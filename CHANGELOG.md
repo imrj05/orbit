@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.0.11] - 2026-09-22
 
+### Contributors
+
+- **Dumitru Moloșnic** ([#11](https://github.com/imrj05/orbit/pull/11)) — light,
+  dark, and system appearance modes; transcript table sizing, streaming
+  scroll-position, and multiline command-preview fixes.
+
 ## [0.0.10] - 2026-09-21
 
 ### Added
