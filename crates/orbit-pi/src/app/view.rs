@@ -137,7 +137,7 @@ impl Render for OrbitApp {
             .current_workspace
             .clone()
             .or_else(|| std::env::current_dir().ok());
-        // The rail gates on the main area's width (Waku: 872px transcript
+        // The rail gates on the main area's width (872px transcript
         // container), which excludes the sessions sidebar when visible.
         let viewport = window.viewport_size();
         // The right side pane is hidden while settings/onboarding own the
@@ -879,7 +879,7 @@ impl Render for OrbitApp {
                                             .children(self.attachments_row(cx))
                                             .child(self.input.clone())
                                             .child(self.composer_row(composer_compact, cx))
-                                            // Drop-target overlay (Waku): fades
+                                            // Drop-target overlay: fades
                                             // in over the box while files are
                                             // dragged across it. Absolute, so
                                             // highlighting never shifts layout.
@@ -2731,7 +2731,7 @@ impl OrbitApp {
             )
     }
 
-    /// Sidebar nav row — Waku `render_sidebar_action_row` shape: fixed height,
+    /// Sidebar nav row — fixed height,
     /// icon in a 20px slot, secondary label, rounded hover surface.
     /// The sidebar's primary action: a raised New Task button with the
     /// ⌘N shortcut hint — the one emphasized control in the nav column.

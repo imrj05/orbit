@@ -1,4 +1,4 @@
-//! Multi-line composer input (Waku-style): text wraps, the editor grows to
+//! Multi-line composer input: text wraps, the editor grows to
 //! `MAX_LINES` and then scrolls internally, `Enter` submits, `Shift+Enter`
 //! inserts a newline, and ↑/↓ move the caret between visual rows.
 //!
@@ -444,7 +444,7 @@ impl ComposerInput {
 
     fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
         // While the autocomplete menu is open the arrows navigate it, not
-        // the caret (Waku parity).
+        // the caret.
         if self.autocomplete_navigate(-1, cx) {
             return;
         }
@@ -725,7 +725,7 @@ impl ComposerInput {
         let Some(item) = cx.read_from_clipboard() else {
             return;
         };
-        // Pasted images become message attachments (Waku: "Show pasted
+        // Pasted images become message attachments ("Show pasted
         // images as attachments") — the app drains `pasted_images` and
         // renders chips above the composer.
         let images: Vec<Image> = item

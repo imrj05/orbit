@@ -1,7 +1,7 @@
 //! Integrated terminal — a real shell in a bottom panel.
 //!
-//! The emulator is [`alacritty_terminal`] (the same Apache-2.0 crate Zed and
-//! Waku build their terminals on), not a bundled terminal app: `tty` opens the
+//! The emulator is [`alacritty_terminal`] (the same Apache-2.0 crate Zed
+//! builds its terminal on), not a bundled terminal app: `tty` opens the
 //! PTY, `Term` owns the VT grid and the ANSI parser, and `EventLoop` drives
 //! PTY I/O on its own thread. Orbit owns the shell selection, the GPUI
 //! rendering, and the key/mouse translation.
@@ -21,8 +21,8 @@
 //! line, and copies it into the composer — without switching apps.
 //! FIRST VIEWPORT: a resizable bottom panel, header first (title, cwd,
 //! restart/close), then the grid, focus already in the shell.
-//! FORM: a bottom workbench panel (the placement Waku gives its right-hand
-//! terminal, rotated to the bottom edge) with Waku's session/view split.
+//! FORM: a bottom workbench panel — a right-hand terminal rotated to the
+//! bottom edge — with a session/view split.
 
 use std::borrow::Cow;
 use std::cell::Cell;
@@ -60,7 +60,7 @@ use crate::theme::{self, Theme};
 /// a zero-sized window.
 const MIN_COLUMNS: usize = 2;
 const MIN_ROWS: usize = 1;
-/// History kept above the visible grid (Waku's default).
+/// History kept above the visible grid.
 const SCROLLBACK_LINES: usize = 10_000;
 /// Fallback advance until the terminal font has been measured.
 const CELL_WIDTH_FALLBACK: f32 = 7.8;

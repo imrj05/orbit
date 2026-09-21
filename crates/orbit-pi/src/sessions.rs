@@ -291,7 +291,7 @@ fn read_session(path: &Path) -> Option<SessionInfo> {
     }
     let first_message = cap_chars(&first_text, 110);
     // A header-only file is a draft: pi writes it at `new_session` time,
-    // before anything is sent. Don't list it (Waku drafts parity) — the
+    // before anything is sent. Don't list it — the
     // session joins the sidebar once its first user message lands.
     if first_message.is_empty() {
         return None;

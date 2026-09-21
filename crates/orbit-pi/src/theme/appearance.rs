@@ -206,6 +206,7 @@ mod tests {
             AppearancePrefs::parse("one-light"),
             AppearancePrefs {
                 mode: AppearanceMode::Light,
+                light_theme: ThemeId::OneLight,
                 ..AppearancePrefs::default()
             }
         );
@@ -326,7 +327,22 @@ mod tests {
     fn dropdown_choices_partition_the_catalog() {
         let light: Vec<_> = themes_for(ThemeMode::Light).collect();
         let dark: Vec<_> = themes_for(ThemeMode::Dark).collect();
-        assert_eq!(light, vec![ThemeId::OrbitLight]);
+        assert_eq!(
+            light,
+            vec![
+                ThemeId::OrbitLight,
+                ThemeId::OrbitPaper,
+                ThemeId::OrbitContrast,
+                ThemeId::AyuLight,
+                ThemeId::CatppuccinLatte,
+                ThemeId::FlexokiLight,
+                ThemeId::GruvboxLight,
+                ThemeId::NordLight,
+                ThemeId::OneLight,
+                ThemeId::SolarizedLight,
+                ThemeId::TokyoNightLight,
+            ]
+        );
         assert_eq!(light.len() + dark.len(), ThemeId::ALL.len());
         assert!(dark.iter().all(|id| id.appearance() == ThemeMode::Dark));
     }

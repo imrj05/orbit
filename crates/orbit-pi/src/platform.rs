@@ -803,7 +803,7 @@ pub const WINDOW_CONTROLS_W: f32 = 46. * 3.;
 /// macOS gets the transparent titlebar the app draws its own controls into,
 /// with the traffic lights moved onto the sidebar's 44px row; Windows gets one
 /// too, because it paints its own caption buttons in that same row
-/// (`draws_window_controls`, Waku-style) and a system caption above them would
+/// (`draws_window_controls`) and a system caption above them would
 /// double the header. That trade is deliberate: the app's buttons carry
 /// `WindowControlArea` hit areas, so minimize/maximize/close, `Alt+Space`, and
 /// double-click-to-maximize all still run the system's own commands, but the
@@ -816,7 +816,7 @@ pub fn titlebar_options() -> TitlebarOptions {
     TitlebarOptions {
         title: Some(SharedString::from("Orbit Pi")),
         // Transparent titlebar: the sidebar extends to the top and the native
-        // traffic lights sit inside it (Waku-style).
+        // traffic lights sit inside it.
         appears_transparent: true,
         // Center the lights in the 44px titlebar row so they share a line with
         // the window controls beside them.

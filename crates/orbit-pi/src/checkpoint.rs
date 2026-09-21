@@ -389,9 +389,9 @@ pub fn has_ref(cwd: &Path, git_ref: &str) -> bool {
 
 /// Highest turn number with an ending checkpoint ref for `session`.
 ///
-/// Waku persists each turn's checkpoint in the session model, so its `Last
-/// Turn` source is available again the moment a session is reopened. Orbit
-/// keeps the checkpoints in Git refs, so it recovers the same fact by listing
+/// Each turn's checkpoint lives in Git refs, so the `Last Turn` source is
+/// available again the moment a session is reopened. Orbit recovers the same
+/// fact by listing
 /// them — this is what makes `Last Turn` survive a restart or session switch.
 pub fn latest_turn(cwd: &Path, session: &str) -> Option<usize> {
     let prefix = format!("refs/orbit/session-{}-turn-", session_key(session));

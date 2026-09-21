@@ -267,8 +267,8 @@ impl OrbitApp {
 
     /// Recover the newest completed turn from the persisted checkpoint refs,
     /// so Review's **Last Turn** is available immediately after a restart or
-    /// session switch. Waku persists the same fact in its session model; Orbit
-    /// keeps it in `refs/orbit/…` and reads it back here.
+    /// session switch. Orbit keeps the fact in `refs/orbit/…` and reads it
+    /// back here.
     pub(super) fn recover_latest_turn(&mut self, cx: &mut Context<Self>) {
         let Some(session) = self.session_id.clone() else {
             return;

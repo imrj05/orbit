@@ -508,7 +508,7 @@ fn main() {
         app_icon::set_dock_icon();
 
         // Open maximized: full width of the screen, filling the visible
-        // frame (Waku-style workbench). The computed bounds are the
+        // frame. The computed bounds are the
         // restore size macOS returns to when the window is un-zoomed,
         // sized relative to the display so it always fits even on
         // small/scaled screens.

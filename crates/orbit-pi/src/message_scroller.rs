@@ -90,7 +90,7 @@ impl MessageScrollerState {
     }
 
     /// True when the transcript holds more content than the viewport shows
-    /// (drives the Waku navigation-rail visibility).
+    /// (drives the navigation-rail visibility).
     pub fn is_scrollable(&self) -> bool {
         self.list.max_offset_for_scrollbar().height > px(0.)
     }
@@ -324,7 +324,7 @@ fn render_jump_button(state: MessageScrollerState, theme: Theme) -> impl IntoEle
         .flex()
         .justify_center()
         .child(
-            // Waku's floating round scroll-to-bottom affordance.
+            // Floating round scroll-to-bottom affordance.
             div()
                 .id(ElementId::Name("message-scroller-jump".into()))
                 .h(px(32.))

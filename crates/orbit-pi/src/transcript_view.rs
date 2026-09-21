@@ -1,4 +1,4 @@
-//! Transcript paint — Waku `transcript_view.rs` layout, honest Orbit data.
+//! Transcript paint — transcript layout, honest Orbit data.
 //!
 //! Rows are plain GPUI flex trees (no component library): user turns are
 //! End-aligned neutral bubbles, assistant turns are Start-aligned prose. A
@@ -57,16 +57,16 @@ pub(crate) type ReviewOpener = Rc<dyn Fn(&mut Window, &mut App)>;
 /// from the app so an image tile can open a surface it doesn't own.
 pub(crate) type ImageOpener = Rc<dyn Fn(Arc<Image>, &mut Window, &mut App)>;
 
-/// Waku `CONTENT_MAX_WIDTH` (the `max-w-[760px]` transcript column).
+/// The transcript content column's max width.
 /// Normal message content keeps this centered measure. Assistant tables
 /// break out to the transcript pane's width; their scroll viewport must not
 /// inherit this cap.
 const CONTENT_MAX_WIDTH: f32 = 960.0;
-/// Extra space before a follow-up user message (Waku `pt-8`).
+/// Extra space before a follow-up user message.
 const FOLLOWUP_TURN_TOP_GAP: f32 = 32.0;
-/// Waku user-bubble `max-w-[540px]`.
+/// User-bubble max width.
 const USER_BUBBLE_MAX_WIDTH: f32 = 540.0;
-/// Waku message-footer action button `size-[27px]`.
+/// Message-footer action button size.
 const FOOTER_BUTTON_SIZE: f32 = 27.0;
 const COPY_FEEDBACK: Duration = Duration::from_secs(2);
 const NAVIGATION_RAIL_LEFT: f32 = 16.0;
@@ -75,10 +75,10 @@ const NAVIGATION_RAIL_TICK_WIDTH: f32 = 32.0;
 const NAVIGATION_RAIL_TICK_HEIGHT: f32 = 2.0;
 const NAVIGATION_RAIL_TURN_HEIGHT: f32 = 12.0;
 const NAVIGATION_RAIL_INACTIVE_OPACITY: f32 = 0.45;
-/// Tick width by emphasis distance from the hovered turn (Waku rail).
+/// Tick width by emphasis distance from the hovered turn.
 const NAVIGATION_RAIL_EMPHASIS_SCALE: [f32; 4] = [1.0, 0.68, 0.44, 0.25];
-/// Waku caps the rail at 80% of the viewport and hides it below an 872px
-/// transcript container.
+/// The rail caps at 80% of the viewport and hides below an 872px transcript
+/// container.
 const NAVIGATION_RAIL_MAX_HEIGHT: f32 = 0.8;
 const NAVIGATION_RAIL_MIN_MAIN_WIDTH: f32 = 1040.0;
 const CHANGED_FILES_PREVIEW_LIMIT: usize = 3;
@@ -189,9 +189,9 @@ pub(crate) struct TranscriptView {
     pub rail_hint_shown_at: Rc<Cell<Option<Instant>>>,
     /// Workspace of the open session — roots the Review git diff.
     pub workspace: Option<PathBuf>,
-    /// Viewport height (caps the rail at 80%, like Waku).
+    /// Viewport height (caps the rail at 80%).
     pub viewport_height: Pixels,
-    /// Main-area width (gates the rail at 872px, like Waku).
+    /// Main-area width (gates the rail at 872px).
     pub main_width: Pixels,
     /// Rail scroll position + last auto-scrolled turn.
     pub rail_scroll: ScrollHandle,
@@ -1095,7 +1095,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
                 scroller.clone(),
                 review_changes.clone(),
             );
-            // One run footer, after the changed-files card (Waku turn order:
+            // One run footer, after the changed-files card (turn order:
             // answer → files card → Copy): the copy affordance copies the
             // answer, with the settled time and the run's usage. The last
             // message's own footer is suppressed (see `suppress_footer`) so
@@ -1236,7 +1236,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
     panel
 }
 
-/// Waku's conversation rail: ticks per user turn, vertically centered,
+/// The conversation rail: ticks per user turn, vertically centered,
 /// capped at 80% of the viewport, wheel-scrollable with edge fades. Tick
 /// widths fan out around the *hovered* turn only; the active turn is the
 /// full-opacity tick while idle.
@@ -1261,7 +1261,7 @@ fn render_navigation_rail(
     let scrollable = content_height > rail_height + px(1.);
     let scroll_offset = rail_scroll.offset().y;
 
-    // Waku scrolls the active tick into view whenever it changes.
+    // Scroll the active tick into view whenever it changes.
     let active_pos =
         active_turn.and_then(|ix| user_turns.iter().position(|candidate| *candidate == ix));
     if scrollable {
@@ -1283,7 +1283,7 @@ fn render_navigation_rail(
     let at_bottom = !scrollable || scroll_offset >= content_height - rail_height - px(0.5);
 
     // The emphasized (hovered) turn anchors the width fan-out; with nothing
-    // hovered every tick rests at the 0.25 scale, like Waku's idle rail.
+    // hovered every tick rests at the 0.25 scale.
     let emphasized_turn = hovered.get();
     let emphasized_pos =
         emphasized_turn.and_then(|ix| user_turns.iter().position(|candidate| *candidate == ix));
@@ -1400,9 +1400,9 @@ fn render_navigation_rail(
             rail.child(render_rail_fade(false, theme))
         });
 
-    // Hover preview, clamped inside the rail body's vertical span (Waku
-    // clamps `previewTop` against the rail bounds). While the one-time hint
-    // is up it owns this slot, so the two floating cards never stack.
+    // Hover preview, clamped inside the rail body's vertical span so it stays
+    // within the rail bounds. While the one-time hint is up it owns this slot,
+    // so the two floating cards never stack.
     if let Some((pos, prompt, response)) = hover_info {
         let visible_center =
             px(pos as f32 * NAVIGATION_RAIL_TURN_HEIGHT) + pitch / 2. - scroll_offset;
@@ -1450,7 +1450,7 @@ fn render_navigation_rail(
         .into_any_element()
 }
 
-/// Waku's rail edge fade: a 20px gradient from the background so scrolling
+/// Rail edge fade: a 20px gradient from the background so scrolling
 /// ticks dissolve instead of clipping.
 fn render_rail_fade(top: bool, theme: Theme) -> impl IntoElement {
     let base = div()
@@ -1475,9 +1475,9 @@ fn render_rail_fade(top: bool, theme: Theme) -> impl IntoElement {
     }
 }
 
-/// Waku's rail hover card: the turn's number, the turn's prompt, and a
+/// Rail hover card: the turn's number, the turn's prompt, and a
 /// short response snippet, vertically positioned by the caller (clamped to
-/// the rail's span) at Waku's 60px left offset (rail width + gap).
+/// the rail's span) at a 60px left offset (rail width + gap).
 fn render_rail_preview(
     prompt: &str,
     response: &str,
@@ -1588,7 +1588,7 @@ fn render_rail_hint(
 }
 
 /// Whitespace-normalized grapheme snippet
-/// (same presentation Waku's navigation previews use).
+/// (the presentation navigation previews use).
 fn snippet(text: &str, max_graphemes: usize) -> String {
     let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut graphemes = normalized.graphemes(true);
@@ -1657,7 +1657,7 @@ fn render_row(paint: RowPaint) -> AnyElement {
         .into_any_element()
 }
 
-/// End-aligned user row: Waku's neutral raised bubble, persistent quiet
+/// End-aligned user row: neutral raised bubble, persistent quiet
 /// footer below. Attached images render as a tile grid above the text
 /// bubble.
 fn render_user_bubble(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement {
@@ -1672,7 +1672,7 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint) -> impl IntoEleme
         .items_end()
         .gap(px(4.))
         // Attachment tiles (images queued with the prompt). Cover-cropped
-        // squares, Waku-style; wrap when a message carries several.
+        // squares; wrap when a message carries several.
         .when(!message.images.is_empty(), |column| {
             column.child(
                 div()
@@ -1767,7 +1767,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
         .items_start()
         .gap(theme.space(CONTENT_GAP));
 
-    // The turn fold precedes the run's first work (Waku: collapsed turns
+    // The turn fold precedes the run's first work (collapsed turns
     // hide the pre-answer work behind a single "Worked for" divider).
     if !paint.live && message.has_hidden_work() {
         content = content.child(render_turn_fold(
@@ -2802,7 +2802,7 @@ fn render_activity_card(
     let has_diff = tool.added > 0 || tool.removed > 0;
     let added = tool.added;
     let removed = tool.removed;
-    // Expandable like Waku's activity rows: full arguments and, when captured
+    // Expandable activity rows: full arguments and, when captured
     // live, the tool result.
     let has_detail =
         tool.args.as_ref().is_some_and(|args| !args.is_null()) || tool.output.is_some();
@@ -3859,7 +3859,7 @@ fn render_message_footer(
         .gap(px(1.))
         .when(align_right, |row| row.justify_end());
     if align_right {
-        // Waku's right-aligned footer: timestamp first, then actions.
+        // Right-aligned footer: timestamp first, then actions.
         if let Some(stamp) = stamp {
             footer = footer.child(stamp);
         }
@@ -4095,7 +4095,7 @@ fn fold_label(elapsed: Option<Duration>) -> String {
     }
 }
 
-/// Waku `formatDuration` spoken units: `5 minutes 41 seconds`.
+/// Spoken duration units: `5 minutes 41 seconds`.
 fn format_duration(duration: Duration) -> String {
     let secs = duration.as_secs().max(1);
     if secs < 60 {
@@ -4322,7 +4322,7 @@ fn render_working_indicator(
         )
 }
 
-/// Waku `formatWorkingElapsed` compact form: `12s` / `5m 41s` / `1h 2m`.
+/// Compact working-elapsed form: `12s` / `5m 41s` / `1h 2m`.
 fn format_working_elapsed(duration: Duration) -> String {
     let secs = duration.as_secs();
     if secs < 60 {
@@ -4398,7 +4398,7 @@ fn render_line_delta(added: u64, removed: u64, theme: Theme, size: f32) -> impl 
 }
 
 // ── Markdown ────────────────────────────────────────────────────────────────
-// Waku `.markdown` parity: 14px/22px body, 0.9rem rhythm between blocks,
+// Markdown styling: 14px/22px body, 0.9rem rhythm between blocks,
 // h1/h2/h3 at 20/18/16px semibold, `ml-5` lists with hanging indents,
 // `border-l-2` blockquotes, mono inline-code chips, rounded pre blocks,
 // and clickable underlined links.
@@ -5101,7 +5101,7 @@ struct TableBreakout {
     column_width: Pixels,
 }
 
-/// Waku `.markdown`: 14px/22px body. Spacing is graded by block pair rather
+/// Markdown: 14px/22px body. Spacing is graded by block pair rather
 /// than one uniform gap, so a heading reads as a section start, a list hugs
 /// the paragraph that introduces it, and consecutive paragraphs breathe.
 ///
@@ -5812,7 +5812,7 @@ fn table_column_widths(header: &[String], rows: &[Vec<String>]) -> Vec<f32> {
 }
 
 /// GFM table: outer border, semibold header, dividers, content-weighted
-/// columns (`th`/`td` styling from Waku's `.markdown table` rules).
+/// columns (`th`/`td` markdown-table styling).
 fn render_table(
     header: &[String],
     rows: &[Vec<String>],
@@ -5933,7 +5933,7 @@ fn render_table(
         )
         .into_any_element()
 }
-/// Waku-style footer stamp for the changed-files summary: `Today 1:15 PM`,
+/// Footer stamp for the changed-files summary: `Today 1:15 PM`,
 /// `Yesterday 6:07 PM`, then a short date (`Sep 6`) once past yesterday.
 fn summary_time_label(millis: i64) -> String {
     summary_time_label_at(millis, chrono::Local::now())
@@ -6049,7 +6049,7 @@ pub(crate) fn render_changed_files(
     }
 
     // Review affordance: opens the changed-files diff in the right side
-    // pane's Review tab (Waku parity — no external editor hop).
+    // pane's Review tab (no external editor hop).
     let review = review_changes.map(|review| {
         div()
             .id(ElementId::NamedInteger(
@@ -6403,7 +6403,7 @@ mod tests {
     }
 
     #[test]
-    fn duration_format_matches_waku_spoken_forms() {
+    fn duration_format_matches_spoken_forms() {
         assert_eq!(format_duration(Duration::from_secs(1)), "1 second");
         assert_eq!(format_duration(Duration::from_secs(12)), "12 seconds");
         assert_eq!(format_duration(Duration::from_secs(60)), "1 minute");
@@ -6423,7 +6423,7 @@ mod tests {
     }
 
     #[test]
-    fn working_elapsed_uses_waku_short_form() {
+    fn working_elapsed_uses_short_form() {
         assert_eq!(format_working_elapsed(Duration::from_secs(0)), "0s");
         assert_eq!(format_working_elapsed(Duration::from_secs(12)), "12s");
         assert_eq!(format_working_elapsed(Duration::from_secs(60)), "1m");

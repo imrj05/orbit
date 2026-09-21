@@ -32,7 +32,7 @@ enum PluginOp {
 
 impl OrbitApp {
     // ── settings surface ───────────────────────────────────────────
-    // Waku-style: left nav (Back + sections), right column of setting
+    // Left nav (Back + sections), right column of setting
     // rows. Every control maps to real app state; read-only rows show
     // real pi/runtime facts (PRODUCT.md: nothing decorative that
     // pretends to be functional).
@@ -4513,7 +4513,7 @@ impl OrbitApp {
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                 this.update(cx, action);
             })
-            .child(div().size(px(14.)).rounded_full().bg(theme.text))
+            .child(div().size(px(14.)).rounded_full().bg(theme.toggle_knob))
             .into_any_element()
     }
 
@@ -4887,6 +4887,11 @@ impl OrbitApp {
             .rounded(px(7.))
             .p(px(4.))
             .focus(|style| style.border_color(theme.accent))
+            // gpui 0.2 has no `:focus-visible`: an automatic focus transfer
+            // on mouse-down would leave the accent ring behind after a click.
+            // Suppress that transfer so the ring only appears for keyboard
+            // focus; the radio's own `on_click` still selects on mouse-up.
+            .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
             .flex()
             .items_center()
             .gap(theme.space(12.))
@@ -5299,7 +5304,7 @@ impl OrbitApp {
                     cx.notify();
                 });
             })
-            .child(div().size(px(14.)).rounded_full().bg(theme.text))
+            .child(div().size(px(14.)).rounded_full().bg(theme.toggle_knob))
             .into_any_element()
     }
 
@@ -5329,7 +5334,7 @@ impl OrbitApp {
         )
     }
 
-    // ── Waku General-settings selects (language / font sizes) ──────────
+    // ── General-settings selects (language / font sizes) ──────────────
 
     /// The Language dropdown, listing every shipped locale (autonyms) plus
     /// `System`.
@@ -5449,7 +5454,7 @@ impl OrbitApp {
         )
     }
 
-    /// A Waku-style select: value chip + caret, dropdown below when open.
+    /// A select control: value chip + caret, dropdown below when open.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn select_control(
         &self,
@@ -6149,7 +6154,7 @@ impl OrbitApp {
 
     /// The same re-read, but off the UI thread: the Providers page paints from
     /// cached state first and the fresh files land a frame later, so clicking
-    /// the nav row never blocks on disk (Waku's no-blink page switch).
+    /// the nav row never blocks on disk (no-blink page switch).
     pub(super) fn reload_custom_providers_later(&mut self, cx: &mut Context<Self>) {
         // Idempotent, already off-thread; kick it now so a first visit still
         // has metadata as soon as it arrives.

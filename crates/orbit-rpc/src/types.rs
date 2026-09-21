@@ -262,8 +262,8 @@ pub enum Event {
         value: Value,
     },
 
-    /// pi renamed the open session (`name` is `null` when cleared). Waku
-    /// forwards this as an automatic session title.
+    /// pi renamed the open session (`name` is `null` when cleared). This
+    /// forwards it as an automatic session title.
     SessionInfoChanged {
         name: Option<String>,
     },

@@ -69,8 +69,7 @@ pub(crate) fn visible_sessions_in_group(
 /// workspace the pi process runs in, pi's live title when it has already
 /// named the session, and a `now` stamp so it sorts to the top of the
 /// sidebar. A session that hasn't started (`session_started` = false — no
-/// user message sent yet) gets no placeholder: a draft is not listed
-/// (Waku drafts parity).
+/// user message sent yet) gets no placeholder: a draft is not listed.
 pub(crate) fn sessions_with_placeholder(
     sessions: &[SessionInfo],
     current_path: Option<&Path>,
@@ -423,7 +422,7 @@ pub(crate) fn render_side_row(
             let session_for_click = session.clone();
             let active = active_path == Some(session.path.as_path());
             // The open session runs live; parked (background) sessions run
-            // in their own pi processes — both get the loader (Waku).
+            // in their own pi processes — both get the loader.
             let running = (active && agent_running) || running_paths.contains(&session.path);
             let pinned = pinned_paths.contains(&session.path);
             let this = this.clone();

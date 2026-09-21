@@ -489,7 +489,7 @@ impl OrbitApp {
                     app.set_automatic_updates(next, cx);
                 });
             })
-            .child(div().size(px(14.)).rounded_full().bg(theme.text))
+            .child(div().size(px(14.)).rounded_full().bg(theme.toggle_knob))
             .into_any_element()
     }
 
