@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.10] - 2026-09-21
+
 ### Added
 
 - **Explorer** — a Zed-style file-and-folder explorer for the active workspace.
@@ -37,7 +39,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is bounded by both step count and total bytes so a whole-file buffer cannot
   balloon memory.
 
+- **Explorer file operations** — create, rename, and delete files and folders
+  from the project panel. **New File** and **New Folder** sit in the panel
+  header and in a directory's right-click menu; **Rename** edits a row's name
+  in place; **Delete** asks first and moves the item to the OS Trash on macOS
+  (permanent delete elsewhere, with the confirmation worded to match). Names
+  are validated before anything touches disk, a create never clobbers an
+  existing file, and a rename refuses an occupied name. An operation is refused
+  while an open Files tab under the target has unsaved edits, so it can never
+  race an autosave or silently discard a buffer; a renamed file's open tab
+  follows the new path, and a deleted one closes.
+
+- **More code fonts** — the Code font picker now offers seven more bundled
+  faces alongside the existing set: **DM Mono**, **IBM Plex Mono**,
+  **Inconsolata**, **Noto Sans Mono**, **Space Mono**, **Anonymous Pro**, and
+  **Martian Mono**. Like the rest of the catalog they ship as subset static
+  TTFs, so a picked face resolves without an OS dependency.
+
 ### Fixed
+
+- Explorer rows now fill the panel width, matching the Review pane's file tree.
+  The selection/hover highlight no longer collapses to a narrow pill around the
+  devicon, and git badges align to the right. This also fixes the inline rename
+  and new-file prompts, which rendered as an empty bubble: the prompt input is
+  a `ComposerInput`, which has no intrinsic width, so on a content-sized row
+  its `flex_1` collapsed to zero. A regression test renders the real panel and
+  asserts the prompt input keeps a usable width.
+
+- The Explorer's row context menu opens at the pointer, flipping above/left
+  when it would overflow the window. It was pinned to the panel's top-left, so
+  a row's menu always appeared at the top of the tree regardless of where the
+  row was right-clicked.
 
 - Closing a file tab keeps keyboard focus inside the Files surface: it moves to
   the newly active editor, or to the surface itself for preview/read-only tabs,
@@ -164,7 +196,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - In-transcript find (⌘F) and a full-window image lightbox.
 - Native macOS app bundle, Developer-ID signed and notarizable.
 
-[Unreleased]: https://github.com/imrj05/orbit/compare/v0.0.9...HEAD
+[Unreleased]: https://github.com/imrj05/orbit/compare/v0.0.10...HEAD
 [0.0.1]: https://github.com/imrj05/orbit/releases/tag/v0.0.1
 [0.0.2]: https://github.com/imrj05/orbit/releases/tag/v0.0.2
 [0.0.3]: https://github.com/imrj05/orbit/releases/tag/v0.0.3
@@ -174,3 +206,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.0.7]: https://github.com/imrj05/orbit/releases/tag/v0.0.7
 [0.0.8]: https://github.com/imrj05/orbit/releases/tag/v0.0.8
 [0.0.9]: https://github.com/imrj05/orbit/releases/tag/v0.0.9
+[0.0.10]: https://github.com/imrj05/orbit/releases/tag/v0.0.10

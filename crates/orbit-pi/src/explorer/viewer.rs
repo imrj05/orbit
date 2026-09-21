@@ -253,6 +253,14 @@ fn image_format(path: &Path) -> Option<ImageFormat> {
     }
 }
 
+/// Rewrite a tab's workspace-relative display path after `old_display` was
+/// renamed to `new_display`: a tab exactly at the old path takes the new name,
+/// one under it keeps its suffix (`src` → `src2` maps `src/a.rs` → `src2/a.rs`).
+fn renamed_display(display: &str, old_display: &str, new_display: &str) -> String {
+    let suffix = display.strip_prefix(old_display).unwrap_or(display);
+    format!("{new_display}{suffix}")
+}
+
 /// A NUL byte in the leading window is the classic binary tell and is right
 /// for source trees; a stray high byte is not enough to call something binary.
 fn is_binary(bytes: &[u8]) -> bool {
@@ -375,6 +383,61 @@ impl FileViewer {
 
     pub fn active_display(&self) -> Option<String> {
         self.tabs.get(self.active).map(|tab| tab.display.clone())
+    }
+
+    /// Whether any open tab at or under `prefix` has unsaved edits. Rename and
+    /// delete check this first, so a file operation can never race the autosave
+    /// or silently discard a buffer.
+    pub fn has_dirty_under(&self, prefix: &Path) -> bool {
+        self.tabs
+            .iter()
+            .any(|tab| tab.path.starts_with(prefix) && tab.dirty)
+    }
+
+    /// A rename landed on disk: move every open tab at or under `old` to
+    /// `new`, rewriting both the absolute path and the workspace-relative
+    /// display the toolbar shows. `*_display` are the `/`-separated relative
+    /// forms. Clean tabs only — the caller refused a dirty one before acting.
+    pub fn reconcile_rename(
+        &mut self,
+        old: &Path,
+        new: &Path,
+        old_display: &str,
+        new_display: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let mut changed = false;
+        for tab in self.tabs.iter_mut() {
+            let Ok(suffix) = tab.path.strip_prefix(old) else {
+                continue;
+            };
+            tab.path = new.join(suffix);
+            tab.display = renamed_display(&tab.display, old_display, new_display);
+            changed = true;
+        }
+        if changed {
+            cx.notify();
+        }
+    }
+
+    /// A delete landed on disk: drop every tab at or under `prefix` without
+    /// writing. The caller refuses a dirty tab first, so nothing is lost.
+    pub fn close_under(&mut self, prefix: &Path, cx: &mut Context<Self>) {
+        let before = self.tabs.len();
+        self.tabs.retain(|tab| !tab.path.starts_with(prefix));
+        if self.tabs.len() == before {
+            return;
+        }
+        if self.tabs.is_empty() {
+            self.open = false;
+            self.list.reset(0);
+            self.loading = false;
+        } else {
+            self.active = self.active.min(self.tabs.len() - 1);
+            self.focus_pending = true;
+            self.sync_list();
+        }
+        cx.notify();
     }
 
     /// Open (or focus) a file. A file already open in a tab keeps its buffer
@@ -1412,6 +1475,18 @@ mod tests {
         assert!(is_image("dir/B.JPEG"));
         assert!(!is_image("a.rs"));
         assert!(is_markdown("README.MD"));
+    }
+
+    /// A rename must rewrite the toolbar path for a tab at the old path and
+    /// for every tab beneath a renamed directory.
+    #[test]
+    fn rename_rewrites_display_for_a_file_and_a_subtree() {
+        assert_eq!(
+            renamed_display("src/old.rs", "src/old.rs", "src/new.rs"),
+            "src/new.rs"
+        );
+        assert_eq!(renamed_display("src/foo.rs", "src", "src2"), "src2/foo.rs");
+        assert_eq!(renamed_display("main.rs", "main.rs", "app.rs"), "app.rs");
     }
 
     #[test]

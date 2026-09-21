@@ -863,10 +863,17 @@ impl OrbitApp {
         let app_weak = cx.entity().downgrade();
         let project_panel = cx.new(|cx| {
             crate::explorer::ProjectPanel::new(
-                Rc::new(move |path, display, cx: &mut App| {
-                    let _ = app_weak.update(cx, |app, cx| {
-                        app.open_file_in_viewer(path, display, cx)
-                    });
+                Rc::new({
+                    let app_weak = app_weak.clone();
+                    move |path, display, cx: &mut App| {
+                        let _ = app_weak.update(cx, |app, cx| {
+                            app.open_file_in_viewer(path, display, cx)
+                        });
+                    }
+                }),
+                Rc::new(move |request, cx: &mut App| {
+                    let _ = app_weak
+                        .update(cx, |app, cx| app.on_file_op(request, cx));
                 }),
                 cx,
             )

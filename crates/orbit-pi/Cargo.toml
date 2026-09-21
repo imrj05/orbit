@@ -1,6 +1,6 @@
 [package]
 name = "orbit-pi"
-version = "0.0.9"
+version = "0.0.10"
 description = "Native GPUI workbench for the pi coding agent"
 edition.workspace = true
 license.workspace = true
@@ -114,6 +114,8 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSArray",
     "NSBundle",
     "NSDictionary",
+    "NSError",
+    "NSFileManager",
     "NSLocale",
     "NSString",
     "NSURL",

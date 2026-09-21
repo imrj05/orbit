@@ -15,6 +15,14 @@ pub(super) enum SendMode {
     Steer,
 }
 
+/// A workspace-relative `/`-separated path for the Files toolbar. Falls back
+/// to the absolute path when the file lies outside the workspace.
+fn relative_display(root: &std::path::Path, path: &std::path::Path) -> String {
+    path.strip_prefix(root)
+        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| path.to_string_lossy().to_string())
+}
+
 impl OrbitApp {
     /// True while a run is in flight (busy flag or a streaming transcript).
     pub(super) fn is_running(&self) -> bool {
@@ -1712,6 +1720,177 @@ impl OrbitApp {
         self.file_viewer
             .update(cx, |viewer, cx| viewer.show(path, display, cx));
         cx.notify();
+    }
+
+    /// Run an Explorer file operation (new file/folder, rename, delete) on the
+    /// background executor, then reconcile the tree and any open Files tabs.
+    /// The panel only sends workspace-relative paths; everything that touches
+    /// the filesystem happens here, off the UI thread.
+    pub(super) fn on_file_op(
+        &mut self,
+        request: crate::explorer::FileOpRequest,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::explorer::{ops, walk, FileOpRequest};
+
+        let Some(root) = self
+            .current_workspace
+            .clone()
+            .or_else(|| std::env::current_dir().ok())
+        else {
+            self.toast_error(tr!("explorer.err_no_workspace"));
+            cx.notify();
+            return;
+        };
+
+        match request {
+            FileOpRequest::NewFile { dir, name } => {
+                let parent = walk::absolute(&root, &dir);
+                let display_root = root.clone();
+                let create = name.clone();
+                cx.spawn(async move |this, cx| {
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move { ops::create_file(&parent, &create) })
+                        .await;
+                    let _ = this.update(cx, |app, cx| {
+                        match result {
+                            Ok(path) => {
+                                app.clear_explorer_notice(cx);
+                                app.project_panel
+                                    .update(cx, |panel, cx| panel.mark_stale(cx));
+                                let display = relative_display(&display_root, &path);
+                                app.open_file_in_viewer(path, display, cx);
+                                app.toast_success(tr!("explorer.created_file", name = name));
+                            }
+                            Err(error) => app.explorer_op_error(&error, cx),
+                        }
+                        cx.notify();
+                    });
+                })
+                .detach();
+            }
+            FileOpRequest::NewFolder { dir, name } => {
+                let parent = walk::absolute(&root, &dir);
+                let create = name.clone();
+                cx.spawn(async move |this, cx| {
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move { ops::create_dir(&parent, &create) })
+                        .await;
+                    let _ = this.update(cx, |app, cx| {
+                        match result {
+                            Ok(_) => {
+                                app.clear_explorer_notice(cx);
+                                app.project_panel
+                                    .update(cx, |panel, cx| panel.mark_stale(cx));
+                                app.toast_success(tr!("explorer.created_folder", name = name));
+                            }
+                            Err(error) => app.explorer_op_error(&error, cx),
+                        }
+                        cx.notify();
+                    });
+                })
+                .detach();
+            }
+            FileOpRequest::Rename { path, name } => {
+                let target = walk::absolute(&root, &path);
+                if self.file_viewer.read(cx).has_dirty_under(&target) {
+                    self.toast_warning(tr!("explorer.err_unsaved"));
+                    cx.notify();
+                    return;
+                }
+                let display_root = root.clone();
+                let old_display = path.clone();
+                let rename_target = target.clone();
+                let rename_name = name.clone();
+                cx.spawn(async move |this, cx| {
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move { ops::rename(&rename_target, &rename_name) })
+                        .await;
+                    let _ = this.update(cx, |app, cx| {
+                        match result {
+                            Ok(new_path) => {
+                                let new_display = relative_display(&display_root, &new_path);
+                                app.file_viewer.update(cx, |viewer, cx| {
+                                    viewer.reconcile_rename(
+                                        &target,
+                                        &new_path,
+                                        &old_display,
+                                        &new_display,
+                                        cx,
+                                    )
+                                });
+                                app.clear_explorer_notice(cx);
+                                app.project_panel
+                                    .update(cx, |panel, cx| panel.mark_stale(cx));
+                                app.toast_success(tr!("explorer.renamed", name = name));
+                            }
+                            Err(error) => app.explorer_op_error(&error, cx),
+                        }
+                        cx.notify();
+                    });
+                })
+                .detach();
+            }
+            FileOpRequest::Delete { path, is_dir: _ } => {
+                let target = walk::absolute(&root, &path);
+                if self.file_viewer.read(cx).has_dirty_under(&target) {
+                    self.toast_warning(tr!("explorer.err_unsaved"));
+                    cx.notify();
+                    return;
+                }
+                let name = path.rsplit('/').next().unwrap_or(path.as_str()).to_string();
+                let trash_target = target.clone();
+                cx.spawn(async move |this, cx| {
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move { crate::platform::trash_path(&trash_target) })
+                        .await;
+                    let _ = this.update(cx, |app, cx| {
+                        match result {
+                            Ok(()) => {
+                                app.file_viewer
+                                    .update(cx, |viewer, cx| viewer.close_under(&target, cx));
+                                app.clear_explorer_notice(cx);
+                                app.project_panel
+                                    .update(cx, |panel, cx| panel.mark_stale(cx));
+                                app.toast_success(tr!("explorer.deleted", name = name));
+                            }
+                            Err(error) => {
+                                let message = format!(
+                                    "{}: {error}",
+                                    tr!("explorer.err_delete")
+                                );
+                                app.project_panel.update(cx, |panel, cx| {
+                                    panel.set_notice(Some(message), cx)
+                                });
+                            }
+                        }
+                        cx.notify();
+                    });
+                })
+                .detach();
+            }
+        }
+    }
+
+    /// Clear the Explorer's operation-error strip.
+    fn clear_explorer_notice(&mut self, cx: &mut Context<Self>) {
+        self.project_panel
+            .update(cx, |panel, cx| panel.set_notice(None, cx));
+    }
+
+    /// Surface a failed create/rename in the Explorer's notice strip.
+    fn explorer_op_error(
+        &mut self,
+        error: &crate::explorer::ops::OpError,
+        cx: &mut Context<Self>,
+    ) {
+        let message = error.message();
+        self.project_panel
+            .update(cx, |panel, cx| panel.set_notice(Some(message), cx));
     }
 
     /// Leave the Files surface and return to the chat.

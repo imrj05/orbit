@@ -6,10 +6,11 @@ file contents. Approved direction: **right dock + full-page Files surface**,
 **gitignore-aware** walking with a hidden-files toggle, and **debounced
 autosave** for text files.
 
-Status: **implemented** (phases 1–5). Text and code files open in an editable,
+Status: **implemented** (phases 1–6). Text and code files open in an editable,
 syntax-highlighted buffer that writes back to disk; Markdown, images, binary,
-and oversized files stay read-only. Later ideas (quick-open, directory folding,
-sticky scroll, file operations) remain open — see [Rollout](#rollout).
+and oversized files stay read-only. Files and folders can be created, renamed,
+and deleted (to the Trash) from the panel. Later ideas (quick-open, directory
+folding, sticky scroll) remain open — see [Rollout](#rollout).
 
 ## Goals
 
@@ -27,10 +28,9 @@ toggle), and honest handling of
 - Leave room for Zed-parity later (quick-open, git decorations, file
   operations) without re-architecting.
 
-Non-goals for this pass: file operations (new/rename/delete), multi-select,
-drag-and-drop, multi-worktree. Editing covers **valid-UTF-8 text files only**:
-truncated and non-UTF-8 files stay read-only so a save can never destroy bytes
-the viewer never held.
+Non-goals for this pass: multi-select, drag-and-drop, multi-worktree. Editing
+covers **valid-UTF-8 text files only**: truncated and non-UTF-8 files stay
+read-only so a save can never destroy bytes the viewer never held.
 
 ## Where it lives
 
@@ -186,6 +186,27 @@ pub struct FileContent {
   lexer the transcript and read-only viewer use; Markdown has no lexer and
   stays rendered.
 
+### File operations (`ops.rs` + `panel.rs`)
+
+`ops.rs` is pure and synchronous — the app runs it on the background executor,
+so no I/O touches a frame. Names are validated before anything reaches the
+filesystem (empty, `.`/`..`, separators, control characters, and over-long
+names are rejected with a locale keyed message), `create_*` use
+`create_new`/`create_dir` so they never clobber, and `rename` refuses an
+existing destination.
+
+The panel owns the inline prompts: **New File** / **New Folder** from the
+header or a directory's context menu, **Rename** from any row's context menu
+(edited in place), and **Delete** via a confirmation card. The panel sends a
+[`FileOpRequest`] (workspace-relative) to the app, which resolves the absolute
+path, performs the operation, then reconciles the tree and any open Files tabs
+(`FileViewer::reconcile_rename` / `close_under`). Rename and delete are refused
+while a tab under the target has unsaved edits, so an operation can never race
+the autosave or discard a buffer. Delete moves to the OS Trash on macOS
+(`platform::trash_path`, `NSFileManager`) and falls back to a permanent delete
+elsewhere — the confirmation is worded from `TRASH_IS_RECOVERABLE`, so it never
+promises a restore the platform cannot deliver.
+
 ## UI
 
 ### ProjectPanel
@@ -199,9 +220,10 @@ pub struct FileContent {
   `enter` opens (or toggles a dir), `cmd-→`/`cmd-←` expand/collapse all.
   Focus handle carries a `ProjectPanel` key context.
 - Footer/status: entry count, "truncated" note when the cap hit.
-- Context menu: Open, Open in editor (existing `open_in` apps), Reveal in
-  Finder, Copy Path, Copy Relative Path, Toggle Hidden Files. Read-only — no
-  destructive rows in this pass.
+- Context menu: opened at the pointer. A directory offers Expand/Collapse,
+  New File, New Folder, Rename, Delete, Open in Default App, Reveal, and Copy
+  Path / Relative Path; a file offers Open, Rename, Delete, Open in Default
+  App, Reveal, and Copy Path / Relative Path.
 
 ### FileViewer (Files page)
 
@@ -291,5 +313,9 @@ pub struct FileContent {
    refresh, open-in-editor/reveal, i18n keys, docs.
 5. ✅ **Editing** — `ComposerInput` syntax/gutter/wrap/fill modes + per-tab
    editors + debounced autosave (`cmd-s`) + dirty/conflict status.
-6. ⬜ **Later (out of scope)** — quick-open (`cmd-p`), directory folding, sticky
-   scroll, git-diff-vs-head on file select, then file operations.
+6. ✅ **File operations** — New File / New Folder / Rename (inline name prompts)
+   and Delete (confirmed, moved to the Trash) from the panel header and row
+   context menu; `ops.rs` validates names and never clobbers; the app
+   reconciles open Files tabs and refuses while a buffer is dirty.
+7. ⬜ **Later (out of scope)** — quick-open (`cmd-p`), directory folding, sticky
+   scroll, git-diff-vs-head on file select.

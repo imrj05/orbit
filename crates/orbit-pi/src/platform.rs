@@ -167,6 +167,38 @@ pub fn reveal_in_file_manager(path: &Path) {
     }
 }
 
+/// Whether [`trash_path`] moves a file to the OS trash (recoverable) or
+/// deletes it outright. The Explorer's delete confirmation is worded from
+/// this, so it never promises a recovery the platform cannot deliver.
+pub const TRASH_IS_RECOVERABLE: bool = cfg!(target_os = "macos");
+
+/// Delete `path`, preferring the OS trash so a mistake is recoverable.
+///
+/// macOS uses `NSFileManager`'s `trashItemAtURL:` — the same move Finder's
+/// **Move to Trash** performs, including collision-renaming and restore.
+/// Windows/Linux are best-effort and fall through to a permanent delete; the
+/// caller checks [`TRASH_IS_RECOVERABLE`] before promising otherwise.
+#[cfg(target_os = "macos")]
+pub fn trash_path(path: &Path) -> std::io::Result<()> {
+    use objc2_foundation::{NSFileManager, NSString, NSURL};
+
+    let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+    NSFileManager::defaultManager()
+        .trashItemAtURL_resultingItemURL_error(&url, None)
+        .map_err(|error| {
+            std::io::Error::other(error.localizedDescription().to_string())
+        })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn trash_path(path: &Path) -> std::io::Result<()> {
+    if path.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+}
+
 /// Open `path` in the OS default application (the user's editor for a
 /// `SKILL.md`). Used by the skills page's **Open SKILL.md** action.
 #[cfg(target_os = "macos")]

@@ -183,8 +183,10 @@ diffs, paths, token counts in tables.
 (`theme::UI_FONTS` / `CODE_FONTS`) of bundled OFL faces — Inter, Fixel Text,
 Geist Sans, Atkinson Hyperlegible, Source Sans 3, Roboto, Noto Sans, DM Sans,
 Manrope, and JetBrains Mono, Fira Code, Geist Mono, Commit Mono, Source Code
-Pro, Cascadia Code, Roboto Mono, Iosevka. Every family ships as statically
-instanced, subset 400/500/600/700 TTFs under `assets/fonts/bundled/` (glyph set
+Pro, Cascadia Code, Roboto Mono, Iosevka, DM Mono, IBM Plex Mono, Inconsolata,
+Noto Sans Mono, Space Mono, Anonymous Pro, Martian Mono. Every family ships as
+statically instanced, subset TTFs at the 400–700 weights it offers, under
+`assets/fonts/bundled/` (glyph set
 is Latin + punctuation + box-drawing + powerline), so a picked face never
 depends on the OS. The bundled IBM Plex Sans and Lilex faces stay in the list
 under their own names (their gpui aliases are `.ZedSans` / `.ZedMono`).

@@ -223,6 +223,12 @@ actions!(
 // focus handle) so Escape dismisses the modal instead of aborting the run.
 actions!(update_dialog_keys, [UpdateDialogClose]);
 
+// Explorer inline name-prompt actions (bound to the `ExplorerEntry` context on
+// the prompt's text field, which also carries `Composer`). Registered after the
+// Composer bindings so Enter confirms the name instead of submitting the
+// composer and Escape cancels instead of aborting the run.
+actions!(explorer_entry_keys, [ExplorerEntryConfirm, ExplorerEntryCancel]);
+
 fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("cmd-q", Quit, None),
@@ -390,6 +396,11 @@ fn bind_keys(cx: &mut App) {
         // itself), but the global `escape`-to-`AbortRun` binding is always
         // enabled, so the `CustomUi` context re-binds it and forwards ESC.
         KeyBinding::new("escape", CustomUiEscape, Some("CustomUi")),
+        // Explorer inline name prompt. The field carries `Composer
+        // ExplorerEntry`, so caret/clipboard keys stay live; these win the
+        // same-depth tie against `Submit`/`AbortRun` (registered later).
+        KeyBinding::new("enter", ExplorerEntryConfirm, Some("ExplorerEntry")),
+        KeyBinding::new("escape", ExplorerEntryCancel, Some("ExplorerEntry")),
     ]);
 }
 

@@ -19,6 +19,7 @@ use gpui::{
     MouseButton, MouseDownEvent, Pixels, Render, Subscription, TextAlign, Transformation, Window,
 };
 
+use super::ops;
 use super::tree::{self, Row, StatusBadge, TreeIndex};
 use super::walk;
 use crate::app::{file_badge, file_glyph, icon, nerd_font_family};
@@ -54,11 +55,57 @@ impl Render for ExplorerDragGhost {
     }
 }
 
-/// Which row the context menu targets.
+/// Which row the context menu targets, and where it was opened (window
+/// coordinates) so the menu can be placed at the pointer.
 struct PanelMenu {
     path: String,
     is_dir: bool,
     expanded: bool,
+    position: gpui::Point<Pixels>,
+}
+
+/// A file operation the panel asks the app to perform. Paths and names are
+/// workspace-relative (the app resolves them against the active workspace and
+/// runs the I/O on the background executor), so the panel itself never touches
+/// the filesystem.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FileOpRequest {
+    NewFile { dir: String, name: String },
+    NewFolder { dir: String, name: String },
+    Rename { path: String, name: String },
+    Delete { path: String, is_dir: bool },
+}
+
+/// The app's handler for a [`FileOpRequest`].
+pub type FileOpHandler = Rc<dyn Fn(FileOpRequest, &mut App)>;
+
+/// Which inline name prompt is open.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EntryKind {
+    NewFile,
+    NewFolder,
+    Rename { is_dir: bool },
+}
+
+/// A single inline name prompt — new file, new folder, or rename.
+struct EntryEditor {
+    kind: EntryKind,
+    /// Parent directory (workspace-relative, `""` = root) a new entry lands
+    /// in, or the renamed entry's directory.
+    dir: String,
+    /// The row path being renamed; `Some` renders the editor inside that row.
+    target: Option<String>,
+    input: Entity<ComposerInput>,
+    /// A rejected name, shown in the notice banner until the user edits.
+    error: Option<String>,
+    _sub: Subscription,
+}
+
+/// A pending delete confirmation.
+struct DeleteConfirm {
+    path: String,
+    name: String,
+    is_dir: bool,
 }
 
 pub struct ProjectPanel {
@@ -92,12 +139,24 @@ pub struct ProjectPanel {
     menu: Option<PanelMenu>,
     /// When the menu was dismissed by an outside click; guards re-open.
     menu_dismissed_at: Option<Instant>,
+    /// Inline name prompt (new file/folder or rename), if open.
+    entry: Option<EntryEditor>,
+    /// A pending delete confirmation, if any.
+    pending_delete: Option<DeleteConfirm>,
+    /// A background file-op failure, shown above the tree.
+    notice: Option<String>,
     /// The app's file-open callback.
     on_open: OpenHandler,
+    /// The app's file-operation callback.
+    on_file_op: FileOpHandler,
 }
 
 impl ProjectPanel {
-    pub fn new(on_open: OpenHandler, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        on_open: OpenHandler,
+        on_file_op: FileOpHandler,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let filter = cx.new(|cx| {
             ComposerInput::new(cx)
                 .with_placeholder_key("explorer.filter_files")
@@ -128,7 +187,11 @@ impl ProjectPanel {
             active: None,
             menu: None,
             menu_dismissed_at: None,
+            entry: None,
+            pending_delete: None,
+            notice: None,
             on_open,
+            on_file_op,
         }
     }
 
@@ -191,6 +254,9 @@ impl ProjectPanel {
         self.cursor = None;
         self.active = None;
         self.error = None;
+        self.entry = None;
+        self.pending_delete = None;
+        self.notice = None;
         self.list.reset(0);
         self.stale = true;
         self.ensure_loaded(cx);
@@ -278,6 +344,17 @@ impl ProjectPanel {
         self.cursor = self
             .cursor
             .filter(|index| *index < self.rows.len());
+        // A rename prompt whose row vanished (an external change, a filter)
+        // has nowhere to render; retire it rather than stranding the keyboard.
+        if let Some(target) = self
+            .entry
+            .as_ref()
+            .and_then(|entry| entry.target.clone())
+        {
+            if !self.rows.iter().any(|row| row.path == target) {
+                self.entry = None;
+            }
+        }
     }
 
     fn toggle_dir(&mut self, path: String, cx: &mut Context<Self>) {
@@ -341,6 +418,11 @@ impl ProjectPanel {
     // ── keyboard ───────────────────────────────────────────────────────
 
     fn on_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        // The inline prompt owns the keyboard while it is open (Enter/Escape
+        // are bound to the `ExplorerEntry` context); don't also drive the tree.
+        if self.entry.is_some() {
+            return;
+        }
         let key = event.keystroke.key.as_str();
         let platform = event.keystroke.modifiers.platform;
         // Escape first: close the row menu, or clear a non-empty filter, and
@@ -410,13 +492,16 @@ impl ProjectPanel {
 
     // ── context menu ───────────────────────────────────────────────────
 
-    fn open_menu(&mut self, row: Row, cx: &mut Context<Self>) {
+    fn open_menu(&mut self, row: Row, position: gpui::Point<Pixels>, cx: &mut Context<Self>) {
+        // A right-click anywhere takes focus, so retire any open prompt.
+        self.entry = None;
         let is_dir = row.is_dir();
         let expanded = row.expanded();
         self.menu = Some(PanelMenu {
             path: row.path,
             is_dir,
             expanded,
+            position,
         });
         cx.notify();
     }
@@ -433,9 +518,233 @@ impl ProjectPanel {
         let root = self.workspace.clone()?;
         Some(walk::absolute(&root, &menu.path))
     }
+
+    // ── file operations ────────────────────────────────────────────────
+
+    /// The directory a new entry should land in: the selected directory, the
+    /// parent of the selected file, or the workspace root.
+    fn selected_dir(&self) -> String {
+        let Some(row) = self.cursor.and_then(|index| self.rows.get(index)) else {
+            return String::new();
+        };
+        if row.is_dir() {
+            row.path.clone()
+        } else {
+            parent_of(&row.path)
+        }
+    }
+
+    fn start_new_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dir = self.selected_dir();
+        self.start_new_file_in(dir, window, cx);
+    }
+
+    fn start_new_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dir = self.selected_dir();
+        self.start_new_folder_in(dir, window, cx);
+    }
+
+    fn start_new_file_in(
+        &mut self,
+        dir: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.begin_entry(EntryKind::NewFile, dir, None, "", "explorer.name_file", window, cx);
+    }
+
+    fn start_new_folder_in(
+        &mut self,
+        dir: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.begin_entry(
+            EntryKind::NewFolder,
+            dir,
+            None,
+            "",
+            "explorer.name_folder",
+            window,
+            cx,
+        );
+    }
+
+    fn start_rename(
+        &mut self,
+        path: String,
+        is_dir: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = path.rsplit('/').next().unwrap_or(path.as_str()).to_string();
+        let dir = parent_of(&path);
+        self.begin_entry(
+            EntryKind::Rename { is_dir },
+            dir,
+            Some(path.clone()),
+            &name,
+            "explorer.name_rename",
+            window,
+            cx,
+        );
+        if let Some(index) = self.rows.iter().position(|row| row.path == path) {
+            self.list.scroll_to_reveal_item(index);
+        }
+    }
+
+    /// Open an inline prompt and focus it. Replaces any prompt already open.
+    #[allow(clippy::too_many_arguments)]
+    fn begin_entry(
+        &mut self,
+        kind: EntryKind,
+        dir: String,
+        target: Option<String>,
+        initial: &str,
+        placeholder_key: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = cx.new(|cx| {
+            ComposerInput::new(cx)
+                .with_element_id("explorer-entry-input")
+                .with_placeholder_key(placeholder_key)
+                .with_key_context("Composer ExplorerEntry")
+                .with_max_lines(1)
+                .with_wrap(false)
+                .with_text(initial)
+        });
+        let sub = cx.observe(&input, |this, _, cx| {
+            // Clear a rejected-name error as soon as the user edits.
+            if let Some(entry) = this.entry.as_mut() {
+                if entry.error.take().is_some() {
+                    cx.notify();
+                }
+            }
+        });
+        self.menu = None;
+        self.pending_delete = None;
+        self.notice = None;
+        self.entry = Some(EntryEditor {
+            kind,
+            dir,
+            target,
+            input: input.clone(),
+            error: None,
+            _sub: sub,
+        });
+        input.read(cx).focus(window);
+        cx.notify();
+    }
+
+    fn commit_entry(&mut self, cx: &mut Context<Self>) {
+        let Some(entry) = self.entry.as_ref() else {
+            return;
+        };
+        let raw = entry.input.read(cx).text();
+        let name = match ops::validate_name(&raw) {
+            Ok(name) => name,
+            Err(error) => {
+                let message = error.message();
+                if let Some(entry) = self.entry.as_mut() {
+                    entry.error = Some(message);
+                }
+                cx.notify();
+                return;
+            }
+        };
+        let request = match entry.kind {
+            EntryKind::NewFile => FileOpRequest::NewFile {
+                dir: entry.dir.clone(),
+                name,
+            },
+            EntryKind::NewFolder => FileOpRequest::NewFolder {
+                dir: entry.dir.clone(),
+                name,
+            },
+            EntryKind::Rename { .. } => FileOpRequest::Rename {
+                path: entry.target.clone().unwrap_or_default(),
+                name,
+            },
+        };
+        let handler = self.on_file_op.clone();
+        self.entry = None;
+        self.notice = None;
+        cx.notify();
+        handler(request, cx);
+    }
+
+    fn cancel_entry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.entry.take().is_some() {
+            window.focus(&self.focus);
+            cx.notify();
+        }
+    }
+
+    fn on_entry_confirm(
+        &mut self,
+        _: &crate::ExplorerEntryConfirm,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.commit_entry(cx);
+    }
+
+    fn on_entry_cancel(
+        &mut self,
+        _: &crate::ExplorerEntryCancel,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.cancel_entry(window, cx);
+    }
+
+    fn request_delete(&mut self, path: String, is_dir: bool, cx: &mut Context<Self>) {
+        let name = path.rsplit('/').next().unwrap_or(path.as_str()).to_string();
+        self.menu = None;
+        self.pending_delete = Some(DeleteConfirm { path, name, is_dir });
+        cx.notify();
+    }
+
+    fn confirm_delete(&mut self, cx: &mut Context<Self>) {
+        let Some(target) = self.pending_delete.take() else {
+            return;
+        };
+        let handler = self.on_file_op.clone();
+        self.notice = None;
+        cx.notify();
+        handler(
+            FileOpRequest::Delete {
+                path: target.path,
+                is_dir: target.is_dir,
+            },
+            cx,
+        );
+    }
+
+    fn cancel_delete(&mut self, cx: &mut Context<Self>) {
+        if self.pending_delete.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Show (or clear) a background file-op failure above the tree.
+    pub fn set_notice(&mut self, notice: Option<String>, cx: &mut Context<Self>) {
+        if self.notice != notice {
+            self.notice = notice;
+            cx.notify();
+        }
+    }
 }
 
 // ── rendering ──────────────────────────────────────────────────────────
+
+/// The parent directory of a `/`-separated workspace path (`""` at the root).
+fn parent_of(path: &str) -> String {
+    path.rsplit_once('/')
+        .map(|(parent, _)| parent.to_string())
+        .unwrap_or_default()
+}
 
 fn badge_color(badge: StatusBadge, theme: &Theme) -> Hsla {
     match badge {
@@ -478,6 +787,24 @@ impl ProjectPanel {
                     .text_color(theme.text)
                     .child(title),
             )
+            .child(ghost_icon(
+                &theme,
+                "explorer-new-file",
+                "icons/file-plus.svg",
+                theme.text_3,
+                cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.start_new_file(window, cx);
+                }),
+            ))
+            .child(ghost_icon(
+                &theme,
+                "explorer-new-folder",
+                "icons/folder-plus.svg",
+                theme.text_3,
+                cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.start_new_folder(window, cx);
+                }),
+            ))
             .child(ghost_icon(
                 &theme,
                 "explorer-refresh",
@@ -576,12 +903,77 @@ impl ProjectPanel {
             .key_context("ProjectPanel")
             .flex_1()
             .min_h_0()
-            .relative()
+            .flex()
+            .flex_col()
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                 this.on_key_down(event, cx)
             }))
-            .child(body)
+            .on_action(cx.listener(Self::on_entry_confirm))
+            .on_action(cx.listener(Self::on_entry_cancel))
+            .children(self.entry_row(theme))
+            .children(self.notice_banner(theme))
+            .child(div().flex_1().min_h_0().relative().child(body))
             .into_any_element()
+    }
+
+    /// The synthetic "new file / new folder" row, pinned above the tree while
+    /// its prompt is open. A rename prompt renders inside its own row instead.
+    fn entry_row(&self, theme: Theme) -> Option<AnyElement> {
+        let entry = self.entry.as_ref()?;
+        if entry.target.is_some() {
+            return None;
+        }
+        let (icon_path, indent) = match entry.kind {
+            EntryKind::NewFolder => ("icons/folder-plus.svg", 7.0),
+            _ => ("icons/file-plus.svg", 23.0),
+        };
+        let mut row = div()
+            .h(px(ROW_H))
+            .flex_none()
+            .mx(px(4.))
+            .pl(px(indent))
+            .pr(px(8.))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .child(icon(icon_path, 13., theme.text_3));
+        if !entry.dir.is_empty() {
+            row = row.child(
+                div()
+                    .flex_none()
+                    .text_size(theme.ui_px(12.5))
+                    .text_color(theme.text_3)
+                    .child(format!("{}/", entry.dir)),
+            );
+        }
+        Some(
+            row.child(div().flex().flex_1().min_w_0().child(entry.input.clone()))
+                .into_any_element(),
+        )
+    }
+
+    /// A one-line error strip above the tree: a rejected name or a failed
+    /// background operation.
+    fn notice_banner(&self, theme: Theme) -> Option<AnyElement> {
+        let message = self
+            .entry
+            .as_ref()
+            .and_then(|entry| entry.error.clone())
+            .or_else(|| self.notice.clone())?;
+        Some(
+            div()
+                .flex_none()
+                .px(px(10.))
+                .py(px(5.))
+                .border_b_1()
+                .border_color(theme.border)
+                .bg(theme.crit.opacity(0.12))
+                .text_size(theme.ui_px(11.5))
+                .line_height(theme.ui_px(15.))
+                .text_color(theme.crit)
+                .child(message)
+                .into_any_element(),
+        )
     }
 
     fn footer(&self, theme: Theme, _cx: &mut Context<Self>) -> AnyElement {
@@ -631,36 +1023,54 @@ impl ProjectPanel {
             .id(gpui::ElementId::Name(
                 format!("explorer-row-{}", row.path).into(),
             ))
+            .w_full()
             .h(px(ROW_H))
-            .mx(px(4.))
             .pl(px(indent))
             .pr(px(8.))
             .rounded(px(8.))
             .flex()
             .items_center()
-            .gap(px(6.))
-            .cursor_pointer()
-            // Selected (open in the viewer) wins; the keyboard cursor is a
-            // quieter wash; pointer hover is the lightest step.
-            .when(active, |el| el.bg(theme.active))
-            .when(!active && cursor, |el| el.bg(theme.overlay))
-            .when(!active && !cursor, |el| el.hover(|el| el.bg(theme.bg_hover)))
-            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                window.focus(&this.focus);
-                this.cursor = Some(index);
-                this.activate(index, cx);
-            }))
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener({
-                    let row = row.clone();
-                    move |this, _: &MouseDownEvent, window, cx| {
-                        window.focus(&this.focus);
-                        this.cursor = Some(index);
-                        this.open_menu(row.clone(), cx);
+            .gap(px(6.));
+        // A row with an open rename prompt owns the keyboard; it must not also
+        // activate the file or open its context menu on click.
+        let renaming = self
+            .entry
+            .as_ref()
+            .is_some_and(|entry| entry.target.as_deref() == Some(row.path.as_str()));
+        let entry_input = renaming.then(|| self.entry.as_ref().expect("renaming implies an entry").input.clone());
+        if renaming {
+            content = content.bg(theme.active);
+        } else {
+            content = content
+                .cursor_pointer()
+                // Selected (open in the viewer) wins; the keyboard cursor is a
+                // quieter wash; pointer hover is the lightest step.
+                .when(active, |el| el.bg(theme.active))
+                .when(!active && cursor, |el| el.bg(theme.overlay))
+                .when(!active && !cursor, |el| el.hover(|el| el.bg(theme.bg_hover)))
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    // Clicking away from an open prompt cancels it rather than
+                    // activating the row under the pointer.
+                    if this.entry.is_some() {
+                        this.cancel_entry(window, cx);
+                        return;
                     }
-                }),
-            );
+                    window.focus(&this.focus);
+                    this.cursor = Some(index);
+                    this.activate(index, cx);
+                }))
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener({
+                        let row = row.clone();
+                        move |this, event: &MouseDownEvent, window, cx| {
+                            window.focus(&this.focus);
+                            this.cursor = Some(index);
+                            this.open_menu(row.clone(), event.position, cx);
+                        }
+                    }),
+                );
+        }
 
         if row.is_dir() {
             content = content
@@ -673,8 +1083,11 @@ impl ProjectPanel {
                     10.,
                     icon_color,
                 ))
-                .child(icon("icons/folder.svg", 13., icon_color))
-                .child(
+                .child(icon("icons/folder.svg", 13., icon_color));
+            if let Some(input) = entry_input {
+                content = content.child(div().flex().flex_1().min_w_0().child(input));
+            } else {
+                content = content.child(
                     div()
                         .min_w_0()
                         .flex_1()
@@ -685,21 +1098,24 @@ impl ProjectPanel {
                         .text_color(name_color)
                         .child(row.name.clone()),
                 );
-            if row.dirty {
-                content = content.child(
-                    div()
-                        .size(px(5.))
-                        .flex_none()
-                        .rounded_full()
-                        .bg(theme.warn),
-                );
+                if row.dirty {
+                    content = content.child(
+                        div()
+                            .size(px(5.))
+                            .flex_none()
+                            .rounded_full()
+                            .bg(theme.warn),
+                    );
+                }
             }
         } else {
             let fallback = file_badge(&row.path, theme);
             let glyph = file_glyph(&row.path, dark, nerd.as_ref(), 13., fallback);
-            content = content
-                .child(glyph)
-                .child(
+            content = content.child(glyph);
+            if let Some(input) = entry_input {
+                content = content.child(div().flex().flex_1().min_w_0().child(input));
+            } else {
+                content = content.child(
                     div()
                         .min_w_0()
                         .flex_1()
@@ -709,20 +1125,30 @@ impl ProjectPanel {
                         .text_color(name_color)
                         .child(row.name.clone()),
                 );
-            if let Some(badge) = row.badge {
-                let color = badge_color(badge, &theme);
-                content = content.child(
-                    div()
-                        .flex_none()
-                        .text_size(theme.ui_px(11.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(color)
-                        .child(badge.letter().to_string()),
-                );
+                if let Some(badge) = row.badge {
+                    let color = badge_color(badge, &theme);
+                    content = content.child(
+                        div()
+                            .flex_none()
+                            .text_size(theme.ui_px(11.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(color)
+                            .child(badge.letter().to_string()),
+                    );
+                }
             }
         }
 
-        content.into_any_element()
+        // The list measures each row with a definite width, but a bare flex
+        // row sizes to its content — so `flex_1` children (the name, and the
+        // rename `ComposerInput`, which has no intrinsic width) would collapse.
+        // A full-width wrapper gives them the row's width to fill; the 4px side
+        // inset rides on this wrapper instead of a margin on the row.
+        div()
+            .w_full()
+            .px(px(4.))
+            .child(content)
+            .into_any_element()
     }
 
     fn context_menu(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -739,9 +1165,6 @@ impl ProjectPanel {
         let expanded = menu.expanded;
         let mut popup = div()
             .id("explorer-context-menu")
-            .absolute()
-            .top(px(HEADER_H + FILTER_H + 4.))
-            .left(px(8.))
             .w(px(220.))
             .py(px(4.))
             .rounded(px(10.))
@@ -777,6 +1200,59 @@ impl ProjectPanel {
                         }
                     }),
                 ))
+                .child(separator(theme))
+                .child(menu_row(
+                    theme,
+                    "icons/file-plus.svg",
+                    tr!("explorer.new_file"),
+                    None,
+                    cx.listener({
+                        let dir = relative.clone();
+                        move |this, _: &ClickEvent, window, cx| {
+                            this.dismiss_menu(cx);
+                            this.start_new_file_in(dir.clone(), window, cx);
+                        }
+                    }),
+                ))
+                .child(menu_row(
+                    theme,
+                    "icons/folder-plus.svg",
+                    tr!("explorer.new_folder"),
+                    None,
+                    cx.listener({
+                        let dir = relative.clone();
+                        move |this, _: &ClickEvent, window, cx| {
+                            this.dismiss_menu(cx);
+                            this.start_new_folder_in(dir.clone(), window, cx);
+                        }
+                    }),
+                ))
+                .child(separator(theme))
+                .child(menu_row(
+                    theme,
+                    "icons/pencil.svg",
+                    tr!("explorer.rename"),
+                    None,
+                    cx.listener({
+                        let relative = relative.clone();
+                        move |this, _: &ClickEvent, window, cx| {
+                            this.dismiss_menu(cx);
+                            this.start_rename(relative.clone(), true, window, cx);
+                        }
+                    }),
+                ))
+                .child(menu_row(
+                    theme,
+                    "icons/trash.svg",
+                    tr!("explorer.delete"),
+                    None,
+                    cx.listener({
+                        let relative = relative.clone();
+                        move |this, _: &ClickEvent, _, cx| {
+                            this.request_delete(relative.clone(), true, cx);
+                        }
+                    }),
+                ))
                 .child(separator(theme));
         } else {
             popup = popup
@@ -790,6 +1266,32 @@ impl ProjectPanel {
                         move |this, _: &ClickEvent, _, cx| {
                             this.dismiss_menu(cx);
                             this.open_file(relative.clone(), cx);
+                        }
+                    }),
+                ))
+                .child(separator(theme))
+                .child(menu_row(
+                    theme,
+                    "icons/pencil.svg",
+                    tr!("explorer.rename"),
+                    None,
+                    cx.listener({
+                        let relative = relative.clone();
+                        move |this, _: &ClickEvent, window, cx| {
+                            this.dismiss_menu(cx);
+                            this.start_rename(relative.clone(), false, window, cx);
+                        }
+                    }),
+                ))
+                .child(menu_row(
+                    theme,
+                    "icons/trash.svg",
+                    tr!("explorer.delete"),
+                    None,
+                    cx.listener({
+                        let relative = relative.clone();
+                        move |this, _: &ClickEvent, _, cx| {
+                            this.request_delete(relative.clone(), false, cx);
                         }
                     }),
                 ))
@@ -849,8 +1351,130 @@ impl ProjectPanel {
                     }
                 }),
             ));
-        Some(popup.into_any_element())
+        Some(
+            // Place the menu at the pointer (window coordinates), flipping it
+            // above/left when it would overflow the window — the default
+            // `SwitchAnchor` fit mode. Previously it was pinned to the panel's
+            // top-left regardless of where the row was clicked.
+            gpui::anchored()
+                .anchor(gpui::Corner::TopLeft)
+                .position(menu.position)
+                .child(popup)
+                .into_any_element(),
+        )
     }
+
+    /// The delete confirmation, painted over the panel. Worded from
+    /// [`platform::TRASH_IS_RECOVERABLE`] so it never promises a restore the
+    /// platform cannot deliver.
+    fn delete_prompt(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let target = self.pending_delete.as_ref()?;
+        let body_key = match (target.is_dir, platform::TRASH_IS_RECOVERABLE) {
+            (true, true) => "explorer.delete_body_dir_trash",
+            (true, false) => "explorer.delete_body_dir_permanent",
+            (false, true) => "explorer.delete_body_file_trash",
+            (false, false) => "explorer.delete_body_file_permanent",
+        };
+        let card = div()
+            .w_full()
+            .max_w(px(250.))
+            .rounded(px(12.))
+            .border_1()
+            .border_color(theme.border_strong)
+            .bg(theme.menu_bg)
+            .shadow(theme.card_shadow())
+            .p(px(14.))
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .occlude()
+            .on_mouse_down_out(
+                cx.listener(|this, _: &MouseDownEvent, _, cx| this.cancel_delete(cx)),
+            )
+            .child(
+                div()
+                    .text_size(theme.ui_px(13.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text)
+                    .child(tr!("explorer.delete_title", name = target.name.clone())),
+            )
+            .child(
+                div()
+                    .text_size(theme.ui_px(12.))
+                    .line_height(theme.ui_px(16.))
+                    .whitespace_normal()
+                    .text_color(theme.text_2)
+                    .child(crate::i18n::translate(body_key)),
+            )
+            .child(
+                div()
+                    .mt(px(2.))
+                    .flex()
+                    .justify_end()
+                    .gap(px(8.))
+                    .child(prompt_button(
+                        theme,
+                        "explorer-delete-cancel",
+                        tr!("explorer.cancel"),
+                        false,
+                        cx.listener(|this, _: &ClickEvent, _, cx| this.cancel_delete(cx)),
+                    ))
+                    .child(prompt_button(
+                        theme,
+                        "explorer-delete-confirm",
+                        tr!("explorer.delete"),
+                        true,
+                        cx.listener(|this, _: &ClickEvent, _, cx| this.confirm_delete(cx)),
+                    )),
+            );
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .px(px(10.))
+                .bg(theme.bg_sidebar.opacity(0.72))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(card)
+                .into_any_element(),
+        )
+    }
+}
+
+/// A small prompt button — quiet by default, `crit` for a destructive action.
+fn prompt_button(
+    theme: Theme,
+    id: &'static str,
+    label: String,
+    destructive: bool,
+    listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    let (bg, fg) = if destructive {
+        (theme.crit, theme.send_fg)
+    } else {
+        (theme.bg_raised, theme.text)
+    };
+    div()
+        .id(id)
+        .h(px(28.))
+        .px(px(12.))
+        .rounded(px(8.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .bg(bg)
+        .hover(|el| el.opacity(0.9))
+        .on_click(listener)
+        .child(
+            div()
+                .text_size(theme.ui_px(12.))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(fg)
+                .child(label),
+        )
+        .into_any_element()
 }
 
 /// A header/toolbar ghost icon control: 24px hit area, hover fill only.
@@ -1036,6 +1660,80 @@ impl Render for ProjectPanel {
             .child(self.tree(theme, cx))
             .child(self.footer(theme, cx))
             .children(self.context_menu(theme, cx))
+            .children(self.delete_prompt(theme, cx))
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn parent_of_splits_workspace_paths() {
+        assert_eq!(parent_of("src/main.rs"), "src");
+        assert_eq!(parent_of("main.rs"), "");
+        assert_eq!(parent_of("a/b/c.rs"), "a/b");
+    }
+
+    /// A `ComposerInput` has no intrinsic width, so on a content-sized row its
+    /// `flex_1` collapses to zero and the inline prompt shows only the devicon.
+    /// Render the real panel and assert both prompts get a usable width.
+    #[gpui::test]
+    fn inline_prompt_input_fills_the_row(cx: &mut gpui::TestAppContext) {
+        let root = std::env::temp_dir().join("orbit-explorer-panel-prompt");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
+
+        let cx = cx.add_empty_window();
+        cx.update(|_, app| app.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+
+        let open: OpenHandler = Rc::new(|_, _, _| {});
+        let op: FileOpHandler = Rc::new(|_, _| {});
+        let panel = cx.update(|_, app| app.new(|cx| ProjectPanel::new(open, op, cx)));
+
+        let snapshot = walk::snapshot(&root, false);
+        cx.update(|window, app| {
+            panel.update(app, |panel, cx| {
+                panel.open = true;
+                panel.width = px(280.);
+                panel.workspace = Some(root.clone());
+                panel.index = TreeIndex::build(snapshot, HashMap::new());
+                panel.stale = false;
+                panel.refresh_rows(cx);
+                // Rename renders inside its row; New File renders above the
+                // tree. Both wrap the same prompt input.
+                panel.start_rename("main.rs".to_string(), false, window, cx);
+            });
+        });
+        let drawn = panel.clone();
+        cx.draw(gpui::point(px(0.), px(0.)), gpui::size(px(280.), px(600.)), {
+            let drawn = drawn.clone();
+            move |_, _| drawn.clone()
+        });
+        assert_prompt_has_width(cx, "rename");
+
+        cx.update(|window, app| {
+            panel.update(app, |panel, cx| panel.start_new_file(window, cx));
+        });
+        let drawn = panel.clone();
+        cx.draw(gpui::point(px(0.), px(0.)), gpui::size(px(280.), px(600.)), {
+            let drawn = drawn.clone();
+            move |_, _| drawn.clone()
+        });
+        assert_prompt_has_width(cx, "new file");
+    }
+
+    fn assert_prompt_has_width(cx: &mut gpui::VisualTestContext, label: &str) {
+        let bounds = cx
+            .debug_bounds("explorer-entry-input")
+            .unwrap_or_else(|| panic!("the {label} prompt input was not rendered"));
+        assert!(
+            f32::from(bounds.size.width) > 40.,
+            "the {label} prompt input collapsed to {}px wide",
+            f32::from(bounds.size.width)
+        );
     }
 }

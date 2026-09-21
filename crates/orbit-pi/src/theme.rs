@@ -604,7 +604,7 @@ pub const UI_FONTS: [FontChoice; 10] = [
 ];
 
 /// Orbit's curated code faces (Waku's list + a System Mono escape hatch).
-pub const CODE_FONTS: [FontChoice; 9] = [
+pub const CODE_FONTS: [FontChoice; 16] = [
     FontChoice {
         label: "JetBrains Mono",
         family: "JetBrains Mono",
@@ -636,6 +636,34 @@ pub const CODE_FONTS: [FontChoice; 9] = [
     FontChoice {
         label: "Iosevka",
         family: "Iosevka",
+    },
+    FontChoice {
+        label: "DM Mono",
+        family: "DM Mono",
+    },
+    FontChoice {
+        label: "IBM Plex Mono",
+        family: "IBM Plex Mono",
+    },
+    FontChoice {
+        label: "Inconsolata",
+        family: "Inconsolata",
+    },
+    FontChoice {
+        label: "Noto Sans Mono",
+        family: "Noto Sans Mono",
+    },
+    FontChoice {
+        label: "Space Mono",
+        family: "Space Mono",
+    },
+    FontChoice {
+        label: "Anonymous Pro",
+        family: "Anonymous Pro",
+    },
+    FontChoice {
+        label: "Martian Mono",
+        family: "Martian Mono",
     },
     FontChoice {
         label: "Lilex",
