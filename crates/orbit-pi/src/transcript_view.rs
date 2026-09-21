@@ -58,9 +58,9 @@ pub(crate) type ReviewOpener = Rc<dyn Fn(&mut Window, &mut App)>;
 pub(crate) type ImageOpener = Rc<dyn Fn(Arc<Image>, &mut Window, &mut App)>;
 
 /// Waku `CONTENT_MAX_WIDTH` (the `max-w-[760px]` transcript column).
-/// Orbit uses 960 so fenced code and tables can use the full pane; body
-/// line-height (14/26) keeps prose readable without a nested measure cap
-/// that mis-measured wrapped markdown and stacked lines on top of each other.
+/// Normal message content keeps this centered measure. Assistant tables
+/// break out to the transcript pane's width; their scroll viewport must not
+/// inherit this cap.
 const CONTENT_MAX_WIDTH: f32 = 960.0;
 /// Extra space before a follow-up user message (Waku `pt-8`).
 const FOLLOWUP_TURN_TOP_GAP: f32 = 32.0;
@@ -946,6 +946,8 @@ struct RowPaint {
     image_opener: Option<ImageOpener>,
     search_hit: bool,
     search_active: bool,
+    /// Tables alone can extend beyond the centered message column.
+    table_breakout: TableBreakout,
 }
 
 /// The last message's own footer is suppressed when the tail summary owns
@@ -1018,6 +1020,22 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
     let show_rail = user_turns.len() >= 2
         && view.main_width >= px(NAVIGATION_RAIL_MIN_MAIN_WIDTH)
         && scroller.is_scrollable();
+    // Reserve the rail's gutter only from spare space outside the normal
+    // text strip, so expanding a table never makes it narrower than prose.
+    let table_inset = if show_rail {
+        ((view.main_width - px(40. + CONTENT_MAX_WIDTH)) / 2.).clamp(
+            px(0.),
+            px(NAVIGATION_RAIL_LEFT + NAVIGATION_RAIL_WIDTH + NAVIGATION_RAIL_CONTENT_GAP - 20.),
+        )
+    } else {
+        px(0.)
+    };
+    let available_width = (view.main_width - px(40.)).max(px(0.));
+    let column_width = available_width.min(px(CONTENT_MAX_WIDTH));
+    let table_breakout = TableBreakout {
+        max_width: (available_width - table_inset * 2.).max(column_width),
+        column_width,
+    };
     // The one-time rail hint shows while the rail is up, until the reader
     // uses it (tick click or turn jump) or its TTL lapses. While it shows,
     // it takes the preview card's slot so the two never stack.
@@ -1155,6 +1173,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
             search_active: search_active
                 .as_ref()
                 .is_some_and(|active| active.get() == Some(ix)),
+            table_breakout,
         })
         .into_any_element()
     })
@@ -1627,8 +1646,11 @@ fn render_row(paint: RowPaint) -> AnyElement {
         })
         .child(
             div()
-                .w_full()
-                .max_w(px(CONTENT_MAX_WIDTH))
+                // Resolve the normal measure before any wide table is
+                // measured; percentage widths can otherwise collapse during
+                // GPUI's intrinsic sizing pass on a narrow pane.
+                .w(paint.table_breakout.column_width)
+                .flex_none()
                 .min_w_0()
                 .child(inner),
         )
@@ -1710,6 +1732,7 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint) -> impl IntoEleme
                         paint.expanded_blocks.clone(),
                         true,
                         paint.scroller.clone(),
+                        None,
                     )),
             )
         })
@@ -1733,7 +1756,10 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
     let theme = paint.theme;
     let ix = paint.ix;
     let mut content = div()
-        .w_full()
+        // Resolve the reading width at the shared ancestor, not on individual
+        // prose blocks: GPUI must measure Thinking cards at their actual width
+        // rather than reserve their height cap during intrinsic layout.
+        .w(paint.table_breakout.column_width)
         .max_w_full()
         .min_w_0()
         .flex()
@@ -1830,6 +1856,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
                 paint.expanded_blocks.clone(),
                 !paint.live,
                 paint.scroller.clone(),
+                Some(paint.table_breakout),
             )));
         }
 
@@ -2112,6 +2139,7 @@ fn render_activity_group(
         .saturating_sub(1);
     let key = (ix, range.start);
     let mut group = div()
+        .debug_selector(move || format!("activity-group-{ix}-{}", key.1))
         .w_full()
         .min_w_0()
         .flex()
@@ -2288,6 +2316,7 @@ fn render_thinking_body(
     }
     let id = (key.0 as u64) << 16 | key.1 as u64;
     let mut card = div()
+        .debug_selector(move || format!("thought-card-{}-{}", key.0, key.1))
         .rounded(px(9.))
         .border_1()
         .border_color(theme.border_strong)
@@ -2751,6 +2780,7 @@ fn render_activity_card(
             "activity-card".into(),
             (key.0 as u64) << 16 | key.1 as u64,
         ))
+        .debug_selector(move || format!("tool-card-{}-{}", key.0, key.1))
         .w_full()
         .min_w_0()
         .overflow_hidden()
@@ -4237,6 +4267,7 @@ fn render_working_indicator(
         // The row needs a definite width: the shimmer paints at `width: 100%`
         // of its wrapper, so an indefinite (shrink-to-fit) row would collapse
         // the label — timer and all — to nothing.
+        .debug_selector(|| "working-indicator".to_string())
         .w_full()
         .h(px(22.))
         .flex()
@@ -5026,13 +5057,23 @@ fn parse_blocks_cached(text: &str) -> Rc<Vec<Block>> {
     })
 }
 
+/// A table-only breakout from the unchanged, centered message column.
+/// Definite widths avoid remeasuring normal prose and activity cards against
+/// a wider ancestor. Relative positioning centers the wider table without
+/// negative layout margins affecting its siblings' intrinsic measurements.
+#[derive(Clone, Copy)]
+struct TableBreakout {
+    max_width: Pixels,
+    column_width: Pixels,
+}
+
 /// Waku `.markdown`: 14px/22px body. Spacing is graded by block pair rather
 /// than one uniform gap, so a heading reads as a section start, a list hugs
 /// the paragraph that introduces it, and consecutive paragraphs breathe.
 ///
-/// Prose blocks (paragraphs, headings, lists, quotes, rules) cap at a
-/// comfortable reading width; code, tables, and alerts use the full content
-/// column. `collapsible` is false for live rows — streaming code blocks
+/// In the transcript, only tables escape the normal content column; the
+/// other blocks keep their existing measure. `collapsible` is false for live
+/// rows — streaming code blocks
 /// never collapse out from under their own growing edge.
 #[allow(clippy::too_many_arguments)]
 fn render_prose(
@@ -5044,6 +5085,7 @@ fn render_prose(
     expanded_blocks: ExpandedBlocks,
     collapsible: bool,
     scroller: MessageScrollerState,
+    table_breakout: Option<TableBreakout>,
 ) -> impl IntoElement + use<> {
     let blocks = parse_blocks_cached(text);
     let gaps: Vec<f32> = blocks
@@ -5066,6 +5108,22 @@ fn render_prose(
                 div()
                     .w_full()
                     .min_w_0()
+                    .when_some(table_breakout, |node, breakout| {
+                        if let Block::Table { header, rows, .. } = block {
+                            // Fit the capped column widths, not the strip or
+                            // pane. Small tables align with prose; larger ones
+                            // extend equally into its margins, up to the pane.
+                            let natural_width =
+                                px(table_column_widths(header, rows).iter().sum::<f32>() + 2.);
+                            let width = natural_width.min(breakout.max_width);
+                            let left = ((breakout.column_width - width) / 2.).min(px(0.));
+                            node.flex_none().w(width).relative().left(left)
+                        } else {
+                            // Only tables override their width; ordinary prose
+                            // inherits the assistant's reading column.
+                            node
+                        }
+                    })
                     .when(gap > 0.0, |node| node.mt(px(gap)))
                     .child(render_block(
                         block,
@@ -5101,6 +5159,7 @@ pub(crate) fn render_markdown_document(text: &str, theme: Theme) -> impl IntoEle
         expanded,
         false,
         MessageScrollerState::new(1),
+        None,
     )
 }
 
@@ -5696,24 +5755,12 @@ fn mono_font() -> Font {
     }
 }
 
-/// GFM table: outer border, semibold header, dividers, content-weighted
-/// columns (`th`/`td` styling from Waku's `.markdown table` rules).
-fn render_table(
-    header: &[String],
-    rows: &[Vec<String>],
-    aligns: &[TableAlign],
-    ix: usize,
-    salt: u64,
-    block_ix: usize,
-    theme: Theme,
-) -> AnyElement {
+/// Shared sizing policy for both the cells and the strip-breakout decision.
+/// Columns follow their content, with a readable baseline and a wrapping cap.
+fn table_column_widths(header: &[String], rows: &[Vec<String>]) -> Vec<f32> {
     let columns = header
         .len()
         .max(rows.iter().map(Vec::len).max().unwrap_or(0));
-    // Column widths are estimated from the longest cell and fixed in px.
-    // Narrow tables lay out as before (the last column absorbs the slack);
-    // wide ones overflow into a horizontal scroller instead of crushing
-    // every column into unreadable wraps.
     let mut widths = vec![96f32; columns];
     for (col, width) in widths.iter_mut().enumerate() {
         let mut longest = 4usize;
@@ -5727,16 +5774,37 @@ fn render_table(
         }
         *width = (longest as f32 * 6.8 + 28.).clamp(96., 340.);
     }
+    widths
+}
+
+/// GFM table: outer border, semibold header, dividers, content-weighted
+/// columns (`th`/`td` styling from Waku's `.markdown table` rules).
+fn render_table(
+    header: &[String],
+    rows: &[Vec<String>],
+    aligns: &[TableAlign],
+    ix: usize,
+    salt: u64,
+    block_ix: usize,
+    theme: Theme,
+) -> AnyElement {
+    let widths = table_column_widths(header, rows);
+    let columns = widths.len();
+    if columns == 0 {
+        return div().into_any_element();
+    }
+    let table_width: f32 = widths.iter().sum();
     let make_cell = |text: &str,
-                     widths: &[f32],
                      col: usize,
-                     last: bool,
                      strong: bool,
                      align: TableAlign,
                      sub: usize,
                      salt: u64,
                      theme: Theme| {
-        let cell = div()
+        div()
+            .flex_none()
+            .w(px(widths[col]))
+            .min_w_0()
             .px(px(12.))
             .py(px(8.))
             .text_align(align.text_align())
@@ -5761,47 +5829,46 @@ fn render_table(
                         | (sub as u64 & 0xffff),
                 ),
                 theme,
-            ));
-        if last {
-            // The last column grows to fill a too-wide conversation, so a
-            // narrow table never leaves dead space inside its border.
-            cell.flex_grow().flex_basis(px(0.)).min_w(px(widths[col]))
-        } else {
-            cell.flex_none().w(px(widths[col]))
-        }
+            ))
     };
     let align_at = |col: usize| aligns.get(col).copied().unwrap_or_default();
-    let header_last = header.len().saturating_sub(1);
-    let mut inner = div().flex_none().min_w_full().flex().flex_col();
-    inner = inner.child(div().w_full().flex().bg(theme.overlay).children(
-        header.iter().enumerate().map(|(col, text)| {
-            make_cell(
-                text,
-                &widths,
-                col,
-                col == header_last,
-                true,
-                align_at(col),
-                col,
-                salt,
-                theme,
-            )
-        }),
-    ));
+    let mut inner = div()
+        .flex_none()
+        // Keep the actual content extent for horizontal scrolling. Neither
+        // the table nor its last column should grow into unused space.
+        .w(px(table_width))
+        .flex()
+        .flex_col();
+    inner = inner.child(
+        div()
+            .w_full()
+            .flex_none()
+            .flex()
+            .bg(theme.overlay)
+            .children((0..columns).map(|col| {
+                make_cell(
+                    header.get(col).map(String::as_str).unwrap_or_default(),
+                    col,
+                    true,
+                    align_at(col),
+                    col,
+                    salt,
+                    theme,
+                )
+            })),
+    );
     for (row_ix, row) in rows.iter().enumerate() {
-        let row_last = row.len().saturating_sub(1);
         inner = inner.child(
             div()
                 .w_full()
+                .flex_none()
                 .flex()
                 .border_t_1()
                 .border_color(theme.border)
-                .children(row.iter().enumerate().map(|(col, text)| {
+                .children((0..columns).map(|col| {
                     make_cell(
-                        text,
-                        &widths,
+                        row.get(col).map(String::as_str).unwrap_or_default(),
                         col,
-                        col == row_last,
                         false,
                         align_at(col),
                         64 + (row_ix * 64) + col,
@@ -5812,7 +5879,8 @@ fn render_table(
         );
     }
     div()
-        .w_full()
+        .w(px(table_width + 2.))
+        .max_w_full()
         .min_w_0()
         .overflow_hidden()
         .rounded(px(12.))
@@ -7124,24 +7192,585 @@ mod tests {
         }
     }
 
+    struct TableTestView {
+        header: Vec<String>,
+        rows: Vec<Vec<String>>,
+        selection: TextSelectionState,
+    }
+
+    impl gpui::Render for TableTestView {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            self.selection.borrow_mut().begin_frame();
+            let _scope = TextScopeGuard::enter(TextScope {
+                state: self.selection.clone(),
+                message_ix: 0,
+            });
+            div().w_full().child(render_table(
+                &self.header,
+                &self.rows,
+                &[],
+                0,
+                0,
+                0,
+                theme::Theme::for_id(theme::ThemeId::Orbit),
+            ))
+        }
+    }
+
+    #[gpui::test]
+    fn table_cells_keep_readable_wrapping_when_the_pane_narrows(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let selection = Rc::new(RefCell::new(TextSelection::new()));
+        let prose =
+            "Long prose with **bold** and `inline code` should wrap inside its cell. ".repeat(6);
+        let token = "long_unbroken_identifier_".repeat(16);
+        let view = cx.update(|_, cx| {
+            cx.new(|_| TableTestView {
+                header: vec!["Description".into(), "Identifier".into()],
+                rows: vec![
+                    vec![prose, token.clone()],
+                    vec!["Next row".into(), "Short value".into()],
+                ],
+                selection: selection.clone(),
+            })
+        });
+        let mut narrow_height = None;
+        for width in [300., 600.] {
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(width), px(1600.)),
+                |_, _| view.clone(),
+            );
+            let state = selection.borrow();
+            assert_eq!(state.blocks.len(), 6);
+            let prose = &state.blocks[2];
+            let identifier = &state.blocks[3];
+            for cell in [prose, identifier] {
+                assert!(cell.bounds.left() >= px(0.));
+                assert_eq!(
+                    cell.bounds.size.width,
+                    px(316.),
+                    "340 px column minus padding"
+                );
+                assert!(cell.layout.wrapped_text().lines().count() > 1);
+                assert!(cell.bounds.size.height > px(22.));
+                assert!(state.blocks[4].bounds.top() >= cell.bounds.bottom());
+            }
+            assert_eq!(
+                identifier.text.as_ref(),
+                token.as_str(),
+                "wrapping preserves copy text"
+            );
+            if let Some(height) = narrow_height {
+                assert_eq!(
+                    prose.bounds.size.height, height,
+                    "narrowing the viewport must not squeeze the columns"
+                );
+            } else {
+                narrow_height = Some(prose.bounds.size.height);
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn five_prose_columns_overflow_instead_of_squeezing_into_the_chat(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let cx = cx.add_empty_window();
+        let selection = Rc::new(RefCell::new(TextSelection::new()));
+        let view = cx.update(|_, cx| {
+            cx.new(|_| TableTestView {
+                header: (0..5).map(|ix| format!("Column {ix}")).collect(),
+                rows: vec![vec!["A detailed explanation that should remain readable even in a table with many columns. ".repeat(3); 5]],
+                selection: selection.clone(),
+            })
+        });
+        for width in [600., 960.] {
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(width), px(800.)),
+                |_, _| view.clone(),
+            );
+            let state = selection.borrow();
+            assert_eq!(state.blocks.len(), 10);
+            for cell in &state.blocks[5..] {
+                assert_eq!(cell.bounds.size.width, px(316.));
+            }
+            assert!(state.blocks[9].bounds.right() > px(width));
+        }
+    }
+
+    #[gpui::test]
+    fn wide_table_can_scroll_to_its_last_column(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let selection = Rc::new(RefCell::new(TextSelection::new()));
+        let view = cx.update(|_, cx| {
+            cx.new(|_| TableTestView {
+                header: (0..6).map(|ix| format!("Col {ix}")).collect(),
+                // Missing cells must not stretch earlier cells out of alignment.
+                rows: vec![vec!["Value".into()]],
+                selection: selection.clone(),
+            })
+        });
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(300.), px(300.)),
+                |_, _| view.clone(),
+            );
+        };
+        draw(cx);
+        let last_before = selection.borrow().blocks[5].bounds;
+        assert!(last_before.right() > px(300.));
+        assert_eq!(
+            selection.borrow().blocks[0].bounds.left(),
+            selection.borrow().blocks[6].bounds.left()
+        );
+
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: point(px(150.), px(20.)),
+            delta: gpui::ScrollDelta::Pixels(point(px(-1000.), px(0.))),
+            ..Default::default()
+        });
+        draw(cx);
+        let state = selection.borrow();
+        let last_after = state.blocks[5].bounds;
+        assert!(last_after.left() < last_before.left());
+        assert!(
+            last_after.right() <= px(300.),
+            "the last column must be reachable"
+        );
+    }
+
     /// The entity wrapper `list()` requires (it reads `window.current_view`).
     struct SelectTestView {
         messages: Rc<RefCell<Vec<ChatMessage>>>,
         state: TextSelectionState,
         scroller: MessageScrollerState,
+        main_width: Pixels,
+        open_work: bool,
+        live: bool,
     }
 
     impl gpui::Render for SelectTestView {
         fn render(&mut self, _: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
-            render_transcript(
-                test_view(
-                    self.state.clone(),
-                    self.messages.clone(),
-                    self.scroller.clone(),
-                ),
-                cx,
-            )
+            let mut view = test_view(
+                self.state.clone(),
+                self.messages.clone(),
+                self.scroller.clone(),
+            );
+            view.main_width = self.main_width;
+            if self.open_work {
+                view.expanded_turns.borrow_mut().insert(0);
+                for tool_ix in 0..self.messages.borrow()[0].tools().count() {
+                    view.expanded_tools.borrow_mut().insert((0, tool_ix));
+                }
+                for step_ix in 0..self.messages.borrow()[0].steps.len() {
+                    view.expanded_activities
+                        .borrow_mut()
+                        .insert((0, step_ix), true);
+                }
+            }
+            if self.live {
+                view.streaming.set(Some(0));
+            }
+            render_transcript(view, cx)
         }
+    }
+
+    #[gpui::test]
+    fn tables_fit_their_content_without_filling_the_strip_or_pane(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let state: TextSelectionState = Rc::new(RefCell::new(TextSelection::new()));
+        let messages = test_messages();
+        let prose = "Normal prose keeps its centered reading width. "
+            .repeat(10)
+            .trim()
+            .to_owned();
+        let long_cell =
+            "A detailed explanation needs a readable column rather than being squeezed. ".repeat(3);
+        messages.borrow_mut()[0].steps[0].text = format!(
+            "{prose}\n\n\
+             | Repeated group | New component |\n| --- | --- |\n\
+             | Gradient, material card, border, window margins | `MiriWindowSurface` |\n\
+             | Scroll view and page insets | `MiriPageScrollContainer` |\n\n\
+             | One | Two | Three | Four |\n| --- | --- | --- | --- |\n\
+             | A | B | C | D |\n\n\
+             | Skill | Strengths | Reservations |\n| --- | --- | --- |\n\
+             | {long_cell} | {long_cell} | {long_cell} |"
+        );
+        let scroller = MessageScrollerState::new(messages.borrow().len());
+        let view = cx.update(|_, cx| {
+            cx.new(|_| SelectTestView {
+                messages: messages.clone(),
+                state: state.clone(),
+                scroller,
+                main_width: px(1400.),
+                open_work: false,
+                live: false,
+            })
+        });
+        for width in [1400., 900., 1800.] {
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.main_width = px(width);
+                    cx.notify();
+                })
+            });
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(width), px(1600.)),
+                |_, _| view.clone(),
+            );
+            let selection = state.borrow();
+            let bounds = |text: &str| {
+                selection
+                    .blocks
+                    .iter()
+                    .find(|block| block.text.as_ref() == text)
+                    .unwrap()
+                    .bounds
+            };
+            let paragraph = bounds(&prose);
+            assert_eq!(paragraph.size.width, px(CONTENT_MAX_WIDTH.min(width - 40.)));
+            // Both two-column prose tables and four-column short tables fit.
+            // Width depends on content, not merely the number of columns.
+            for (first, last) in [("Repeated group", "New component"), ("One", "Four")] {
+                assert_eq!(bounds(first).left(), paragraph.left() + px(13.));
+                assert!(
+                    bounds(last).right() < paragraph.right() - px(100.),
+                    "small tables must not stretch"
+                );
+            }
+            // Four short columns need 4 × 96px; three prose columns cap at
+            // 3 × 340px. The measured text excludes 12px padding at each end.
+            assert_eq!(bounds("Four").right() - bounds("One").left(), px(360.));
+            assert_eq!(
+                bounds("Reservations").right() - bounds("Skill").left(),
+                px(996.)
+            );
+            if width > CONTENT_MAX_WIDTH + 40. {
+                assert!(bounds("Skill").left() < paragraph.left());
+                assert!(bounds("Reservations").right() > paragraph.right());
+                let table_left = bounds("Skill").left() - px(13.);
+                let table_right = bounds("Reservations").right() + px(13.);
+                assert_eq!(table_right - table_left, px(1022.));
+                assert_eq!(table_left, (px(width) - px(1022.)) / 2.);
+            }
+        }
+    }
+
+    /// Exercise the whole virtualized row, not just an isolated table: the
+    /// old row-level width cap hid the breakout even when its cells were wide.
+    #[gpui::test]
+    fn transcript_table_viewport_breaks_out_of_the_prose_strip(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let state: TextSelectionState = Rc::new(RefCell::new(TextSelection::new()));
+        let messages = test_messages();
+        let before = "Before the table, prose keeps its reading width. "
+            .repeat(8)
+            .trim()
+            .to_owned();
+        let after = "After the table, prose returns to the same reading width. "
+            .repeat(8)
+            .trim()
+            .to_owned();
+        let cell =
+            "A detailed explanation stays readable instead of being squeezed into a thin column. "
+                .repeat(3);
+        messages.borrow_mut()[0].steps[0].text = format!(
+            "{before}\n\n| Skill | Strengths | Reservations |\n| --- | --- | --- |\n| {cell} | {cell} | {cell} |\n\n{after}"
+        );
+        let scroller = MessageScrollerState::new(messages.borrow().len());
+        let view = cx.update(|_, cx| {
+            cx.new(|_| SelectTestView {
+                messages: messages.clone(),
+                state: state.clone(),
+                scroller,
+                main_width: px(1400.),
+                open_work: false,
+                live: false,
+            })
+        });
+
+        for width in [1400., 800., 1400.] {
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.main_width = px(width);
+                    cx.notify();
+                })
+            });
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(width), px(1600.)),
+                |_, _| view.clone(),
+            );
+            let selection = state.borrow();
+            let before = selection
+                .blocks
+                .iter()
+                .find(|block| block.text.as_ref() == before)
+                .unwrap()
+                .bounds;
+            let after = selection
+                .blocks
+                .iter()
+                .find(|block| block.text.as_ref() == after)
+                .unwrap()
+                .bounds;
+            let first = selection
+                .blocks
+                .iter()
+                .find(|block| block.text.as_ref() == "Skill")
+                .unwrap()
+                .bounds;
+            let last = selection
+                .blocks
+                .iter()
+                .find(|block| block.text.as_ref() == "Reservations")
+                .unwrap()
+                .bounds;
+            assert_eq!(before.size.width, px(CONTENT_MAX_WIDTH.min(width - 40.)));
+            assert_eq!(before.left(), after.left());
+            assert_eq!(before.size.width, after.size.width);
+            assert!(after.top() > last.bottom());
+            if width > CONTENT_MAX_WIDTH + 40. {
+                assert!(
+                    first.left() < before.left(),
+                    "table extends into the left margin"
+                );
+                assert!(
+                    last.right() > before.right(),
+                    "table extends into the right margin"
+                );
+                assert!(
+                    last.right() < px(width),
+                    "all three columns are visible without scrolling"
+                );
+            } else {
+                assert!(
+                    first.left() > before.left(),
+                    "narrow panes contain the table viewport"
+                );
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn expanded_activity_stays_inside_the_original_message_column(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let state: TextSelectionState = Rc::new(RefCell::new(TextSelection::new()));
+        let messages = test_messages();
+        let prose = "A wrapping paragraph before the next activity group. "
+            .repeat(10)
+            .trim()
+            .to_owned();
+        let second = "A second paragraph after the first activity group. "
+            .repeat(10)
+            .trim()
+            .to_owned();
+        let tool = ToolCall {
+            name: "batch_web_fetch".into(),
+            summary: "https://example.com/a-long-path/".repeat(12),
+            path: None,
+            added: 0,
+            removed: 0,
+            id: None,
+            args: Some(serde_json::json!({"url": "https://example.com"})),
+            output: None,
+            failed: false,
+        };
+        messages.borrow_mut()[0].steps = vec![
+            Step { text: prose.clone(), thinking: "First thought\nChecking references".into(), tools: vec![tool.clone()], ..Step::default() },
+            Step { text: second.clone(), thinking: "Second thought\nChecking more references".into(), tools: vec![tool], ..Step::default() },
+            Step { text: "| A | B | C | D |\n| --- | --- | --- | --- |\n| A wide table | preserves | the normal | activity layout |".into(), ..Step::default() },
+        ];
+        let scroller = MessageScrollerState::new(messages.borrow().len());
+        let view = cx.update(|_, cx| {
+            cx.new(|_| SelectTestView {
+                messages: messages.clone(),
+                state: state.clone(),
+                scroller,
+                main_width: px(1800.),
+                open_work: true,
+                live: false,
+            })
+        });
+        for (width, live) in [(1800., false), (1100., false), (800., false), (1800., true)] {
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.main_width = px(width);
+                    view.live = live;
+                    cx.notify();
+                })
+            });
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(width), px(1600.)),
+                |_, _| view.clone(),
+            );
+            let column_width = px(CONTENT_MAX_WIDTH.min(width - 40.));
+            let column_left = (px(width) - column_width) / 2.;
+            for selector in ["activity-group-0-0", "activity-group-0-1"] {
+                let bounds = cx
+                    .debug_bounds(selector)
+                    .expect("expanded activity is visible");
+                assert_eq!(
+                    bounds.size.width, column_width,
+                    "{selector} width at {width}"
+                );
+                assert_eq!(
+                    bounds.left(),
+                    column_left,
+                    "{selector} alignment at {width}"
+                );
+            }
+            for selector in [
+                "thought-card-0-0",
+                "thought-card-0-1",
+                "tool-card-0-0",
+                "tool-card-0-1",
+            ] {
+                let bounds = cx.debug_bounds(selector).expect("card is visible");
+                assert!(bounds.left() >= column_left);
+                assert!(
+                    bounds.right() <= column_left + column_width + px(6.),
+                    "{selector} overflows the message column at {width}: {bounds:?}"
+                );
+            }
+            let selection = state.borrow();
+            let first = selection
+                .blocks
+                .iter()
+                .find(|block| block.text.as_ref() == prose)
+                .unwrap();
+            let next = selection
+                .blocks
+                .iter()
+                .find(|block| block.text.as_ref() == second)
+                .unwrap();
+            assert_eq!(first.bounds.size.width, column_width);
+            assert_eq!(next.bounds.left(), first.bounds.left());
+            assert!(
+                next.bounds.top() >= first.bounds.bottom() + px(8.),
+                "paragraphs must not overlap"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn repeated_tools_with_short_thoughts_do_not_accumulate_bottom_space(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let state: TextSelectionState = Rc::new(RefCell::new(TextSelection::new()));
+        let messages = test_messages();
+        messages.borrow_mut().truncate(1);
+        messages.borrow_mut()[0].steps = vec![Step {
+            text: "I will investigate the system appearance behavior.".into(),
+            ..Step::default()
+        }];
+        let scroller = MessageScrollerState::new(1);
+        let view = cx.update(|_, cx| {
+            cx.new(|_| SelectTestView {
+                messages: messages.clone(),
+                state: state.clone(),
+                scroller: scroller.clone(),
+                main_width: px(1400.),
+                open_work: false,
+                live: true,
+            })
+        });
+        let height = px(1100.);
+        for count in 1..=12 {
+            if count == 6 {
+                // Exercise the same growth with a wide table mixed into the
+                // prose. Fixing the gap must not reintroduce zero-width prose
+                // during table layout on a narrow pane.
+                let cell = "A detailed explanation keeps a readable column. ".repeat(4);
+                messages.borrow_mut()[0].steps[0].text.push_str(&format!(
+                    "\n\n| Skill | Strengths | Reservations |\n| --- | --- | --- |\n\
+                     | {cell} | {cell} | {cell} |\n\nContinuing the investigation."
+                ));
+            }
+            messages.borrow_mut()[0].steps.push(Step {
+                thinking: "Adding explicit backdrop imports".into(),
+                tools: vec![ToolCall {
+                    name: "read".into(),
+                    summary: "crates/orbit-pi/src/app/backdrop_layout_tests.rs".into(),
+                    path: None,
+                    added: 0,
+                    removed: 0,
+                    id: Some(format!("call-{count}")),
+                    args: None,
+                    output: None,
+                    failed: false,
+                }],
+                ..Step::default()
+            });
+            // Match successive tool updates: invalidate the existing row,
+            // without manually jumping to the bottom to hide scroll errors.
+            scroller.remeasure_items(0..1);
+            scroller.note_activity();
+            for width in [1400., 800., 1800.] {
+                cx.update(|_, cx| {
+                    view.update(cx, |view, cx| {
+                        view.main_width = px(width);
+                        cx.notify();
+                    });
+                });
+                cx.draw(
+                    point(px(0.), px(0.)),
+                    gpui::size(px(width), height),
+                    |_, _| view.clone(),
+                );
+                let indicator = cx.debug_bounds("working-indicator").unwrap();
+                assert_eq!(
+                    height - indicator.bottom(),
+                    px(22.),
+                    "only the final row padding belongs below the indicator: {count} tools at {width}px"
+                );
+                if count >= 6 {
+                    let selection = state.borrow();
+                    let paragraph = selection
+                        .blocks
+                        .iter()
+                        .find(|block| block.text.as_ref() == "Continuing the investigation.")
+                        .unwrap();
+                    assert_eq!(
+                        paragraph.bounds.size.width,
+                        px(CONTENT_MAX_WIDTH.min(width - 40.))
+                    );
+                }
+                assert_eq!(scroller.item_count(), 1);
+                assert!(scroller.is_following_tail());
+            }
+        }
+
+        // Settling changes the footer and default activity expansion. Keep
+        // the work expanded and ensure its measured height still fits it.
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.live = false;
+                view.open_work = true;
+                cx.notify();
+            });
+        });
+        scroller.remeasure_items(0..1);
+        cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(1800.), height),
+            |_, _| view.clone(),
+        );
+        let last_tool = cx.debug_bounds("tool-card-0-11").unwrap();
+        assert!(
+            (px(0.)..px(100.)).contains(&(height - last_tool.bottom())),
+            "only the footer and row padding should follow the settled work"
+        );
     }
 
     /// The panel's selection plumbing end-to-end: a simulated drag from the
@@ -7162,12 +7791,15 @@ mod tests {
                 messages: messages_in,
                 state: state_in,
                 scroller: scroller_in,
+                main_width: px(900.),
+                open_work: false,
+                live: false,
             })
         });
         // The standalone test window only re-registers the panel's mouse
         // listeners when the entity is painted, so redraw between input
         // events (a real window paints a frame after every event anyway).
-        let mut paint = |cx: &mut gpui::VisualTestContext| {
+        let paint = |cx: &mut gpui::VisualTestContext| {
             let view = view.clone();
             cx.draw(
                 point(px(0.), px(0.)),
