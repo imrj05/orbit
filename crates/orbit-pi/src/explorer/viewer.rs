@@ -1,4 +1,4 @@
-//! File loading for the Explorer's viewer.
+//! File loading and editing for the Explorer's viewer.
 //!
 //! Split in two: [`load`] is pure filesystem work (no GPUI), so it runs on the
 //! background executor and is unit-tested without a window; the `FileViewer`
@@ -6,7 +6,10 @@
 //!
 //! Guards are deliberate and honest: a directory, a binary file, or a file
 //! over [`MAX_FILE_BYTES`] is reported as such — never dumped lossily at the
-//! user or read into memory unbounded.
+//! user or read into memory unbounded. Code and plain-text files open in an
+//! editable [`ComposerInput`] with syntax highlighting; edits autosave back to
+//! disk (debounced, atomic). Markdown, images, binary, and oversized files stay
+//! read-only.
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -15,12 +18,13 @@ use std::time::Duration;
 
 use gpui::{
     div, img, prelude::*, px, Animation, AnimationExt, AnyElement, App, ClickEvent, Context,
-    FocusHandle, Font, FontFeatures, FontStyle, FontWeight, Hsla, Image, ImageFormat, ImageSource,
-    ListAlignment, ListState, ObjectFit, Render, StyledText, TextAlign, TextRun, Transformation,
-    Window,
+    Entity, FocusHandle, Focusable, Font, FontFeatures, FontStyle, FontWeight, Hsla, Image,
+    ImageFormat, ImageSource, ListAlignment, ListState, ObjectFit, Render, StyledText,
+    Subscription, TextAlign, TextRun, Timer, Transformation, Window,
 };
 
 use crate::app::{file_badge, file_glyph, icon, nerd_font_family};
+use crate::composer::ComposerInput;
 use crate::highlight::{self, Lang, Token};
 use crate::theme::{self, Theme, ThemeMode};
 
@@ -34,6 +38,9 @@ pub const MAX_LINES: usize = 200_000;
 
 /// How many leading bytes to sniff for a NUL when deciding "binary".
 const BINARY_SNIFF_BYTES: usize = 8_000;
+
+/// Idle beat after the last keystroke before the editor writes to disk.
+const AUTOSAVE_DELAY: Duration = Duration::from_millis(500);
 
 /// How a loaded file should be painted.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -54,6 +61,8 @@ pub struct FileContent {
     /// Workspace-relative path for the header, when known.
     pub display: String,
     pub mode: Mode,
+    /// The decoded file text, verbatim (used to seed the editor).
+    pub text: String,
     pub lines: Vec<String>,
     /// Paint-only syntax spans over `lines`, computed off the UI thread.
     /// `None` when the mode is not [`Mode::Code`].
@@ -63,21 +72,36 @@ pub struct FileContent {
     pub bytes: u64,
     /// The line cap trimmed the document.
     pub truncated: bool,
+    /// The bytes were not valid UTF-8, so the decoded text cannot round-trip
+    /// through the editor — the file stays read-only rather than corrupting it.
+    pub lossy: bool,
     /// A read error worth showing in place of the content.
     pub error: Option<String>,
 }
 
 impl FileContent {
+    /// Whether this content opens in the editable buffer rather than a
+    /// read-only body. Truncated and lossy files stay read-only: writing their
+    /// in-memory text back would destroy the bytes the viewer never held.
+    pub fn editable(&self) -> bool {
+        self.error.is_none()
+            && !self.truncated
+            && !self.lossy
+            && matches!(self.mode, Mode::Code { .. } | Mode::Text | Mode::Markdown)
+    }
+
     fn failed(path: PathBuf, display: String, error: impl Into<String>) -> Self {
         Self {
             path,
             display,
             mode: Mode::Text,
+            text: String::new(),
             lines: Vec::new(),
             tokens: None,
             image_bytes: None,
             bytes: 0,
             truncated: false,
+            lossy: false,
             error: Some(error.into()),
         }
     }
@@ -106,11 +130,13 @@ pub fn load(path: &Path, display: impl Into<String>) -> FileContent {
             path: path.to_path_buf(),
             display,
             mode: Mode::TooLarge,
+            text: String::new(),
             lines: Vec::new(),
             tokens: None,
             image_bytes: None,
             bytes,
             truncated: false,
+            lossy: false,
             error: None,
         };
     }
@@ -125,11 +151,13 @@ pub fn load(path: &Path, display: impl Into<String>) -> FileContent {
             path: path.to_path_buf(),
             display,
             mode: Mode::Image,
+            text: String::new(),
             lines: Vec::new(),
             tokens: None,
             image_bytes: Some(raw),
             bytes,
             truncated: false,
+            lossy: false,
             error: None,
         };
     }
@@ -139,16 +167,20 @@ pub fn load(path: &Path, display: impl Into<String>) -> FileContent {
             path: path.to_path_buf(),
             display,
             mode: Mode::Binary,
+            text: String::new(),
             lines: Vec::new(),
             tokens: None,
             image_bytes: None,
             bytes,
             truncated: false,
+            lossy: false,
             error: None,
         };
     }
 
-    let text = String::from_utf8_lossy(&raw);
+    let decoded = String::from_utf8_lossy(&raw);
+    let lossy = matches!(decoded, std::borrow::Cow::Owned(_));
+    let text = decoded.into_owned();
     let mut lines: Vec<String> = text.split('\n').map(|line| line.to_string()).collect();
     // `split` yields a trailing empty line for a file ending in a newline;
     // drop it so the gutter does not show a phantom last line.
@@ -163,10 +195,7 @@ pub fn load(path: &Path, display: impl Into<String>) -> FileContent {
     let (mode, tokens) = if is_markdown(name) {
         (Mode::Markdown, None)
     } else if let Some(lang) = crate::review::language_for_path(name) {
-        (
-            Mode::Code { lang },
-            Some(highlight::tokenize(lang, &text)),
-        )
+        (Mode::Code { lang }, Some(highlight::tokenize(lang, &text)))
     } else {
         (Mode::Text, None)
     };
@@ -175,11 +204,13 @@ pub fn load(path: &Path, display: impl Into<String>) -> FileContent {
         path: path.to_path_buf(),
         display,
         mode,
+        text,
         lines,
         tokens,
         image_bytes: None,
         bytes,
         truncated,
+        lossy,
         error: None,
     }
 }
@@ -228,32 +259,92 @@ fn is_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(BINARY_SNIFF_BYTES).any(|byte| *byte == 0)
 }
 
-// ── the GPUI entity ────────────────────────────────────────────────────
-
-struct Tab {
-    path: PathBuf,
-    display: String,
+/// Write `text` to `path` atomically: a sibling temp file, then a rename.
+/// Falls back to a direct write when the directory will not take a temp file,
+/// so a real error is still surfaced rather than swallowed.
+fn save_file(path: &Path, text: &str) -> std::io::Result<()> {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+    let tmp = path.with_file_name(format!(".{name}.orbit-save"));
+    match std::fs::write(&tmp, text) {
+        Ok(()) => match std::fs::rename(&tmp, path) {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                let result = std::fs::write(path, text);
+                let _ = std::fs::remove_file(&tmp);
+                result
+            }
+        },
+        Err(_) => std::fs::write(path, text),
+    }
 }
 
-/// The full-page Files surface: a tab strip over a read-only file view.
+// ── the GPUI entity ────────────────────────────────────────────────────
+
+/// Autosave status for one editable tab.
+#[derive(Clone, Debug)]
+enum SaveState {
+    /// Matches disk.
+    Saved,
+    /// Edits made since the last write.
+    Unsaved,
+    /// A write is in flight.
+    Saving,
+    /// The last write failed; the message is shown in the toolbar.
+    Failed(String),
+}
+
+struct Tab {
+    /// Stable id: observers and save timers outlive a shift in the tab vec.
+    id: u64,
+    path: PathBuf,
+    display: String,
+    /// Decoded image for the active file, when it is an image.
+    image: Option<Arc<Image>>,
+    /// Loaded content: the toolbar's size/line count and the read-only bodies.
+    content: Option<FileContent>,
+    /// The editable buffer. Always present; only rendered for editable modes.
+    editor: Entity<ComposerInput>,
+    /// Text last written to disk (or loaded), for dirty comparison.
+    saved: String,
+    /// Editor revision last seen, so a caret move is not taken for an edit.
+    seen_revision: u64,
+    dirty: bool,
+    /// The file changed on disk while this tab had unsaved edits.
+    conflict: bool,
+    /// Markdown tabs default to the rendered preview; the toolbar toggles
+    /// between it and the editable source.
+    markdown_preview: bool,
+    save: SaveState,
+    /// Guards a late load from a previous request.
+    generation: u64,
+    _sub: Subscription,
+}
+
+impl Tab {
+    fn editable(&self) -> bool {
+        self.content.as_ref().is_some_and(FileContent::editable)
+    }
+}
+
+/// The full-page Files surface: a tab strip over editable code/text files and
+/// read-only Markdown/image/binary/oversized views.
 ///
-/// Loading always happens on the background executor; the entity only ever
-/// paints an already-loaded [`FileContent`].
+/// Loading and saving always happen on the background executor; the entity
+/// only ever paints already-loaded [`FileContent`] and an already-seeded
+/// [`ComposerInput`].
 pub struct FileViewer {
     open: bool,
     tabs: Vec<Tab>,
     active: usize,
-    content: Option<FileContent>,
     loading: bool,
-    /// Guards a late load from a previous request.
-    generation: u64,
     list: ListState,
-    /// Decoded image for the active file, when it is an image.
-    image: Option<Arc<Image>>,
     /// Carries the `Files` key context so `cmd-w` closes the surface.
     focus: FocusHandle,
-    /// Focus the surface on the next paint (`show` has no window).
+    /// Focus the active editor on the next paint (`show` has no window).
     focus_pending: bool,
+    next_id: u64,
+    /// Debounce epoch; a newer edit supersedes the pending autosave.
+    save_epoch: u64,
     /// The app's close callback (the toolbar's X).
     on_close: Rc<dyn Fn(&mut App)>,
 }
@@ -264,13 +355,12 @@ impl FileViewer {
             open: false,
             tabs: Vec::new(),
             active: 0,
-            content: None,
             loading: false,
-            generation: 0,
             list: ListState::new(0, ListAlignment::Top, px(400.)),
-            image: None,
             focus: cx.focus_handle(),
             focus_pending: false,
+            next_id: 0,
+            save_epoch: 0,
             on_close,
         }
     }
@@ -287,26 +377,53 @@ impl FileViewer {
         self.tabs.get(self.active).map(|tab| tab.display.clone())
     }
 
-    /// Open (or focus) a file and load it.
+    /// Open (or focus) a file. A file already open in a tab keeps its buffer
+    /// and unsaved edits; only a new tab is loaded from disk.
     pub fn show(&mut self, path: PathBuf, display: String, cx: &mut Context<Self>) {
         self.open = true;
         self.focus_pending = true;
-        let index = match self.tabs.iter().position(|tab| tab.path == path) {
-            Some(index) => index,
-            None => {
-                self.tabs.push(Tab {
-                    path: path.clone(),
-                    display: display.clone(),
-                });
-                self.tabs.len() - 1
-            }
-        };
-        self.active = index;
-        self.read(path, display, cx);
+        if let Some(index) = self.tabs.iter().position(|tab| tab.path == path) {
+            self.active = index;
+            cx.notify();
+            return;
+        }
+        let id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1);
+        let editor = cx.new(|cx| {
+            ComposerInput::new(cx)
+                .with_placeholder("")
+                .with_gutter(true)
+                .with_wrap(false)
+                .with_fill(true)
+                .with_key_context("Editor Files")
+        });
+        let sub = cx.observe(&editor, move |this, editor, cx| {
+            this.on_editor_changed(id, &editor, cx);
+        });
+        self.tabs.push(Tab {
+            id,
+            path,
+            display,
+            image: None,
+            content: None,
+            editor,
+            saved: String::new(),
+            seen_revision: 0,
+            dirty: false,
+            conflict: false,
+            markdown_preview: true,
+            save: SaveState::Saved,
+            generation: 0,
+            _sub: sub,
+        });
+        self.active = self.tabs.len() - 1;
+        self.read(self.active, cx);
         cx.notify();
     }
 
+    /// Leave the surface, flushing any unsaved edits first.
     pub fn hide(&mut self, cx: &mut Context<Self>) {
+        self.flush_all(cx);
         self.open = false;
         cx.notify();
     }
@@ -315,68 +432,249 @@ impl FileViewer {
         if index >= self.tabs.len() {
             return;
         }
+        let id = self.tabs[index].id;
+        self.flush(id, cx);
         self.tabs.remove(index);
         if self.tabs.is_empty() {
             self.open = false;
-            self.content = None;
-            self.image = None;
             self.list.reset(0);
+            self.loading = false;
         } else {
-            self.active = self.active.min(self.tabs.len() - 1);
-            let (path, display) = self.tab_target(cx);
-            self.read(path, display, cx);
+            // Removing a tab before the active one shifts it down; closing the
+            // active one falls to the next tab (or the previous, at the end).
+            self.active = active_after_close(self.active, index, self.tabs.len());
+            self.focus_pending = true;
+            self.sync_list();
         }
         cx.notify();
     }
 
-    /// The workspace watcher fired: reload the active file when it changed.
+    /// The workspace watcher fired: re-read the active file. The load
+    /// completion tells our own save (which echoes back through the watcher)
+    /// apart from a real external change, so uncommitted edits are never
+    /// clobbered and a self-write never flashes a conflict.
     pub fn reload(&mut self, path: &Path, cx: &mut Context<Self>) {
-        let Some(tab) = self.tabs.get(self.active) else {
+        let Some(index) = self.tabs.iter().position(|tab| tab.path == path) else {
             return;
         };
-        if tab.path != path {
+        if index != self.active {
             return;
         }
-        let (path, display) = self.tab_target(cx);
-        self.read(path, display, cx);
+        self.read(index, cx);
     }
 
-    fn tab_target(&self, _cx: &Context<Self>) -> (PathBuf, String) {
-        let tab = &self.tabs[self.active];
-        (tab.path.clone(), tab.display.clone())
+    fn activate(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.tabs.len() {
+            return;
+        }
+        self.active = index;
+        self.focus_pending = true;
+        self.sync_list();
+        cx.notify();
     }
 
-    fn read(&mut self, path: PathBuf, display: String, cx: &mut Context<Self>) {
-        self.loading = true;
-        self.generation = self.generation.wrapping_add(1);
-        let generation = self.generation;
-        self.content = None;
-        self.image = None;
-        self.list.reset(0);
+    /// Keep the read-only list's item count in step with the active tab.
+    fn sync_list(&mut self) {
+        let count = self
+            .tabs
+            .get(self.active)
+            .and_then(|tab| tab.content.as_ref())
+            .map_or(0, FileContent::line_count);
+        if count != self.list.item_count() {
+            self.list.reset(count);
+        }
+    }
+
+    fn read(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.get_mut(index) else {
+            return;
+        };
+        tab.generation = tab.generation.wrapping_add(1);
+        let generation = tab.generation;
+        let id = tab.id;
+        let path = tab.path.clone();
+        let display = tab.display.clone();
+        // A reload keeps the old content on screen until the new bytes land
+        // (no spinner flash on every autosave); only a first load blanks it.
+        let first_load = tab.content.is_none();
+        if first_load {
+            tab.image = None;
+            self.loading = true;
+            self.list.reset(0);
+        }
         cx.spawn(async move |this, cx| {
             let content = cx
                 .background_executor()
                 .spawn(async move { load(&path, display) })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                if this.generation != generation {
+                let Some(index) = this
+                    .tabs
+                    .iter()
+                    .position(|tab| tab.id == id && tab.generation == generation)
+                else {
                     return;
-                }
-                this.image = if content.mode == Mode::Image {
+                };
+                let image = if content.mode == Mode::Image {
                     content.image_bytes.as_deref().and_then(|bytes| {
-                        image_format(&content.path).map(|format| {
-                            Arc::new(Image::from_bytes(format, bytes.to_vec()))
-                        })
+                        image_format(&content.path)
+                            .map(|format| Arc::new(Image::from_bytes(format, bytes.to_vec())))
                     })
                 } else {
                     None
                 };
-                let count = content.lines.len();
-                if count != this.list.item_count() {
-                    this.list.reset(count);
-                }
                 this.loading = false;
-                this.content = Some(content);
+                this.tabs[index].image = image;
+                this.tabs[index].content = Some(content);
+                this.sync_list();
+                this.seed_editor(index, cx);
+                // A first load can land while the editor was still absent (the
+                // loading spinner had focus); claim focus for the new file.
+                if first_load && index == this.active {
+                    this.focus_pending = true;
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Copy loaded text into a tab's editor and reconcile its save state.
+    /// Read-only modes leave the buffer alone (it is never rendered).
+    fn seed_editor(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some((editable, lang, text)) = self.tabs.get(index).and_then(|tab| {
+            let content = tab.content.as_ref()?;
+            let lang = match content.mode {
+                Mode::Code { lang } => Some(lang),
+                _ => None,
+            };
+            Some((content.editable(), lang, content.text.clone()))
+        }) else {
+            return;
+        };
+        if !editable {
+            return;
+        }
+        let editor = self.tabs[index].editor.clone();
+        editor.update(cx, |editor, cx| editor.set_syntax(lang, cx));
+        let current = editor.read(cx).text();
+        let revision = editor.read(cx).revision();
+
+        {
+            let tab = &mut self.tabs[index];
+            // Did the bytes on disk change since we last read or wrote them?
+            let external = text != tab.saved;
+            tab.saved = text.clone();
+            if current == text {
+                // Fresh empty file, or the watcher echoing our own save. Keep
+                // the buffer — and its caret and scroll — untouched.
+                tab.seen_revision = revision;
+                tab.dirty = false;
+                tab.conflict = false;
+                tab.save = SaveState::Saved;
+                return;
+            }
+            if tab.dirty {
+                // Uncommitted edits win; a pending write of ours is not a
+                // conflict.
+                tab.conflict = external;
+                return;
+            }
+            if !external {
+                return;
+            }
+        }
+        // Clean buffer, real external change: replace it from disk.
+        editor.update(cx, |editor, cx| editor.set_text_at_start(text, cx));
+        let revision = editor.read(cx).revision();
+        let tab = &mut self.tabs[index];
+        tab.seen_revision = revision;
+        tab.dirty = false;
+        tab.conflict = false;
+        tab.save = SaveState::Saved;
+    }
+
+    /// An edit landed in a tab's editor: mark it dirty and (re)arm autosave.
+    fn on_editor_changed(
+        &mut self,
+        id: u64,
+        editor: &Entity<ComposerInput>,
+        cx: &mut Context<Self>,
+    ) {
+        let revision = editor.read(cx).revision();
+        let Some(index) = self.tabs.iter().position(|tab| tab.id == id) else {
+            return;
+        };
+        if self.tabs[index].seen_revision == revision {
+            return;
+        }
+        self.tabs[index].seen_revision = revision;
+        self.tabs[index].dirty = true;
+        self.tabs[index].save = SaveState::Unsaved;
+        self.schedule_save(cx);
+        cx.notify();
+    }
+
+    /// (Re)arm the autosave debounce. It flushes *all* dirty tabs when it
+    /// fires — not just the tab that was edited — so moving to another tab
+    /// within the window cannot cancel a pending save.
+    fn schedule_save(&mut self, cx: &mut Context<Self>) {
+        self.save_epoch = self.save_epoch.wrapping_add(1);
+        let epoch = self.save_epoch;
+        cx.spawn(async move |this, cx| {
+            Timer::after(AUTOSAVE_DELAY).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.save_epoch == epoch {
+                    this.flush_all(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn flush_all(&mut self, cx: &mut Context<Self>) {
+        let ids: Vec<u64> = self
+            .tabs
+            .iter()
+            .filter(|tab| tab.dirty)
+            .map(|tab| tab.id)
+            .collect();
+        for id in ids {
+            self.flush(id, cx);
+        }
+    }
+
+    /// Write one tab's editor to disk on the background executor. No-op when
+    /// the tab is clean or gone.
+    fn flush(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(index) = self.tabs.iter().position(|tab| tab.id == id) else {
+            return;
+        };
+        if !self.tabs[index].dirty {
+            return;
+        }
+        let path = self.tabs[index].path.clone();
+        let text = self.tabs[index].editor.read(cx).text();
+        self.tabs[index].saved = text.clone();
+        self.tabs[index].dirty = false;
+        self.tabs[index].conflict = false;
+        self.tabs[index].save = SaveState::Saving;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { save_file(&path, &text) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if let Some(tab) = this.tabs.iter_mut().find(|tab| tab.id == id) {
+                    tab.save = match result {
+                        Ok(()) => SaveState::Saved,
+                        Err(error) => {
+                            tab.dirty = true;
+                            SaveState::Failed(error.to_string())
+                        }
+                    };
+                }
                 cx.notify();
             });
         })
@@ -425,10 +723,7 @@ impl FileViewer {
                             .hover(|el| el.bg(theme.bg_hover).text_color(theme.text_2))
                     })
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.active = index;
-                        let (path, display) = this.tab_target(cx);
-                        this.read(path, display, cx);
-                        cx.notify();
+                        this.activate(index, cx);
                     }))
                     .child(glyph)
                     .child(
@@ -440,9 +735,22 @@ impl FileViewer {
                             } else {
                                 FontWeight::NORMAL
                             })
-                            .text_color(if active { theme.active_fg } else { theme.text_3 })
+                            .text_color(if active {
+                                theme.active_fg
+                            } else {
+                                theme.text_3
+                            })
                             .child(name),
                     )
+                    .when(tab.dirty, |el| {
+                        el.child(
+                            div()
+                                .size(px(6.))
+                                .flex_none()
+                                .rounded_full()
+                                .bg(theme.accent),
+                        )
+                    })
                     .child(
                         div()
                             .id(gpui::ElementId::Name(
@@ -467,7 +775,11 @@ impl FileViewer {
                             .child(icon(
                                 "icons/x.svg",
                                 10.,
-                                if active { theme.active_fg } else { theme.text_3 },
+                                if active {
+                                    theme.active_fg
+                                } else {
+                                    theme.text_3
+                                },
                             )),
                     ),
             );
@@ -497,8 +809,11 @@ impl FileViewer {
         strip.into_any_element()
     }
 
-    fn toolbar(&self, theme: Theme, _cx: &mut Context<Self>) -> AnyElement {
-        let Some(content) = self.content.as_ref() else {
+    fn toolbar(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return div().h(px(34.)).flex_none().into_any_element();
+        };
+        let Some(content) = tab.content.as_ref() else {
             return div().h(px(34.)).flex_none().into_any_element();
         };
         let size = format_bytes(content.bytes);
@@ -536,22 +851,73 @@ impl FileViewer {
                         .child(tr!("explorer.truncated")),
                 )
             })
-            .child(
-                div()
-                    .flex_none()
-                    .h(px(20.))
-                    .px(px(6.))
-                    .rounded(px(6.))
-                    .bg(theme.bg_raised)
-                    .border_1()
-                    .border_color(theme.border)
-                    .font_family(theme::ui_font_family())
-                    .flex()
-                    .items_center()
-                    .gap(px(4.))
-                    .child(icon("icons/lock.svg", 10., theme.text_3))
-                    .child(tr!("explorer.read_only")),
+            .when(
+                content.mode == Mode::Markdown && content.editable(),
+                |el| {
+                    el.child(
+                        div()
+                            .id("viewer-md-toggle")
+                            .flex_none()
+                            .h(px(20.))
+                            .px(px(7.))
+                            .rounded(px(6.))
+                            .bg(theme.bg_raised)
+                            .border_1()
+                            .border_color(theme.border)
+                            .font_family(theme::ui_font_family())
+                            .flex()
+                            .items_center()
+                            .cursor_pointer()
+                            .text_color(theme.text_2)
+                            .hover(|el| el.bg(theme.bg_hover))
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.toggle_markdown_preview(cx)
+                            }))
+                            .child(if tab.markdown_preview {
+                                tr!("explorer.edit")
+                            } else {
+                                tr!("explorer.preview")
+                            }),
+                    )
+                },
             )
+            .child(self.status_chip(theme, tab))
+            .into_any_element()
+    }
+
+    /// Read-only lock for non-editable modes; autosave status for editable ones.
+    fn status_chip(&self, theme: Theme, tab: &Tab) -> AnyElement {
+        let (label, color) = if !tab.editable() {
+            (tr!("explorer.read_only"), theme.text_3)
+        } else if tab.conflict {
+            (tr!("explorer.changed_on_disk"), theme.warn)
+        } else {
+            match &tab.save {
+                SaveState::Saved => (tr!("explorer.saved"), theme.text_3),
+                SaveState::Unsaved => (tr!("explorer.unsaved"), theme.text_2),
+                SaveState::Saving => (tr!("explorer.saving"), theme.text_3),
+                SaveState::Failed(error) => (
+                    format!("{}: {error}", tr!("explorer.save_failed")),
+                    theme.warn,
+                ),
+            }
+        };
+        div()
+            .flex_none()
+            .h(px(20.))
+            .px(px(6.))
+            .rounded(px(6.))
+            .bg(theme.bg_raised)
+            .border_1()
+            .border_color(theme.border)
+            .font_family(theme::ui_font_family())
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .when(!tab.editable(), |el| {
+                el.child(icon("icons/lock.svg", 10., theme.text_3))
+            })
+            .child(div().text_color(color).child(label))
             .into_any_element()
     }
 
@@ -559,20 +925,33 @@ impl FileViewer {
         if self.loading {
             return loading_state(&theme);
         }
-        let Some(content) = self.content.as_ref() else {
+        let Some(tab) = self.tabs.get(self.active) else {
+            let detail = tr!("explorer.select_file_detail");
+            return centered_message(&theme, tr!("explorer.select_file"), Some(detail.as_str()));
+        };
+        let Some(content) = tab.content.as_ref() else {
             let detail = tr!("explorer.select_file_detail");
             return centered_message(&theme, tr!("explorer.select_file"), Some(detail.as_str()));
         };
         if let Some(error) = &content.error {
             return centered_message(&theme, tr!("explorer.read_error"), Some(error.as_str()));
         }
-        if matches!(content.mode, Mode::Code { .. } | Mode::Text) && content.lines.is_empty() {
-            return centered_message(&theme, tr!("explorer.empty_file"), None);
-        }
         match content.mode {
+            // Editable: the buffer is the body (empty files included, so the
+            // user can type into a new file).
+            Mode::Code { .. } | Mode::Text if content.editable() => editor_body(theme, tab),
+            // Markdown gets an editor too, with a Preview toggle.
+            Mode::Markdown if content.editable() && !tab.markdown_preview => editor_body(theme, tab),
+            // Truncated / non-UTF-8 text: read-only, since saving the buffer
+            // would not reproduce the file's real bytes.
             Mode::Code { .. } | Mode::Text => self.text_body(theme, cx),
             Mode::Markdown => {
-                let text = content.lines.join("\n");
+                // Render the live buffer so edits show up in the preview.
+                let text = if content.editable() {
+                    tab.editor.read(cx).text()
+                } else {
+                    content.lines.join("\n")
+                };
                 div()
                     .id("viewer-markdown")
                     .flex_1()
@@ -584,11 +963,13 @@ impl FileViewer {
                             .max_w(px(760.))
                             .mx_auto()
                             .p(theme.space(20.))
-                            .child(crate::transcript_view::render_markdown_document(&text, theme)),
+                            .child(crate::transcript_view::render_markdown_document(
+                                &text, theme,
+                            )),
                     )
                     .into_any_element()
             }
-            Mode::Image => match self.image.clone() {
+            Mode::Image => match tab.image.clone() {
                 Some(image) => div()
                     .flex_1()
                     .min_h_0()
@@ -610,10 +991,7 @@ impl FileViewer {
                 centered_message(&theme, tr!("explorer.binary"), Some(detail.as_str()))
             }
             Mode::TooLarge => {
-                let detail = tr!(
-                    "explorer.too_large",
-                    size = format_bytes(content.bytes)
-                );
+                let detail = tr!("explorer.too_large", size = format_bytes(content.bytes));
                 centered_message(
                     &theme,
                     tr!("explorer.too_large_title"),
@@ -645,7 +1023,11 @@ impl FileViewer {
     }
 
     fn render_line(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
-        let Some(content) = self.content.as_ref() else {
+        let Some(content) = self
+            .tabs
+            .get(self.active)
+            .and_then(|tab| tab.content.as_ref())
+        else {
             return div().into_any_element();
         };
         let Some(line) = content.lines.get(index) else {
@@ -687,6 +1069,42 @@ impl FileViewer {
                     .child(line_text(line, tokens, theme)),
             )
             .into_any_element()
+    }
+
+    /// `cmd-s`: write the active tab (and any other dirty tab) now.
+    fn on_save_active(&mut self, _: &crate::SaveFile, _: &mut Window, cx: &mut Context<Self>) {
+        self.flush_all(cx);
+        cx.notify();
+    }
+
+    /// `cmd-w`: close the active file tab, flushing it first. Closing the last
+    /// tab closes the whole surface.
+    fn on_close_tab_action(
+        &mut self,
+        _: &crate::CloseFileTab,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.tabs.is_empty() {
+            return;
+        }
+        let on_close = self.on_close.clone();
+        self.close_tab(self.active, cx);
+        if !self.open {
+            on_close(cx);
+        }
+        cx.notify();
+    }
+
+    /// Toggle a Markdown tab between the rendered preview and its source.
+    fn toggle_markdown_preview(&mut self, cx: &mut Context<Self>) {
+        if let Some(tab) = self.tabs.get_mut(self.active) {
+            tab.markdown_preview = !tab.markdown_preview;
+        }
+        // Re-resolve focus either way: the editor appears/disappears, so the
+        // target is the editor in edit mode and the viewer root in preview.
+        self.focus_pending = true;
+        cx.notify();
     }
 }
 
@@ -762,8 +1180,6 @@ fn centered_message(theme: &Theme, title: String, detail: Option<&str>) -> AnyEl
     column.into_any_element()
 }
 
-/// `ListState::reset` is not `&mut` on the field through a closure borrow in
-/// the load path; this keeps that call explicit and readable.
 fn mono_font() -> Font {
     Font {
         family: theme::code_font_family(),
@@ -830,6 +1246,47 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
+/// The tab index that becomes active after removing `index` from a list that
+/// had `active` selected and now has `len_after` tabs (`len_after >= 1`).
+fn active_after_close(active: usize, index: usize, len_after: usize) -> usize {
+    if index < active {
+        active - 1
+    } else {
+        active.min(len_after - 1)
+    }
+}
+
+/// Whether a tab currently paints its editor, as opposed to a read-only body
+/// or the Markdown preview. Used to pick a focus target that exists in the
+/// tree: focusing a hidden editor would drop focus and the `Files` context.
+fn editor_shown(tab: &Tab) -> bool {
+    let Some(content) = tab.content.as_ref() else {
+        return false;
+    };
+    match content.mode {
+        Mode::Code { .. } | Mode::Text => content.editable(),
+        Mode::Markdown => content.editable() && !tab.markdown_preview,
+        _ => false,
+    }
+}
+
+/// The Explorer's editing surface. A column so the editor's `flex_1` grows
+/// vertically; a row would leave its height auto and collapse the buffer to 0.
+fn editor_body(theme: Theme, tab: &Tab) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_h_0()
+        .min_w_0()
+        .overflow_hidden()
+        .font_family(theme::code_font_family())
+        .text_size(theme.code_px(12.5))
+        .line_height(theme.code_px(18.))
+        .child(tab.editor.clone())
+        .into_any_element()
+}
+
 impl Render for FileViewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.open {
@@ -837,13 +1294,27 @@ impl Render for FileViewer {
         }
         if self.focus_pending {
             self.focus_pending = false;
-            window.focus(&self.focus);
+            // Only focus the editor when it is actually painted. Focusing an
+            // editor that a read-only/preview tab does not render drops focus —
+            // and with it the `Files` key context, so `cmd-w` would stop
+            // working. Otherwise the viewer root holds focus.
+            let handle = self
+                .tabs
+                .get(self.active)
+                .filter(|tab| editor_shown(tab))
+                .map(|tab| tab.editor.read(cx).focus_handle(cx));
+            match handle {
+                Some(handle) => window.focus(&handle),
+                None => window.focus(&self.focus),
+            }
         }
         let theme = *theme::get(cx);
         div()
             .id("file-viewer")
             .key_context("Files")
             .track_focus(&self.focus)
+            .on_action(cx.listener(Self::on_close_tab_action))
+            .on_action(cx.listener(Self::on_save_active))
             .size_full()
             .min_w_0()
             .min_h_0()
@@ -864,7 +1335,8 @@ mod tests {
     fn temp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join("orbit-explorer-viewer-tests");
         std::fs::create_dir_all(&dir).unwrap();
-        dir.join(name)
+        // Per-test file name keeps parallel tests from sharing a path.
+        dir.join(format!("{}-{name}", std::process::id()))
     }
 
     #[test]
@@ -876,6 +1348,9 @@ mod tests {
         assert_eq!(content.lines.len(), 3);
         assert!(content.tokens.is_some());
         assert!(content.error.is_none());
+        assert!(content.editable());
+        // The exact text is preserved for the editor seed.
+        assert!(content.text.ends_with("}\n"));
     }
 
     #[test]
@@ -886,6 +1361,9 @@ mod tests {
         assert_eq!(content.mode, Mode::Markdown);
         assert!(content.tokens.is_none());
         assert_eq!(content.lines[0], "# Title");
+        // Markdown opens in the editor as source; the toolbar Preview toggle
+        // still renders it.
+        assert!(content.editable());
     }
 
     #[test]
@@ -916,6 +1394,8 @@ mod tests {
         let content = load(&path, "latin1.txt");
         assert_eq!(content.mode, Mode::Text);
         assert!(content.lines[0].starts_with("caf"));
+        // Lossy decode stays read-only so a save cannot rewrite the bytes.
+        assert!(!content.editable());
     }
 
     #[test]
@@ -932,5 +1412,66 @@ mod tests {
         assert!(is_image("dir/B.JPEG"));
         assert!(!is_image("a.rs"));
         assert!(is_markdown("README.MD"));
+    }
+
+    #[test]
+    fn active_tab_after_close_is_a_neighbour() {
+        // Closing the active tab falls to the next tab, or the previous at the
+        // end of the strip.
+        assert_eq!(active_after_close(0, 0, 1), 0);
+        assert_eq!(active_after_close(1, 1, 2), 1);
+        assert_eq!(active_after_close(2, 2, 2), 1);
+        // Closing a tab before the active one shifts it down.
+        assert_eq!(active_after_close(2, 0, 2), 1);
+        assert_eq!(active_after_close(1, 0, 2), 0);
+        // Closing a tab after the active one leaves it put.
+        assert_eq!(active_after_close(0, 1, 1), 0);
+    }
+
+    #[test]
+    fn truncated_and_lossy_content_is_not_editable() {
+        let mut content = FileContent {
+            path: PathBuf::from("x"),
+            display: "x".into(),
+            mode: Mode::Text,
+            text: "x".into(),
+            lines: vec!["x".into()],
+            tokens: None,
+            image_bytes: None,
+            bytes: 1,
+            truncated: true,
+            lossy: false,
+            error: None,
+        };
+        assert!(!content.editable(), "a truncated buffer must not save");
+        content.truncated = false;
+        content.lossy = true;
+        assert!(!content.editable(), "a lossy buffer must not save");
+        content.lossy = false;
+        assert!(content.editable());
+    }
+
+    #[test]
+    fn save_file_round_trips_and_is_atomic() {
+        let path = temp("save-roundtrip.txt");
+        std::fs::write(&path, "before\n").unwrap();
+        save_file(&path, "after\nsecond\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "after\nsecond\n");
+        // The temp sibling is renamed away, not left behind.
+        assert!(!path
+            .with_file_name(format!(
+                ".{}.orbit-save",
+                path.file_name().unwrap().to_str().unwrap()
+            ))
+            .exists());
+    }
+
+    #[test]
+    fn save_file_surfaces_a_missing_directory_error() {
+        let path = std::env::temp_dir()
+            .join("orbit-explorer-viewer-tests/does-not-exist")
+            .join("file.txt");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        assert!(save_file(&path, "x").is_err());
     }
 }

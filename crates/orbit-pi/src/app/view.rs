@@ -142,7 +142,8 @@ impl Render for OrbitApp {
         let viewport = window.viewport_size();
         // The right side pane is hidden while settings/onboarding own the
         // main area (same rule as the sessions sidebar).
-        let pane_visible = self.sidepane.read(cx).is_open()
+        let pane_open = self.sidepane.read(cx).is_open();
+        let pane_visible = pane_open
             && !self.settings_open
             && !self.usage_open
             && self.dependencies_ready();
@@ -192,8 +193,12 @@ impl Render for OrbitApp {
         });
         // ── project panel (right dock) ── hidden while Settings owns the
         // window, like the sessions sidebar. Sync the workspace each render;
-        // a change rebuilds the tree off-thread.
-        let explorer_visible = self.project_panel.read(cx).is_open() && !self.settings_open;
+        // a change rebuilds the tree off-thread. The Explorer and the Review
+        // pane are mutually exclusive right docks: while Review is open the
+        // tree stays closed.
+        let explorer_visible = self.project_panel.read(cx).is_open()
+            && !self.settings_open
+            && !pane_open;
         let explorer_width = if explorer_visible {
             self.project_panel.read(cx).width()
         } else {
@@ -212,6 +217,12 @@ impl Render for OrbitApp {
             panel.set_workspace(explorer_workspace, cx);
             panel.set_active(explorer_active, cx);
             panel.set_reserve_controls(explorer_reserve_controls, cx);
+            // Review is open, so the Explorer must not be: close it here to
+            // catch every path that opens the pane (diff chip, transcript
+            // cards, Git page file rows), not just the top-bar toggle.
+            if pane_open {
+                panel.close(cx);
+            }
         });
         let main_width = viewport.width
             - if self.sidebar_visible && !self.settings_open {

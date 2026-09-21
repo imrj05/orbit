@@ -241,7 +241,12 @@ impl SidePane {
         }
     }
 
-    fn close(&mut self, cx: &mut Context<Self>) {
+    /// Close the pane if it is open. Used when the Explorer opens — the two
+    /// right docks are mutually exclusive.
+    pub fn close(&mut self, cx: &mut Context<Self>) {
+        if !self.open {
+            return;
+        }
         self.open = false;
         self.source_menu_open = false;
         cx.notify();

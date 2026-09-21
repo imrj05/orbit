@@ -19,14 +19,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and runs off-thread with a bounded entry cap surfaced honestly as
   "truncated". Right-clicking a row offers Open, Open in Default App, Reveal
   in File Manager, and Copy Path / Relative Path. Clicking a file opens a
-  full-page read-only **Files** viewer: a tab strip over syntax-highlighted
-  code, rendered Markdown, or an image, with a path/size/line-count toolbar and
-  a Read-only mark. Binary files, oversized files (2 MiB), and directories get
-  an honest notice instead of a lossy dump; the workspace watcher refreshes the
-  tree and the open file on change. `cmd-w` or the toolbar X returns to the
-  chat.
+  full-page **Files** editor: a tab strip over syntax-highlighted
+  code with line numbers, editable Markdown (with an Edit/Preview toggle), or
+  an image, with a path/size/line-count toolbar and a save-status chip. Code,
+  text, and Markdown files are editable and autosave to disk (debounced;
+  `cmd-s` saves now); unsaved tabs carry a dot, and external changes are
+  flagged rather than silently overwriting edits. Binary files, oversized
+  files (2 MiB), truncated files, non-UTF-8 files, and directories get an
+  honest notice instead of a lossy dump, and never enter the editor. The
+  workspace watcher refreshes the tree and the open file on change. `cmd-w`
+  closes the active tab (the last tab, or `cmd-shift-w`, closes the surface),
+  and the toolbar X returns to the chat.
+
+- **Editing** — the Explorer's editor (and the chat composer) supports
+  **undo/redo** (`cmd-z` / `cmd-shift-z`), where a run of typing within 400 ms
+  coalesces into a single undo step and a caret move starts a new one. History
+  is bounded by both step count and total bytes so a whole-file buffer cannot
+  balloon memory.
 
 ### Fixed
+
+- Closing a file tab keeps keyboard focus inside the Files surface: it moves to
+  the newly active editor, or to the surface itself for preview/read-only tabs,
+  instead of being dropped with the removed editor. Previously focus was lost
+  after the first close (when the next tab did not paint an editor), so `cmd-w`
+  stopped working. Closing a tab to the left of the active one also selected the
+  wrong neighbour.
 
 - Search and filter placeholders (provider, model, settings, plugins, skills,
   side pane, git panel, usage, in-transcript find, branch/workspace pickers)

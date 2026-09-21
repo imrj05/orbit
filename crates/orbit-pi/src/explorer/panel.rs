@@ -169,6 +169,16 @@ impl ProjectPanel {
         cx.notify();
     }
 
+    /// Close the dock if it is open. Used while the Review pane is open — the
+    /// two right docks are mutually exclusive.
+    pub fn close(&mut self, cx: &mut Context<Self>) {
+        if self.open {
+            self.open = false;
+            self.menu = None;
+            cx.notify();
+        }
+    }
+
     /// The app calls this every render; a changed workspace rebuilds the tree.
     pub fn set_workspace(&mut self, workspace: Option<PathBuf>, cx: &mut Context<Self>) {
         if self.workspace == workspace {

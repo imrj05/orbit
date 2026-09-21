@@ -1685,7 +1685,13 @@ impl OrbitApp {
     }
 
     pub(super) fn toggle_project_panel(&mut self, cx: &mut Context<Self>) {
+        let opening = !self.project_panel.read(cx).is_open();
         self.project_panel.update(cx, |panel, cx| panel.toggle(cx));
+        if opening {
+            // The Explorer and the Review pane are mutually exclusive right
+            // docks: opening the tree closes Review.
+            self.sidepane.update(cx, |pane, cx| pane.close(cx));
+        }
         cx.notify();
     }
 
