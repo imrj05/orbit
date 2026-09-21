@@ -2,7 +2,8 @@
 //!
 //! Colors are semantic roles (backgrounds, text, borders, transcript
 //! surfaces) rather than raw steps, so every paint site reads from one
-//! place. A [`ThemeId`] names the Orbit dark or light palette. The UI
+//! place. A [`ThemeId`] names a palette; [`AppearancePrefs`] chooses which
+//! light or dark palette to use, optionally following the system. The UI
 //! face is Zed's bundled IBM Plex Sans (`.ZedSans`); code surfaces use
 //! Zed's Lilex (`.ZedMono`).
 
@@ -13,6 +14,9 @@ use gpui::{hsla, point, px, rgb, App, BoxShadow, Global, Hsla, Pixels, SharedStr
 use serde_json::Value;
 
 use crate::highlight::TokenClass;
+
+mod appearance;
+pub use appearance::*;
 
 /// Dark or light appearance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -260,21 +264,6 @@ impl ThemeId {
             | Self::Vesper
             | Self::Vitesse => ThemeMode::Dark,
         }
-    }
-
-    fn load() -> Self {
-        std::fs::read_to_string(persist_path())
-            .ok()
-            .and_then(|raw| Self::parse(&raw))
-            .unwrap_or(Self::Orbit)
-    }
-
-    fn persist(self) {
-        let path = persist_path();
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::write(path, self.as_str());
     }
 }
 
@@ -2332,10 +2321,11 @@ fn persist_path() -> PathBuf {
     crate::platform::home_dir().join(".orbit-pi").join("theme")
 }
 
-/// Install the persisted (or default Orbit) theme as a GPUI global and
-/// load the persisted font families into the statics.
+/// Install the persisted appearance (System by default) and font preferences.
 pub fn init(cx: &mut App) {
-    cx.set_global(Theme::for_id(ThemeId::load()).with_ui(UiPrefs::load()));
+    let prefs = AppearancePrefs::load();
+    cx.set_global(prefs);
+    cx.set_global(Theme::for_id(prefs.resolve(cx.window_appearance())).with_ui(UiPrefs::load()));
     let prefs = FontPrefs::load();
     *UI_FONT_FAMILY.write().unwrap() = prefs.ui_font_family;
     *CODE_FONT_FAMILY.write().unwrap() = prefs.code_font_family;
@@ -2350,17 +2340,6 @@ pub fn get(cx: &App) -> &Theme {
 /// static when this is true.
 pub fn reduce_motion(cx: &App) -> bool {
     get(cx).ui.reduce_motion
-}
-
-/// Switch to a palette, persist the choice, and notify global observers.
-pub fn set_theme(cx: &mut App, id: ThemeId) {
-    if get(cx).theme_id == id {
-        return;
-    }
-    id.persist();
-    // The palette switches; UI customization carries over.
-    let ui = get(cx).ui;
-    cx.set_global(Theme::for_id(id).with_ui(ui));
 }
 
 /// Apply new UI / code font families to the statics and persist them.

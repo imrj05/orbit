@@ -4679,11 +4679,23 @@ impl OrbitApp {
         }
         theme_rows.push(self.setting_row(
             theme,
-            &tr!("settings.theme"),
-            Some(&tr!("settings.pick_a_zed_compatible_palette_for_the_workbench")),
+            &tr!("settings.appearance"),
+            Some(&tr!("settings.appearance_mode_description")),
             None,
-            Some(self.theme_control(theme, this.clone(), cx)),
+            Some(self.appearance_mode_control(theme, this.clone(), cx)),
         ));
+        for (mode, label) in [
+            (ThemeMode::Light, tr!("settings.light_theme")),
+            (ThemeMode::Dark, tr!("settings.dark_theme")),
+        ] {
+            theme_rows.push(self.setting_row(
+                theme,
+                &label,
+                None,
+                None,
+                Some(self.theme_control(mode, theme, this.clone(), cx)),
+            ));
+        }
         theme_rows.push(self.setting_row(
             theme,
             &tr!("settings.background_image"),
@@ -4857,15 +4869,105 @@ impl OrbitApp {
         }
         sections
     }
-    /// The Theme row's control: a live palette strip (canvas, chrome,
-    /// raised, tertiary ink, ink, accent) before the palette dropdown, so
-    /// the active colors are legible without opening the menu.
-    pub(super) fn theme_control(
+    /// One keyboard-focusable radio group; arrows choose the adjacent mode.
+    fn appearance_mode_control(
         &self,
         theme: Theme,
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
     ) -> AnyElement {
+        use theme::AppearanceMode;
+        let current = theme::appearance_prefs(cx).mode;
+        let keyboard_this = this.clone();
+        div()
+            .id("appearance-mode")
+            .focusable()
+            .border_1()
+            .border_color(gpui::transparent_black())
+            .rounded(px(7.))
+            .p(px(4.))
+            .focus(|style| style.border_color(theme.accent))
+            .flex()
+            .items_center()
+            .gap(theme.space(12.))
+            .on_key_down(move |event, _, cx| {
+                let index = AppearanceMode::ALL
+                    .iter()
+                    .position(|mode| *mode == current)
+                    .unwrap_or(0);
+                let next = match event.keystroke.key.as_str() {
+                    "left" | "up" => (index + 2) % 3,
+                    "right" | "down" => (index + 1) % 3,
+                    "home" => 0,
+                    "end" => 2,
+                    _ => return,
+                };
+                cx.stop_propagation();
+                keyboard_this.update(cx, |app, cx| {
+                    app.set_appearance_mode(AppearanceMode::ALL[next], cx);
+                });
+            })
+            .children(AppearanceMode::ALL.into_iter().map(|mode| {
+                let this = this.clone();
+                let selected = current == mode;
+                let label = match mode {
+                    AppearanceMode::Light => tr!("settings.appearance_light"),
+                    AppearanceMode::Dark => tr!("settings.appearance_dark"),
+                    AppearanceMode::System => tr!("settings.appearance_system"),
+                };
+                div()
+                    .id(mode.as_str())
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .py(px(4.))
+                    .cursor_pointer()
+                    .text_size(theme.ui_px(12.))
+                    .text_color(theme.text_2)
+                    .hover(|style| style.text_color(theme.text))
+                    .on_click(move |_, _, cx| {
+                        this.update(cx, |app, cx| app.set_appearance_mode(mode, cx));
+                    })
+                    .child(
+                        div()
+                            .size(px(14.))
+                            .rounded_full()
+                            .border_1()
+                            .border_color(if selected {
+                                theme.accent
+                            } else {
+                                theme.border_strong
+                            })
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .when(selected, |radio| {
+                                radio.child(div().size(px(6.)).rounded_full().bg(theme.accent))
+                            }),
+                    )
+                    .child(label)
+            }))
+            .into_any_element()
+    }
+
+    fn set_appearance_mode(&mut self, mode: theme::AppearanceMode, cx: &mut Context<Self>) {
+        let mut prefs = theme::appearance_prefs(cx);
+        prefs.mode = mode;
+        if let Err(error) = theme::set_appearance_prefs(cx, prefs) {
+            self.toast_error(tr!("settings.appearance_save_failed", error = error));
+        }
+        cx.notify();
+    }
+
+    /// Preview the configured palette, even when the other appearance is active.
+    pub(super) fn theme_control(
+        &self,
+        mode: ThemeMode,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let preview = Theme::for_id(theme::appearance_prefs(cx).theme(mode));
         let swatch = |color: Hsla| {
             div()
                 .size(px(16.))
@@ -4884,14 +4986,14 @@ impl OrbitApp {
                     .flex()
                     .items_center()
                     .gap(px(4.))
-                    .child(swatch(theme.bg_main))
-                    .child(swatch(theme.bg_sidebar))
-                    .child(swatch(theme.bg_raised))
-                    .child(swatch(theme.text_3))
-                    .child(swatch(theme.text))
-                    .child(swatch(theme.accent)),
+                    .child(swatch(preview.bg_main))
+                    .child(swatch(preview.bg_sidebar))
+                    .child(swatch(preview.bg_raised))
+                    .child(swatch(preview.text_3))
+                    .child(swatch(preview.text))
+                    .child(swatch(preview.accent)),
             )
-            .child(self.theme_select(theme, this, cx))
+            .child(self.theme_select(mode, theme, this, cx))
             .into_any_element()
     }
 
@@ -5201,19 +5303,24 @@ impl OrbitApp {
             .into_any_element()
     }
 
-    /// Theme dropdown on Appearance — lists every selectable palette.
+    /// Each appearance remembers its own choice and lists only matching palettes.
     pub(super) fn theme_select(
         &self,
+        mode: ThemeMode,
         theme: Theme,
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
     ) -> AnyElement {
-        let all = ThemeId::ALL;
-        let selected = all.iter().position(|id| *id == theme.theme_id).unwrap_or(0);
+        let all: Vec<_> = theme::themes_for(mode).collect();
+        let configured = theme::appearance_prefs(cx).theme(mode);
+        let selected = all.iter().position(|id| *id == configured).unwrap_or(0);
         self.select_control(
-            "theme-select",
-            SettingsSelect::Theme,
-            theme.theme_id.label().to_string(),
+            match mode {
+                ThemeMode::Light => "light-theme-select",
+                ThemeMode::Dark => "dark-theme-select",
+            },
+            SettingsSelect::Theme(mode),
+            configured.label().to_string(),
             all.iter().map(|id| id.label().to_string()).collect(),
             selected,
             theme,
@@ -5270,7 +5377,7 @@ impl OrbitApp {
                 "%",
             ),
             SettingsSelect::Language
-            | SettingsSelect::Theme
+            | SettingsSelect::Theme(_)
             | SettingsSelect::UiFontFamily
             | SettingsSelect::CodeFontFamily
             | SettingsSelect::BackdropBlur
@@ -5689,9 +5796,15 @@ impl OrbitApp {
         cx: &mut Context<Self>,
     ) {
         match kind {
-            SettingsSelect::Theme => {
-                let id = ThemeId::ALL.get(ix).copied().unwrap_or(ThemeId::Orbit);
-                theme::set_theme(cx, id);
+            SettingsSelect::Theme(mode) => {
+                let Some(id) = theme::themes_for(mode).nth(ix) else {
+                    return;
+                };
+                let mut prefs = theme::appearance_prefs(cx);
+                prefs.set_theme(mode, id);
+                if let Err(error) = theme::set_appearance_prefs(cx, prefs) {
+                    self.toast_error(tr!("settings.appearance_save_failed", error = error));
+                }
                 return;
             }
             SettingsSelect::UiFontFamily | SettingsSelect::CodeFontFamily => {
@@ -5781,7 +5894,7 @@ impl OrbitApp {
             SettingsSelect::SpacingDensity => {
                 ui.spacing_density = SPACING_DENSITIES.get(ix).copied().unwrap_or(100);
             }
-            SettingsSelect::Theme
+            SettingsSelect::Theme(_)
             | SettingsSelect::UiFontFamily
             | SettingsSelect::CodeFontFamily
             | SettingsSelect::BackdropBlur

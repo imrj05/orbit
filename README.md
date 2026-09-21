@@ -64,7 +64,7 @@ Usage — requests, tokens, cost, and cache, read from your own sessions:
 - Providers — pi's live catalog plus custom endpoints, with API-key or OAuth sign-in and usage meters
 - Plugins — install pi packages from npm, git, or a local path, global or per project, and update or remove them in place
 - Models and thinking effort read from pi's own runtime
-- Appearance — theme palette, background image, fonts, sizes, spacing density, and **interface language** (English, 简体中文, 日本語, 한국어, Español, Français, Deutsch, Português do Brasil, Русский, Italiano, or the system language)
+- Appearance — **Light / Dark / System**, independent light and dark theme palettes, background image, fonts, sizes, spacing density, and **interface language** (English, 简体中文, 日本語, 한국어, Español, Français, Deutsch, Português do Brasil, Русский, Italiano, or the system language). System follows OS appearance changes live; new installations use System, while existing theme choices are preserved.
 
 **Native**
 

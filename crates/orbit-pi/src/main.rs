@@ -484,6 +484,7 @@ fn main() {
                     ..Default::default()
                 },
                 |window, cx| {
+                    theme::watch_system_appearance(window, cx);
                     let app: Entity<OrbitApp> = cx.new(OrbitApp::new);
 
                     // Focus the composer so typing works immediately; track

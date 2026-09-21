@@ -72,7 +72,7 @@ use crate::sessions::{self, SessionInfo};
 use crate::sidepane::{SidePane, SidePaneResize};
 use crate::skills::Skill;
 use crate::terminal::{TerminalPanel, TerminalResize};
-use crate::theme::{self, Theme, ThemeId, ThemeMode};
+use crate::theme::{self, Theme, ThemeMode};
 use crate::toast;
 use crate::transcript::{self, Transcript};
 use crate::usage::page::UsagePage;
@@ -1692,7 +1692,7 @@ enum RuntimeState {
 /// Which dropdown is open on the settings surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SettingsSelect {
-    Theme,
+    Theme(ThemeMode),
     Language,
     UiFontSize,
     TerminalFont,
