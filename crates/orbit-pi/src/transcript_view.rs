@@ -4316,13 +4316,10 @@ fn activity_preview(tool: &ToolCall) -> String {
     // A command tool's pi summary is the raw JSON arguments; show the shell
     // command itself in the header instead of `{"command":"…"}`.
     let summary = tool_command(tool).unwrap_or_else(|| tool.summary.clone());
-    if summary.len() > 72 {
-        let mut out: String = summary.chars().take(72).collect();
-        out.push('…');
-        out
-    } else {
-        summary
-    }
+    // Headers are single-line. A literal newline in a heredoc would make
+    // the fixed-height preview paint several clipped lines; full arguments
+    // and copy still use the original command.
+    snippet(&summary, 72)
 }
 
 /// The shell command a command-running tool was invoked with, when the tool
@@ -6507,6 +6504,27 @@ mod tests {
             ..bash.clone()
         };
         assert_eq!(tool_command(&edit), None);
+    }
+
+    #[test]
+    fn multiline_command_preview_is_single_line_without_changing_the_command() {
+        let command = "python3 - <<'PY'\n  print('hello')\nPY";
+        let tool = ToolCall {
+            name: "bash".into(),
+            summary: command.into(),
+            path: None,
+            added: 0,
+            removed: 0,
+            id: None,
+            args: Some(serde_json::json!({ "command": command })),
+            output: None,
+            failed: false,
+        };
+        assert_eq!(
+            activity_preview(&tool),
+            "python3 - <<'PY' print('hello') PY"
+        );
+        assert_eq!(tool_command(&tool).as_deref(), Some(command));
     }
 
     #[test]
