@@ -27,6 +27,7 @@ use crate::gh;
 use crate::git::{self, CommitEntry, StatusRow};
 use crate::git_ops::{self, InProgress};
 use crate::theme::{self, Theme, ThemeMode};
+use crate::usage::tooltip::Tooltip;
 
 mod failure;
 mod widgets;
@@ -2044,6 +2045,10 @@ impl GitPanel {
                     .rounded_sm()
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.bg_hover))
+                    .tooltip({
+                        let label = tr!("common.refresh");
+                        move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
+                    })
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.refresh_from_button(cx);
                     }))
@@ -2087,7 +2092,11 @@ impl GitPanel {
         // Host tabs only appear when `gh` exists, so a repo without it keeps
         // the page exactly as it was. Sign-in state is handled inside the tab.
         if self.gh_installed {
-            tabs.push((GitTab::Issues, "icons/github.svg", "git_panel.tab_issues"));
+            tabs.push((
+                GitTab::Issues,
+                "icons/circle-dot.svg",
+                "git_panel.tab_issues",
+            ));
             tabs.push((
                 GitTab::Pulls,
                 "icons/git-pull-request.svg",
@@ -2243,6 +2252,10 @@ impl GitPanel {
                         .cursor_pointer()
                         .text_color(theme.text_2)
                         .hover(|s| s.bg(theme.overlay).text_color(theme.text))
+                        .tooltip({
+                            let label = tr!("git_panel.tip_copy_error");
+                            move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
+                        })
                         .on_mouse_up(
                             gpui::MouseButton::Left,
                             cx.listener(move |_, _, _, cx| {
@@ -2266,6 +2279,10 @@ impl GitPanel {
                         .text_size(theme.ui_px(13.))
                         .text_color(theme.text_2)
                         .hover(|s| s.bg(theme.overlay).text_color(theme.text))
+                        .tooltip({
+                            let label = tr!("git_panel.tip_dismiss");
+                            move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
+                        })
                         .on_mouse_up(
                             gpui::MouseButton::Left,
                             cx.listener(|this, _, _, cx| {
@@ -2813,7 +2830,7 @@ impl GitPanel {
                     .text_color(theme.text_2)
                     .hover(|s| s.bg(theme.bg_hover).text_color(theme.text))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.stash_push(cx)))
-                    .child(icon("icons/arrow-down.svg", 11., theme.text_3))
+                    .child(icon("icons/archive.svg", 11., theme.text_3))
                     .child(tr!("git_panel.stash_changes")),
             );
         }
@@ -2952,6 +2969,7 @@ impl GitPanel {
             actions = actions.child(row_button(
                 format!("git-unstage-{path}"),
                 "icons/minus.svg",
+                "git_panel.tip_unstage",
                 theme,
                 cx.listener(move |this, _: &ClickEvent, _, cx| this.unstage(row_path.clone(), cx)),
             ));
@@ -2959,6 +2977,7 @@ impl GitPanel {
             actions = actions.child(row_button(
                 format!("git-stage-{path}"),
                 "icons/plus.svg",
+                "git_panel.tip_stage",
                 theme,
                 cx.listener(move |this, _: &ClickEvent, _, cx| this.stage(row_path.clone(), cx)),
             ));
@@ -2969,7 +2988,7 @@ impl GitPanel {
                             .id(gpui::ElementId::Name(
                                 format!("git-discard-yes-{path}").into(),
                             ))
-                            .h(px(22.))
+                            .h(px(24.))
                             .px(px(6.))
                             .rounded(px(6.))
                             .bg(theme.crit)
@@ -2993,7 +3012,7 @@ impl GitPanel {
                             .id(gpui::ElementId::Name(
                                 format!("git-discard-no-{path}").into(),
                             ))
-                            .h(px(22.))
+                            .h(px(24.))
                             .px(px(6.))
                             .rounded(px(6.))
                             .text_size(theme.ui_px(11.))
@@ -3013,6 +3032,7 @@ impl GitPanel {
                 actions = actions.child(row_button(
                     format!("git-discard-{path}"),
                     "icons/trash.svg",
+                    "git_panel.tip_discard",
                     theme,
                     cx.listener({
                         let p = path.clone();
@@ -3208,6 +3228,7 @@ impl GitPanel {
             .child(filter_toggle_chip(
                 "git-filter-all",
                 &tr!("git_panel.all_branches"),
+                Some("icons/branch.svg"),
                 filter.all_branches,
                 theme,
                 cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_all_branches(cx)),
@@ -3216,6 +3237,7 @@ impl GitPanel {
             bar = bar.child(filter_chip(
                 "git-filter-author",
                 &tr!("git_panel.author_chip", name = author),
+                "icons/x.svg",
                 theme,
                 cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.history_filter.author = None;
@@ -3233,6 +3255,7 @@ impl GitPanel {
             bar = bar.child(filter_chip(
                 "git-filter-path",
                 &label,
+                "icons/x.svg",
                 theme,
                 cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.history_filter.path = None;
@@ -3248,6 +3271,7 @@ impl GitPanel {
                 filter_chip(
                     "git-filter-clear",
                     &tr!("git_panel.clear_filter"),
+                    "icons/x.svg",
                     theme,
                     cx.listener(|this, _: &ClickEvent, _, cx| this.clear_history_filter(cx)),
                 )
@@ -3307,6 +3331,7 @@ impl GitPanel {
             meta = meta.child(row_button(
                 "git-detail-open",
                 "icons/arrow-up-right.svg",
+                "git_panel.open_on_github",
                 theme,
                 move |_, _, cx| cx.open_url(&url),
             ));
@@ -3314,6 +3339,7 @@ impl GitPanel {
         meta = meta.child(row_button(
             "git-detail-copy-hash",
             "icons/copy.svg",
+            "git_panel.tip_copy_hash",
             theme,
             move |_, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(hash.clone())),
         ));
@@ -3368,6 +3394,7 @@ impl GitPanel {
                     .child(row_button(
                         format!("git-detail-more-{path}"),
                         "icons/more.svg",
+                        "git_panel.tip_more",
                         theme,
                         cx.listener({
                             let path = path.clone();
@@ -3584,6 +3611,7 @@ impl GitPanel {
                     .child(filter_toggle_chip(
                         "git-graph-all-refs",
                         &tr!("git_panel.all_refs"),
+                        Some("icons/branch.svg"),
                         self.graph_all_refs,
                         theme,
                         cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -3652,6 +3680,7 @@ impl GitPanel {
                     filter_toggle_chip(
                         state_id(state),
                         &tr!(key),
+                        None,
                         filter.state == state,
                         theme,
                         cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -3686,6 +3715,7 @@ impl GitPanel {
             .child(filter_chip(
                 "git-issue-label-filter",
                 &label_label,
+                "icons/chevron-down.svg",
                 theme,
                 cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.label_menu_open = !this.label_menu_open;
@@ -3696,6 +3726,7 @@ impl GitPanel {
                 filter_chip(
                     "git-issue-clear",
                     &tr!("git_panel.clear_filter"),
+                    "icons/x.svg",
                     theme,
                     cx.listener(|this, _: &ClickEvent, _, cx| this.clear_issue_filter(cx)),
                 )
@@ -3729,14 +3760,14 @@ impl GitPanel {
         } else if self.issues.is_empty() && self.issues_loading {
             body = body.child(empty_note(
                 theme,
-                "icons/github.svg",
+                "icons/circle-dot.svg",
                 &tr!("git_panel.reading_issues"),
                 None,
             ));
         } else if self.issues.is_empty() {
             body = body.child(empty_note(
                 theme,
-                "icons/github.svg",
+                "icons/circle-dot.svg",
                 &tr!("git_panel.no_issues"),
                 Some(&tr!("git_panel.no_issues_detail")),
             ));
@@ -3784,6 +3815,11 @@ impl GitPanel {
         } else {
             tr!("git_panel.issue_closed")
         };
+        let state_glyph = if issue.is_open() {
+            "icons/circle-dot.svg"
+        } else {
+            "icons/circle-check.svg"
+        };
         let mut content = div()
             .flex()
             .flex_col()
@@ -3816,7 +3852,12 @@ impl GitPanel {
                                 .flex()
                                 .items_center()
                                 .gap(px(6.))
-                                .child(state_chip(&state_label, state_color, theme))
+                                .child(state_chip(
+                                    &state_label,
+                                    state_color,
+                                    Some(state_glyph),
+                                    theme,
+                                ))
                                 .child(
                                     div()
                                         .text_size(theme.ui_px(11.5))
@@ -3833,7 +3874,7 @@ impl GitPanel {
                 .child(action_button(
                     "git-issue-back",
                     &tr!("git_panel.back"),
-                    None,
+                    Some(icon("icons/arrow-left.svg", 12., theme.text_2).into_any_element()),
                     false,
                     false,
                     theme,
@@ -3855,7 +3896,7 @@ impl GitPanel {
                 .child(action_button(
                     "git-issue-labels",
                     &tr!("git_panel.edit_labels"),
-                    None,
+                    Some(icon("icons/tag-01.svg", 12., theme.text_2).into_any_element()),
                     false,
                     self.issue_busy,
                     theme,
@@ -3891,7 +3932,18 @@ impl GitPanel {
                     } else {
                         tr!("git_panel.reopen_issue")
                     },
-                    None,
+                    Some(
+                        icon(
+                            if issue.is_open() {
+                                "icons/x.svg"
+                            } else {
+                                "icons/refresh.svg"
+                            },
+                            12.,
+                            theme.text_2,
+                        )
+                        .into_any_element(),
+                    ),
                     false,
                     self.issue_busy,
                     theme,
@@ -3924,7 +3976,7 @@ impl GitPanel {
                 .child(div().flex().justify_end().child(action_button(
                     "git-issue-comment",
                     &tr!("git_panel.comment"),
-                    None,
+                    Some(icon("icons/chat.svg", 12., theme.send_fg).into_any_element()),
                     true,
                     self.issue_busy,
                     theme,
@@ -4120,6 +4172,7 @@ impl GitPanel {
                     filter_toggle_chip(
                         state_id(state),
                         &tr!(key),
+                        None,
                         filter.state == state,
                         theme,
                         cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -4155,6 +4208,7 @@ impl GitPanel {
                 filter_chip(
                     "git-pr-clear",
                     &tr!("git_panel.clear_filter"),
+                    "icons/x.svg",
                     theme,
                     cx.listener(|this, _: &ClickEvent, _, cx| this.clear_pr_filter(cx)),
                 )
@@ -4248,6 +4302,13 @@ impl GitPanel {
         } else {
             tr!("git_panel.issue_closed")
         };
+        let state_glyph = if pull.is_merged() {
+            "icons/git-merge.svg"
+        } else if pull.is_open() {
+            "icons/git-pull-request.svg"
+        } else {
+            "icons/circle-x.svg"
+        };
         let mut content = div()
             .flex()
             .flex_col()
@@ -4280,9 +4341,19 @@ impl GitPanel {
                                 .flex()
                                 .items_center()
                                 .gap(px(6.))
-                                .child(state_chip(&state_label, state_color, theme))
+                                .child(state_chip(
+                                    &state_label,
+                                    state_color,
+                                    Some(state_glyph),
+                                    theme,
+                                ))
                                 .children(pull.is_draft.then(|| {
-                                    state_chip(&tr!("git_panel.pr_draft"), theme.text_3, theme)
+                                    state_chip(
+                                        &tr!("git_panel.pr_draft"),
+                                        theme.text_3,
+                                        Some("icons/pencil.svg"),
+                                        theme,
+                                    )
                                 }))
                                 .child(
                                     div()
@@ -4301,7 +4372,7 @@ impl GitPanel {
                 .child(action_button(
                     "git-pr-back",
                     &tr!("git_panel.back"),
-                    None,
+                    Some(icon("icons/arrow-left.svg", 12., theme.text_2).into_any_element()),
                     false,
                     false,
                     theme,
@@ -4386,6 +4457,7 @@ impl GitPanel {
                     row = row.child(row_button(
                         "git-check-open",
                         "icons/arrow-up-right.svg",
+                        "git_panel.open_on_github",
                         theme,
                         move |_, _, cx| cx.open_url(&link),
                     ));
@@ -4491,6 +4563,7 @@ impl GitPanel {
                         .child(row_button(
                             format!("git-pr-file-{path}"),
                             "icons/git-compare.svg",
+                            "git_panel.open_diff",
                             theme,
                             cx.listener({
                                 let path = path.clone();
@@ -4536,7 +4609,7 @@ impl GitPanel {
                 .child(action_button(
                     "git-pr-comment",
                     &tr!("git_panel.comment"),
-                    None,
+                    Some(icon("icons/chat.svg", 12., theme.text_2).into_any_element()),
                     false,
                     self.pr_busy,
                     theme,
@@ -4545,7 +4618,7 @@ impl GitPanel {
                 .child(action_button(
                     "git-pr-approve",
                     &tr!("git_panel.approve"),
-                    None,
+                    Some(icon("icons/check.svg", 12., theme.add_green).into_any_element()),
                     false,
                     self.pr_busy,
                     theme,
@@ -4556,7 +4629,7 @@ impl GitPanel {
                 .child(action_button(
                     "git-pr-changes",
                     &tr!("git_panel.request_changes"),
-                    None,
+                    Some(icon("icons/pencil.svg", 12., theme.warn).into_any_element()),
                     false,
                     self.pr_busy,
                     theme,
@@ -4568,7 +4641,7 @@ impl GitPanel {
 
         // Merge controls.
         if pull.is_open() {
-            let mut merge_row = div()
+            let merge_row = div()
                 .flex()
                 .items_center()
                 .flex_wrap()
@@ -4589,6 +4662,7 @@ impl GitPanel {
                                     gh::MergeMethod::Rebase => "git-merge-method-rebase",
                                 },
                                 &tr!(key),
+                                None,
                                 self.pr_merge_method == method,
                                 theme,
                                 cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -4602,6 +4676,7 @@ impl GitPanel {
                 .child(filter_toggle_chip(
                     "git-pr-delete-branch",
                     &tr!("git_panel.delete_branch_after"),
+                    None,
                     self.pr_delete_branch,
                     theme,
                     cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -4618,22 +4693,13 @@ impl GitPanel {
                     theme,
                     cx.listener(|this, _: &ClickEvent, _, cx| this.request_merge_pull(cx)),
                 ));
-            merge_row = merge_row.child(action_button(
-                "git-pr-close",
-                &tr!("git_panel.close_pull"),
-                None,
-                false,
-                self.pr_busy,
-                theme,
-                cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_pull_state(cx)),
-            ));
             content = content.child(merge_row);
         } else {
             content = content.child(div().flex().items_center().flex_wrap().gap(px(8.)).child(
                 action_button(
                     "git-pr-reopen",
                     &tr!("git_panel.reopen_pull"),
-                    None,
+                    Some(icon("icons/refresh.svg", 12., theme.text_2).into_any_element()),
                     false,
                     self.pr_busy,
                     theme,
@@ -4650,12 +4716,25 @@ impl GitPanel {
                 .child(action_button(
                     "git-pr-checkout",
                     &tr!("git_panel.checkout_pull"),
-                    None,
+                    Some(icon("icons/branch.svg", 12., theme.text_2).into_any_element()),
                     false,
                     self.pr_busy || !pull.is_open(),
                     theme,
                     cx.listener(|this, _: &ClickEvent, _, cx| this.checkout_pull(cx)),
                 ))
+                // "Close" sits with the utility actions, away from the primary
+                // Merge button, so it cannot be hit by a merge-shaped reflex.
+                .children(pull.is_open().then(|| {
+                    action_button(
+                        "git-pr-close",
+                        &tr!("git_panel.close_pull"),
+                        Some(icon("icons/x.svg", 12., theme.text_2).into_any_element()),
+                        false,
+                        self.pr_busy,
+                        theme,
+                        cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_pull_state(cx)),
+                    )
+                }))
                 .children((!pull.url.is_empty()).then(|| {
                     let url = pull.url.clone();
                     action_button(
@@ -4715,6 +4794,7 @@ impl GitPanel {
                     .child(filter_toggle_chip(
                         "git-pr-new-base",
                         &base_label,
+                        Some("icons/branch.svg"),
                         false,
                         theme,
                         cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -4725,6 +4805,7 @@ impl GitPanel {
                     .child(filter_toggle_chip(
                         "git-pr-new-draft",
                         &tr!("git_panel.pr_draft"),
+                        None,
                         self.pr_new_draft,
                         theme,
                         cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -4904,6 +4985,10 @@ impl GitPanel {
                         .justify_center()
                         .cursor_pointer()
                         .hover(|s| s.bg(theme.overlay))
+                        .tooltip({
+                            let label = tr!("git_panel.tip_delete_branch");
+                            move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
+                        })
                         .on_click(cx.listener({
                             let branch = branch.clone();
                             move |this, _: &ClickEvent, _, cx| {
@@ -5587,29 +5672,35 @@ fn stash_row(stash: &git_ops::StashEntry, theme: Theme, cx: &Context<GitPanel>) 
         )
         .child(row_button(
             format!("git-stash-pop-{index}"),
-            "icons/upload.svg",
+            "icons/arrow-down.svg",
+            "git_panel.tip_stash_pop",
             theme,
             cx.listener(move |this, _: &ClickEvent, _, cx| this.stash_pop(index, cx)),
         ))
         .child(row_button(
             format!("git-stash-apply-{index}"),
             "icons/check.svg",
+            "git_panel.tip_stash_apply",
             theme,
             cx.listener(move |this, _: &ClickEvent, _, cx| this.stash_apply(index, cx)),
         ))
         .child(row_button(
             format!("git-stash-drop-{index}"),
             "icons/trash.svg",
+            "git_panel.tip_stash_drop",
             theme,
             cx.listener(move |this, _: &ClickEvent, _, cx| this.stash_drop(index, cx)),
         ))
         .into_any_element()
 }
 
-/// A removable filter chip (label plus an × affordance).
+/// A removable filter chip (label plus a trailing glyph). `trailing` is an `×`
+/// for chips that clear themselves on click, or a chevron for chips that open
+/// a picker, so the affordance always matches the behaviour.
 fn filter_chip(
     id: &'static str,
     label: &str,
+    trailing: &'static str,
     theme: Theme,
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
@@ -5630,14 +5721,17 @@ fn filter_chip(
         .hover(|s| s.bg(theme.bg_hover).text_color(theme.text))
         .on_click(listener)
         .child(label.to_string())
-        .child(icon("icons/x.svg", 9., theme.text_3))
+        .child(icon(trailing, 9., theme.text_3))
         .into_any_element()
 }
 
-/// An on/off filter chip ("All branches").
+/// An on/off filter chip ("All branches"). `glyph` is shown only where it adds
+/// meaning (a branch-scoped toggle); state and mode chips render label-only so
+/// the same icon never stands for two different things.
 fn filter_toggle_chip(
     id: &'static str,
     label: &str,
+    glyph: Option<&'static str>,
     active: bool,
     theme: Theme,
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
@@ -5662,11 +5756,9 @@ fn filter_toggle_chip(
         .cursor_pointer()
         .text_size(theme.ui_px(11.))
         .on_click(listener)
-        .child(icon(
-            "icons/git-fork.svg",
-            10.,
-            if active { theme.send_fg } else { theme.text_3 },
-        ))
+        .children(
+            glyph.map(|path| icon(path, 10., if active { theme.send_fg } else { theme.text_3 })),
+        )
         .child(label.to_string())
         .into_any_element()
 }
@@ -5705,6 +5797,11 @@ fn issue_row(issue: &gh::GhIssue, theme: Theme, cx: &Context<GitPanel>) -> AnyEl
     } else {
         tr!("git_panel.issue_closed")
     };
+    let state_glyph = if issue.is_open() {
+        "icons/circle-dot.svg"
+    } else {
+        "icons/circle-check.svg"
+    };
     let mut row = div()
         .id(gpui::ElementId::Name(format!("git-issue-{number}").into()))
         .mx(theme.space(12.))
@@ -5717,7 +5814,7 @@ fn issue_row(issue: &gh::GhIssue, theme: Theme, cx: &Context<GitPanel>) -> AnyEl
         .cursor_pointer()
         .hover(|s| s.bg(theme.bg_hover))
         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open_issue(number, cx)))
-        .child(icon("icons/github.svg", 15., state_color))
+        .child(icon(state_glyph, 15., state_color))
         .child(
             div()
                 .flex_1()
@@ -5786,12 +5883,18 @@ fn issue_row(issue: &gh::GhIssue, theme: Theme, cx: &Context<GitPanel>) -> AnyEl
                         ),
                 ),
         )
-        .child(state_chip(&state_label, state_color, theme));
+        .child(state_chip(
+            &state_label,
+            state_color,
+            Some(state_glyph),
+            theme,
+        ));
     if !issue.url.is_empty() {
         let url = issue.url.clone();
         row = row.child(row_button(
             "git-issue-open",
             "icons/arrow-up-right.svg",
+            "git_panel.open_on_github",
             theme,
             move |_, _, cx| cx.open_url(&url),
         ));
@@ -5828,8 +5931,9 @@ fn label_color(hex: &str) -> Hsla {
     Hsla::from(gpui::rgba((value << 8) | 0xff))
 }
 
-/// A pill chip for an issue/PR state.
-fn state_chip(label: &str, color: Hsla, theme: Theme) -> AnyElement {
+/// A pill chip for an issue/PR state: an optional leading glyph (circle-dot,
+/// check, merge…) plus the label, the way GitHub marks its states.
+fn state_chip(label: &str, color: Hsla, glyph: Option<&'static str>, theme: Theme) -> AnyElement {
     div()
         .h(px(20.))
         .px(px(8.))
@@ -5839,9 +5943,11 @@ fn state_chip(label: &str, color: Hsla, theme: Theme) -> AnyElement {
         .border_color(color.opacity(0.5))
         .flex()
         .items_center()
+        .gap(px(4.))
         .text_size(theme.ui_px(10.5))
         .font_weight(FontWeight::MEDIUM)
         .text_color(color)
+        .children(glyph.map(|path| icon(path, 10., color)))
         .child(label.to_string())
         .into_any_element()
 }
@@ -5917,99 +6023,104 @@ fn pr_row(pull: &gh::GhPull, theme: Theme, cx: &Context<GitPanel>) -> AnyElement
     } else {
         theme.del_red
     };
-    let mut row =
-        div()
-            .id(gpui::ElementId::Name(format!("git-pr-{number}").into()))
-            .mx(theme.space(12.))
-            .px(theme.space(8.))
-            .py(theme.space(8.))
-            .rounded_md()
-            .flex()
-            .items_center()
-            .gap(theme.space(10.))
-            .cursor_pointer()
-            .hover(|s| s.bg(theme.bg_hover))
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open_pull(number, cx)))
-            .child(icon("icons/git-pull-request.svg", 15., state_color))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap(px(3.))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .text_size(theme.ui_px(11.5))
-                                    .text_color(theme.text_3)
-                                    .child(format!("#{number}")),
+    let mut row = div()
+        .id(gpui::ElementId::Name(format!("git-pr-{number}").into()))
+        .mx(theme.space(12.))
+        .px(theme.space(8.))
+        .py(theme.space(8.))
+        .rounded_md()
+        .flex()
+        .items_center()
+        .gap(theme.space(10.))
+        .cursor_pointer()
+        .hover(|s| s.bg(theme.bg_hover))
+        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open_pull(number, cx)))
+        .child(icon("icons/git-pull-request.svg", 15., state_color))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(3.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .min_w_0()
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(theme.ui_px(11.5))
+                                .text_color(theme.text_3)
+                                .child(format!("#{number}")),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_size(theme.ui_px(12.5))
+                                .text_color(theme.text)
+                                .child(pull.title.clone()),
+                        )
+                        .children(pull.is_draft.then(|| {
+                            state_chip(
+                                &tr!("git_panel.pr_draft"),
+                                theme.text_3,
+                                Some("icons/pencil.svg"),
+                                theme,
                             )
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_size(theme.ui_px(12.5))
-                                    .text_color(theme.text)
-                                    .child(pull.title.clone()),
-                            )
-                            .children(pull.is_draft.then(|| {
-                                state_chip(&tr!("git_panel.pr_draft"), theme.text_3, theme)
-                            })),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .min_w_0()
-                            .children(
-                                pull.labels
-                                    .iter()
-                                    .take(3)
-                                    .map(|label| issue_label_chip(label, theme)),
-                            )
-                            .child(author_avatar(&pull.author.login, "", theme))
-                            .child(
-                                div()
-                                    .text_size(theme.ui_px(11.))
-                                    .text_color(theme.text_3)
-                                    .child(pull.author.login.clone()),
-                            )
-                            .child(
-                                div()
-                                    .text_size(theme.ui_px(11.))
-                                    .text_color(theme.text_3)
-                                    .child(format!("{} \u{2192} {}", pull.base_ref, pull.head_ref)),
-                            )
-                            .children(review_chip(pull, theme))
-                            .children(check_bucket_chip(pull.checks_summary(), theme))
-                            .child(
-                                div()
-                                    .text_size(theme.ui_px(11.))
-                                    .text_color(theme.text_3)
-                                    .child(format!("+{} -{}", pull.additions, pull.deletions)),
-                            )
-                            .child(
-                                div()
-                                    .text_size(theme.ui_px(11.))
-                                    .text_color(theme.text_3)
-                                    .child(gh::relative_time(&pull.updated_at)),
-                            ),
-                    ),
-            );
+                        })),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .min_w_0()
+                        .children(
+                            pull.labels
+                                .iter()
+                                .take(3)
+                                .map(|label| issue_label_chip(label, theme)),
+                        )
+                        .child(author_avatar(&pull.author.login, "", theme))
+                        .child(
+                            div()
+                                .text_size(theme.ui_px(11.))
+                                .text_color(theme.text_3)
+                                .child(pull.author.login.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_size(theme.ui_px(11.))
+                                .text_color(theme.text_3)
+                                .child(format!("{} \u{2192} {}", pull.base_ref, pull.head_ref)),
+                        )
+                        .children(review_chip(pull, theme))
+                        .children(check_bucket_chip(pull.checks_summary(), theme))
+                        .child(
+                            div()
+                                .text_size(theme.ui_px(11.))
+                                .text_color(theme.text_3)
+                                .child(format!("+{} -{}", pull.additions, pull.deletions)),
+                        )
+                        .child(
+                            div()
+                                .text_size(theme.ui_px(11.))
+                                .text_color(theme.text_3)
+                                .child(gh::relative_time(&pull.updated_at)),
+                        ),
+                ),
+        );
     if !pull.url.is_empty() {
         let url = pull.url.clone();
         row = row.child(row_button(
             "git-pr-open",
             "icons/arrow-up-right.svg",
+            "git_panel.open_on_github",
             theme,
             move |_, _, cx| cx.open_url(&url),
         ));
@@ -6020,26 +6131,58 @@ fn pr_row(pull: &gh::GhPull, theme: Theme, cx: &Context<GitPanel>) -> AnyElement
 /// A chip for the PR's overall CI state, or `None` when it has no checks.
 fn check_bucket_chip(bucket: Option<gh::CheckBucket>, theme: Theme) -> Option<AnyElement> {
     let bucket = bucket?;
-    let (label, color) = match bucket {
-        gh::CheckBucket::Passed => (tr!("git_panel.checks_passed"), theme.add_green),
-        gh::CheckBucket::Failed => (tr!("git_panel.checks_failed"), theme.del_red),
-        gh::CheckBucket::Pending => (tr!("git_panel.checks_pending"), theme.warn),
-        gh::CheckBucket::Skipped => (tr!("git_panel.checks_skipped"), theme.text_3),
-        gh::CheckBucket::Unknown => (tr!("git_panel.checks_pending"), theme.text_3),
+    let (label, color, glyph) = match bucket {
+        gh::CheckBucket::Passed => (
+            tr!("git_panel.checks_passed"),
+            theme.add_green,
+            "icons/circle-check.svg",
+        ),
+        gh::CheckBucket::Failed => (
+            tr!("git_panel.checks_failed"),
+            theme.del_red,
+            "icons/circle-x.svg",
+        ),
+        gh::CheckBucket::Pending => (
+            tr!("git_panel.checks_pending"),
+            theme.warn,
+            "icons/clock.svg",
+        ),
+        gh::CheckBucket::Skipped => (
+            tr!("git_panel.checks_skipped"),
+            theme.text_3,
+            "icons/minus.svg",
+        ),
+        gh::CheckBucket::Unknown => (
+            tr!("git_panel.checks_pending"),
+            theme.text_3,
+            "icons/info.svg",
+        ),
     };
-    Some(state_chip(&label, color, theme))
+    Some(state_chip(&label, color, Some(glyph), theme))
 }
 
 /// A chip for the PR's review decision, or `None` when GitHub has none.
 fn review_chip(pull: &gh::GhPull, theme: Theme) -> Option<AnyElement> {
     let decision = pull.review_decision.as_deref()?;
-    let (label, color) = match decision {
-        "APPROVED" => (tr!("git_panel.review_approved"), theme.add_green),
-        "CHANGES_REQUESTED" => (tr!("git_panel.review_changes"), theme.del_red),
-        "REVIEW_REQUIRED" => (tr!("git_panel.review_required"), theme.warn),
+    let (label, color, glyph) = match decision {
+        "APPROVED" => (
+            tr!("git_panel.review_approved"),
+            theme.add_green,
+            "icons/circle-check.svg",
+        ),
+        "CHANGES_REQUESTED" => (
+            tr!("git_panel.review_changes"),
+            theme.del_red,
+            "icons/circle-x.svg",
+        ),
+        "REVIEW_REQUIRED" => (
+            tr!("git_panel.review_required"),
+            theme.warn,
+            "icons/eye.svg",
+        ),
         _ => return None,
     };
-    Some(state_chip(&label, color, theme))
+    Some(state_chip(&label, color, Some(glyph), theme))
 }
 
 /// One submitted review: author header with a state chip and optional body.
@@ -6049,10 +6192,22 @@ fn review_card(review: &gh::GhReview, theme: Theme) -> AnyElement {
         .as_ref()
         .map(|user| user.login.clone())
         .unwrap_or_default();
-    let (label, color) = match review.state.as_str() {
-        "APPROVED" => (tr!("git_panel.review_approved"), theme.add_green),
-        "CHANGES_REQUESTED" => (tr!("git_panel.review_changes"), theme.del_red),
-        _ => (tr!("git_panel.review_commented"), theme.text_3),
+    let (label, color, glyph) = match review.state.as_str() {
+        "APPROVED" => (
+            tr!("git_panel.review_approved"),
+            theme.add_green,
+            "icons/circle-check.svg",
+        ),
+        "CHANGES_REQUESTED" => (
+            tr!("git_panel.review_changes"),
+            theme.del_red,
+            "icons/circle-x.svg",
+        ),
+        _ => (
+            tr!("git_panel.review_commented"),
+            theme.text_3,
+            "icons/chat.svg",
+        ),
     };
     div()
         .rounded(px(8.))
@@ -6078,7 +6233,7 @@ fn review_card(review: &gh::GhReview, theme: Theme) -> AnyElement {
                         .text_color(theme.text_2)
                         .child(author),
                 )
-                .child(state_chip(&label, color, theme))
+                .child(state_chip(&label, color, Some(glyph), theme))
                 .child(
                     div()
                         .text_size(theme.ui_px(11.))
@@ -6208,6 +6363,7 @@ fn graph_row(
         element = element.child(row_button(
             "git-graph-open",
             "icons/arrow-up-right.svg",
+            "git_panel.open_on_github",
             theme,
             move |_, _, cx| cx.open_url(&url),
         ));
@@ -6419,6 +6575,7 @@ fn commit_row(
         row = row.child(row_button(
             "git-commit-open",
             "icons/arrow-up-right.svg",
+            "git_panel.open_on_github",
             theme,
             move |_, _, cx| cx.open_url(&url),
         ));
@@ -6460,11 +6617,11 @@ fn history_marker(theme: Theme) -> AnyElement {
 }
 
 /// A small round avatar shown before the author name: the real GitHub photo
-/// when the author name is a GitHub handle, with the monogram as its fallback
-/// (while loading, for accounts with no photo, or for real names that aren't
-/// handles). Never leaves a blank slot.
+/// when the author's noreply email or name identifies a handle, with the
+/// monogram as its fallback (while loading, for accounts with no photo, or for
+/// real names that aren't handles). Never leaves a blank slot.
 fn author_avatar(name: &str, email: &str, theme: Theme) -> AnyElement {
-    avatar_image(github_avatar_url(name), name, email, theme)
+    avatar_image(github_avatar_url(name, email), name, email, theme)
 }
 
 /// A small round avatar from an explicit URL (a GitHub event carries the exact
@@ -6489,20 +6646,45 @@ fn avatar_image(url: Option<String>, name: &str, email: &str, theme: Theme) -> A
     }
 }
 
-/// The GitHub avatar URL for a commit author whose name looks like a handle.
-/// Real names ("Ada Lovelace") return `None` and fall back to the monogram
-/// rather than 404-ing. GitHub usernames are alphanumeric or single hyphens.
-fn github_avatar_url(author: &str) -> Option<String> {
-    let handle = author.trim();
-    let valid = !handle.is_empty()
+/// The GitHub avatar URL for a commit author. The login encoded in a GitHub
+/// noreply email (`123+login@users.noreply.github.com`) is authoritative, so
+/// it wins over the display name; only when no email login is available does a
+/// name that already looks like a handle get used. This keeps display names
+/// ("Ada Lovelace") from 404-ing and avoids showing the photo of an unrelated
+/// account whose handle happens to equal the display name.
+fn github_avatar_url(name: &str, email: &str) -> Option<String> {
+    let handle = github_handle_from_email(email)
+        .or_else(|| is_github_handle(name).then(|| name.trim().to_string()))?;
+    Some(format!(
+        "https://avatars.githubusercontent.com/{handle}?size=48"
+    ))
+}
+
+/// The GitHub login from a noreply email, if the address is one. Modern
+/// addresses are `12345+login@users.noreply.github.com`; legacy ones are plain
+/// `login@users.noreply.github.com`.
+fn github_handle_from_email(email: &str) -> Option<String> {
+    let (local, domain) = email.trim().rsplit_once('@')?;
+    if !domain.eq_ignore_ascii_case("users.noreply.github.com") {
+        return None;
+    }
+    // The numeric segment before '+' is GitHub's account id, never the handle.
+    let handle = local.rsplit_once('+').map_or(local, |(_, handle)| handle);
+    is_github_handle(handle).then(|| handle.to_string())
+}
+
+/// Whether a string is shaped like a GitHub username (alphanumeric or single
+/// hyphens).
+fn is_github_handle(candidate: &str) -> bool {
+    let handle = candidate.trim();
+    !handle.is_empty()
         && handle.len() <= 39
         && !handle.starts_with('-')
         && !handle.ends_with('-')
         && !handle.contains("--")
         && handle
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-');
-    valid.then(|| format!("https://avatars.githubusercontent.com/{handle}?size=48"))
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 /// A tiny initials chip — the avatar fallback. The tint is a stable function
@@ -6616,5 +6798,38 @@ mod tests {
         );
         // Empty repo (no commits, no upstream) is not a publish.
         assert_eq!(bar_actions(false, 0, false, false, 0), BarActions::UpToDate);
+    }
+
+    #[test]
+    fn avatar_url_prefers_noreply_email_login() {
+        // The noreply login wins even when the display name is a valid handle.
+        assert_eq!(
+            github_avatar_url("someone", "12345+real-login@users.noreply.github.com"),
+            Some("https://avatars.githubusercontent.com/real-login?size=48".into())
+        );
+        // A display name with spaces no longer hides the login in the email.
+        assert_eq!(
+            github_avatar_url("Rajeshwar Kashyap", "76556671+imrj05@users.noreply.github.com"),
+            Some("https://avatars.githubusercontent.com/imrj05?size=48".into())
+        );
+        // Legacy noreply addresses carry the login as the whole local part.
+        assert_eq!(
+            github_avatar_url("Ada Lovelace", "adal@users.noreply.github.com"),
+            Some("https://avatars.githubusercontent.com/adal?size=48".into())
+        );
+    }
+
+    #[test]
+    fn avatar_url_falls_back_to_handle_shaped_name() {
+        // No usable email → a handle-shaped name is still a candidate.
+        assert_eq!(
+            github_avatar_url("work-rjkashyap", "work@example.com"),
+            Some("https://avatars.githubusercontent.com/work-rjkashyap?size=48".into())
+        );
+        // A real name and a non-noreply address resolve to no photo.
+        assert_eq!(github_avatar_url("Ada Lovelace", "ada@example.com"), None);
+        // Invalid handle shapes are rejected rather than 404-ing on the forge.
+        assert_eq!(github_avatar_url("-bad-", ""), None);
+        assert_eq!(github_avatar_url("a--b", ""), None);
     }
 }

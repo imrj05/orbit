@@ -15,6 +15,7 @@ use gpui::{
 use crate::app::icon;
 use crate::git::RefKind;
 use crate::theme::Theme;
+use crate::usage::tooltip::Tooltip;
 
 /// The color for a `git status` porcelain badge byte.
 pub fn status_color(badge: char, theme: Theme) -> Hsla {
@@ -125,23 +126,27 @@ pub fn action_button(
     button.child(label.to_string()).into_any_element()
 }
 
-/// A 22px icon-only button for a row action. Stops propagation so clicking it
-/// never also triggers the row's own click handler.
+/// A 24px icon-only button for a row action, with a tooltip so the glyph is
+/// never a guess. Stops propagation so clicking it never also triggers the
+/// row's own click handler.
 pub fn row_button(
     id: impl Into<gpui::SharedString>,
     icon_path: &'static str,
+    tip_key: &'static str,
     theme: Theme,
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
+    let label = tr!(tip_key);
     div()
         .id(gpui::ElementId::Name(id.into()))
-        .size(px(22.))
+        .size(px(24.))
         .rounded(px(6.))
         .flex()
         .items_center()
         .justify_center()
         .cursor_pointer()
         .hover(|s| s.bg(theme.overlay))
+        .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into())
         .on_click(move |event, window, cx| {
             cx.stop_propagation();
             listener(event, window, cx);

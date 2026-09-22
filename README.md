@@ -107,6 +107,48 @@ INTENT.md             Architecture decisions + phase plan
 AGENT.md              Conventions for agents and humans working on this repo
 ```
 
+## Roadmap
+
+Orbit is a workbench, not just a chat window. The confirmed direction lives in
+[PRODUCT.md](PRODUCT.md), architecture decisions in [INTENT.md](INTENT.md), and
+shipped work in [CHANGELOG.md](CHANGELOG.md). Every unchecked item below is open
+for a pull request — read [CONTRIBUTING.md](CONTRIBUTING.md) and claim the linked
+issue before starting.
+
+### Planned features
+
+| Feature | Area | Description | Status | Tracking |
+| --- | --- | --- | --- | --- |
+| Workflow modes | Composer | Start a session scoped to **Plan Mode**, **Build Mode**, or **Ask Mode** instead of one undifferentiated chat. | Planned | — |
+| Follow-up on settle | Transcript | Show a queued follow-up inline once a run ends, not only in the compose queue. | Planned | — |
+| Suggested follow-ups | Transcript | Propose 2–3 context-grounded next prompts as composer inserts after a run settles. | Proposed | [#10](https://github.com/imrj05/orbit/issues/10) |
+| AI review agent | Review | Run a read-only reviewer over current changes or the whole project; findings render in the Review pane. | Proposed | [#6](https://github.com/imrj05/orbit/issues/6) |
+| GitHub client | Workbench | Browse and manage remote commits, graph, issues, and pull requests in-app. | In progress — issues and PRs tabs ship today | [#8](https://github.com/imrj05/orbit/issues/8) |
+| Pi extension support | Workbench | First-class list / install / enable / configure / debug of pi extensions, including community ones. | Proposed | [#7](https://github.com/imrj05/orbit/issues/7) |
+| Global default model | Models | Pin pi's global default model and thinking effort from within Orbit. | Proposed | [#9](https://github.com/imrj05/orbit/issues/9) |
+| Voice dictation | Composer | Dictate prompts into the composer. | Planned | — |
+| Diff review and terminal | Workbench | Inline diff review and an integrated terminal. | Planned | — |
+| Parallel sessions | Sessions | Run multiple agents / sessions side by side. | Planned | — |
+| Explorer gaps | Explorer | Quick-open, sticky scroll, and directory folding in the file tree. | Planned | — |
+| Conversation fork/rewind | Sessions | Branch and rewind a conversation (clone ships today). | Planned | — |
+| Scroll-perf measurement | Performance | On-device measurement of transcript scroll performance. | Planned | — |
+
+### Contributor checklist
+
+- [ ] **Workflow modes** — Plan Mode / Build Mode / Ask Mode
+- [ ] **Follow-up on settle** — show a queued follow-up inline when a run ends
+- [ ] **Suggested follow-ups** — context-grounded next prompts ([#10](https://github.com/imrj05/orbit/issues/10))
+- [ ] **AI review agent** — read-only review of changes or the whole project ([#6](https://github.com/imrj05/orbit/issues/6))
+- [ ] **GitHub client** — commits, graph, issues, and pull requests ([#8](https://github.com/imrj05/orbit/issues/8))
+- [ ] **Pi extension support** — install and manage extensions, including community ones ([#7](https://github.com/imrj05/orbit/issues/7))
+- [ ] **Global default model** — set pi's default model and thinking effort ([#9](https://github.com/imrj05/orbit/issues/9))
+- [ ] **Voice dictation** — dictate prompts into the composer
+- [ ] **Diff review and terminal** — inline review plus an integrated terminal
+- [ ] **Parallel sessions** — multiple agents / sessions at once
+- [ ] **Explorer gaps** — quick-open, sticky scroll, directory folding
+- [ ] **Conversation fork/rewind** — branch and rewind a session
+- [ ] **Scroll-perf measurement** — on-device transcript scroll benchmark
+
 ---
 
 Setup, checks, and commit conventions live in [CONTRIBUTING.md](CONTRIBUTING.md). Orbit is licensed under [Apache-2.0](LICENSE); report vulnerabilities per [SECURITY.md](SECURITY.md).
