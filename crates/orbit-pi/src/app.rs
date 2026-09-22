@@ -434,8 +434,10 @@ pub struct OrbitApp {
     workspace_picker: Option<Entity<WorkspacePicker>>,
     /// A checkout/create is running on the background executor.
     branch_operation_pending: bool,
-    /// Persisted preferred open-in app id (see [`ExternalApp::id`]).
-    preferred_open_in_app: Option<String>,
+    /// Persisted open-in choices, resolved against the active workspace.
+    open_in_prefs: platform::OpenInPrefs,
+    /// Serializes preference writes so rapid selections cannot save out of order.
+    open_in_save_task: Option<gpui::Task<()>>,
     /// Keeps the theme global observer alive so a settings toggle redraws.
     _theme_sub: Subscription,
     /// Keeps the composer observer alive: edits re-render the app so the
@@ -999,7 +1001,8 @@ impl OrbitApp {
             branch_picker: None,
             workspace_picker: None,
             branch_operation_pending: false,
-            preferred_open_in_app: platform::load_preferred_open_in_app(),
+            open_in_prefs: platform::OpenInPrefs::load(),
+            open_in_save_task: None,
             _theme_sub: theme_sub,
             _input_sub: input_sub,
             _copy_selection_sub: copy_selection_sub,
