@@ -43,6 +43,11 @@ const OPEN_IN_CATALOG: &[(&str, &str, &[&str])] = &[
     ("warp", "Warp", &["dev.warp.Warp-Stable", "dev.warp.Warp"]),
     ("xcode", "Xcode", &["com.apple.dt.Xcode"]),
     (
+        "rider",
+        "Rider",
+        &["com.jetbrains.rider", "com.jetbrains.rider-EAP"],
+    ),
+    (
         "android-studio",
         "Android Studio",
         &["com.google.android.studio"],
@@ -838,6 +843,17 @@ pub fn titlebar_options() -> TitlebarOptions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn open_in_catalog_includes_rider_stable_and_eap() {
+        let rider = OPEN_IN_CATALOG
+            .iter()
+            .find(|entry| entry.0 == "rider")
+            .unwrap();
+        assert_eq!(rider.1, "Rider");
+        assert_eq!(rider.2, &["com.jetbrains.rider", "com.jetbrains.rider-EAP"]);
+    }
 
     #[test]
     fn only_http_urls_are_opened() {
