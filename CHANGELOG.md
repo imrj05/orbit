@@ -191,6 +191,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   year to read — but the active workspace / model / provider / errors filters
   apply to every cell.
 
+### Fixed
+
+- App and composer shortcuts now bind GPUI's cross-platform `secondary`
+  modifier (Cmd on macOS, Ctrl on Windows/Linux). They previously used
+  `cmd-*`, which GPUI maps to the Windows/Super key on Windows, so
+  copy/paste/cut/select-all and every other primary shortcut did nothing
+  there. Shortcut hint chips now render the platform-correct label too.
+
 ## [0.0.5] - 2026-09-17
 
 ### Added

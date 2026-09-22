@@ -31,15 +31,10 @@ impl OrbitApp {
         app_id: &str,
         cx: &mut Context<Self>,
     ) {
-        let Some(bundle_id) = self
-            .open_in_apps
-            .iter()
-            .find(|app| app.id == app_id)
-            .map(|app| app.bundle_id)
-        else {
+        let Some(app) = self.open_in_apps.iter().find(|app| app.id == app_id).cloned() else {
             return;
         };
-        platform::open_path_in_app(path, bundle_id);
+        platform::open_path_in_app(path, &app);
         self.open_in_prefs.remember(path, app_id);
         let prefs = self.open_in_prefs.clone();
         let previous_save = self.open_in_save_task.take();
@@ -76,7 +71,7 @@ impl OrbitApp {
         };
         // Opening a fallback must not replace a saved app that is temporarily
         // unavailable. Only an explicit menu selection changes the preference.
-        platform::open_path_in_app(&path, app.bundle_id);
+        platform::open_path_in_app(&path, app);
         self.open_in_menu_open = false;
         cx.notify();
     }

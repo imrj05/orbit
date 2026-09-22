@@ -238,7 +238,7 @@ actions!(explorer_entry_keys, [ExplorerEntryConfirm, ExplorerEntryCancel]);
 
 fn bind_keys(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("cmd-q", Quit, None),
+        KeyBinding::new("secondary-q", Quit, None),
         KeyBinding::new("escape", AbortRun, None),
         // Composer keys only apply while the input is focused.
         KeyBinding::new("backspace", Backspace, Some("Composer")),
@@ -247,29 +247,30 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("right", Right, Some("Composer")),
         KeyBinding::new("shift-left", SelectLeft, Some("Composer")),
         KeyBinding::new("shift-right", SelectRight, Some("Composer")),
-        // macOS text-field conventions: Cmd+Left/Right jump to the ends of the
-        // line (or the wrapped row), Option+Left/Right move word by word.
-        KeyBinding::new("cmd-left", LineLeft, Some("Composer")),
-        KeyBinding::new("cmd-right", LineRight, Some("Composer")),
-        KeyBinding::new("cmd-shift-left", SelectLineLeft, Some("Composer")),
-        KeyBinding::new("cmd-shift-right", SelectLineRight, Some("Composer")),
+        // Text-field conventions: the primary modifier (Cmd on macOS, Ctrl
+        // elsewhere) + Left/Right jumps to the ends of the line (or the
+        // wrapped row); Alt+Left/Right moves word by word.
+        KeyBinding::new("secondary-left", LineLeft, Some("Composer")),
+        KeyBinding::new("secondary-right", LineRight, Some("Composer")),
+        KeyBinding::new("secondary-shift-left", SelectLineLeft, Some("Composer")),
+        KeyBinding::new("secondary-shift-right", SelectLineRight, Some("Composer")),
         KeyBinding::new("alt-left", WordLeft, Some("Composer")),
         KeyBinding::new("alt-right", WordRight, Some("Composer")),
         KeyBinding::new("alt-shift-left", SelectWordLeft, Some("Composer")),
         KeyBinding::new("alt-shift-right", SelectWordRight, Some("Composer")),
-        KeyBinding::new("cmd-a", SelectAll, Some("Composer")),
+        KeyBinding::new("secondary-a", SelectAll, Some("Composer")),
         KeyBinding::new("home", Home, Some("Composer")),
         KeyBinding::new("end", End, Some("Composer")),
-        KeyBinding::new("cmd-v", Paste, Some("Composer")),
-        KeyBinding::new("cmd-c", Copy, Some("Composer")),
-        KeyBinding::new("cmd-x", Cut, Some("Composer")),
+        KeyBinding::new("secondary-v", Paste, Some("Composer")),
+        KeyBinding::new("secondary-c", Copy, Some("Composer")),
+        KeyBinding::new("secondary-x", Cut, Some("Composer")),
         KeyBinding::new("cmd-z", Undo, Some("Composer")),
         KeyBinding::new("cmd-shift-z", Redo, Some("Composer")),
         KeyBinding::new("enter", Submit, Some("Composer")),
-        KeyBinding::new("cmd-enter", Submit, Some("Composer")),
+        KeyBinding::new("secondary-enter", Submit, Some("Composer")),
         // Steer: inject the composer text into the running turn instead of
         // queuing a follow-up. With no run in flight it behaves like submit.
-        KeyBinding::new("cmd-shift-enter", SteerRun, Some("Composer")),
+        KeyBinding::new("secondary-shift-enter", SteerRun, Some("Composer")),
         KeyBinding::new("alt-enter", SteerRun, Some("Composer")),
         // Tab accepts the highlighted `/`-command or `@`-file entry while
         // the autocomplete menu is open (Enter is the second way in).
@@ -307,11 +308,12 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("enter", Newline, Some("Editor")),
         KeyBinding::new("shift-enter", Newline, Some("Editor")),
         KeyBinding::new("cmd-s", SaveFile, Some("Editor")),
-        KeyBinding::new("cmd-n", NewSession, None),
-        KeyBinding::new("cmd-r", RefreshSessions, None),
-        KeyBinding::new("cmd-,", OpenSettings, None),
-        // The Usage page is a destination: cmd-u matches the sidebar row.
-        KeyBinding::new("cmd-u", ToggleUsage, None),
+        KeyBinding::new("secondary-n", NewSession, None),
+        KeyBinding::new("secondary-r", RefreshSessions, None),
+        KeyBinding::new("secondary-,", OpenSettings, None),
+        // The Usage page is a destination: the primary modifier + U matches
+        // the sidebar row.
+        KeyBinding::new("secondary-u", ToggleUsage, None),
         // Git page tabs: cmd-1..cmd-5 switch tabs while the page is open; the
         // handler is a no-op elsewhere, so they never surprise a chat session.
         KeyBinding::new("cmd-1", GitTabChanges, None),
@@ -319,25 +321,25 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-3", GitTabGraph, None),
         KeyBinding::new("cmd-4", GitTabIssues, None),
         KeyBinding::new("cmd-5", GitTabPulls, None),
-        // Bottom terminal panel: cmd-j is the workbench convention for the
-        // panel toggle (and stays live while the shell has focus, since app
-        // actions are not scoped to a key context).
-        KeyBinding::new("cmd-j", ToggleTerminal, None),
+        // Bottom terminal panel: the primary modifier + J is the workbench
+        // convention for the panel toggle (and stays live while the shell has
+        // focus, since app actions are not scoped to a key context).
+        KeyBinding::new("secondary-j", ToggleTerminal, None),
         // Left project panel (Explorer): cmd-shift-e is the convention.
         KeyBinding::new("cmd-shift-e", ToggleProjectPanel, None),
         // On the Files surface, cmd-w closes the active file tab (the whole
         // surface when it was the last tab); cmd-shift-w closes the surface.
         KeyBinding::new("cmd-w", CloseFileTab, Some("Files")),
         KeyBinding::new("cmd-shift-w", CloseFiles, Some("Files")),
-        KeyBinding::new("cmd-p", ToggleCommandPalette, None),
-        KeyBinding::new("cmd-period", AbortRun, None),
+        KeyBinding::new("secondary-p", ToggleCommandPalette, None),
+        KeyBinding::new("secondary-period", AbortRun, None),
         // Transcript accelerators (work regardless of focus):
         // copy the newest response; jump between user turns like the rail.
-        KeyBinding::new("cmd-shift-c", CopyLastResponse, None),
-        KeyBinding::new("cmd-up", PrevTurn, None),
-        KeyBinding::new("cmd-down", NextTurn, None),
+        KeyBinding::new("secondary-shift-c", CopyLastResponse, None),
+        KeyBinding::new("secondary-up", PrevTurn, None),
+        KeyBinding::new("secondary-down", NextTurn, None),
         // Check for Updates (the app menu has no native home in Orbit yet).
-        KeyBinding::new("cmd-shift-u", CheckForUpdates, None),
+        KeyBinding::new("secondary-shift-u", CheckForUpdates, None),
         // Model picker keys — the `Picker` context rides on the popup's
         // filter input, i.e. the *same* dispatch node as `Composer`, so these
         // bindings sit at the same depth as the composer ones. gpui breaks
@@ -396,7 +398,7 @@ fn bind_keys(cx: &mut App) {
         // so editing keys stay live; these bindings are registered after the
         // composer ones and win the same-depth tie, keeping Enter from
         // submitting the real composer while the bar is open.
-        KeyBinding::new("cmd-f", ToggleSearch, None),
+        KeyBinding::new("secondary-f", ToggleSearch, None),
         KeyBinding::new("enter", SearchNext, Some("Search")),
         KeyBinding::new("shift-enter", SearchPrev, Some("Search")),
         KeyBinding::new("escape", SearchClose, Some("Search")),

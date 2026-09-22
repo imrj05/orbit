@@ -2275,8 +2275,8 @@ mod geometry_tests {
             cx.bind_keys([
                 KeyBinding::new("alt-left", WordLeft, Some("Composer")),
                 KeyBinding::new("alt-right", WordRight, Some("Composer")),
-                KeyBinding::new("cmd-left", LineLeft, Some("Composer")),
-                KeyBinding::new("cmd-right", LineRight, Some("Composer")),
+                KeyBinding::new("secondary-left", LineLeft, Some("Composer")),
+                KeyBinding::new("secondary-right", LineRight, Some("Composer")),
             ]);
             cx.new(ComposerInput::new)
         });
@@ -2301,12 +2301,20 @@ mod geometry_tests {
         assert_eq!(caret(cx), 5, "alt-right moves past the word");
 
         cx.update(|_, cx| input.update(cx, |input, cx| input.move_to(15, cx)));
-        cx.simulate_keystrokes("cmd-left");
-        assert_eq!(caret(cx), 12, "cmd-left moves to the line start");
+        cx.simulate_keystrokes("secondary-left");
+        assert_eq!(
+            caret(cx),
+            12,
+            "the primary modifier + left moves to the line start"
+        );
 
         cx.update(|_, cx| input.update(cx, |input, cx| input.move_to(0, cx)));
-        cx.simulate_keystrokes("cmd-right");
-        assert_eq!(caret(cx), 11, "cmd-right moves to the line end");
+        cx.simulate_keystrokes("secondary-right");
+        assert_eq!(
+            caret(cx),
+            11,
+            "the primary modifier + right moves to the line end"
+        );
     }
 
     /// A fixed-height harness: `with_fill(true)` needs a definite parent
