@@ -2462,7 +2462,7 @@ impl OrbitApp {
                     .flex_none()
                     .text_size(theme.ui_px(11.))
                     .text_color(theme.text_3)
-                    .child("\u{2318}N"),
+                    .child(crate::platform::shortcuts::NEW_SESSION),
             )
     }
 
@@ -2504,7 +2504,7 @@ impl OrbitApp {
                     .flex_none()
                     .text_size(theme.ui_px(11.))
                     .text_color(theme.text_3)
-                    .child("\u{2318}P"),
+                    .child(crate::platform::shortcuts::PALETTE),
             )
     }
 

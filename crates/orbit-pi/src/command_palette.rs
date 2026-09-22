@@ -324,7 +324,7 @@ impl CommandPalette {
             PaletteItem::command(
                 "New Session",
                 "icons/plus.svg",
-                Some("⌘N"),
+                Some(crate::platform::shortcuts::NEW_SESSION),
                 PaletteCommand::NewSession,
                 "new session chat conversation start task",
                 next(),
@@ -340,7 +340,7 @@ impl CommandPalette {
             PaletteItem::command(
                 "Refresh Sessions",
                 "icons/refresh.svg",
-                Some("⌘R"),
+                Some(crate::platform::shortcuts::REFRESH),
                 PaletteCommand::RefreshSessions,
                 "refresh reload sessions list disk",
                 next(),
@@ -376,7 +376,7 @@ impl CommandPalette {
                     "Show Terminal"
                 },
                 "icons/terminal.svg",
-                Some("⌘J"),
+                Some(crate::platform::shortcuts::TERMINAL),
                 PaletteCommand::ToggleTerminal,
                 "toggle show hide terminal shell console command line pty",
                 next(),
@@ -505,7 +505,8 @@ impl CommandPalette {
             items.push(PaletteItem::command(
                 label,
                 icon,
-                (section == SettingsSection::General).then_some("⌘,"),
+                (section == SettingsSection::General)
+                    .then_some(crate::platform::shortcuts::SETTINGS),
                 PaletteCommand::OpenSettings(section),
                 keywords,
                 next(),

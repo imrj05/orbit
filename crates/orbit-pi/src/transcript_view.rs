@@ -781,7 +781,10 @@ fn render_rail_hint(
                 .text_size(theme.ui_px(11.5))
                 .line_height(theme.ui_px(16.))
                 .text_color(theme.text_3)
-                .child("Click a line — or press ⌘↑ ⌘↓ — to revisit any prompt."),
+                .child(format!(
+                    "Click a line — or press {} — to revisit any prompt.",
+                    crate::platform::shortcuts::TURNS
+                )),
         )
         .on_click(move |_, _, cx| {
             crate::transcript::dismiss_rail_hint_state(&rail_hint_dismissed, &rail_hint_shown_at);

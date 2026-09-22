@@ -222,6 +222,31 @@ pub fn home_dir_opt() -> Option<PathBuf> {
     }
 }
 
+/// Platform-correct labels for the primary shortcut modifier.
+///
+/// Keybindings bind GPUI's `secondary` token (Cmd on macOS, Ctrl elsewhere),
+/// so UI hint chips must render the matching chord rather than a hardcoded
+/// `⌘`, which on Windows would advertise the Windows/Super key instead.
+#[cfg(target_os = "macos")]
+pub mod shortcuts {
+    pub const NEW_SESSION: &str = "⌘N";
+    pub const REFRESH: &str = "⌘R";
+    pub const TERMINAL: &str = "⌘J";
+    pub const SETTINGS: &str = "⌘,";
+    pub const PALETTE: &str = "⌘P";
+    pub const TURNS: &str = "⌘↑ ⌘↓";
+}
+
+#[cfg(not(target_os = "macos"))]
+pub mod shortcuts {
+    pub const NEW_SESSION: &str = "Ctrl+N";
+    pub const REFRESH: &str = "Ctrl+R";
+    pub const TERMINAL: &str = "Ctrl+J";
+    pub const SETTINGS: &str = "Ctrl+,";
+    pub const PALETTE: &str = "Ctrl+P";
+    pub const TURNS: &str = "Ctrl+↑ Ctrl+↓";
+}
+
 fn open_in_prefs_path() -> PathBuf {
     home_dir().join(".orbit-pi").join("open-in.json")
 }
