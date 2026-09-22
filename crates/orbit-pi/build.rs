@@ -15,11 +15,47 @@ use std::path::PathBuf;
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=ORBIT_UPDATE_PUBLIC_KEY");
+    track_locales();
 
     let key = public_key();
     println!("cargo:rustc-env=ORBIT_UPDATE_PUBLIC_KEY={key}");
 
     embed_windows_resources();
+}
+
+/// Make translation edits rebuild the binary.
+///
+/// `rust_i18n::i18n!` bakes `locales/*.yml` in at compile time but never tells
+/// Cargo those files are inputs, so a locale-only change (a fixed translation,
+/// or a key added after the last code change) is silently dropped and the
+/// binary keeps serving the old strings — a key with no embedded value renders
+/// its raw name. Hash the locale files into a `rustc-env` value: when the hash
+/// changes, Cargo sees different build-script output and recompiles the crate,
+/// re-running the macro against the current files.
+fn track_locales() {
+    use std::hash::{Hash, Hasher};
+
+    println!("cargo:rerun-if-changed=locales");
+    let root = PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is always set"),
+    );
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(root.join("locales"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "yml"))
+        .collect();
+    paths.sort();
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for path in &paths {
+        println!("cargo:rerun-if-changed={}", path.display());
+        if let Ok(bytes) = std::fs::read(path) {
+            bytes.hash(&mut hasher);
+        }
+    }
+    println!("cargo:rustc-env=ORBIT_I18N_HASH={:016x}", hasher.finish());
 }
 
 fn public_key() -> String {
@@ -67,7 +103,10 @@ fn embed_windows_resources() {
     let resources = root.join("resources");
     let icons = root.join("../../assets/icons");
 
-    println!("cargo:rerun-if-changed={}", icons.join("icon.ico").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        icons.join("icon.ico").display()
+    );
     println!(
         "cargo:rerun-if-changed={}",
         resources.join("windows.manifest").display()
@@ -129,7 +168,10 @@ END
     );
     std::fs::write(&script, body).expect("failed to write the generated Windows resource script");
 
-    embed_resource::compile(&script, embed_resource::ParamsIncludeDirs([icons, resources]))
-        .manifest_optional()
-        .expect("failed to embed Windows resources into orbit-pi.exe");
+    embed_resource::compile(
+        &script,
+        embed_resource::ParamsIncludeDirs([icons, resources]),
+    )
+    .manifest_optional()
+    .expect("failed to embed Windows resources into orbit-pi.exe");
 }

@@ -8,20 +8,21 @@ pub(crate) fn humanize_command(command: &str) -> String {
     let mut chars = spaced.chars();
     let label = match chars.next() {
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => "Command".to_string(),
+        None => tr!("helpers.command"),
     };
-    format!("{label} failed")
+    tr!("helpers.command_failed", label = label)
 }
 
 /// One queued-message chip: a kind tag plus the message text.
 pub(crate) fn queue_chip(kind: &str, text: &str, follow: bool, theme: Theme) -> AnyElement {
     div()
-        .max_w(px(300.))
+        .w_full()
+        .min_w_0()
         .flex()
-        .items_center()
+        .items_start()
         .gap(px(6.))
         .px(px(8.))
-        .py(px(4.))
+        .py(px(5.))
         .rounded(px(6.))
         .border_1()
         .border_color(theme.border)
@@ -29,17 +30,20 @@ pub(crate) fn queue_chip(kind: &str, text: &str, follow: bool, theme: Theme) -> 
         .child(
             div()
                 .flex_none()
+                .pt(px(1.))
                 .text_size(theme.ui_px(10.))
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_color(if follow { theme.text_3 } else { theme.accent })
+                .text_color(if follow { theme.text_2 } else { theme.accent })
                 .child(kind.to_string()),
         )
         .child(
             div()
+                .flex_1()
                 .min_w_0()
-                .truncate()
+                .line_clamp(4)
                 .text_size(theme.ui_px(11.5))
-                .text_color(theme.text_2)
+                .line_height(theme.ui_px(16.))
+                .text_color(theme.text)
                 .child(text.to_string()),
         )
         .into_any_element()
@@ -65,6 +69,126 @@ pub(crate) fn icon_dyn(path: SharedString, size: f32, color: Hsla) -> impl IntoE
         .flex_none()
         .size(px(size))
         .text_color(color)
+}
+
+// ── top-bar chip primitives ──
+
+/// Shared height of every top-bar control — the quota pill, the "open in"
+/// split, the diff chip and the icon buttons — so a row of mixed
+/// affordances reads as one instrument panel instead of assorted sizes.
+pub(crate) const HEADER_CTRL_H: f32 = 28.;
+
+/// Corner radius of the rectangular header chips (the quota pill keeps a
+/// full round so it still reads as a meter, not a button).
+pub(crate) const HEADER_CTRL_R: f32 = 8.;
+
+/// The glass fill every resting top-bar chip shares: the text-wash overlay
+/// with its alpha raised toward the top edge and eased off at the bottom,
+/// so chips catch light like a meter surface rather than a flat sticker.
+pub(crate) fn header_fill(theme: &Theme) -> gpui::Background {
+    let mut top = theme.overlay;
+    top.a *= 1.5;
+    let mut bottom = theme.overlay;
+    bottom.a *= 0.7;
+    linear_gradient(
+        180.,
+        linear_color_stop(top, 0.),
+        linear_color_stop(bottom, 1.),
+    )
+}
+
+/// The lift a chip gets under the cursor (or while its surface is open):
+/// denser glass, a stronger hairline, and a tight contact shadow that pulls
+/// the chip off the titlebar. Shared by hover *and* open states so a
+/// toggle's panel reads as "still held" after the click.
+fn header_lifted(theme: &Theme) -> gpui::StyleRefinement {
+    let mut top = theme.overlay_strong;
+    top.a *= 1.15;
+    let mut bottom = theme.overlay_strong;
+    bottom.a *= 0.85;
+    gpui::StyleRefinement::default()
+        .bg(linear_gradient(
+            180.,
+            linear_color_stop(top, 0.),
+            linear_color_stop(bottom, 1.),
+        ))
+        .border_color(theme.border_strong)
+        .shadow(vec![gpui::BoxShadow {
+            color: theme.shadow_contact,
+            offset: point(px(0.), px(1.)),
+            blur_radius: px(3.),
+            spread_radius: px(-1.),
+        }])
+}
+
+/// Force a chip into its lifted state — for controls whose surface is
+/// currently open (the info popover, the open-in menu, a visible panel).
+pub(crate) fn header_lift<S: Styled>(el: S, theme: &Theme) -> S {
+    let mut el = el;
+    el.style().refine(&header_lifted(theme));
+    el
+}
+
+/// Dress a top-bar chip: the [`header_fill`] glass in a hairline box, lifting
+/// on hover. The caller owns the size and the rounding — the quota pill stays
+/// `rounded_full` while the rest of the row takes [`HEADER_CTRL_R`], and a
+/// radius set here would override whichever it picked — and must not set a
+/// second hover of its own.
+pub(crate) fn header_chip<S: Styled + InteractiveElement>(el: S, theme: &Theme) -> S {
+    let lifted = header_lifted(theme);
+    el.border_1()
+        .border_color(theme.border)
+        .bg(header_fill(theme))
+        .hover(move |_| lifted)
+}
+
+/// A top-bar icon button: a square glass chip ([`HEADER_CTRL_H`]) holding a
+/// centered icon, lifting on hover and staying lifted while `active` (its
+/// surface is open). Callers pass the icon already tinted; the chip itself
+/// carries no label.
+pub(crate) fn header_icon_button(
+    id: &'static str,
+    theme: &Theme,
+    active: bool,
+    child: impl IntoElement,
+) -> gpui::Stateful<gpui::Div> {
+    let chip = header_chip(
+        div()
+            .id(id)
+            .size(px(HEADER_CTRL_H))
+            .rounded(px(HEADER_CTRL_R))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer(),
+        theme,
+    )
+    .child(child);
+    if active {
+        header_lift(chip, theme)
+    } else {
+        chip
+    }
+}
+
+/// A bare top-bar icon button: the same square hit box as
+/// [`header_icon_button`], but without the chip's hairline or glass fill so
+/// it sits flat on the titlebar. Hover is the only affordance.
+pub(crate) fn header_ghost_button(
+    id: &'static str,
+    theme: &Theme,
+    child: impl IntoElement,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .size(px(HEADER_CTRL_H))
+        .rounded(px(HEADER_CTRL_R))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .hover(|s| s.bg(theme.bg_hover))
+        .child(child)
 }
 
 /// Width of one caption button, matching the metric Windows uses for its own
@@ -352,6 +476,26 @@ pub(crate) fn runtime_error(theme: Theme, text: String) -> AnyElement {
         .into_any_element()
 }
 
+/// The title shown in the top bar and session lists. An explicit
+/// `set_session_name` value wins over pi's live auto-title; neither
+/// present is a new, unnamed task.
+pub(crate) fn session_display_title(
+    session_name: Option<&str>,
+    current_title: Option<&str>,
+) -> String {
+    session_name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            current_title
+                .map(str::trim)
+                .filter(|title| !title.is_empty())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| tr!("settings.new_task"))
+}
+
 /// "42s" / "3m 12s" / "2h 5m" / "4d 3h" for the Runtime uptime readout.
 pub(crate) fn format_uptime(elapsed: Duration) -> String {
     let seconds = elapsed.as_secs();
@@ -360,5 +504,40 @@ pub(crate) fn format_uptime(elapsed: Duration) -> String {
         s if s < 3_600 => format!("{}m {}s", s / 60, s % 60),
         s if s < 86_400 => format!("{}h {}m", s / 3_600, (s % 3_600) / 60),
         s => format!("{}d {}h", s / 86_400, (s % 86_400) / 3_600),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `header_chip` dresses the surface (hairline, glass, hover lift) but
+    /// must leave the caller's rounding alone: the quota pill is
+    /// `rounded_full` while every other chip takes [`HEADER_CTRL_R`], so a
+    /// rest style that also set the corners would square the pill off.
+    #[test]
+    fn chip_glass_keeps_the_callers_rounding() {
+        let theme = Theme::dark();
+        let round = div().rounded_full().style().corner_radii.clone();
+        let square = div()
+            .rounded(px(HEADER_CTRL_R))
+            .style()
+            .corner_radii
+            .clone();
+        assert_ne!(round, square);
+        assert_eq!(
+            header_chip(div().rounded_full(), &theme)
+                .style()
+                .corner_radii
+                .clone(),
+            round
+        );
+        assert_eq!(
+            header_chip(div().rounded(px(HEADER_CTRL_R)), &theme)
+                .style()
+                .corner_radii
+                .clone(),
+            square
+        );
     }
 }

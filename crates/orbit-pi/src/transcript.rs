@@ -32,6 +32,13 @@ pub struct Step {
     pub text: String,
     /// Provider-reported usage for this LLM call, when pi supplies it.
     pub usage: Option<MessageUsage>,
+    /// Wall time the reasoning streamed, measured client-side while live.
+    /// Reloaded sessions leave this `None` and the view estimates it from
+    /// [`Step::timestamp`] instead.
+    pub thinking_duration: Option<Duration>,
+    /// pi's per-step message timestamp (epoch millis), when supplied — the
+    /// fallback for estimating reasoning time on reload.
+    pub timestamp: Option<i64>,
 }
 
 pub struct ChatMessage {
@@ -121,10 +128,6 @@ pub struct ToolCall {
     pub output: Option<Value>,
     /// The tool execution reported `isError`.
     pub failed: bool,
-    /// Wall-clock time the tool took, measured client-side between
-    /// `tool_execution_start` and `tool_execution_end` (live runs only —
-    /// snapshots carry no timing). The header shows it once settled.
-    pub duration: Option<Duration>,
 }
 
 impl ToolCall {
@@ -146,7 +149,6 @@ impl ToolCall {
             },
             output: None,
             failed: false,
-            duration: None,
         }
     }
 }
@@ -170,6 +172,15 @@ impl ChatMessage {
     fn from_value(value: &Value) -> Option<ChatMessage> {
         let value = value.get("message").unwrap_or(value);
         let role = value.get("role")?.as_str()?;
+        // Only user and assistant messages are conversation rows. pi
+        // interleaves context-only entries — the `system` loadout/tool-change
+        // update it emits right before a prompt's user echo, extension
+        // `custom` messages, summaries. Parsed as rows they would land
+        // between the optimistic prompt and pi's echo, defeating the
+        // identical-echo dedupe and showing the prompt twice.
+        if role != "user" && role != "assistant" {
+            return None;
+        }
         let user = role == "user";
         let error = message_error(value);
         let aborted = !user && value.get("stopReason").and_then(Value::as_str) == Some("aborted");
@@ -240,6 +251,8 @@ impl ChatMessage {
             }
         }
         message.steps[0].usage = MessageUsage::from_value(value.get("usage"));
+        let timestamp = message.finished_at;
+        message.steps[0].timestamp = timestamp;
         Some(message)
     }
 }
@@ -327,7 +340,7 @@ fn image_from_block(block: &Value) -> Option<Arc<Image>> {
 
 /// Extract a tool result message: `(toolCallId, output, isError)`. pi sends
 /// `role: "toolResult"` messages — not chat rows; their output belongs on
-/// the matching tool call (Waku renders it inside the activity detail).
+/// the matching tool call (rendered inside the activity detail).
 fn tool_result_parts(value: &Value) -> Option<(String, Option<Value>, bool)> {
     let value = value.get("message").unwrap_or(value);
     if value.get("role").and_then(Value::as_str) != Some("toolResult") {
@@ -673,12 +686,16 @@ pub(crate) fn dismiss_rail_hint_state(
 /// Transcript state shared between the view and the RPC event pump.
 pub struct Transcript {
     messages: Rc<RefCell<Vec<ChatMessage>>>,
+    /// Cross-block text selection + right-click copy menu state.
+    text_selection: transcript_view::TextSelectionState,
     scroller: MessageScrollerState,
     /// Index of the assistant message currently being streamed, if any.
     streaming: Rc<Cell<Option<usize>>>,
     /// When the current assistant turn started (for the live Working clock).
     stream_started: Rc<Cell<Option<Instant>>>,
-    /// Settled turns whose thinking/tools are disclosed (Waku turn fold).
+    /// When the current step's reasoning began (the per-thought clock).
+    thinking_started: Rc<Cell<Option<Instant>>>,
+    /// Settled turns whose thinking/tools are disclosed (turn fold).
     expanded_turns: Rc<RefCell<HashSet<usize>>>,
     /// Messages whose changed-files list is fully expanded.
     expanded_files: Rc<RefCell<HashSet<usize>>>,
@@ -694,6 +711,16 @@ pub struct Transcript {
     expanded_sections: ExpandedSections,
     /// Code blocks expanded past their collapsed preview.
     expanded_blocks: ExpandedBlocks,
+    /// Persistent scroll handles for the expandable "Thought" cards, keyed
+    /// `(message_ix, step_ix)` — the card reads its offset/limit to chain the
+    /// wheel to the transcript once it bottoms out.
+    thinking_scrolls: transcript_view::ThinkingScrolls,
+    /// "Thought" cards the reader collapsed, keyed `(message_ix, step_ix)`.
+    /// Missing means expanded — the default once the activity group is open.
+    collapsed_thoughts: transcript_view::CollapsedThoughts,
+    /// Live "Thought" cards the reader scrolled away from the newest line.
+    /// Missing means the streaming card stays pinned to its latest line.
+    thinking_detached: transcript_view::ThinkingDetached,
     /// `toolCallId` -> `(message_ix, tool_ix)` so `tool_execution_end` results
     /// land on the right row.
     tool_positions: ToolPositions,
@@ -707,7 +734,7 @@ pub struct Transcript {
     rail_hint_dismissed: Rc<Cell<bool>>,
     /// When the hint first rendered — drives its self-dismiss timeout.
     rail_hint_shown_at: Rc<Cell<Option<Instant>>>,
-    /// Scroll position of the conversation-turn rail (Waku's scrollable rail).
+    /// Scroll position of the conversation-turn rail.
     rail_scroll: ScrollHandle,
     /// Last turn the rail auto-scrolled to — re-fires only when it changes.
     rail_autoscroll: Rc<Cell<Option<usize>>>,
@@ -735,9 +762,11 @@ impl Transcript {
         let messages = Rc::new(RefCell::new(Vec::new()));
         Self {
             messages,
+            text_selection: Rc::new(RefCell::new(transcript_view::TextSelection::new())),
             scroller: MessageScrollerState::new(0),
             streaming: Rc::new(Cell::new(None)),
             stream_started: Rc::new(Cell::new(None)),
+            thinking_started: Rc::new(Cell::new(None)),
             expanded_turns: Rc::new(RefCell::new(HashSet::new())),
             expanded_files: Rc::new(RefCell::new(HashSet::new())),
             expanded_activities: Rc::new(RefCell::new(HashMap::new())),
@@ -746,6 +775,9 @@ impl Transcript {
             copied_sections: Rc::new(RefCell::new(HashMap::new())),
             expanded_sections: Rc::new(RefCell::new(HashSet::new())),
             expanded_blocks: Rc::new(RefCell::new(HashSet::new())),
+            thinking_scrolls: Rc::new(RefCell::new(HashMap::new())),
+            collapsed_thoughts: Rc::new(RefCell::new(HashSet::new())),
+            thinking_detached: Rc::new(RefCell::new(HashSet::new())),
             tool_positions: Rc::new(RefCell::new(HashMap::new())),
             hovered_turn: Rc::new(Cell::new(None)),
             hovered_usage: Rc::new(Cell::new(None)),
@@ -761,8 +793,15 @@ impl Transcript {
         }
     }
 
+    /// The current transcript text selection, if any — the keyboard copy
+    /// path (`cmd-c`) reads it without stealing the composer's own copy.
+    pub fn selected_text(&self) -> Option<String> {
+        self.text_selection.borrow().selected_text()
+    }
+
     /// Rebuild the whole transcript from a `get_messages` response payload.
     pub fn load_from(&mut self, data: &Value) {
+        self.text_selection.borrow_mut().clear();
         let mut parsed = Vec::new();
         if let Some(messages) = data.get("messages").and_then(Value::as_array) {
             for message in messages {
@@ -774,7 +813,7 @@ impl Transcript {
                 }
                 if let Some(parsed_message) = ChatMessage::from_value(message) {
                     // Consecutive assistant messages are one logical turn
-                    // (Waku): one row, one fold, one footer — not a stack of
+                    // one row, one fold, one footer — not a stack of
                     // "Worked" dividers per streaming step. A user message
                     // always begins a new turn — never merged into the run
                     // before it (the whole trail used to collapse into one
@@ -796,6 +835,7 @@ impl Transcript {
         self.seed_text.set(false);
         self.seed_thinking.set(false);
         self.stream_started.set(None);
+        self.thinking_started.set(None);
         self.expanded_turns.borrow_mut().clear();
         self.expanded_files.borrow_mut().clear();
         self.expanded_activities.borrow_mut().clear();
@@ -804,6 +844,9 @@ impl Transcript {
         self.copied_sections.borrow_mut().clear();
         self.expanded_sections.borrow_mut().clear();
         self.expanded_blocks.borrow_mut().clear();
+        self.thinking_scrolls.borrow_mut().clear();
+        self.collapsed_thoughts.borrow_mut().clear();
+        self.thinking_detached.borrow_mut().clear();
         self.tool_positions.borrow_mut().clear();
         self.hovered_turn.set(None);
         self.rail_scroll.set_offset(point(px(0.), px(0.)));
@@ -820,11 +863,13 @@ impl Transcript {
     /// Clear for a fresh session.
     pub fn clear(&mut self) {
         *self.messages.borrow_mut() = Vec::new();
+        self.text_selection.borrow_mut().clear();
         self.scroller.reset(0);
         self.streaming.set(None);
         self.seed_text.set(false);
         self.seed_thinking.set(false);
         self.stream_started.set(None);
+        self.thinking_started.set(None);
         self.expanded_turns.borrow_mut().clear();
         self.expanded_files.borrow_mut().clear();
         self.expanded_activities.borrow_mut().clear();
@@ -833,6 +878,9 @@ impl Transcript {
         self.copied_sections.borrow_mut().clear();
         self.expanded_sections.borrow_mut().clear();
         self.expanded_blocks.borrow_mut().clear();
+        self.thinking_scrolls.borrow_mut().clear();
+        self.collapsed_thoughts.borrow_mut().clear();
+        self.thinking_detached.borrow_mut().clear();
         self.tool_positions.borrow_mut().clear();
         self.hovered_turn.set(None);
         self.rail_scroll.set_offset(point(px(0.), px(0.)));
@@ -913,7 +961,7 @@ impl Transcript {
             return false;
         }
         // Assistant message starts. A turn's steps stream into ONE row
-        // (Waku): when the previous row is an assistant message, this step
+        // when the previous row is an assistant message, this step
         // continues it instead of stacking another "Worked" fold.
         //
         // The start snapshot may already hold the first content chunk (some
@@ -923,6 +971,12 @@ impl Transcript {
         self.seed_text.set(seed.is_some_and(|s| !s.text.is_empty()));
         self.seed_thinking
             .set(seed.is_some_and(|s| !s.thinking.is_empty()));
+        // Each step starts a fresh reasoning clock; a buffered start snapshot
+        // that already carries reasoning begins it now.
+        self.thinking_started.set(None);
+        if seed.is_some_and(|s| !s.thinking.is_empty()) {
+            self.begin_thinking();
+        }
         let continues_run = messages.last().map(|m| !m.user).unwrap_or(false);
         if continues_run {
             let ix = messages.len() - 1;
@@ -959,8 +1013,15 @@ impl Transcript {
             Am::TextDelta { delta } => {
                 let seeded = self.seed_text.replace(false);
                 let mark = self.step_mark.get().map(|k| k.text).unwrap_or(0);
+                // The step moved on from reasoning to its answer.
+                let thinking = self.finish_thinking();
                 self.with_streaming(move |m| {
                     let step = m.steps.last_mut().expect("step");
+                    if let Some(duration) = thinking {
+                        if !step.thinking.is_empty() {
+                            step.thinking_duration = Some(duration);
+                        }
+                    }
                     drop_seed(&mut step.text, mark, delta, seeded);
                     step.text.push_str(delta);
                 })
@@ -968,10 +1029,15 @@ impl Transcript {
             Am::ThinkingDelta { delta } => {
                 let seeded = self.seed_thinking.replace(false);
                 let mark = self.step_mark.get().map(|k| k.thinking).unwrap_or(0);
+                let started = self.begin_thinking();
                 self.with_streaming(move |m| {
                     let step = m.steps.last_mut().expect("step");
                     drop_seed(&mut step.thinking, mark, delta, seeded);
                     step.thinking.push_str(delta);
+                    // Keep the per-thought clock ticking while it streams.
+                    if let Some(started) = started {
+                        step.thinking_duration = Some(started.elapsed());
+                    }
                 })
             }
             Am::ToolcallStart { value } => {
@@ -990,10 +1056,18 @@ impl Transcript {
                     .map(str::to_string);
                 // A fresh call streams a fresh argument buffer.
                 self.toolcall_args.borrow_mut().clear();
+                // Reasoning is done once the step starts emitting tool calls.
+                let thinking = self.finish_thinking();
                 let (changed, created) = self.with_streaming(|m| {
+                    let step = m.steps.last_mut().expect("step");
+                    if let Some(duration) = thinking {
+                        if !step.thinking.is_empty() {
+                            step.thinking_duration = Some(duration);
+                        }
+                    }
                     let mut tool = ToolCall::from_value(name, value.get("arguments"));
                     tool.id = id.clone();
-                    m.steps.last_mut().expect("step").tools.push(tool);
+                    step.tools.push(tool);
                 });
                 if changed {
                     let id = id.as_deref().map(str::to_string);
@@ -1115,8 +1189,16 @@ impl Transcript {
                                 .get()
                                 .map(|m| if is_text { m.text } else { m.thinking })
                                 .unwrap_or(0);
+                            // A whole-block (non-streaming) provider finishes
+                            // reasoning when it delivers this block.
+                            let thinking = self.finish_thinking();
                             self.with_streaming(move |m| {
                                 let step = m.steps.last_mut().expect("step");
+                                if let Some(duration) = thinking {
+                                    if !step.thinking.is_empty() {
+                                        step.thinking_duration = Some(duration);
+                                    }
+                                }
                                 let target = if is_text {
                                     &mut step.text
                                 } else {
@@ -1169,6 +1251,14 @@ impl Transcript {
             // The step's wall clock runs from the start of its turn; the
             // settled step replaces only its own slice of the merged row.
             final_message.elapsed = self.stream_started.get().map(|started| started.elapsed());
+            // Close the reasoning clock: the settled snapshot carries no
+            // timing, so the measured value must ride its step.
+            let thinking = self.finish_thinking();
+            if let Some(step) = final_message.steps.last_mut() {
+                if thinking.is_some() && !step.thinking.is_empty() {
+                    step.thinking_duration = thinking;
+                }
+            }
         }
         let mut messages = self.messages.borrow_mut();
         if final_message.user {
@@ -1205,6 +1295,12 @@ impl Transcript {
                             .collect()
                     })
                     .unwrap_or_default();
+                // The live step's measured reasoning clock survives the
+                // settled replacement (pi's snapshot has no timing).
+                let live_thinking = slot
+                    .steps
+                    .get(mark.step)
+                    .and_then(|step| step.thinking_duration);
                 // The settled step carries the run's wall clock — keep it
                 // on the row (merge_step does this for non-stream paths).
                 let step_elapsed = final_message.elapsed.take();
@@ -1213,6 +1309,9 @@ impl Transcript {
                 let mut settled_step = final_message.into_step();
                 // Re-attach results pi captured live (its settled blocks omit
                 // them).
+                if settled_step.thinking_duration.is_none() {
+                    settled_step.thinking_duration = live_thinking;
+                }
                 for tool in &mut settled_step.tools {
                     if tool.output.is_some() {
                         continue;
@@ -1537,6 +1636,22 @@ impl Transcript {
         }
     }
 
+    /// Mark the start of the current step's reasoning (once) and return the
+    /// clock — `None` only if reasoning already finished.
+    fn begin_thinking(&self) -> Option<Instant> {
+        if self.thinking_started.get().is_none() {
+            self.thinking_started.set(Some(Instant::now()));
+        }
+        self.thinking_started.get()
+    }
+
+    /// Close the current step's reasoning clock, returning how long it ran.
+    fn finish_thinking(&self) -> Option<Duration> {
+        self.thinking_started
+            .take()
+            .map(|started| started.elapsed())
+    }
+
     fn insert_row(&self) {
         self.scroller.append(1);
         self.scroller.note_activity();
@@ -1594,6 +1709,17 @@ impl Transcript {
     /// True when no messages are loaded (drives the empty state).
     pub fn is_empty(&self) -> bool {
         self.messages.borrow().is_empty()
+    }
+
+    /// Text of the first real user prompt, if any. The sidebar uses it as the
+    /// placeholder row's preview while the session file is not yet on disk
+    /// (pi flushes lazily), so the open session never reads as title-only.
+    pub fn first_user_message(&self) -> Option<String> {
+        self.messages
+            .borrow()
+            .iter()
+            .find(|message| message.user && !message.text().trim().is_empty())
+            .map(|message| message.text())
     }
 
     /// Mark the one-time rail hint as seen — it stops rendering and the
@@ -1738,6 +1864,7 @@ impl Transcript {
         self.streaming.set(None);
         self.step_mark.set(None);
         self.stream_started.set(None);
+        self.thinking_started.set(None);
     }
 
     /// Turn end (or abort): drop live streaming state, then — once the run
@@ -1857,6 +1984,7 @@ impl Transcript {
         transcript_view::render_transcript(
             TranscriptView {
                 messages: self.messages.clone(),
+                text_selection: self.text_selection.clone(),
                 scroller: self.scroller.clone(),
                 streaming: self.streaming.clone(),
                 stream_started: self.stream_started.clone(),
@@ -1868,6 +1996,9 @@ impl Transcript {
                 copied_sections: self.copied_sections.clone(),
                 expanded_sections: self.expanded_sections.clone(),
                 expanded_blocks: self.expanded_blocks.clone(),
+                thinking_scrolls: self.thinking_scrolls.clone(),
+                collapsed_thoughts: self.collapsed_thoughts.clone(),
+                thinking_detached: self.thinking_detached.clone(),
                 hovered_turn: self.hovered_turn.clone(),
                 hovered_usage: self.hovered_usage.clone(),
                 rail_hint_dismissed: self.rail_hint_dismissed.clone(),
@@ -1932,7 +2063,7 @@ mod tests {
     fn real_session_payload_renders_changed_files_card() {
         // Ground-truth check against the live pi session when present:
         // `get_messages` snapshots must yield edit/write tools with paths and
-        // line counts, otherwise the Waku changed-files card never appears.
+        // line counts, otherwise the changed-files card never appears.
         // Regenerates the payload from the newest real session on disk.
         let mut data = None;
         if let Ok(sample) = std::fs::read_to_string("/tmp/orbit-sample.json") {
@@ -2114,6 +2245,68 @@ mod tests {
         assert!(messages[0].user);
     }
 
+    /// pi emits a context-only `system` loadout/tool-change update right
+    /// before the user echo (its session files show a system entry between
+    /// the prompt's turn and the echoed user message). It must not become a
+    /// row — and, critically, must not break the echo dedupe: a live event
+    /// sequence of system start/end then user start/end shows the prompt
+    /// twice when the system message lands in between.
+    #[test]
+    fn system_loadout_message_does_not_duplicate_the_user_echo() {
+        let mut t = Transcript::new();
+        assert!(t.append_user_message("hello", Vec::new()));
+        let system = json!({"type": "message_start", "message": {
+            "role": "system", "content": "",
+            "sections": {"preamble": "You are an expert…"}
+        }});
+        t.apply_event(&Event::MessageStart {
+            value: system.clone(),
+        });
+        t.apply_event(&Event::MessageEnd {
+            value: json!({"type": "message_end", "message": {
+                "role": "system", "content": "",
+                "sections": {"preamble": "You are an expert…"}
+            }}),
+        });
+        t.apply_event(&Event::MessageStart {
+            value: json!({"type": "message_start", "message": {
+                "role": "user", "content": [{"type": "text", "text": "hello"}]
+            }}),
+        });
+        t.apply_event(&Event::MessageEnd {
+            value: json!({"type": "message_end", "message": {
+                "role": "user", "content": [{"type": "text", "text": "hello"}]
+            }}),
+        });
+        let messages = t.messages.borrow();
+        assert_eq!(messages.len(), 1, "the prompt must render once");
+        assert!(messages[0].user);
+        assert_eq!(messages[0].text(), "hello");
+    }
+
+    /// The same system entry in a `get_messages`/disk snapshot must be
+    /// skipped, not parsed as an empty assistant row between turns.
+    #[test]
+    fn system_messages_are_skipped_when_reloading() {
+        let message = ChatMessage::from_value(&json!({
+            "role": "system", "content": "",
+            "sections": {"preamble": "You are an expert…"}
+        }));
+        assert!(message.is_none());
+
+        let mut t = Transcript::new();
+        t.load_from(&json!({"messages": [
+            {"role": "user", "content": [{"type": "text", "text": "first"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "answer"}]},
+            {"role": "system", "content": "", "sections": {"preamble": "…"}},
+            {"role": "user", "content": [{"type": "text", "text": "hello"}]},
+        ]}));
+        let messages = t.messages.borrow();
+        assert_eq!(messages.len(), 3, "two user turns plus one assistant row");
+        assert!(messages[2].user);
+        assert_eq!(messages[2].text(), "hello");
+    }
+
     #[test]
     fn injected_skill_blocks_are_reduced_to_the_command() {
         let body = "<skill name=\"impeccable\" location=\"/x/SKILL.md\">\nBody.\n</skill>\n\npolish the retail page";
@@ -2208,6 +2401,37 @@ mod tests {
         assert_eq!(t.message_count(), 3);
         assert_eq!(t.find_messages("login"), vec![0, 2]);
         assert!(t.find_messages("missing").is_empty());
+    }
+
+    #[test]
+    fn live_thinking_duration_rides_the_step() {
+        let mut t = Transcript::new();
+        t.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": ""}),
+        });
+        t.apply_event(&Event::MessageUpdate {
+            usage: None,
+            assistant: Some(AssistantMessageEvent::ThinkingDelta {
+                delta: "reason".into(),
+            }),
+        });
+        // The reasoning clock starts with the first delta (a running value).
+        {
+            let messages = t.messages.borrow();
+            assert!(messages[0].steps[0].thinking_duration.is_some());
+        }
+        std::thread::sleep(Duration::from_millis(5));
+        t.apply_event(&Event::MessageEnd {
+            value: json!({
+                "role": "assistant",
+                "content": [{"type": "thinking", "thinking": "reason"}],
+                "timestamp": 1_700_000_000_000i64
+            }),
+        });
+        // The settled snapshot has no timing, so the measured value survives.
+        let messages = t.messages.borrow();
+        assert!(messages[0].steps[0].thinking_duration.is_some());
+        assert_eq!(messages[0].steps[0].timestamp, Some(1_700_000_000_000));
     }
 
     #[test]

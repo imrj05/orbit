@@ -1,10 +1,17 @@
-import { DownloadSimple, GithubLogo } from "@phosphor-icons/react/dist/ssr";
+import Link from "next/link";
+import { Download01Icon, GithubIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { OsDownloadButton } from "@/components/download-button";
 import { Band, ButtonLink, Shell } from "@/components/ui";
 import { getLatestRelease, LATEST_RELEASE_URL } from "@/lib/releases";
 
 export async function Closer() {
   const release = await getLatestRelease();
-  const downloadHref = release?.macos ?? LATEST_RELEASE_URL;
+  const assets = {
+    macos: release?.macos,
+    windows: release?.windows,
+    linux: release?.linux,
+  };
   const platforms = [
     { label: "macOS", href: release?.macos ?? LATEST_RELEASE_URL },
     { label: "Windows", href: release?.windows ?? LATEST_RELEASE_URL },
@@ -22,21 +29,17 @@ export async function Closer() {
           models, same tools — just drawn on the GPU.
         </p>
         <div className="flex flex-wrap items-center justify-center gap-3.5">
-          <ButtonLink
-            href={downloadHref}
-            variant="primary"
+          <OsDownloadButton
+            assets={assets}
+            fallback={LATEST_RELEASE_URL}
             className="min-w-[184px]"
-            external
-          >
-            <DownloadSimple data-icon="inline-start" weight="bold" />
-            {release ? `Download ${release.tag}` : "Download for macOS"}
-          </ButtonLink>
+          />
           <ButtonLink
             href="https://github.com/imrj05/orbit"
             variant="secondary"
             external
           >
-            <GithubLogo data-icon="inline-start" />
+            <HugeiconsIcon icon={GithubIcon} data-icon="inline-start" />
             View on GitHub
           </ButtonLink>
         </div>
@@ -49,19 +52,21 @@ export async function Closer() {
               rel="noreferrer"
               className="inline-flex items-center gap-1.5 no-underline transition-colors hover:text-ink"
             >
-              <DownloadSimple className="size-3.5" weight="bold" />
+              <HugeiconsIcon
+                icon={Download01Icon}
+                className="size-3.5"
+                strokeWidth={1.8}
+              />
               {label}
             </a>
           ))}
           {release ? (
-            <a
-              href={release.pageUrl}
-              target="_blank"
-              rel="noreferrer"
+            <Link
+              href={`/changelog/${release.tag}`}
               className="no-underline transition-colors hover:text-ink"
             >
               Release notes · {release.tag}
-            </a>
+            </Link>
           ) : null}
         </div>
       </Band>

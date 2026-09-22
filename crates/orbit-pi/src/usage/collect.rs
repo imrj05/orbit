@@ -528,7 +528,7 @@ fn parse_session_file(path: &Path) -> Option<FileUsage> {
                         ts_ms: ts,
                         model: model_ix,
                         kind: ErrorKind::Tool,
-                        message: format!("{label} returned an error"),
+                        message: tr!("usage.tool_returned_error", tool = label),
                     });
                 }
             }
@@ -662,8 +662,8 @@ fn title_from(text: &str) -> String {
     let trimmed = text.trim_start();
     if let Some(rest) = trimmed.strip_prefix("<skill") {
         return match attribute(rest, "name") {
-            Some(name) => format!("Skill: {name}"),
-            None => "Skill loaded".to_string(),
+            Some(name) => tr!("usage.session_skill", name = name),
+            None => tr!("usage.session_skill_loaded"),
         };
     }
     if let Some(rest) = trimmed.strip_prefix('<') {

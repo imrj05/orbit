@@ -408,24 +408,39 @@ fn readout(
         return div().into_any_element();
     };
     let totals = &bucket.totals;
-    let mut rows: Vec<(&str, String)> = Vec::new();
+    let mut rows: Vec<(String, String)> = Vec::new();
     match metric {
         ChartMetric::Tokens | ChartMetric::Input | ChartMetric::Output | ChartMetric::Cache => {
-            rows.push(("Requests", format::exact(totals.requests)));
-            rows.push(("Input", format::compact(totals.tokens.input)));
-            rows.push(("Output", format::compact(totals.tokens.output)));
-            rows.push(("Cache read", format::compact(totals.tokens.cache_read)));
-            rows.push(("Cache write", format::compact(totals.tokens.cache_write)));
+            rows.push((tr!("usage.metric_requests"), format::exact(totals.requests)));
+            rows.push((
+                tr!("usage.slice_input"),
+                format::compact(totals.tokens.input),
+            ));
+            rows.push((
+                tr!("usage.slice_output"),
+                format::compact(totals.tokens.output),
+            ));
+            rows.push((
+                tr!("usage.slice_cache_read"),
+                format::compact(totals.tokens.cache_read),
+            ));
+            rows.push((
+                tr!("usage.slice_cache_write"),
+                format::compact(totals.tokens.cache_write),
+            ));
         }
         ChartMetric::Requests => {
-            rows.push(("Requests", format::exact(totals.requests)));
-            rows.push(("Errors", format::exact(totals.errors)));
-            rows.push(("Tokens", format::compact(totals.tokens.total)));
+            rows.push((tr!("usage.metric_requests"), format::exact(totals.requests)));
+            rows.push((tr!("usage.metric_errors"), format::exact(totals.errors)));
+            rows.push((
+                tr!("usage.metric_tokens"),
+                format::compact(totals.tokens.total),
+            ));
         }
         ChartMetric::Cost => {
-            rows.push(("Cost", format::cost(totals.cost_usd)));
-            rows.push(("Requests", format::exact(totals.requests)));
-            rows.push(("Priced", format::exact(totals.priced_requests)));
+            rows.push((tr!("usage.stat_cost"), format::cost(totals.cost_usd)));
+            rows.push((tr!("usage.metric_requests"), format::exact(totals.requests)));
+            rows.push((tr!("usage.priced"), format::exact(totals.priced_requests)));
         }
         ChartMetric::Latency => {
             // The active register first, then the others when the bucket has
@@ -438,25 +453,25 @@ fn readout(
                         format::duration_ms(value),
                     ));
                 } else if choice == LatencyMetric::Average {
-                    rows.push(("Average", "—".into()));
+                    rows.push((tr!("usage.latency_average"), "—".into()));
                 }
             }
             rows.push((
-                "Measured",
+                tr!("usage.measured"),
                 format::exact(latency.samples.max(totals.duration_samples)),
             ));
-            rows.push(("Requests", format::exact(totals.requests)));
+            rows.push((tr!("usage.metric_requests"), format::exact(totals.requests)));
         }
         ChartMetric::Errors => {
-            rows.push(("Errors", format::exact(totals.errors)));
-            rows.push(("Stopped", format::exact(totals.aborted)));
-            rows.push(("Requests", format::exact(totals.requests)));
+            rows.push((tr!("usage.metric_errors"), format::exact(totals.errors)));
+            rows.push((tr!("usage.stopped"), format::exact(totals.aborted)));
+            rows.push((tr!("usage.metric_requests"), format::exact(totals.requests)));
         }
     }
     let footer = match metric {
         ChartMetric::Tokens | ChartMetric::Input | ChartMetric::Output | ChartMetric::Cache => {
             Some((
-                "Total",
+                tr!("usage.total"),
                 format!(
                     "{} ({})",
                     format::compact(totals.tokens.total),
@@ -466,7 +481,7 @@ fn readout(
         }
         ChartMetric::Errors => totals
             .error_rate()
-            .map(|rate| ("Failure rate", format::percent(rate))),
+            .map(|rate| (tr!("usage.failure_rate"), format::percent(rate))),
         _ => None,
     };
 
@@ -483,12 +498,12 @@ fn readout(
                 .child(bucket.stamp.clone()),
         );
     for (label, value) in rows {
-        body = body.child(readout_row(label, &value, theme));
+        body = body.child(readout_row(&label, &value, theme));
     }
     if let Some((label, value)) = footer {
         body = body
             .child(div().h(px(1.)).w_full().bg(theme.border))
-            .child(readout_row(label, &value, theme));
+            .child(readout_row(&label, &value, theme));
     }
 
     let fraction = (ix as f32 + 0.5) / count.max(1) as f32;
@@ -517,16 +532,16 @@ fn readout(
 }
 
 /// Static labels for the latency readout, with the active register marked.
-fn latency_row_label(choice: LatencyMetric, shown: bool) -> &'static str {
+fn latency_row_label(choice: LatencyMetric, shown: bool) -> String {
     match (choice, shown) {
-        (LatencyMetric::Average, false) => "Average",
-        (LatencyMetric::Average, true) => "Average (shown)",
-        (LatencyMetric::P50, false) => "P50",
-        (LatencyMetric::P50, true) => "P50 (shown)",
-        (LatencyMetric::P95, false) => "P95",
-        (LatencyMetric::P95, true) => "P95 (shown)",
-        (LatencyMetric::P99, false) => "P99",
-        (LatencyMetric::P99, true) => "P99 (shown)",
+        (LatencyMetric::Average, false) => tr!("usage.latency_average"),
+        (LatencyMetric::Average, true) => tr!("usage.latency_average_shown"),
+        (LatencyMetric::P50, false) => tr!("usage.latency_p50"),
+        (LatencyMetric::P50, true) => tr!("usage.latency_p50_shown"),
+        (LatencyMetric::P95, false) => tr!("usage.latency_p95"),
+        (LatencyMetric::P95, true) => tr!("usage.latency_p95_shown"),
+        (LatencyMetric::P99, false) => tr!("usage.latency_p99"),
+        (LatencyMetric::P99, true) => tr!("usage.latency_p99_shown"),
     }
 }
 

@@ -1,8 +1,9 @@
 use super::helpers::*;
 use super::*;
 
-use gpui::point;
+use gpui::{point, Pixels};
 
+use crate::sessions::cap_chars;
 use crate::shimmer::ShimmerText;
 
 /// Whether a workspace group is collapsed in the sidebar. The active
@@ -37,18 +38,18 @@ pub(crate) fn toggle_workspace_group(
     }
 }
 
-/// Sessions visible under one workspace group when it is not expanded.
+/// Sessions visible under one workspace group: at most `limit` rows, with
+/// the open session swapped into the last slot when it falls outside.
 pub(crate) fn visible_sessions_in_group(
     ixs: &[usize],
     sessions: &[SessionInfo],
-    expanded: bool,
+    limit: usize,
     active_path: &Option<PathBuf>,
 ) -> Vec<usize> {
-    if expanded || ixs.len() <= SIDEBAR_GROUP_SESSIONS_VISIBLE {
+    if ixs.len() <= limit {
         return ixs.to_vec();
     }
 
-    let limit = SIDEBAR_GROUP_SESSIONS_VISIBLE;
     let mut indices: Vec<usize> = ixs.iter().take(limit).copied().collect();
     if let Some(active) = active_path {
         if let Some(active_ix) = sessions.iter().position(|s| &s.path == active) {
@@ -68,12 +69,12 @@ pub(crate) fn visible_sessions_in_group(
 /// workspace the pi process runs in, pi's live title when it has already
 /// named the session, and a `now` stamp so it sorts to the top of the
 /// sidebar. A session that hasn't started (`session_started` = false — no
-/// user message sent yet) gets no placeholder: a draft is not listed
-/// (Waku drafts parity).
+/// user message sent yet) gets no placeholder: a draft is not listed.
 pub(crate) fn sessions_with_placeholder(
     sessions: &[SessionInfo],
     current_path: Option<&Path>,
     current_title: Option<&str>,
+    current_first_message: Option<&str>,
     current_workspace: Option<&Path>,
     session_started: bool,
 ) -> Vec<SessionInfo> {
@@ -90,6 +91,20 @@ pub(crate) fn sessions_with_placeholder(
     let workspace = current_workspace
         .map(Path::to_path_buf)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    // The placeholder carries the same two lines a disk row would: pi's live
+    // title (or the first message when pi hasn't named it yet) over the first
+    // message preview.
+    let first_message = cap_chars(current_first_message.unwrap_or_default(), 110);
+    let title = current_title
+        .filter(|title| !title.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            if first_message.is_empty() {
+                tr!("menu.new_task")
+            } else {
+                cap_chars(current_first_message.unwrap_or_default(), 80)
+            }
+        });
     rows.insert(
         0,
         SessionInfo {
@@ -100,11 +115,8 @@ pub(crate) fn sessions_with_placeholder(
                 .to_string_lossy()
                 .into_owned(),
             cwd: workspace,
-            title: current_title
-                .filter(|title| !title.is_empty())
-                .unwrap_or("New Task")
-                .to_string(),
-            first_message: String::new(),
+            title,
+            first_message,
             modified: SystemTime::now(),
         },
     );
@@ -115,15 +127,23 @@ pub(crate) fn sessions_with_placeholder(
 /// workspace appears because the user added it, not because pi happens to
 /// have sessions there; sessions in unlisted folders are omitted entirely
 /// (they stay on disk). Each group shows at most
-/// [`SIDEBAR_GROUP_SESSIONS_VISIBLE`] sessions until expanded.
+/// [`SIDEBAR_GROUP_SESSIONS_VISIBLE`] sessions plus one step of
+/// [`SIDEBAR_GROUP_SESSIONS_VISIBLE`] per "Show more" click, so a long
+/// history never lands in one go.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_sidebar_rows(
     sessions: &[SessionInfo],
     workspaces: &[PathBuf],
     working_label: &str,
     collapsed_workspaces: &HashSet<String>,
     expanded_workspace_groups: &HashSet<String>,
-    expanded_session_groups: &HashSet<String>,
+    expanded_session_groups: &HashMap<String, usize>,
+    pinned: &HashSet<PathBuf>,
     active_path: &Option<PathBuf>,
+    // Sessions with a live pi process that is currently mid-run. A running
+    // session stays visible under a collapsed group header, like the open
+    // session, so active work is never lost behind a collapse.
+    running_paths: &HashSet<PathBuf>,
 ) -> Vec<SideRow> {
     let mut side_rows: Vec<SideRow> = Vec::new();
     // One group per listed project, in the order the user added them — an
@@ -146,6 +166,14 @@ pub(crate) fn build_sidebar_rows(
             ixs.push(ix);
         }
     }
+    // Pinned sessions lead their project group; recency order is preserved
+    // within the pinned and unpinned partitions (the sort is stable). Doing
+    // this here rather than in `load_sessions` keeps an Orbit-owned
+    // preference out of the pi-store scan — and means a pinned session can
+    // never be hidden by the per-group truncation below.
+    for (_, _, ixs) in groups.iter_mut() {
+        ixs.sort_by_key(|&ix| !pinned.contains(&sessions[ix].path));
+    }
     for (label, cwd, ixs) in groups {
         let collapsed = is_workspace_group_collapsed(
             &label,
@@ -161,37 +189,110 @@ pub(crate) fn build_sidebar_rows(
         });
         if collapsed {
             // A collapsed group hides its sessions — except the open one,
-            // which stays pinned under the header so the sidebar always
-            // shows where the live session lives.
-            if let Some(active) = active_path {
-                if let Some(&ix) = ixs.iter().find(|&&ix| sessions[ix].path == *active) {
+            // any running (busy background) ones, and pinned ones. The live
+            // session and a deliberate mark stay reachable under the header.
+            // `ixs` is already pinned-first, so the pinned rows keep their
+            // place at the top.
+            for &ix in &ixs {
+                let open = active_path.as_deref() == Some(sessions[ix].path.as_path());
+                let running = running_paths.contains(&sessions[ix].path);
+                if open || running || pinned.contains(&sessions[ix].path) {
                     side_rows.push(SideRow::Session(ix));
                 }
             }
             continue;
         }
 
-        let sessions_expanded = expanded_session_groups.contains(&label);
-        let visible = visible_sessions_in_group(&ixs, sessions, sessions_expanded, active_path);
+        // Sessions start at the base cap and grow one step per "Show more"
+        // click, so a group with a long history reveals ten rows at a time.
+        let extra = expanded_session_groups.get(&label).copied().unwrap_or(0);
+        let limit = SIDEBAR_GROUP_SESSIONS_VISIBLE.saturating_add(extra);
+        let visible = visible_sessions_in_group(&ixs, sessions, limit, active_path);
         for ix in &visible {
             side_rows.push(SideRow::Session(*ix));
         }
 
-        if sessions_expanded {
-            if ixs.len() > SIDEBAR_GROUP_SESSIONS_VISIBLE {
-                side_rows.push(SideRow::ShowLess { label });
-            }
-        } else if ixs.len() > SIDEBAR_GROUP_SESSIONS_VISIBLE {
-            let hidden_count = ixs.len().saturating_sub(visible.len());
-            if hidden_count > 0 {
-                side_rows.push(SideRow::ShowMore {
-                    label,
-                    count: hidden_count,
-                });
-            }
+        let hidden_count = ixs.len().saturating_sub(visible.len());
+        if hidden_count > 0 {
+            side_rows.push(SideRow::ShowMore {
+                label: label.clone(),
+                count: hidden_count.min(SIDEBAR_GROUP_SESSIONS_VISIBLE),
+                // Past the base cap the same row carries the collapse
+                // affordance on its right edge, so the group never needs a
+                // second toggle row.
+                can_collapse: extra > 0,
+            });
+        } else if extra > 0 {
+            // Everything is shown — keep one quiet row to collapse the group
+            // back to the base cap.
+            side_rows.push(SideRow::ShowLess { label });
         }
     }
     side_rows
+}
+
+/// The active workspace's header pinned over the session list, plus how far
+/// the next group's header has pushed it up.
+pub(crate) struct StickyHeader {
+    /// Row index of the pinned [`SideRow::Workspace`] header.
+    pub ix: usize,
+    /// Pixels to shift the pinned row up (0 while it sits at the list top).
+    pub top_offset: Pixels,
+}
+
+/// Resolve the sticky header for the session list. Only the active
+/// workspace's group pins — and only while it is expanded — so the open
+/// session's project stays named while its own sessions scroll. The header
+/// scrolls away with its section once the next group's header takes over
+/// (same behaviour as the side pane's sticky file header).
+pub(crate) fn sticky_sidebar_header(
+    list: &ListState,
+    rows: &[SideRow],
+    active_label: &str,
+) -> Option<StickyHeader> {
+    let header_ix = rows.iter().position(|row| {
+        matches!(
+            row,
+            SideRow::Workspace {
+                label,
+                collapsed: false,
+                ..
+            } if label == active_label
+        )
+    })?;
+    let scroll_top = list.logical_scroll_top();
+    if scroll_top.item_ix < header_ix {
+        // The real header has not reached the top of the viewport yet.
+        return None;
+    }
+    // The section ends at the next workspace header (or the list end).
+    let next_header_ix = rows[header_ix + 1..]
+        .iter()
+        .position(|row| matches!(row, SideRow::Workspace { .. }))
+        .map(|offset| header_ix + 1 + offset);
+    if next_header_ix.is_some_and(|next| scroll_top.item_ix >= next) {
+        // The section scrolled fully past; its header belongs above the view.
+        return None;
+    }
+    if scroll_top.item_ix == header_ix && scroll_top.offset_in_item <= px(0.) {
+        // The real header is exactly at the top — nothing to pin over it.
+        return None;
+    }
+    // Push the pinned header up as the next group's header arrives. Item
+    // bounds are in window coordinates, so compare against the list's
+    // viewport; unmeasured items are too far away to need a push.
+    let top_offset = next_header_ix
+        .and_then(|next| {
+            let bounds = list.bounds_for_item(next)?;
+            let viewport = list.viewport_bounds();
+            let y_in_viewport = bounds.origin.y - viewport.origin.y;
+            (y_in_viewport < bounds.size.height).then_some(y_in_viewport - bounds.size.height)
+        })
+        .unwrap_or(px(0.));
+    Some(StickyHeader {
+        ix: header_ix,
+        top_offset,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -203,6 +304,9 @@ pub(crate) fn render_side_row(
     this: &Entity<OrbitApp>,
     agent_running: bool,
     running_paths: &Rc<HashSet<PathBuf>>,
+    // Sessions the user pinned — they lead their project group and take a
+    // small pin glyph on the title line.
+    pinned_paths: &Rc<HashSet<PathBuf>>,
     // Every session with a live (running or warm-idle) pi process. Guards
     // delete, which would otherwise let an alive process recreate the file.
     live_paths: &Rc<HashSet<PathBuf>>,
@@ -330,24 +434,36 @@ pub(crate) fn render_side_row(
                 )
                 .into_any_element()
         }
-        SideRow::ShowMore { label, count } => {
+        SideRow::ShowMore {
+            label,
+            count,
+            can_collapse,
+        } => {
             let this = this.clone();
             let label_for_click = label.clone();
-            div()
-                .w_full()
-                .h(px(26.))
-                .pl(px(22.))
-                .pr_2()
+            // One click reveals exactly one step (or the tail remainder), so
+            // the group can never overshoot its session count.
+            let step = *count;
+            let can_collapse = *can_collapse;
+            let this_for_collapse = this.clone();
+            let label_for_collapse = label.clone();
+            // Left side is the whole "show more" target; the collapse
+            // chevron on the right is its own quiet button.
+            let more = div()
+                .flex_1()
+                .h_full()
+                .min_w_0()
                 .flex()
                 .items_center()
                 .gap(px(6.))
-                .rounded_md()
                 .cursor_pointer()
-                .hover(|s| s.bg(theme.bg_hover))
                 .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                     let label = label_for_click.clone();
                     this.update(cx, |app, cx| {
-                        app.expanded_session_groups.insert(label);
+                        app.expanded_session_groups
+                            .entry(label)
+                            .and_modify(|extra| *extra += step)
+                            .or_insert(step);
                         cx.notify();
                     });
                 })
@@ -356,9 +472,41 @@ pub(crate) fn render_side_row(
                     div()
                         .text_size(theme.ui_px(11.))
                         .text_color(theme.text_3)
-                        .child(format!("Show {count} more")),
-                )
-                .into_any_element()
+                        .child(tr!("sidebar.show_count_more", count = count)),
+                );
+            let mut row = div()
+                .w_full()
+                .h(px(26.))
+                .pl(px(22.))
+                .pr(px(4.))
+                .flex()
+                .items_center()
+                .rounded_md()
+                .hover(|s| s.bg(theme.bg_hover))
+                .child(more);
+            if can_collapse {
+                row = row.child(
+                    div()
+                        .flex_none()
+                        .size(px(18.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme.overlay))
+                        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                            cx.stop_propagation();
+                            let label = label_for_collapse.clone();
+                            this_for_collapse.update(cx, |app, cx| {
+                                app.expanded_session_groups.remove(&label);
+                                cx.notify();
+                            });
+                        })
+                        .child(icon("icons/chevron-up.svg", 11., theme.text_3)),
+                );
+            }
+            row.into_any_element()
         }
         SideRow::ShowLess { label } => {
             let this = this.clone();
@@ -386,7 +534,7 @@ pub(crate) fn render_side_row(
                     div()
                         .text_size(theme.ui_px(11.))
                         .text_color(theme.text_3)
-                        .child("Show less"),
+                        .child(tr!("sidebar.show_less")),
                 )
                 .into_any_element()
         }
@@ -395,8 +543,9 @@ pub(crate) fn render_side_row(
             let session_for_click = session.clone();
             let active = active_path == Some(session.path.as_path());
             // The open session runs live; parked (background) sessions run
-            // in their own pi processes — both get the loader (Waku).
+            // in their own pi processes — both get the loader.
             let running = (active && agent_running) || running_paths.contains(&session.path);
+            let pinned = pinned_paths.contains(&session.path);
             let this = this.clone();
             let this_for_row = this.clone();
             let this_for_menu = this.clone();
@@ -408,11 +557,12 @@ pub(crate) fn render_side_row(
             // title (shadcn's Marker + `shimmer`); row actions stay available
             // on hover.
             let title = session_title(*ix, session.title.clone().into(), theme, active, running);
-            // Two-line row (title + actions, then preview · age),
-            // indented under its workspace group so the list reads as a
+            // Indented under its workspace group so the list reads as a
             // tree. The open session takes the `active` fill with `active_fg`
             // ink — the same selected-destination grammar as the nav rows;
-            // row actions are revealed on hover.
+            // row actions are revealed on hover. A unique first-message
+            // preview adds a second line; a title that already is the prompt
+            // stays one line.
             // Outer item carries the inter-row spacing (padding) and the click
             // handler; the inner card holds the background/hover so the gap
             // between cards stays clear. Padding (not margin) is used because
@@ -440,8 +590,13 @@ pub(crate) fn render_side_row(
                 .gap(px(6.))
                 .when(active, |card| card.bg(theme.active))
                 .when(!active, |card| card.hover(|s| s.bg(theme.bg_hover)));
-            // Two-line text column: title + actions on top, then the
-            // preview with the age pinned to its right end.
+            // Text column: title + actions, then the first-message preview
+            // with the age. Every row with a message keeps the same two-line
+            // shape — even when the title repeats it — so the list scans
+            // evenly. Only a row without a message (a just-named session pi
+            // has not flushed) keeps the age on the title line.
+            let age = sessions::relative_time(session.modified);
+            let show_preview = !session.first_message.trim().is_empty();
             card = card.child(
                 div()
                     .flex_1()
@@ -463,6 +618,9 @@ pub(crate) fn render_side_row(
                             .items_center()
                             .gap(px(6.))
                             .when(running, |line| line.child(running_loader(theme, *ix)))
+                            .when(pinned, |line| {
+                                line.child(icon("icons/pin.svg", 16., theme.text_3))
+                            })
                             .child(title)
                             .child(session_menu_button(
                                 *ix,
@@ -472,35 +630,46 @@ pub(crate) fn render_side_row(
                                 deletable,
                                 this_for_menu,
                                 theme,
-                            )),
+                            ))
+                            .when(!show_preview, |line| {
+                                line.child(
+                                    div()
+                                        .flex_none()
+                                        .text_size(theme.ui_px(10.5))
+                                        .text_color(theme.text_3)
+                                        .child(age.clone()),
+                                )
+                            }),
                     )
                     // Line 2 — first-message preview with the age at the very
                     // end, both tertiary metadata (accent is reserved for the
                     // running signal, not timestamps).
-                    .child(
-                        div()
-                            .w_full()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_size(theme.ui_px(11.))
-                                    .line_height(px(14.))
-                                    .text_color(theme.text_3)
-                                    .child(session.first_message.clone()),
-                            )
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .text_size(theme.ui_px(10.5))
-                                    .text_color(theme.text_3)
-                                    .child(sessions::relative_time(session.modified)),
-                            ),
-                    ),
+                    .when(show_preview, |col| {
+                        col.child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_size(theme.ui_px(11.))
+                                        .line_height(px(14.))
+                                        .text_color(theme.text_3)
+                                        .child(session.first_message.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_size(theme.ui_px(10.5))
+                                        .text_color(theme.text_3)
+                                        .child(age),
+                                ),
+                        )
+                    }),
             );
             row = row.child(card);
             row.into_any_element()
@@ -671,6 +840,7 @@ pub(crate) fn session_menu_popup(
 ) -> AnyElement {
     let deletable = menu.deletable;
     let confirm = menu.confirm_delete;
+    let pinned = crate::pins::contains(&menu.path);
 
     let body: AnyElement = if confirm {
         // Delete confirmation — the destructive step gets a named victim.
@@ -689,13 +859,13 @@ pub(crate) fn session_menu_popup(
                             .text_size(theme.ui_px(12.5))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.text)
-                            .child("Delete this session?"),
+                            .child(tr!("sidebar.delete_this_session")),
                     )
                     .child(
                         div()
                             .text_size(theme.ui_px(11.))
                             .text_color(theme.text_2)
-                            .child("Removes the session file from disk."),
+                            .child(tr!("sidebar.removes_the_session_file_from_disk")),
                     ),
             )
             .child(
@@ -723,7 +893,7 @@ pub(crate) fn session_menu_popup(
                                     this.update(cx, |app, cx| app.on_menu_cancel(cx));
                                 }
                             })
-                            .child("Cancel"),
+                            .child(tr!("sidebar.cancel")),
                     )
                     .child(
                         div()
@@ -745,7 +915,7 @@ pub(crate) fn session_menu_popup(
                                     this.update(cx, |app, cx| app.on_menu_delete_confirm(cx));
                                 }
                             })
-                            .child("Delete"),
+                            .child(tr!("sidebar.delete")),
                     ),
             )
             .into_any_element()
@@ -755,9 +925,22 @@ pub(crate) fn session_menu_popup(
             .flex()
             .flex_col()
             .child(menu_item(
+                "menu-pin",
+                "icons/pin.svg",
+                if pinned {
+                    tr!("sidebar.unpin_session")
+                } else {
+                    tr!("sidebar.pin_session")
+                },
+                theme,
+                this.clone(),
+                false,
+                |app, cx| app.on_menu_toggle_pin(cx),
+            ))
+            .child(menu_item(
                 "menu-copy-path",
                 "icons/copy.svg",
-                "Copy path",
+                tr!("sidebar.copy_path"),
                 theme,
                 this.clone(),
                 false,
@@ -766,18 +949,27 @@ pub(crate) fn session_menu_popup(
             .child(menu_item(
                 "menu-reveal",
                 "icons/folder.svg",
-                "Reveal in Finder",
+                tr!("sidebar.reveal_in_finder"),
                 theme,
                 this.clone(),
                 false,
                 |app, cx| app.on_menu_reveal(cx),
+            ))
+            .child(menu_item(
+                "menu-clone",
+                "icons/git-fork.svg",
+                tr!("sidebar.clone_session"),
+                theme,
+                this.clone(),
+                false,
+                |app, cx| app.on_menu_clone_session(cx),
             ))
             .when(deletable, |menu| {
                 menu.child(div().h(px(1.)).w_full().bg(theme.border).my(px(4.)))
                     .child(menu_item(
                         "menu-delete",
                         "icons/trash.svg",
-                        "Delete session…",
+                        tr!("sidebar.delete_session_menu"),
                         theme,
                         this.clone(),
                         true,
@@ -910,7 +1102,7 @@ pub(crate) fn workspace_menu_popup(this: Entity<OrbitApp>, theme: Theme) -> AnyE
         .child(menu_item(
             "wm-copy-path",
             "icons/copy.svg",
-            "Copy path",
+            tr!("sidebar.copy_path"),
             theme,
             this.clone(),
             false,
@@ -920,7 +1112,7 @@ pub(crate) fn workspace_menu_popup(this: Entity<OrbitApp>, theme: Theme) -> AnyE
         .child(menu_item(
             "wm-remove",
             "icons/minus.svg",
-            "Remove from sidebar",
+            tr!("sidebar.remove_from_sidebar"),
             theme,
             this.clone(),
             false,
@@ -936,15 +1128,20 @@ pub(crate) fn workspace_menu_popup(this: Entity<OrbitApp>, theme: Theme) -> AnyE
         .into_any_element()
 }
 
-pub(crate) fn menu_item<C: Fn(&mut OrbitApp, &mut Context<OrbitApp>) + 'static>(
+pub(crate) fn menu_item<C, L>(
     id: &'static str,
     icon_path: &'static str,
-    label: &'static str,
+    label: L,
     theme: Theme,
     this: Entity<OrbitApp>,
     danger: bool,
     on_click: C,
-) -> impl IntoElement + use<C> {
+) -> impl IntoElement + use<C, L>
+where
+    C: Fn(&mut OrbitApp, &mut Context<OrbitApp>) + 'static,
+    L: Into<SharedString>,
+{
+    let label: SharedString = label.into();
     let on_click = on_click;
     let (hover_bg, text_color, icon_color) = if danger {
         (theme.stop_red_hover, theme.send_fg, theme.send_fg)
@@ -1017,14 +1214,14 @@ pub(crate) fn empty_sessions_state(theme: Theme) -> impl IntoElement + use<> {
                 .text_size(theme.ui_px(12.5))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text_2)
-                .child("No projects yet"),
+                .child(tr!("sidebar.no_projects_yet")),
         )
         .child(
             div()
                 .text_size(theme.ui_px(11.5))
                 .text_color(theme.text_3)
                 .text_align(TextAlign::Center)
-                .child("Pick a folder to start your first task."),
+                .child(tr!("sidebar.pick_a_folder_to_start_your_first_task")),
         )
 }
 
@@ -1084,6 +1281,32 @@ impl OrbitApp {
         cx.notify();
     }
 
+    /// Duplicate the session the open row menu belongs to, so it shows up as
+    /// its own row to branch off. The source is only read, so — unlike Delete —
+    /// this is safe for a session with a live pi process.
+    pub(super) fn on_menu_clone_session(&mut self, cx: &mut Context<Self>) {
+        let Some(menu) = self.session_menu.take() else {
+            return;
+        };
+        match sessions::clone_session_file(&menu.path) {
+            Ok(_) => {
+                self.sessions = sessions::load_sessions();
+            }
+            Err(err) => self.toast_error(tr!("sidebar.clone_failed", error = err)),
+        }
+        cx.notify();
+    }
+
+    /// Pin or unpin the session the open row menu belongs to. The pin lives
+    /// in Orbit's own store (`~/.orbit-pi/pinned-sessions.json`); pi's
+    /// session file is never touched.
+    pub(super) fn on_menu_toggle_pin(&mut self, cx: &mut Context<Self>) {
+        if let Some(menu) = self.session_menu.take() {
+            crate::pins::toggle(&menu.path);
+        }
+        cx.notify();
+    }
+
     /// First Delete click: swap the popup to the confirmation state.
     pub(super) fn on_menu_delete_request(&mut self, cx: &mut Context<Self>) {
         if let Some(menu) = self.session_menu.as_mut() {
@@ -1097,14 +1320,15 @@ impl OrbitApp {
         if let Some(menu) = self.session_menu.take() {
             // Defensive: a warm parked process would recreate the file.
             if self.lives.contains_key(&menu.path) {
-                self.toast_warning("Session has a live process — switch away and wait, then delete");
+                self.toast_warning(tr!("sidebar.live_process_delete"));
                 cx.notify();
                 return;
             }
             if let Err(err) = fs::remove_file(&menu.path) {
-                self.toast_error(format!("delete failed: {err}"));
+                self.toast_error(tr!("sidebar.delete_failed", error = err));
             } else {
-                self.toast_info("Session deleted");
+                // A deleted session must not leave a stale pin behind.
+                crate::pins::remove(&menu.path);
             }
             self.sessions = sessions::load_sessions();
             cx.notify();
@@ -1174,7 +1398,6 @@ impl OrbitApp {
         self.collapsed_workspaces.remove(&menu.label);
         self.expanded_workspace_groups.remove(&menu.label);
         self.expanded_session_groups.remove(&menu.label);
-        self.toast_info(format!("Removed {} from the sidebar", menu.label));
         cx.notify();
     }
 

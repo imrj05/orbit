@@ -185,7 +185,11 @@ impl AskReplayState {
                 }
                 AskAnswer::Custom(text) => {
                     self.pending_custom = Some(text);
-                    AskReplayReply::Value(format!("{}. Type something.", options_len + 1))
+                    AskReplayReply::Value(format!(
+                        "{}. {}",
+                        options_len + 1,
+                        tr!("view.type_something")
+                    ))
                 }
                 _ => AskReplayReply::Cancel,
             }

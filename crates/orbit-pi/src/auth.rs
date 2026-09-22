@@ -343,7 +343,7 @@ impl AuthManager {
         error: Option<&str>,
     ) {
         if !success {
-            let message = error.unwrap_or("login failed").to_string();
+            let message = error.unwrap_or(&tr!("auth.login_failed")).to_string();
             if let Some(session) = self.login.as_mut() {
                 session.phase = LoginPhase::Error;
                 session.deadline = None;
@@ -533,7 +533,7 @@ impl AuthManager {
                 session.phase = LoginPhase::Cancelled;
                 session.deadline = None;
                 session.finished_at = Some(Instant::now());
-                session.message = Some("interrupted by restart".into());
+                session.message = Some(tr!("auth.interrupted_by_restart").into());
             }
         }
         self.support = AuthSupport::Unknown;
@@ -573,10 +573,7 @@ impl AuthManager {
             session.phase = LoginPhase::Error;
             session.deadline = None;
             session.finished_at = Some(now);
-            session.error = Some((
-                AuthErrorCode::Timeout,
-                "The sign-in request timed out. Try again.".into(),
-            ));
+            session.error = Some((AuthErrorCode::Timeout, tr!("auth.sign_in_timed_out").into()));
             effects.push(AuthEffect::CancelLogin(session.id.clone()));
         }
         effects
@@ -646,7 +643,7 @@ impl AuthManager {
                     session.phase = LoginPhase::Succeeded;
                     session.finished_at = Some(Instant::now());
                     session.error = None;
-                    session.message = Some("completed while Orbit restarted".into());
+                    session.message = Some(tr!("auth.completed_while_restarting").into());
                 }
             }
             self.recovering = None;

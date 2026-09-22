@@ -146,7 +146,7 @@ test("OllamaCloudParser handles zero usage as a real value, not missing", () => 
 });
 
 test("google/ollama are registered; unknown ids report unsupported", async () => {
-  for (const id of ["google", "google-vertex", "ollama"]) {
+  for (const id of ["google", "google-vertex", "ollama", "ollama-cloud"]) {
     assert.equal(typeof quotaAdapters[id], "function", `${id} registered`);
   }
   const report = await quotaReport("acme-llm");
@@ -205,6 +205,33 @@ test("ollama with a session parses the legacy settings page", async () => {
       assert.equal(session.usedPercent, 42.5);
       assert.equal(session.resetsAt, Date.parse("2026-09-12T16:30:00Z"));
       assert.equal(weekly.usedPercent, 12);
+    },
+  );
+});
+
+test("ollama-cloud (third-party provider id) uses the stored cloud key", async () => {
+  await withAuth(
+    { "ollama-cloud": { type: "api_key", key: "real-cloud-key" } },
+    async () => {
+      globalThis.fetch = jsonFetch({ limits: { monthly: { usage: 0.4 } } });
+      const report = await quotaReport("ollama-cloud");
+      assert.equal(report.kind, "subscription");
+      assert.equal(report.windows.find((w) => w.id === "monthly").usedPercent, 40);
+    },
+  );
+});
+
+test("ollama-cloud falls back to the shared session cookie", async () => {
+  await withAuth(
+    { "ollama-cloud-session": { type: "ollama_cloud_session", session: "__Secure-session=abc123" } },
+    async () => {
+      globalThis.fetch = htmlFetch(
+        `<h2>Cloud Usage</h2> (Pro)
+        <div aria-label="Session usage 7% used"></div>`,
+      );
+      const report = await quotaReport("ollama-cloud");
+      assert.equal(report.kind, "subscription");
+      assert.equal(report.windows.find((w) => w.id === "session").usedPercent, 7);
     },
   );
 });

@@ -1,6 +1,8 @@
 use super::sidebar::*;
 use super::*;
 
+use gpui::ListOffset;
+
 fn store_session(name: &str, cwd: &str) -> SessionInfo {
     SessionInfo {
         path: PathBuf::from(format!("/store/{name}.jsonl")),
@@ -43,8 +45,10 @@ fn collapsed_workspace_pins_the_open_session() {
         "alpha",
         &HashSet::new(),
         &HashSet::new(),
+        &HashMap::new(),
         &HashSet::new(),
         &active,
+        &HashSet::new(),
     );
     let visible = session_row_paths(&rows, &sessions);
     assert!(
@@ -69,6 +73,39 @@ fn collapsed_workspace_pins_the_open_session() {
 }
 
 #[test]
+fn collapsed_workspace_keeps_a_running_session_visible() {
+    // A background session mid-run is live work. Collapsing its workspace
+    // keeps that one row under the header — like the open session — while
+    // its idle siblings disappear.
+    let sessions = vec![
+        store_session("a1", "/work/alpha"),
+        store_session("b1", "/work/beta"),
+        store_session("b2", "/work/beta"),
+    ];
+    let running: HashSet<PathBuf> = HashSet::from([sessions[2].path.clone()]);
+    let rows = build_sidebar_rows(
+        &sessions,
+        &workspace_paths(&["/work/alpha", "/work/beta"]),
+        "alpha",
+        &HashSet::new(),
+        &HashSet::new(),
+        &HashMap::new(),
+        &HashSet::new(),
+        &None,
+        &running,
+    );
+    let visible = session_row_paths(&rows, &sessions);
+    assert!(
+        visible.contains(&sessions[2].path),
+        "a running session stays visible in a collapsed workspace"
+    );
+    assert!(
+        !visible.contains(&sessions[1].path),
+        "its idle siblings stay hidden while the group is collapsed"
+    );
+}
+
+#[test]
 fn collapsed_workspace_without_the_open_session_stays_closed() {
     let sessions = vec![
         store_session("a1", "/work/alpha"),
@@ -81,8 +118,10 @@ fn collapsed_workspace_without_the_open_session_stays_closed() {
         "alpha",
         &HashSet::new(),
         &HashSet::new(),
+        &HashMap::new(),
         &HashSet::new(),
         &active,
+        &HashSet::new(),
     );
     assert!(
         !session_row_paths(&rows, &sessions).contains(&sessions[1].path),
@@ -107,8 +146,10 @@ fn manually_collapsed_working_workspace_pins_the_open_session() {
         "alpha",
         &collapsed,
         &HashSet::new(),
+        &HashMap::new(),
         &HashSet::new(),
         &active,
+        &HashSet::new(),
     );
     let visible = session_row_paths(&rows, &sessions);
     assert!(
@@ -135,8 +176,10 @@ fn unlisted_workspace_stays_out_of_the_sidebar() {
         "alpha",
         &HashSet::new(),
         &HashSet::new(),
+        &HashMap::new(),
         &HashSet::new(),
         &None,
+        &HashSet::new(),
     );
     assert!(
         !rows
@@ -161,8 +204,10 @@ fn listed_workspace_without_sessions_gets_a_header() {
         "alpha",
         &HashSet::new(),
         &HashSet::new(),
+        &HashMap::new(),
         &HashSet::new(),
         &None,
+        &HashSet::new(),
     );
     assert!(
         rows.iter().any(|r| matches!(
@@ -188,8 +233,10 @@ fn groups_follow_the_project_list_order() {
         "none",
         &HashSet::new(),
         &HashSet::new(),
+        &HashMap::new(),
         &HashSet::new(),
         &None,
+        &HashSet::new(),
     );
     let labels: Vec<&str> = rows
         .iter()
@@ -199,4 +246,263 @@ fn groups_follow_the_project_list_order() {
         })
         .collect();
     assert_eq!(labels, vec!["alpha", "beta"]);
+}
+
+#[test]
+fn pinned_sessions_lead_their_group_and_beat_truncation() {
+    // More sessions in the group than fit collapsed. The pinned session is
+    // the oldest row, so without pinning it would be truncated away; the pin
+    // must lift it to the top of its group and keep it visible, while the
+    // rest stay in recency order.
+    let sessions: Vec<SessionInfo> = (0..SIDEBAR_GROUP_SESSIONS_VISIBLE + 2)
+        .map(|i| store_session(&format!("a{i}"), "/work/alpha"))
+        .collect();
+    let oldest = sessions.last().unwrap().path.clone();
+    let pinned: HashSet<PathBuf> = HashSet::from([oldest.clone()]);
+    let rows = build_sidebar_rows(
+        &sessions,
+        &workspace_paths(&["/work/alpha"]),
+        "alpha",
+        &HashSet::new(),
+        &HashSet::new(),
+        &HashMap::new(),
+        &pinned,
+        &None,
+        &HashSet::new(),
+    );
+    let visible = session_row_paths(&rows, &sessions);
+    assert_eq!(visible.first(), Some(&oldest), "the pin leads the group");
+    assert_eq!(
+        visible.len(),
+        SIDEBAR_GROUP_SESSIONS_VISIBLE,
+        "the group still shows its visible cap"
+    );
+    assert_eq!(
+        visible[1], sessions[0].path,
+        "unpinned rows keep recency order after the pin"
+    );
+}
+
+#[test]
+fn pinned_sessions_stay_visible_in_a_collapsed_workspace() {
+    // Foreign projects are collapsed by default; a pin is a deliberate mark
+    // and must survive that — under its header, alongside the open row.
+    let sessions = vec![
+        store_session("b1", "/work/beta"),
+        store_session("b2", "/work/beta"),
+    ];
+    let pinned: HashSet<PathBuf> = HashSet::from([sessions[1].path.clone()]);
+    let rows = build_sidebar_rows(
+        &sessions,
+        &workspace_paths(&["/work/alpha", "/work/beta"]),
+        "alpha",
+        &HashSet::new(),
+        &HashSet::new(),
+        &HashMap::new(),
+        &pinned,
+        &None,
+        &HashSet::new(),
+    );
+    let visible = session_row_paths(&rows, &sessions);
+    assert_eq!(visible, vec![sessions[1].path.clone()]);
+}
+
+#[test]
+fn show_more_reveals_one_step_at_a_time() {
+    // A long history must never land in one go: each "Show more" click
+    // reveals one step of ten. Past the base cap the same row carries the
+    // collapse affordance, so the group never needs two toggle rows.
+    let total = SIDEBAR_GROUP_SESSIONS_VISIBLE * 3;
+    let sessions: Vec<SessionInfo> = (0..total)
+        .map(|i| store_session(&format!("a{i}"), "/work/alpha"))
+        .collect();
+    let workspaces = workspace_paths(&["/work/alpha"]);
+
+    // `(step, can_collapse)`: what one click reveals and whether the row
+    // also offers the right-side collapse chevron.
+    let show_more = |rows: &[SideRow]| -> Option<(usize, bool)> {
+        rows.iter().find_map(|r| match r {
+            SideRow::ShowMore {
+                count,
+                can_collapse,
+                ..
+            } => Some((*count, *can_collapse)),
+            _ => None,
+        })
+    };
+    let show_less =
+        |rows: &[SideRow]| -> bool { rows.iter().any(|r| matches!(r, SideRow::ShowLess { .. })) };
+
+    // Fresh group: the base cap, one step on offer, nothing to collapse.
+    let rows = build_sidebar_rows(
+        &sessions,
+        &workspaces,
+        "alpha",
+        &HashSet::new(),
+        &HashSet::new(),
+        &HashMap::new(),
+        &HashSet::new(),
+        &None,
+        &HashSet::new(),
+    );
+    assert_eq!(
+        session_row_paths(&rows, &sessions).len(),
+        SIDEBAR_GROUP_SESSIONS_VISIBLE
+    );
+    assert_eq!(
+        show_more(&rows),
+        Some((SIDEBAR_GROUP_SESSIONS_VISIBLE, false))
+    );
+    assert!(!show_less(&rows), "nothing to collapse before expanding");
+
+    // One click in: two steps visible, another step (not the rest) on offer,
+    // and the same row now carries the collapse chevron.
+    let expanded = HashMap::from([("alpha".to_string(), SIDEBAR_GROUP_SESSIONS_VISIBLE)]);
+    let rows = build_sidebar_rows(
+        &sessions,
+        &workspaces,
+        "alpha",
+        &HashSet::new(),
+        &HashSet::new(),
+        &expanded,
+        &HashSet::new(),
+        &None,
+        &HashSet::new(),
+    );
+    assert_eq!(
+        session_row_paths(&rows, &sessions).len(),
+        SIDEBAR_GROUP_SESSIONS_VISIBLE * 2
+    );
+    assert_eq!(
+        show_more(&rows),
+        Some((SIDEBAR_GROUP_SESSIONS_VISIBLE, true))
+    );
+    assert!(
+        !show_less(&rows),
+        "the collapse lives on the show-more row, not a second row"
+    );
+
+    // Fully expanded: the whole group, no step left, one quiet collapse row.
+    let expanded = HashMap::from([("alpha".to_string(), total - SIDEBAR_GROUP_SESSIONS_VISIBLE)]);
+    let rows = build_sidebar_rows(
+        &sessions,
+        &workspaces,
+        "alpha",
+        &HashSet::new(),
+        &HashSet::new(),
+        &expanded,
+        &HashSet::new(),
+        &None,
+        &HashSet::new(),
+    );
+    assert_eq!(session_row_paths(&rows, &sessions).len(), total);
+    assert_eq!(show_more(&rows), None);
+    assert!(show_less(&rows));
+}
+
+#[test]
+fn show_more_step_never_overshoots_the_tail() {
+    // The last step is trimmed to the sessions actually left, so the stored
+    // expansion can never push the group past its own count.
+    let total = SIDEBAR_GROUP_SESSIONS_VISIBLE + 3;
+    let sessions: Vec<SessionInfo> = (0..total)
+        .map(|i| store_session(&format!("a{i}"), "/work/alpha"))
+        .collect();
+    let rows = build_sidebar_rows(
+        &sessions,
+        &workspace_paths(&["/work/alpha"]),
+        "alpha",
+        &HashSet::new(),
+        &HashSet::new(),
+        &HashMap::new(),
+        &HashSet::new(),
+        &None,
+        &HashSet::new(),
+    );
+    let step = rows.iter().find_map(|r| match r {
+        SideRow::ShowMore { count, .. } => Some(*count),
+        _ => None,
+    });
+    assert_eq!(step, Some(3), "the offer is capped at the rows that remain");
+}
+
+/// Rows for a two-workspace sidebar with both groups expanded: alpha's
+/// header sits on row 0, beta's on row 3, each followed by two sessions.
+fn sticky_rows() -> Vec<SideRow> {
+    let sessions = vec![
+        store_session("a1", "/work/alpha"),
+        store_session("a2", "/work/alpha"),
+        store_session("b1", "/work/beta"),
+        store_session("b2", "/work/beta"),
+    ];
+    build_sidebar_rows(
+        &sessions,
+        &workspace_paths(&["/work/alpha", "/work/beta"]),
+        "alpha",
+        &HashSet::new(),
+        &HashSet::from(["beta".to_string()]),
+        &HashMap::new(),
+        &HashSet::new(),
+        &None,
+        &HashSet::new(),
+    )
+}
+
+/// Resolve the sticky header against a list scrolled to `(item_ix, offset)`.
+fn sticky_at(
+    rows: &[SideRow],
+    label: &str,
+    item_ix: usize,
+    offset: f32,
+) -> Option<(usize, Pixels)> {
+    let list = ListState::new(rows.len(), ListAlignment::Top, px(0.));
+    list.scroll_to(ListOffset {
+        item_ix,
+        offset_in_item: px(offset),
+    });
+    sticky_sidebar_header(&list, rows, label).map(|s| (s.ix, s.top_offset))
+}
+
+#[test]
+fn sticky_header_pins_the_active_expanded_group() {
+    let rows = sticky_rows();
+    // Scrolled into alpha's own sessions, its header pins at the top.
+    assert_eq!(sticky_at(&rows, "alpha", 0, 5.), Some((0, px(0.))));
+    assert_eq!(sticky_at(&rows, "alpha", 1, 0.), Some((0, px(0.))));
+    // Exactly at the top the real header already sits there — no overlay.
+    assert_eq!(sticky_at(&rows, "alpha", 0, 0.), None);
+    // Once beta's header takes the top, alpha's header scrolls away.
+    assert_eq!(sticky_at(&rows, "alpha", 3, 0.), None);
+    assert_eq!(sticky_at(&rows, "alpha", 4, 0.), None);
+}
+
+#[test]
+fn sticky_header_only_pins_the_active_group() {
+    let rows = sticky_rows();
+    // Scrolling beta's sessions leaves alpha's header alone; only the
+    // active group pins.
+    assert_eq!(sticky_at(&rows, "beta", 1, 0.), None);
+    // With beta active, beta's own header pins.
+    assert_eq!(sticky_at(&rows, "beta", 4, 0.), Some((3, px(0.))));
+}
+
+#[test]
+fn sticky_header_skips_collapsed_and_unlisted_groups() {
+    // A collapsed active group has no sessions to scroll, so nothing pins.
+    let sessions = vec![store_session("a1", "/work/alpha")];
+    let collapsed = HashSet::from(["alpha".to_string()]);
+    let rows = build_sidebar_rows(
+        &sessions,
+        &workspace_paths(&["/work/alpha"]),
+        "alpha",
+        &collapsed,
+        &HashSet::new(),
+        &HashMap::new(),
+        &HashSet::new(),
+        &None,
+        &HashSet::new(),
+    );
+    assert_eq!(sticky_at(&rows, "alpha", 0, 10.), None);
+    // A workspace that is not listed at all has no header to pin.
+    assert_eq!(sticky_at(&rows, "gamma", 0, 10.), None);
 }

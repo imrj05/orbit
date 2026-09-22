@@ -114,8 +114,7 @@ impl Toasts {
     /// Drop expired cards; returns whether the stack changed.
     pub fn expire(&mut self, now: Instant, fade: Duration) -> bool {
         let before = self.items.len();
-        self.items
-            .retain(|toast| !toast.is_expired(now, fade));
+        self.items.retain(|toast| !toast.is_expired(now, fade));
         self.items.len() != before
     }
 

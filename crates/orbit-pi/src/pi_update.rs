@@ -50,16 +50,9 @@ pub fn run_self_update() -> std::io::Result<Output> {
     let bin = orbit_rpc::pi_binary();
     let mut command = Command::new(&bin);
     // pi's updater shells out to the package manager that owns it; a bundled
-    // `.app` launches with a minimal PATH, so put pi's own bin dir (where its
-    // npm/pnpm shim usually lives) in front of whatever this process has.
-    if let Some(dir) = Path::new(&bin).parent() {
-        let inherited = std::env::var_os("PATH").unwrap_or_default();
-        let mut dirs = vec![dir.to_path_buf()];
-        dirs.extend(std::env::split_paths(&inherited));
-        if let Ok(path) = std::env::join_paths(dirs) {
-            command.env("PATH", path);
-        }
-    }
+    // `.app` launches with a minimal PATH that usually lacks `node`, so use
+    // the same augmented PATH as RPC session spawns.
+    command.env("PATH", orbit_rpc::augmented_path(Path::new(&bin).parent()));
     command
         // The update run needs no startup notice of its own.
         .env("PI_SKIP_VERSION_CHECK", "1")
@@ -121,7 +114,7 @@ pub fn failure_detail(stdout: &[u8], stderr: &[u8]) -> String {
         .or_else(|| lines.last())
         .map(|line| line.trim_start_matches("Error:").trim().to_string())
         .filter(|line| !line.is_empty())
-        .unwrap_or_else(|| "pi update failed".to_string())
+        .unwrap_or_else(|| tr!("pi_update.failed_short"))
 }
 
 /// Drop ANSI SGR sequences, so a colored child's output still matches.

@@ -91,7 +91,7 @@ impl WorkspacePicker {
     ) -> Self {
         let filter = cx.new(|cx| {
             ComposerInput::new(cx)
-                .with_placeholder("Filter folders…")
+                .with_placeholder_key("workspace_picker.filter_folders")
                 .with_key_context("Composer Picker")
         });
         Self {
@@ -393,7 +393,7 @@ impl Render for WorkspacePicker {
                     .text_size(theme.ui_px(12.))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_3)
-                    .child("Recent folders")
+                    .child(tr!("workspace_picker.recent_folders"))
                     .child(div().flex_1())
                     .when(!rows.is_empty(), |row| row.child(rows.len().to_string())),
             )
@@ -411,13 +411,15 @@ impl Render for WorkspacePicker {
                             .text_size(theme.ui_px(14.))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.text_2)
-                            .child("No folders match"),
+                            .child(tr!("workspace_picker.no_folders_match")),
                     )
                     .child(
                         div()
                             .text_size(theme.ui_px(13.))
                             .text_color(theme.text_3)
-                            .child("Try another name, or choose a folder below"),
+                            .child(tr!(
+                                "workspace_picker.try_another_name_or_choose_a_folder_below"
+                            )),
                     )
                     .into_any_element()
             } else {
@@ -474,7 +476,7 @@ impl Render for WorkspacePicker {
                                     .flex_1()
                                     .text_size(theme.ui_px(14.))
                                     .text_color(theme.text_2)
-                                    .child("Choose folder…"),
+                                    .child(tr!("workspace_picker.choose_folder")),
                             ),
                     ),
             )

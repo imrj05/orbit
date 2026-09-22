@@ -6,9 +6,16 @@
 //! (determinism). Everything is built on a hand-made [`UsageIndex`], so the
 //! math is tested without touching the disk.
 
-use super::aggregate::{ChartMetric, Direction, LatencyMetric, LatencyStats, UsageSnapshot};
+use super::aggregate::{
+    BucketRow, ChartMetric, Direction, LatencyMetric, LatencyStats, SeriesPoint, Totals,
+    UsageSnapshot,
+};
 use super::model::*;
-use super::page::{query_sessions, SessionQuery, SessionSort};
+use super::page::{
+    query_buckets, query_failures, query_series, query_sessions, BucketSort, SeriesSort,
+    SessionQuery, SessionSort,
+};
+use super::table::{FailureRow, FailureSort};
 
 /// A tiny builder for synthetic indexes.
 #[derive(Default)]
@@ -1136,4 +1143,293 @@ fn insights_only_appear_with_signal() {
         "{:?}",
         snapshot.insights
     );
+}
+
+#[test]
+fn calendar_is_monday_aligned_and_carries_daily_totals() {
+    use chrono::Datelike;
+
+    let now = anchor();
+    let today = day_start(now);
+    let yesterday = local_day_start(today - 86_400_000);
+    let mut fixture = Fixture::default();
+    let session = fixture.session("/tmp/orbit", "calendar", now - 3_600_000, vec![]);
+    // Two requests today, one yesterday.
+    fixture.request(
+        session,
+        ("anthropic", "claude"),
+        today + 3_600_000,
+        100,
+        10,
+        0,
+        0,
+    );
+    fixture.request(
+        session,
+        ("anthropic", "claude"),
+        today + 7_200_000,
+        200,
+        20,
+        0,
+        0,
+    );
+    fixture.request(
+        session,
+        ("anthropic", "claude"),
+        yesterday + 3_600_000,
+        50,
+        5,
+        0,
+        0,
+    );
+    let index = fixture.build();
+    let snapshot = scope(&index, DateRange::for_preset(RangePreset::Last7, now));
+    let calendar = &snapshot.calendar;
+
+    assert_eq!(calendar.days.len() % 7, 0, "the grid is whole weeks");
+    assert_eq!(calendar.weeks(), calendar.days.len() / 7);
+    // Always a trailing year, whatever the date range says.
+    assert!(
+        calendar.in_range().count() >= 365 && calendar.in_range().count() <= 366,
+        "{} in-range days",
+        calendar.in_range().count()
+    );
+    assert!(calendar.weeks() >= 53, "{} week columns", calendar.weeks());
+    // The first cell is a Monday (the store's own week boundary).
+    let first = local_datetime(calendar.start_ms).unwrap();
+    assert_eq!(first.weekday().num_days_from_monday(), 0);
+    // Contiguous, one local day apart.
+    for pair in calendar.days.windows(2) {
+        assert_eq!(
+            next_bucket(pair[0].start_ms, Granularity::Day),
+            pair[1].start_ms
+        );
+    }
+    let day = |start: i64| {
+        calendar
+            .days
+            .iter()
+            .find(|cell| cell.start_ms == start)
+            .expect("day is in the grid")
+    };
+    assert_eq!(day(today).totals.requests, 2);
+    assert_eq!(day(today).totals.tokens.total, 330);
+    assert_eq!(day(yesterday).totals.requests, 1);
+    // Padding days complete the shape but claim no activity.
+    for cell in calendar.days.iter().filter(|cell| !cell.in_range) {
+        assert_eq!(cell.totals.requests, 0);
+        assert_eq!(cell.totals.tokens.total, 0);
+    }
+}
+
+#[test]
+fn calendar_ignores_the_date_range_but_honors_scope() {
+    let now = anchor();
+    let six_months = 180 * 86_400_000;
+    let mut fixture = Fixture::default();
+    let old = fixture.session("/tmp/orbit", "old", now - six_months, vec![]);
+    let today = fixture.session("/tmp/orbit", "today", now - 3_600_000, vec![]);
+    let other = fixture.session("/tmp/other", "other", now - 3_600_000, vec![]);
+    fixture.request(
+        old,
+        ("anthropic", "claude"),
+        now - six_months,
+        100,
+        10,
+        0,
+        0,
+    );
+    fixture.request(today, ("anthropic", "claude"), now - 60_000, 200, 20, 0, 0);
+    fixture.request(other, ("anthropic", "claude"), now - 120_000, 400, 40, 0, 0);
+    let index = fixture.build();
+    let workspace = index.session(old).workspace;
+
+    // The range is a single day, but the calendar still reaches six months back.
+    let narrow = scope(
+        &index,
+        DateRange {
+            preset: RangePreset::Today,
+            start_ms: day_start(now),
+            end_ms: day_start(now) + 24 * 3_600_000,
+        },
+    );
+    let requests: u64 = narrow
+        .calendar
+        .in_range()
+        .map(|cell| cell.totals.requests)
+        .sum();
+    assert_eq!(requests, 3, "the calendar ignores the date range");
+
+    // A workspace filter still narrows it, even though the range does not.
+    let filter = UsageFilter {
+        range: DateRange::for_preset(RangePreset::Today, now),
+        workspaces: vec![workspace],
+        ..UsageFilter::new(DateRange::for_preset(RangePreset::Today, now))
+    };
+    let scoped = UsageSnapshot::compute(&index, &filter);
+    let requests: u64 = scoped
+        .calendar
+        .in_range()
+        .map(|cell| cell.totals.requests)
+        .sum();
+    assert_eq!(
+        requests, 2,
+        "the workspace scope still applies (excludes /tmp/other)"
+    );
+}
+
+#[test]
+fn calendar_drops_records_older_than_a_year() {
+    let now = anchor();
+    let mut fixture = Fixture::default();
+    let session = fixture.session("/tmp/orbit", "old and new", now - 3_600_000, vec![]);
+    fixture.request(
+        session,
+        ("anthropic", "claude"),
+        now - 400 * 86_400_000,
+        100,
+        10,
+        0,
+        0,
+    );
+    fixture.request(
+        session,
+        ("anthropic", "claude"),
+        now - 60_000,
+        200,
+        20,
+        0,
+        0,
+    );
+    let index = fixture.build();
+    let snapshot = scope(&index, DateRange::for_preset(RangePreset::All, now));
+    let calendar = &snapshot.calendar;
+
+    assert_eq!(calendar.days.len() % 7, 0);
+    assert!(calendar.weeks() >= 53 && calendar.weeks() <= 54);
+    // The 400-day-old request is outside the year; the recent one is inside.
+    let requests: u64 = calendar.in_range().map(|cell| cell.totals.requests).sum();
+    assert_eq!(requests, 1);
+    // The snapshot itself still counts both — the calendar is a calendar, not
+    // the page's totals.
+    assert_eq!(snapshot.summary.totals.requests, 2);
+}
+
+#[test]
+fn series_query_filters_sorts_then_paginates() {
+    let point = |stamp: &str, start: i64, tokens: u64| SeriesPoint {
+        start_ms: start,
+        label: stamp.to_string(),
+        stamp: stamp.to_string(),
+        totals: Totals {
+            requests: 1,
+            tokens: TokenCounts {
+                total: tokens,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        latency: LatencyStats::default(),
+    };
+    let points = [
+        point("Mon", 1, 100),
+        point("Tue", 2, 300),
+        point("Wed", 3, 200),
+    ];
+    let query = |page, search: &str| {
+        query_series(
+            &points,
+            search,
+            SeriesSort::Tokens,
+            true,
+            ChartMetric::Tokens,
+            LatencyMetric::Average,
+            page,
+            1,
+        )
+    };
+
+    let first = query(1, "");
+    assert_eq!(first.total, 3);
+    assert_eq!(first.rows[0].stamp, "Tue");
+    assert_eq!((first.first_row(), first.last_row()), (1, 1));
+    let second = query(2, "");
+    assert_eq!(second.rows[0].stamp, "Wed");
+
+    let past = query(99, "");
+    assert_eq!(past.page, 3);
+    assert_eq!(past.rows[0].stamp, "Mon");
+
+    let searched = query(1, "wed");
+    assert_eq!(searched.total, 1);
+    assert_eq!(searched.rows[0].stamp, "Wed");
+}
+
+#[test]
+fn bucket_query_filters_sorts_then_paginates() {
+    let row = |label: &str, start: i64, tokens: u64| BucketRow {
+        start_ms: start,
+        label: label.to_string(),
+        stamp: label.to_string(),
+        totals: Totals {
+            requests: 1,
+            tokens: TokenCounts {
+                total: tokens,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    };
+    let rows = [row("Mon", 1, 100), row("Tue", 2, 300), row("Wed", 3, 200)];
+    let query =
+        |page, search: &str| query_buckets(&rows, search, BucketSort::Tokens, true, page, 1);
+
+    let first = query(1, "");
+    assert_eq!(first.total, 3);
+    assert_eq!(first.rows[0].label, "Tue");
+    assert_eq!(first.totals.tokens.total, 600);
+    let second = query(2, "");
+    assert_eq!(second.rows[0].label, "Wed");
+
+    let past = query(99, "");
+    assert_eq!(past.page, 3);
+    assert_eq!(past.rows[0].label, "Mon");
+
+    let searched = query(1, "wed");
+    assert_eq!(searched.total, 1);
+    assert_eq!(searched.rows[0].label, "Wed");
+    assert_eq!(searched.totals.tokens.total, 200);
+}
+
+#[test]
+fn failure_query_filters_sorts_then_paginates() {
+    let row = |title: &str, ts: i64, message: &str| FailureRow {
+        ts_ms: ts,
+        session: 0,
+        kind: ErrorKind::Provider,
+        model: "claude".into(),
+        session_title: title.to_string(),
+        message: message.to_string(),
+    };
+    let rows = [
+        row("alpha", 1, "timeout"),
+        row("beta", 2, "overloaded"),
+        row("gamma", 3, "rate limit"),
+    ];
+    let query =
+        |page, search: &str| query_failures(&rows, search, FailureSort::When, true, page, 1);
+
+    let first = query(1, "");
+    assert_eq!(first.total, 3);
+    assert_eq!(first.rows[0].session_title, "gamma");
+    let second = query(2, "");
+    assert_eq!(second.rows[0].session_title, "beta");
+
+    let past = query(99, "");
+    assert_eq!(past.page, 3);
+    assert_eq!(past.rows[0].session_title, "alpha");
+
+    let searched = query(1, "over");
+    assert_eq!(searched.total, 1);
+    assert_eq!(searched.rows[0].session_title, "beta");
 }

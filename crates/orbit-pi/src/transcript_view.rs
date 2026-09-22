@@ -1,10 +1,11 @@
-//! Transcript paint — Waku `transcript_view.rs` layout, honest Orbit data.
+//! Transcript paint — transcript layout, honest Orbit data.
 //!
 //! Rows are plain GPUI flex trees (no component library): user turns are
 //! End-aligned neutral bubbles, assistant turns are Start-aligned prose. A
 //! ghost copy/timestamp footer reveals on row hover. Settled: **Worked for**
 //! fold → thinking/tool cards → answer → files → copy footer. Live: thinking
-//! + activity cards → answer → files → **Working for**.
+//! + activity cards → answer → files → **Working for** — work stays in
+//! sequence with the text as it arrives from the agent.
 //!
 //! Timestamps render on the footer when pi provides one (snapshot
 //! `timestamp` fields, or a wall-clock stamp taken at `message_end`).
@@ -23,11 +24,13 @@ use std::{
 };
 
 use gpui::{
-    deferred, div, img, linear_color_stop, linear_gradient, list, point, prelude::*, px, svg,
-    Animation, AnimationExt, AnyElement, App, ClipboardItem, ElementId, Font, FontFeatures,
-    FontStyle, FontWeight, Hsla, Image, ImageSource, InteractiveText, ObjectFit, Pixels,
-    ScrollHandle, SharedString, StrikethroughStyle, StyledText, TextAlign, TextRun, UnderlineStyle,
-    Window,
+    anchored, canvas, deferred, div, img, linear_color_stop, linear_gradient, list, point,
+    prelude::*, px, svg, Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem,
+    CursorStyle, DispatchPhase, Element, ElementId, Font, FontFeatures, FontStyle, FontWeight,
+    GlobalElementId, Hitbox, HitboxBehavior, Hsla, Image, ImageSource, InspectorElementId,
+    InteractiveText, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ObjectFit, Pixels, ScrollHandle, ScrollWheelEvent, SharedString, StrikethroughStyle,
+    StyledText, TextAlign, TextLayout, TextRun, UnderlineStyle, Window,
 };
 
 use std::ops::Range;
@@ -38,7 +41,7 @@ use serde_json::Value;
 
 use orbit_rpc::MessageUsage;
 
-use crate::context_meter::format_tokens;
+use crate::context_meter::{format_tokens, hit_percent_label};
 use crate::highlight::{self, Token};
 use crate::message_scroller::{self, MessageScrollerState};
 use crate::shimmer::ShimmerText;
@@ -54,16 +57,16 @@ pub(crate) type ReviewOpener = Rc<dyn Fn(&mut Window, &mut App)>;
 /// from the app so an image tile can open a surface it doesn't own.
 pub(crate) type ImageOpener = Rc<dyn Fn(Arc<Image>, &mut Window, &mut App)>;
 
-/// Waku `CONTENT_MAX_WIDTH` (the `max-w-[760px]` transcript column).
-/// Orbit uses 960 so fenced code and tables can use the full pane; body
-/// line-height (14/26) keeps prose readable without a nested measure cap
-/// that mis-measured wrapped markdown and stacked lines on top of each other.
+/// The transcript content column's max width.
+/// Normal message content keeps this centered measure. Assistant tables
+/// break out to the transcript pane's width; their scroll viewport must not
+/// inherit this cap.
 const CONTENT_MAX_WIDTH: f32 = 960.0;
-/// Extra space before a follow-up user message (Waku `pt-8`).
+/// Extra space before a follow-up user message.
 const FOLLOWUP_TURN_TOP_GAP: f32 = 32.0;
-/// Waku user-bubble `max-w-[540px]`.
+/// User-bubble max width.
 const USER_BUBBLE_MAX_WIDTH: f32 = 540.0;
-/// Waku message-footer action button `size-[27px]`.
+/// Message-footer action button size.
 const FOOTER_BUTTON_SIZE: f32 = 27.0;
 const COPY_FEEDBACK: Duration = Duration::from_secs(2);
 const NAVIGATION_RAIL_LEFT: f32 = 16.0;
@@ -72,10 +75,10 @@ const NAVIGATION_RAIL_TICK_WIDTH: f32 = 32.0;
 const NAVIGATION_RAIL_TICK_HEIGHT: f32 = 2.0;
 const NAVIGATION_RAIL_TURN_HEIGHT: f32 = 12.0;
 const NAVIGATION_RAIL_INACTIVE_OPACITY: f32 = 0.45;
-/// Tick width by emphasis distance from the hovered turn (Waku rail).
+/// Tick width by emphasis distance from the hovered turn.
 const NAVIGATION_RAIL_EMPHASIS_SCALE: [f32; 4] = [1.0, 0.68, 0.44, 0.25];
-/// Waku caps the rail at 80% of the viewport and hides it below an 872px
-/// transcript container.
+/// The rail caps at 80% of the viewport and hides below an 872px transcript
+/// container.
 const NAVIGATION_RAIL_MAX_HEIGHT: f32 = 0.8;
 const NAVIGATION_RAIL_MIN_MAIN_WIDTH: f32 = 1040.0;
 const CHANGED_FILES_PREVIEW_LIMIT: usize = 3;
@@ -93,6 +96,14 @@ const OUTPUT_TEXT_CAP: usize = 100_000;
 const OUTPUT_COLLAPSE_LINES: usize = 16;
 /// …showing this many lines collapsed.
 const OUTPUT_PREVIEW_LINES: usize = 12;
+/// Reasoning is bounded by height, not characters: a "Thought" card taller
+/// than this scrolls, so a long chain of thought stays readable without
+/// burying the answer below it.
+const THINKING_MAX_HEIGHT: f32 = 260.0;
+/// Reasoning budget once the card scrolls — far larger than
+/// [`DETAIL_TEXT_CAP`], since the max height keeps the virtualized row
+/// bounded regardless of how much text is retained.
+const THINKING_TEXT_CAP: usize = 40_000;
 /// Even expanded, one virtualized row paints at most this many output lines
 /// (the copy button always carries the full captured text).
 const OUTPUT_EXPANDED_PAINT_LINES: usize = 400;
@@ -127,9 +138,25 @@ type ExpandedSections = Rc<RefCell<HashSet<(usize, usize, u8)>>>;
 /// Code blocks expanded past their collapsed preview, keyed
 /// `(message_ix, prose_salt, block_ix)`.
 type ExpandedBlocks = Rc<RefCell<HashSet<(usize, u64, usize)>>>;
+/// Persistent scroll handles for expandable "Thought" cards, keyed
+/// `(message_ix, step_ix)`. The handle lets the card read its own
+/// offset/limit so a wheel that no longer scrolls the card can be chained
+/// to the transcript (rather than swallowed by `occlude`).
+pub(crate) type ThinkingScrolls = Rc<RefCell<HashMap<(usize, usize), ScrollHandle>>>;
+/// "Thought" cards collapsed by the reader, keyed `(message_ix, step_ix)`.
+/// Missing means expanded — the default once the activity group is open.
+pub(crate) type CollapsedThoughts = Rc<RefCell<HashSet<(usize, usize)>>>;
+/// Live "Thought" cards the reader scrolled away from the newest line,
+/// keyed `(message_ix, step_ix)`. Missing means following: while a card
+/// streams, its view stays pinned to the bottom so each new line of
+/// reasoning is visible. Present means detached — the reader scrolled up
+/// and the card stops chasing the stream until they return to the bottom.
+pub(crate) type ThinkingDetached = Rc<RefCell<HashSet<(usize, usize)>>>;
 
 pub(crate) struct TranscriptView {
     pub messages: Rc<RefCell<Vec<ChatMessage>>>,
+    /// Cross-block text selection + the right-click copy menu.
+    pub text_selection: TextSelectionState,
     pub scroller: MessageScrollerState,
     pub streaming: Rc<Cell<Option<usize>>>,
     pub stream_started: Rc<Cell<Option<Instant>>>,
@@ -145,6 +172,12 @@ pub(crate) struct TranscriptView {
     pub expanded_sections: ExpandedSections,
     /// Code blocks expanded past their collapsed preview.
     pub expanded_blocks: ExpandedBlocks,
+    /// Persistent scroll handles for the "Thought" cards.
+    pub thinking_scrolls: ThinkingScrolls,
+    /// "Thought" cards collapsed by the reader.
+    pub collapsed_thoughts: CollapsedThoughts,
+    /// Live "Thought" cards the reader scrolled away from the newest line.
+    pub thinking_detached: ThinkingDetached,
     /// Rail tick currently hovered (drives the turn preview card).
     pub hovered_turn: Rc<Cell<Option<usize>>>,
     /// Assistant row whose footer usage metric is hovered (drives the
@@ -156,9 +189,9 @@ pub(crate) struct TranscriptView {
     pub rail_hint_shown_at: Rc<Cell<Option<Instant>>>,
     /// Workspace of the open session — roots the Review git diff.
     pub workspace: Option<PathBuf>,
-    /// Viewport height (caps the rail at 80%, like Waku).
+    /// Viewport height (caps the rail at 80%).
     pub viewport_height: Pixels,
-    /// Main-area width (gates the rail at 872px, like Waku).
+    /// Main-area width (gates the rail at 872px).
     pub main_width: Pixels,
     /// Rail scroll position + last auto-scrolled turn.
     pub rail_scroll: ScrollHandle,
@@ -187,8 +220,707 @@ pub(crate) struct TranscriptView {
     pub search_active: Option<Rc<Cell<Option<usize>>>>,
 }
 
+// ── text selection ─────────────────────────────────────────────────────────
+
+/// One rendered text block from the last painted frame, in visual order.
+/// Registered by [`SelectableText`] so the transcript panel's mouse handlers
+/// can hit-test a window position to a (block, byte offset) without owning
+/// the layout themselves.
+struct TextBlock {
+    key: ElementId,
+    /// The block's plain text — what a selection contributes to the clipboard.
+    text: SharedString,
+    /// Message this block rendered from — right-click "Copy Message" target.
+    message_ix: usize,
+    /// Link ranges inside `text` (markdown links), resolved on a plain click.
+    links: Vec<(Range<usize>, String)>,
+    layout: TextLayout,
+    bounds: Bounds<Pixels>,
+}
+
+/// A block captured when a selection began; the selection's `blocks` list is
+/// the visual order at that moment, so copying does not depend on later
+/// frames or virtualization.
+struct SelectedBlock {
+    key: ElementId,
+    text: SharedString,
+}
+
+/// One endpoint of a selection: index into [`Selection::blocks`] plus a byte
+/// offset into that block's text.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SelectPoint {
+    block: usize,
+    offset: usize,
+}
+
+/// An active cross-block selection. Intermediate blocks are fully selected;
+/// only the anchor and focus blocks carry partial ranges.
+struct Selection {
+    blocks: Vec<SelectedBlock>,
+    anchor: SelectPoint,
+    focus: SelectPoint,
+}
+
+impl Selection {
+    fn normalized(&self) -> (SelectPoint, SelectPoint) {
+        if (self.focus.block, self.focus.offset) < (self.anchor.block, self.anchor.offset) {
+            (self.focus, self.anchor)
+        } else {
+            (self.anchor, self.focus)
+        }
+    }
+}
+
+/// The right-click menu over transcript text: `Copy Selection` reads the live
+/// selection, `Copy Message` carries the message text captured on open.
+#[derive(Clone)]
+struct TextMenu {
+    position: gpui::Point<Pixels>,
+    message_text: String,
+}
+
+/// Shared text-selection state — one per transcript, cloned into every text
+/// element and the panel's mouse handlers so all of them see the same drag.
+pub(crate) struct TextSelection {
+    /// Blocks registered by the current frame's paint, in visual order.
+    blocks: Vec<TextBlock>,
+    /// Key -> index into [`TextSelection::blocks`] (dedupe + lookup).
+    index: HashMap<ElementId, usize>,
+    /// Bumped once per transcript render; the first block painted after a
+    /// bump drops the previous frame's registrations.
+    frame: u64,
+    painted_frame: u64,
+    selection: Option<Selection>,
+    dragging: bool,
+    /// The drag moved away from the anchor — mouse-up is not a link click.
+    moved: bool,
+    /// The press that started the drag, for link resolution on release.
+    down: Option<(ElementId, usize)>,
+    menu: Option<TextMenu>,
+}
+
+pub(crate) type TextSelectionState = Rc<RefCell<TextSelection>>;
+
+impl TextSelection {
+    pub(crate) fn new() -> Self {
+        Self {
+            blocks: Vec::new(),
+            index: HashMap::new(),
+            frame: 0,
+            painted_frame: 0,
+            selection: None,
+            dragging: false,
+            moved: false,
+            down: None,
+            menu: None,
+        }
+    }
+
+    /// Start a new render frame: blocks registered by the next paint replace
+    /// the previous frame's registrations.
+    fn begin_frame(&mut self) {
+        self.frame = self.frame.wrapping_add(1);
+    }
+
+    fn register(&mut self, block: TextBlock) {
+        if self.painted_frame != self.frame {
+            self.painted_frame = self.frame;
+            self.blocks.clear();
+            self.index.clear();
+        }
+        match self.index.get(&block.key).copied() {
+            Some(existing) => self.blocks[existing] = block,
+            None => {
+                self.index.insert(block.key.clone(), self.blocks.len());
+                self.blocks.push(block);
+            }
+        }
+    }
+
+    /// Index and byte offset of the text under `position`: the containing
+    /// block, or the nearest one when the pointer sits in a gutter.
+    fn hit(&self, position: gpui::Point<Pixels>) -> Option<(usize, usize)> {
+        let index = self
+            .blocks
+            .iter()
+            .position(|block| block.bounds.contains(&position))
+            .or_else(|| self.nearest_block(position))?;
+        let block = &self.blocks[index];
+        let local = point(
+            position.x.clamp(block.bounds.left(), block.bounds.right()),
+            position.y.clamp(block.bounds.top(), block.bounds.bottom()),
+        );
+        let offset = match block.layout.index_for_position(local) {
+            Ok(offset) | Err(offset) => offset,
+        };
+        Some((index, offset.min(block.text.len())))
+    }
+
+    fn nearest_block(&self, position: gpui::Point<Pixels>) -> Option<usize> {
+        self.blocks
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                let da = gutter_distance(a, position);
+                let db = gutter_distance(b, position);
+                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(index, _)| index)
+    }
+
+    fn begin_selection(&mut self, position: gpui::Point<Pixels>) {
+        self.menu = None;
+        self.moved = false;
+        self.down = None;
+        let Some((index, offset)) = self.hit(position) else {
+            self.selection = None;
+            self.dragging = false;
+            return;
+        };
+        let key = self.blocks[index].key.clone();
+        let blocks = self
+            .blocks
+            .iter()
+            .map(|block| SelectedBlock {
+                key: block.key.clone(),
+                text: block.text.clone(),
+            })
+            .collect();
+        let point = SelectPoint {
+            block: index,
+            offset,
+        };
+        self.down = Some((key, offset));
+        self.selection = Some(Selection {
+            blocks,
+            anchor: point,
+            focus: point,
+        });
+        self.dragging = true;
+    }
+
+    fn extend_selection(&mut self, position: gpui::Point<Pixels>) {
+        if !self.dragging {
+            return;
+        }
+        let Some((index, offset)) = self.hit(position) else {
+            return;
+        };
+        let key = self.blocks[index].key.clone();
+        let Some(selection) = self.selection.as_mut() else {
+            return;
+        };
+        let Some(target) = selection.blocks.iter().position(|block| block.key == key) else {
+            return;
+        };
+        let next = SelectPoint {
+            block: target,
+            offset,
+        };
+        if next != selection.anchor {
+            self.moved = true;
+        }
+        selection.focus = next;
+    }
+
+    /// End a drag; a press that never moved resolves to the link under it.
+    fn finish_selection(&mut self) -> Option<String> {
+        self.dragging = false;
+        if self.moved {
+            return None;
+        }
+        let (key, offset) = self.down.take()?;
+        let block = self.blocks.iter().find(|block| block.key == key)?;
+        block
+            .links
+            .iter()
+            .find(|(range, _)| range.contains(&offset))
+            .map(|(_, url)| url.clone())
+    }
+
+    fn clear_selection(&mut self) -> bool {
+        let had = self.selection.take().is_some();
+        self.dragging = false;
+        self.down = None;
+        self.moved = false;
+        had
+    }
+
+    /// Drop the selection and any open menu (session switch, outside click).
+    pub(crate) fn clear(&mut self) {
+        self.clear_selection();
+        self.menu = None;
+    }
+
+    /// Message index of the block under `position` (context menu). A press in
+    /// the row padding between blocks still counts when it lands close to one.
+    fn message_at(&self, position: gpui::Point<Pixels>) -> Option<usize> {
+        if let Some(index) = self
+            .blocks
+            .iter()
+            .position(|block| block.bounds.contains(&position))
+        {
+            return Some(self.blocks[index].message_ix);
+        }
+        let (index, distance) = self
+            .blocks
+            .iter()
+            .enumerate()
+            .map(|(index, block)| (index, gutter_distance(block, position)))
+            .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))?;
+        (distance < 24.).then(|| self.blocks[index].message_ix)
+    }
+
+    /// Byte range of this block that is selected, clamped to its current
+    /// text and snapped to char boundaries (the text can shrink mid-stream).
+    fn range_for(&self, key: &ElementId, text: &str) -> Option<Range<usize>> {
+        let selection = self.selection.as_ref()?;
+        let (start, end) = selection.normalized();
+        let index = selection
+            .blocks
+            .iter()
+            .position(|block| &block.key == key)?;
+        if index < start.block || index > end.block {
+            return None;
+        }
+        let from = if index == start.block {
+            byte_boundary(text, start.offset)
+        } else {
+            0
+        };
+        let to = if index == end.block {
+            byte_boundary(text, end.offset)
+        } else {
+            text.len()
+        };
+        (from < to).then_some(from..to)
+    }
+
+    /// The selected text, one line per selected block (the clipboard form).
+    pub(crate) fn selected_text(&self) -> Option<String> {
+        let selection = self.selection.as_ref()?;
+        let (start, end) = selection.normalized();
+        if start == end {
+            return None;
+        }
+        let mut parts: Vec<&str> = Vec::new();
+        for (index, block) in selection.blocks.iter().enumerate() {
+            if index < start.block || index > end.block {
+                continue;
+            }
+            let from = if index == start.block {
+                byte_boundary(&block.text, start.offset)
+            } else {
+                0
+            };
+            let to = if index == end.block {
+                byte_boundary(&block.text, end.offset)
+            } else {
+                block.text.len()
+            };
+            if from < to {
+                parts.push(&block.text[from..to]);
+            }
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("\n"))
+        }
+    }
+}
+
+fn gutter_distance(block: &TextBlock, position: gpui::Point<Pixels>) -> f32 {
+    let dx: f32 = (position.x - position.x.clamp(block.bounds.left(), block.bounds.right()))
+        .abs()
+        .into();
+    let dy: f32 = (position.y - position.y.clamp(block.bounds.top(), block.bounds.bottom()))
+        .abs()
+        .into();
+    dx + dy
+}
+
+/// Snap a byte offset back to a char boundary (layout offsets are glyph
+/// boundaries already; this guards stale offsets from a streaming edit).
+fn byte_boundary(text: &str, mut offset: usize) -> usize {
+    offset = offset.min(text.len());
+    while offset > 0 && !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
+}
+
+/// Split `runs` so the selected byte range carries the selection wash as a
+/// run background — gpui paints run backgrounds itself, so the highlight
+/// needs no separate layout math and never reflows text.
+fn highlight_runs(runs: Vec<TextRun>, range: Option<Range<usize>>, color: Hsla) -> Vec<TextRun> {
+    let Some(range) = range else {
+        return runs;
+    };
+    if range.is_empty() {
+        return runs;
+    }
+    let mut out = Vec::with_capacity(runs.len() + 2);
+    let mut offset = 0usize;
+    for run in runs {
+        let start = offset;
+        let end = offset + run.len;
+        offset = end;
+        let hi_from = range.start.max(start);
+        let hi_to = range.end.min(end);
+        if hi_from >= hi_to {
+            out.push(run);
+            continue;
+        }
+        if hi_from > start {
+            out.push(TextRun {
+                len: hi_from - start,
+                ..run.clone()
+            });
+        }
+        out.push(TextRun {
+            len: hi_to - hi_from,
+            background_color: Some(color),
+            ..run.clone()
+        });
+        if hi_to < end {
+            out.push(TextRun {
+                len: end - hi_to,
+                ..run
+            });
+        }
+    }
+    out
+}
+
+fn selection_color(theme: Theme) -> Hsla {
+    theme.accent.opacity(if theme.mode == ThemeMode::Dark {
+        0.30
+    } else {
+        0.20
+    })
+}
+
+thread_local! {
+    /// The active selectable-text scope, set while a transcript row's element
+    /// tree is built. `None` outside the transcript (the skills viewer), where
+    /// prose keeps the plain clickable [`InteractiveText`].
+    static TEXT_SCOPE: RefCell<Option<TextScope>> = const { RefCell::new(None) };
+}
+
+#[derive(Clone)]
+struct TextScope {
+    state: TextSelectionState,
+    message_ix: usize,
+}
+
+struct TextScopeGuard(Option<TextScope>);
+
+impl TextScopeGuard {
+    fn enter(scope: TextScope) -> Self {
+        Self(TEXT_SCOPE.with(|current| current.replace(Some(scope))))
+    }
+}
+
+impl Drop for TextScopeGuard {
+    fn drop(&mut self) {
+        TEXT_SCOPE.with(|current| current.replace(self.0.take()));
+    }
+}
+
+fn text_scope() -> Option<TextScope> {
+    TEXT_SCOPE.with(|current| current.borrow().clone())
+}
+
+/// A [`StyledText`] that registers itself with the transcript's selection
+/// state so the panel can hit-test it. Styling comes from the caller's wrapper
+/// div, exactly as with a bare [`StyledText`].
+struct SelectableText {
+    key: ElementId,
+    text: StyledText,
+    /// Plain text this block contributes to the clipboard.
+    plain: SharedString,
+    links: Vec<(Range<usize>, String)>,
+    scope: Option<TextScope>,
+}
+
+impl SelectableText {
+    fn new(
+        key: ElementId,
+        text: StyledText,
+        plain: SharedString,
+        links: Vec<(Range<usize>, String)>,
+        scope: Option<TextScope>,
+    ) -> Self {
+        Self {
+            key,
+            text,
+            plain,
+            links,
+            scope,
+        }
+    }
+}
+
+impl Element for SelectableText {
+    type RequestLayoutState = ();
+    type PrepaintState = (Hitbox, TextLayout);
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        self.text.request_layout(None, inspector_id, window, cx)
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (Hitbox, TextLayout) {
+        self.text
+            .prepaint(None, inspector_id, bounds, &mut (), window, cx);
+        let layout = self.text.layout().clone();
+        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+        (hitbox, layout)
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        (hitbox, layout): &mut (Hitbox, TextLayout),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.text
+            .paint(None, inspector_id, bounds, &mut (), &mut (), window, cx);
+        if let Some(scope) = self.scope.as_ref() {
+            // The cursor rides this block's own hitbox: an I-beam over text,
+            // a hand on links. A block's request wins only while the pointer
+            // is actually on the text, so in-row buttons keep their pointer.
+            if hitbox.is_hovered(window) {
+                let position = window.mouse_position();
+                let offset = match layout.index_for_position(position) {
+                    Ok(offset) | Err(offset) => offset,
+                };
+                let over_link = self.links.iter().any(|(range, _)| range.contains(&offset));
+                let style = if over_link {
+                    CursorStyle::PointingHand
+                } else {
+                    CursorStyle::IBeam
+                };
+                window.set_cursor_style(style, hitbox);
+            }
+            scope.state.borrow_mut().register(TextBlock {
+                key: self.key.clone(),
+                text: self.plain.clone(),
+                message_ix: scope.message_ix,
+                links: self.links.clone(),
+                layout: layout.clone(),
+                bounds,
+            });
+        }
+    }
+}
+
+impl IntoElement for SelectableText {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+/// Register the transcript panel's mouse handlers: drag-select (cross-block),
+/// right-click menu, link clicks, and click-outside clearing. The canvas
+/// listener receives every window mouse event, so a drag that leaves the
+/// panel keeps updating (clamped to the nearest text block).
+fn register_text_selection(
+    state: TextSelectionState,
+    messages: Rc<RefCell<Vec<ChatMessage>>>,
+    bounds: Bounds<Pixels>,
+    hitbox: Hitbox,
+    window: &mut Window,
+) {
+    window.on_mouse_event({
+        let state = state.clone();
+        move |event: &MouseDownEvent, phase, window, _| {
+            if phase != DispatchPhase::Capture || !hitbox.is_hovered(window) {
+                return;
+            }
+            let menu_open = state.borrow().menu.is_some();
+            match event.button {
+                MouseButton::Left => {
+                    // The open menu owns the next press; its outside-click
+                    // handler dismisses it without disturbing the selection.
+                    if menu_open {
+                        return;
+                    }
+                    state.borrow_mut().begin_selection(event.position);
+                    window.refresh();
+                }
+                MouseButton::Right => {
+                    let Some(message_ix) = state.borrow().message_at(event.position) else {
+                        return;
+                    };
+                    let message_text = messages
+                        .borrow()
+                        .get(message_ix)
+                        .map(ChatMessage::text)
+                        .unwrap_or_default();
+                    state.borrow_mut().menu = Some(TextMenu {
+                        position: event.position,
+                        message_text,
+                    });
+                    window.refresh();
+                }
+                _ => {}
+            }
+        }
+    });
+    window.on_mouse_event({
+        let state = state.clone();
+        move |event: &MouseMoveEvent, phase, window, _| {
+            if phase != DispatchPhase::Capture || !state.borrow().dragging {
+                return;
+            }
+            state.borrow_mut().extend_selection(event.position);
+            window.refresh();
+        }
+    });
+    window.on_mouse_event({
+        let state = state.clone();
+        move |event: &MouseUpEvent, phase, window, cx| {
+            if phase != DispatchPhase::Capture || event.button != MouseButton::Left {
+                return;
+            }
+            let url = state.borrow_mut().finish_selection();
+            if let Some(url) = url {
+                cx.open_url(&url);
+            }
+            window.refresh();
+        }
+    });
+    window.on_mouse_event({
+        let state = state.clone();
+        move |event: &MouseDownEvent, phase, window, _| {
+            if phase != DispatchPhase::Capture || event.button != MouseButton::Left {
+                return;
+            }
+            if bounds.contains(&event.position) {
+                return;
+            }
+            if state.borrow_mut().clear_selection() {
+                window.refresh();
+            }
+        }
+    });
+}
+
+/// The right-click menu: `Copy Selection` (disabled without one) and
+/// `Copy Message` (the clicked message's full text).
+fn text_selection_menu(menu: &TextMenu, state: TextSelectionState, theme: Theme) -> AnyElement {
+    let selected = state.borrow().selected_text();
+    let copy_selection = selected.clone();
+    let close = state.clone();
+    let copy_selection_item = selection_menu_item(
+        tr!("transcript.copy_selection"),
+        selected.is_some(),
+        theme,
+        move |window, cx| {
+            if let Some(text) = copy_selection.clone() {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+            }
+            close.borrow_mut().menu = None;
+            cx.stop_propagation();
+            window.refresh();
+        },
+    );
+    let copy_message = menu.message_text.clone();
+    let close = state.clone();
+    let copy_message_item = selection_menu_item(
+        tr!("transcript.copy_message"),
+        true,
+        theme,
+        move |window, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(copy_message.clone()));
+            close.borrow_mut().menu = None;
+            cx.stop_propagation();
+            window.refresh();
+        },
+    );
+    let dismiss = state.clone();
+    deferred(
+        anchored().position(menu.position).snap_to_window().child(
+            div()
+                .id("transcript-text-menu")
+                .min_w(px(190.))
+                .rounded(px(9.))
+                .border_1()
+                .border_color(theme.border_strong)
+                .bg(theme.menu_bg)
+                .shadow(theme.popover_shadow())
+                .flex()
+                .flex_col()
+                .overflow_hidden()
+                .occlude()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_mouse_down_out(move |_, window, _| {
+                    dismiss.borrow_mut().menu = None;
+                    window.refresh();
+                })
+                .child(copy_selection_item)
+                .child(copy_message_item),
+        ),
+    )
+    .into_any_element()
+}
+
+fn selection_menu_item(
+    label: String,
+    enabled: bool,
+    theme: Theme,
+    on_click: impl Fn(&mut Window, &mut App) + 'static,
+) -> AnyElement {
+    div()
+        .px(px(10.))
+        .py(px(6.))
+        .text_size(theme.ui_px(12.))
+        .text_color(if enabled { theme.text } else { theme.text_3 })
+        .when(enabled, |item| {
+            item.cursor_pointer()
+                .hover(|style| style.bg(theme.bg_hover))
+                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                    on_click(window, cx);
+                })
+        })
+        .child(label)
+        .into_any_element()
+}
+
 struct RowPaint {
     messages: Rc<RefCell<Vec<ChatMessage>>>,
+    /// Selection state threaded to every text block this row renders.
+    text_selection: TextSelectionState,
     ix: usize,
     row_count: usize,
     theme: Theme,
@@ -207,10 +939,15 @@ struct RowPaint {
     copied_sections: CopiedSections,
     expanded_sections: ExpandedSections,
     expanded_blocks: ExpandedBlocks,
+    thinking_scrolls: ThinkingScrolls,
+    collapsed_thoughts: CollapsedThoughts,
+    thinking_detached: ThinkingDetached,
     hovered_usage: Rc<Cell<Option<usize>>>,
     image_opener: Option<ImageOpener>,
     search_hit: bool,
     search_active: bool,
+    /// Tables alone can extend beyond the centered message column.
+    table_breakout: TableBreakout,
 }
 
 /// The last message's own footer is suppressed when the tail summary owns
@@ -223,6 +960,14 @@ fn suppress_message_footer(has_summary: bool, ix: usize, row_count: usize) -> bo
 pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl IntoElement + use<> {
     let theme = *theme::get(cx);
     let messages = view.messages.clone();
+    let text_selection = view.text_selection.clone();
+    text_selection.borrow_mut().begin_frame();
+    // Clones the list closure cannot move: the panel's mouse handlers and
+    // right-click menu need them after the list (and its rows) have captured
+    // the originals.
+    let events_selection = text_selection.clone();
+    let events_messages = messages.clone();
+    let menu_selection = text_selection.clone();
     let streaming = view.streaming.clone();
     let stream_started = view.stream_started.clone();
     let expanded_turns = view.expanded_turns.clone();
@@ -233,6 +978,9 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
     let copied_sections = view.copied_sections.clone();
     let expanded_sections = view.expanded_sections.clone();
     let expanded_blocks = view.expanded_blocks.clone();
+    let thinking_scrolls = view.thinking_scrolls.clone();
+    let collapsed_thoughts = view.collapsed_thoughts.clone();
+    let thinking_detached = view.thinking_detached.clone();
     let hovered_turn = view.hovered_turn.clone();
     let hovered_usage = view.hovered_usage.clone();
     let rail_hint_dismissed = view.rail_hint_dismissed.clone();
@@ -272,6 +1020,22 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
     let show_rail = user_turns.len() >= 2
         && view.main_width >= px(NAVIGATION_RAIL_MIN_MAIN_WIDTH)
         && scroller.is_scrollable();
+    // Reserve the rail's gutter only from spare space outside the normal
+    // text strip, so expanding a table never makes it narrower than prose.
+    let table_inset = if show_rail {
+        ((view.main_width - px(40. + CONTENT_MAX_WIDTH)) / 2.).clamp(
+            px(0.),
+            px(NAVIGATION_RAIL_LEFT + NAVIGATION_RAIL_WIDTH + NAVIGATION_RAIL_CONTENT_GAP - 20.),
+        )
+    } else {
+        px(0.)
+    };
+    let available_width = (view.main_width - px(40.)).max(px(0.));
+    let column_width = available_width.min(px(CONTENT_MAX_WIDTH));
+    let table_breakout = TableBreakout {
+        max_width: (available_width - table_inset * 2.).max(column_width),
+        column_width,
+    };
     // The one-time rail hint shows while the rail is up, until the reader
     // uses it (tick click or turn jump) or its TTL lapses. While it shows,
     // it takes the preview card's slot so the two never stack.
@@ -331,7 +1095,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
                 scroller.clone(),
                 review_changes.clone(),
             );
-            // One run footer, after the changed-files card (Waku turn order:
+            // One run footer, after the changed-files card (turn order:
             // answer → files card → Copy): the copy affordance copies the
             // answer, with the settled time and the run's usage. The last
             // message's own footer is suppressed (see `suppress_footer`) so
@@ -381,6 +1145,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
         }
         render_row(RowPaint {
             messages: messages.clone(),
+            text_selection: text_selection.clone(),
             ix,
             row_count,
             theme: *theme::get(cx),
@@ -397,6 +1162,9 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
             copied_sections: copied_sections.clone(),
             expanded_sections: expanded_sections.clone(),
             expanded_blocks: expanded_blocks.clone(),
+            thinking_scrolls: thinking_scrolls.clone(),
+            collapsed_thoughts: collapsed_thoughts.clone(),
+            thinking_detached: thinking_detached.clone(),
             hovered_usage: hovered_usage.clone(),
             image_opener: image_opener.clone(),
             search_hit: search_hits
@@ -405,6 +1173,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
             search_active: search_active
                 .as_ref()
                 .is_some_and(|active| active.get() == Some(ix)),
+            table_breakout,
         })
         .into_any_element()
     })
@@ -415,7 +1184,27 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
     // `min_h_0` child of a column, so `h_full` on the list is a definite
     // height. Jump-to-latest and the bottom fade live on the scroller wrap.
     let scroller = message_scroller::render_scroller(view.scroller.clone(), theme, list_el);
-    div()
+    // Selection handlers ride a transparent canvas over the panel: its paint
+    // callback registers global mouse listeners, so a drag that leaves the
+    // panel keeps extending (clamped to the nearest text block) instead of
+    // freezing at the edge.
+    let events = {
+        let state = events_selection;
+        let messages = events_messages;
+        canvas(
+            // One hitbox for the whole panel: `is_hovered` respects occluding
+            // overlays (the find bar, popovers), so presses there never start
+            // a selection behind them.
+            |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+            move |bounds, hitbox, window, _| {
+                register_text_selection(state, messages, bounds, hitbox, window);
+            },
+        )
+        .absolute()
+        .inset_0()
+        .size_full()
+    };
+    let mut panel = div()
         .id(ElementId::Name("transcript-panel".into()))
         .w_full()
         .min_w_0()
@@ -423,6 +1212,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
         .min_h_0()
         .relative()
         .child(scroller)
+        .child(events)
         .when(show_rail, |shell| {
             shell.child(render_navigation_rail(
                 turn_snippets,
@@ -438,10 +1228,15 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
                 rail_hint_dismissed,
                 rail_hint_shown_at,
             ))
-        })
+        });
+    let menu = menu_selection.borrow().menu.clone();
+    if let Some(menu) = menu {
+        panel = panel.child(text_selection_menu(&menu, menu_selection, theme));
+    }
+    panel
 }
 
-/// Waku's conversation rail: ticks per user turn, vertically centered,
+/// The conversation rail: ticks per user turn, vertically centered,
 /// capped at 80% of the viewport, wheel-scrollable with edge fades. Tick
 /// widths fan out around the *hovered* turn only; the active turn is the
 /// full-opacity tick while idle.
@@ -466,7 +1261,7 @@ fn render_navigation_rail(
     let scrollable = content_height > rail_height + px(1.);
     let scroll_offset = rail_scroll.offset().y;
 
-    // Waku scrolls the active tick into view whenever it changes.
+    // Scroll the active tick into view whenever it changes.
     let active_pos =
         active_turn.and_then(|ix| user_turns.iter().position(|candidate| *candidate == ix));
     if scrollable {
@@ -488,7 +1283,7 @@ fn render_navigation_rail(
     let at_bottom = !scrollable || scroll_offset >= content_height - rail_height - px(0.5);
 
     // The emphasized (hovered) turn anchors the width fan-out; with nothing
-    // hovered every tick rests at the 0.25 scale, like Waku's idle rail.
+    // hovered every tick rests at the 0.25 scale.
     let emphasized_turn = hovered.get();
     let emphasized_pos =
         emphasized_turn.and_then(|ix| user_turns.iter().position(|candidate| *candidate == ix));
@@ -605,9 +1400,9 @@ fn render_navigation_rail(
             rail.child(render_rail_fade(false, theme))
         });
 
-    // Hover preview, clamped inside the rail body's vertical span (Waku
-    // clamps `previewTop` against the rail bounds). While the one-time hint
-    // is up it owns this slot, so the two floating cards never stack.
+    // Hover preview, clamped inside the rail body's vertical span so it stays
+    // within the rail bounds. While the one-time hint is up it owns this slot,
+    // so the two floating cards never stack.
     if let Some((pos, prompt, response)) = hover_info {
         let visible_center =
             px(pos as f32 * NAVIGATION_RAIL_TURN_HEIGHT) + pitch / 2. - scroll_offset;
@@ -655,7 +1450,7 @@ fn render_navigation_rail(
         .into_any_element()
 }
 
-/// Waku's rail edge fade: a 20px gradient from the background so scrolling
+/// Rail edge fade: a 20px gradient from the background so scrolling
 /// ticks dissolve instead of clipping.
 fn render_rail_fade(top: bool, theme: Theme) -> impl IntoElement {
     let base = div()
@@ -680,9 +1475,9 @@ fn render_rail_fade(top: bool, theme: Theme) -> impl IntoElement {
     }
 }
 
-/// Waku's rail hover card: the turn's number, the turn's prompt, and a
+/// Rail hover card: the turn's number, the turn's prompt, and a
 /// short response snippet, vertically positioned by the caller (clamped to
-/// the rail's span) at Waku's 60px left offset (rail width + gap).
+/// the rail's span) at a 60px left offset (rail width + gap).
 fn render_rail_preview(
     prompt: &str,
     response: &str,
@@ -713,9 +1508,10 @@ fn render_rail_preview(
                 .text_size(theme.ui_px(10.5))
                 .line_height(theme.ui_px(14.))
                 .text_color(theme.text_3)
-                .child(format!(
-                    "Turn {} of {} · click to jump",
-                    turn_number, turn_total
+                .child(tr!(
+                    "transcript_view.turn_of_total_hint",
+                    current = turn_number,
+                    total = turn_total
                 )),
         )
         .child(
@@ -774,16 +1570,15 @@ fn render_rail_hint(
                 .line_height(theme.ui_px(16.))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text)
-                .child("Jump between turns"),
+                .child(tr!("transcript_view.jump_between_turns")),
         )
         .child(
             div()
                 .text_size(theme.ui_px(11.5))
                 .line_height(theme.ui_px(16.))
                 .text_color(theme.text_3)
-                .child(format!(
-                    "Click a line — or press {} — to revisit any prompt.",
-                    crate::platform::shortcuts::TURNS
+                .child(tr!(
+                    "transcript_view.click_a_line_or_press_to_revisit_any_prompt"
                 )),
         )
         .on_click(move |_, _, cx| {
@@ -793,7 +1588,7 @@ fn render_rail_hint(
 }
 
 /// Whitespace-normalized grapheme snippet
-/// (same presentation Waku's navigation previews use).
+/// (the presentation navigation previews use).
 fn snippet(text: &str, max_graphemes: usize) -> String {
     let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut graphemes = normalized.graphemes(true);
@@ -810,6 +1605,13 @@ fn render_row(paint: RowPaint) -> AnyElement {
     let Some(message) = messages.get(paint.ix) else {
         return div().into_any_element();
     };
+    // Every text block built below registers with the row's selection scope
+    // (thread-local, mirroring the block-parse memo), so the low-level text
+    // builders stay unaware of the transcript panel's selection state.
+    let _scope = TextScopeGuard::enter(TextScope {
+        state: paint.text_selection.clone(),
+        message_ix: paint.ix,
+    });
     let followup = starts_followup_turn(&messages, paint.ix);
     let first = paint.ix == 0;
     let last = paint.ix + 1 == paint.row_count;
@@ -844,15 +1646,18 @@ fn render_row(paint: RowPaint) -> AnyElement {
         })
         .child(
             div()
-                .w_full()
-                .max_w(px(CONTENT_MAX_WIDTH))
+                // Resolve the normal measure before any wide table is
+                // measured; percentage widths can otherwise collapse during
+                // GPUI's intrinsic sizing pass on a narrow pane.
+                .w(paint.table_breakout.column_width)
+                .flex_none()
                 .min_w_0()
                 .child(inner),
         )
         .into_any_element()
 }
 
-/// End-aligned user row: Waku's neutral raised bubble, persistent quiet
+/// End-aligned user row: neutral raised bubble, persistent quiet
 /// footer below. Attached images render as a tile grid above the text
 /// bubble.
 fn render_user_bubble(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement {
@@ -867,7 +1672,7 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint) -> impl IntoEleme
         .items_end()
         .gap(px(4.))
         // Attachment tiles (images queued with the prompt). Cover-cropped
-        // squares, Waku-style; wrap when a message carries several.
+        // squares; wrap when a message carries several.
         .when(!message.images.is_empty(), |column| {
             column.child(
                 div()
@@ -927,6 +1732,7 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint) -> impl IntoEleme
                         paint.expanded_blocks.clone(),
                         true,
                         paint.scroller.clone(),
+                        None,
                     )),
             )
         })
@@ -950,7 +1756,10 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
     let theme = paint.theme;
     let ix = paint.ix;
     let mut content = div()
-        .w_full()
+        // Resolve the reading width at the shared ancestor, not on individual
+        // prose blocks: GPUI must measure Thinking cards at their actual width
+        // rather than reserve their height cap during intrinsic layout.
+        .w(paint.table_breakout.column_width)
         .max_w_full()
         .min_w_0()
         .flex()
@@ -958,7 +1767,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
         .items_start()
         .gap(theme.space(CONTENT_GAP));
 
-    // The turn fold precedes the run's first work (Waku: collapsed turns
+    // The turn fold precedes the run's first work (collapsed turns
     // hide the pre-answer work behind a single "Worked for" divider).
     if !paint.live && message.has_hidden_work() {
         content = content.child(render_turn_fold(
@@ -971,51 +1780,71 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
         ));
     }
 
-    // Steps render in sequence: each step's thought/tool group sits directly
-    // above the text it produced (Waku's interleaved activity rows).
+    // Every thought and tool call of the turn collects into ONE collapsible
+    // activity group: a tool-heavy turn reads as a single summary line
+    // ("Ran 2 commands · 3 file reads · 4 thoughts") that expands into all
+    // of its cards, instead of a stack of per-step "Ran …" rows.
     let answer_start = message
         .steps
         .iter()
         .position(|step| !step.text.trim().is_empty());
-    let last_step = message.steps.len().saturating_sub(1);
-    // Running count of tools across the message's steps — the flat index
-    // space the per-tool detail/copy keys use (stable across steps).
-    let mut tool_base = 0usize;
+    let work_start = message
+        .steps
+        .iter()
+        .position(|step| !step.thinking.is_empty() || !step.tools.is_empty());
+    let live_elapsed = paint.live_elapsed.unwrap_or(Duration::ZERO);
+    // First step index whose post-answer work is NOT yet absorbed into a
+    // rendered activity group (see the in-sequence group block below).
+    let mut covered_until = 0usize;
 
     for (step_ix, step) in message.steps.iter().enumerate() {
-        let before_answer = answer_start.is_none_or(|answer| step_ix < answer);
-        let is_live_step = paint.live && step_ix == last_step;
-        let has_work = !step.thinking.is_empty() || !step.tools.is_empty();
-
-        if has_work {
-            // Pre-answer work hides behind the turn fold; later bursts stay
-            // visible as collapsed, expandable groups.
+        // The group sits where the turn's first work happened, so any text
+        // that preceded it stays above; the rest of the text follows below.
+        if Some(step_ix) == work_start {
+            let before_answer = answer_start.is_none_or(|answer| step_ix < answer);
+            // Pre-answer work hides behind the turn fold; later work stays
+            // visible as a collapsed, expandable group.
             let show_work = paint.live || paint.fold_open || !before_answer;
             if show_work {
+                // The group covers the work up to and including the step
+                // that produced the first answer text; work in later steps
+                // gets its own group further down, so tool calls stay in
+                // sequence with the text — live included: a turn that speaks
+                // and then works again must not hoist that work above the
+                // answer that preceded it.
+                let group_end = answer_start.map_or(message.steps.len(), |answer| answer + 1);
+                let group_live =
+                    activity_group_is_live(paint.live, group_end, &message.steps);
                 let open = paint
                     .expanded_activities
                     .borrow()
-                    .get(&(ix, step_ix))
+                    .get(&(ix, 0))
                     .copied()
-                    .unwrap_or(is_live_step);
-                content = content.child(render_step_group(
-                    ix,
-                    step_ix,
-                    tool_base,
-                    step,
-                    open,
-                    is_live_step,
-                    paint.live_elapsed.unwrap_or(Duration::ZERO),
-                    theme,
-                    paint.expanded_activities.clone(),
-                    paint.expanded_tools.clone(),
-                    paint.copied_sections.clone(),
-                    paint.expanded_sections.clone(),
-                    paint.scroller.clone(),
-                ));
+                    .unwrap_or(group_live);
+                let group_has_work = message.steps[..group_end]
+                    .iter()
+                    .any(|step| !step.thinking.is_empty() || !step.tools.is_empty());
+                if group_has_work {
+                    content = content.child(render_activity_group(
+                        ix,
+                        0..group_end,
+                        &message.steps,
+                        open,
+                        group_live,
+                        live_elapsed,
+                        theme,
+                        paint.expanded_activities.clone(),
+                        paint.expanded_tools.clone(),
+                        paint.copied_sections.clone(),
+                        paint.expanded_sections.clone(),
+                        paint.scroller.clone(),
+                        paint.thinking_scrolls.clone(),
+                        paint.collapsed_thoughts.clone(),
+                        paint.thinking_detached.clone(),
+                    ));
+                }
             }
         }
-        tool_base += step.tools.len();
 
         if !step.text.is_empty() {
             // Live rows never collapse code blocks — a growing block's tail
@@ -1029,7 +1858,59 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
                 paint.expanded_blocks.clone(),
                 !paint.live,
                 paint.scroller.clone(),
+                Some(paint.table_breakout),
             )));
+        }
+
+        // Work in a step that FOLLOWS answer text (the assistant spoke,
+        // then kept thinking/calling tools) renders as its own group here,
+        // in sequence, instead of being pulled up into the first group.
+        // The group absorbs every following work-only step, so a run of
+        // tool calls between two text blocks is ONE group ("Ran 4
+        // commands · 5 thoughts"), never a stack of per-step rows. While
+        // live, the currently streaming work-only step is absorbed too,
+        // so the group sits where the agent actually resumed working.
+        if answer_start.is_some_and(|answer| step_ix > answer)
+            && step_ix >= covered_until
+            && (!step.thinking.is_empty() || !step.tools.is_empty())
+        {
+            let has_work = |j: usize| {
+                let s = &message.steps[j];
+                !s.thinking.is_empty() || !s.tools.is_empty()
+            };
+            let mut group_end = step_ix + 1;
+            while group_end < message.steps.len()
+                && message.steps[group_end].text.trim().is_empty()
+                && has_work(group_end)
+            {
+                group_end += 1;
+            }
+            covered_until = group_end;
+            let group_live =
+                activity_group_is_live(paint.live, group_end, &message.steps);
+            let open = paint
+                .expanded_activities
+                .borrow()
+                .get(&(ix, step_ix))
+                .copied()
+                .unwrap_or(group_live);
+            content = content.child(render_activity_group(
+                ix,
+                step_ix..group_end,
+                &message.steps,
+                open,
+                group_live,
+                live_elapsed,
+                theme,
+                paint.expanded_activities.clone(),
+                paint.expanded_tools.clone(),
+                paint.copied_sections.clone(),
+                paint.expanded_sections.clone(),
+                paint.scroller.clone(),
+                paint.thinking_scrolls.clone(),
+                paint.collapsed_thoughts.clone(),
+                paint.thinking_detached.clone(),
+            ));
         }
     }
 
@@ -1040,7 +1921,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
     // model). pi carries the message in `errorMessage`; render it so a
     // failed turn is never an empty row.
     if let Some(error) = &message.error {
-        content = content.child(render_assistant_error(error, theme));
+        content = content.child(render_assistant_error(error, ix, theme));
     }
 
     // A cancelled turn keeps its partial content and says so, quietly —
@@ -1089,7 +1970,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
 /// A settled assistant turn that failed: the provider/agent `errorMessage`
 /// pi carries on the message, as a red card. Mirrors the app-level error
 /// banner so the failure is visible in context too.
-fn render_assistant_error(error: &str, theme: Theme) -> AnyElement {
+fn render_assistant_error(error: &str, ix: usize, theme: Theme) -> AnyElement {
     div()
         .w_full()
         .max_w_full()
@@ -1116,74 +1997,124 @@ fn render_assistant_error(error: &str, theme: Theme) -> AnyElement {
                         .text_size(theme.ui_px(12.5))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.text)
-                        .child("Agent error"),
+                        .child(tr!("transcript_view.agent_error")),
                 )
                 .child(
                     div()
                         .text_size(theme.ui_px(12.5))
                         .text_color(theme.text_2)
                         .whitespace_normal()
-                        .child(error.to_string()),
+                        .child({
+                            let text: SharedString = error.to_string().into();
+                            let key = ElementId::NamedInteger("agent-error".into(), ix as u64);
+                            let scope = text_scope();
+                            let range = scope
+                                .as_ref()
+                                .and_then(|scope| scope.state.borrow().range_for(&key, &text));
+                            let runs = highlight_runs(
+                                vec![code_run(text.len(), theme.text_2, &ui_font())],
+                                range,
+                                selection_color(theme),
+                            );
+                            SelectableText::new(
+                                key,
+                                StyledText::new(text.clone()).with_runs(runs),
+                                text,
+                                Vec::new(),
+                                scope,
+                            )
+                        }),
                 ),
         )
         .into_any_element()
 }
 
-/// Waku reasoning row: "Thinking" while live, "Thought for <duration>" once
-/// settled; the raw reasoning text is expandable detail (auto-open live).
-#[allow(clippy::too_many_arguments)]
-/// One step's activity group: a collapsed "Ran 7 commands · 4 thoughts"
-/// summary line (Waku) that expands into the thought card and the step's
-/// tool rows.
-/// Waku's activity summary: counts the step's tool kinds and thoughts —
-/// "Ran 7 commands · 4 thoughts", "Ran 1 file read · 1 thought".
-fn step_activity_title(step: &Step, live: bool) -> String {
+/// The turn's activity summary: counts every tool kind and every thought
+/// across the turn's steps — "Ran 7 commands · 4 thoughts", "Ran 1 file
+/// read · 1 thought", "Ran 2 commands · 3 file reads · 1 file edit".
+fn activity_title(steps: &[Step], live: bool) -> String {
     let mut parts: Vec<String> = Vec::new();
-    let (mut commands, mut reads, mut edits, mut other) = (0usize, 0usize, 0usize, 0usize);
-    for tool in &step.tools {
-        match tool.name.as_str() {
-            "bash" | "shell" => commands += 1,
-            "read" | "grep" | "find" | "glob" | "search" => reads += 1,
-            "edit" | "write" => edits += 1,
-            _ => other += 1,
+    let (mut commands, mut reads, mut edits, mut other, mut thoughts) =
+        (0usize, 0usize, 0usize, 0usize, 0usize);
+    for step in steps {
+        for tool in &step.tools {
+            match tool.name.as_str() {
+                "bash" | "shell" => commands += 1,
+                "read" | "grep" | "find" | "glob" | "search" => reads += 1,
+                "edit" | "write" => edits += 1,
+                _ => other += 1,
+            }
+        }
+        if !step.thinking.is_empty() {
+            thoughts += 1;
         }
     }
-    let units = |n: usize, word: &str| format!("{} {}{}", n, word, if n == 1 { "" } else { "s" });
+    let unit = |count: usize, one: &str, other: &str| {
+        if count == 1 {
+            tr!(one, count = count)
+        } else {
+            tr!(other, count = count)
+        }
+    };
     if commands > 0 {
-        parts.push(format!("Ran {}", units(commands, "command")));
+        parts.push(unit(
+            commands,
+            "transcript_view.ran_command_one",
+            "transcript_view.ran_command_other",
+        ));
     }
     if reads > 0 {
-        parts.push(format!("Ran {}", units(reads, "file read")));
+        parts.push(unit(
+            reads,
+            "transcript_view.ran_file_read_one",
+            "transcript_view.ran_file_read_other",
+        ));
     }
     if edits > 0 {
-        parts.push(format!("Ran {}", units(edits, "file edit")));
+        parts.push(unit(
+            edits,
+            "transcript_view.ran_file_edit_one",
+            "transcript_view.ran_file_edit_other",
+        ));
     }
     if other > 0 {
-        parts.push(format!("Ran {}", units(other, "tool")));
+        parts.push(unit(
+            other,
+            "transcript_view.ran_tool_one",
+            "transcript_view.ran_tool_other",
+        ));
     }
-    if !step.thinking.is_empty() {
+    if thoughts > 0 {
         parts.push(if live {
-            "Thinking".to_string()
+            tr!("transcript.thinking")
         } else {
-            units(1, "thought")
+            unit(
+                thoughts,
+                "transcript_view.thought_one",
+                "transcript_view.thought_other",
+            )
         });
     }
     if parts.is_empty() {
         return if live {
-            "Working".into()
+            tr!("transcript.working")
         } else {
-            "Worked".into()
+            tr!("transcript.worked")
         };
     }
     parts.join(" \u{b} ")
 }
 
+/// A turn's activity group: a single collapsed summary line ("Ran 2
+/// commands · 3 file reads · 4 thoughts") that expands into every thought
+/// and tool card in `range`. Pre-answer work is one group keyed `(ix, 0)`;
+/// work after the answer gets its own group per step so it stays in
+/// sequence with the text.
 #[allow(clippy::too_many_arguments)]
-fn render_step_group(
+fn render_activity_group(
     ix: usize,
-    step_ix: usize,
-    tool_base: usize,
-    step: &Step,
+    range: std::ops::Range<usize>,
+    all_steps: &[Step],
     open: bool,
     live: bool,
     elapsed: Duration,
@@ -1193,10 +2124,26 @@ fn render_step_group(
     copied_sections: CopiedSections,
     expanded_sections: ExpandedSections,
     scroller: MessageScrollerState,
+    thinking_scrolls: ThinkingScrolls,
+    collapsed_thoughts: CollapsedThoughts,
+    thinking_detached: ThinkingDetached,
 ) -> impl IntoElement {
-    let title = step_activity_title(step, live);
-    let last = step.tools.len().saturating_sub(1);
+    let steps = &all_steps[range.clone()];
+    let title = activity_title(steps, live);
+    let tool_base = all_steps[..range.start]
+        .iter()
+        .map(|step| step.tools.len())
+        .sum::<usize>();
+    // The tool that may still be running is the turn's newest call — not
+    // merely this group's newest (a live turn can carry several groups).
+    let last_tool = all_steps
+        .iter()
+        .map(|step| step.tools.len())
+        .sum::<usize>()
+        .saturating_sub(1);
+    let key = (ix, range.start);
     let mut group = div()
+        .debug_selector(move || format!("activity-group-{ix}-{}", key.1))
         .w_full()
         .min_w_0()
         .flex()
@@ -1206,7 +2153,7 @@ fn render_step_group(
             div()
                 .id(ElementId::NamedInteger(
                     "activity-toggle".into(),
-                    (ix as u64) << 16 | step_ix as u64,
+                    ((ix as u64) << 20) | range.start as u64,
                 ))
                 .w_full()
                 .min_w_0()
@@ -1239,7 +2186,6 @@ fn render_step_group(
                     let expanded_activities = expanded_activities.clone();
                     let scroller = scroller.clone();
                     move |_, _, cx| {
-                        let key = (ix, step_ix);
                         let mut map = expanded_activities.borrow_mut();
                         let next = !map.get(&key).copied().unwrap_or(false);
                         map.insert(key, next);
@@ -1261,41 +2207,151 @@ fn render_step_group(
             .flex()
             .flex_col()
             .gap(px(8.));
-        if !step.thinking.is_empty() {
-            body = body.child(render_thinking_body(&step.thinking, live, theme));
+        let mut tool_base = tool_base;
+        for (step_ix, step) in steps.iter().enumerate() {
+            if !step.thinking.is_empty() {
+                let duration = step_thinking_duration(all_steps, range.start + step_ix);
+                // Only the turn's last step can still be streaming; earlier
+                // thoughts are settled and must not chase the live edge.
+                // Measured against ALL steps, not this group: a live group
+                // can end before the turn's last (still-streaming) step.
+                // The card also settles the moment its step moves on to
+                // answer text or a tool call — pi sends no `thinking_end`, so
+                // the turn's own end is too late to close it.
+                let thinking_live = thinking_is_live(
+                    live,
+                    range.start + step_ix + 1 == all_steps.len(),
+                    step,
+                );
+                body = body.child(render_thinking_body(
+                    &step.thinking,
+                    thinking_live,
+                    thinking_live,
+                    duration,
+                    theme,
+                    (ix, range.start + step_ix),
+                    scroller.clone(),
+                    thinking_scrolls.clone(),
+                    collapsed_thoughts.clone(),
+                    thinking_detached.clone(),
+                ));
+            }
+            body = body.children(step.tools.iter().enumerate().map(|(tool_ix, tool)| {
+                let flat = tool_base + tool_ix;
+                // Only the turn's newest call can still be running; every
+                // earlier call is done and shows its check even while a
+                // later step streams.
+                let pulse = live && flat == last_tool;
+                render_activity_card(
+                    tool,
+                    pulse,
+                    !pulse,
+                    elapsed,
+                    theme,
+                    (ix, flat),
+                    expanded_tools.borrow().contains(&(ix, flat)),
+                    expanded_tools.clone(),
+                    copied_sections.clone(),
+                    expanded_sections.clone(),
+                    scroller.clone(),
+                )
+            }));
+            tool_base += step.tools.len();
         }
-        body = body.children(step.tools.iter().enumerate().map(|(tool_ix, tool)| {
-            let flat = tool_base + tool_ix;
-            render_activity_card(
-                tool,
-                live && tool_ix == last,
-                !live,
-                elapsed,
-                theme,
-                (ix, flat),
-                expanded_tools.borrow().contains(&(ix, flat)),
-                expanded_tools.clone(),
-                copied_sections.clone(),
-                expanded_sections.clone(),
-                scroller.clone(),
-            )
-        }));
         group = group.child(body);
     }
 
     group
 }
 
-/// The reasoning card body inside a step group ("Thinking" live, "Thought
-/// for <duration>" settled).
-fn render_thinking_body(thinking: &str, live: bool, theme: Theme) -> impl IntoElement {
-    let title = if live {
-        "Thinking".to_string()
+/// How long a step's reasoning took. Live runs carry the measured value on
+/// the step; reloaded sessions have no timing, so estimate it from pi's
+/// per-step timestamps — the gap to the next step's message covers this
+/// step's LLM call (reasoning + call generation) plus the tools it ran.
+fn step_thinking_duration(steps: &[Step], step_ix: usize) -> Option<Duration> {
+    let step = steps.get(step_ix)?;
+    if let Some(duration) = step.thinking_duration {
+        return Some(duration);
+    }
+    if step.thinking.is_empty() {
+        return None;
+    }
+    let start = step.timestamp?;
+    let end = steps.get(step_ix + 1).and_then(|next| next.timestamp)?;
+    let millis = end.checked_sub(start)?;
+    (millis > 0).then(|| Duration::from_millis(millis as u64))
+}
+
+/// Whether a step's reasoning card is still the active phase: the row is
+/// live, this is the turn's last step, and it has not moved on to answer
+/// text or a tool call yet. pi emits no `thinking_end`, so that transition —
+/// not the turn's end — is what settles the card.
+fn thinking_is_live(live: bool, is_last_step: bool, step: &Step) -> bool {
+    live && is_last_step && step.text.trim().is_empty() && step.tools.is_empty()
+}
+
+/// Whether an activity group is the one still streaming: the row must be
+/// live, the group must include the turn's newest step, and that step must
+/// not have moved on to answer text. Older groups settle as soon as a newer
+/// step starts, instead of waiting for the whole turn to end.
+fn activity_group_is_live(row_live: bool, group_end: usize, all_steps: &[Step]) -> bool {
+    row_live
+        && group_end == all_steps.len()
+        && all_steps
+            .last()
+            .is_some_and(|step| step.text.trim().is_empty())
+}
+
+/// The reasoning card body inside a turn's activity group ("Thinking" live,
+/// "Thought" settled). The header collapses/expands the reasoning; tall
+/// reasoning scrolls inside a height-capped card so a long chain of thought
+/// never pushes the answer off-screen.
+#[allow(clippy::too_many_arguments)]
+fn render_thinking_body(
+    thinking: &str,
+    live: bool,
+    streaming: bool,
+    duration: Option<Duration>,
+    theme: Theme,
+    key: (usize, usize),
+    scroller: MessageScrollerState,
+    thinking_scrolls: ThinkingScrolls,
+    collapsed_thoughts: CollapsedThoughts,
+    thinking_detached: ThinkingDetached,
+) -> impl IntoElement {
+    let label = if live {
+        tr!("transcript.thinking")
     } else {
-        "Thought".to_string()
+        tr!("transcript.thought")
     };
-    let detail = cap_chars(thinking, DETAIL_TEXT_CAP);
-    div()
+    // The label stays the bold accent anchor; the timing is secondary —
+    // normal weight and muted, like the other metric text in the row.
+    let timing = duration.map(|duration| {
+        let elapsed = if live {
+            format_working_elapsed(duration)
+        } else {
+            format_duration(duration)
+        };
+        tr!("transcript.for_duration", duration = elapsed)
+    });
+    let detail = cap_chars(thinking, THINKING_TEXT_CAP);
+    let collapsed = collapsed_thoughts.borrow().contains(&key);
+    let handle = thinking_scrolls
+        .borrow_mut()
+        .entry(key)
+        .or_default()
+        .clone();
+    // While reasoning streams, keep the newest line in view: the card is
+    // height-capped and would otherwise stay parked at the top while text
+    // keeps growing below the fold. The reader's own scroll away from the
+    // bottom detaches the card until they return (see
+    // `chain_thinking_scroll`).
+    if streaming && !thinking_detached.borrow().contains(&key) {
+        handle.scroll_to_bottom();
+    }
+    let id = (key.0 as u64) << 16 | key.1 as u64;
+    let mut card = div()
+        .debug_selector(move || format!("thought-card-{}-{}", key.0, key.1))
         .rounded(px(9.))
         .border_1()
         .border_color(theme.border_strong)
@@ -1307,28 +2363,217 @@ fn render_thinking_body(thinking: &str, live: bool, theme: Theme) -> impl IntoEl
         .gap(px(5.))
         .child(
             div()
+                .id(ElementId::NamedInteger("thought-toggle".into(), id))
+                .w_full()
+                .min_w_0()
                 .flex()
                 .items_center()
                 .gap(px(8.))
+                .cursor_pointer()
                 .text_size(theme.ui_px(13.))
                 .line_height(theme.ui_px(17.))
+                .hover(|style| style.text_color(theme.text))
                 .child(glyph("icons/spark.svg", 13., theme.text_3))
                 .child(
                     div()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme.accent)
-                        .child(title),
-                ),
-        )
-        .child(
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .items_center()
+                        .gap(px(5.))
+                        .child(
+                            div()
+                                .flex_none()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme.accent)
+                                .child(label),
+                        )
+                        .when_some(timing, |row, timing| {
+                            row.child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .font_weight(FontWeight::NORMAL)
+                                    .text_color(theme.text_3)
+                                    .child(timing),
+                            )
+                        }),
+                )
+                .child(glyph(
+                    if collapsed {
+                        "icons/chevron-right.svg"
+                    } else {
+                        "icons/chevron-down.svg"
+                    },
+                    11.,
+                    theme.text_3,
+                ))
+                .on_click({
+                    let collapsed_thoughts = collapsed_thoughts.clone();
+                    let scroller = scroller.clone();
+                    move |_, _, cx| {
+                        let mut set = collapsed_thoughts.borrow_mut();
+                        if !set.remove(&key) {
+                            set.insert(key);
+                        }
+                        drop(set);
+                        scroller.remeasure_toggle(key.0);
+                        cx.refresh_windows();
+                    }
+                }),
+        );
+    if !collapsed {
+        card = card.child(
             div()
+                // A stable id lets GPUI remember the scroll offset across
+                // re-renders (element-state keyed scrolling).
+                .id(ElementId::NamedInteger("thinking-scroll".into(), id))
+                .w_full()
+                .min_w_0()
+                .max_h(px(THINKING_MAX_HEIGHT))
+                .overflow_y_scroll()
+                // A tracked handle lets `chain_thinking_scroll` read the
+                // card's offset and limit once it bottoms out.
+                .track_scroll(&handle)
+                // The transcript is a virtualized list whose wheel handler
+                // bubbles and claims the event whenever its hitbox is under
+                // the cursor — so a long thought would scroll the page
+                // instead of the card. `occlude` blocks hitboxes behind it,
+                // which flips the list's `should_handle_scroll` to false and
+                // leaves the wheel to this card.
+                .occlude()
+                // `occlude` also stops the page from ever scrolling while
+                // the card is at its end, so hand the leftover wheel back to
+                // the transcript (a card too short to scroll forwards the
+                // whole delta, so the page still moves normally).
+                .on_scroll_wheel({
+                    let handle = handle.clone();
+                    let scroller = scroller.clone();
+                    let thinking_detached = thinking_detached.clone();
+                    move |event, window, cx| {
+                        chain_thinking_scroll(
+                            &handle,
+                            &scroller,
+                            &thinking_detached,
+                            key,
+                            event,
+                            window.line_height(),
+                            cx,
+                        );
+                    }
+                })
                 .font_family(theme::code_font_family())
                 .text_size(theme.code_px(12.))
                 .line_height(theme.code_px(18.))
                 .text_color(theme.tool_meta)
                 .whitespace_normal()
-                .child(detail),
-        )
+                .child({
+                    let body_key = ElementId::NamedInteger(
+                        "thinking-body".into(),
+                        ((key.0 as u64) << 32) | key.1 as u64,
+                    );
+                    let scope = text_scope();
+                    let range = scope
+                        .as_ref()
+                        .and_then(|scope| scope.state.borrow().range_for(&body_key, &detail));
+                    let runs = highlight_runs(
+                        vec![code_run(detail.len(), theme.tool_meta, &mono_font())],
+                        range,
+                        selection_color(theme),
+                    );
+                    SelectableText::new(
+                        body_key,
+                        StyledText::new(detail.clone()).with_runs(runs),
+                        detail.into(),
+                        Vec::new(),
+                        scope,
+                    )
+                }),
+        );
+    }
+    card
+}
+
+/// Chain a wheel event from a "Thought" card to the transcript once the card
+/// has scrolled as far as it can. The card's own `overflow_y_scroll` listener
+/// is registered *after* this one and GPUI dispatches bubble listeners in
+/// reverse, so it runs first and adds the raw delta to the handle
+/// *unclamped* — the offset read here is therefore the pre-clamp value. The
+/// part a clamp would discard is exactly what the transcript should consume.
+fn chain_thinking_scroll(
+    handle: &ScrollHandle,
+    scroller: &MessageScrollerState,
+    thinking_detached: &ThinkingDetached,
+    key: (usize, usize),
+    event: &ScrollWheelEvent,
+    line_height: Pixels,
+    cx: &mut App,
+) {
+    let raw = event.delta.pixel_delta(line_height);
+    // The card only scrolls on Y; mirror the built-in listener's fallback (a
+    // purely horizontal delta over a vertical scroller is applied to Y).
+    let delta_y = if raw.y != px(0.) { raw.y } else { raw.x };
+    if delta_y == px(0.) {
+        return;
+    }
+    let offset = handle.offset();
+    let max = handle.max_offset().height;
+    // The built-in listener already added `delta_y` without clamping, so the
+    // pre-event offset is this event's offset minus the delta it applied.
+    let previous = offset.y - delta_y;
+    let (clamped, residual) = split_thinking_scroll(previous, max, delta_y);
+    // Track whether the reader is following the stream or has scrolled away
+    // from the newest line: reaching the bottom re-arms following, an upward
+    // wheel detaches, and a downward wheel short of the bottom leaves the
+    // current choice alone.
+    match thinking_follow_after(clamped, max, delta_y) {
+        Some(true) => {
+            thinking_detached.borrow_mut().remove(&key);
+        }
+        Some(false) => {
+            thinking_detached.borrow_mut().insert(key);
+        }
+        None => {}
+    }
+    if clamped != offset.y {
+        handle.set_offset(point(offset.x, clamped));
+        cx.refresh_windows();
+    }
+    if residual != px(0.) {
+        // `ListState::scroll_by` is positive towards the live edge; the wheel
+        // delta is negative in that direction.
+        scroller.scroll_by(-residual);
+        cx.refresh_windows();
+    }
+}
+
+/// Split a wheel delta between a "Thought" card and the transcript: clamp the
+/// card to its scrollable range and return `(card_offset, residual)`, where
+/// `residual` is the part the card could not consume and the transcript
+/// should. `previous` is the card's offset before this event; `max` is its
+/// scrollable extent (positive pixels).
+fn split_thinking_scroll(previous: Pixels, max: Pixels, delta: Pixels) -> (Pixels, Pixels) {
+    let unclamped = previous + delta;
+    let clamped = unclamped.clamp(-max, px(0.));
+    (clamped, unclamped - clamped)
+}
+
+/// The follow state a live "Thought" card should carry after a wheel event:
+/// `Some(true)` to follow the newest line (the card reached its bottom, or is
+/// too short to scroll), `Some(false)` to detach (the reader wheeled up), and
+/// `None` to leave the current state alone (a downward wheel still short of
+/// the bottom). `clamped` is the card's offset after the event, `max` its
+/// scrollable extent, and `delta_y` the wheel delta (positive scrolls up).
+fn thinking_follow_after(clamped: Pixels, max: Pixels, delta_y: Pixels) -> Option<bool> {
+    // Offsets run from `0` (top) to `-max` (bottom), so hitting the floor is
+    // `clamped <= -max`, not `>=`.
+    if max <= px(0.) || clamped <= -max {
+        Some(true)
+    } else if delta_y > px(0.) {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 /// The `ask_user_question` card: a compact question record for the transcript.
@@ -1373,7 +2618,7 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
                 .flex_none()
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.accent)
-                .child("Question"),
+                .child(tr!("transcript_view.question")),
         );
     if questions.len() > 1 {
         header = header.child(
@@ -1381,7 +2626,7 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
                 .flex_none()
                 .text_size(theme.ui_px(11.))
                 .text_color(theme.text_3)
-                .child(format!("{} asked", questions.len())),
+                .child(tr!("transcript.asked", count = questions.len())),
         );
     }
     if declined {
@@ -1392,7 +2637,7 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
                 .justify_end()
                 .text_size(theme.ui_px(11.))
                 .text_color(theme.text_3)
-                .child("No answer"),
+                .child(tr!("transcript_view.no_answer")),
         );
     } else if tool.failed {
         header = header.child(div().flex_1().flex().justify_end().child(glyph(
@@ -1521,7 +2766,7 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
                     .text_size(theme.ui_px(11.))
                     .line_height(theme.ui_px(15.))
                     .text_color(theme.text_3)
-                    .child("Waiting for an answer…"),
+                    .child(tr!("transcript_view.waiting_for_an_answer")),
             );
         }
         body = body.child(block);
@@ -1557,7 +2802,7 @@ fn render_activity_card(
     let has_diff = tool.added > 0 || tool.removed > 0;
     let added = tool.added;
     let removed = tool.removed;
-    // Expandable like Waku's activity rows: full arguments and, when captured
+    // Expandable activity rows: full arguments and, when captured
     // live, the tool result.
     let has_detail =
         tool.args.as_ref().is_some_and(|args| !args.is_null()) || tool.output.is_some();
@@ -1570,6 +2815,7 @@ fn render_activity_card(
             "activity-card".into(),
             (key.0 as u64) << 16 | key.1 as u64,
         ))
+        .debug_selector(move || format!("tool-card-{}-{}", key.0, key.1))
         .w_full()
         .min_w_0()
         .overflow_hidden()
@@ -1617,8 +2863,7 @@ fn render_activity_card(
                                     div().min_w_0().overflow_hidden().whitespace_nowrap().child(
                                         syntax_styled(
                                             &detail,
-                                            Some(tokens.as_ref()),
-                                            0,
+                                            tokens.first().map(Vec::as_slice),
                                             theme.tool_meta,
                                             theme,
                                         ),
@@ -1758,7 +3003,7 @@ fn render_tool_error_strip(tool: &ToolCall, theme: Theme) -> impl IntoElement {
         .output
         .as_ref()
         .and_then(first_error_line)
-        .unwrap_or_else(|| "The run failed without an error message.".to_string());
+        .unwrap_or_else(|| tr!("transcript.run_failed"));
     div()
         .w_full()
         .border_t_1()
@@ -1802,11 +3047,16 @@ fn render_tool_detail(
     // structured data, plain otherwise.
     let diff = edit_diff(tool);
     let first = match tool_command(tool) {
-        Some(command) => Some(("Command", command, Some(highlight::Lang::Shell), true)),
+        Some(command) => Some((
+            tr!("transcript.command"),
+            command,
+            Some(highlight::Lang::Shell),
+            true,
+        )),
         None if diff.is_some() => None,
         None => tool.args.as_ref().map(|args| {
             (
-                "Arguments",
+                tr!("transcript.arguments"),
                 display_value_capped(args, DETAIL_TEXT_CAP),
                 section_lang(Some(args)),
                 false,
@@ -1815,7 +3065,7 @@ fn render_tool_detail(
     };
     let second = tool.output.as_ref().map(|output| {
         (
-            "Output",
+            tr!("transcript.output"),
             display_value_capped(output, OUTPUT_TEXT_CAP),
             section_lang(Some(output)),
             false,
@@ -1862,7 +3112,7 @@ fn render_tool_detail(
                         render_detail_section(
                             key,
                             section,
-                            label,
+                            &label,
                             content,
                             lang,
                             prompt,
@@ -1992,14 +3242,16 @@ fn render_detail_section(
                             .child("$"),
                     )
                 })
-                .child(render_detail_body(&content, visible, lang, theme)),
+                .child(render_detail_body(
+                    &content, visible, lang, key, section, theme,
+                )),
         );
     if foldable {
         let total = lines.len();
         let toggle_label = if expanded {
-            "Show less".to_string()
+            tr!("transcript.show_less")
         } else {
-            format!("Show all {total} lines")
+            tr!("transcript.show_all_lines", total = total)
         };
         card.child(
             div()
@@ -2035,8 +3287,9 @@ fn render_detail_section(
                             .truncate()
                             .font_weight(FontWeight::NORMAL)
                             .text_color(theme.text_3)
-                            .child(format!(
-                                "Showing first {OUTPUT_EXPANDED_PAINT_LINES} — copy for the full log"
+                            .child(tr!(
+                                "transcript.showing_first_output",
+                                count = OUTPUT_EXPANDED_PAINT_LINES
                             )),
                     )
                 })
@@ -2064,6 +3317,8 @@ fn render_detail_body(
     content: &str,
     visible: &[&str],
     lang: Option<highlight::Lang>,
+    key: (usize, usize),
+    section: u8,
     theme: Theme,
 ) -> AnyElement {
     let tokens = lang.map(|lang| highlight::tokenize_cached(lang, content));
@@ -2078,10 +3333,20 @@ fn render_detail_body(
         .flex()
         .flex_col()
         .children(visible.iter().enumerate().map(move |(line_ix, line)| {
-            div().w_full().min_w_0().child(syntax_styled(
+            let line_id = ElementId::NamedInteger(
+                "detail-line".into(),
+                ((key.0 as u64) << 34)
+                    | ((key.1 as u64) << 18)
+                    | ((section as u64) << 12)
+                    | line_ix as u64,
+            );
+            div().w_full().min_w_0().child(syntax_line(
                 line,
-                tokens.as_deref(),
-                line_ix,
+                tokens
+                    .as_deref()
+                    .and_then(|lines| lines.get(line_ix))
+                    .map(Vec::as_slice),
+                line_id,
                 theme.code_text,
                 theme,
             ))
@@ -2340,13 +3605,14 @@ fn render_edit_diff(
         .children(
             rows.iter()
                 .take(visible)
-                .map(|row| render_edit_diff_row(row, theme)),
+                .enumerate()
+                .map(|(line_ix, row)| render_edit_diff_row(row, line_ix, key, theme)),
         );
     if foldable {
         let label = if expanded {
-            "Show less".to_string()
+            tr!("transcript.show_less")
         } else {
-            format!("Show all {total} lines")
+            tr!("transcript.show_all_lines", total = total)
         };
         body = body.child(
             div()
@@ -2383,8 +3649,9 @@ fn render_edit_diff(
                             .truncate()
                             .font_weight(FontWeight::NORMAL)
                             .text_color(theme.text_3)
-                            .child(format!(
-                                "Showing first {EDIT_DIFF_PAINT_LINES} — copy for the whole diff"
+                            .child(tr!(
+                                "transcript.showing_first_diff",
+                                count = EDIT_DIFF_PAINT_LINES
                             )),
                     )
                 })
@@ -2406,7 +3673,12 @@ fn render_edit_diff(
     body.into_any_element()
 }
 
-fn render_edit_diff_row(row: &DiffRow, theme: Theme) -> AnyElement {
+fn render_edit_diff_row(
+    row: &DiffRow,
+    line_ix: usize,
+    key: (usize, usize),
+    theme: Theme,
+) -> AnyElement {
     if row.kind == DiffRowKind::Break {
         return div()
             .w_full()
@@ -2416,6 +3688,10 @@ fn render_edit_diff_row(row: &DiffRow, theme: Theme) -> AnyElement {
             .border_color(theme.border)
             .into_any_element();
     }
+    let line_id = ElementId::NamedInteger(
+        "diff-line".into(),
+        ((key.0 as u64) << 34) | ((key.1 as u64) << 18) | line_ix as u64,
+    );
     let (body_bg, gutter_bg, edge, marker_color, marker) = match row.kind {
         DiffRowKind::Addition => (
             Some(theme.add_green.opacity(diff_body_wash(theme))),
@@ -2464,7 +3740,7 @@ fn render_edit_diff_row(row: &DiffRow, theme: Theme) -> AnyElement {
                 .whitespace_normal()
                 .when_some(body_bg, |body, bg| body.bg(bg))
                 .text_color(theme.code_text)
-                .child(diff_row_text(row, theme)),
+                .child(diff_row_text(row, line_id, theme)),
         )
         .into_any_element()
 }
@@ -2485,36 +3761,22 @@ fn diff_gutter_wash(theme: Theme) -> f32 {
     }
 }
 
-/// Syntax-colored text for one diff row (tokens are already per-line).
-fn diff_row_text(row: &DiffRow, theme: Theme) -> StyledText {
-    let font = mono_font();
-    let display = if row.text.is_empty() {
-        " "
-    } else {
-        row.text.as_str()
-    };
-    let mut runs: Vec<TextRun> = Vec::new();
-    if let Some(tokens) = row.tokens.as_ref() {
-        let mut offset = 0usize;
-        for token in tokens {
-            let start = token.range.start.min(row.text.len());
-            let end = token.range.end.min(row.text.len());
-            if start > offset {
-                runs.push(code_run(start - offset, theme.code_text, &font));
-            }
-            if end > start {
-                runs.push(code_run(end - start, theme.token_color(token.class), &font));
-            }
-            offset = offset.max(end);
-        }
-        if offset < row.text.len() {
-            runs.push(code_run(row.text.len() - offset, theme.code_text, &font));
-        }
-    }
-    if runs.is_empty() {
-        runs.push(code_run(display.len(), theme.code_text, &font));
-    }
-    StyledText::new(display.to_string()).with_runs(runs)
+/// Syntax-colored text for one diff row (tokens are already per-line); the
+/// row's text (with its `+`/`-` marker) is what a selection copies.
+fn diff_row_text(row: &DiffRow, key: ElementId, theme: Theme) -> SelectableText {
+    let (display, runs) = syntax_runs(&row.text, row.tokens.as_deref(), theme.code_text, theme);
+    let scope = text_scope();
+    let range = scope
+        .as_ref()
+        .and_then(|scope| scope.state.borrow().range_for(&key, &display));
+    let runs = highlight_runs(runs, range, selection_color(theme));
+    SelectableText::new(
+        key,
+        StyledText::new(display).with_runs(runs),
+        row.text.clone().into(),
+        Vec::new(),
+        scope,
+    )
 }
 
 /// Arguments / result text: strings as-is, everything else pretty-printed.
@@ -2597,7 +3859,7 @@ fn render_message_footer(
         .gap(px(1.))
         .when(align_right, |row| row.justify_end());
     if align_right {
-        // Waku's right-aligned footer: timestamp first, then actions.
+        // Right-aligned footer: timestamp first, then actions.
         if let Some(stamp) = stamp {
             footer = footer.child(stamp);
         }
@@ -2632,7 +3894,10 @@ fn usage_metric(
         );
         if usage.cache_read > 0 {
             if let Some(percent) = usage.cache_read_percent() {
-                label.push_str(&format!(" · {percent:.0}% cached"));
+                label.push_str(&tr!(
+                    "transcript_view.cached_share",
+                    percent = format!("{percent:.0}")
+                ));
             }
         }
         if let Some(cost) = usage.cost.filter(|cost| *cost > 0.0) {
@@ -2695,36 +3960,36 @@ fn usage_breakdown_card(usage: &MessageUsage, theme: Theme) -> AnyElement {
             div()
                 .text_size(theme.ui_px(11.5))
                 .text_color(theme.text_3)
-                .child("Message usage"),
+                .child(tr!("transcript_view.message_usage")),
         )
         .child(usage_metric_row(
             "icons/usage-input.svg",
-            "Input",
+            tr!("transcript.input"),
             format_tokens(usage.input),
             theme,
         ))
         .child(usage_metric_row(
             "icons/usage-output.svg",
-            "Output",
+            tr!("transcript.output"),
             format_tokens(usage.output),
             theme,
         ))
         .child(usage_metric_row(
             "icons/cache-read.svg",
-            "Cache read",
+            tr!("transcript.cache_read"),
             cache_read_label(usage),
             theme,
         ))
         .child(usage_metric_row(
             "icons/cache-write.svg",
-            "Cache write",
+            tr!("transcript.cache_write"),
             format_tokens(usage.cache_write),
             theme,
         ))
         .child(div().w_full().h(px(1.)).bg(theme.border))
         .child(usage_metric_row(
             "icons/usage-total.svg",
-            "Total",
+            tr!("transcript.total"),
             format_tokens(usage.total),
             theme,
         ))
@@ -2739,10 +4004,11 @@ fn usage_breakdown_card(usage: &MessageUsage, theme: Theme) -> AnyElement {
 
 fn usage_metric_row(
     icon_path: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     value: String,
     theme: Theme,
 ) -> impl IntoElement {
+    let label = label.into();
     div()
         .w_full()
         .flex()
@@ -2773,7 +4039,11 @@ fn usage_metric_row(
 fn cache_read_label(usage: &MessageUsage) -> String {
     let tokens = format_tokens(usage.cache_read);
     match usage.cache_read_percent() {
-        Some(percent) => format!("{tokens} · {percent:.0}% hit"),
+        Some(percent) => tr!(
+            "transcript_view.hit_share",
+            tokens = tokens,
+            percent = hit_percent_label(percent)
+        ),
         None => tokens,
     }
 }
@@ -2817,48 +4087,56 @@ fn pulse_dot(theme: Theme, elapsed_ms: u128) -> impl IntoElement {
 
 fn fold_label(elapsed: Option<Duration>) -> String {
     match elapsed {
-        Some(duration) => format!("Worked for {}", format_duration(duration)),
-        None => "Worked".to_string(),
+        Some(duration) => tr!(
+            "transcript_view.worked_for",
+            duration = format_duration(duration)
+        ),
+        None => tr!("transcript.worked"),
     }
 }
 
-/// Waku `formatDuration` spoken units: `5 minutes 41 seconds`.
+/// Spoken duration units: `5 minutes 41 seconds`.
 fn format_duration(duration: Duration) -> String {
     let secs = duration.as_secs().max(1);
     if secs < 60 {
-        return format!("{} {}", secs, plural_unit("second", secs));
+        return spoken_unit(secs, "s");
     }
     if secs < 3_600 {
         let minutes = secs / 60;
         let remaining = secs % 60;
-        let first = format!("{} {}", minutes, plural_unit("minute", minutes));
+        let first = spoken_unit(minutes, "m");
         return if remaining > 0 {
-            format!(
-                "{} {} {}",
-                first,
-                remaining,
-                plural_unit("second", remaining)
-            )
+            format!("{} {}", first, spoken_unit(remaining, "s"))
         } else {
             first
         };
     }
     let hours = secs / 3_600;
     let minutes = (secs % 3_600) / 60;
-    let first = format!("{} {}", hours, plural_unit("hour", hours));
+    let first = spoken_unit(hours, "h");
     if minutes > 0 {
-        format!("{} {} {}", first, minutes, plural_unit("minute", minutes))
+        format!("{} {}", first, spoken_unit(minutes, "m"))
     } else {
         first
     }
 }
 
-fn plural_unit(word: &str, count: u64) -> String {
-    if count == 1 {
-        word.to_string()
+/// One spoken duration unit in the active locale: "1 second" / "7 minutes".
+fn spoken_unit(count: u64, kind: &str) -> String {
+    let word = if count == 1 {
+        match kind {
+            "s" => tr!("transcript_view.second"),
+            "m" => tr!("transcript_view.minute"),
+            _ => tr!("transcript_view.hour"),
+        }
     } else {
-        format!("{word}s")
-    }
+        match kind {
+            "s" => tr!("transcript_view.seconds"),
+            "m" => tr!("transcript_view.minutes"),
+            _ => tr!("transcript_view.hours"),
+        }
+    };
+    format!("{} {}", count, word)
 }
 
 fn render_turn_fold(
@@ -2933,27 +4211,31 @@ fn working_activity_label(step: &Step) -> Option<String> {
     if let Some(tool) = step.tools.last() {
         let detail = activity_preview(tool);
         let verb = match tool.name.as_str() {
-            "bash" | "shell" | "terminal" | "exec" | "run" => "Running",
-            "read" => "Reading",
-            "grep" | "find" | "glob" | "search" => "Searching",
-            "edit" | "write" => "Editing",
+            "bash" | "shell" | "terminal" | "exec" | "run" => {
+                tr!("transcript_view.verb_running")
+            }
+            "read" => tr!("transcript_view.verb_reading"),
+            "grep" | "find" | "glob" | "search" => tr!("transcript_view.verb_searching"),
+            "edit" | "write" => tr!("transcript_view.verb_editing"),
             other => {
                 let action = activity_action_label(other);
                 return Some(if detail.is_empty() {
-                    format!("Using {action}")
+                    tr!("transcript_view.using_tool", action = action)
                 } else {
                     format!("{action} {detail}")
                 });
             }
         };
         return Some(if detail.is_empty() {
-            verb.to_string()
+            verb
         } else {
             format!("{verb} {detail}")
         });
     }
-    if !step.thinking.is_empty() {
-        return Some("Thinking…".into());
+    // Reasoning is only the current activity while the step has no answer
+    // text yet; once the model is writing, the thinking phase is over.
+    if !step.thinking.is_empty() && step.text.trim().is_empty() {
+        return Some(tr!("transcript_view.thinking_ellipsis"));
     }
     None
 }
@@ -2973,7 +4255,7 @@ fn render_stopped_marker(theme: Theme) -> impl IntoElement {
                 .line_height(theme.ui_px(18.))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text_3)
-                .child("Stopped"),
+                .child(tr!("transcript_view.stopped")),
         )
 }
 
@@ -2986,7 +4268,10 @@ fn render_working_indicator(
     // a long-running command still reads as progress, not a hang.
     let label = match activity {
         Some(activity) => format!("{} · {}", activity, format_working_elapsed(elapsed)),
-        None => format!("Working for {}", format_working_elapsed(elapsed)),
+        None => tr!(
+            "transcript_view.working_for",
+            duration = format_working_elapsed(elapsed)
+        ),
     };
     let label_size = theme.ui_px(13.5);
     let label_line = theme.ui_px(18.);
@@ -3019,6 +4304,7 @@ fn render_working_indicator(
         // The row needs a definite width: the shimmer paints at `width: 100%`
         // of its wrapper, so an indefinite (shrink-to-fit) row would collapse
         // the label — timer and all — to nothing.
+        .debug_selector(|| "working-indicator".to_string())
         .w_full()
         .h(px(22.))
         .flex()
@@ -3036,7 +4322,7 @@ fn render_working_indicator(
         )
 }
 
-/// Waku `formatWorkingElapsed` compact form: `12s` / `5m 41s` / `1h 2m`.
+/// Compact working-elapsed form: `12s` / `5m 41s` / `1h 2m`.
 fn format_working_elapsed(duration: Duration) -> String {
     let secs = duration.as_secs();
     if secs < 60 {
@@ -3067,13 +4353,10 @@ fn activity_preview(tool: &ToolCall) -> String {
     // A command tool's pi summary is the raw JSON arguments; show the shell
     // command itself in the header instead of `{"command":"…"}`.
     let summary = tool_command(tool).unwrap_or_else(|| tool.summary.clone());
-    if summary.len() > 72 {
-        let mut out: String = summary.chars().take(72).collect();
-        out.push('…');
-        out
-    } else {
-        summary
-    }
+    // Headers are single-line. A literal newline in a heredoc would make
+    // the fixed-height preview paint several clipped lines; full arguments
+    // and copy still use the original command.
+    snippet(&summary, 72)
 }
 
 /// The shell command a command-running tool was invoked with, when the tool
@@ -3115,7 +4398,7 @@ fn render_line_delta(added: u64, removed: u64, theme: Theme, size: f32) -> impl 
 }
 
 // ── Markdown ────────────────────────────────────────────────────────────────
-// Waku `.markdown` parity: 14px/22px body, 0.9rem rhythm between blocks,
+// Markdown styling: 14px/22px body, 0.9rem rhythm between blocks,
 // h1/h2/h3 at 20/18/16px semibold, `ml-5` lists with hanging indents,
 // `border-l-2` blockquotes, mono inline-code chips, rounded pre blocks,
 // and clickable underlined links.
@@ -3331,7 +4614,9 @@ fn ui_font() -> Font {
     }
 }
 
-/// A styled, word-wrapping paragraph. Links open via `cx.open_url`.
+/// A styled, word-wrapping paragraph. In the transcript the text is
+/// selectable and links resolve through the panel's mouse handlers; outside
+/// it (the skills viewer) the plain clickable [`InteractiveText`] is kept.
 ///
 /// Line height must clear inline-code backgrounds: a tight 14/22 measure let
 /// the next wrapped line (and the next block) paint through the previous one.
@@ -3346,24 +4631,41 @@ fn paragraph_text(
 ) -> impl IntoElement {
     let spans = parse_inline(text);
     let (body, runs, links) = inline_runs(&spans, weight, color, theme);
-    let ranges: Vec<Range<usize>> = links.iter().map(|(range, _)| range.clone()).collect();
-    div()
+    let wrapper = div()
         .w_full()
         .min_w_0()
         .whitespace_normal()
         .text_size(theme.ui_px(size))
         .line_height(theme.ui_px(line_height))
-        .text_color(color)
-        .child(
-            InteractiveText::new(key, StyledText::new(body).with_runs(runs)).on_click(
-                ranges,
-                move |range_ix: usize, _, cx| {
-                    if let Some((_, url)) = links.get(range_ix) {
-                        cx.open_url(url);
-                    }
-                },
-            ),
-        )
+        .text_color(color);
+    if let Some(scope) = text_scope() {
+        let range = scope.state.borrow().range_for(&key, body.as_ref());
+        let runs = highlight_runs(runs, range, selection_color(theme));
+        let plain = body.clone();
+        wrapper
+            .child(SelectableText::new(
+                key,
+                StyledText::new(body).with_runs(runs),
+                plain,
+                links,
+                Some(scope),
+            ))
+            .into_any_element()
+    } else {
+        let ranges: Vec<Range<usize>> = links.iter().map(|(range, _)| range.clone()).collect();
+        wrapper
+            .child(
+                InteractiveText::new(key, StyledText::new(body).with_runs(runs)).on_click(
+                    ranges,
+                    move |range_ix: usize, _, cx| {
+                        if let Some((_, url)) = links.get(range_ix) {
+                            cx.open_url(url);
+                        }
+                    },
+                ),
+            )
+            .into_any_element()
+    }
 }
 
 fn md_id(ix: usize, salt: u64, block_ix: usize, sub: usize) -> ElementId {
@@ -3789,13 +5091,23 @@ fn parse_blocks_cached(text: &str) -> Rc<Vec<Block>> {
     })
 }
 
-/// Waku `.markdown`: 14px/22px body. Spacing is graded by block pair rather
+/// A table-only breakout from the unchanged, centered message column.
+/// Definite widths avoid remeasuring normal prose and activity cards against
+/// a wider ancestor. Relative positioning centers the wider table without
+/// negative layout margins affecting its siblings' intrinsic measurements.
+#[derive(Clone, Copy)]
+struct TableBreakout {
+    max_width: Pixels,
+    column_width: Pixels,
+}
+
+/// Markdown: 14px/22px body. Spacing is graded by block pair rather
 /// than one uniform gap, so a heading reads as a section start, a list hugs
 /// the paragraph that introduces it, and consecutive paragraphs breathe.
 ///
-/// Prose blocks (paragraphs, headings, lists, quotes, rules) cap at a
-/// comfortable reading width; code, tables, and alerts use the full content
-/// column. `collapsible` is false for live rows — streaming code blocks
+/// In the transcript, only tables escape the normal content column; the
+/// other blocks keep their existing measure. `collapsible` is false for live
+/// rows — streaming code blocks
 /// never collapse out from under their own growing edge.
 #[allow(clippy::too_many_arguments)]
 fn render_prose(
@@ -3807,6 +5119,7 @@ fn render_prose(
     expanded_blocks: ExpandedBlocks,
     collapsible: bool,
     scroller: MessageScrollerState,
+    table_breakout: Option<TableBreakout>,
 ) -> impl IntoElement + use<> {
     let blocks = parse_blocks_cached(text);
     let gaps: Vec<f32> = blocks
@@ -3829,6 +5142,22 @@ fn render_prose(
                 div()
                     .w_full()
                     .min_w_0()
+                    .when_some(table_breakout, |node, breakout| {
+                        if let Block::Table { header, rows, .. } = block {
+                            // Fit the capped column widths, not the strip or
+                            // pane. Small tables align with prose; larger ones
+                            // extend equally into its margins, up to the pane.
+                            let natural_width =
+                                px(table_column_widths(header, rows).iter().sum::<f32>() + 2.);
+                            let width = natural_width.min(breakout.max_width);
+                            let left = ((breakout.column_width - width) / 2.).min(px(0.));
+                            node.flex_none().w(width).relative().left(left)
+                        } else {
+                            // Only tables override their width; ordinary prose
+                            // inherits the assistant's reading column.
+                            node
+                        }
+                    })
                     .when(gap > 0.0, |node| node.mt(px(gap)))
                     .child(render_block(
                         block,
@@ -3864,6 +5193,7 @@ pub(crate) fn render_markdown_document(text: &str, theme: Theme) -> impl IntoEle
         expanded,
         false,
         MessageScrollerState::new(1),
+        None,
     )
 }
 
@@ -4266,7 +5596,19 @@ fn render_code_block(
                         .line_height(theme.code_px(21.))
                         .text_color(theme.code_text)
                         .children(visible.iter().enumerate().map(|(line_ix, line)| {
-                            code_line(line, tokens.as_deref(), line_ix, theme)
+                            let line_id = ElementId::NamedInteger(
+                                "code-line".into(),
+                                code_line_id(ix, salt, block_ix, line_ix),
+                            );
+                            code_line(
+                                line,
+                                tokens
+                                    .as_deref()
+                                    .and_then(|lines| lines.get(line_ix))
+                                    .map(Vec::as_slice),
+                                line_id,
+                                theme,
+                            )
                         })),
                 ),
         );
@@ -4274,9 +5616,9 @@ fn render_code_block(
     if folded {
         let hidden = lines.len() - CODE_PREVIEW_LINES;
         let label = if expanded {
-            "Show less".to_string()
+            tr!("transcript.show_less")
         } else {
-            format!("Show remaining {hidden} lines")
+            tr!("transcript_view.show_remaining_lines", count = hidden)
         };
         card = card.child(
             div()
@@ -4332,45 +5674,73 @@ fn code_block_label(language: Option<&str>) -> String {
         // D2: no native diagram renderer. A mermaid fence stays a copyable
         // code block — the label says so instead of pretending to preview.
         Some(tag) if tag.eq_ignore_ascii_case("mermaid") => {
-            "Mermaid · source (preview unavailable)".to_string()
+            tr!("transcript_view.mermaid_source")
         }
         Some(tag) => highlight::language_label(tag)
             .map(str::to_string)
             .unwrap_or_else(|| tag.to_string()),
-        None => "Plain text".to_string(),
+        None => tr!("transcript_view.plain_text"),
     }
 }
 
 /// One code line as syntax-colored `TextRun`s over the monospace face.
 /// `whitespace_nowrap` keeps indentation exact and lets the block scroll
 /// instead of wrap; an empty line carries a space so its row keeps height.
-fn code_line(
-    text: &str,
-    tokens: Option<&Vec<Vec<Token>>>,
-    line_ix: usize,
-    theme: Theme,
-) -> AnyElement {
+fn code_line(text: &str, tokens: Option<&[Token]>, key: ElementId, theme: Theme) -> AnyElement {
     div()
         .flex_none()
         .whitespace_nowrap()
-        .child(syntax_styled(text, tokens, line_ix, theme.code_text, theme))
+        .child(syntax_line(text, tokens, key, theme.code_text, theme))
         .into_any_element()
+}
+
+/// A selectable syntax-highlighted line; the selection wash rides the line's
+/// runs, so wrapped/folded lines highlight exactly with the text.
+fn syntax_line(
+    text: &str,
+    tokens: Option<&[Token]>,
+    key: ElementId,
+    base: Hsla,
+    theme: Theme,
+) -> SelectableText {
+    let (display, runs) = syntax_runs(text, tokens, base, theme);
+    let plain: SharedString = text.to_string().into();
+    let scope = text_scope();
+    let range = scope
+        .as_ref()
+        .and_then(|scope| scope.state.borrow().range_for(&key, &display));
+    let runs = highlight_runs(runs, range, selection_color(theme));
+    SelectableText::new(
+        key,
+        StyledText::new(display).with_runs(runs),
+        plain,
+        Vec::new(),
+        scope,
+    )
 }
 
 /// Build a line of syntax-colored text: plain gaps and token spans over the
 /// monospace face, with an empty line carrying a space so its row keeps
 /// height. Shared by code blocks (no-wrap) and tool detail (wrapping).
-fn syntax_styled(
+fn syntax_styled(text: &str, tokens: Option<&[Token]>, base: Hsla, theme: Theme) -> StyledText {
+    let (display, runs) = syntax_runs(text, tokens, base, theme);
+    StyledText::new(display).with_runs(runs)
+}
+
+fn syntax_runs(
     text: &str,
-    tokens: Option<&Vec<Vec<Token>>>,
-    line_ix: usize,
+    tokens: Option<&[Token]>,
     base: Hsla,
     theme: Theme,
-) -> StyledText {
+) -> (SharedString, Vec<TextRun>) {
     let font = mono_font();
-    let display = if text.is_empty() { " " } else { text };
+    let display: SharedString = if text.is_empty() {
+        " ".into()
+    } else {
+        text.to_string().into()
+    };
     let mut runs: Vec<TextRun> = Vec::new();
-    if let Some(spans) = tokens.and_then(|lines| lines.get(line_ix)) {
+    if let Some(spans) = tokens {
         let mut offset = 0usize;
         for token in spans {
             let start = token.range.start.min(text.len());
@@ -4390,7 +5760,12 @@ fn syntax_styled(
     if runs.is_empty() {
         runs.push(code_run(display.len(), base, &font));
     }
-    StyledText::new(display.to_string()).with_runs(runs)
+    (display, runs)
+}
+
+/// Element id for one line inside a code block.
+fn code_line_id(ix: usize, salt: u64, block_ix: usize, line_ix: usize) -> u64 {
+    ((ix as u64) << 40) | ((salt & 0xff_ffff) << 16) | ((block_ix as u64) << 10) | line_ix as u64
 }
 
 fn code_run(len: usize, color: Hsla, font: &Font) -> TextRun {
@@ -4414,24 +5789,12 @@ fn mono_font() -> Font {
     }
 }
 
-/// GFM table: outer border, semibold header, dividers, content-weighted
-/// columns (`th`/`td` styling from Waku's `.markdown table` rules).
-fn render_table(
-    header: &[String],
-    rows: &[Vec<String>],
-    aligns: &[TableAlign],
-    ix: usize,
-    salt: u64,
-    block_ix: usize,
-    theme: Theme,
-) -> AnyElement {
+/// Shared sizing policy for both the cells and the strip-breakout decision.
+/// Columns follow their content, with a readable baseline and a wrapping cap.
+fn table_column_widths(header: &[String], rows: &[Vec<String>]) -> Vec<f32> {
     let columns = header
         .len()
         .max(rows.iter().map(Vec::len).max().unwrap_or(0));
-    // Column widths are estimated from the longest cell and fixed in px.
-    // Narrow tables lay out as before (the last column absorbs the slack);
-    // wide ones overflow into a horizontal scroller instead of crushing
-    // every column into unreadable wraps.
     let mut widths = vec![96f32; columns];
     for (col, width) in widths.iter_mut().enumerate() {
         let mut longest = 4usize;
@@ -4445,16 +5808,37 @@ fn render_table(
         }
         *width = (longest as f32 * 6.8 + 28.).clamp(96., 340.);
     }
+    widths
+}
+
+/// GFM table: outer border, semibold header, dividers, content-weighted
+/// columns (`th`/`td` markdown-table styling).
+fn render_table(
+    header: &[String],
+    rows: &[Vec<String>],
+    aligns: &[TableAlign],
+    ix: usize,
+    salt: u64,
+    block_ix: usize,
+    theme: Theme,
+) -> AnyElement {
+    let widths = table_column_widths(header, rows);
+    let columns = widths.len();
+    if columns == 0 {
+        return div().into_any_element();
+    }
+    let table_width: f32 = widths.iter().sum();
     let make_cell = |text: &str,
-                     widths: &[f32],
                      col: usize,
-                     last: bool,
                      strong: bool,
                      align: TableAlign,
                      sub: usize,
                      salt: u64,
                      theme: Theme| {
-        let cell = div()
+        div()
+            .flex_none()
+            .w(px(widths[col]))
+            .min_w_0()
             .px(px(12.))
             .py(px(8.))
             .text_align(align.text_align())
@@ -4468,49 +5852,57 @@ fn render_table(
                     FontWeight::NORMAL
                 },
                 theme.assistant_text,
-                md_id(ix, salt, block_ix, sub),
+                // Table cells get their own id namespace: `md_id`'s 8-bit
+                // `sub` overflows for taller tables and would collide with
+                // other blocks (selection keys depend on unique ids).
+                ElementId::NamedInteger(
+                    "md-table".into(),
+                    ((ix as u64) << 40)
+                        | ((salt & 0xffff) << 24)
+                        | ((block_ix as u64) << 16)
+                        | (sub as u64 & 0xffff),
+                ),
                 theme,
-            ));
-        if last {
-            // The last column grows to fill a too-wide conversation, so a
-            // narrow table never leaves dead space inside its border.
-            cell.flex_grow().flex_basis(px(0.)).min_w(px(widths[col]))
-        } else {
-            cell.flex_none().w(px(widths[col]))
-        }
+            ))
     };
     let align_at = |col: usize| aligns.get(col).copied().unwrap_or_default();
-    let header_last = header.len().saturating_sub(1);
-    let mut inner = div().flex_none().min_w_full().flex().flex_col();
-    inner = inner.child(div().w_full().flex().bg(theme.overlay).children(
-        header.iter().enumerate().map(|(col, text)| {
-            make_cell(
-                text,
-                &widths,
-                col,
-                col == header_last,
-                true,
-                align_at(col),
-                col,
-                salt,
-                theme,
-            )
-        }),
-    ));
+    let mut inner = div()
+        .flex_none()
+        // Keep the actual content extent for horizontal scrolling. Neither
+        // the table nor its last column should grow into unused space.
+        .w(px(table_width))
+        .flex()
+        .flex_col();
+    inner = inner.child(
+        div()
+            .w_full()
+            .flex_none()
+            .flex()
+            .bg(theme.overlay)
+            .children((0..columns).map(|col| {
+                make_cell(
+                    header.get(col).map(String::as_str).unwrap_or_default(),
+                    col,
+                    true,
+                    align_at(col),
+                    col,
+                    salt,
+                    theme,
+                )
+            })),
+    );
     for (row_ix, row) in rows.iter().enumerate() {
-        let row_last = row.len().saturating_sub(1);
         inner = inner.child(
             div()
                 .w_full()
+                .flex_none()
                 .flex()
                 .border_t_1()
                 .border_color(theme.border)
-                .children(row.iter().enumerate().map(|(col, text)| {
+                .children((0..columns).map(|col| {
                     make_cell(
-                        text,
-                        &widths,
+                        row.get(col).map(String::as_str).unwrap_or_default(),
                         col,
-                        col == row_last,
                         false,
                         align_at(col),
                         64 + (row_ix * 64) + col,
@@ -4521,7 +5913,8 @@ fn render_table(
         );
     }
     div()
-        .w_full()
+        .w(px(table_width + 2.))
+        .max_w_full()
         .min_w_0()
         .overflow_hidden()
         .rounded(px(12.))
@@ -4540,7 +5933,7 @@ fn render_table(
         )
         .into_any_element()
 }
-/// Waku-style footer stamp for the changed-files summary: `Today 1:15 PM`,
+/// Footer stamp for the changed-files summary: `Today 1:15 PM`,
 /// `Yesterday 6:07 PM`, then a short date (`Sep 6`) once past yesterday.
 fn summary_time_label(millis: i64) -> String {
     summary_time_label_at(millis, chrono::Local::now())
@@ -4555,17 +5948,17 @@ fn summary_time_label_at(millis: i64, now: chrono::DateTime<chrono::Local>) -> S
     let days = (now.date_naive() - dt.date_naive()).num_days();
     let clock = dt.format("%-I:%M %p");
     match days {
-        0 => format!("Today {clock}"),
-        1 => format!("Yesterday {clock}"),
+        0 => tr!("transcript_view.today_clock", clock = clock.to_string()),
+        1 => tr!("transcript_view.yesterday_clock", clock = clock.to_string()),
         _ => dt.format("%b %-d").to_string(),
     }
 }
 
 fn changed_files_title(count: usize) -> String {
     if count == 1 {
-        "Changed 1 file".to_string()
+        tr!("transcript_view.changed_file_one", count = count)
     } else {
-        format!("Changed {count} files")
+        tr!("transcript_view.changed_file_other", count = count)
     }
 }
 
@@ -4586,9 +5979,10 @@ fn workspace_relative_path(path: &str, workspace: Option<&Path>) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-/// Waku `ChangedFilesCard`: raised tile, "Changed N files" with a ±delta
-/// underneath, a Review affordance, and roomy file rows with right-aligned
-/// line counts. Shows 3 rows; expanded shows up to 12 with a clip note.
+/// End-of-task changed-files summary: a hairlined group on the transcript
+/// canvas (canvas fill — not a raised/shadowed slab), "Changed N files"
+/// with a ±delta underneath, a Review chip, and roomy file rows. Shows 3
+/// rows; expanded shows up to 12 with a clip note.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render_changed_files(
     files: &[(String, u64, u64)],
@@ -4655,7 +6049,7 @@ pub(crate) fn render_changed_files(
     }
 
     // Review affordance: opens the changed-files diff in the right side
-    // pane's Review tab (Waku parity — no external editor hop).
+    // pane's Review tab (no external editor hop).
     let review = review_changes.map(|review| {
         div()
             .id(ElementId::NamedInteger(
@@ -4664,10 +6058,10 @@ pub(crate) fn render_changed_files(
             ))
             .h(px(28.))
             .px(px(10.))
-            .rounded(px(7.))
+            .rounded(px(8.))
             .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.overlay)
+            .border_color(theme.border)
+            .bg(theme.bg_raised)
             .flex()
             .items_center()
             .gap(px(4.))
@@ -4675,9 +6069,9 @@ pub(crate) fn render_changed_files(
             .text_size(theme.ui_px(11.5))
             .font_weight(FontWeight::MEDIUM)
             .text_color(theme.text_2)
-            .hover(|style| style.bg(theme.overlay_strong).text_color(theme.text))
+            .hover(|style| style.bg(theme.bg_hover).text_color(theme.text))
             .child(glyph("icons/file-diff.svg", 12., theme.text_3))
-            .child("Review")
+            .child(tr!("transcript_view.review"))
             .on_click(move |_, window, cx| review(window, cx))
     });
 
@@ -4690,14 +6084,16 @@ pub(crate) fn render_changed_files(
         .gap(px(10.))
         .child(
             div()
-                .size(px(34.))
+                .size(px(28.))
                 .flex_none()
-                .rounded(px(9.))
-                .bg(theme.accent.opacity(0.14))
+                .rounded(px(8.))
+                .bg(theme.bg_raised)
+                .border_1()
+                .border_color(theme.border)
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(glyph("icons/file-diff.svg", 15., theme.accent)),
+                .child(glyph("icons/file-diff.svg", 14., theme.text_2)),
         )
         .child(
             div()
@@ -4742,9 +6138,8 @@ pub(crate) fn render_changed_files(
         .min_w_0()
         .rounded(px(12.))
         .border_1()
-        .border_color(theme.border_strong)
-        .bg(theme.bg_raised)
-        .shadow(theme.card_shadow())
+        .border_color(theme.border)
+        .bg(theme.bg_main)
         .overflow_hidden()
         .child(header)
         .child(rows);
@@ -4752,11 +6147,11 @@ pub(crate) fn render_changed_files(
     if can_expand {
         let remaining = files.len() - CHANGED_FILES_PREVIEW_LIMIT;
         let label = if expanded {
-            "Show fewer files".to_string()
+            tr!("transcript_view.show_fewer_files")
         } else if remaining == 1 {
-            "Show 1 more file".to_string()
+            tr!("transcript_view.show_one_more_file")
         } else {
-            format!("Show {remaining} more files")
+            tr!("transcript_view.show_more_files", count = remaining)
         };
         let clipped = expanded && files.len() > EXPANDED_PREVIEW_LIMIT;
         let mut toggle = div()
@@ -4786,9 +6181,10 @@ pub(crate) fn render_changed_files(
                     .font_weight(FontWeight::NORMAL)
                     .text_size(theme.ui_px(11.5))
                     .text_color(theme.text_3)
-                    .child(format!(
-                        "Showing first {EXPANDED_PREVIEW_LIMIT} of {}",
-                        files.len()
+                    .child(tr!(
+                        "transcript_view.showing_first_of",
+                        limit = EXPANDED_PREVIEW_LIMIT,
+                        total = files.len()
                     )),
             );
         }
@@ -4893,7 +6289,121 @@ mod tests {
     }
 
     #[test]
-    fn duration_format_matches_waku_spoken_forms() {
+    fn step_thinking_duration_prefers_live_and_estimates_on_reload() {
+        let step = |thinking: &str, timestamp: Option<i64>, duration: Option<Duration>| Step {
+            thinking: thinking.into(),
+            timestamp,
+            thinking_duration: duration,
+            ..Step::default()
+        };
+        // A measured duration always wins over the timestamp estimate.
+        let live = vec![
+            step("a", Some(1_000), Some(Duration::from_millis(2_500))),
+            step("b", Some(9_999), None),
+        ];
+        assert_eq!(
+            step_thinking_duration(&live, 0),
+            Some(Duration::from_millis(2_500))
+        );
+        // Reload: estimated from the gap to the next step's timestamp.
+        let reload = vec![step("a", Some(1_000), None), step("b", Some(4_500), None)];
+        assert_eq!(
+            step_thinking_duration(&reload, 0),
+            Some(Duration::from_millis(3_500))
+        );
+        // The last step has no following timestamp to measure against.
+        assert_eq!(step_thinking_duration(&reload, 1), None);
+        // A step without reasoning has no duration at all.
+        let no_think = vec![step("", Some(1_000), None), step("b", Some(2_000), None)];
+        assert_eq!(step_thinking_duration(&no_think, 0), None);
+    }
+
+    #[test]
+    fn split_thinking_scroll_chains_only_past_the_edges() {
+        // Mid-card: the full delta stays on the card, nothing forwarded.
+        assert_eq!(
+            split_thinking_scroll(px(-40.), px(100.), px(-10.)),
+            (px(-50.), px(0.))
+        );
+        // At the bottom: the overshoot is clamped off and forwarded whole.
+        assert_eq!(
+            split_thinking_scroll(px(-95.), px(100.), px(-10.)),
+            (px(-100.), px(-5.))
+        );
+        // At the top scrolling up: the overshoot goes back to the transcript.
+        assert_eq!(
+            split_thinking_scroll(px(-5.), px(100.), px(10.)),
+            (px(0.), px(5.))
+        );
+        // A card that cannot scroll forwards everything (short content).
+        assert_eq!(
+            split_thinking_scroll(px(0.), px(0.), px(-10.)),
+            (px(0.), px(-10.))
+        );
+    }
+
+    #[test]
+    fn thinking_follow_only_detaches_on_an_upward_wheel() {
+        // At the card's bottom (or too short to scroll): follow the stream.
+        assert_eq!(
+            thinking_follow_after(px(-100.), px(100.), px(-10.)),
+            Some(true)
+        );
+        assert_eq!(thinking_follow_after(px(0.), px(0.), px(-10.)), Some(true));
+        assert_eq!(thinking_follow_after(px(0.), px(0.), px(10.)), Some(true));
+        // Mid-card, a wheel up detaches; a wheel down leaves the choice be.
+        assert_eq!(
+            thinking_follow_after(px(-50.), px(100.), px(10.)),
+            Some(false)
+        );
+        assert_eq!(thinking_follow_after(px(-50.), px(100.), px(-10.)), None);
+        // A wheel up from the bottom moves off it and detaches.
+        assert_eq!(
+            thinking_follow_after(px(-90.), px(100.), px(10.)),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn activity_title_aggregates_every_step() {
+        let tool = |name: &str| ToolCall {
+            name: name.to_string(),
+            summary: String::new(),
+            path: None,
+            added: 0,
+            removed: 0,
+            id: None,
+            args: None,
+            output: None,
+            failed: false,
+        };
+        // Two steps' worth of work lands on one summary line — counts span
+        // every step instead of one "Ran …" row per step.
+        let steps = vec![
+            Step {
+                thinking: "first".into(),
+                tools: vec![tool("edit")],
+                ..Step::default()
+            },
+            Step {
+                thinking: "second".into(),
+                tools: vec![tool("bash"), tool("read")],
+                ..Step::default()
+            },
+        ];
+        assert_eq!(
+            activity_title(&steps, false),
+            "Ran 1 command \u{b} Ran 1 file read \u{b} Ran 1 file edit \u{b} 2 thoughts"
+        );
+        assert_eq!(
+            activity_title(&steps, true),
+            "Ran 1 command \u{b} Ran 1 file read \u{b} Ran 1 file edit \u{b} Thinking"
+        );
+        assert_eq!(activity_title(&[], false), "Worked");
+    }
+
+    #[test]
+    fn duration_format_matches_spoken_forms() {
         assert_eq!(format_duration(Duration::from_secs(1)), "1 second");
         assert_eq!(format_duration(Duration::from_secs(12)), "12 seconds");
         assert_eq!(format_duration(Duration::from_secs(60)), "1 minute");
@@ -4913,7 +6423,7 @@ mod tests {
     }
 
     #[test]
-    fn working_elapsed_uses_waku_short_form() {
+    fn working_elapsed_uses_short_form() {
         assert_eq!(format_working_elapsed(Duration::from_secs(0)), "0s");
         assert_eq!(format_working_elapsed(Duration::from_secs(12)), "12s");
         assert_eq!(format_working_elapsed(Duration::from_secs(60)), "1m");
@@ -5021,7 +6531,6 @@ mod tests {
             args: Some(serde_json::json!({ "command": "ls -la" })),
             output: None,
             failed: false,
-            duration: None,
         };
         assert_eq!(tool_command(&bash).as_deref(), Some("ls -la"));
         // The header preview shows the command, not the raw JSON summary.
@@ -5032,6 +6541,27 @@ mod tests {
             ..bash.clone()
         };
         assert_eq!(tool_command(&edit), None);
+    }
+
+    #[test]
+    fn multiline_command_preview_is_single_line_without_changing_the_command() {
+        let command = "python3 - <<'PY'\n  print('hello')\nPY";
+        let tool = ToolCall {
+            name: "bash".into(),
+            summary: command.into(),
+            path: None,
+            added: 0,
+            removed: 0,
+            id: None,
+            args: Some(serde_json::json!({ "command": command })),
+            output: None,
+            failed: false,
+        };
+        assert_eq!(
+            activity_preview(&tool),
+            "python3 - <<'PY' print('hello') PY"
+        );
+        assert_eq!(tool_command(&tool).as_deref(), Some(command));
     }
 
     #[test]
@@ -5073,7 +6603,6 @@ mod tests {
             })),
             output: None,
             failed: false,
-            duration: None,
         };
         let rows = build_edit_diff(&tool).expect("diff");
         assert_eq!(rows.len(), 2);
@@ -5100,7 +6629,6 @@ mod tests {
             args: Some(serde_json::json!({ "path": "src/new.rs", "content": "a\nb\n" })),
             output: None,
             failed: false,
-            duration: None,
         };
         let rows = build_edit_diff(&tool).expect("diff");
         assert_eq!(rows.len(), 2);
@@ -5479,7 +7007,6 @@ mod tests {
             args: Some(serde_json::json!({ "command": "cargo test" })),
             output: None,
             failed: false,
-            duration: None,
         };
         let step = Step {
             tools: vec![bash],
@@ -5500,7 +7027,6 @@ mod tests {
             args: Some(serde_json::json!({ "path": "src/auth.rs" })),
             output: None,
             failed: false,
-            duration: None,
         };
         let step = Step {
             tools: vec![read],
@@ -5521,7 +7047,60 @@ mod tests {
             working_activity_label(&thinking).as_deref(),
             Some("Thinking…")
         );
+        // Once the step carries answer text, reasoning is done and the label
+        // falls back to the generic working form instead of "Thinking…".
+        let answered = Step {
+            thinking: "reasoning".into(),
+            text: "the answer".into(),
+            ..Step::default()
+        };
+        assert_eq!(working_activity_label(&answered).as_deref(), None);
         assert_eq!(working_activity_label(&Step::default()), None);
+    }
+
+    #[test]
+    fn thinking_card_settles_when_the_step_moves_on() {
+        let thinking = Step {
+            thinking: "reasoning".into(),
+            ..Step::default()
+        };
+        // The last step of a live row is the one still reasoning.
+        assert!(thinking_is_live(true, true, &thinking));
+        // An earlier step is settled even while the row streams.
+        assert!(!thinking_is_live(true, false, &thinking));
+        // Answer text ends the reasoning phase without waiting for the turn.
+        let answered = Step {
+            thinking: "reasoning".into(),
+            text: "the answer".into(),
+            ..Step::default()
+        };
+        assert!(!thinking_is_live(true, true, &answered));
+        // A settled row is never live.
+        assert!(!thinking_is_live(false, true, &thinking));
+    }
+
+    #[test]
+    fn activity_group_live_follows_the_newest_step() {
+        let work = |thinking: &str| Step {
+            thinking: thinking.into(),
+            ..Step::default()
+        };
+        let answered = Step {
+            text: "the answer".into(),
+            ..Step::default()
+        };
+        // A group running to the newest work-only step is live.
+        assert!(activity_group_is_live(true, 1, &[work("reasoning")]));
+        // Once the newest step holds answer text, the work group settles.
+        assert!(!activity_group_is_live(true, 2, &[work("a"), answered]));
+        // An earlier group is never live, even while the row streams.
+        assert!(!activity_group_is_live(
+            true,
+            1,
+            &[work("first"), work("second")]
+        ));
+        // A settled row is never live.
+        assert!(!activity_group_is_live(false, 1, &[work("reasoning")]));
     }
 
     #[test]
@@ -5535,5 +7114,836 @@ mod tests {
         assert!(matches!(first[0], Block::Heading(1, _)));
         let third = parse_blocks_cached("# Title\n\nchanged\n");
         assert!(!Rc::ptr_eq(&first, &third));
+    }
+
+    /// A selection over `texts` with keys `block-0..block-N` — the shape the
+    /// panel builds on mouse-down.
+    fn selection_over(
+        texts: &[&str],
+        anchor: (usize, usize),
+        focus: (usize, usize),
+    ) -> TextSelection {
+        let blocks = texts
+            .iter()
+            .enumerate()
+            .map(|(ix, text)| SelectedBlock {
+                key: ElementId::Name(format!("block-{ix}").into()),
+                text: (*text).to_string().into(),
+            })
+            .collect();
+        let mut state = TextSelection::new();
+        state.selection = Some(Selection {
+            blocks,
+            anchor: SelectPoint {
+                block: anchor.0,
+                offset: anchor.1,
+            },
+            focus: SelectPoint {
+                block: focus.0,
+                offset: focus.1,
+            },
+        });
+        state
+    }
+
+    fn test_key(ix: usize) -> ElementId {
+        ElementId::Name(format!("block-{ix}").into())
+    }
+
+    #[test]
+    fn selection_spans_blocks_with_partial_ends() {
+        // Cross-paragraph: first block from the anchor offset to its end,
+        // middle blocks whole, last block up to the focus offset.
+        let state = selection_over(
+            &["hello world", "second paragraph", "third"],
+            (0, 6),
+            (2, 5),
+        );
+        assert_eq!(
+            state.selected_text().as_deref(),
+            Some("world\nsecond paragraph\nthird")
+        );
+        // A backwards drag normalizes to the same text.
+        let state = selection_over(
+            &["hello world", "second paragraph", "third"],
+            (2, 5),
+            (0, 6),
+        );
+        assert_eq!(
+            state.selected_text().as_deref(),
+            Some("world\nsecond paragraph\nthird")
+        );
+        // A collapsed selection is nothing to copy.
+        let state = selection_over(&["only"], (0, 2), (0, 2));
+        assert_eq!(state.selected_text(), None);
+    }
+
+    #[test]
+    fn selection_ranges_are_per_block() {
+        let state = selection_over(
+            &["first block", "middle block", "last block"],
+            (0, 6),
+            (2, 4),
+        );
+        assert_eq!(state.range_for(&test_key(0), "first block"), Some(6..11));
+        assert_eq!(state.range_for(&test_key(1), "middle block"), Some(0..12));
+        assert_eq!(state.range_for(&test_key(2), "last block"), Some(0..4));
+        // A block outside the selection washes nothing.
+        let state = selection_over(&["one", "two"], (1, 1), (1, 2));
+        assert_eq!(state.range_for(&test_key(0), "one"), None);
+    }
+
+    #[test]
+    fn selection_offsets_snap_to_char_boundaries_and_shrinking_text() {
+        // Offset 2 sits inside the multi-byte 'é' (bytes 1..3): the start
+        // snaps back so the highlighted range is a whole char.
+        let state = selection_over(&["héllo"], (0, 2), (0, 3));
+        assert_eq!(state.selected_text().as_deref(), Some("é"));
+        // Offsets past the current text end (stale mid-stream selection)
+        // clamp instead of panicking.
+        let state = selection_over(&["short"], (0, 2), (0, 50));
+        assert_eq!(state.selected_text().as_deref(), Some("ort"));
+    }
+
+    #[test]
+    fn highlight_runs_splits_only_the_selected_slice() {
+        let font = ui_font();
+        let color = Hsla::default();
+        let runs = vec![
+            code_run(4, Hsla::default(), &font),
+            code_run(4, Hsla::default(), &font),
+        ];
+        let out = highlight_runs(runs, Some(3..6), color);
+        let lens: Vec<usize> = out.iter().map(|run| run.len).collect();
+        assert_eq!(lens, vec![3, 1, 2, 2]);
+        assert_eq!(out[1].background_color, Some(color));
+        assert_eq!(out[2].background_color, Some(color));
+        assert_eq!(out[3].background_color, None);
+        // Without a selection the runs are untouched.
+        let out = highlight_runs(vec![code_run(4, Hsla::default(), &font)], None, color);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].background_color, None);
+    }
+
+    /// A minimal transcript view: one assistant paragraph and one user
+    /// prompt, with fresh shared state for every collaborator.
+    fn test_messages() -> Rc<RefCell<Vec<ChatMessage>>> {
+        Rc::new(RefCell::new(vec![
+            ChatMessage {
+                user: false,
+                steps: vec![Step {
+                    text: "Alpha bravo charlie delta echo foxtrot golf hotel india juliet \
+                           kilo lima mike november oscar papa quebec romeo sierra tango \
+                           uniform victor whiskey x-ray yankee zulu."
+                        .into(),
+                    ..Step::default()
+                }],
+                images: Vec::new(),
+                elapsed: None,
+                finished_at: None,
+                error: None,
+                aborted: false,
+            },
+            ChatMessage {
+                user: true,
+                steps: vec![Step {
+                    text: "Second paragraph in a follow-up turn.".into(),
+                    ..Step::default()
+                }],
+                images: Vec::new(),
+                elapsed: None,
+                finished_at: None,
+                error: None,
+                aborted: false,
+            },
+        ]))
+    }
+
+    fn test_view(
+        state: TextSelectionState,
+        messages: Rc<RefCell<Vec<ChatMessage>>>,
+        scroller: MessageScrollerState,
+    ) -> TranscriptView {
+        TranscriptView {
+            scroller,
+            messages,
+            text_selection: state,
+            streaming: Rc::new(Cell::new(None)),
+            stream_started: Rc::new(Cell::new(None)),
+            expanded_turns: Rc::new(RefCell::new(HashSet::new())),
+            expanded_files: Rc::new(RefCell::new(HashSet::new())),
+            expanded_activities: Rc::new(RefCell::new(HashMap::new())),
+            expanded_tools: Rc::new(RefCell::new(HashSet::new())),
+            copied: Rc::new(RefCell::new(HashMap::new())),
+            copied_sections: Rc::new(RefCell::new(HashMap::new())),
+            expanded_sections: Rc::new(RefCell::new(HashSet::new())),
+            expanded_blocks: Rc::new(RefCell::new(HashSet::new())),
+            thinking_scrolls: Rc::new(RefCell::new(HashMap::new())),
+            collapsed_thoughts: Rc::new(RefCell::new(HashSet::new())),
+            thinking_detached: Rc::new(RefCell::new(HashSet::new())),
+            hovered_turn: Rc::new(Cell::new(None)),
+            hovered_usage: Rc::new(Cell::new(None)),
+            rail_hint_dismissed: Rc::new(Cell::new(true)),
+            rail_hint_shown_at: Rc::new(Cell::new(None)),
+            workspace: None,
+            viewport_height: px(600.),
+            main_width: px(900.),
+            rail_scroll: ScrollHandle::new(),
+            rail_autoscroll: Rc::new(Cell::new(None)),
+            summary_files: None,
+            summary_finished_at: None,
+            summary_usage: None,
+            review_changes: None,
+            image_opener: None,
+            search_hits: None,
+            search_active: None,
+        }
+    }
+
+    struct TableTestView {
+        header: Vec<String>,
+        rows: Vec<Vec<String>>,
+        selection: TextSelectionState,
+    }
+
+    impl gpui::Render for TableTestView {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            self.selection.borrow_mut().begin_frame();
+            let _scope = TextScopeGuard::enter(TextScope {
+                state: self.selection.clone(),
+                message_ix: 0,
+            });
+            div().w_full().child(render_table(
+                &self.header,
+                &self.rows,
+                &[],
+                0,
+                0,
+                0,
+                theme::Theme::for_id(theme::ThemeId::Orbit),
+            ))
+        }
+    }
+
+    #[gpui::test]
+    fn table_cells_keep_readable_wrapping_when_the_pane_narrows(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let selection = Rc::new(RefCell::new(TextSelection::new()));
+        let prose =
+            "Long prose with **bold** and `inline code` should wrap inside its cell. ".repeat(6);
+        let token = "long_unbroken_identifier_".repeat(16);
+        let view = cx.update(|_, cx| {
+            cx.new(|_| TableTestView {
+                header: vec!["Description".into(), "Identifier".into()],
+                rows: vec![
+                    vec![prose, token.clone()],
+                    vec!["Next row".into(), "Short value".into()],
+                ],
+                selection: selection.clone(),
+            })
+        });
+        let mut narrow_height = None;
+        for width in [300., 600.] {
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(width), px(1600.)),
+                |_, _| view.clone(),
+            );
+            let state = selection.borrow();
+            assert_eq!(state.blocks.len(), 6);
+            let prose = &state.blocks[2];
+            let identifier = &state.blocks[3];
+            for cell in [prose, identifier] {
+                assert!(cell.bounds.left() >= px(0.));
+                assert_eq!(
+                    cell.bounds.size.width,
+                    px(316.),
+                    "340 px column minus padding"
+                );
+                assert!(cell.layout.wrapped_text().lines().count() > 1);
+                assert!(cell.bounds.size.height > px(22.));
+                assert!(state.blocks[4].bounds.top() >= cell.bounds.bottom());
+            }
+            assert_eq!(
+                identifier.text.as_ref(),
+                token.as_str(),
+                "wrapping preserves copy text"
+            );
+            if let Some(height) = narrow_height {
+                assert_eq!(
+                    prose.bounds.size.height, height,
+                    "narrowing the viewport must not squeeze the columns"
+                );
+            } else {
+                narrow_height = Some(prose.bounds.size.height);
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn five_prose_columns_overflow_instead_of_squeezing_into_the_chat(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let cx = cx.add_empty_window();
+        let selection = Rc::new(RefCell::new(TextSelection::new()));
+        let view = cx.update(|_, cx| {
+            cx.new(|_| TableTestView {
+                header: (0..5).map(|ix| format!("Column {ix}")).collect(),
+                rows: vec![vec!["A detailed explanation that should remain readable even in a table with many columns. ".repeat(3); 5]],
+                selection: selection.clone(),
+            })
+        });
+        for width in [600., 960.] {
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(width), px(800.)),
+                |_, _| view.clone(),
+            );
+            let state = selection.borrow();
+            assert_eq!(state.blocks.len(), 10);
+            for cell in &state.blocks[5..] {
+                assert_eq!(cell.bounds.size.width, px(316.));
+            }
+            assert!(state.blocks[9].bounds.right() > px(width));
+        }
+    }
+
+    #[gpui::test]
+    fn wide_table_can_scroll_to_its_last_column(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let selection = Rc::new(RefCell::new(TextSelection::new()));
+        let view = cx.update(|_, cx| {
+            cx.new(|_| TableTestView {
+                header: (0..6).map(|ix| format!("Col {ix}")).collect(),
+                // Missing cells must not stretch earlier cells out of alignment.
+                rows: vec![vec!["Value".into()]],
+                selection: selection.clone(),
+            })
+        });
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(300.), px(300.)),
+                |_, _| view.clone(),
+            );
+        };
+        draw(cx);
+        let last_before = selection.borrow().blocks[5].bounds;
+        assert!(last_before.right() > px(300.));
+        assert_eq!(
+            selection.borrow().blocks[0].bounds.left(),
+            selection.borrow().blocks[6].bounds.left()
+        );
+
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: point(px(150.), px(20.)),
+            delta: gpui::ScrollDelta::Pixels(point(px(-1000.), px(0.))),
+            ..Default::default()
+        });
+        draw(cx);
+        let state = selection.borrow();
+        let last_after = state.blocks[5].bounds;
+        assert!(last_after.left() < last_before.left());
+        assert!(
+            last_after.right() <= px(300.),
+            "the last column must be reachable"
+        );
+    }
+
+    /// The entity wrapper `list()` requires (it reads `window.current_view`).
+    struct SelectTestView {
+        messages: Rc<RefCell<Vec<ChatMessage>>>,
+        state: TextSelectionState,
+        scroller: MessageScrollerState,
+        main_width: Pixels,
+        open_work: bool,
+        live: bool,
+    }
+
+    impl gpui::Render for SelectTestView {
+        fn render(&mut self, _: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+            let mut view = test_view(
+                self.state.clone(),
+                self.messages.clone(),
+                self.scroller.clone(),
+            );
+            view.main_width = self.main_width;
+            if self.open_work {
+                view.expanded_turns.borrow_mut().insert(0);
+                for tool_ix in 0..self.messages.borrow()[0].tools().count() {
+                    view.expanded_tools.borrow_mut().insert((0, tool_ix));
+                }
+                for step_ix in 0..self.messages.borrow()[0].steps.len() {
+                    view.expanded_activities
+                        .borrow_mut()
+                        .insert((0, step_ix), true);
+                }
+            }
+            if self.live {
+                view.streaming.set(Some(0));
+            }
+            render_transcript(view, cx)
+        }
+    }
+
+    #[gpui::test]
+    fn tables_fit_their_content_without_filling_the_strip_or_pane(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let state: TextSelectionState = Rc::new(RefCell::new(TextSelection::new()));
+        let messages = test_messages();
+        let prose = "Normal prose keeps its centered reading width. "
+            .repeat(10)
+            .trim()
+            .to_owned();
+        let long_cell =
+            "A detailed explanation needs a readable column rather than being squeezed. ".repeat(3);
+        messages.borrow_mut()[0].steps[0].text = format!(
+            "{prose}\n\n\
+             | Repeated group | New component |\n| --- | --- |\n\
+             | Gradient, material card, border, window margins | `MiriWindowSurface` |\n\
+             | Scroll view and page insets | `MiriPageScrollContainer` |\n\n\
+             | One | Two | Three | Four |\n| --- | --- | --- | --- |\n\
+             | A | B | C | D |\n\n\
+             | Skill | Strengths | Reservations |\n| --- | --- | --- |\n\
+             | {long_cell} | {long_cell} | {long_cell} |"
+        );
+        let scroller = MessageScrollerState::new(messages.borrow().len());
+        let view = cx.update(|_, cx| {
+            cx.new(|_| SelectTestView {
+                messages: messages.clone(),
+                state: state.clone(),
+                scroller,
+                main_width: px(1400.),
+                open_work: false,
+                live: false,
+            })
+        });
+        for width in [1400., 900., 1800.] {
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.main_width = px(width);
+                    cx.notify();
+                })
+            });
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(width), px(1600.)),
+                |_, _| view.clone(),
+            );
+            let selection = state.borrow();
+            let bounds = |text: &str| {
+                selection
+                    .blocks
+                    .iter()
+                    .find(|block| block.text.as_ref() == text)
+                    .unwrap()
+                    .bounds
+            };
+            let paragraph = bounds(&prose);
+            assert_eq!(paragraph.size.width, px(CONTENT_MAX_WIDTH.min(width - 40.)));
+            // Both two-column prose tables and four-column short tables fit.
+            // Width depends on content, not merely the number of columns.
+            for (first, last) in [("Repeated group", "New component"), ("One", "Four")] {
+                assert_eq!(bounds(first).left(), paragraph.left() + px(13.));
+                assert!(
+                    bounds(last).right() < paragraph.right() - px(100.),
+                    "small tables must not stretch"
+                );
+            }
+            // Four short columns need 4 × 96px; three prose columns cap at
+            // 3 × 340px. The measured text excludes 12px padding at each end.
+            assert_eq!(bounds("Four").right() - bounds("One").left(), px(360.));
+            assert_eq!(
+                bounds("Reservations").right() - bounds("Skill").left(),
+                px(996.)
+            );
+            if width > CONTENT_MAX_WIDTH + 40. {
+                assert!(bounds("Skill").left() < paragraph.left());
+                assert!(bounds("Reservations").right() > paragraph.right());
+                let table_left = bounds("Skill").left() - px(13.);
+                let table_right = bounds("Reservations").right() + px(13.);
+                assert_eq!(table_right - table_left, px(1022.));
+                assert_eq!(table_left, (px(width) - px(1022.)) / 2.);
+            }
+        }
+    }
+
+    /// Exercise the whole virtualized row, not just an isolated table: the
+    /// old row-level width cap hid the breakout even when its cells were wide.
+    #[gpui::test]
+    fn transcript_table_viewport_breaks_out_of_the_prose_strip(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let state: TextSelectionState = Rc::new(RefCell::new(TextSelection::new()));
+        let messages = test_messages();
+        let before = "Before the table, prose keeps its reading width. "
+            .repeat(8)
+            .trim()
+            .to_owned();
+        let after = "After the table, prose returns to the same reading width. "
+            .repeat(8)
+            .trim()
+            .to_owned();
+        let cell =
+            "A detailed explanation stays readable instead of being squeezed into a thin column. "
+                .repeat(3);
+        messages.borrow_mut()[0].steps[0].text = format!(
+            "{before}\n\n| Skill | Strengths | Reservations |\n| --- | --- | --- |\n| {cell} | {cell} | {cell} |\n\n{after}"
+        );
+        let scroller = MessageScrollerState::new(messages.borrow().len());
+        let view = cx.update(|_, cx| {
+            cx.new(|_| SelectTestView {
+                messages: messages.clone(),
+                state: state.clone(),
+                scroller,
+                main_width: px(1400.),
+                open_work: false,
+                live: false,
+            })
+        });
+
+        for width in [1400., 800., 1400.] {
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.main_width = px(width);
+                    cx.notify();
+                })
+            });
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(width), px(1600.)),
+                |_, _| view.clone(),
+            );
+            let selection = state.borrow();
+            let before = selection
+                .blocks
+                .iter()
+                .find(|block| block.text.as_ref() == before)
+                .unwrap()
+                .bounds;
+            let after = selection
+                .blocks
+                .iter()
+                .find(|block| block.text.as_ref() == after)
+                .unwrap()
+                .bounds;
+            let first = selection
+                .blocks
+                .iter()
+                .find(|block| block.text.as_ref() == "Skill")
+                .unwrap()
+                .bounds;
+            let last = selection
+                .blocks
+                .iter()
+                .find(|block| block.text.as_ref() == "Reservations")
+                .unwrap()
+                .bounds;
+            assert_eq!(before.size.width, px(CONTENT_MAX_WIDTH.min(width - 40.)));
+            assert_eq!(before.left(), after.left());
+            assert_eq!(before.size.width, after.size.width);
+            assert!(after.top() > last.bottom());
+            if width > CONTENT_MAX_WIDTH + 40. {
+                assert!(
+                    first.left() < before.left(),
+                    "table extends into the left margin"
+                );
+                assert!(
+                    last.right() > before.right(),
+                    "table extends into the right margin"
+                );
+                assert!(
+                    last.right() < px(width),
+                    "all three columns are visible without scrolling"
+                );
+            } else {
+                assert!(
+                    first.left() > before.left(),
+                    "narrow panes contain the table viewport"
+                );
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn expanded_activity_stays_inside_the_original_message_column(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let state: TextSelectionState = Rc::new(RefCell::new(TextSelection::new()));
+        let messages = test_messages();
+        let prose = "A wrapping paragraph before the next activity group. "
+            .repeat(10)
+            .trim()
+            .to_owned();
+        let second = "A second paragraph after the first activity group. "
+            .repeat(10)
+            .trim()
+            .to_owned();
+        let tool = ToolCall {
+            name: "batch_web_fetch".into(),
+            summary: "https://example.com/a-long-path/".repeat(12),
+            path: None,
+            added: 0,
+            removed: 0,
+            id: None,
+            args: Some(serde_json::json!({"url": "https://example.com"})),
+            output: None,
+            failed: false,
+        };
+        messages.borrow_mut()[0].steps = vec![
+            Step { text: prose.clone(), thinking: "First thought\nChecking references".into(), tools: vec![tool.clone()], ..Step::default() },
+            Step { text: second.clone(), thinking: "Second thought\nChecking more references".into(), tools: vec![tool], ..Step::default() },
+            Step { text: "| A | B | C | D |\n| --- | --- | --- | --- |\n| A wide table | preserves | the normal | activity layout |".into(), ..Step::default() },
+        ];
+        let scroller = MessageScrollerState::new(messages.borrow().len());
+        let view = cx.update(|_, cx| {
+            cx.new(|_| SelectTestView {
+                messages: messages.clone(),
+                state: state.clone(),
+                scroller,
+                main_width: px(1800.),
+                open_work: true,
+                live: false,
+            })
+        });
+        for (width, live) in [(1800., false), (1100., false), (800., false), (1800., true)] {
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.main_width = px(width);
+                    view.live = live;
+                    cx.notify();
+                })
+            });
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(width), px(1600.)),
+                |_, _| view.clone(),
+            );
+            let column_width = px(CONTENT_MAX_WIDTH.min(width - 40.));
+            let column_left = (px(width) - column_width) / 2.;
+            for selector in ["activity-group-0-0", "activity-group-0-1"] {
+                let bounds = cx
+                    .debug_bounds(selector)
+                    .expect("expanded activity is visible");
+                assert_eq!(
+                    bounds.size.width, column_width,
+                    "{selector} width at {width}"
+                );
+                assert_eq!(
+                    bounds.left(),
+                    column_left,
+                    "{selector} alignment at {width}"
+                );
+            }
+            for selector in [
+                "thought-card-0-0",
+                "thought-card-0-1",
+                "tool-card-0-0",
+                "tool-card-0-1",
+            ] {
+                let bounds = cx.debug_bounds(selector).expect("card is visible");
+                assert!(bounds.left() >= column_left);
+                assert!(
+                    bounds.right() <= column_left + column_width + px(6.),
+                    "{selector} overflows the message column at {width}: {bounds:?}"
+                );
+            }
+            let selection = state.borrow();
+            let first = selection
+                .blocks
+                .iter()
+                .find(|block| block.text.as_ref() == prose)
+                .unwrap();
+            let next = selection
+                .blocks
+                .iter()
+                .find(|block| block.text.as_ref() == second)
+                .unwrap();
+            assert_eq!(first.bounds.size.width, column_width);
+            assert_eq!(next.bounds.left(), first.bounds.left());
+            assert!(
+                next.bounds.top() >= first.bounds.bottom() + px(8.),
+                "paragraphs must not overlap"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn repeated_tools_with_short_thoughts_do_not_accumulate_bottom_space(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let state: TextSelectionState = Rc::new(RefCell::new(TextSelection::new()));
+        let messages = test_messages();
+        messages.borrow_mut().truncate(1);
+        messages.borrow_mut()[0].steps = vec![Step {
+            text: "I will investigate the system appearance behavior.".into(),
+            ..Step::default()
+        }];
+        let scroller = MessageScrollerState::new(1);
+        let view = cx.update(|_, cx| {
+            cx.new(|_| SelectTestView {
+                messages: messages.clone(),
+                state: state.clone(),
+                scroller: scroller.clone(),
+                main_width: px(1400.),
+                open_work: false,
+                live: true,
+            })
+        });
+        let height = px(1100.);
+        for count in 1..=12 {
+            if count == 6 {
+                // Exercise the same growth with a wide table mixed into the
+                // prose. Fixing the gap must not reintroduce zero-width prose
+                // during table layout on a narrow pane.
+                let cell = "A detailed explanation keeps a readable column. ".repeat(4);
+                messages.borrow_mut()[0].steps[0].text.push_str(&format!(
+                    "\n\n| Skill | Strengths | Reservations |\n| --- | --- | --- |\n\
+                     | {cell} | {cell} | {cell} |\n\nContinuing the investigation."
+                ));
+            }
+            messages.borrow_mut()[0].steps.push(Step {
+                thinking: "Adding explicit backdrop imports".into(),
+                tools: vec![ToolCall {
+                    name: "read".into(),
+                    summary: "crates/orbit-pi/src/app/backdrop_layout_tests.rs".into(),
+                    path: None,
+                    added: 0,
+                    removed: 0,
+                    id: Some(format!("call-{count}")),
+                    args: None,
+                    output: None,
+                    failed: false,
+                }],
+                ..Step::default()
+            });
+            // Match successive tool updates: invalidate the existing row,
+            // without manually jumping to the bottom to hide scroll errors.
+            scroller.remeasure_items(0..1);
+            scroller.note_activity();
+            for width in [1400., 800., 1800.] {
+                cx.update(|_, cx| {
+                    view.update(cx, |view, cx| {
+                        view.main_width = px(width);
+                        cx.notify();
+                    });
+                });
+                cx.draw(
+                    point(px(0.), px(0.)),
+                    gpui::size(px(width), height),
+                    |_, _| view.clone(),
+                );
+                let indicator = cx.debug_bounds("working-indicator").unwrap();
+                assert_eq!(
+                    height - indicator.bottom(),
+                    px(22.),
+                    "only the final row padding belongs below the indicator: {count} tools at {width}px"
+                );
+                if count >= 6 {
+                    let selection = state.borrow();
+                    let paragraph = selection
+                        .blocks
+                        .iter()
+                        .find(|block| block.text.as_ref() == "Continuing the investigation.")
+                        .unwrap();
+                    assert_eq!(
+                        paragraph.bounds.size.width,
+                        px(CONTENT_MAX_WIDTH.min(width - 40.))
+                    );
+                }
+                assert_eq!(scroller.item_count(), 1);
+                assert!(scroller.is_following_tail());
+            }
+        }
+
+        // Settling changes the footer and default activity expansion. Keep
+        // the work expanded and ensure its measured height still fits it.
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.live = false;
+                view.open_work = true;
+                cx.notify();
+            });
+        });
+        scroller.remeasure_items(0..1);
+        cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(1800.), height),
+            |_, _| view.clone(),
+        );
+        let last_tool = cx.debug_bounds("tool-card-0-11").unwrap();
+        assert!(
+            (px(0.)..px(100.)).contains(&(height - last_tool.bottom())),
+            "only the footer and row padding should follow the settled work"
+        );
+    }
+
+    /// The panel's selection plumbing end-to-end: a simulated drag from the
+    /// assistant paragraph into the user prompt must produce a cross-block
+    /// selection (this caught a panel hitbox that never filled its bounds).
+    #[gpui::test]
+    fn transcript_drag_selects_across_paragraphs(cx: &mut gpui::TestAppContext) {
+        let mut cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let state: TextSelectionState = Rc::new(RefCell::new(TextSelection::new()));
+        let messages = test_messages();
+        let scroller = MessageScrollerState::new(messages.borrow().len());
+        let state_in = state.clone();
+        let messages_in = messages.clone();
+        let scroller_in = scroller.clone();
+        let view = cx.update(|_, cx| {
+            cx.new(move |_| SelectTestView {
+                messages: messages_in,
+                state: state_in,
+                scroller: scroller_in,
+                main_width: px(900.),
+                open_work: false,
+                live: false,
+            })
+        });
+        // The standalone test window only re-registers the panel's mouse
+        // listeners when the entity is painted, so redraw between input
+        // events (a real window paints a frame after every event anyway).
+        let paint = |cx: &mut gpui::VisualTestContext| {
+            let view = view.clone();
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(900.), px(600.)),
+                move |_, _| view.clone(),
+            );
+        };
+        paint(&mut cx);
+
+        let blocks = state.borrow();
+        assert!(
+            blocks.blocks.len() >= 2,
+            "expected the rendered paragraphs to register as selectable blocks, got {}",
+            blocks.blocks.len()
+        );
+        let first = blocks.blocks[0].bounds;
+        let last = blocks.blocks[blocks.blocks.len() - 1].bounds;
+        drop(blocks);
+
+        let start = point(first.left() + px(2.), first.top() + px(8.));
+        let end = point(last.left() + px(60.), last.top() + px(8.));
+        cx.simulate_mouse_down(start, MouseButton::Left, gpui::Modifiers::none());
+        paint(&mut cx);
+        cx.simulate_mouse_move(end, Some(MouseButton::Left), gpui::Modifiers::none());
+        paint(&mut cx);
+        cx.simulate_mouse_up(end, MouseButton::Left, gpui::Modifiers::none());
+
+        let selected = state.borrow().selected_text();
+        assert!(
+            selected.is_some(),
+            "drag across paragraphs produced no selection"
+        );
+        let selected = selected.unwrap();
+        assert!(
+            selected.contains("zulu") && selected.contains("Second"),
+            "unexpected selection text: {selected:?}"
+        );
     }
 }

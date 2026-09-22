@@ -82,7 +82,7 @@ impl OrbitApp {
         let input = cx.new(|cx| {
             ComposerInput::new(cx)
                 .with_element_id("ask-input")
-                .with_placeholder("Type your answer…")
+                .with_placeholder_key("ask.type_your_answer")
                 .with_max_lines(3)
                 .with_key_context("Composer AskInput")
         });

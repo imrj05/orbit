@@ -4,7 +4,8 @@
 //! by `img("https://…")`. GPUI's image loader needs an [`HttpClient`], and its
 //! default is a null client that renders nothing — so this module supplies a
 //! small blocking client whose requests run on a worker thread, keeping the
-//! GPUI executor free. TLS uses the platform trust store through rustls.
+//! GPUI executor free. TLS uses rustls with the platform trust store and
+//! Mozilla's webpki roots as fallback.
 
 use anyhow::{anyhow, Result};
 use futures::channel::oneshot;

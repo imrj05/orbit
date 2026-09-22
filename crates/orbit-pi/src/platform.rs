@@ -1,6 +1,7 @@
 //! macOS helpers for detecting installed folder-capable apps and opening a
 //! workspace path in one of them (editors, terminals, Finder, etc.).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -9,7 +10,7 @@ use gpui::{Image, SharedString, TitlebarOptions, Window};
 // position, so they stay behind the same gate as that titlebar.
 #[cfg(target_os = "macos")]
 use gpui::{point, px};
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
 
 /// A folder-capable application the header's "open in" control can target,
 /// resolved against what is installed on this machine.
@@ -42,6 +43,11 @@ const OPEN_IN_CATALOG: &[(&str, &str, &[&str])] = &[
     ("ghostty", "Ghostty", &["com.mitchellh.ghostty"]),
     ("warp", "Warp", &["dev.warp.Warp-Stable", "dev.warp.Warp"]),
     ("xcode", "Xcode", &["com.apple.dt.Xcode"]),
+    (
+        "rider",
+        "Rider",
+        &["com.jetbrains.rider", "com.jetbrains.rider-EAP"],
+    ),
     (
         "android-studio",
         "Android Studio",
@@ -167,6 +173,38 @@ pub fn reveal_in_file_manager(path: &Path) {
     }
 }
 
+/// Whether [`trash_path`] moves a file to the OS trash (recoverable) or
+/// deletes it outright. The Explorer's delete confirmation is worded from
+/// this, so it never promises a recovery the platform cannot deliver.
+pub const TRASH_IS_RECOVERABLE: bool = cfg!(target_os = "macos");
+
+/// Delete `path`, preferring the OS trash so a mistake is recoverable.
+///
+/// macOS uses `NSFileManager`'s `trashItemAtURL:` — the same move Finder's
+/// **Move to Trash** performs, including collision-renaming and restore.
+/// Windows/Linux are best-effort and fall through to a permanent delete; the
+/// caller checks [`TRASH_IS_RECOVERABLE`] before promising otherwise.
+#[cfg(target_os = "macos")]
+pub fn trash_path(path: &Path) -> std::io::Result<()> {
+    use objc2_foundation::{NSFileManager, NSString, NSURL};
+
+    let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+    NSFileManager::defaultManager()
+        .trashItemAtURL_resultingItemURL_error(&url, None)
+        .map_err(|error| {
+            std::io::Error::other(error.localizedDescription().to_string())
+        })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn trash_path(path: &Path) -> std::io::Result<()> {
+    if path.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+}
+
 /// Open `path` in the OS default application (the user's editor for a
 /// `SKILL.md`). Used by the skills page's **Open SKILL.md** action.
 #[cfg(target_os = "macos")]
@@ -251,27 +289,72 @@ fn open_in_prefs_path() -> PathBuf {
     home_dir().join(".orbit-pi").join("open-in.json")
 }
 
-/// Load the persisted preferred open-in app id, if any.
-pub fn load_preferred_open_in_app() -> Option<String> {
-    let raw = std::fs::read_to_string(open_in_prefs_path()).ok()?;
-    let value: Value = serde_json::from_str(&raw).ok()?;
-    value
-        .get("open_in_app")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-        .map(str::to_owned)
+/// Workspace-specific app choices, with the old global choice as a fallback.
+/// Keys are workspace paths, not session ids, so sessions in a project share
+/// the same choice without writing anything into the project itself.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct OpenInPrefs {
+    open_in_app: Option<String>,
+    workspaces: BTreeMap<PathBuf, String>,
 }
 
-/// Remember the user's preferred open-in app id.
-pub fn persist_preferred_open_in_app(app_id: &str) {
-    let path = open_in_prefs_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+impl OpenInPrefs {
+    pub fn load() -> Self {
+        match Self::load_from(&open_in_prefs_path()) {
+            Ok(prefs) => prefs,
+            Err(error) => {
+                eprintln!("Could not load open-in preferences: {error}");
+                Self::default()
+            }
+        }
     }
-    let _ = std::fs::write(
-        path,
-        serde_json::json!({ "open_in_app": app_id }).to_string(),
-    );
+
+    fn load_from(path: &Path) -> std::io::Result<Self> {
+        match std::fs::read(path) {
+            Ok(raw) => serde_json::from_slice(&raw).map_err(std::io::Error::other),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Resolve against installed apps without discarding an unavailable saved
+    /// choice. Reinstalling that app restores it as the preferred target.
+    pub fn preferred_app<'a>(
+        &self,
+        workspace: Option<&Path>,
+        apps: &'a [ExternalApp],
+    ) -> Option<&'a ExternalApp> {
+        let workspace_app = workspace.and_then(|path| self.workspaces.get(path));
+        [workspace_app, self.open_in_app.as_ref()]
+            .into_iter()
+            .flatten()
+            .find_map(|id| apps.iter().find(|app| app.id == id))
+            .or_else(|| apps.iter().find(|app| app.id == "finder"))
+            .or_else(|| apps.first())
+    }
+
+    pub fn remember(&mut self, workspace: &Path, app_id: &str) {
+        self.workspaces
+            .insert(workspace.to_path_buf(), app_id.to_owned());
+    }
+
+    /// Persist off-thread. The caller serializes saves so the latest choice
+    /// wins even when the user changes it again before a write completes.
+    pub fn persist(&self) -> std::io::Result<()> {
+        self.persist_to(&open_in_prefs_path())
+    }
+
+    fn persist_to(&self, path: &Path) -> std::io::Result<()> {
+        let raw = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        // Keep an interrupted write from truncating the saved preferences.
+        let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
+        std::fs::write(&temporary, raw)?;
+        std::fs::rename(temporary, path)
+    }
 }
 
 /// Run an interactive shell command in the user's terminal. Used for
@@ -284,7 +367,8 @@ pub fn open_terminal_command(command: &str) -> Result<(), String> {
     // non-default terminal is installed.
     let path = std::env::temp_dir().join(format!("orbit-{}.command", std::process::id()));
     let script = format!("#!/bin/zsh\n{command}\n");
-    std::fs::write(&path, script).map_err(|err| format!("could not write login script: {err}"))?;
+    std::fs::write(&path, script)
+        .map_err(|err| tr!("platform.login_script_failed", error = err))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -294,7 +378,7 @@ pub fn open_terminal_command(command: &str) -> Result<(), String> {
         .arg(&path)
         .spawn()
         .map(|_| ())
-        .map_err(|err| format!("could not open Terminal: {err}"))
+        .map_err(|err| tr!("platform.terminal_failed", error = err))
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -309,7 +393,7 @@ pub fn open_terminal_command(command: &str) -> Result<(), String> {
         launcher
             .spawn()
             .map(|_| ())
-            .map_err(|err| format!("could not open a terminal: {err}"))
+            .map_err(|err| tr!("platform.terminal_failed", error = err))
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -323,7 +407,7 @@ pub fn open_terminal_command(command: &str) -> Result<(), String> {
                 return Ok(());
             }
         }
-        Err("no terminal emulator found — run the command manually".into())
+        Err(tr!("platform.no_terminal_found"))
     }
 }
 
@@ -333,19 +417,19 @@ pub fn open_terminal_command(command: &str) -> Result<(), String> {
 #[cfg(target_os = "macos")]
 pub fn open_url(url: &str) -> Result<(), String> {
     if !is_safe_browser_url(url) {
-        return Err("refusing to open a non-http(s) URL".into());
+        return Err(tr!("platform.unsafe_url"));
     }
     std::process::Command::new("/usr/bin/open")
         .arg(url)
         .spawn()
         .map(|_| ())
-        .map_err(|err| format!("could not open the browser: {err}"))
+        .map_err(|err| tr!("platform.browser_failed", error = err))
 }
 
 #[cfg(not(target_os = "macos"))]
 pub fn open_url(url: &str) -> Result<(), String> {
     if !is_safe_browser_url(url) {
-        return Err("refusing to open a non-http(s) URL".into());
+        return Err(tr!("platform.unsafe_url"));
     }
     let opener = if cfg!(target_os = "windows") {
         "cmd"
@@ -362,7 +446,7 @@ pub fn open_url(url: &str) -> Result<(), String> {
     command
         .spawn()
         .map(|_| ())
-        .map_err(|err| format!("could not open the browser: {err}"))
+        .map_err(|err| tr!("platform.browser_failed", error = err))
 }
 
 /// Rename the running process so macOS labels the application menu with the
@@ -444,7 +528,7 @@ pub fn open_notification_settings() -> Result<(), String> {
             return Ok(());
         }
     }
-    Err("could not open System Settings".into())
+    Err(tr!("platform.open_settings_failed"))
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -558,14 +642,14 @@ fn unsupported_reason(version: OsVersion) -> Option<String> {
     {
         const FLOOR_MAJOR: u32 = 13;
         if version.major > 0 && version.major < FLOOR_MAJOR {
-            return Some(format!("Orbit needs macOS {FLOOR_MAJOR} or newer"));
+            return Some(tr!("platform.needs_macos", major = FLOOR_MAJOR));
         }
     }
     #[cfg(windows)]
     {
         const FLOOR_BUILD: u32 = 17763;
         if version.build > 0 && version.build < FLOOR_BUILD {
-            return Some("Orbit needs Windows 10 (1809) or newer".to_string());
+            return Some(tr!("platform.needs_windows").to_string());
         }
     }
     // Linux has no floor to compare against (see `os_probe`).
@@ -684,6 +768,7 @@ pub fn draws_window_controls() -> bool {
 /// path entirely — no move loop, and no caption-button commands. So the press
 /// hands the move to the OS itself (`WM_NCLBUTTONDOWN` + `HTCAPTION`), which
 /// is the standard way a custom titlebar drags a Windows window.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn start_window_drag(window: &Window) {
     #[cfg(windows)]
     windows_chrome::start_drag(window);
@@ -795,7 +880,7 @@ pub const WINDOW_CONTROLS_W: f32 = 46. * 3.;
 /// macOS gets the transparent titlebar the app draws its own controls into,
 /// with the traffic lights moved onto the sidebar's 44px row; Windows gets one
 /// too, because it paints its own caption buttons in that same row
-/// (`draws_window_controls`, Waku-style) and a system caption above them would
+/// (`draws_window_controls`) and a system caption above them would
 /// double the header. That trade is deliberate: the app's buttons carry
 /// `WindowControlArea` hit areas, so minimize/maximize/close, `Alt+Space`, and
 /// double-click-to-maximize all still run the system's own commands, but the
@@ -808,7 +893,7 @@ pub fn titlebar_options() -> TitlebarOptions {
     TitlebarOptions {
         title: Some(SharedString::from("Orbit Pi")),
         // Transparent titlebar: the sidebar extends to the top and the native
-        // traffic lights sit inside it (Waku-style).
+        // traffic lights sit inside it.
         appears_transparent: true,
         // Center the lights in the 44px titlebar row so they share a line with
         // the window controls beside them.
@@ -830,6 +915,128 @@ pub fn titlebar_options() -> TitlebarOptions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn open_in_test_apps() -> Vec<ExternalApp> {
+        ["vscode", "rider", "finder"]
+            .into_iter()
+            .map(|id| ExternalApp {
+                id,
+                label: id,
+                bundle_id: id,
+                icon: Arc::new(Image::from_bytes(gpui::ImageFormat::Png, Vec::new())),
+            })
+            .collect()
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn open_in_catalog_includes_rider_stable_and_eap() {
+        let rider = OPEN_IN_CATALOG
+            .iter()
+            .find(|entry| entry.0 == "rider")
+            .unwrap();
+        assert_eq!(rider.1, "Rider");
+        assert_eq!(rider.2, &["com.jetbrains.rider", "com.jetbrains.rider-EAP"]);
+    }
+
+    #[test]
+    fn open_in_legacy_global_choice_is_preserved_as_fallback() {
+        let prefs: OpenInPrefs = serde_json::from_str(r#"{"open_in_app":"vscode"}"#).unwrap();
+        let apps = open_in_test_apps();
+        assert_eq!(
+            prefs
+                .preferred_app(Some(Path::new("/new-project")), &apps)
+                .unwrap()
+                .id,
+            "vscode"
+        );
+        assert_eq!(prefs.preferred_app(None, &apps).unwrap().id, "vscode");
+    }
+
+    #[test]
+    fn open_in_workspace_choices_are_independent_and_survive_reload() {
+        let mut prefs: OpenInPrefs = serde_json::from_str(r#"{"open_in_app":"vscode"}"#).unwrap();
+        let project_a = Path::new("/projects/Game with spaces");
+        let project_b = Path::new("/projects/游戏");
+        prefs.remember(project_a, "rider");
+        prefs.remember(project_b, "finder");
+        let raw = serde_json::to_string(&prefs).unwrap();
+        let mut prefs: OpenInPrefs = serde_json::from_str(&raw).unwrap();
+        let apps = open_in_test_apps();
+        for (path, expected) in [
+            (project_a, "rider"),
+            (project_b, "finder"),
+            (project_a, "rider"),
+        ] {
+            assert_eq!(prefs.preferred_app(Some(path), &apps).unwrap().id, expected);
+        }
+        prefs.remember(project_a, "vscode");
+        assert_eq!(
+            prefs.preferred_app(Some(project_a), &apps).unwrap().id,
+            "vscode"
+        );
+        assert_eq!(
+            prefs.preferred_app(Some(project_b), &apps).unwrap().id,
+            "finder"
+        );
+        assert_eq!(prefs.preferred_app(None, &apps).unwrap().id, "vscode");
+    }
+
+    #[test]
+    fn open_in_unavailable_workspace_app_falls_back_without_forgetting_choice() {
+        let mut prefs: OpenInPrefs = serde_json::from_str(r#"{"open_in_app":"vscode"}"#).unwrap();
+        let workspace = Path::new("/project");
+        prefs.remember(workspace, "rider");
+        let apps = open_in_test_apps();
+        let without_rider: Vec<_> = apps
+            .iter()
+            .filter(|app| app.id != "rider")
+            .cloned()
+            .collect();
+        assert_eq!(
+            prefs.preferred_app(Some(workspace), &without_rider).unwrap().id,
+            "vscode"
+        );
+        assert_eq!(prefs.preferred_app(Some(workspace), &apps).unwrap().id, "rider");
+    }
+
+    #[test]
+    fn open_in_defaults_to_finder_then_first_installed_app() {
+        let prefs: OpenInPrefs = serde_json::from_str(r#"{"open_in_app":"uninstalled"}"#).unwrap();
+        let apps = open_in_test_apps();
+        assert_eq!(prefs.preferred_app(None, &apps).unwrap().id, "finder");
+        assert_eq!(prefs.preferred_app(None, &apps[..1]).unwrap().id, "vscode");
+        assert!(prefs.preferred_app(None, &[]).is_none());
+        assert!(OpenInPrefs::default().preferred_app(None, &[]).is_none());
+    }
+
+    #[test]
+    fn open_in_persistence_creates_and_replaces_preferences() {
+        let dir = std::env::temp_dir().join(format!(
+            "orbit-open-in-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = dir.join("open-in.json");
+        let mut prefs = OpenInPrefs::load_from(&path).unwrap();
+        assert!(prefs.workspaces.is_empty());
+        prefs.remember(Path::new("/project"), "rider");
+        prefs.persist_to(&path).unwrap();
+        prefs.remember(Path::new("/project"), "vscode");
+        prefs.persist_to(&path).unwrap();
+        let reloaded = OpenInPrefs::load_from(&path).unwrap();
+        assert_eq!(
+            reloaded.workspaces.get(Path::new("/project")).unwrap(),
+            "vscode"
+        );
+        std::fs::write(&path, "not JSON").unwrap();
+        assert!(OpenInPrefs::load_from(&path).is_err());
+        assert!(prefs.persist_to(&path.join("invalid-child")).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn only_http_urls_are_opened() {

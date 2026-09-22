@@ -682,6 +682,8 @@ async function orbitQuotaGoogle() {
 // `ollama` pointing at 127.0.0.1). Accepted auth.json shapes:
 //
 //   "ollama"                {"type":"api_key","key":"<real key>"}          → current model
+//   "ollama-cloud"          {"type":"api_key","key":"<real key>"}          → current model
+//                           (the third-party pi-ollama-cloud-provider id)
 //   "ollama-cloud-session"  {"type":"ollama_cloud_session","session":"<cookie>"} → legacy page
 //
 // The session lives under its own key, never the `ollama` provider id: pi's
@@ -944,6 +946,7 @@ const orbitQuotaAdapters = {
   google: orbitQuotaGoogle,
   "google-vertex": orbitQuotaGoogle,
   ollama: orbitQuotaOllama,
+  "ollama-cloud": orbitQuotaOllama,
   "moonshotai": orbitQuotaMoonshot,
   "moonshotai-cn": orbitQuotaMoonshot,
   "minimax": orbitQuotaMiniMax,
@@ -1059,4 +1062,5 @@ export {
   OllamaCloudParser,
   quotaReports,
   ORBIT_QUOTA_TTL_MS,
+  OLLAMA_SESSION_KEY,
 };

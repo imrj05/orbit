@@ -488,9 +488,11 @@ fn find_on_path(name: &str) -> Option<String> {
     None
 }
 
-/// The PATH handed to the child: the resolved binary's dir plus common install
-/// dirs prepended to whatever PATH the parent process has.
-fn augmented_path(bin_dir: Option<&Path>) -> OsString {
+/// The PATH handed to a pi child: the resolved binary's dir plus common
+/// install dirs prepended to whatever PATH the parent process has. Public so
+/// every direct pi spawn (updater, version probe) resolves `node` from a
+/// bundled `.app`, not just the RPC session.
+pub fn augmented_path(bin_dir: Option<&Path>) -> OsString {
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(dir) = bin_dir {
         if !dir.as_os_str().is_empty() {

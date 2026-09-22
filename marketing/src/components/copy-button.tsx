@@ -1,6 +1,7 @@
 "use client";
 
-import { Check, CopySimple } from "@phosphor-icons/react/dist/ssr";
+import { Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 
@@ -33,9 +34,9 @@ export function CopyButton({
       className="font-mono text-[10.5px]"
     >
       {copied ? (
-        <Check data-icon="inline-start" />
+        <HugeiconsIcon icon={Tick02Icon} data-icon="inline-start" />
       ) : (
-        <CopySimple data-icon="inline-start" />
+        <HugeiconsIcon icon={Copy01Icon} data-icon="inline-start" />
       )}
       {copied ? "Copied" : label}
     </Button>

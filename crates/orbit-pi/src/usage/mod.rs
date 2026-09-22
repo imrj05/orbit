@@ -24,6 +24,7 @@ pub mod chart;
 pub mod collect;
 pub mod filters;
 pub mod format;
+pub mod heatmap;
 pub mod model;
 pub mod page;
 pub mod table;

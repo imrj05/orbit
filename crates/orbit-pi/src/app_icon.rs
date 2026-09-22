@@ -6,11 +6,24 @@
 //! apps; `icon.icns` and the 512px copy in this crate are derived that way, and
 //! the 512px copy is what the running binary embeds. `icon.ico` keeps the
 //! full-bleed art, which is what Windows expects.
+//!
+//! macOS **debug** builds swap in the Alpha mark (`assets/icons/alpha-logo.png`,
+//! inset the same way) so a `cargo run` build is unmistakable in the Dock.
+//! Release builds — `cargo build --release`, `scripts/make-dmg.sh`, CI — never
+//! take those branches, so the production icon and bundle id are untouched.
 
-/// 512×512 PNG used by the dock (macOS) and Settings → About.
+/// 512×512 PNG used by the dock (macOS) and Settings → About. The Alpha mark
+/// in macOS debug builds, the production mark everywhere else.
+#[cfg(all(debug_assertions, target_os = "macos"))]
+pub const PNG: &[u8] = include_bytes!("../dev-assets/alpha-app-icon.png");
+#[cfg(not(all(debug_assertions, target_os = "macos")))]
 pub const PNG: &[u8] = include_bytes!("../assets/app-icon.png");
 
-/// Asset path for [`gpui::img`] via [`crate::assets::Assets`].
+/// Asset path for [`gpui::img`] via [`crate::assets::Assets`]. Mirrors [`PNG`]:
+/// Alpha in macOS debug builds, production everywhere else.
+#[cfg(all(debug_assertions, target_os = "macos"))]
+pub const ASSET: &str = "alpha-app-icon.png";
+#[cfg(not(all(debug_assertions, target_os = "macos")))]
 pub const ASSET: &str = "app-icon.png";
 
 /// The "Orbit Pi" wordmark, shown as the sidebar brand header. Source of
@@ -26,7 +39,8 @@ pub const LOGO_DARK_ASSET: &str = "logo-dark.png";
 /// Set the macOS Dock icon for `cargo run` (no `.app` bundle).
 ///
 /// Bundled builds pick the icon up from `icon.icns` / cargo-bundle metadata;
-/// this still runs and is a no-op if AppKit already has a bundle icon.
+/// this still runs with [`PNG`]'s mark — the Alpha logo in debug builds, which
+/// is what the ad-hoc dev bundle in `scripts/run-bundled.sh` shows.
 pub fn set_dock_icon() {
     // Keep the PNG in the binary on every OS so About / tests share one embed.
     let _png = PNG;
@@ -54,5 +68,17 @@ mod tests {
     fn embedded_icon_is_png() {
         assert_eq!(&PNG[..4], b"\x89PNG");
         assert!(PNG.len() > 1024);
+    }
+
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    #[test]
+    fn debug_build_uses_the_alpha_mark() {
+        assert_eq!(ASSET, "alpha-app-icon.png");
+    }
+
+    #[cfg(not(all(debug_assertions, target_os = "macos")))]
+    #[test]
+    fn release_build_uses_the_production_mark() {
+        assert_eq!(ASSET, "app-icon.png");
     }
 }

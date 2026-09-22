@@ -2,6 +2,10 @@ use super::helpers::*;
 use super::sidebar::*;
 use super::*;
 
+use gpui::StyledText;
+
+use crate::widgets as ext_widgets;
+
 /// Height of a page's top bar (DESIGN.md: 44px header rows). The new-task
 /// backdrop is offset by it, so the picture starts below the title exactly
 /// where it always has — this is the one value the two must agree on.
@@ -11,18 +15,68 @@ pub(super) const TOP_BAR_H: f32 = 44.;
 /// macOS traffic lights when the titlebar is transparent, or a plain edge
 /// inset where the system titlebar holds them (see
 /// [`platform::titlebar_options`]). The sidebar's drag strip and the main top
-/// bar share it so the window's left controls hold their place when the
-/// sidebar is toggled.
+/// bar share it so the window's left controls never ride into the OS buttons.
 pub(super) const TRAFFIC_LIGHT_CLEARANCE: f32 = platform::WINDOW_CONTROLS_CLEARANCE;
 
+/// Space between the titlebar's left controls. Set to the same 8px the right
+/// cluster spaces its chips with (`gap_2`), so the two ends of the bar share
+/// one rhythm — a bare 2px let bordered chips read as one crowded block.
+const TITLEBAR_CONTROLS_GAP: f32 = 8.;
+
+/// Breathing room between the OS window buttons and the first titlebar
+/// control. The traffic-light clearance alone ended flush against them, which
+/// made the app's own controls read as part of the caption; the lead gives
+/// the overlay its own left margin.
+pub(super) const TITLEBAR_CONTROLS_LEAD: f32 = 12.;
+
 /// Combined width of the titlebar's left controls (toggle + history) as laid
-/// out by [`OrbitApp::titlebar_left_controls`]: three 24px boxes, two 2px gaps,
-/// and the trailing 6px gap.
-pub(super) const TITLEBAR_CONTROLS_W: f32 = 24. * 3. + 2. * 2. + 6.;
+/// out by [`OrbitApp::titlebar_left_controls`]: three [`HEADER_CTRL_H`] boxes,
+/// two [`TITLEBAR_CONTROLS_GAP`] gaps, and the trailing 6px gap.
+pub(super) const TITLEBAR_CONTROLS_W: f32 = HEADER_CTRL_H * 3. + TITLEBAR_CONTROLS_GAP * 2. + 6.;
+
+/// Space between the controls and the session title while the sidebar is
+/// collapsed. The cluster's own trailing 6px pad is inside
+/// [`TITLEBAR_CONTROLS_W`], so this is what actually separates the last chip
+/// from the title — without it the two sit flush once the sidebar stops
+/// providing the separation.
+pub(super) const TITLEBAR_TITLE_GAP: f32 = 8.;
 
 /// Where the main top bar's content starts when the sidebar is collapsed: past
-/// the traffic lights and the (fixed, overlaid) window controls.
-pub(super) const TITLEBAR_LEADING: f32 = TRAFFIC_LIGHT_CLEARANCE + TITLEBAR_CONTROLS_W;
+/// the traffic lights, the controls' lead margin, the (overlaid) window
+/// controls, and the gap that keeps the title off them.
+pub(super) const TITLEBAR_LEADING: f32 =
+    TRAFFIC_LIGHT_CLEARANCE + TITLEBAR_CONTROLS_LEAD + TITLEBAR_CONTROLS_W + TITLEBAR_TITLE_GAP;
+
+/// Space kept between the last titlebar control and the sidebar's right edge
+/// while the controls are right-aligned inside the sidebar's strip. The
+/// sidebar's 6px resize handle lives against that edge, so the pad keeps the
+/// chips off it (and off the sidebar's rounded boundary).
+pub(super) const SIDEBAR_EDGE_PAD: f32 = 6.;
+
+/// Where the titlebar's left controls sit. While the sidebar is open they
+/// right-align inside its strip — [`SIDEBAR_EDGE_PAD`] off the column's right
+/// edge, so they ride both a resize drag and the open/close slide. Collapsed,
+/// there is no column to hug and the chips fall back to the fixed lead past
+/// the OS window buttons.
+pub(super) fn titlebar_controls_left(sidebar_visible: bool, sidebar_width: f32) -> f32 {
+    if sidebar_visible {
+        sidebar_width - TITLEBAR_CONTROLS_W - SIDEBAR_EDGE_PAD
+    } else {
+        TRAFFIC_LIGHT_CLEARANCE + TITLEBAR_CONTROLS_LEAD
+    }
+}
+
+/// Leading inset the full-window pages (Git, Usage, Files) give their headers.
+/// With the sidebar open they start after it and only need the normal page
+/// padding; collapsed, they own the window's left edge and must clear the
+/// macOS traffic lights and the overlaid titlebar controls.
+pub(super) fn page_header_leading(sidebar_visible: bool) -> f32 {
+    if sidebar_visible {
+        12.
+    } else {
+        TITLEBAR_LEADING
+    }
+}
 
 /// Duration of the sidebar collapse/expand slide.
 const SIDEBAR_SLIDE_MS: u64 = 180;
@@ -51,6 +105,19 @@ impl Render for OrbitApp {
         // open group shows up to SIDEBAR_GROUP_SESSIONS_VISIBLE sessions
         // with per-group Show more / Show less toggles.
         let sidebar_sessions = self.sidebar_sessions();
+        // A pinned session leads its project group; the sidebar sorts and
+        // marks pinned rows from this snapshot (Orbit-owned state).
+        let pinned: Rc<HashSet<PathBuf>> = Rc::new(crate::pins::all().paths());
+        // Parked (background) sessions mid-run — they keep their row under a
+        // collapsed workspace header, like the open session, so a live task
+        // is never hidden by a collapse. Also drives the running loader.
+        let running_paths: Rc<HashSet<PathBuf>> = Rc::new(
+            self.lives
+                .iter()
+                .filter(|(_, parked)| parked.busy)
+                .map(|(path, _)| path.clone())
+                .collect(),
+        );
         let side_rows = Rc::new(build_sidebar_rows(
             &sidebar_sessions,
             &self.workspaces,
@@ -58,7 +125,9 @@ impl Render for OrbitApp {
             &self.collapsed_workspaces,
             &self.expanded_workspace_groups,
             &self.expanded_session_groups,
+            &pinned,
             &self.current_session_path,
+            &running_paths,
         ));
         let old = self.sidebar_list.item_count();
         if old != side_rows.len() {
@@ -69,18 +138,42 @@ impl Render for OrbitApp {
         let session_menu = Rc::new(self.session_menu.clone());
         let workspace_menu = Rc::new(self.workspace_menu.clone());
         let this = cx.entity();
-        // The open session's agent activity, plus which parked (background)
-        // sessions are mid-run — both drive the sidebar's running loader.
+        // The open session's agent activity drives the sidebar's running
+        // loader (parked runs come in via `running_paths` above).
         let agent_running = self.busy || self.transcript.is_streaming();
-        let running_paths: Rc<HashSet<PathBuf>> = Rc::new(
-            self.lives
-                .iter()
-                .filter(|(_, parked)| parked.busy)
-                .map(|(path, _)| path.clone())
-                .collect(),
-        );
         // Every live process (running or warm-idle) — guards delete.
         let live_paths: Rc<HashSet<PathBuf>> = Rc::new(self.lives.keys().cloned().collect());
+        // Pinned header for the open, expanded workspace: it stays at the
+        // top of the session list while its own sessions scroll, and the
+        // next group's header pushes it away (see `sticky_sidebar_header`).
+        // Its row is rendered twice while pinned (the real one scrolls under
+        // the overlay), so the pinned index also tells the list to skip that
+        // row's workspace menu — the overlay owns the single open popup.
+        let sticky = sticky_sidebar_header(&self.sidebar_list, &side_rows, &working_label);
+        let sticky_ix = sticky.as_ref().map(|sticky| sticky.ix);
+        let sticky_header = sticky.map(|sticky| {
+            div()
+                .absolute()
+                .top(sticky.top_offset)
+                .left_0()
+                .w_full()
+                .bg(theme.bg_sidebar)
+                .child(render_side_row(
+                    &side_rows,
+                    &sessions_data,
+                    active_path.as_deref(),
+                    sticky.ix,
+                    &this,
+                    agent_running,
+                    &running_paths,
+                    &pinned,
+                    &live_paths,
+                    session_menu.as_ref().as_ref(),
+                    workspace_menu.as_ref().as_ref(),
+                    theme,
+                ))
+                .into_any_element()
+        });
 
         let workspace_label = self.workspace_label();
         // Focus ring on the composer box: the border strengthens while the
@@ -91,12 +184,13 @@ impl Render for OrbitApp {
             .current_workspace
             .clone()
             .or_else(|| std::env::current_dir().ok());
-        // The rail gates on the main area's width (Waku: 872px transcript
+        // The rail gates on the main area's width (872px transcript
         // container), which excludes the sessions sidebar when visible.
         let viewport = window.viewport_size();
         // The right side pane is hidden while settings/onboarding own the
         // main area (same rule as the sessions sidebar).
-        let pane_visible = self.sidepane.read(cx).is_open()
+        let pane_open = self.sidepane.read(cx).is_open();
+        let pane_visible = pane_open
             && !self.settings_open
             && !self.usage_open
             && self.dependencies_ready();
@@ -131,8 +225,57 @@ impl Render for OrbitApp {
         let git_workspace = self.current_workspace.clone();
         let git_provider = self.model_provider.clone();
         let git_model = self.model_id.clone();
+        // Leading inset the full-window pages (Git/Usage/Files) give their
+        // headers while the sidebar is collapsed.
+        let page_leading = view::page_header_leading(self.sidebar_visible);
         self.git_panel.update(cx, |panel, cx| {
-            panel.set_context(git_workspace, git_provider, git_model, cx)
+            panel.set_context(git_workspace, git_provider, git_model, cx);
+            panel.set_chrome_leading(page_leading, cx);
+        });
+        // ── file viewer (Files surface) ── spans the main column, so it gives
+        // its tab strip the same leading inset as the Git/Usage page headers;
+        // it carries the caption-control clearance only while it owns the
+        // window's right edge (no project panel, Review pane, or Settings).
+        let viewer_reserve_controls = platform::draws_window_controls()
+            && !self.settings_open
+            && !self.project_panel.read(cx).is_open()
+            && !pane_visible;
+        self.file_viewer.update(cx, |viewer, cx| {
+            viewer.set_chrome_leading(page_leading, cx);
+            viewer.set_reserve_controls(viewer_reserve_controls, cx);
+        });
+        // ── project panel (right dock) ── hidden while Settings owns the
+        // window, like the sessions sidebar. Sync the workspace each render;
+        // a change rebuilds the tree off-thread. The Explorer and the Review
+        // pane are mutually exclusive right docks: while Review is open the
+        // tree stays closed.
+        let explorer_visible = self.project_panel.read(cx).is_open()
+            && !self.settings_open
+            && !pane_open;
+        let explorer_width = if explorer_visible {
+            self.project_panel.read(cx).width()
+        } else {
+            px(0.)
+        };
+        let explorer_workspace = self
+            .current_workspace
+            .clone()
+            .or_else(|| std::env::current_dir().ok());
+        let explorer_active = self.file_viewer.read(cx).active_display();
+        // On Windows the caption is painted into the top-right corner. The dock
+        // owns that corner whenever the Review pane is not open, so it carries
+        // the control clearance itself (the pane does when it is open).
+        let explorer_reserve_controls = platform::draws_window_controls() && !pane_visible;
+        self.project_panel.update(cx, |panel, cx| {
+            panel.set_workspace(explorer_workspace, cx);
+            panel.set_active(explorer_active, cx);
+            panel.set_reserve_controls(explorer_reserve_controls, cx);
+            // Review is open, so the Explorer must not be: close it here to
+            // catch every path that opens the pane (diff chip, transcript
+            // cards, Git page file rows), not just the top-bar toggle.
+            if pane_open {
+                panel.close(cx);
+            }
         });
         let main_width = viewport.width
             - if self.sidebar_visible && !self.settings_open {
@@ -140,6 +283,7 @@ impl Render for OrbitApp {
             } else {
                 px(0.)
             }
+            - explorer_width
             - pane_width;
         // Composer toolbar compaction: below this column width the access
         // pill drops out and the model label clamps (Send stays reachable).
@@ -148,68 +292,101 @@ impl Render for OrbitApp {
         // its tables and grids never overflow the column it is given.
         if self.usage_open {
             let width = f32::from(main_width);
-            self.usage
-                .update(cx, |page, cx| page.set_main_width(width, cx));
+            self.usage.update(cx, |page, cx| {
+                page.set_main_width(width, cx);
+                page.set_header_leading(page_leading, cx);
+            });
         }
 
         // ── top-bar right controls ──
-        let mut top_controls = div().flex().items_center().gap_2();
+        // When Review owns the right edge, or the chat column is tight, the
+        // title and the chips collide. Compact the quota label and drop the
+        // +/− chip (Review already shows the same stats).
+        let compact_chrome = pane_visible || f32::from(main_width) < 720.;
+        let mut top_controls = div().flex_none().flex().items_center().gap_2();
         // Provider quota — a compact, provider-independent headroom meter.
         // Hidden entirely on a pi without `quota.*` (or when no provider
         // reports anything), so the bar never shows a fabricated value.
-        top_controls = top_controls.children(self.render_quota_pill(cx));
+        top_controls = top_controls.children(self.render_quota_pill(compact_chrome, cx));
         top_controls = top_controls.children(self.render_open_in_control(cx));
+        if (self.added > 0 || self.removed > 0) && !pane_visible {
+            top_controls = top_controls.child(
+                header_chip(
+                    div()
+                        .id("top-diff-stats")
+                        .h(px(HEADER_CTRL_H))
+                        .px(px(9.))
+                        .rounded(px(HEADER_CTRL_R))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .cursor_pointer(),
+                    &theme,
+                )
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(Self::on_open_uncommitted_review),
+                )
+                .child(
+                    div()
+                        .text_size(theme.ui_px(12.))
+                        .text_color(theme.add_green)
+                        .child(format!("+{}", self.added)),
+                )
+                .child(
+                    div()
+                        .text_size(theme.ui_px(12.))
+                        .text_color(theme.del_red)
+                        .child(format!("-{}", self.removed)),
+                ),
+            );
+        }
         top_controls = top_controls
             .child(
+                // Popup is a sibling of the info chip, not a child: clicks
+                // inside the rename field must not bubble to the chip's
+                // toggle (which would close the popover before Update runs).
                 div()
-                    .id("top-diff-stats")
-                    .h(px(26.))
-                    .px(px(8.))
-                    .rounded_md()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme.bg_hover))
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(Self::on_open_uncommitted_review),
-                    )
+                    .relative()
+                    .children(self.render_session_details_popup(cx))
                     .child(
-                        div()
-                            .text_size(theme.ui_px(12.))
-                            .text_color(theme.add_green)
-                            .child(format!("+{}", self.added)),
-                    )
-                    .child(
-                        div()
-                            .text_size(theme.ui_px(12.))
-                            .text_color(theme.del_red)
-                            .child(format!("-{}", self.removed)),
+                        header_icon_button(
+                            "info",
+                            &theme,
+                            self.session_details_open,
+                            icon("icons/info.svg", 16., theme.text_2),
+                        )
+                        .on_mouse_up(MouseButton::Left, cx.listener(Self::on_info_click)),
                     ),
             )
+            // Explorer (project panel) toggle — the right file tree.
             .child(
-                div()
-                    .id("info")
-                    .relative()
-                    .p_1()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme.bg_hover))
-                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_info_click))
-                    .children(self.render_session_details_popup(cx))
-                    .child(icon("icons/info.svg", 16., theme.text_2)),
+                header_icon_button(
+                    "toggle-project-panel",
+                    &theme,
+                    explorer_visible,
+                    icon(
+                        "icons/folder.svg",
+                        16.,
+                        if explorer_visible {
+                            theme.text
+                        } else {
+                            theme.text_2
+                        },
+                    ),
+                )
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(Self::on_toggle_project_panel_click),
+                ),
             )
             // side-pane toggle sits right after the about (info) button
             .child(
-                div()
-                    .id("toggle-side-pane")
-                    .p_1()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme.bg_hover))
-                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_toggle_side_pane))
-                    .child(icon(
+                header_icon_button(
+                    "toggle-side-pane",
+                    &theme,
+                    pane_visible,
+                    icon(
                         "icons/panel-right.svg",
                         16.,
                         if pane_visible {
@@ -217,23 +394,17 @@ impl Render for OrbitApp {
                         } else {
                             theme.text_2
                         },
-                    )),
+                    ),
+                )
+                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_toggle_side_pane)),
             )
             // Terminal toggle — the bottom panel (cmd-j).
             .child(
-                div()
-                    .id("toggle-terminal")
-                    .p_1()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme.bg_hover))
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _, window, cx| {
-                            this.on_toggle_terminal(&crate::ToggleTerminal, window, cx)
-                        }),
-                    )
-                    .child(icon(
+                header_icon_button(
+                    "toggle-terminal",
+                    &theme,
+                    terminal_visible,
+                    icon(
                         "icons/terminal.svg",
                         16.,
                         if terminal_visible {
@@ -241,18 +412,22 @@ impl Render for OrbitApp {
                         } else {
                             theme.text_2
                         },
-                    )),
+                    ),
+                )
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        this.on_toggle_terminal(&crate::ToggleTerminal, window, cx)
+                    }),
+                ),
             )
             // GitHub affordance: opens the full-page Git surface.
             .child(
-                div()
-                    .id("open-git-github")
-                    .p_1()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme.bg_hover))
-                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_open_git_click))
-                    .child(icon(
+                header_icon_button(
+                    "open-git-github",
+                    &theme,
+                    self.git_open,
+                    icon(
                         "icons/github.svg",
                         16.,
                         if self.git_open {
@@ -260,7 +435,9 @@ impl Render for OrbitApp {
                         } else {
                             theme.text_2
                         },
-                    )),
+                    ),
+                )
+                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_open_git_click)),
             );
 
         // A blocking extension dialog owns the keyboard while it is open. Focus
@@ -273,10 +450,25 @@ impl Render for OrbitApp {
                 window.focus(&dialog.read(cx).focus_handle(cx));
             }
         }
+        // A custom-UI surface owns the keyboard while it is open; the newest
+        // (top of the stack) takes focus, and closing the last hands focus back
+        // to the composer so typing continues.
+        if self.custom_ui_focus_pending {
+            self.custom_ui_focus_pending = false;
+            match self.custom_ui.last().cloned() {
+                Some(ui) => window.focus(&ui.read(cx).focus_handle(cx)),
+                None => self.input.read(cx).focus(window),
+            }
+        }
         // The inline approval bar owns the keyboard the same way.
         if self.approval_focus_pending {
             self.approval_focus_pending = false;
             window.focus(&self.approval_focus);
+        }
+        // The update modal owns the keyboard (Escape dismisses) once open.
+        if self.updater_dialog_focus_pending {
+            self.updater_dialog_focus_pending = false;
+            window.focus(&self.updater_dialog_focus);
         }
         // The inline ask panel owns the keyboard while it is open.
         if self.ask_focus_pending {
@@ -319,8 +511,8 @@ impl Render for OrbitApp {
                             .flex_col()
                             // traffic-light strip (drag region); the window's
                             // left controls float above it in the titlebar
-                            // overlay, so they keep the same spot whether the
-                            // sidebar is open or closed.
+                            // overlay — right-aligned against this column's
+                            // edge while the sidebar is open.
                             .child(window_drag_region(div().h(px(TOP_BAR_H)).w_full()))
                             // Resize handle: drag the sidebar's right edge to
                             // adjust its width. Kept fully inside the panel so
@@ -393,7 +585,7 @@ impl Render for OrbitApp {
                                             .text_size(theme.ui_px(11.))
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(theme.text_3)
-                                            .child("Projects"),
+                                            .child(tr!("sidebar.projects")),
                                     )
                                     .child(
                                         div()
@@ -403,27 +595,47 @@ impl Render for OrbitApp {
                                             .px_2()
                                             .relative()
                                             .child(
-                                                list(
-                                                    self.sidebar_list.clone(),
-                                                    move |ix, _window, cx| {
-                                                        render_side_row(
-                                                            &side_rows,
-                                                            &sessions_data,
-                                                            active_path.as_deref(),
-                                                            ix,
-                                                            &this,
-                                                            agent_running,
-                                                            &running_paths,
-                                                            &live_paths,
-                                                            session_menu.as_ref().as_ref(),
-                                                            workspace_menu.as_ref().as_ref(),
-                                                            *theme::get(cx),
+                                                div()
+                                                    .w_full()
+                                                    .h_full()
+                                                    .relative()
+                                                    // Clips the pinned header as
+                                                    // the next group pushes it
+                                                    // up past the list top.
+                                                    .overflow_hidden()
+                                                    .child(
+                                                        list(
+                                                            self.sidebar_list.clone(),
+                                                            move |ix, _window, cx| {
+                                                                let row_workspace_menu =
+                                                                    if sticky_ix == Some(ix) {
+                                                                        None
+                                                                    } else {
+                                                                        workspace_menu
+                                                                            .as_ref()
+                                                                            .as_ref()
+                                                                    };
+                                                                render_side_row(
+                                                                    &side_rows,
+                                                                    &sessions_data,
+                                                                    active_path.as_deref(),
+                                                                    ix,
+                                                                    &this,
+                                                                    agent_running,
+                                                                    &running_paths,
+                                                                    &pinned,
+                                                                    &live_paths,
+                                                                    session_menu.as_ref().as_ref(),
+                                                                    row_workspace_menu,
+                                                                    *theme::get(cx),
+                                                                )
+                                                                .into_any_element()
+                                                            },
                                                         )
-                                                        .into_any_element()
-                                                    },
-                                                )
-                                                .w_full()
-                                                .h_full(),
+                                                        .w_full()
+                                                        .h_full(),
+                                                    )
+                                                    .children(sticky_header),
                                             ),
                                     )
                                     .into_any_element()
@@ -458,7 +670,7 @@ impl Render for OrbitApp {
                                                 div()
                                                     .text_size(theme.ui_px(12.))
                                                     .text_color(theme.text_2)
-                                                    .child("Settings"),
+                                                    .child(tr!("common.settings")),
                                             ),
                                     )
                                     .child(div().flex_1())
@@ -485,9 +697,9 @@ impl Render for OrbitApp {
                                                     .text_size(theme.ui_px(11.))
                                                     .text_color(theme.text_3)
                                                     .child(if self.client.is_some() {
-                                                        "Connected"
+                                                        tr!("status.connected")
                                                     } else {
-                                                        "Offline"
+                                                        tr!("status.offline")
                                                     }),
                                             ),
                                     ),
@@ -527,6 +739,8 @@ impl Render for OrbitApp {
             // ── main ──
             .child(if self.settings_open {
                 self.render_settings(cx).into_any_element()
+            } else if self.file_viewer.read(cx).is_open() {
+                self.file_viewer.clone().into_any_element()
             } else if self.git_open {
                 self.git_panel.clone().into_any_element()
             } else if self.usage_open {
@@ -574,26 +788,38 @@ impl Render for OrbitApp {
                             // right cluster stops short of them — unless the
                             // side pane owns the window's right edge, and
                             // carries the clearance itself.
-                            .pr(px(if platform::draws_window_controls() && !pane_visible {
-                                platform::WINDOW_CONTROLS_W
-                            } else {
-                                12.
-                            }))
+                            .pr(px(
+                                if platform::draws_window_controls()
+                                    && !pane_visible
+                                    && !explorer_visible
+                                {
+                                    platform::WINDOW_CONTROLS_W
+                                } else {
+                                    12.
+                                },
+                            ))
                             .child(
                                 window_drag_region(
-                                    div().flex_1().min_w_0().h_full().flex().items_center(),
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .h_full()
+                                        .flex()
+                                        .items_center(),
                                 )
                                 .child(
                                     div()
+                                        .flex_1()
                                         .min_w_0()
+                                        .overflow_hidden()
                                         .truncate()
                                         .text_size(theme.ui_px(13.))
                                         .text_color(theme.text_2)
-                                        .child(
-                                            self.current_title
-                                                .clone()
-                                                .unwrap_or_else(|| "New task".into()),
-                                        ),
+                                        .child(session_display_title(
+                                            self.session_name.as_deref(),
+                                            self.current_title.as_deref(),
+                                        )),
                                 ),
                             )
                             .child(top_controls);
@@ -688,6 +914,9 @@ impl Render for OrbitApp {
                                     // Queued follow-ups wait here (sticky above
                                     // the composer) until the task finishes.
                                     .children(self.queue_bar(cx))
+                                    // Extension `setWidget` blocks placed
+                                    // above the editor.
+                                    .children(self.extension_widgets_above(cx))
                                     // composer box — the picker popups are
                                     // anchored above their own chips
                                     .child(
@@ -724,7 +953,7 @@ impl Render for OrbitApp {
                                             .children(self.attachments_row(cx))
                                             .child(self.input.clone())
                                             .child(self.composer_row(composer_compact, cx))
-                                            // Drop-target overlay (Waku): fades
+                                            // Drop-target overlay: fades
                                             // in over the box while files are
                                             // dragged across it. Absolute, so
                                             // highlighting never shifts layout.
@@ -750,7 +979,7 @@ impl Render for OrbitApp {
                                                             .text_size(theme.ui_px(12.5))
                                                             .font_weight(FontWeight::MEDIUM)
                                                             .text_color(theme.accent)
-                                                            .child("Drop to attach"),
+                                                            .child(tr!("composer.drop_to_attach")),
                                                     );
                                                 if theme::reduce_motion(cx) {
                                                     overlay.into_any_element()
@@ -767,6 +996,9 @@ impl Render for OrbitApp {
                                                 }
                                             })),
                                     )
+                                    // Extension `setWidget` blocks placed
+                                    // below the editor.
+                                    .children(self.extension_widgets_below(cx))
                                     .child(self.status_bar(&workspace_label, cx)),
                             ),
                     )
@@ -777,32 +1009,63 @@ impl Render for OrbitApp {
                     )
                     .into_any_element()
             })
+            // ── project panel ── the Explorer's right dock, between the main
+            // column and the Review pane so the pane keeps the window edge.
+            .children(explorer_visible.then(|| self.project_panel.clone().into_any_element()))
             // ── right side pane (Review) ──
             .children(pane_visible.then(|| self.sidepane.clone().into_any_element()))
             // ── titlebar controls ── a fixed overlay pinned just past the
-            // macOS traffic lights, above both the sidebar and the main column,
-            // so the toggle/history buttons hold their place while the sidebar
-            // slides underneath. Shown whenever the sidebar is open, and on the
-            // composer surface when it is closed (the Git/Usage pages carry
-            // their own headers, so they don't get the fallback). The container
+            // macOS traffic lights, above both the sidebar and the main column.
+            // Shown on every surface except Settings, which owns its own nav
+            // column — including the Git/Usage pages when the sidebar is
+            // collapsed, so the toggle (and history arrows) stay reachable;
+            // those pages inset their own headers to clear it. The controls
+            // right-align inside the sidebar's strip when it is open (hugging
+            // its edge, and tracking it through a resize or the slide) and
+            // fall back to the fixed lead when it is collapsed. The container
             // is not itself a hitbox, so the drag strip beneath still drags the
             // window in the gaps between buttons while each button takes its
             // own clicks.
-            .children(
-                (!self.settings_open
-                    && (self.sidebar_visible || (!self.git_open && !self.usage_open)))
-                    .then(|| {
-                        div()
-                            .absolute()
-                            .top_0()
-                            .left(px(TRAFFIC_LIGHT_CLEARANCE))
-                            .h(px(TOP_BAR_H))
-                            .flex()
-                            .items_center()
-                            .child(self.titlebar_left_controls(theme, cx))
-                            .into_any_element()
-                    }),
-            )
+            .children((!self.settings_open).then(|| {
+                let pinned = titlebar_controls_left(false, f32::from(self.sidebar_width));
+                let hugging = titlebar_controls_left(true, f32::from(self.sidebar_width));
+                let controls = div()
+                    .absolute()
+                    .top_0()
+                    .h(px(TOP_BAR_H))
+                    .flex()
+                    .items_center()
+                    .child(self.titlebar_left_controls(theme, cx));
+                let gen = self.sidebar_slide_gen;
+                if gen == 0 || theme::reduce_motion(cx) {
+                    controls
+                        .left(px(if self.sidebar_visible {
+                            hugging
+                        } else {
+                            pinned
+                        }))
+                        .into_any_element()
+                } else {
+                    // Same easing and duration as the panel's own slide, so the
+                    // chips ride the edge instead of snapping to it.
+                    let expanding = self.sidebar_visible;
+                    controls
+                        .with_animation(
+                            ElementId::Name(format!("titlebar-lead-{gen}").into()),
+                            Animation::new(Duration::from_millis(SIDEBAR_SLIDE_MS))
+                                .with_easing(|d| 1.0 - (1.0 - d).powi(3)),
+                            move |el, d| {
+                                let (from, to) = if expanding {
+                                    (pinned, hugging)
+                                } else {
+                                    (hugging, pinned)
+                                };
+                                el.left(px(from + (to - from) * d))
+                            },
+                        )
+                        .into_any_element()
+                }
+            }))
             // ── window caption buttons ── the app owns the caption on the
             // platforms where it draws it (`platform::draws_window_controls`),
             // so these sit above *every* surface — settings, git, usage,
@@ -832,6 +1095,18 @@ impl Render for OrbitApp {
             // blocking modal above every other surface; pi holds the run until
             // the user answers. It cancels the incoming request otherwise.
             .children(dialog_layer.map(|dialog| crate::dialog::layer(dialog).into_any_element()))
+            // ── extension custom UI (`ctx.ui.custom`) — the component's own
+            // rendered frames, stacked with the newest on top.
+            .children(
+                self.custom_ui
+                    .iter()
+                    .cloned()
+                    .map(|ui| crate::custom_ui::layer(ui).into_any_element()),
+            )
+            // ── update modal — the search, changelog, and install decision,
+            // opened by the download control and Check for Updates. Below the
+            // extension dialog (a run blocks on it) and the lightbox.
+            .children(self.updater_dialog_layer(window, cx))
             // ── image lightbox — full-window, above everything; opened from a
             // transcript image tile, dismissed by click or Escape.
             .children(
@@ -860,6 +1135,28 @@ impl Render for OrbitApp {
                         app.sidebar_width = width;
                         cx.notify();
                     }
+                },
+            ))
+            .on_drag_move(cx.listener(
+                |app: &mut Self,
+                 event: &DragMoveEvent<crate::explorer::ExplorerResize>,
+                 _: &mut Window,
+                 cx: &mut Context<Self>| {
+                    // The dock sits between the main column and the Review
+                    // pane, so its width is the pointer's distance to its
+                    // right edge — which the pane owns when it is open.
+                    let pane = if app.sidepane.read(cx).is_open()
+                        && !app.settings_open
+                        && !app.usage_open
+                        && app.dependencies_ready()
+                    {
+                        app.sidepane.read(cx).width()
+                    } else {
+                        px(0.)
+                    };
+                    let width = event.bounds.size.width - pane - event.event.position.x;
+                    app.project_panel
+                        .update(cx, |panel, cx| panel.set_width(width, cx));
                 },
             ))
             .on_drag_move(cx.listener(
@@ -903,14 +1200,86 @@ impl Render for OrbitApp {
             .on_action(cx.listener(Self::on_open_settings))
             .on_action(cx.listener(Self::on_open_about))
             .on_action(cx.listener(Self::on_toggle_usage))
+            .on_action(cx.listener(Self::on_toggle_project_panel))
+            .on_action(cx.listener(Self::on_close_files))
             .on_action(cx.listener(Self::on_toggle_terminal))
             .on_action(cx.listener(Self::on_toggle_command_palette))
             .on_action(cx.listener(Self::on_check_for_updates))
             .on_action(cx.listener(Self::on_toggle_search))
+            .on_action(cx.listener(|this, _: &crate::GitTabChanges, window, cx| {
+                this.on_git_tab(0, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::GitTabHistory, window, cx| {
+                this.on_git_tab(1, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::GitTabGraph, window, cx| {
+                this.on_git_tab(2, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::GitTabIssues, window, cx| {
+                this.on_git_tab(3, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::GitTabPulls, window, cx| {
+                this.on_git_tab(4, window, cx)
+            }))
     }
 }
 
 impl OrbitApp {
+    /// The extension widgets placed above the composer, if any.
+    pub(super) fn extension_widgets_above(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        self.extension_widgets_element(WidgetPlacement::AboveEditor, cx)
+    }
+
+    /// The extension widgets placed below the composer, if any.
+    pub(super) fn extension_widgets_below(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        self.extension_widgets_element(WidgetPlacement::BelowEditor, cx)
+    }
+
+    /// Render every keyed `setWidget` block for one placement as a small
+    /// monospace card. The lines keep the extension's own SGR coloring (see
+    /// [`crate::widgets`]), so a todo list or status block reads as intended.
+    fn extension_widgets_element(
+        &self,
+        placement: WidgetPlacement,
+        cx: &Context<Self>,
+    ) -> Option<AnyElement> {
+        let items: Vec<&ExtensionWidget> = self
+            .extension_widgets
+            .iter()
+            .filter(|widget| widget.placement == placement && !widget.lines.is_empty())
+            .collect();
+        if items.is_empty() {
+            return None;
+        }
+        let theme = *theme::get(cx);
+        let font = ext_widgets::widget_font();
+        let mut column = div().w_full().flex().flex_col().gap(theme.space(6.));
+        for widget in items {
+            let mut card = div()
+                .id(ElementId::Name(format!("ext-widget-{}", widget.key).into()))
+                .w_full()
+                .px(theme.space(12.))
+                .py(theme.space(8.))
+                .rounded(px(10.))
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.code_bg)
+                .font_family(theme::code_font_family())
+                .text_size(theme.code_px(12.))
+                .line_height(theme.code_px(18.))
+                .text_color(theme.code_text)
+                .flex()
+                .flex_col()
+                .gap(theme.space(2.));
+            for line in &widget.lines {
+                let (text, runs) = ext_widgets::styled_line(line, &theme, &font);
+                card = card.child(StyledText::new(text).with_runs(runs));
+            }
+            column = column.child(card);
+        }
+        Some(column.into_any_element())
+    }
+
     /// Bottom row inside the composer: the "+" add menu and the access-mode
     /// chip on the left; model / thinking chips and the round send button on
     /// the right. `compact` (narrow window) drops the access chip and clamps
@@ -969,42 +1338,66 @@ impl OrbitApp {
                     .child(icon(self.access_mode.icon(), 12., theme.text_3))
                     .child(
                         div()
-                            .text_color(theme.text_2)
+                            .text_color(if self.access_menu_open {
+                                theme.active_fg
+                            } else {
+                                theme.text_2
+                            })
                             .child(self.access_mode.label()),
                     )
-                    .child(self.access_caret(cx)),
+                    .child(Self::chip_caret(
+                        self.access_menu_open,
+                        theme.active_fg,
+                        "access-caret-turn",
+                        cx,
+                    )),
             )
     }
 
-    /// The chip's caret. It turns a half-turn when the picker opens — animated
-    /// on open (reduce-motion aware) so the turn reads as a transition, and
-    /// resting flat when closed so there is no reverse flicker.
-    fn access_caret(&self, cx: &Context<Self>) -> AnyElement {
+    /// The shared chip caret. It turns a half-turn when the picker opens —
+    /// animated on open (reduce-motion aware) so the turn reads as a
+    /// transition, and resting flat when closed so there is no reverse
+    /// flicker. `fg` is the caret color while open.
+    fn chip_caret(
+        open: bool,
+        fg: gpui::Hsla,
+        animation_id: &'static str,
+        cx: &Context<Self>,
+    ) -> AnyElement {
         let theme = *theme::get(cx);
-        let open = self.access_menu_open;
         let svg = gpui::svg()
             .path("icons/chevron-down.svg")
             .flex_none()
-            .size(px(11.))
-            .text_color(theme.text_3);
+            .size(px(10.))
+            .text_color(if open { fg } else { theme.text_3 })
+            .into_any_element();
         if !open {
-            return svg
-                .with_transformation(Transformation::rotate(radians(0.0)))
-                .into_any_element();
+            return svg;
         }
         if theme::reduce_motion(cx) {
-            return svg
+            return gpui::svg()
+                .path("icons/chevron-down.svg")
+                .flex_none()
+                .size(px(10.))
+                .text_color(fg)
                 .with_transformation(Transformation::rotate(radians(std::f32::consts::PI)))
                 .into_any_element();
         }
-        svg.with_animation(
-            "access-caret-turn",
-            Animation::new(Duration::from_millis(150)).with_easing(|d| 1.0 - (1.0 - d).powi(3)),
-            |svg, d| {
-                svg.with_transformation(Transformation::rotate(radians(std::f32::consts::PI * d)))
-            },
-        )
-        .into_any_element()
+        gpui::svg()
+            .path("icons/chevron-down.svg")
+            .flex_none()
+            .size(px(10.))
+            .text_color(fg)
+            .with_animation(
+                animation_id,
+                Animation::new(Duration::from_millis(150)).with_easing(|d| 1.0 - (1.0 - d).powi(3)),
+                |svg, d| {
+                    svg.with_transformation(Transformation::rotate(radians(
+                        std::f32::consts::PI * d,
+                    )))
+                },
+            )
+            .into_any_element()
     }
 
     /// The access-mode picker popup, while open. Minimal rows: an icon tile,
@@ -1267,7 +1660,7 @@ impl OrbitApp {
                             } else {
                                 theme.text_2
                             })
-                            .child(*label),
+                            .child(tr!(*label)),
                     )
                     .when(!hint.is_empty(), |row| {
                         row.child(
@@ -1355,29 +1748,38 @@ impl OrbitApp {
                     .flex()
                     .items_center()
                     .gap_1p5()
-                    .px(px(7.))
-                    .h(px(24.))
-                    .rounded_md()
-                    .text_size(theme.ui_px(12.))
+                    .px(px(6.))
+                    .h(px(22.))
+                    .rounded(px(6.))
+                    .text_size(theme.ui_px(11.5))
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.overlay))
                     .when(self.picker_is_open(PickerKind::Model), |chip| {
-                        chip.bg(theme.active).text_color(theme.active_fg)
+                        chip.bg(theme.active)
                     })
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::on_model_trigger_click))
                     .child(icon_dyn(
                         provider_icon(&self.model_provider),
-                        12.,
+                        11.,
                         theme.text_3,
                     ))
                     .child(
                         div()
                             .max_w(px(if compact { 120. } else { 220. }))
                             .truncate()
-                            .text_color(theme.text_2)
+                            .text_color(if self.picker_is_open(PickerKind::Model) {
+                                theme.active_fg
+                            } else {
+                                theme.text_2
+                            })
                             .child(self.model_label.clone()),
                     )
-                    .child(icon("icons/chevron-down.svg", 11., theme.text_3)),
+                    .child(Self::chip_caret(
+                        self.picker_is_open(PickerKind::Model),
+                        theme.active_fg,
+                        "model-caret-turn",
+                        cx,
+                    )),
             )
     }
 
@@ -1396,29 +1798,38 @@ impl OrbitApp {
                     .flex()
                     .items_center()
                     .gap_1p5()
-                    .px(px(7.))
-                    .h(px(24.))
-                    .rounded_md()
-                    .text_size(theme.ui_px(12.))
+                    .px(px(6.))
+                    .h(px(22.))
+                    .rounded(px(6.))
+                    .text_size(theme.ui_px(11.5))
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.overlay))
                     .when(self.picker_is_open(PickerKind::Thinking), |chip| {
-                        chip.bg(theme.active).text_color(theme.active_fg)
+                        chip.bg(theme.active)
                     })
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(Self::on_thinking_trigger_click),
                     )
                     .child({
-                        let (path, color) = thinking_icon(&self.thinking_label, &theme);
-                        icon(path, 15., color)
+                        let (path, _) = thinking_icon(&self.thinking_label, &theme);
+                        icon(path, 13., theme.text_3)
                     })
                     .child(
                         div()
-                            .text_color(theme.text_2)
+                            .text_color(if self.picker_is_open(PickerKind::Thinking) {
+                                theme.active_fg
+                            } else {
+                                theme.text_2
+                            })
                             .child(thinking_display(&self.thinking_label)),
                     )
-                    .child(icon("icons/chevron-down.svg", 11., theme.text_3)),
+                    .child(Self::chip_caret(
+                        self.picker_is_open(PickerKind::Thinking),
+                        theme.active_fg,
+                        "thinking-caret-turn",
+                        cx,
+                    )),
             )
     }
 
@@ -1583,23 +1994,24 @@ impl OrbitApp {
                             .flex_col()
                             .items_center()
                             .gap(px(20.))
-                            // Rocket mark (HugeIcons start-up-02) — hero-size
-                            // disc over the dot grid; soft accent wash, no
-                            // heavy card chrome. `flex_none` keeps the disc a
-                            // true circle when a larger UI font makes the
-                            // column shrink its children.
+                            // Mark over the dot grid: a quiet raised disc,
+                            // not an accent wash. Ember is reserved for the
+                            // open picker and the caret, not decoration.
                             .child(
                                 div()
                                     .flex_none()
-                                    .size(px(72.))
+                                    .size(px(56.))
                                     .rounded_full()
-                                    .bg(theme.accent.opacity(0.12))
+                                    .bg(theme.bg_raised)
+                                    .border_1()
+                                    .border_color(theme.border)
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .child(icon("icons/start-up.svg", 36., theme.accent)),
+                                    .child(icon("icons/start-up.svg", 24., theme.text_2)),
                             )
                             // Title block — one idea, one line of guidance.
+                            // 20px is the scale's display step (DESIGN.md).
                             .child(
                                 div()
                                     .flex()
@@ -1608,19 +2020,17 @@ impl OrbitApp {
                                     .gap(px(6.))
                                     .child(
                                         div()
-                                            .text_size(theme.ui_px(22.))
+                                            .text_size(theme.ui_px(20.))
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(theme.text)
-                                            .child("What should we build?"),
+                                            .child(tr!("view.start_a_task")),
                                     )
                                     .child(
                                         div()
                                             .text_size(theme.ui_px(13.))
                                             .text_color(theme.text_3)
                                             .text_align(TextAlign::Center)
-                                            .child(
-                                                "Pick a workspace, then describe your task below.",
-                                            ),
+                                            .child(tr!("workspace.pick_workspace_hint")),
                                     ),
                             )
                             // Workspace — a labeled select field, not a ghost
@@ -1644,7 +2054,7 @@ impl OrbitApp {
                                             .text_size(theme.ui_px(10.5))
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(theme.text_3)
-                                            .child("Workspace"),
+                                            .child(tr!("view.workspace")),
                                     )
                                     .child(
                                         div()
@@ -1681,17 +2091,17 @@ impl OrbitApp {
                                                     )
                                                     .child(
                                                         div()
-                                                            .size(px(34.))
+                                                            .size(px(28.))
                                                             .flex_none()
-                                                            .rounded(px(9.))
-                                                            .bg(theme.accent.opacity(0.12))
+                                                            .rounded(px(8.))
+                                                            .bg(theme.overlay)
                                                             .flex()
                                                             .items_center()
                                                             .justify_center()
                                                             .child(icon(
                                                                 "icons/folder.svg",
-                                                                16.,
-                                                                theme.accent,
+                                                                14.,
+                                                                theme.text_2,
                                                             )),
                                                     )
                                                     .child(
@@ -1742,19 +2152,6 @@ impl OrbitApp {
         onboarding::all_required_installed(&self.deps)
     }
 
-    /// Re-run the dependency probe and, if `pi` just became available, spawn
-    /// the agent client. Runs the probe off the main thread and spins the
-    /// setup page's Refresh button while it's in flight.
-    /// Open the setup page on request (Settings → About → Requirements),
-    /// off the settings surface so the page owns the main area.
-    pub(super) fn open_setup(&mut self, cx: &mut Context<Self>) {
-        self.settings_open = false;
-        self.setup_open = true;
-        // The page reports what is on disk right now, so re-probe on open.
-        self.refresh_setup(cx);
-        cx.notify();
-    }
-
     /// Leave the setup page. Only reachable on request: the page also shows
     /// when something is missing, and then there is nothing to go back to.
     pub(super) fn close_setup(&mut self, cx: &mut Context<Self>) {
@@ -1762,6 +2159,9 @@ impl OrbitApp {
         cx.notify();
     }
 
+    /// Re-run the dependency probe and, if `pi` just became available, spawn
+    /// the agent client. Runs the probe off the main thread and spins the
+    /// setup page's Refresh button while it's in flight.
     pub(super) fn refresh_setup(&mut self, cx: &mut Context<Self>) {
         if self.refreshing {
             return; // ignore double-clicks while a refresh is running
@@ -1795,9 +2195,9 @@ impl OrbitApp {
                             app.client = Some(client);
                             app.send(CommandBody::GetState, "get_state");
                             app.refresh_catalogs();
-                            app.toast_success("Connected");
+                            app.toast_success(tr!("view.connected"));
                         }
-                        Err(err) => app.toast_error(format!("pi spawn failed: {err}")),
+                        Err(err) => app.toast_error(tr!("runtime.pi_spawn_failed", error = err)),
                     }
                 }
                 cx.notify();
@@ -1859,7 +2259,7 @@ impl OrbitApp {
                                             .text_size(theme.ui_px(22.))
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(theme.text)
-                                            .child("Set up Orbit"),
+                                            .child(tr!("view.set_up_orbit")),
                                     )
                                     .child(
                                         div()
@@ -1868,21 +2268,17 @@ impl OrbitApp {
                                             .text_color(theme.text_3)
                                             .text_align(TextAlign::Center)
                                             .child(if asked_for {
-                                                "Everything Orbit needs is installed. This is what it found on this machine."
+                                                tr!("view.setup_complete_hint")
                                             } else {
-                                                "A few pieces are missing before Orbit can run the pi agent. Install them, then refresh."
+                                                tr!("view.setup_missing_hint")
                                             }),
                                     ),
                             )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(10.))
-                                    .children(self.deps.iter().enumerate().map(|(ix, dep)| {
-                                        self.render_dependency_row(dep, ix, cx).into_any_element()
-                                    })),
-                            )
+                            .child(div().flex().flex_col().gap(px(10.)).children(
+                                self.deps.iter().enumerate().map(|(ix, dep)| {
+                                    self.render_dependency_row(dep, ix, cx).into_any_element()
+                                }),
+                            ))
                             .child(self.render_host_facts(cx))
                             .child(
                                 div()
@@ -1901,16 +2297,18 @@ impl OrbitApp {
                                                 // Green once nothing is
                                                 // missing: the page doubles
                                                 // as a health report.
-                                                div().size(px(8.)).rounded_full().bg(if missing > 0 {
-                                                    theme.stop_red
-                                                } else {
-                                                    theme.ok_green
-                                                }),
+                                                div().size(px(8.)).rounded_full().bg(
+                                                    if missing > 0 {
+                                                        theme.stop_red
+                                                    } else {
+                                                        theme.ok_green
+                                                    },
+                                                ),
                                             )
                                             .child(if missing > 0 {
-                                                format!("{missing} required piece(s) missing")
+                                                tr!("setup.missing_count", count = missing)
                                             } else {
-                                                "Ready".to_string()
+                                                tr!("setup.ready")
                                             }),
                                     )
                                     .child(
@@ -1962,9 +2360,9 @@ impl OrbitApp {
                                                     .text_size(theme.ui_px(12.))
                                                     .text_color(theme.text_2)
                                                     .child(if self.refreshing {
-                                                        "Checking…"
+                                                        tr!("common.checking")
                                                     } else {
-                                                        "Refresh"
+                                                        tr!("common.refresh")
                                                     }),
                                             ),
                                     )
@@ -1974,7 +2372,7 @@ impl OrbitApp {
                                     .when(asked_for, |footer| {
                                         footer.child(self.runtime_button(
                                             "setup-done",
-                                            "Done",
+                                            &tr!("common.done"),
                                             true,
                                             theme,
                                             cx.entity(),
@@ -2023,7 +2421,7 @@ impl OrbitApp {
                             .flex_none()
                             .text_size(theme.ui_px(11.5))
                             .text_color(theme.text_3)
-                            .child(fact.label),
+                            .child(fact.label.clone()),
                     )
                     .child(
                         div()
@@ -2094,14 +2492,18 @@ impl OrbitApp {
                                 div()
                                     .text_size(theme.ui_px(11.))
                                     .text_color(theme.text_3)
-                                    .child(if dep.required { "required" } else { "optional" }),
+                                    .child(if dep.required {
+                                        tr!("setup.required")
+                                    } else {
+                                        tr!("setup.optional")
+                                    }),
                             ),
                     )
                     .child(
                         div()
                             .text_size(theme.ui_px(11.5))
                             .text_color(theme.text_3)
-                            .child(dep.detail),
+                            .child(tr!(dep.detail_key)),
                     ),
             )
             .child(if dep.installed {
@@ -2112,7 +2514,11 @@ impl OrbitApp {
                     .text_size(theme.ui_px(11.5))
                     .text_color(theme.ok_green)
                     .child(icon("icons/check.svg", 12., theme.ok_green))
-                    .child(dep.version.clone().unwrap_or_else(|| "installed".into()))
+                    .child(
+                        dep.version
+                            .clone()
+                            .unwrap_or_else(|| tr!("setup.installed")),
+                    )
                     .into_any_element()
             } else {
                 let cmd = dep.install_hint;
@@ -2254,7 +2660,7 @@ impl OrbitApp {
                                 }),
                             )
                             .child(icon("icons/git-fork.svg", 12., theme.text_3))
-                            .child(format!("{count} more"))
+                            .child(tr!("view.count_more", count = count))
                     }))
                     .into_any_element()
             }))
@@ -2345,34 +2751,31 @@ impl OrbitApp {
     ) -> impl IntoElement + use<> {
         let back_enabled = self.history_index > 0;
         let forward_enabled = self.history_index + 1 < self.session_history.len();
-        // Fixed 24px hit boxes with centered icons keep the three controls
-        // optically even (a bare `p_1` gives the 16px toggle a wider pill than
-        // the 14px chevrons, so their edges drift).
+        // The three controls wear the same glass chips as the right cluster
+        // ([`header_icon_button`]), so the whole 44px bar reads as one row:
+        // a fixed square hit box with a centered icon keeps the 16px toggle
+        // and the 15px chevrons optically even (a bare `p_1` lets the toggle's
+        // pill drift wider than the chevrons).
         div()
             .flex()
             .items_center()
-            .gap(px(2.))
+            .gap(px(TITLEBAR_CONTROLS_GAP))
             .pr(px(6.))
             .child(
-                div()
-                    .id("toggle-sidebar")
-                    .block_mouse_except_scroll()
-                    .size(px(24.))
-                    .rounded_sm()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme.bg_hover))
-                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_toggle_sidebar))
-                    .child(icon("icons/layout-left.svg", 16., theme.text_2)),
+                header_ghost_button(
+                    "toggle-sidebar",
+                    &theme,
+                    icon("icons/layout-left.svg", 16., theme.text_2),
+                )
+                .block_mouse_except_scroll()
+                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_toggle_sidebar)),
             )
             .child(
                 div()
                     .id("history-back")
                     .block_mouse_except_scroll()
-                    .size(px(24.))
-                    .rounded_sm()
+                    .size(px(HEADER_CTRL_H))
+                    .rounded(px(HEADER_CTRL_R))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -2395,8 +2798,8 @@ impl OrbitApp {
                 div()
                     .id("history-forward")
                     .block_mouse_except_scroll()
-                    .size(px(24.))
-                    .rounded_sm()
+                    .size(px(HEADER_CTRL_H))
+                    .rounded(px(HEADER_CTRL_R))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -2417,7 +2820,7 @@ impl OrbitApp {
             )
     }
 
-    /// Sidebar nav row — Waku `render_sidebar_action_row` shape: fixed height,
+    /// Sidebar nav row — fixed height,
     /// icon in a 20px slot, secondary label, rounded hover surface.
     /// The sidebar's primary action: a raised New Task button with the
     /// ⌘N shortcut hint — the one emphasized control in the nav column.
@@ -2455,7 +2858,7 @@ impl OrbitApp {
                     .text_size(theme.ui_px(13.))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text)
-                    .child("New Task"),
+                    .child(tr!("view.new_task")),
             )
             .child(
                 div()
@@ -2497,7 +2900,7 @@ impl OrbitApp {
                     .truncate()
                     .text_size(theme.ui_px(12.5))
                     .text_color(theme.text_3)
-                    .child("Search"),
+                    .child(tr!("view.search")),
             )
             .child(
                 div()
@@ -2564,7 +2967,7 @@ impl OrbitApp {
                     } else {
                         theme.text_2
                     })
-                    .child("Usage"),
+                    .child(tr!("view.usage")),
             )
     }
 
@@ -2621,8 +3024,8 @@ impl OrbitApp {
         let theme = *theme::get(cx);
         if let Some(retry) = &self.retry_detail {
             let attempt = match retry.max {
-                Some(max) => format!("attempt {} of {}", retry.attempt, max),
-                None => format!("attempt {}", retry.attempt),
+                Some(max) => tr!("runtime.attempt_of", attempt = retry.attempt, max = max),
+                None => tr!("runtime.attempt", attempt = retry.attempt),
             };
             return Some(
                 div()
@@ -2645,7 +3048,11 @@ impl OrbitApp {
                             .truncate()
                             .text_size(theme.ui_px(11.5))
                             .text_color(theme.text_2)
-                            .child(format!("Retrying — {attempt} · {}", retry.error)),
+                            .child(tr!(
+                                "runtime.retrying",
+                                attempt = attempt,
+                                error = retry.error
+                            )),
                     )
                     .child(
                         div()
@@ -2664,7 +3071,7 @@ impl OrbitApp {
                                     this.abort_retry(cx);
                                 }),
                             )
-                            .child("Cancel"),
+                            .child(tr!("view.cancel")),
                     )
                     .into_any_element(),
             );
@@ -2696,7 +3103,7 @@ impl OrbitApp {
                             .min_w_0()
                             .text_size(theme.ui_px(11.5))
                             .text_color(theme.text_2)
-                            .child("Preparing conversation context…"),
+                            .child(tr!("view.preparing_conversation_context")),
                     )
                     .into_any_element(),
             );
@@ -2782,7 +3189,7 @@ impl OrbitApp {
                     .flex_none()
                     .text_size(theme.ui_px(11.))
                     .text_color(theme.text_3)
-                    .child(format!("Question {} of {}", cursor + 1, total)),
+                    .child(tr!("ask.question_of", current = cursor + 1, total = total)),
             );
         }
         // A visible dismiss affordance beside the keyboard hint.
@@ -2920,7 +3327,7 @@ impl OrbitApp {
                         } else {
                             theme.text_2
                         })
-                        .child("Type something."),
+                        .child(tr!("view.type_something")),
                 );
             if !submitted {
                 row =
@@ -2970,7 +3377,7 @@ impl OrbitApp {
                                             .line_height(theme.ui_px(14.))
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(theme.text_3)
-                                            .child(format!("Preview · {}", option.label)),
+                                            .child(tr!("ask.preview", label = option.label)),
                                     ),
                             )
                             .child(
@@ -3008,11 +3415,11 @@ impl OrbitApp {
 
         // ── footer: hint + Back / Next (Submit on the last question) ──
         let hint = if submitted {
-            "Sending your answers…"
+            tr!("ask.sending")
         } else if multi {
-            "↑↓ Navigate · ⏎ Toggle · esc Cancel"
+            tr!("ask.hint_multi")
         } else {
-            "↑↓ Navigate · ⏎ Next · esc Cancel"
+            tr!("ask.hint_single")
         };
         let mut back = div()
             .id("ask-back")
@@ -3037,10 +3444,14 @@ impl OrbitApp {
                 .hover(|style| style.bg(theme.overlay_strong).text_color(theme.text))
                 .on_click(cx.listener(|this, _, window, cx| this.ask_prev_question(window, cx)));
         }
-        back = back.child("Back");
+        back = back.child(tr!("view.back"));
 
         let last = cursor + 1 >= total;
-        let next_label = if last { "Submit" } else { "Next" };
+        let next_label = if last {
+            tr!("ask.submit")
+        } else {
+            tr!("ask.next")
+        };
         let mut next = div()
             .id("ask-next")
             .h(px(28.))
@@ -3104,9 +3515,9 @@ impl OrbitApp {
         let request = self.approval.as_ref()?;
         let theme = *theme::get(cx);
         let heading = if request.tool.trim().is_empty() {
-            "Permission needed".to_string()
+            tr!("approval.permission_needed")
         } else {
-            format!("Allow {}?", request.tool)
+            tr!("approval.allow_tool", tool = request.tool)
         };
         let detail = request.detail.clone();
 
@@ -3273,17 +3684,11 @@ impl OrbitApp {
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(theme.text_3)
                                 .child(if self.queue.follow_up.is_empty() {
-                                    format!("Steering the running turn ({})", self.queue.len())
+                                    tr!("view.steering_turn", count = self.queue.len())
                                 } else if self.queue.steering.is_empty() {
-                                    format!(
-                                        "Queued — sends after the current task finishes ({})",
-                                        self.queue.len()
-                                    )
+                                    tr!("view.queued_after_task", count = self.queue.len())
                                 } else {
-                                    format!(
-                                        "Steering now; follow-ups send after the task finishes ({})",
-                                        self.queue.len()
-                                    )
+                                    tr!("view.steering_plus_followups", count = self.queue.len())
                                 }),
                         )
                         .child(
@@ -3297,7 +3702,7 @@ impl OrbitApp {
                                 .cursor_pointer()
                                 .hover(|s| s.bg(theme.overlay).text_color(theme.text))
                                 .on_mouse_up(MouseButton::Left, cx.listener(Self::on_clear_queue))
-                                .child("Clear"),
+                                .child(tr!("view.clear")),
                         ),
                 )
                 .child(chips)
@@ -3356,7 +3761,7 @@ impl OrbitApp {
                                     this.runtime_restart(cx);
                                 }),
                             )
-                            .child("Reconnect"),
+                            .child(tr!("view.reconnect")),
                     )
                 })
                 .child(

@@ -1,31 +1,58 @@
+import Link from "next/link";
+import { GithubIcon, StarIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+
 import { OrbitWordmark } from "@/components/brand";
-import { Band, ButtonLink, Shell } from "@/components/ui";
-import { getLatestRelease, LATEST_RELEASE_URL } from "@/lib/releases";
+import { OsDownloadButton } from "@/components/download-button";
+import { ThemeToggle } from "@/components/theme-toggle";
+import { Band, Shell } from "@/components/ui";
+import {
+  getLatestRelease,
+  getRepoStars,
+  LATEST_RELEASE_URL,
+} from "@/lib/releases";
 
 const links = [
-  { label: "Features", href: "#features" },
-  { label: "Workbench", href: "#workbench" },
-  { label: "Safeguards", href: "#guard" },
-  { label: "Gallery", href: "#gallery" },
-  { label: "Get started", href: "#install" },
+  { label: "Features", href: "/#features" },
+  { label: "Workbench", href: "/#workbench" },
+  { label: "Safeguards", href: "/#guard" },
+  { label: "Gallery", href: "/#gallery" },
+  { label: "Changelog", href: "/changelog" },
+  { label: "Get started", href: "/#install" },
 ];
 
+/** 13 → "13", 1234 → "1.2k", 123456 → "123k". */
+function formatStars(count: number): string {
+  if (count < 1000) return String(count);
+  const thousands = count / 1000;
+  const rounded =
+    thousands >= 100 ? Math.round(thousands) : Number(thousands.toFixed(1));
+  return `${rounded}k`;
+}
+
 export async function SiteNav() {
-  const release = await getLatestRelease();
-  const downloadHref = release?.macos ?? LATEST_RELEASE_URL;
+  const [release, stars] = await Promise.all([
+    getLatestRelease(),
+    getRepoStars(),
+  ]);
+  const assets = {
+    macos: release?.macos,
+    windows: release?.windows,
+    linux: release?.linux,
+  };
 
   return (
     <header className="sticky top-0 z-50 bg-page/80 backdrop-blur-md">
       <Shell>
         <Band dashed>
           <nav className="nav-in flex h-16 items-center justify-between">
-            <a
-              href="#top"
+            <Link
+              href="/"
               aria-label="Orbit home"
               className="inline-flex items-center no-underline"
             >
               <OrbitWordmark className="h-[30px] w-auto" alt="" priority />
-            </a>
+            </Link>
 
             <div className="hidden items-center gap-[26px] text-[13.5px] md:flex">
               {links.map((l) => (
@@ -37,23 +64,51 @@ export async function SiteNav() {
                   {l.label}
                 </a>
               ))}
+
               <a
                 href="https://github.com/imrj05/orbit"
                 target="_blank"
                 rel="noreferrer"
-                className="text-ink no-underline transition-colors duration-[120ms] hover:text-ink-2"
+                aria-label={
+                  stars != null ? `GitHub — ${stars} stars` : "GitHub"
+                }
+                className="group inline-flex items-center gap-2 rounded-full border border-hair bg-tint-04 py-[5px] pl-2.5 pr-3 text-[12.5px] text-ink-2 no-underline transition-colors duration-[120ms] hover:border-tint-26 hover:bg-tint-07 hover:text-ink"
               >
-                GitHub
+                <HugeiconsIcon icon={GithubIcon} className="size-4" />
+                {stars != null ? (
+                  <span className="inline-flex items-center gap-1.5">
+                    <HugeiconsIcon
+                      icon={StarIcon}
+                      fill="currentColor"
+                      className="size-3.5 text-gold transition-transform duration-200 group-hover:scale-110"
+                    />
+                    <span className="font-mono text-[11.5px] tabular-nums text-ink">
+                      {formatStars(stars)}
+                    </span>
+                  </span>
+                ) : (
+                  <span>GitHub</span>
+                )}
               </a>
-              <ButtonLink href={downloadHref} variant="nav" external>
-                Download
-              </ButtonLink>
+
+              <ThemeToggle />
+
+              <OsDownloadButton
+                assets={assets}
+                fallback={LATEST_RELEASE_URL}
+                variant="nav"
+                short
+              />
             </div>
 
-            <div className="md:hidden">
-              <ButtonLink href={downloadHref} variant="nav" external>
-                Download
-              </ButtonLink>
+            <div className="flex items-center gap-2.5 md:hidden">
+              <ThemeToggle />
+              <OsDownloadButton
+                assets={assets}
+                fallback={LATEST_RELEASE_URL}
+                variant="nav"
+                short
+              />
             </div>
           </nav>
         </Band>

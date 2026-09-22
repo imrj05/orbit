@@ -19,6 +19,7 @@
  */
 import {
   configureQuotaAuth,
+  OLLAMA_SESSION_KEY,
   quotaAdapters,
   quotaReports,
   quotaStoredAuth,
@@ -82,14 +83,15 @@ export default async function activate(pi) {
   /** Every provider with a credential: the adapter set plus whatever else pi
    *  has registered, filtered by pi's own "configured" test. */
   async function configuredProviders(current) {
-    const ids = new Set(KNOWN_PROVIDERS);
+    const registered = new Set();
     try {
       for (const id of current.modelRegistry?.getRegisteredProviderIds?.() ?? []) {
-        ids.add(id);
+        registered.add(id);
       }
     } catch {
       // Older pi without registry enumeration: the adapter set still works.
     }
+    const ids = new Set([...KNOWN_PROVIDERS, ...registered]);
     let stored = {};
     try {
       stored = (await quotaStoredAuth()) ?? {};
@@ -105,6 +107,15 @@ export default async function activate(pi) {
         configured = false;
       }
       if (configured || stored[id] != null) out.push(id);
+    }
+    // A cookie-only Ollama Cloud setup stores the session under its own
+    // non-provider key: pi sees no provider credential, so `hasConfiguredAuth`
+    // would otherwise exclude it and the usage would never load. One adapter
+    // id is enough — prefer the third-party provider's `ollama-cloud` when it
+    // is registered, else the local endpoint's `ollama`.
+    if (stored[OLLAMA_SESSION_KEY] != null) {
+      const hasOllama = out.some((id) => id === "ollama" || id === "ollama-cloud");
+      if (!hasOllama) out.push(registered.has("ollama-cloud") ? "ollama-cloud" : "ollama");
     }
     return out;
   }

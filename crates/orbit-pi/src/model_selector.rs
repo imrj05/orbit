@@ -174,14 +174,14 @@ impl ModelSelector {
         // The filter input carries both the `Composer` context (so backspace,
         // paste, etc. keep working) and the `Picker` flag (so the picker's
         // enter/escape/arrows take precedence at the same dispatch depth).
-        let placeholder = match kind {
-            PickerKind::Model => "Search models…",
-            PickerKind::Thinking => "Search levels…",
+        let placeholder_key = match kind {
+            PickerKind::Model => "model_selector.search_models",
+            PickerKind::Thinking => "model_selector.search_levels",
         };
         let filter = cx.new(|cx| {
             ComposerInput::new(cx)
                 .with_element_id("picker-filter")
-                .with_placeholder(placeholder)
+                .with_placeholder_key(placeholder_key)
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
         });
@@ -289,7 +289,9 @@ impl ModelSelector {
 
         if kind == PickerKind::Thinking {
             for level in levels.iter().filter(|level| {
-                matches(level) || matches(&thinking_display(level)) || matches(thinking_hint(level))
+                matches(level)
+                    || matches(&thinking_display(level))
+                    || matches(&thinking_hint(level))
             }) {
                 rows.push(Row::Level {
                     level: level.clone(),
@@ -432,10 +434,17 @@ impl ModelSelector {
     fn scope_row(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let this = cx.weak_entity();
         let favorites = crate::favorites::all();
-        let mut entries: Vec<(String, Scope, &'static str)> =
-            vec![("All".to_string(), Scope::All, "icons/extensions.svg")];
+        let mut entries: Vec<(String, Scope, &'static str)> = vec![(
+            tr!("model_selector.all"),
+            Scope::All,
+            "icons/extensions.svg",
+        )];
         if !favorites.is_empty() {
-            entries.push(("Favorites".to_string(), Scope::Favorites, "icons/star.svg"));
+            entries.push((
+                tr!("model_selector.favorites"),
+                Scope::Favorites,
+                "icons/star.svg",
+            ));
         }
         entries.extend(self.providers().into_iter().map(|provider| {
             (
@@ -496,7 +505,7 @@ impl ModelSelector {
                     let this = this.clone();
                     row = row.child(scope_chip(
                         ElementId::Name(id.into()),
-                        "Favorite current".to_string(),
+                        tr!("model_selector.favorite_current"),
                         icon("icons/star.svg", 13., theme.text_3).into_any_element(),
                         false,
                         theme,
@@ -764,10 +773,10 @@ impl Render for ModelSelector {
         };
         let option_count = rows.iter().filter(|row| !row.is_header()).count();
         let count_label = match self.kind {
-            PickerKind::Thinking => format!("{option_count} levels"),
+            PickerKind::Thinking => tr!("model_selector.n_levels", count = option_count),
             PickerKind::Model => match self.scope {
-                Scope::Favorites => format!("{option_count} favorites"),
-                _ => format!("{option_count} models"),
+                Scope::Favorites => tr!("model_selector.n_favorites", count = option_count),
+                _ => tr!("model_selector.n_models", count = option_count),
             },
         };
 
@@ -864,10 +873,17 @@ pub(crate) fn thinking_icon(level: &str, theme: &Theme) -> (&'static str, gpui::
 
 /// Brand glyph for a pi provider — mono SVGs from [theSVG.org]
 /// (https://thesvg.org), embedded under `assets/icons/providers/` and named
-/// by provider id. Every pi built-in provider has a mark; unknown or
+/// by provider id. A few ids reuse another brand's mark (Ollama Cloud is
+/// still Ollama). Every pi built-in provider has a mark; unknown or
 /// user-defined providers (custom `models.json` entries) fall back to a
 /// neutral cloud glyph.
 pub(crate) fn provider_icon(provider: &str) -> SharedString {
+    // Provider id → the id whose mark it shares. The leading dot on
+    // `.manifest` is pi's catalog-index filename, not a real provider id.
+    const ALIASES: &[(&str, &str)] = &[("ollama-cloud", "ollama"), (".manifest", "manifest")];
+    if let Some((_, mark)) = ALIASES.iter().find(|(id, _)| *id == provider) {
+        return format!("icons/providers/{mark}.svg").into();
+    }
     const KNOWN: &[&str] = &[
         "amazon-bedrock",
         "ant-ling",
@@ -931,16 +947,16 @@ pub(crate) fn thinking_display(level: &str) -> String {
 }
 
 /// Short hint shown under the thinking level label in the picker.
-fn thinking_hint(level: &str) -> &'static str {
+fn thinking_hint(level: &str) -> String {
     match level.to_ascii_lowercase().as_str() {
-        "off" | "none" => "No reasoning",
-        "minimal" | "low" => "Fast reasoning",
-        "medium" => "Balanced reasoning",
-        "high" => "Deeper reasoning",
-        "xhigh" | "ultra" => "Extensive reasoning",
-        "max" => "Maximum reasoning",
-        "auto" => "Model chooses depth",
-        _ => "Custom reasoning level",
+        "off" | "none" => tr!("model_selector.reasoning_none"),
+        "minimal" | "low" => tr!("model_selector.reasoning_fast"),
+        "medium" => tr!("model_selector.reasoning_balanced"),
+        "high" => tr!("model_selector.reasoning_deeper"),
+        "xhigh" | "ultra" => tr!("model_selector.reasoning_extensive"),
+        "max" => tr!("model_selector.reasoning_maximum"),
+        "auto" => tr!("model_selector.reasoning_auto"),
+        _ => tr!("model_selector.reasoning_custom"),
     }
 }
 
@@ -1128,8 +1144,14 @@ fn group_header(
 
 fn empty_state(kind: PickerKind, theme: Theme) -> impl IntoElement + use<> {
     let (title, hint) = match kind {
-        PickerKind::Model => ("No matching models", "Try a provider, model, or id"),
-        PickerKind::Thinking => ("No matching levels", "Try a reasoning level"),
+        PickerKind::Model => (
+            tr!("model_selector.no_matching_models"),
+            tr!("model_selector.try_a_provider_model_or_id"),
+        ),
+        PickerKind::Thinking => (
+            tr!("model_selector.no_matching_levels"),
+            tr!("model_selector.try_a_reasoning_level"),
+        ),
     };
     div()
         .h(px(120.))
@@ -1170,9 +1192,9 @@ fn footer(count_label: String, theme: Theme) -> impl IntoElement + use<> {
         .text_color(theme.text_3)
         .child(count_label)
         .child(div().flex_1())
-        .child("↑↓ Navigate")
-        .child("⏎ Select")
-        .child("Esc Close")
+        .child(tr!("model_selector.navigate"))
+        .child(tr!("model_selector.select"))
+        .child(tr!("model_selector.esc_close"))
 }
 
 fn label_column<P: IntoElement, S: IntoElement>(
@@ -1329,7 +1351,13 @@ fn render_row(
             // fact when pi reports it; otherwise the machine id (mono), then
             // the provider name as a last resort.
             let (secondary, mono) = match model.context_window {
-                Some(tokens) => (format!("{} context window", format_tokens(tokens)), false),
+                Some(tokens) => (
+                    tr!(
+                        "model_selector.context_window",
+                        count = format_tokens(tokens)
+                    ),
+                    false,
+                ),
                 None => {
                     let id = model.id.trim();
                     if id.is_empty() {
@@ -1621,6 +1649,27 @@ mod tests {
                 "{path} is not embedded"
             );
         }
+    }
+
+    #[test]
+    fn aliased_provider_ids_reuse_their_brand_mark() {
+        use gpui::AssetSource as _;
+        for (id, mark) in [("ollama-cloud", "ollama"), (".manifest", "manifest")] {
+            let path = provider_icon(id);
+            assert_eq!(path.as_ref(), format!("icons/providers/{mark}.svg"));
+            assert!(
+                crate::assets::Assets.load(&path).unwrap().is_some(),
+                "{path} is not embedded"
+            );
+        }
+        assert_eq!(
+            provider_icon("ollama").as_ref(),
+            "icons/providers/ollama.svg"
+        );
+        assert_eq!(
+            provider_icon("manifest").as_ref(),
+            "icons/providers/manifest.svg"
+        );
     }
 
     #[test]

@@ -1,4 +1,6 @@
-import { ArrowRight, DownloadSimple } from "@phosphor-icons/react/dist/ssr";
+import Link from "next/link";
+import { ArrowRight01Icon, Download01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { Band, SectionLabel, Shell } from "@/components/ui";
 import { getLatestRelease, LATEST_RELEASE_URL } from "@/lib/releases";
 
@@ -57,14 +59,12 @@ export async function Steps() {
           </p>
           <div className="mb-[18px] flex flex-wrap items-center gap-x-3 gap-y-2 font-mono text-[11px] uppercase tracking-[0.12em] text-ink-3">
             {release ? (
-              <a
-                href={release.pageUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="rounded-full border border-[#ffffff1c] px-2.5 py-1 text-ink-2 no-underline transition-colors hover:text-ink"
+              <Link
+                href={`/changelog/${release.tag}`}
+                className="rounded-full border border-tint-1c px-2.5 py-1 text-ink-2 no-underline transition-colors hover:text-ink"
               >
                 Latest {release.tag}
-              </a>
+              </Link>
             ) : null}
             {platforms.map(({ label, href }) => (
               <a
@@ -74,7 +74,11 @@ export async function Steps() {
                 rel="noreferrer"
                 className="inline-flex items-center gap-1.5 no-underline transition-colors hover:text-ink"
               >
-                <DownloadSimple className="size-3.5" weight="bold" />
+                <HugeiconsIcon
+                  icon={Download01Icon}
+                  className="size-3.5"
+                  strokeWidth={1.8}
+                />
                 {label}
               </a>
             ))}
@@ -84,22 +88,22 @@ export async function Steps() {
             className="inline-flex items-center gap-2 text-[11px] text-ink-2 no-underline transition-colors hover:text-ink"
           >
             See every feature
-            <ArrowRight className="size-3.5" />
+            <HugeiconsIcon icon={ArrowRight01Icon} className="size-3.5" />
           </a>
         </div>
 
         <div className="min-w-0 overflow-hidden rounded-2xl bg-window shadow-pop">
-          <div className="flex items-center gap-2 bg-winbar px-3 py-[9px] text-[11px] text-ink-3 shadow-[inset_0_-1px_#00000066]">
+          <div className="flex items-center gap-2 bg-winbar px-3 py-[9px] text-[11px] text-ink-3 shadow-[inset_0_-1px_var(--winbar-line)]">
             <span className="mr-2 inline-flex gap-1.5">
-              <i className="size-[10px] rounded-full bg-[#ffffff29]" />
-              <i className="size-[10px] rounded-full bg-[#ffffff29]" />
-              <i className="size-[10px] rounded-full bg-[#ffffff29]" />
+              <i className="size-[10px] rounded-full bg-tint-29" />
+              <i className="size-[10px] rounded-full bg-tint-29" />
+              <i className="size-[10px] rounded-full bg-tint-29" />
             </span>
-            <span className="rounded-md bg-[#ffffff14] px-2.5 py-1 text-ink-2">
+            <span className="rounded-md bg-tint-14 px-2.5 py-1 text-ink-2">
               Get started
             </span>
           </div>
-          <ol className="flex flex-col divide-y divide-[#ffffff0f]">
+          <ol className="flex flex-col divide-y divide-tint-0f">
             {steps.map((s) => (
               <li key={s.n} className="flex gap-4 px-4 py-3.5">
                 <span className="pt-0.5 font-mono text-[11px] text-ink-3">

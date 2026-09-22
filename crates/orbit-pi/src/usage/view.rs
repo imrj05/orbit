@@ -4,31 +4,32 @@
 //! computed elsewhere and formats it; the only logic allowed here is layout,
 //! interaction, and choosing which register a number is shown in.
 //!
-//! # Direction contract — Usage, card-stack redesign
+//! # Direction contract — Usage, minimal pass
 //!
-//! **THESIS.** The page is an instrument cluster, not a scroll of lists: each
-//! measure owns a bordered card so a metric's domain is spatial, refusing the
-//! undifferentiated hairline stack the category defaults to.
+//! **THESIS.** The page is a reading surface, not an instrument rack: the
+//! headline metrics are the one board, and every other measure sits on the
+//! canvas behind a hairline. Chrome is spent only where it earns its weight.
 //!
 //! **OWN-WORLD.** Orbit's instrument panel, inherited whole: canvas ground,
-//! `bg_raised` cards at 12px radius, one ember accent on the active series,
-//! hairlines only *inside* a card, tabular mono figures for every number.
+//! one raised card per section, one ember accent on the active series,
+//! hairlines inside the cards, tabular mono figures.
 //!
-//! **STORY.** The operator scans the summary, reads the trend, ranks one
-//! dimension at a time, checks token health, then drills the record tables.
-//! Every figure is pi's own session measurement; nothing is invented.
+//! **STORY.** The operator reads the four headline figures, reads the trend,
+//! then opens Breakdown or Records only when the question asks. Every figure
+//! is pi's own session measurement; nothing is invented.
 //!
-//! **FIRST VIEWPORT.** 44px header + filter bar, then the Summary card: the
-//! metric grid first, the quieter secondary figures one click away. The Trend
-//! area chart follows as the first chart, so data starts above the fold.
+//! **FIRST VIEWPORT.** 44px header + filter bar with Simple | Details. Simple
+//! is the scan: Summary, Usage over time, Signals, Daily activity, Token health.
+//! Details is the audit: Breakdown and Records. The two never share a viewport.
 //!
-//! **FORM.** Established world, brief-pinned structure — no concept tournament
-//! was run. Composition is a card stack on the canvas; the trend is an area
-//! chart, and both the Breakdown dimensions and the Details records are the
-//! same shared data table (search, columns, sorting, totals, pagination).
+//! **FORM.** Established world. Simple is a stack of 12px raised cards; Details
+//! are two cards of tables. Title on a hairline header, content padded inside.
+//! Nested cards are forbidden: inner wells recess to the canvas, tables keep
+//! only a hairline frame. The trend is an area chart plus the same data table
+//! as Sessions (search, columns, sorting, totals, pagination).
 //!
-//! Sections: Summary (metric grid) · Signals · Trend (area) · Breakdown (four
-//! dimensions, each a data table) · Token composition · Cache · Details.
+//! Sections: Summary · Usage over time · Signals · Daily activity · Token health
+//! · Breakdown · Records.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -39,22 +40,24 @@ use gpui::{
 };
 
 use super::aggregate::{
-    Breakdown, ChartMetric, Direction, GroupRow, Insight, LatencyMetric, LatencyStats, SessionRow,
-    TimeSeries, Tone, ToolRow, Totals, UsageSnapshot,
+    Breakdown, BucketRow, ChartMetric, Direction, GroupRow, Insight, LatencyMetric, LatencyStats,
+    SessionRow, TimeSeries, Tone, ToolRow, Totals, UsageSnapshot,
 };
 use super::chart;
 use super::filters::{self, FilterOption};
 use super::format;
+use super::heatmap;
 use super::model::{
     next_bucket, Granularity, RangePreset, TimeFocus, TokenCounts, UsageFilter, UsageIndex,
 };
 use super::page::{
-    BreakdownQueryResult, BreakdownSort, BreakdownTab, BucketSort, DetailTab, MenuKind,
-    SessionQueryResult, SessionSort, ToolQueryResult, UsagePage,
+    BreakdownQueryResult, BreakdownSort, BreakdownTab, BucketQueryResult, BucketSort, DetailTab,
+    FailureQueryResult, MenuKind, SeriesQueryResult, SeriesSort, SessionQueryResult, SessionSort,
+    ToolQueryResult, UsageMode, UsagePage,
 };
 use super::table::{
     cell_shell, data_table, empty_cell, text_cell, Column, FailureSort, SortState, TableHandlers,
-    TableKind, ROW_H,
+    TableKind, HEADER_H, ROW_H,
 };
 use super::tooltip::Tooltip;
 use crate::app::icon;
@@ -66,15 +69,13 @@ use crate::theme::{self, Theme};
 pub(super) const CONTENT_MAX_W: f32 = 1180.;
 /// The page column's horizontal padding (both sides), which the tables sit inside.
 pub(super) const PAGE_PAD: f32 = 40.;
+/// Inner padding of a section card (each side). Tables budget against this
+/// so their last column is not squeezed into a scrollbar.
+pub(super) const SECTION_PAD: f32 = 14.;
 /// Below this column width the paired panels stack into one column.
 const TWO_COLUMN_MIN: f32 = 820.;
 const FOUR_KPI_MIN: f32 = 880.;
 
-/// Heights for the tables. Each is a whole number of 26px rows plus the
-/// header, so a table never ends by cutting a row in half. All three scroll
-/// internally rather than growing without bound.
-const BUCKET_TABLE_H: f32 = ROW_H * 11.;
-const FAILURE_TABLE_H: f32 = ROW_H * 10.;
 /// Ranked bars the Breakdown chart shows; the table below carries the rest.
 const CHART_ROWS: usize = 8;
 
@@ -117,18 +118,17 @@ impl Render for UsagePage {
                             .flex_none()
                             .w(column_w)
                             .mx_auto()
-                            .pb(px(56.))
+                            .pb(theme.space(56.))
                             .flex()
                             .flex_col()
                             .children(self.active_filter_bar(theme, cx))
                             .child(
                                 div()
                                     .w_full()
-                                    .px(px(20.))
-                                    .pt(px(18.))
+                                    .px(theme.space(20.))
+                                    .pt(theme.space(20.))
                                     .flex()
                                     .flex_col()
-                                    .gap(px(16.))
                                     .child(self.body(theme, wide, kpi_cols, window, cx)),
                             ),
                     ),
@@ -142,8 +142,10 @@ impl UsagePage {
     /// 44px page header: back affordance, title, freshness, and the page's own
     /// actions. Compact by design — the data starts on the next row.
     fn header(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let refresh_label = tr!("usage.refreshing");
+        let refresh_idle_label = tr!("common.refresh");
         let status = if self.is_refreshing() {
-            Some("Refreshing…".to_string())
+            Some(refresh_label.clone())
         } else {
             self.status().map(str::to_string).or_else(|| {
                 self.last_updated_ms()
@@ -155,7 +157,17 @@ impl UsagePage {
         div()
             .h(px(44.))
             .flex_none()
-            .px(px(12.))
+            // The page spans the window when the sessions sidebar is collapsed,
+            // so the leading inset clears the macOS traffic lights and the
+            // sidebar/history controls overlaid in the titlebar. The right end
+            // clears the app's own caption buttons on the platforms that draw
+            // them (see `platform::draws_window_controls`).
+            .pl(px(self.header_leading()))
+            .pr(px(if crate::platform::draws_window_controls() {
+                crate::platform::WINDOW_CONTROLS_W
+            } else {
+                12.
+            }))
             .flex()
             .items_center()
             .gap_2()
@@ -183,7 +195,7 @@ impl UsagePage {
                         div()
                             .text_size(theme.ui_px(12.5))
                             .text_color(theme.text_2)
-                            .child("Back"),
+                            .child(tr!("view.back")),
                     ),
             )
             .child(
@@ -196,7 +208,7 @@ impl UsagePage {
                         div()
                             .text_size(theme.ui_px(15.))
                             .font_weight(FontWeight::MEDIUM)
-                            .child("Usage"),
+                            .child(tr!("view.usage")),
                     ),
             )
             .children(status.map(|status| {
@@ -210,9 +222,9 @@ impl UsagePage {
             .child(filters::text_button(
                 "usage-refresh",
                 if self.is_refreshing() {
-                    "Refreshing…"
+                    &refresh_label
                 } else {
-                    "Refresh"
+                    &refresh_idle_label
                 },
                 Some("icons/refresh.svg"),
                 true,
@@ -232,7 +244,7 @@ impl UsagePage {
         let entity = cx.entity();
         let button = filters::text_button(
             "usage-export",
-            "Export",
+            &tr!("usage.export"),
             Some("icons/upload.svg"),
             enabled,
             theme,
@@ -267,13 +279,13 @@ impl UsagePage {
         let mut bar = div()
             .w_full()
             .flex_none()
-            .px(px(12.))
-            .py(px(8.))
+            .px(theme.space(20.))
+            .py(theme.space(8.))
             .border_b_1()
             .border_color(theme.border)
             .flex()
             .items_center()
-            .gap(px(6.));
+            .gap(theme.space(8.));
 
         let entity = cx.entity();
         let range_open = self.menu() == Some(MenuKind::Range);
@@ -334,7 +346,7 @@ impl UsagePage {
                 .child(self.multi_chip(
                     MenuKind::Workspace,
                     "usage-workspace",
-                    "All workspaces",
+                    &tr!("usage.all_workspaces"),
                     &ranked_workspaces,
                     &all_workspaces,
                     &filter.workspaces,
@@ -344,7 +356,7 @@ impl UsagePage {
                 .child(self.multi_chip(
                     MenuKind::Provider,
                     "usage-provider",
-                    "All providers",
+                    &tr!("usage.all_providers"),
                     &ranked_providers,
                     &all_providers,
                     &filter.providers,
@@ -354,7 +366,7 @@ impl UsagePage {
                 .child(self.multi_chip(
                     MenuKind::Model,
                     "usage-model",
-                    "All models",
+                    &tr!("usage.all_models"),
                     &ranked_models,
                     &all_models,
                     &filter.models,
@@ -365,7 +377,28 @@ impl UsagePage {
 
         // Active narrowings are shown once, as removable chips, under the
         // filter row (§45); the filter row itself stays a set of controls.
-        bar.into_any_element()
+        bar.child(div().flex_1())
+            .child(self.mode_control(theme, cx))
+            .into_any_element()
+    }
+
+    /// Simple vs Details. Lives on the filter row so the two readings never
+    /// compete for the same viewport.
+    fn mode_control(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        segmented(
+            "usage-mode",
+            &UsageMode::ALL,
+            self.usage_mode(),
+            |choice| choice.label(),
+            |choice| choice.as_str(),
+            theme,
+            {
+                let entity = cx.entity();
+                move |choice, _, cx| {
+                    entity.update(cx, |page, cx| page.set_usage_mode(choice, cx));
+                }
+            },
+        )
     }
 
     /// One multi-select chip with its popover. `ranked` is what the menu shows
@@ -435,7 +468,7 @@ impl UsagePage {
         }
         if let Some(session) = filter.session {
             if let Some(entry) = index.try_session(session) {
-                let label = format!("Session: {}", session_title(entry));
+                let label = tr!("usage.chip_session", name = session_title(entry));
                 let entity = cx.entity();
                 chips.push(filters::toggle_chip(
                     "usage-chip-session".to_string(),
@@ -454,7 +487,7 @@ impl UsagePage {
             let entity = cx.entity();
             chips.push(filters::toggle_chip(
                 format!("usage-chip-workspace-{id}"),
-                format!("Workspace: {}", entry.label),
+                tr!("usage.chip_workspace", name = entry.label),
                 theme,
                 move |_, _, cx| {
                     entity.update(cx, |page, cx| {
@@ -470,7 +503,7 @@ impl UsagePage {
             let entity = cx.entity();
             chips.push(filters::toggle_chip(
                 format!("usage-chip-provider-{id}"),
-                format!("Provider: {}", entry.label),
+                tr!("usage.chip_provider", name = entry.label),
                 theme,
                 move |_, _, cx| {
                     entity.update(cx, |page, cx| {
@@ -486,7 +519,7 @@ impl UsagePage {
             let entity = cx.entity();
             chips.push(filters::toggle_chip(
                 format!("usage-chip-model-{id}"),
-                format!("Model: {}", entry.label),
+                tr!("usage.chip_model", name = entry.label),
                 theme,
                 move |_, _, cx| {
                     entity.update(cx, |page, cx| {
@@ -499,7 +532,7 @@ impl UsagePage {
             let entity = cx.entity();
             chips.push(filters::toggle_chip(
                 "usage-chip-errors".to_string(),
-                "Failed requests",
+                tr!("usage.chip_failed_requests"),
                 theme,
                 move |_, _, cx| {
                     entity.update(cx, |page, cx| page.set_errors_only(false, cx));
@@ -510,7 +543,7 @@ impl UsagePage {
             let entity = cx.entity();
             chips.push(filters::toggle_chip(
                 "usage-chip-cached".to_string(),
-                "Cached only",
+                tr!("usage.chip_cached_only"),
                 theme,
                 move |_, _, cx| {
                     entity.update(cx, |page, cx| page.set_cached_only(false, cx));
@@ -521,7 +554,7 @@ impl UsagePage {
         let entity = cx.entity();
         let clear_all = filters::text_button(
             "usage-chips-clear",
-            "Clear all",
+            &tr!("usage.clear_all"),
             None,
             true,
             theme,
@@ -534,19 +567,19 @@ impl UsagePage {
             div()
                 .id("usage-active-filters")
                 .w_full()
-                .px(px(20.))
-                .pt(px(14.))
+                .px(theme.space(20.))
+                .pt(theme.space(14.))
                 .flex()
                 .flex_wrap()
                 .items_center()
-                .gap(px(6.))
+                .gap(theme.space(6.))
                 .child(
                     div()
                         .pr(px(2.))
                         .text_size(theme.ui_px(11.))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.text_3)
-                        .child("FILTERS"),
+                        .child(tr!("view.filters")),
                 )
                 .children(chips)
                 .child(clear_all)
@@ -588,12 +621,12 @@ impl UsagePage {
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         entity.update(cx, |page, cx| page.refresh(cx));
                     })
-                    .child("Try again")
+                    .child(tr!("view.try_again"))
                     .into_any_element();
                 return self.message_state(
                     theme,
                     "icons/info.svg",
-                    "Unable to load usage data",
+                    &tr!("usage.unable_to_load"),
                     &error,
                     Some(action),
                 );
@@ -607,11 +640,11 @@ impl UsagePage {
             return self.message_state(
                 theme,
                 "icons/info.svg",
-                "Unable to read usage data",
-                &format!(
-                    "{} session files in {} could not be parsed.",
-                    format::count(index.unreadable_files as u64),
-                    self.store_hint()
+                &tr!("usage.unable_to_read"),
+                &tr!(
+                    "usage.unreadable_files_hint",
+                    count = format::count(index.unreadable_files as u64),
+                    store = self.store_hint()
                 ),
                 None,
             );
@@ -628,8 +661,8 @@ impl UsagePage {
             return self.message_state(
                 theme,
                 "icons/filter.svg",
-                "No usage matches these filters",
-                "Try widening the date range or clearing a filter.",
+                &tr!("usage.no_matches"),
+                &tr!("usage.no_matches_hint"),
                 action,
             );
         }
@@ -637,22 +670,147 @@ impl UsagePage {
             return self.empty_store_state(theme, index.unreadable_files);
         }
 
-        let mut sections: Vec<AnyElement> = vec![self.summary_card(snapshot, theme, kpi_cols, cx)];
-        if !snapshot.insights.is_empty() {
-            sections.push(self.signals_card(&snapshot.insights, theme));
+        match self.usage_mode() {
+            UsageMode::Simple => {
+                let mut cards = div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap(theme.space(20.))
+                    .child(self.summary_card(snapshot, theme, kpi_cols, cx))
+                    .child(self.activity_section(snapshot, theme, cx));
+                if !snapshot.insights.is_empty() {
+                    cards = cards.child(self.signals_section(&snapshot.insights, theme));
+                }
+                cards = cards.child(self.daily_section(snapshot, theme, cx));
+                if snapshot.cache.is_available() || snapshot.summary.totals.tokens.total > 0 {
+                    cards = cards.child(self.health_section(snapshot, theme, wide, cx));
+                }
+                band(
+                    "usage-overview",
+                    &tr!("usage.overview"),
+                    &tr!("usage.overview_hint"),
+                    cards.into_any_element(),
+                    theme,
+                )
+            }
+            UsageMode::Details => band(
+                "usage-details-band",
+                &tr!("usage.details"),
+                &tr!("usage.details_hint"),
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap(theme.space(20.))
+                    .child(self.breakdown_section(snapshot, theme, cx))
+                    .child(self.details_section(snapshot, theme, window, cx))
+                    .into_any_element(),
+                theme,
+            ),
         }
-        sections.push(self.trend_card(snapshot, theme, cx));
-        sections.push(self.breakdown_card(snapshot, theme, cx));
-        sections.push(self.health_section(snapshot, theme, wide, cx));
-        sections.push(self.details_section(snapshot, theme, window, cx));
+    }
 
-        div()
-            .w_full()
-            .flex()
-            .flex_col()
-            .gap(px(16.))
-            .children(sections)
-            .into_any_element()
+    /// Usage over time as one card: the trend chart and its data table.
+    fn activity_section(
+        &self,
+        snapshot: &UsageSnapshot,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let metric = self.metric();
+        let latency_metric = self.latency_metric();
+        let by = snapshot.series.granularity.label();
+        let meta = match metric {
+            ChartMetric::Cost => tr!(
+                "usage.total_by",
+                value = format::cost(metric.total(&snapshot.summary.totals)),
+                by = by
+            ),
+            ChartMetric::Latency => tr!(
+                "usage.per_bucket",
+                value = latency_metric.label().to_lowercase(),
+                by = by
+            ),
+            _ => tr!(
+                "usage.total_by",
+                value = format::compact(metric.total(&snapshot.summary.totals) as u64),
+                by = by
+            ),
+        };
+
+        section(
+            "usage-activity",
+            &tr!("usage.over_time"),
+            Some(&tr!("usage.over_time_hint")),
+            Some(meta),
+            None,
+            self.trend_body(snapshot, theme, cx),
+            theme,
+        )
+    }
+
+    /// Derived findings as their own card, so a warning cannot be mistaken for
+    /// a metric on the board above.
+    fn signals_section(&self, insights: &[Insight], theme: Theme) -> AnyElement {
+        let meta = if insights.len() == 1 {
+            tr!("usage.one_note")
+        } else {
+            tr!(
+                "usage.n_notes",
+                count = format::count(insights.len() as u64)
+            )
+        };
+        section(
+            "usage-signals",
+            &tr!("usage.signals"),
+            Some(&tr!("usage.signals_hint")),
+            Some(meta),
+            None,
+            self.signals_body(insights, theme),
+            theme,
+        )
+    }
+
+    /// The contribution-graph calendar as its own card.
+    fn daily_section(
+        &self,
+        snapshot: &UsageSnapshot,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let daily_meta = tr!(
+            "usage.per_day_last_year",
+            metric = self.metric().label().to_lowercase()
+        );
+        section(
+            "usage-daily",
+            &tr!("usage.daily_activity"),
+            Some(&tr!("usage.daily_activity_hint")),
+            Some(daily_meta),
+            None,
+            self.heatmap_body(snapshot, theme, cx),
+            theme,
+        )
+    }
+
+    /// Token composition and cache performance as their own card.
+    fn health_section(
+        &self,
+        snapshot: &UsageSnapshot,
+        theme: Theme,
+        wide: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        section(
+            "usage-token-health",
+            &tr!("usage.token_health"),
+            Some(&tr!("usage.token_health_hint")),
+            Some(tr!("usage.composition_and_cache")),
+            None,
+            self.health_body(snapshot, theme, wide, cx),
+            theme,
+        )
     }
 
     fn clear_filters_button(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -678,7 +836,7 @@ impl UsagePage {
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     entity.update(cx, |page, cx| page.clear_filters(cx));
                 })
-                .child("Clear filters")
+                .child(tr!("view.clear_filters"))
                 .into_any_element(),
         )
     }
@@ -729,7 +887,7 @@ impl UsagePage {
             .flex_wrap()
             .gap(px(1.))
             .bg(theme.border);
-        for _ in 0..8 {
+        for _ in 0..4 {
             grid = grid.child(
                 div()
                     .flex_1()
@@ -745,18 +903,20 @@ impl UsagePage {
             );
         }
 
-        // Trend: the switcher row, then the plot block.
-        let trend = div()
+        // Activity: the switcher row, the plot, then the always-open bands.
+        let activity = div()
             .p(px(14.))
             .w_full()
             .flex()
             .flex_col()
             .gap(px(12.))
             .child(bar(320., 26.))
-            .child(div().h(px(168.)).w_full().rounded(px(8.)).bg(theme.trough));
+            .child(div().h(px(168.)).w_full().rounded(px(8.)).bg(theme.trough))
+            .child(div().h(px(96.)).w_full().rounded(px(8.)).bg(theme.trough))
+            .child(div().h(px(72.)).w_full().rounded(px(8.)).bg(theme.trough));
 
         // Records: a header rule and a handful of rows.
-        let mut records = div().w_full().pt(px(12.)).flex().flex_col();
+        let mut records = div().w_full().pt(theme.space(12.)).flex().flex_col();
         for ix in 0..6 {
             records = records.child(
                 div()
@@ -765,7 +925,7 @@ impl UsagePage {
                     .px(px(14.))
                     .flex()
                     .items_center()
-                    .gap(px(12.))
+                    .gap(theme.space(12.))
                     .when(ix > 0, |row| row.border_t_1().border_color(theme.border))
                     .child(bar(140., 10.))
                     .child(div().flex_1())
@@ -773,33 +933,86 @@ impl UsagePage {
             );
         }
 
-        div()
-            .w_full()
-            .flex()
-            .flex_col()
-            .gap(px(16.))
-            .child(shell(grid.into_any_element()))
-            .child(shell(trend.into_any_element()))
-            .child(shell(records.into_any_element()))
-            .into_any_element()
+        // Secondary bands are sections, not cards: a quiet rule over the
+        // placeholder body.
+        let section_shell = |body: AnyElement| {
+            div()
+                .w_full()
+                .flex_none()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .w_full()
+                        .pb(theme.space(12.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .child(bar(120., 12.))
+                        .child(bar(220., 10.)),
+                )
+                .child(div().pt(theme.space(12.)).child(body))
+                .into_any_element()
+        };
+
+        let heading = |title_w: f32, desc_w: f32| {
+            div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(bar(title_w, 10.))
+                .child(bar(desc_w, 10.))
+                .into_any_element()
+        };
+
+        let body = match self.usage_mode() {
+            UsageMode::Simple => div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap(theme.space(20.))
+                .child(heading(72., 280.))
+                .child(shell(grid.into_any_element()))
+                .child(section_shell(activity.into_any_element())),
+            UsageMode::Details => div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap(theme.space(20.))
+                .child(heading(64., 320.))
+                .child(section_shell(
+                    div()
+                        .p(px(14.))
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .gap(px(12.))
+                        .child(bar(220., 26.))
+                        .child(div().h(px(96.)).w_full().rounded(px(8.)).bg(theme.trough))
+                        .into_any_element(),
+                ))
+                .child(section_shell(records.into_any_element())),
+        };
+
+        body.into_any_element()
     }
 
     /// The store has no usage at all (§43).
     fn empty_store_state(&self, theme: Theme, unreadable: usize) -> AnyElement {
         let note = (unreadable > 0).then(|| {
-            format!(
-                "{} session files could not be read.",
-                format::count(unreadable as u64)
+            tr!(
+                "usage.unreadable_files_period",
+                count = format::count(unreadable as u64)
             )
         });
         let mut state = self.message_state(
             theme,
             "icons/usage-total.svg",
-            "No usage data yet",
-            &format!(
-                "Once you run the agent, its model, token, session and workspace activity appears here — {} is empty.",
-                self.store_hint()
-            ),
+            &tr!("usage.no_data_yet"),
+            &tr!("usage.no_data_hint", store = self.store_hint()),
             None,
         );
         if let Some(note) = note {
@@ -825,7 +1038,7 @@ impl UsagePage {
     fn store_hint(&self) -> String {
         self.store_path()
             .map(|path| format::short_path(&path))
-            .unwrap_or_else(|| "the session store".to_string())
+            .unwrap_or_else(|| tr!("usage.the_session_store"))
     }
 
     /// A centered message with an optional action.
@@ -857,7 +1070,8 @@ impl UsagePage {
             )
             .child(
                 div()
-                    .text_size(theme.ui_px(14.))
+                    .text_size(theme.ui_px(15.))
+                    .line_height(theme.ui_px(20.))
                     .font_weight(FontWeight::MEDIUM)
                     .child(title.to_string()),
             )
@@ -877,7 +1091,7 @@ impl UsagePage {
 
     /// The Summary card: the metric grid first, as full-bleed cells divided by
     /// hairlines (a measurement board, not a grid of floating cards), then the
-    /// quieter secondary figures behind a disclosure.
+    /// quieter secondary figures on the strip beneath.
     ///
     /// The grid is built as explicit rows of `flex_1` cells rather than one
     /// wrapping container of percentage-width cells: percentage widths inside a
@@ -899,7 +1113,6 @@ impl UsagePage {
                 let entity = cx.entity();
                 let tint = match cell.tone {
                     CellTone::Normal => theme.text,
-                    CellTone::Alert => theme.crit,
                     CellTone::Muted => theme.text_3,
                 };
                 let mut element = div()
@@ -942,14 +1155,10 @@ impl UsagePage {
                             .text_color(theme.text_3)
                             .child(cell.sub.clone()),
                     );
-                if let Some(click) = cell.click {
+                if let Some(metric) = cell.click {
                     element = element.on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                        entity.update(cx, |page, cx| match click {
-                            // Drill-down: jump to the failed requests, or point
-                            // the main chart at the metric the card names (§79).
-                            KpiClick::ErrorsOnly => page.set_errors_only(true, cx),
-                            KpiClick::Metric(metric) => page.set_metric(metric, cx),
-                        });
+                        // Point the main chart at the metric the card names (§79).
+                        entity.update(cx, |page, cx| page.set_metric(metric, cx));
                     });
                 }
                 row = row.child(element);
@@ -975,7 +1184,8 @@ impl UsagePage {
 
         card(
             "usage-summary",
-            "Summary",
+            &tr!("usage.summary"),
+            Some(&tr!("usage.summary_hint")),
             Some(summary_meta(snapshot)),
             None,
             body.into_any_element(),
@@ -990,136 +1200,83 @@ impl UsagePage {
         let totals = &snapshot.summary.totals;
         let mut cells = Vec::new();
         cells.push(KpiCell {
-            label: "Requests".into(),
+            label: tr!("usage.metric_requests"),
             value: format::count(totals.requests),
-            sub: delta_sub(snapshot, ChartMetric::Requests, "model requests in range"),
+            sub: delta_sub(
+                snapshot,
+                ChartMetric::Requests,
+                &tr!("usage.sub_requests_in_range"),
+            ),
             tone: CellTone::Normal,
-            click: Some(KpiClick::Metric(ChartMetric::Requests)),
+            click: Some(ChartMetric::Requests),
         });
         cells.push(KpiCell {
-            label: "Total tokens".into(),
+            label: tr!("usage.metric_total_tokens"),
             value: format::compact(totals.tokens.total),
             sub: match totals.tokens_per_request() {
-                Some(avg) => format!("{} avg/request", format::compact(avg as u64)),
-                None => "no requests".into(),
+                Some(avg) => tr!(
+                    "usage.sub_avg_per_request",
+                    value = format::compact(avg as u64)
+                ),
+                None => tr!("usage.sub_no_requests"),
             },
             tone: CellTone::Normal,
-            click: Some(KpiClick::Metric(ChartMetric::Tokens)),
-        });
-        cells.push(KpiCell {
-            label: "Input tokens".into(),
-            value: format::compact(totals.tokens.input),
-            sub: share_sub(totals.tokens.input, totals.tokens.total),
-            tone: CellTone::Normal,
-            click: Some(KpiClick::Metric(ChartMetric::Input)),
-        });
-        cells.push(KpiCell {
-            label: "Output tokens".into(),
-            value: format::compact(totals.tokens.output),
-            sub: match totals.reasoning_reported {
-                0 => share_sub(totals.tokens.output, totals.tokens.total),
-                _ => format!("{} reasoning", format::compact(totals.reasoning)),
-            },
-            tone: CellTone::Normal,
-            click: Some(KpiClick::Metric(ChartMetric::Output)),
+            click: Some(ChartMetric::Tokens),
         });
         cells.push(match snapshot.cache.hit_rate {
             Some(rate) => KpiCell {
-                label: "Cache hit rate".into(),
+                label: tr!("usage.metric_cache_hit_rate"),
                 value: format::percent(rate),
-                sub: format!(
-                    "{} read · {} written",
-                    format::compact(snapshot.cache.cache_read),
-                    format::compact(snapshot.cache.cache_write)
+                sub: tr!(
+                    "usage.sub_read_written",
+                    read = format::compact(snapshot.cache.cache_read),
+                    written = format::compact(snapshot.cache.cache_write)
                 ),
                 tone: CellTone::Normal,
                 // Focus the cache analytics: plot cache volume over time.
-                click: Some(KpiClick::Metric(ChartMetric::Cache)),
+                click: Some(ChartMetric::Cache),
             },
             None => KpiCell {
-                label: "Cache hit rate".into(),
-                value: "Unavailable".into(),
-                sub: "no cache tokens reported".into(),
+                label: tr!("usage.metric_cache_hit_rate"),
+                value: tr!("usage.unavailable"),
+                sub: tr!("usage.sub_no_cache_tokens"),
                 tone: CellTone::Muted,
                 click: None,
             },
         });
         cells.push(match totals.avg_duration_ms() {
             Some(avg) => KpiCell {
-                label: "Avg response".into(),
+                label: tr!("usage.metric_avg_response"),
                 value: format::duration_ms(avg),
                 sub: if snapshot.latency.has_percentiles() {
-                    format!(
-                        "p95 {} · {} measured",
-                        format::duration_ms(snapshot.latency.p95_ms as f64),
-                        format::count(snapshot.latency.samples)
+                    tr!(
+                        "usage.sub_p95_measured",
+                        p95 = format::duration_ms(snapshot.latency.p95_ms as f64),
+                        count = format::count(snapshot.latency.samples)
                     )
                 } else {
-                    format!("{} measured", format::count(snapshot.latency.samples))
+                    tr!(
+                        "usage.sub_measured",
+                        count = format::count(snapshot.latency.samples)
+                    )
                 },
                 tone: CellTone::Normal,
-                click: Some(KpiClick::Metric(ChartMetric::Latency)),
+                click: Some(ChartMetric::Latency),
             },
             None => KpiCell {
-                label: "Avg response".into(),
-                value: "Unavailable".into(),
-                sub: "no measurable request gaps".into(),
+                label: tr!("usage.metric_avg_response"),
+                value: tr!("usage.unavailable"),
+                sub: tr!("usage.sub_no_request_gaps"),
                 tone: CellTone::Muted,
                 click: None,
             },
-        });
-        cells.push(KpiCell {
-            label: "Failed requests".into(),
-            value: format::exact(totals.errors),
-            sub: match totals.error_rate() {
-                Some(_) if totals.errors == 0 => "none in this period".into(),
-                Some(rate) => format!(
-                    "{} of requests · {} stopped",
-                    format::percent(rate),
-                    format::count(totals.aborted)
-                ),
-                None => "no requests".into(),
-            },
-            tone: if totals.errors > 0 {
-                CellTone::Alert
-            } else {
-                CellTone::Normal
-            },
-            click: (totals.errors > 0).then_some(KpiClick::ErrorsOnly),
-        });
-        let coverage = totals.cost_coverage();
-        cells.push(KpiCell {
-            label: "Cost".into(),
-            value: if coverage == 0.0 {
-                "Unavailable".into()
-            } else {
-                format::cost(totals.cost_usd)
-            },
-            sub: if coverage == 0.0 {
-                "no pricing for these models".into()
-            } else if coverage < 0.999 {
-                format!("{} of requests priced", format::percent(coverage * 100.0))
-            } else {
-                match totals.cost_per_request() {
-                    Some(per) => format!("{} per request", format::cost(per)),
-                    None => "priced requests only".into(),
-                }
-            },
-            tone: if coverage == 0.0 {
-                CellTone::Muted
-            } else {
-                CellTone::Normal
-            },
-            click: (coverage > 0.0).then_some(KpiClick::Metric(ChartMetric::Cost)),
         });
         cells
     }
 
     /// Secondary readout under the board: the metrics that inform the headline
-    /// numbers but should not compete with them (§88/§101).
-    ///
-    /// The headline items stay visible; the long tail is behind a disclosure so
-    /// the default view stays quiet. Nothing is dropped — it is one click away.
+    /// numbers but should not compete with them (§88/§101). Every figure stays
+    /// on the strip — nothing is behind a disclosure.
     fn summary_strip(
         &self,
         snapshot: &UsageSnapshot,
@@ -1128,36 +1285,65 @@ impl UsagePage {
     ) -> AnyElement {
         let totals = &snapshot.summary.totals;
         let headline: Vec<(String, String)> = vec![
-            ("Turns".into(), format::count(snapshot.summary.turns)),
-            ("Sessions".into(), format::count(snapshot.summary.sessions)),
             (
-                "Tool calls".into(),
-                format::count(snapshot.summary.tool_runs),
+                tr!("usage.stat_input_tokens"),
+                format::compact(totals.tokens.input),
             ),
-            ("Models".into(), format::count(snapshot.summary.models)),
             (
-                "Workspaces".into(),
-                format::count(snapshot.summary.workspaces),
+                tr!("usage.stat_output_tokens"),
+                format::compact(totals.tokens.output),
+            ),
+            (
+                tr!("usage.stat_cost"),
+                match (totals.cost_coverage(), totals.cost_per_request()) {
+                    (0.0, _) => tr!("usage.unavailable"),
+                    (_, Some(per)) => tr!(
+                        "usage.stat_cost_per_req",
+                        cost = format::cost(totals.cost_usd),
+                        per = format::cost(per)
+                    ),
+                    (_, None) => format::cost(totals.cost_usd),
+                },
+            ),
+            (
+                tr!("usage.stat_failed"),
+                if totals.errors > 0 {
+                    format::exact(totals.errors)
+                } else {
+                    tr!("usage.none")
+                },
+            ),
+            (
+                tr!("usage.stat_sessions"),
+                format::count(snapshot.summary.sessions),
+            ),
+            (
+                tr!("usage.stat_turns"),
+                format::count(snapshot.summary.turns),
+            ),
+            (
+                tr!("usage.stat_tool_calls"),
+                format::count(snapshot.summary.tool_runs),
             ),
         ];
         let mut extra: Vec<(String, String)> = vec![(
-            "Bash commands".into(),
+            tr!("usage.stat_bash_commands"),
             format::count(snapshot.summary.bash_runs),
         )];
         if snapshot.summary.tool_errors > 0 {
             extra.push((
-                "Tool failures".into(),
+                tr!("usage.stat_tool_failures"),
                 format::count(snapshot.summary.tool_errors),
             ));
         }
         if totals.duration_samples > 0 {
             extra.push((
-                "Generation time".into(),
+                tr!("usage.stat_generation_time"),
                 format::span_ms(totals.duration_ms as i64),
             ));
         }
         if let Some(avg) = totals.avg_prompt() {
-            extra.push(("Avg prompt".into(), format::compact(avg as u64)));
+            extra.push((tr!("usage.stat_avg_prompt"), format::compact(avg as u64)));
         }
         if let Some(ratio) = totals.output_input_ratio() {
             // Three decimals: output is routinely a fraction of a percent of
@@ -1167,51 +1353,51 @@ impl UsagePage {
             } else {
                 format!("{ratio:.3}×")
             };
-            extra.push(("Output / input".into(), text));
+            extra.push((tr!("usage.stat_output_input"), text));
         }
         if let Some(per_mtok) = totals.cost_per_mtok() {
-            extra.push(("Cost / M tokens".into(), format::cost(per_mtok)));
+            extra.push((tr!("usage.stat_cost_per_mtok"), format::cost(per_mtok)));
         }
         if totals.peak_prompt > 0 {
-            extra.push(("Peak prompt".into(), format::compact(totals.peak_prompt)));
+            extra.push((
+                tr!("usage.stat_peak_prompt"),
+                format::compact(totals.peak_prompt),
+            ));
         }
         if totals.reasoning_reported > 0 {
             extra.push((
-                "Reasoning".into(),
-                format!("{} of output", format::compact(totals.reasoning)),
+                tr!("usage.stat_reasoning"),
+                tr!(
+                    "usage.stat_reasoning_of_output",
+                    value = format::compact(totals.reasoning)
+                ),
             ));
         }
 
-        let open = self.is_summary_open();
-        let entity = cx.entity();
-        let toggle = filters::text_button(
-            "usage-summary-toggle",
-            if open {
-                "Fewer metrics"
-            } else {
-                "More metrics"
-            },
-            if open {
-                Some("icons/chevron-up.svg")
-            } else {
-                Some("icons/chevron-down.svg")
-            },
-            true,
-            theme,
-            move |_, _, cx| {
-                entity.update(cx, |page, cx| page.toggle_summary(cx));
-            },
-        );
-
         let mut values: Vec<AnyElement> = headline
             .into_iter()
+            .chain(extra)
             .map(|(label, value)| summary_stat(label, value, theme))
             .collect();
-        if open {
-            values.extend(
-                extra
-                    .into_iter()
-                    .map(|(label, value)| summary_stat(label, value, theme)),
+
+        // Keep the failed-request drill-down available even though Errors is no
+        // longer a headline cell.
+        if totals.errors > 0 {
+            let fail_entity = cx.entity();
+            values.push(
+                div()
+                    .id("usage-summary-failures")
+                    .flex()
+                    .items_center()
+                    .cursor_pointer()
+                    .text_size(theme.ui_px(11.5))
+                    .text_color(theme.crit)
+                    .hover(|style| style.text_color(theme.text))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        fail_entity.update(cx, |page, cx| page.set_errors_only(true, cx));
+                    })
+                    .child(tr!("view.view_failures"))
+                    .into_any_element(),
             );
         }
 
@@ -1230,56 +1416,47 @@ impl UsagePage {
                     .gap_y(px(6.))
                     .children(values),
             )
-            .child(toggle)
             .into_any_element()
     }
 
-    /// Derived findings, one line each. Their own card so a warning cannot be
-    /// mistaken for a metric.
-    fn signals_card(&self, insights: &[Insight], theme: Theme) -> AnyElement {
-        card(
-            "usage-signals",
-            "Signals",
-            Some("derived from this range".into()),
-            None,
-            div()
-                .p(px(14.))
-                .flex()
-                .flex_col()
-                .gap(px(7.))
-                .children(insights.iter().map(|insight| {
-                    let (path, color) = match insight.tone {
-                        Tone::Positive => ("icons/check.svg", theme.ok_green),
-                        Tone::Warning => ("icons/info.svg", theme.warn),
-                        Tone::Neutral => ("icons/spark.svg", theme.text_3),
-                    };
-                    div()
-                        .flex()
-                        .items_start()
-                        .gap(px(8.))
-                        .text_size(theme.ui_px(12.))
-                        .child(div().pt(px(1.)).child(icon(path, 12., color)))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_color(theme.text_2)
-                                .child(insight.text.clone()),
-                        )
-                        .into_any_element()
-                }))
-                .into_any_element(),
-            theme,
-            false,
-        )
+    /// Derived findings, one line each. The card title carries the heading, so
+    /// this is only the list.
+    fn signals_body(&self, insights: &[Insight], theme: Theme) -> AnyElement {
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .children(insights.iter().map(|insight| {
+                let (path, color) = match insight.tone {
+                    Tone::Positive => ("icons/check.svg", theme.ok_green),
+                    Tone::Warning => ("icons/info.svg", theme.warn),
+                    Tone::Neutral => ("icons/spark.svg", theme.text_3),
+                };
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(8.))
+                    .text_size(theme.ui_px(12.))
+                    .child(div().pt(px(1.)).child(icon(path, 12., color)))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_color(theme.text_2)
+                            .child(insight.text.clone()),
+                    )
+                    .into_any_element()
+            }))
+            .into_any_element()
     }
 
     // ── trend ──────────────────────────────────────────────────────────────
 
-    /// The Trend card: one area chart across several measures. The metric
-    /// switcher lives in the card header; the chart is the card's whole body,
-    /// because the trend is this page's primary read.
-    fn trend_card(
+    /// The trend: one area chart across several measures, with the metric
+    /// switcher and the chart's data table in its own body. The Usage over
+    /// time card supplies the frame.
+    fn trend_body(
         &self,
         snapshot: &UsageSnapshot,
         theme: Theme,
@@ -1287,21 +1464,6 @@ impl UsagePage {
     ) -> AnyElement {
         let metric = self.metric();
         let latency_metric = self.latency_metric();
-        let by = snapshot.series.granularity.label();
-        let meta = match metric {
-            ChartMetric::Cost => format!(
-                "{} total · by {by}",
-                format::cost(metric.total(&snapshot.summary.totals))
-            ),
-            ChartMetric::Latency => format!(
-                "{} per bucket · by {by}",
-                latency_metric.label().to_lowercase()
-            ),
-            _ => format!(
-                "{} total · by {by}",
-                format::compact(metric.total(&snapshot.summary.totals) as u64)
-            ),
-        };
 
         // Metric switcher: one visualization, several measures (§19). A metric
         // with no source data stays visible but disabled, and the line under
@@ -1319,7 +1481,7 @@ impl UsagePage {
         for option in ChartMetric::ALL {
             let available = option.available(&snapshot.summary);
             if !available {
-                unavailable.push(option.label());
+                unavailable.push(option.as_str());
             }
             let active = option == metric;
             let entity = cx.entity();
@@ -1336,8 +1498,8 @@ impl UsagePage {
                     .items_center()
                     .text_size(theme.ui_px(11.5))
                     .when(active, |tab| {
-                        tab.bg(theme.bg_raised)
-                            .text_color(theme.text)
+                        tab.bg(theme.active)
+                            .text_color(theme.active_fg)
                             .font_weight(FontWeight::MEDIUM)
                     })
                     .when(!active, |tab| {
@@ -1387,8 +1549,8 @@ impl UsagePage {
                         .items_center()
                         .text_size(theme.ui_px(11.5))
                         .when(active, |tab| {
-                            tab.bg(theme.bg_raised)
-                                .text_color(theme.text)
+                            tab.bg(theme.active)
+                                .text_color(theme.active_fg)
                                 .font_weight(FontWeight::MEDIUM)
                         })
                         .when(!active, |tab| tab.text_color(theme.text_3))
@@ -1405,23 +1567,6 @@ impl UsagePage {
             }
             segment.into_any_element()
         });
-
-        // "View data" (§52): the same series as a precise table, so the chart's
-        // values are always available without hover.
-        let data_open = self.is_chart_data_open();
-        let view_data = filters::text_button(
-            "usage-view-data",
-            if data_open { "Hide data" } else { "View data" },
-            None,
-            true,
-            theme,
-            {
-                let entity = cx.entity();
-                move |_, _, cx| {
-                    entity.update(cx, |page, cx| page.toggle_chart_data(cx));
-                }
-            },
-        );
 
         // The metric switcher sits in the body, above the plot: a row of
         // selectors under a heading reads as controls, and no eight-way
@@ -1477,7 +1622,6 @@ impl UsagePage {
         };
 
         let mut content = div()
-            .p(px(14.))
             .w_full()
             .flex()
             .flex_col()
@@ -1494,9 +1638,7 @@ impl UsagePage {
                 on_hover,
                 on_select,
             ));
-        if data_open {
-            content = content.child(self.chart_data_table(snapshot, metric, latency_metric, theme));
-        }
+        content = content.child(self.chart_data_table(snapshot, metric, latency_metric, theme, cx));
         if snapshot.latency.samples > 0 {
             content = content.child(self.latency_line(snapshot, theme));
         }
@@ -1510,118 +1652,549 @@ impl UsagePage {
             );
         }
 
-        card(
-            "usage-trend",
-            "Usage over time",
-            Some(meta),
-            Some(view_data),
-            content.into_any_element(),
-            theme,
-            false,
-        )
+        content.into_any_element()
     }
 
-    /// The chart's data as a compact, precise table (§52).
+    // ── daily activity (calendar heatmap) ──────────────────────────────────
+
+    /// The daily activity calendar: one cell per day, shaded by the active
+    /// metric. A second reading of the same activity — the trend shows the shape
+    /// across adaptive buckets, the calendar shows the day-of-week rhythm, the
+    /// streaks, and the quiet stretches at a glance. It is always a trailing
+    /// year (like a contribution graph), so it stays readable whatever the date
+    /// range is; the workspace / model / provider scope still applies to every
+    /// cell. Clicking a day scopes the whole page to it.
+    fn heatmap_body(
+        &self,
+        snapshot: &UsageSnapshot,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let metric = self.metric();
+        let calendar = &snapshot.calendar;
+
+        let hover = self.hover_day();
+        // The day the page is scoped to, when the range sits inside one day (a
+        // calendar click, or the Today preset). The calendar does not read the
+        // range for its window, so this is only the selection ring.
+        let range = &self.filter().range;
+        let selected = calendar.days.iter().position(|day| {
+            day.in_range
+                && range.start_ms >= day.start_ms
+                && range.end_ms > range.start_ms
+                && range.end_ms <= next_bucket(day.start_ms, Granularity::Day)
+        });
+
+        // Pre-compute each in-range day's start so the click handler (which
+        // must be `'static`) can scope the page without touching the snapshot.
+        let day_starts: Vec<Option<i64>> = calendar
+            .days
+            .iter()
+            .map(|day| day.in_range.then_some(day.start_ms))
+            .collect();
+
+        let entity = cx.entity();
+        let on_hover = move |day: Option<usize>, _: &mut Window, cx: &mut App| {
+            entity.update(cx, |page, cx| page.set_hover_day(day, cx));
+        };
+        let select_entity = cx.entity();
+        let on_select = move |ix: usize, _: &mut Window, cx: &mut App| {
+            let Some(Some(day_ms)) = day_starts.get(ix).copied() else {
+                return;
+            };
+            select_entity.update(cx, |page, cx| page.scope_to_day(day_ms, cx));
+        };
+
+        // Empty-day cells paint `bg_main`; on the raised section card they
+        // recess without a second frame. Nested cards are forbidden.
+        let width = self.table_width().max(240.);
+        heatmap::calendar(
+            "usage-calendar",
+            calendar,
+            metric,
+            hover,
+            selected,
+            theme,
+            width,
+            on_hover,
+            on_select,
+        )
+        .into_any_element()
+    }
+
+    /// The chart's data as the same framed table as Sessions: search, column
+    /// picker, sortable headers, totals, and pagination. Click a bucket to
+    /// focus the page.
     fn chart_data_table(
         &self,
         snapshot: &UsageSnapshot,
         metric: ChartMetric,
         latency_metric: LatencyMetric,
         theme: Theme,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mut body = div()
-            .id("usage-chart-data-body")
-            .flex()
-            .flex_col()
-            .max_h(px(240.))
-            .overflow_y_scroll();
-        let header = |label: &str, right: bool| {
-            div()
-                .when(right, |cell| cell.text_align(gpui::TextAlign::Right))
-                .text_size(theme.ui_px(10.5))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_3)
-                .child(label.to_uppercase())
-                .into_any_element()
-        };
-        body = body.child(
-            div()
+        let result = self.series_result(snapshot, cx);
+        let (columns, keys) = self.series_columns(metric);
+        let total_w: f32 = columns.iter().map(|column| column.width).sum();
+        let granularity = snapshot.series.granularity;
+        let selected = self.filter().focus.map(|focus| focus.start_ms);
+        let entity = cx.entity();
+        let mut rows = Vec::with_capacity(result.rows.len());
+        for (ix, point) in result.rows.iter().enumerate() {
+            let last = ix + 1 == result.rows.len();
+            let start_ms = point.start_ms;
+            let focus = TimeFocus {
+                start_ms,
+                end_ms: next_bucket(start_ms, granularity),
+                granularity,
+            };
+            let mut line = div()
+                .id(SharedString::from(format!("usage-series-row-{start_ms}")))
+                .h(px(ROW_H))
                 .w_full()
-                .px(px(4.))
-                .py(px(4.))
-                .border_b_1()
-                .border_color(theme.border)
+                .min_w(px(total_w))
                 .flex()
                 .items_center()
-                .gap(px(12.))
-                .child(div().flex_1().min_w_0().child(header("Time", false)))
-                .child(
-                    div()
-                        .w(px(90.))
-                        .flex_none()
-                        .child(header(metric.label(), true)),
-                )
-                .child(div().w(px(72.)).flex_none().child(header("Requests", true)))
-                .child(div().w(px(80.)).flex_none().child(header("Tokens", true))),
-        );
-        for point in &snapshot.series.points {
-            let row = |value: String, width: f32, color: Hsla, numeric: bool| {
-                div()
-                    .w(px(width))
-                    .flex_none()
-                    .when(numeric, |cell| cell.text_align(gpui::TextAlign::Right))
-                    .font(num_font())
-                    .text_size(theme.ui_px(11.))
-                    .text_color(color)
-                    .child(value)
-                    .into_any_element()
-            };
-            body = body.child(
-                div()
-                    .w_full()
-                    .px(px(4.))
-                    .py(px(3.))
-                    .flex()
-                    .items_center()
-                    .gap(px(12.))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(theme.ui_px(11.))
-                            .text_color(theme.text_2)
-                            .child(point.stamp.clone()),
-                    )
-                    .child(row(
+                .when(!last, |row| row.border_b_1().border_color(theme.border))
+                .when(selected == Some(start_ms), |row| row.bg(theme.active))
+                .cursor_pointer()
+                .hover(|style| style.bg(theme.bg_hover))
+                .on_mouse_down(MouseButton::Left, {
+                    let entity = entity.clone();
+                    move |_, _, cx| {
+                        entity.update(cx, |page, cx| {
+                            let next = if page.filter().focus == Some(focus) {
+                                None
+                            } else {
+                                Some(focus)
+                            };
+                            page.set_focus(next, cx);
+                        });
+                    }
+                });
+            for (col_ix, column) in columns.iter().enumerate() {
+                let key = keys.get(col_ix).copied().unwrap_or(SeriesSort::Time);
+                let (text, color) = match key {
+                    SeriesSort::Time => (point.stamp.clone(), theme.text_2),
+                    SeriesSort::Value => (
                         chart::format_point(metric, latency_metric, point),
-                        90.,
                         theme.text,
-                        true,
-                    ))
-                    .child(row(
-                        format::exact(point.totals.requests),
-                        72.,
-                        theme.text_3,
-                        true,
-                    ))
-                    .child(row(
-                        format::compact(point.totals.tokens.total),
-                        80.,
-                        theme.text_3,
-                        true,
-                    )),
-            );
+                    ),
+                    SeriesSort::Requests => (format::exact(point.totals.requests), theme.text_3),
+                    SeriesSort::Tokens => {
+                        (format::compact(point.totals.tokens.total), theme.text_3)
+                    }
+                };
+                line = line.child(text_cell(column, text, color, theme));
+            }
+            rows.push(line.into_any_element());
         }
-        // A hairline-separated readout under the plot, not a card inside a
-        // card: the chart's values are the card's own detail.
+
+        let visible = if result.rows.is_empty() {
+            3
+        } else {
+            result.rows.len()
+        } as f32;
+        let height = HEADER_H + ROW_H * visible;
+        let table = self.table_element(
+            TableKind::Series,
+            "usage-series-table",
+            columns,
+            rows,
+            height,
+            empty_cell(&tr!("usage.no_buckets_match_search"), theme),
+            theme,
+            Rc::new(
+                move |page, ix, sort, cx| match (keys.get(ix).copied(), sort) {
+                    (Some(key), SortState::Ascending) => page.set_series_sort(key, false, cx),
+                    (Some(key), SortState::Descending) => page.set_series_sort(key, true, cx),
+                    _ => page.set_series_sort(SeriesSort::Time, false, cx),
+                },
+            ),
+            cx,
+        );
+        let toolbar = table_toolbar(
+            search_box(self.series_search(), theme),
+            self.series_columns_control(theme, cx),
+            theme,
+        );
+
         div()
             .w_full()
-            .pt(px(8.))
-            .border_t_1()
-            .border_color(theme.border)
-            .child(body)
+            .flex()
+            .flex_col()
+            .gap(theme.space(12.))
+            .child(toolbar)
+            .child(table)
+            .child(self.series_totals(snapshot, &result, theme))
+            .child(self.series_pagination_footer(&result, theme, cx))
             .into_any_element()
+    }
+
+    /// Column-visibility control for the usage-over-time table. Time is fixed.
+    fn series_columns_control(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let open = self.menu() == Some(MenuKind::SeriesColumns);
+        let entity = cx.entity();
+        let chip = filters::chip(
+            "usage-series-columns-chip",
+            tr!("usage.columns"),
+            None,
+            !self.series_hidden_columns().is_empty(),
+            true,
+            theme,
+            move |_, window, cx| {
+                entity.update(cx, |page, cx| {
+                    page.toggle_menu(MenuKind::SeriesColumns, window, cx)
+                });
+            },
+        );
+        if !open {
+            return filters::chip_with_menu(
+                "usage-series-columns-anchor",
+                chip,
+                false,
+                Corner::TopRight,
+                || div().into_any_element(),
+            );
+        }
+        let panel = filters::series_columns_menu(self, cx, theme);
+        filters::chip_with_menu(
+            "usage-series-columns-anchor",
+            chip,
+            true,
+            Corner::TopRight,
+            move || panel,
+        )
+    }
+
+    /// Totals under the usage-over-time table: the whole filtered set on the
+    /// left, the visible page on the right.
+    fn series_totals(
+        &self,
+        snapshot: &UsageSnapshot,
+        result: &SeriesQueryResult,
+        theme: Theme,
+    ) -> AnyElement {
+        let totals = &snapshot.summary.totals;
+        let page_requests: u64 = result.rows.iter().map(|row| row.totals.requests).sum();
+        let page_tokens: u64 = result.rows.iter().map(|row| row.totals.tokens.total).sum();
+        let mut filtered = tr!(
+            "usage.filtered_totals_requests",
+            requests = format::count(totals.requests),
+            tokens = format::compact(totals.tokens.total)
+        );
+        if totals.cost_coverage() > 0.0 {
+            filtered.push_str(&format!(" · {}", format::cost(totals.cost_usd)));
+        }
+        let page = tr!(
+            "usage.page_requests",
+            requests = format::count(page_requests),
+            tokens = format::compact(page_tokens)
+        );
+        totals_row(&filtered, &page, theme)
+    }
+
+    /// Range, rows-per-page, and Previous / Next — the same footer as Sessions.
+    fn series_pagination_footer(
+        &self,
+        result: &SeriesQueryResult,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let pages = result.page_count();
+        let current = result.page;
+        let summary = if result.total == 0 {
+            tr!("usage.no_buckets_match").to_string()
+        } else {
+            tr!(
+                "usage.showing_range",
+                first = format::count(result.first_row() as u64),
+                last = format::count(result.last_row() as u64),
+                total = format::count(result.total as u64)
+            )
+        };
+
+        let size_open = self.menu() == Some(MenuKind::SeriesPageSize);
+        let entity = cx.entity();
+        let size_chip = filters::chip(
+            "usage-series-page-size-chip",
+            result.page_size.to_string(),
+            None,
+            false,
+            true,
+            theme,
+            move |_, window, cx| {
+                entity.update(cx, |page, cx| {
+                    page.toggle_menu(MenuKind::SeriesPageSize, window, cx)
+                });
+            },
+        );
+        let size_panel = size_open.then(|| filters::series_page_size_menu(self, cx, theme));
+        let size_control = filters::chip_with_menu(
+            "usage-series-page-size-anchor",
+            size_chip,
+            size_open,
+            Corner::TopRight,
+            move || size_panel.unwrap_or_else(|| div().into_any_element()),
+        );
+
+        let prev =
+            filters::outline_button("usage-series-page-prev", "Previous", current > 1, theme, {
+                let entity = cx.entity();
+                move |_, _, cx| {
+                    entity.update(cx, |page, cx| {
+                        page.set_series_page(current.saturating_sub(1), cx)
+                    });
+                }
+            });
+        let next =
+            filters::outline_button("usage-series-page-next", "Next", current < pages, theme, {
+                let entity = cx.entity();
+                move |_, _, cx| {
+                    entity.update(cx, |page, cx| page.set_series_page(current + 1, cx));
+                }
+            });
+
+        table_pager(summary, size_control, prev, next, current, pages, theme)
+    }
+
+    fn bucket_columns_control(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let open = self.menu() == Some(MenuKind::BucketColumns);
+        let entity = cx.entity();
+        let chip = filters::chip(
+            "usage-bucket-columns-chip",
+            tr!("usage.columns"),
+            None,
+            !self.bucket_hidden_columns().is_empty(),
+            true,
+            theme,
+            move |_, window, cx| {
+                entity.update(cx, |page, cx| {
+                    page.toggle_menu(MenuKind::BucketColumns, window, cx)
+                });
+            },
+        );
+        if !open {
+            return filters::chip_with_menu(
+                "usage-bucket-columns-anchor",
+                chip,
+                false,
+                Corner::TopRight,
+                || div().into_any_element(),
+            );
+        }
+        let panel = filters::bucket_columns_menu(self, cx, theme);
+        filters::chip_with_menu(
+            "usage-bucket-columns-anchor",
+            chip,
+            true,
+            Corner::TopRight,
+            move || panel,
+        )
+    }
+
+    fn bucket_totals(&self, result: &BucketQueryResult, theme: Theme) -> AnyElement {
+        let page_requests: u64 = result.rows.iter().map(|row| row.totals.requests).sum();
+        let page_tokens: u64 = result.rows.iter().map(|row| row.totals.tokens.total).sum();
+        let mut filtered = tr!(
+            "usage.filtered_totals_requests",
+            requests = format::count(result.totals.requests),
+            tokens = format::compact(result.totals.tokens.total)
+        );
+        if result.totals.cost_coverage() > 0.0 {
+            filtered.push_str(&format!(" · {}", format::cost(result.totals.cost_usd)));
+        }
+        let page = tr!(
+            "usage.page_requests",
+            requests = format::count(page_requests),
+            tokens = format::compact(page_tokens)
+        );
+        totals_row(&filtered, &page, theme)
+    }
+
+    fn bucket_pagination_footer(
+        &self,
+        result: &BucketQueryResult,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let pages = result.page_count();
+        let current = result.page;
+        let summary = if result.total == 0 {
+            tr!("usage.no_buckets_match").to_string()
+        } else {
+            tr!(
+                "usage.showing_range",
+                first = format::count(result.first_row() as u64),
+                last = format::count(result.last_row() as u64),
+                total = format::count(result.total as u64)
+            )
+        };
+        let size_open = self.menu() == Some(MenuKind::BucketPageSize);
+        let entity = cx.entity();
+        let size_chip = filters::chip(
+            "usage-bucket-page-size-chip",
+            result.page_size.to_string(),
+            None,
+            false,
+            true,
+            theme,
+            move |_, window, cx| {
+                entity.update(cx, |page, cx| {
+                    page.toggle_menu(MenuKind::BucketPageSize, window, cx)
+                });
+            },
+        );
+        let size_panel = size_open.then(|| filters::bucket_page_size_menu(self, cx, theme));
+        let size_control = filters::chip_with_menu(
+            "usage-bucket-page-size-anchor",
+            size_chip,
+            size_open,
+            Corner::TopRight,
+            move || size_panel.unwrap_or_else(|| div().into_any_element()),
+        );
+        let prev = filters::outline_button(
+            "usage-bucket-page-prev",
+            &tr!("usage.previous"),
+            current > 1,
+            theme,
+            {
+                let entity = cx.entity();
+                move |_, _, cx| {
+                    entity.update(cx, |page, cx| {
+                        page.set_bucket_page(current.saturating_sub(1), cx)
+                    });
+                }
+            },
+        );
+        let next = filters::outline_button(
+            "usage-bucket-page-next",
+            &tr!("usage.next"),
+            current < pages,
+            theme,
+            {
+                let entity = cx.entity();
+                move |_, _, cx| {
+                    entity.update(cx, |page, cx| page.set_bucket_page(current + 1, cx));
+                }
+            },
+        );
+        table_pager(summary, size_control, prev, next, current, pages, theme)
+    }
+
+    fn failure_columns_control(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let open = self.menu() == Some(MenuKind::FailureColumns);
+        let entity = cx.entity();
+        let chip = filters::chip(
+            "usage-failure-columns-chip",
+            tr!("usage.columns"),
+            None,
+            !self.failure_hidden_columns().is_empty(),
+            true,
+            theme,
+            move |_, window, cx| {
+                entity.update(cx, |page, cx| {
+                    page.toggle_menu(MenuKind::FailureColumns, window, cx)
+                });
+            },
+        );
+        if !open {
+            return filters::chip_with_menu(
+                "usage-failure-columns-anchor",
+                chip,
+                false,
+                Corner::TopRight,
+                || div().into_any_element(),
+            );
+        }
+        let panel = filters::failure_columns_menu(self, cx, theme);
+        filters::chip_with_menu(
+            "usage-failure-columns-anchor",
+            chip,
+            true,
+            Corner::TopRight,
+            move || panel,
+        )
+    }
+
+    fn failure_totals(&self, result: &FailureQueryResult, theme: Theme) -> AnyElement {
+        let page_n = result.rows.len();
+        let filtered = tr!(
+            "usage.filtered_totals_events",
+            events = format::count(result.total as u64)
+        );
+        let page = tr!("usage.page_events", events = format::count(page_n as u64));
+        totals_row(&filtered, &page, theme)
+    }
+
+    fn failure_pagination_footer(
+        &self,
+        result: &FailureQueryResult,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let pages = result.page_count();
+        let current = result.page;
+        let summary = if result.total == 0 {
+            tr!("usage.no_failures_match").to_string()
+        } else {
+            tr!(
+                "usage.showing_range",
+                first = format::count(result.first_row() as u64),
+                last = format::count(result.last_row() as u64),
+                total = format::count(result.total as u64)
+            )
+        };
+        let size_open = self.menu() == Some(MenuKind::FailurePageSize);
+        let entity = cx.entity();
+        let size_chip = filters::chip(
+            "usage-failure-page-size-chip",
+            result.page_size.to_string(),
+            None,
+            false,
+            true,
+            theme,
+            move |_, window, cx| {
+                entity.update(cx, |page, cx| {
+                    page.toggle_menu(MenuKind::FailurePageSize, window, cx)
+                });
+            },
+        );
+        let size_panel = size_open.then(|| filters::failure_page_size_menu(self, cx, theme));
+        let size_control = filters::chip_with_menu(
+            "usage-failure-page-size-anchor",
+            size_chip,
+            size_open,
+            Corner::TopRight,
+            move || size_panel.unwrap_or_else(|| div().into_any_element()),
+        );
+        let prev = filters::outline_button(
+            "usage-failure-page-prev",
+            &tr!("usage.previous"),
+            current > 1,
+            theme,
+            {
+                let entity = cx.entity();
+                move |_, _, cx| {
+                    entity.update(cx, |page, cx| {
+                        page.set_failure_page(current.saturating_sub(1), cx)
+                    });
+                }
+            },
+        );
+        let next = filters::outline_button(
+            "usage-failure-page-next",
+            &tr!("usage.next"),
+            current < pages,
+            theme,
+            {
+                let entity = cx.entity();
+                move |_, _, cx| {
+                    entity.update(cx, |page, cx| page.set_failure_page(current + 1, cx));
+                }
+            },
+        );
+        table_pager(summary, size_control, prev, next, current, pages, theme)
     }
 
     /// Response-time readout (§36): average, then percentiles once there are
@@ -1648,7 +2221,7 @@ impl UsagePage {
                 div()
                     .text_color(theme.text_3)
                     .font_weight(FontWeight::MEDIUM)
-                    .child("Response time"),
+                    .child(tr!("view.response_time")),
             )
             .children(items.into_iter().map(|(label, value)| {
                 div()
@@ -1664,12 +2237,12 @@ impl UsagePage {
                     .text_size(theme.ui_px(10.5))
                     .text_color(theme.text_3)
                     .child(if latency.has_percentiles() {
-                        format!("{} measured", format::count(latency.samples))
+                        tr!("usage.sub_measured", count = format::count(latency.samples))
                     } else {
-                        format!(
-                            "{} measured — percentiles need {}",
-                            format::count(latency.samples),
-                            LatencyStats::MIN_SAMPLES
+                        tr!(
+                            "usage.sub_measured_needs_min",
+                            count = format::count(latency.samples),
+                            min = LatencyStats::MIN_SAMPLES
                         )
                     }),
             )
@@ -1682,7 +2255,7 @@ impl UsagePage {
     /// chart over a sortable data table. The chart reads the aggregate's own
     /// token ranking; the table sorts independently, so an operator can rank by
     /// requests or cache without disturbing the overview.
-    fn breakdown_card(
+    fn breakdown_section(
         &self,
         snapshot: &UsageSnapshot,
         theme: Theme,
@@ -1772,36 +2345,28 @@ impl UsagePage {
         };
 
         let search = search_box(self.breakdown_search(), theme);
-        let toolbar = div()
-            .w_full()
-            .px(px(14.))
-            .pb(px(10.))
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .child(search)
-            .child(div().flex_1())
-            .child(self.breakdown_columns_control(theme, cx));
+        let toolbar = table_toolbar(search, self.breakdown_columns_control(theme, cx), theme);
 
         let body = div()
             .w_full()
             .flex()
             .flex_col()
-            .child(div().px(px(14.)).pt(px(14.)).pb(px(10.)).child(tabs))
+            .gap(theme.space(12.))
+            .child(tabs)
             .child(chart)
             .child(toolbar)
             .child(table)
             .child(totals)
             .child(footer);
 
-        card(
+        section(
             "usage-breakdowns",
-            "Breakdown",
+            &tr!("usage.breakdown"),
+            Some(&tr!("usage.breakdown_hint")),
             Some(meta),
             None,
             body.into_any_element(),
             theme,
-            false,
         )
     }
 
@@ -1811,8 +2376,8 @@ impl UsagePage {
         let entity = cx.entity();
         let chip = filters::chip(
             "usage-breakdown-columns-chip",
-            "Columns".to_string(),
-            Some("icons/panel-right.svg"),
+            tr!("usage.columns"),
+            None,
             !self.breakdown_hidden_columns().is_empty(),
             true,
             theme,
@@ -1845,18 +2410,18 @@ impl UsagePage {
     fn breakdown_totals(&self, result: &BreakdownQueryResult, theme: Theme) -> AnyElement {
         let page_requests: u64 = result.rows.iter().map(|row| row.totals.requests).sum();
         let page_tokens: u64 = result.rows.iter().map(|row| row.totals.tokens.total).sum();
-        let mut filtered = format!(
-            "Filtered totals: {} requests · {} tokens",
-            format::count(result.totals.requests),
-            format::compact(result.totals.tokens.total)
+        let mut filtered = tr!(
+            "usage.filtered_totals_requests",
+            requests = format::count(result.totals.requests),
+            tokens = format::compact(result.totals.tokens.total)
         );
         if result.totals.cost_coverage() > 0.0 {
             filtered.push_str(&format!(" · {}", format::cost(result.totals.cost_usd)));
         }
-        let page = format!(
-            "this page: {} requests · {} tokens",
-            format::count(page_requests),
-            format::compact(page_tokens)
+        let page = tr!(
+            "usage.page_requests",
+            requests = format::count(page_requests),
+            tokens = format::compact(page_tokens)
         );
         totals_row(&filtered, &page, theme)
     }
@@ -1865,15 +2430,15 @@ impl UsagePage {
     fn tools_totals(&self, result: &ToolQueryResult, theme: Theme) -> AnyElement {
         let page_calls: u64 = result.rows.iter().map(|row| row.calls).sum();
         let page_errors: u64 = result.rows.iter().map(|row| row.errors).sum();
-        let filtered = format!(
-            "Filtered totals: {} calls · {} failed",
-            format::count(result.calls),
-            format::count(result.errors)
+        let filtered = tr!(
+            "usage.filtered_totals_calls",
+            calls = format::count(result.calls),
+            failed = format::count(result.errors)
         );
-        let page = format!(
-            "this page: {} calls · {} failed",
-            format::count(page_calls),
-            format::count(page_errors)
+        let page = tr!(
+            "usage.page_calls",
+            calls = format::count(page_calls),
+            failed = format::count(page_errors)
         );
         totals_row(&filtered, &page, theme)
     }
@@ -1893,13 +2458,13 @@ impl UsagePage {
         let start = (current - 1) * page_size;
         let shown = page_size.min(total.saturating_sub(start));
         let summary = if total == 0 {
-            "No rows".to_string()
+            tr!("usage.no_rows").to_string()
         } else {
-            format!(
-                "Showing {}–{} of {}",
-                format::count((start + 1) as u64),
-                format::count((start + shown) as u64),
-                format::count(total as u64)
+            tr!(
+                "usage.showing_range",
+                first = format::count((start + 1) as u64),
+                last = format::count((start + shown) as u64),
+                total = format::count(total as u64)
             )
         };
 
@@ -1927,10 +2492,9 @@ impl UsagePage {
             move || size_panel.unwrap_or_else(|| div().into_any_element()),
         );
 
-        let prev = filters::text_button(
+        let prev = filters::outline_button(
             "usage-breakdown-page-prev",
-            "Previous",
-            Some("icons/chevron-left.svg"),
+            &tr!("usage.previous"),
             current > 1,
             theme,
             {
@@ -1942,10 +2506,9 @@ impl UsagePage {
                 }
             },
         );
-        let next = filters::text_button(
+        let next = filters::outline_button(
             "usage-breakdown-page-next",
-            "Next",
-            Some("icons/chevron-right.svg"),
+            &tr!("usage.next"),
             current < pages,
             theme,
             {
@@ -1956,29 +2519,7 @@ impl UsagePage {
             },
         );
 
-        div()
-            .w_full()
-            .px(px(14.))
-            .pt(px(10.))
-            .pb(px(14.))
-            .flex()
-            .items_center()
-            .gap(px(10.))
-            .text_size(theme.ui_px(11.5))
-            .child(div().text_color(theme.text_3).child(summary))
-            .child(div().flex_1())
-            .child(div().text_color(theme.text_3).child("Rows per page"))
-            .child(size_control)
-            .child(prev)
-            .child(
-                div()
-                    .px(px(4.))
-                    .font(num_font())
-                    .text_color(theme.text_2)
-                    .child(format!("{current} / {pages}")),
-            )
-            .child(next)
-            .into_any_element()
+        table_pager(summary, size_control, prev, next, current, pages, theme)
     }
 
     /// One page of a token dimension as a standard data table — the same
@@ -1997,7 +2538,8 @@ impl UsagePage {
         let total_tokens = result.totals.tokens.total;
         let entity = cx.entity();
         let mut elements = Vec::with_capacity(rows.len());
-        for row in rows {
+        for (ix, row) in rows.iter().enumerate() {
+            let last = ix + 1 == rows.len();
             let target = row.id;
             let mut line = div()
                 .id(SharedString::from(format!(
@@ -2009,8 +2551,7 @@ impl UsagePage {
                 .min_w(px(total_w))
                 .flex()
                 .items_center()
-                .border_b_1()
-                .border_color(theme.border)
+                .when(!last, |row| row.border_b_1().border_color(theme.border))
                 .cursor_pointer()
                 .hover(|style| style.bg(theme.bg_hover));
             for column in &columns {
@@ -2078,14 +2619,14 @@ impl UsagePage {
         } else {
             result.rows.len()
         } as f32;
-        let height = (ROW_H * visible) + 28.;
+        let height = HEADER_H + ROW_H * visible;
         self.table_element(
             TableKind::Breakdown,
             "usage-breakdown-table",
             columns,
             elements,
             height,
-            empty_cell("No rows match this search.", theme),
+            empty_cell(&tr!("usage.no_rows_match_search"), theme),
             theme,
             Rc::new(move |page, ix, sort, cx| {
                 let Some(Some(key)) = keys.get(ix).copied() else {
@@ -2112,15 +2653,9 @@ impl UsagePage {
         theme: Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mut chart = div()
-            .w_full()
-            .px(px(14.))
-            .pb(px(12.))
-            .flex()
-            .flex_col()
-            .gap(px(2.));
+        let mut chart = div().w_full().pb(px(12.)).flex().flex_col().gap(px(2.));
         if rows.is_empty() {
-            chart = chart.child(empty_line("No usage in this range.", theme));
+            chart = chart.child(empty_line(&tr!("usage.no_usage_in_range"), theme));
         }
         for row in rows {
             let fraction = if total > 0 {
@@ -2169,15 +2704,9 @@ impl UsagePage {
 
     /// The ranked bar chart above the Tools table: the busiest tools as bars.
     fn tools_chart(&self, rows: &[ToolRow], total: u64, theme: Theme) -> AnyElement {
-        let mut chart = div()
-            .w_full()
-            .px(px(14.))
-            .pb(px(12.))
-            .flex()
-            .flex_col()
-            .gap(px(2.));
+        let mut chart = div().w_full().pb(px(12.)).flex().flex_col().gap(px(2.));
         if rows.is_empty() {
-            chart = chart.child(empty_line("No tool calls in this range.", theme));
+            chart = chart.child(empty_line(&tr!("usage.no_tool_calls_in_range"), theme));
         }
         for row in rows {
             let fraction = if total > 0 {
@@ -2185,12 +2714,13 @@ impl UsagePage {
             } else {
                 0.0
             };
-            let tooltip = format!(
-                "{} · {} calls · {} errors · avg {}",
-                row.label,
-                format::count(row.calls),
-                format::count(row.errors),
-                row.avg_duration_ms()
+            let tooltip = tr!(
+                "usage.tool_chart_tooltip",
+                name = row.label,
+                calls = format::count(row.calls),
+                errors = format::count(row.errors),
+                avg = row
+                    .avg_duration_ms()
                     .map(format::duration_ms)
                     .unwrap_or_else(|| "—".into())
             );
@@ -2207,7 +2737,11 @@ impl UsagePage {
                     .flex()
                     .items_center()
                     .gap(px(10.))
-                    .child(chart_label(&row.label, Some(row.class.label()), theme))
+                    .child(chart_label(
+                        &row.label,
+                        Some(row.class.label().as_str()),
+                        theme,
+                    ))
                     .child(bar_track(fraction, theme))
                     .child(chart_value(&format::count(row.calls), theme))
                     .child(chart_share(&format::share(fraction), theme)),
@@ -2227,15 +2761,15 @@ impl UsagePage {
         let columns = self.tool_columns();
         let total_w: f32 = columns.iter().map(|column| column.width).sum();
         let mut elements = Vec::with_capacity(result.rows.len());
-        for row in &result.rows {
+        for (ix, row) in result.rows.iter().enumerate() {
+            let last = ix + 1 == result.rows.len();
             let mut line = div()
                 .h(px(ROW_H))
                 .w_full()
                 .min_w(px(total_w))
                 .flex()
                 .items_center()
-                .border_b_1()
-                .border_color(theme.border)
+                .when(!last, |row| row.border_b_1().border_color(theme.border))
                 .hover(|style| style.bg(theme.bg_hover));
             for column in &columns {
                 let cell = match column.id {
@@ -2246,7 +2780,7 @@ impl UsagePage {
                                 .flex_none()
                                 .max_w(px(column.width - 96.))
                                 .truncate()
-                                .text_size(theme.ui_px(12.))
+                                .text_size(theme.ui_px(13.))
                                 .text_color(theme.text)
                                 .child(row.label.clone()),
                         )
@@ -2303,14 +2837,14 @@ impl UsagePage {
         } else {
             result.rows.len()
         } as f32;
-        let height = (ROW_H * visible) + 28.;
+        let height = HEADER_H + ROW_H * visible;
         self.table_element(
             TableKind::Breakdown,
             "usage-tools-table",
             columns,
             elements,
             height,
-            empty_cell("No tools match this search.", theme),
+            empty_cell(&tr!("usage.no_tools_match_search"), theme),
             theme,
             Rc::new(|_: &mut UsagePage, _: usize, _: SortState, _: &mut Context<UsagePage>| {}),
             cx,
@@ -2320,7 +2854,7 @@ impl UsagePage {
     /// Token composition: input / output / cache read / cache write, as one
     /// stacked bar plus its four rows. The four categories sum to the total,
     /// so nothing is double-counted (§23).
-    fn composition_panel(
+    fn composition_body(
         &self,
         snapshot: &UsageSnapshot,
         theme: Theme,
@@ -2328,32 +2862,32 @@ impl UsagePage {
     ) -> AnyElement {
         let tokens = snapshot.summary.totals.tokens;
         let total = tokens.total;
-        let slices: [(&str, u64, Hsla, ChartMetric); 4] = [
-            ("Input", tokens.input, theme.accent, ChartMetric::Input),
+        let slices: [(String, u64, Hsla, ChartMetric); 4] = [
             (
-                "Output",
+                tr!("usage.slice_input"),
+                tokens.input,
+                theme.accent,
+                ChartMetric::Input,
+            ),
+            (
+                tr!("usage.slice_output"),
                 tokens.output,
                 theme.accent.opacity(0.62),
                 ChartMetric::Output,
             ),
             (
-                "Cache read",
+                tr!("usage.slice_cache_read"),
                 tokens.cache_read,
                 theme.accent.opacity(0.40),
                 ChartMetric::Cache,
             ),
             (
-                "Cache write",
+                tr!("usage.slice_cache_write"),
                 tokens.cache_write,
                 theme.accent.opacity(0.22),
                 ChartMetric::Cache,
             ),
         ];
-        let meta = if total == 0 {
-            "no tokens in range".to_string()
-        } else {
-            format!("{} tokens", format::compact(total))
-        };
 
         let mut stack = div()
             .w_full()
@@ -2362,7 +2896,7 @@ impl UsagePage {
             .overflow_hidden()
             .flex()
             .bg(theme.trough);
-        for (_, value, color, _) in slices {
+        for &(_, value, color, _) in slices.iter() {
             if value == 0 || total == 0 {
                 continue;
             }
@@ -2375,16 +2909,22 @@ impl UsagePage {
         }
 
         let mut content = div().flex().flex_col().gap(px(10.)).child(stack);
-        for (label, value, color, metric) in slices {
+        for (label, value, color, metric) in slices.iter() {
             // Clicking a component points the main chart at it (§19); hover
             // surfaces the exact figure (§42).
             let entity = cx.entity();
+            let metric = *metric;
             let share = if total == 0 {
                 "—".to_string()
             } else {
-                format::share(value as f64 / total as f64)
+                format::share(*value as f64 / total as f64)
             };
-            let tooltip = format!("{label}: {} tokens · {share}", format::exact(value));
+            let tooltip = tr!(
+                "usage.slice_tooltip",
+                label = label,
+                tokens = format::exact(*value),
+                share = share
+            );
             content = content.child(
                 div()
                     .id(SharedString::from(format!("usage-composition-{label}")))
@@ -2400,13 +2940,13 @@ impl UsagePage {
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         entity.update(cx, |page, cx| page.set_metric(metric, cx));
                     })
-                    .child(div().size(px(8.)).rounded(px(2.)).flex_none().bg(color))
+                    .child(div().size(px(8.)).rounded(px(2.)).flex_none().bg(*color))
                     .child(
                         div()
                             .flex_1()
                             .text_size(theme.ui_px(12.))
                             .text_color(theme.text_2)
-                            .child(label),
+                            .child(label.clone()),
                     )
                     .child(
                         div()
@@ -2414,7 +2954,7 @@ impl UsagePage {
                             .font(num_font())
                             .text_size(theme.ui_px(11.5))
                             .text_color(theme.text)
-                            .child(format::compact(value)),
+                            .child(format::compact(*value)),
                     )
                     .child(
                         div()
@@ -2436,30 +2976,21 @@ impl UsagePage {
                 .text_size(theme.ui_px(10.5))
                 .text_color(theme.text_3)
                 .child(if total == 0 {
-                    "No tokens in this range.".to_string()
+                    tr!("usage.no_tokens_in_range")
                 } else if tokens.cache_read == 0 && tokens.cache_write == 0 {
-                    "Cache data unavailable — these providers report no cache tokens.".to_string()
+                    tr!("usage.cache_unavailable_providers")
                 } else {
-                    "Total = input + output + cache read + cache write. Reasoning tokens are a subset of output."
-                        .to_string()
+                    tr!("usage.composition_formula")
                 }),
         );
 
-        card(
-            "usage-composition",
-            "Token composition",
-            Some(meta),
-            None,
-            div().p(px(14.)).child(content).into_any_element(),
-            theme,
-            false,
-        )
+        div().w_full().child(content).into_any_element()
     }
 
     // ── health panels ──────────────────────────────────────────────────────
 
     /// Cache performance, with the formula stated in the panel (§24/§25).
-    fn cache_panel(
+    fn cache_body(
         &self,
         snapshot: &UsageSnapshot,
         theme: Theme,
@@ -2468,25 +2999,10 @@ impl UsagePage {
         let cache = &snapshot.cache;
         let available = cache.is_available();
         let hit = cache.hit_rate;
-        let meta = match hit {
-            Some(rate) if available => format!("{} hit rate", format::percent(rate)),
-            _ => "unavailable".into(),
-        };
         let mut content = div().flex().flex_col().gap(px(10.));
         if !available {
-            content = content.child(empty_line(
-                "Cache data unavailable — no cache tokens were reported in this range.",
-                theme,
-            ));
-            return card(
-                "usage-cache",
-                "Cache performance",
-                Some(meta),
-                None,
-                div().p(px(14.)).child(content).into_any_element(),
-                theme,
-                false,
-            );
+            content = content.child(empty_line(&tr!("usage.cache_unavailable_range"), theme));
+            return div().w_full().child(content).into_any_element();
         }
 
         if let Some(rate) = hit {
@@ -2511,7 +3027,7 @@ impl UsagePage {
                                 div()
                                     .text_size(theme.ui_px(11.5))
                                     .text_color(theme.text_3)
-                                    .child("of prompt tokens served from cache"),
+                                    .child(tr!("view.of_prompt_tokens_served_from_cache")),
                             ),
                     )
                     .child(
@@ -2535,20 +3051,26 @@ impl UsagePage {
         content = content.child(
             div().flex().flex_col().gap(px(2.)).children(
                 [
-                    ("Cache reads", format::compact(cache.cache_read)),
-                    ("Cache writes", format::compact(cache.cache_write)),
-                    ("Uncached input", format::compact(cache.uncached_input)),
+                    (tr!("usage.cache_reads"), format::compact(cache.cache_read)),
                     (
-                        "Requests served from cache",
-                        format!(
-                            "{} of {}",
-                            format::count(cache.cached_requests),
-                            format::count(snapshot.summary.totals.requests)
+                        tr!("usage.cache_writes"),
+                        format::compact(cache.cache_write),
+                    ),
+                    (
+                        tr!("usage.uncached_input"),
+                        format::compact(cache.uncached_input),
+                    ),
+                    (
+                        tr!("usage.requests_served_from_cache"),
+                        tr!(
+                            "usage.of_total",
+                            count = format::count(cache.cached_requests),
+                            total = format::count(snapshot.summary.totals.requests)
                         ),
                     ),
                 ]
                 .into_iter()
-                .map(|(label, value)| stat_row(label, &value, theme)),
+                .map(|(label, value)| stat_row(&label, &value, theme)),
             ),
         );
 
@@ -2571,7 +3093,7 @@ impl UsagePage {
                         div()
                             .text_size(theme.ui_px(10.5))
                             .text_color(theme.text_3)
-                            .child("Hit rate over time"),
+                            .child(tr!("view.hit_rate_over_time")),
                     )
                     .child(hit_rate_bars(&snapshot.series, theme)),
             );
@@ -2589,7 +3111,7 @@ impl UsagePage {
                 .child(
                     div()
                         .text_color(theme.text_3)
-                        .child("Hit rate = cache reads / (cache reads + uncached input) ·"),
+                        .child(tr!("usage.hit_rate_formula")),
                 )
                 .child(
                     div()
@@ -2601,42 +3123,58 @@ impl UsagePage {
                             entity.update(cx, |page, cx| page.set_cached_only(!cached_only, cx));
                         })
                         .child(if cached_only {
-                            "show all requests"
+                            tr!("usage.show_all_requests")
                         } else {
-                            "show cached requests only"
+                            tr!("usage.show_cached_only")
                         }),
                 ),
         );
 
-        card(
-            "usage-cache",
-            "Cache performance",
-            Some(meta),
-            None,
-            div().p(px(14.)).child(content).into_any_element(),
-            theme,
-            false,
-        )
+        div().w_full().child(content).into_any_element()
     }
 
     // ── health ─────────────────────────────────────────────────────────────
 
-    /// Two token-health cards share one row on wide layouts: composition (what
-    /// the tokens were) beside cache performance (how much was reused). They
-    /// stay separate cards so neither reads as a subordinate of the other.
-    fn health_section(
+    /// Token composition beside cache performance. Each well recesses to the
+    /// canvas so the troughs keep contrast on the raised section card — not a
+    /// second card nested inside it.
+    fn health_body(
         &self,
         snapshot: &UsageSnapshot,
         theme: Theme,
         wide: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let composition = self.composition_panel(snapshot, theme, cx);
-        let cache = self.cache_panel(snapshot, theme, cx);
+        let totals = &snapshot.summary.totals;
+        let tokens = totals.tokens;
+        let composition_meta = if tokens.total == 0 {
+            tr!("usage.no_tokens_in_range_short")
+        } else {
+            tr!("usage.n_tokens", count = format::compact(tokens.total))
+        };
+        let cache_meta = match snapshot.cache.hit_rate {
+            Some(rate) if snapshot.cache.is_available() => {
+                tr!("usage.n_hit_rate", rate = format::percent(rate))
+            }
+            _ => tr!("usage.unavailable_short"),
+        };
+        let composition = subpanel(
+            &tr!("usage.token_composition"),
+            Some(composition_meta),
+            self.composition_body(snapshot, theme, cx),
+            theme,
+        );
+        let cache = subpanel(
+            &tr!("usage.cache_performance"),
+            Some(cache_meta),
+            self.cache_body(snapshot, theme, cx),
+            theme,
+        );
         if wide {
             div()
                 .w_full()
                 .flex()
+                .items_start()
                 .gap(px(16.))
                 .child(div().flex_1().min_w_0().child(composition))
                 .child(div().flex_1().min_w_0().child(cache))
@@ -2680,38 +3218,34 @@ impl UsagePage {
                 }
             },
         );
-        let tabs_row = div().px(px(14.)).pt(px(14.)).pb(px(10.)).child(tabs);
+        let tabs_row = div().pb(theme.space(12.)).child(tabs);
 
         let (meta, content) = match tab {
             DetailTab::Sessions => {
                 let result = self.session_page(cx);
                 let all = snapshot.sessions.len();
                 let meta = if result.total == all {
-                    format!("{} sessions", format::count(all as u64))
+                    tr!("usage.n_sessions", count = format::count(all as u64))
                 } else {
-                    format!(
-                        "{} of {} sessions",
-                        format::count(result.total as u64),
-                        format::count(all as u64)
+                    tr!(
+                        "usage.n_of_n_sessions",
+                        count = format::count(result.total as u64),
+                        total = format::count(all as u64)
                     )
                 };
                 let table = self.sessions_content(&result, theme, cx);
-                let toolbar = div()
-                    .w_full()
-                    .px(px(14.))
-                    .pb(px(10.))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .child(self.session_search_box(theme))
-                    .child(div().flex_1())
-                    .child(self.columns_control(theme, cx));
+                let toolbar = table_toolbar(
+                    self.session_search_box(theme),
+                    self.columns_control(theme, cx),
+                    theme,
+                );
                 (
                     meta,
                     div()
                         .w_full()
                         .flex()
                         .flex_col()
+                        .gap(theme.space(12.))
                         .child(tabs_row)
                         .child(toolbar)
                         .child(table)
@@ -2720,11 +3254,27 @@ impl UsagePage {
             }
             DetailTab::Daily => {
                 let granularity = snapshot.buckets.granularity;
-                let rows = self.bucket_rows();
-                let meta = format!(
-                    "{} buckets · by {}",
-                    format::count(rows.len() as u64),
-                    granularity.label()
+                let result = self.bucket_result(snapshot, cx);
+                let all = snapshot.buckets.rows.len();
+                let meta = if result.total == all {
+                    tr!(
+                        "usage.n_buckets_by",
+                        buckets = format::count(all as u64),
+                        by = granularity.label()
+                    )
+                } else {
+                    tr!(
+                        "usage.n_of_n_buckets_by",
+                        buckets = format::count(result.total as u64),
+                        total = format::count(all as u64),
+                        by = granularity.label()
+                    )
+                };
+                let table = self.buckets_content(&result, granularity, theme, cx);
+                let toolbar = table_toolbar(
+                    search_box(self.bucket_search(), theme),
+                    self.bucket_columns_control(theme, cx),
+                    theme,
                 );
                 (
                     meta,
@@ -2732,21 +3282,39 @@ impl UsagePage {
                         .w_full()
                         .flex()
                         .flex_col()
+                        .gap(theme.space(12.))
                         .child(tabs_row)
-                        .child(self.buckets_content(snapshot, theme, cx))
+                        .child(toolbar)
+                        .child(table)
                         .into_any_element(),
                 )
             }
             DetailTab::Failures => {
                 let errors = &snapshot.errors;
-                // Two different measures, both real: recorded failure events
-                // (provider errors pi logged, including ones a retry later
-                // recovered from) and requests whose stop reason was an error.
-                let meta = format!(
-                    "{} provider errors recorded · {} tool failures · {} stopped",
-                    format::count(errors.provider),
-                    format::count(errors.tool),
-                    format::count(errors.aborted)
+                let result = self.failure_result(cx);
+                let all = errors.rows.len();
+                let meta = if result.total == all {
+                    tr!(
+                        "usage.failures_meta",
+                        provider = format::count(errors.provider),
+                        tool = format::count(errors.tool),
+                        stopped = format::count(errors.aborted)
+                    )
+                } else {
+                    tr!(
+                        "usage.failures_meta_filtered",
+                        events = format::count(result.total as u64),
+                        total = format::count(all as u64),
+                        provider = format::count(errors.provider),
+                        tool = format::count(errors.tool),
+                        stopped = format::count(errors.aborted)
+                    )
+                };
+                let table = self.failures_content(&result, theme, cx);
+                let toolbar = table_toolbar(
+                    search_box(self.failure_search(), theme),
+                    self.failure_columns_control(theme, cx),
+                    theme,
                 );
                 (
                     meta,
@@ -2754,21 +3322,23 @@ impl UsagePage {
                         .w_full()
                         .flex()
                         .flex_col()
+                        .gap(theme.space(12.))
                         .child(tabs_row)
-                        .child(self.failures_content(snapshot, theme, cx))
+                        .child(toolbar)
+                        .child(table)
                         .into_any_element(),
                 )
             }
         };
 
-        card(
+        section(
             "usage-details",
-            "Details",
+            &tr!("usage.records"),
+            Some(&tr!("usage.records_hint")),
             Some(meta),
             None,
             content,
             theme,
-            false,
         )
     }
 
@@ -2787,10 +3357,11 @@ impl UsagePage {
         theme: Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // The viewport shows at most 20 rows; a page of 25+ scrolls within it,
-        // exactly like a desktop data grid (§38).
-        let visible_rows = result.page_size.min(20) as f32;
-        let table_h = ROW_H * visible_rows + 28.;
+        // The viewport matches the current page so the page — not a nested
+        // table — is the scroller. Pagination already caps how many rows land
+        // here.
+        let visible_rows = result.rows.len().max(3) as f32;
+        let table_h = ROW_H * visible_rows + HEADER_H;
         let footer = self.pagination_footer(result, theme, cx);
 
         let (columns, keys) = self.session_columns();
@@ -2801,7 +3372,7 @@ impl UsagePage {
             columns,
             rows,
             table_h,
-            empty_cell("No sessions match this search.", theme),
+            empty_cell(&tr!("usage.no_sessions_match_search"), theme),
             theme,
             Rc::new(
                 move |page, ix, sort, cx| match (keys.get(ix).copied().flatten(), sort) {
@@ -2817,7 +3388,7 @@ impl UsagePage {
             .w_full()
             .flex()
             .flex_col()
-            .child(div().h(px(table_h)).w_full().child(table))
+            .child(table)
             .children(self.totals_line(result, theme))
             .child(footer)
             .into_any_element()
@@ -2827,20 +3398,22 @@ impl UsagePage {
     /// same table is the weekly and monthly trend view for long windows (§42).
     fn buckets_content(
         &self,
-        snapshot: &UsageSnapshot,
+        result: &BucketQueryResult,
+        granularity: Granularity,
         theme: Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let granularity = snapshot.buckets.granularity;
+        let visible_rows = result.rows.len().max(3) as f32;
+        let table_h = ROW_H * visible_rows + HEADER_H;
         let (columns, keys) = self.bucket_columns();
-        let rows = self.bucket_row_elements(&columns, &keys, granularity, theme);
+        let rows = self.bucket_row_elements(&result.rows, &columns, &keys, granularity, theme);
         let table = self.table_element(
             TableKind::Buckets,
             "usage-buckets-table",
             columns,
             rows,
-            BUCKET_TABLE_H,
-            empty_cell("No buckets in this range.", theme),
+            table_h,
+            empty_cell(&tr!("usage.no_buckets_match_search"), theme),
             theme,
             Rc::new(
                 move |page, ix, sort, cx| match (keys.get(ix).copied(), sort) {
@@ -2851,54 +3424,57 @@ impl UsagePage {
             ),
             cx,
         );
-        // Bottom breathing room, matching the card's gutter, so the last row's
-        // hover fill stays clear of the rounded corners.
-        div().w_full().pb(px(14.)).child(table).into_any_element()
+
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .child(table)
+            .child(self.bucket_totals(result, theme))
+            .child(self.bucket_pagination_footer(result, theme, cx))
+            .into_any_element()
     }
 
     /// Failures (§34): every provider error and tool failure in the range, in
     /// the same table as the rest of the page.
     fn failures_content(
         &self,
-        snapshot: &UsageSnapshot,
+        result: &FailureQueryResult,
         theme: Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let errors = &snapshot.errors;
-        let shown = errors.rows.len();
-        let total_events = errors.provider + errors.tool;
-
-        let mut content = div().w_full().flex().flex_col().gap(px(8.));
-        if errors.rows.is_empty() {
-            content = content.child(
-                div()
-                    .px(px(14.))
-                    .py(px(8.))
-                    .text_size(theme.ui_px(11.5))
-                    .text_color(theme.text_3)
-                    .child("No failed requests in this range."),
-            );
-        } else {
-            let table = self.failure_table_element(theme, cx);
-            content = content.child(div().h(px(FAILURE_TABLE_H)).w_full().child(table));
-        }
-        content = content.child(retry_note(theme)).child(
-            div()
-                .px(px(14.))
-                .pb(px(14.))
-                .text_size(theme.ui_px(10.5))
-                .text_color(theme.text_3)
-                .child(if total_events as usize > shown {
-                    format!(
-                        "showing the {} most recent of {} events",
-                        format::count(shown as u64),
-                        format::count(total_events)
-                    )
-                } else {
-                    format!("{} events", format::count(total_events))
-                }),
+        let visible_rows = result.rows.len().max(3) as f32;
+        let table_h = ROW_H * visible_rows + HEADER_H;
+        let (columns, keys) = self.failure_columns();
+        let rows = self.failure_row_elements(&result.rows, &columns, &keys, theme);
+        let table = self.table_element(
+            TableKind::Failures,
+            "usage-failures-table",
+            columns,
+            rows,
+            table_h,
+            empty_cell(&tr!("usage.no_failures_match_search"), theme),
+            theme,
+            Rc::new(move |page, ix, sort, cx| {
+                let key = keys.get(ix).copied().unwrap_or(FailureSort::When);
+                match sort {
+                    SortState::Ascending => page.set_failure_sort(key, false, cx),
+                    SortState::Descending => page.set_failure_sort(key, true, cx),
+                    SortState::Default => page.set_failure_sort(FailureSort::When, true, cx),
+                }
+            }),
+            cx,
         );
-        content.into_any_element()
+
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .child(table)
+            .child(self.failure_totals(result, theme))
+            .child(self.failure_pagination_footer(result, theme, cx))
+            .child(retry_note(theme))
+            .into_any_element()
     }
 
     // ── column plans ───────────────────────────────────────────────────────
@@ -3077,21 +3653,85 @@ impl UsagePage {
         columns
     }
 
-    /// Breakdown columns plus their sort keys.
+    /// Breakdown columns plus their sort keys. Hidden columns are dropped;
+    /// Date always stays.
     fn bucket_columns(&self) -> (Vec<Column>, Vec<BucketSort>) {
+        let (sort, desc) = self.bucket_sort_state();
         let plan: [(BucketSort, f32, bool); 5] = [
-            (BucketSort::Date, 220., false),
+            (BucketSort::Date, 0., false),
             (BucketSort::Requests, 104., true),
             (BucketSort::Tokens, 96., true),
             (BucketSort::Cache, 104., true),
             (BucketSort::Errors, 84., true),
         ];
-        let mut columns = Vec::with_capacity(plan.len());
-        let mut keys = Vec::with_capacity(plan.len());
-        let (sort, desc) = self.bucket_sort_state();
-        for (key, default, numeric) in plan {
-            let width = self.col_width(TableKind::Buckets, key.label(), default);
-            let mut column = Column::new(key.label(), key.label())
+        let keep: Vec<(BucketSort, f32, bool)> = plan
+            .into_iter()
+            .filter(|(key, _, _)| self.bucket_column_visible(*key))
+            .collect();
+        let fixed: f32 = keep
+            .iter()
+            .filter(|(key, _, _)| *key != BucketSort::Date)
+            .map(|(key, default, _)| self.col_width(TableKind::Buckets, key.id(), *default))
+            .sum();
+        let date_default = (self.table_width() - fixed).clamp(160., 480.);
+        let mut columns = Vec::with_capacity(keep.len());
+        let mut keys = Vec::with_capacity(keep.len());
+        for (key, default, numeric) in keep {
+            let default = if key == BucketSort::Date {
+                date_default
+            } else {
+                default
+            };
+            let width = self.col_width(TableKind::Buckets, key.id(), default);
+            let mut column = Column::new(key.id(), key.label())
+                .width(width)
+                .sortable()
+                .sort(sort_state(key == sort, desc));
+            if numeric {
+                column = column.numeric();
+            }
+            columns.push(column);
+            keys.push(key);
+        }
+        (columns, keys)
+    }
+
+    /// Usage-over-time columns: Time plus the active metric, then requests and
+    /// tokens so the table agrees with the plot above it. Hidden columns are
+    /// dropped here; Time always stays.
+    fn series_columns(&self, metric: ChartMetric) -> (Vec<Column>, Vec<SeriesSort>) {
+        let (sort, desc) = self.series_sort_state();
+        let plan: [(SeriesSort, String, f32, bool); 4] = [
+            (SeriesSort::Time, tr!("usage.col_time"), 0., false),
+            (SeriesSort::Value, metric.label(), 112., true),
+            (
+                SeriesSort::Requests,
+                tr!("usage.metric_requests"),
+                104.,
+                true,
+            ),
+            (SeriesSort::Tokens, tr!("usage.metric_tokens"), 96., true),
+        ];
+        let keep: Vec<(SeriesSort, String, f32, bool)> = plan
+            .into_iter()
+            .filter(|(key, _, _, _)| self.series_column_visible(*key))
+            .collect();
+        let fixed: f32 = keep
+            .iter()
+            .filter(|(key, _, _, _)| *key != SeriesSort::Time)
+            .map(|(key, _, default, _)| self.col_width(TableKind::Series, key.id(), *default))
+            .sum();
+        let time_default = (self.table_width() - fixed).clamp(160., 480.);
+        let mut columns = Vec::with_capacity(keep.len());
+        let mut keys = Vec::with_capacity(keep.len());
+        for (key, label, default, numeric) in keep {
+            let default = if key == SeriesSort::Time {
+                time_default
+            } else {
+                default
+            };
+            let width = self.col_width(TableKind::Series, key.id(), default);
+            let mut column = Column::new(key.id(), label)
                 .width(width)
                 .sortable()
                 .sort(sort_state(key == sort, desc));
@@ -3105,27 +3745,43 @@ impl UsagePage {
     }
 
     /// Failure columns plus their sort keys. The message takes the remainder.
+    /// Hidden columns are dropped; When always stays.
     fn failure_columns(&self) -> (Vec<Column>, Vec<FailureSort>) {
-        let fixed = 108. + 96. + 150. + 200. + 60.;
-        let message_w = (self.table_width() - fixed).clamp(180., 560.);
-        let plan: [(FailureSort, f32); 5] = [
-            (FailureSort::When, 108.),
-            (FailureSort::Kind, 96.),
-            (FailureSort::Model, 150.),
-            (FailureSort::Session, 200.),
-            (FailureSort::Model, message_w),
-        ];
-        let mut columns = Vec::with_capacity(plan.len());
-        let mut keys = Vec::with_capacity(plan.len());
         let (sort, desc) = self.failure_sort_state();
-        for (ix, (key, default)) in plan.into_iter().enumerate() {
-            let is_message = ix == 4;
-            let id: &'static str = if is_message { "message" } else { key.label() };
-            let width = self.col_width(TableKind::Failures, id, default);
-            let mut column = Column::new(id, if is_message { "Message" } else { key.label() })
-                .width(width)
-                .resizable();
-            if !is_message {
+        let plan: [(FailureSort, f32, bool); 5] = [
+            (FailureSort::When, 0., false),
+            (FailureSort::Kind, 96., false),
+            (FailureSort::Model, 150., false),
+            (FailureSort::Session, 200., false),
+            (FailureSort::Message, 180., false),
+        ];
+        let keep: Vec<(FailureSort, f32, bool)> = plan
+            .into_iter()
+            .filter(|(key, _, _)| self.failure_column_visible(*key))
+            .collect();
+        let message_visible = keep.iter().any(|(key, _, _)| *key == FailureSort::Message);
+        let fixed: f32 = keep
+            .iter()
+            .filter(|(key, _, _)| *key != FailureSort::When && *key != FailureSort::Message)
+            .map(|(key, default, _)| self.col_width(TableKind::Failures, key.id(), *default))
+            .sum();
+        let flex_default = if message_visible {
+            (self.table_width() - fixed - 108.).clamp(180., 560.)
+        } else {
+            (self.table_width() - fixed).clamp(160., 480.)
+        };
+        let mut columns = Vec::with_capacity(keep.len());
+        let mut keys = Vec::with_capacity(keep.len());
+        for (key, default, _) in keep {
+            let default = match key {
+                FailureSort::When if !message_visible => flex_default,
+                FailureSort::When => 108.,
+                FailureSort::Message => flex_default,
+                _ => default,
+            };
+            let width = self.col_width(TableKind::Failures, key.id(), default);
+            let mut column = Column::new(key.id(), key.label()).width(width).resizable();
+            if key != FailureSort::Message {
                 column = column.sortable().sort(sort_state(key == sort, desc));
             }
             columns.push(column);
@@ -3151,6 +3807,7 @@ impl UsagePage {
         let context_row = self.context_row();
         let mut out = Vec::with_capacity(rows.len());
         for (ix, row) in rows.iter().enumerate() {
+            let last = ix + 1 == rows.len();
             let mut line = div()
                 .id(("usage-session-row", ix))
                 .group("usage-row")
@@ -3159,8 +3816,7 @@ impl UsagePage {
                 .min_w(px(columns.iter().map(|column| column.width).sum::<f32>()))
                 .flex()
                 .items_center()
-                .border_b_1()
-                .border_color(theme.border)
+                .when(!last, |row| row.border_b_1().border_color(theme.border))
                 .hover(|style| style.bg(theme.bg_hover))
                 .when(selected == Some(row.session), |line| line.bg(theme.active))
                 .on_mouse_down(MouseButton::Left, {
@@ -3199,23 +3855,23 @@ impl UsagePage {
     /// suffix, so an all-time monthly table still says what each row is.
     fn bucket_row_elements(
         &self,
+        rows: &[BucketRow],
         columns: &[Column],
         keys: &[BucketSort],
         granularity: Granularity,
         theme: Theme,
     ) -> Vec<AnyElement> {
-        let rows = self.bucket_rows();
         let total_w: f32 = columns.iter().map(|column| column.width).sum();
         let mut out = Vec::with_capacity(rows.len());
-        for row in &rows {
+        for (ix, row) in rows.iter().enumerate() {
+            let last = ix + 1 == rows.len();
             let mut line = div()
                 .h(px(ROW_H))
                 .w_full()
                 .min_w(px(total_w))
                 .flex()
                 .items_center()
-                .border_b_1()
-                .border_color(theme.border)
+                .when(!last, |row| row.border_b_1().border_color(theme.border))
                 .hover(|style| style.bg(theme.bg_hover));
             for (ix, column) in columns.iter().enumerate() {
                 let key = keys.get(ix).copied().unwrap_or(BucketSort::Date);
@@ -3267,60 +3923,43 @@ impl UsagePage {
         out
     }
 
-    /// One failure per row, newest first.
-    fn failure_table_element(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
-        let (columns, keys) = self.failure_columns();
-        let rows = self.failure_rows();
+    /// One failure per row, newest first unless the user re-sorted.
+    fn failure_row_elements(
+        &self,
+        rows: &[super::table::FailureRow],
+        columns: &[Column],
+        keys: &[FailureSort],
+        theme: Theme,
+    ) -> Vec<AnyElement> {
         let total_w: f32 = columns.iter().map(|column| column.width).sum();
         let mut elements = Vec::with_capacity(rows.len());
-        for row in &rows {
+        for (ix, row) in rows.iter().enumerate() {
+            let last = ix + 1 == rows.len();
             let mut line = div()
                 .h(px(ROW_H))
                 .w_full()
                 .min_w(px(total_w))
                 .flex()
                 .items_center()
-                .border_b_1()
-                .border_color(theme.border)
+                .when(!last, |row| row.border_b_1().border_color(theme.border))
                 .hover(|style| style.bg(theme.bg_hover));
             for (ix, column) in columns.iter().enumerate() {
-                let is_message = column.id == "message";
-                let (text, color) = if is_message {
-                    (row.message.clone(), theme.text_3)
-                } else {
-                    match keys.get(ix).copied().unwrap_or(FailureSort::When) {
-                        FailureSort::When => (super::table::failure_when(row.ts_ms), theme.text_3),
-                        FailureSort::Kind => {
-                            let (label, color) =
-                                super::table::failure_kind_register(row.kind, theme);
-                            (label.to_string(), color)
-                        }
-                        FailureSort::Model => (row.model.clone(), theme.text_2),
-                        FailureSort::Session => (row.session_title.clone(), theme.text_2),
+                let key = keys.get(ix).copied().unwrap_or(FailureSort::When);
+                let (label, color) = match key {
+                    FailureSort::When => (super::table::failure_when(row.ts_ms), theme.text_3),
+                    FailureSort::Kind => {
+                        let (label, color) = super::table::failure_kind_register(row.kind, theme);
+                        (label, color)
                     }
+                    FailureSort::Model => (row.model.clone(), theme.text_2),
+                    FailureSort::Session => (row.session_title.clone(), theme.text_2),
+                    FailureSort::Message => (row.message.clone(), theme.text_3),
                 };
-                line = line.child(text_cell(column, text, color, theme));
+                line = line.child(text_cell(column, label, color, theme));
             }
             elements.push(line.into_any_element());
         }
-        self.table_element(
-            TableKind::Failures,
-            "usage-failures-table",
-            columns,
-            elements,
-            FAILURE_TABLE_H,
-            empty_cell("No failed requests in this range.", theme),
-            theme,
-            Rc::new(move |page, ix, sort, cx| {
-                let key = keys.get(ix).copied().unwrap_or(FailureSort::When);
-                match sort {
-                    SortState::Ascending => page.set_failure_sort(key, false, cx),
-                    SortState::Descending => page.set_failure_sort(key, true, cx),
-                    SortState::Default => page.set_failure_sort(FailureSort::When, true, cx),
-                }
-            }),
-            cx,
-        )
+        elements
     }
 
     /// A table with its handlers wired to this page. The column ids and widths
@@ -3356,8 +3995,8 @@ impl UsagePage {
         let entity = cx.entity();
         let chip = filters::chip(
             "usage-columns-chip",
-            "Columns".to_string(),
-            Some("icons/panel-right.svg"),
+            tr!("usage.columns"),
+            None,
             !self.hidden_columns().is_empty(),
             true,
             theme,
@@ -3394,29 +4033,28 @@ impl UsagePage {
         let page_requests: u64 = result.rows.iter().map(|row| row.totals.requests).sum();
         let page_tokens: u64 = result.rows.iter().map(|row| row.totals.tokens.total).sum();
 
-        let mut filtered = format!(
-            "Filtered totals: {} requests · {} tokens",
-            format::count(totals.requests),
-            format::compact(totals.tokens.total)
+        let mut filtered = tr!(
+            "usage.filtered_totals_requests",
+            requests = format::count(totals.requests),
+            tokens = format::compact(totals.tokens.total)
         );
         if totals.cost_coverage() > 0.0 {
             filtered.push_str(&format!(" · {}", format::cost(totals.cost_usd)));
         }
-        let page = format!(
-            "this page: {} requests · {} tokens",
-            format::count(page_requests),
-            format::compact(page_tokens)
+        let page = tr!(
+            "usage.page_requests",
+            requests = format::count(page_requests),
+            tokens = format::compact(page_tokens)
         );
 
         Some(
             div()
                 .w_full()
-                .px(px(14.))
-                .pt(px(10.))
+                .pt(theme.space(8.))
                 .flex()
                 .items_center()
                 .gap(px(12.))
-                .text_size(theme.ui_px(10.5))
+                .text_size(theme.ui_px(12.))
                 .child(div().text_color(theme.text_3).child(filtered))
                 .child(div().flex_1())
                 .child(div().text_color(theme.text_3).child(page))
@@ -3434,13 +4072,13 @@ impl UsagePage {
         let pages = result.page_count();
         let current = result.page;
         let summary = if result.total == 0 {
-            "No sessions match".to_string()
+            tr!("usage.no_sessions_match").to_string()
         } else {
-            format!(
-                "Showing {}–{} of {}",
-                format::count(result.first_row() as u64),
-                format::count(result.last_row() as u64),
-                format::count(result.total as u64)
+            tr!(
+                "usage.showing_range",
+                first = format::count(result.first_row() as u64),
+                last = format::count(result.last_row() as u64),
+                total = format::count(result.total as u64)
             )
         };
 
@@ -3468,10 +4106,9 @@ impl UsagePage {
             move || size_panel.unwrap_or_else(|| div().into_any_element()),
         );
 
-        let prev = filters::text_button(
+        let prev = filters::outline_button(
             "usage-page-prev",
-            "Previous",
-            Some("icons/chevron-left.svg"),
+            &tr!("usage.previous"),
             current > 1,
             theme,
             {
@@ -3481,10 +4118,9 @@ impl UsagePage {
                 }
             },
         );
-        let next = filters::text_button(
+        let next = filters::outline_button(
             "usage-page-next",
-            "Next",
-            Some("icons/chevron-right.svg"),
+            &tr!("usage.next"),
             current < pages,
             theme,
             {
@@ -3495,29 +4131,7 @@ impl UsagePage {
             },
         );
 
-        div()
-            .w_full()
-            .px(px(14.))
-            .pt(px(10.))
-            .pb(px(14.))
-            .flex()
-            .items_center()
-            .gap(px(10.))
-            .text_size(theme.ui_px(11.5))
-            .child(div().text_color(theme.text_3).child(summary))
-            .child(div().flex_1())
-            .child(div().text_color(theme.text_3).child("Rows per page"))
-            .child(size_control)
-            .child(prev)
-            .child(
-                div()
-                    .px(px(4.))
-                    .font(num_font())
-                    .text_color(theme.text_2)
-                    .child(format!("{current} / {pages}")),
-            )
-            .child(next)
-            .into_any_element()
+        table_pager(summary, size_control, prev, next, current, pages, theme)
     }
 }
 
@@ -3655,13 +4269,13 @@ fn session_context_menu(row: &SessionRow, theme: Theme, page: Entity<UsagePage>)
     let model_label = row.top_model.clone();
 
     let mut items: Vec<AnyElement> = Vec::new();
-    items.push(context_item("Open session".into(), theme, {
+    items.push(context_item(tr!("usage.ctx_open_session"), theme, {
         let page = page.clone();
         move |window, cx| {
             page.update(cx, |page, cx| page.open_session(window, cx, session));
         }
     }));
-    items.push(context_item("Scope to this session".into(), theme, {
+    items.push(context_item(tr!("usage.ctx_scope_to_session"), theme, {
         let page = page.clone();
         move |_, cx| {
             page.update(cx, |page, cx| page.set_session_scope(Some(session), cx));
@@ -3669,7 +4283,7 @@ fn session_context_menu(row: &SessionRow, theme: Theme, page: Entity<UsagePage>)
     }));
     items.push(context_separator(theme));
     items.push(context_item(
-        "Copy session ID".into(),
+        tr!("usage.ctx_copy_session_id"),
         theme,
         move |_, cx| {
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(session_id.clone()));
@@ -3677,7 +4291,7 @@ fn session_context_menu(row: &SessionRow, theme: Theme, page: Entity<UsagePage>)
     ));
     items.push(context_separator(theme));
     items.push(context_item(
-        format!("Filter by provider: {provider_label}"),
+        tr!("usage.ctx_filter_by_provider", name = provider_label),
         theme,
         {
             let page = page.clone();
@@ -3690,7 +4304,7 @@ fn session_context_menu(row: &SessionRow, theme: Theme, page: Entity<UsagePage>)
     ));
     if let Some(model_id) = model_id {
         items.push(context_item(
-            format!("Filter by model: {model_label}"),
+            tr!("usage.ctx_filter_by_model", name = model_label),
             theme,
             {
                 let page = page.clone();
@@ -3702,7 +4316,7 @@ fn session_context_menu(row: &SessionRow, theme: Theme, page: Entity<UsagePage>)
             },
         ));
     }
-    items.push(context_item("Filter by workspace".into(), theme, {
+    items.push(context_item(tr!("usage.ctx_filter_by_workspace"), theme, {
         let page = page.clone();
         move |_, cx| {
             page.update(cx, |page, cx| {
@@ -3773,13 +4387,121 @@ fn context_separator(theme: Theme) -> AnyElement {
 
 // ── shared pieces ─────────────────────────────────────────────────────────
 
-/// A page section as its own card: a header strip (title, meta, controls) over
-/// a body, on a raised surface with a single hairline border. `clip` rounds the
-/// corners for cards whose content runs edge to edge; it stays off for a card
-/// that hosts a popover, which must escape the card to be usable.
+/// A top-level band on the canvas: a semantic title, a one-line description,
+/// optional meta, a hairline, then the content. Used for every secondary
+/// section so the page reads as hairlines and whitespace rather than a stack
+/// of boxes (DESIGN.md: hairlines over boxes). The summary metric board is
+/// the one place that keeps a card.
+fn section(
+    id: &'static str,
+    title: &str,
+    description: Option<&str>,
+    meta: Option<String>,
+    right: Option<AnyElement>,
+    content: AnyElement,
+    theme: Theme,
+) -> AnyElement {
+    card(
+        id,
+        title,
+        description,
+        meta,
+        right,
+        div()
+            .w_full()
+            .px(px(SECTION_PAD))
+            .pt(px(SECTION_PAD))
+            .pb(px(SECTION_PAD))
+            .child(content)
+            .into_any_element(),
+        theme,
+        false,
+    )
+}
+
+/// A reading band: the Simple / Details group heading, then its sections.
+/// Title is the 11px label register; the 15px titles live on the sections
+/// inside, so the two levels never compete.
+fn band(
+    id: &'static str,
+    title: &str,
+    description: &str,
+    content: AnyElement,
+    theme: Theme,
+) -> AnyElement {
+    div()
+        .id(SharedString::from(id))
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap(theme.space(20.))
+        .child(
+            div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(
+                    div()
+                        .text_size(theme.ui_px(11.))
+                        .line_height(theme.ui_px(14.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.text_3)
+                        .child(title.to_uppercase()),
+                )
+                .child(
+                    div()
+                        .text_size(theme.ui_px(12.))
+                        .line_height(theme.ui_px(16.))
+                        .text_color(theme.text_3)
+                        .child(description.to_string()),
+                ),
+        )
+        .child(content)
+        .into_any_element()
+}
+
+/// A recessed well inside a section card: canvas fill and a hairline, never a
+/// second raised card. Used for the token-health panels, whose troughs need
+/// a surface distinct from the raised section.
+fn subpanel(label: &str, meta: Option<String>, content: AnyElement, theme: Theme) -> AnyElement {
+    div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap(px(10.))
+        .p(px(14.))
+        .rounded(px(10.))
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.bg_main)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .text_size(theme.ui_px(11.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.text_3)
+                        .child(label.to_uppercase()),
+                )
+                .children(meta.map(|meta| {
+                    div()
+                        .text_size(theme.ui_px(11.))
+                        .text_color(theme.text_3)
+                        .child(meta)
+                })),
+        )
+        .child(content)
+        .into_any_element()
+}
+
 fn card(
     id: &'static str,
     title: &str,
+    description: Option<&str>,
     meta: Option<String>,
     right: Option<AnyElement>,
     content: AnyElement,
@@ -3794,33 +4516,49 @@ fn card(
         .border_1()
         .border_color(theme.border)
         .bg(theme.bg_raised)
+        .shadow(theme.composer_shadow())
         .flex()
         .flex_col()
         .child(
             div()
                 .flex_none()
-                .h(px(42.))
                 .px(px(14.))
+                .py(px(12.))
                 .flex()
-                .items_center()
-                .gap(px(10.))
+                .flex_col()
+                .gap(px(4.))
                 .border_b_1()
                 .border_color(theme.border)
                 .child(
                     div()
-                        .text_size(theme.ui_px(11.))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text_3)
-                        .child(title.to_uppercase()),
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .child(
+                            div()
+                                .text_size(theme.ui_px(15.))
+                                .line_height(theme.ui_px(20.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(theme.text)
+                                .child(title.to_string()),
+                        )
+                        .children(meta.map(|meta| {
+                            div()
+                                .text_size(theme.ui_px(11.))
+                                .text_color(theme.text_3)
+                                .child(meta)
+                        }))
+                        .child(div().flex_1())
+                        .children(right),
                 )
-                .children(meta.map(|meta| {
+                .children(description.map(|description| {
                     div()
-                        .text_size(theme.ui_px(11.))
+                        .text_size(theme.ui_px(12.))
+                        .line_height(theme.ui_px(16.))
                         .text_color(theme.text_3)
-                        .child(meta)
-                }))
-                .child(div().flex_1())
-                .children(right),
+                        .child(description.to_string())
+                })),
         )
         .child(content);
     if clip {
@@ -3839,7 +4577,7 @@ fn segmented<T>(
     prefix: &'static str,
     options: &[T],
     active: T,
-    label: impl Fn(T) -> &'static str,
+    label: impl Fn(T) -> String,
     key: impl Fn(T) -> &'static str,
     theme: Theme,
     on_pick: impl Fn(T, &mut Window, &mut App) + 'static,
@@ -3870,8 +4608,8 @@ where
                 .items_center()
                 .text_size(theme.ui_px(11.5))
                 .when(is_active, |tab| {
-                    tab.bg(theme.bg_raised)
-                        .text_color(theme.text)
+                    tab.bg(theme.active)
+                        .text_color(theme.active_fg)
                         .font_weight(FontWeight::MEDIUM)
                 })
                 .when(!is_active, |tab| {
@@ -3892,24 +4630,83 @@ where
 /// read the same.
 fn search_box(input: &Entity<ComposerInput>, theme: Theme) -> AnyElement {
     div()
-        .w(px(232.))
-        .h(px(28.))
-        .px(px(8.))
-        .rounded(px(7.))
+        .flex_1()
+        .min_w(px(180.))
+        .h(px(32.))
+        .px(px(12.))
+        .rounded(px(8.))
         .bg(theme.bg_main)
         .border_1()
         .border_color(theme.border)
         .flex()
         .items_center()
-        .gap(px(6.))
-        .child(icon("icons/search.svg", 12., theme.text_3))
+        .gap(px(8.))
+        .child(icon("icons/search.svg", 13., theme.text_3))
         .child(
             div()
                 .flex_1()
                 .min_w_0()
-                .text_size(theme.ui_px(12.))
+                .text_size(theme.ui_px(13.))
                 .child(input.clone()),
         )
+        .into_any_element()
+}
+
+/// Search on the left, Columns on the right — the controls sit above the
+/// table card, never inside it.
+fn table_toolbar(search: AnyElement, columns: AnyElement, theme: Theme) -> AnyElement {
+    div()
+        .w_full()
+        .flex()
+        .items_center()
+        .gap(theme.space(8.))
+        .child(search)
+        .child(columns)
+        .into_any_element()
+}
+
+/// Footer under a table card: the count on the left, outlined Previous / Next
+/// on the right. Rows-per-page stays as a quiet chip beside the pager.
+fn table_pager(
+    summary: String,
+    size_control: AnyElement,
+    prev: AnyElement,
+    next: AnyElement,
+    current: usize,
+    pages: usize,
+    theme: Theme,
+) -> AnyElement {
+    div()
+        .w_full()
+        .pt(theme.space(12.))
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_size(theme.ui_px(13.))
+                .text_color(theme.text_3)
+                .child(summary),
+        )
+        .child(
+            div()
+                .text_size(theme.ui_px(12.))
+                .text_color(theme.text_3)
+                .child(tr!("view.rows")),
+        )
+        .child(size_control)
+        .child(
+            div()
+                .px(px(2.))
+                .font(num_font())
+                .text_size(theme.ui_px(12.))
+                .text_color(theme.text_3)
+                .child(format!("{current}/{pages}")),
+        )
+        .child(prev)
+        .child(next)
         .into_any_element()
 }
 
@@ -3987,12 +4784,11 @@ fn chart_share(share: &str, theme: Theme) -> AnyElement {
 fn totals_row(filtered: &str, page: &str, theme: Theme) -> AnyElement {
     div()
         .w_full()
-        .px(px(14.))
-        .pt(px(10.))
+        .pt(theme.space(8.))
         .flex()
         .items_center()
         .gap(px(12.))
-        .text_size(theme.ui_px(10.5))
+        .text_size(theme.ui_px(12.))
         .child(div().text_color(theme.text_3).child(filtered.to_string()))
         .child(div().flex_1())
         .child(div().text_color(theme.text_3).child(page.to_string()))
@@ -4011,10 +4807,9 @@ fn empty_line(text: &str, theme: Theme) -> AnyElement {
 
 fn retry_note(theme: Theme) -> AnyElement {
     div()
-        .px(px(14.))
-        .text_size(theme.ui_px(10.5))
+        .text_size(theme.ui_px(12.))
         .text_color(theme.text_3)
-        .child("Retries are unavailable: pi records automatic retries as live events, not in session files.")
+        .child(tr!("view.retries_are_unavailable_pi_records_automatic_ret"))
         .into_any_element()
 }
 
@@ -4066,12 +4861,16 @@ fn hit_rate_bars(series: &TimeSeries, theme: Theme) -> AnyElement {
                 Some(rate) => (
                     (rate / 100.0).clamp(0.03, 1.0) as f32,
                     theme.accent.opacity(0.55),
-                    format!("{} · {} hit rate", point.stamp, format::percent(rate)),
+                    tr!(
+                        "usage.cache_bar_tooltip",
+                        stamp = point.stamp,
+                        rate = format::percent(rate)
+                    ),
                 ),
                 None => (
                     0.03,
                     theme.trough,
-                    format!("{} · no cache traffic", point.stamp),
+                    tr!("usage.cache_bar_no_traffic", stamp = point.stamp),
                 ),
             };
             div()
@@ -4098,7 +4897,7 @@ fn hit_rate_bars(series: &TimeSeries, theme: Theme) -> AnyElement {
 
 /// Tabular figures for numeric columns (§54). Both bundled faces carry `tnum`,
 /// and requesting it is what stops columns from jittering as digits change.
-pub(super) fn num_font() -> Font {
+pub(crate) fn num_font() -> Font {
     let mut font = gpui::font(theme::ui_font_family());
     font.features = FontFeatures(Arc::new(vec![
         ("tnum".to_string(), 1),
@@ -4135,11 +4934,11 @@ fn breakdown_name_cell(column: &Column, row: &GroupRow, theme: Theme) -> AnyElem
 
 /// The Summary card's meta line: the range's headline counts.
 fn summary_meta(snapshot: &UsageSnapshot) -> String {
-    format!(
-        "{} requests · {} tokens · {} sessions",
-        format::count(snapshot.summary.totals.requests),
-        format::compact(snapshot.summary.totals.tokens.total),
-        format::count(snapshot.summary.sessions)
+    tr!(
+        "usage.summary_meta",
+        requests = format::count(snapshot.summary.totals.requests),
+        tokens = format::compact(snapshot.summary.totals.tokens.total),
+        sessions = format::count(snapshot.summary.sessions)
     )
 }
 
@@ -4154,47 +4953,53 @@ fn toggle(list: &mut Vec<u16>, value: u16) {
 
 fn session_title(entry: &super::model::SessionEntry) -> String {
     if entry.title.is_empty() {
-        format!("Session {}", entry.id.chars().take(8).collect::<String>())
+        tr!(
+            "usage.session_fallback",
+            id = entry.id.chars().take(8).collect::<String>()
+        )
     } else {
         entry.title.clone()
     }
 }
 
 fn model_meta(breakdown: &Breakdown) -> String {
-    format!(
-        "{} models · {} requests",
-        format::count(breakdown.rows.len() as u64),
-        format::count(breakdown.totals.requests)
+    tr!(
+        "usage.meta_models_requests",
+        models = format::count(breakdown.rows.len() as u64),
+        requests = format::count(breakdown.totals.requests)
     )
 }
 
 fn workspace_meta(breakdown: &Breakdown) -> String {
-    format!(
-        "{} workspaces · {} tokens",
-        format::count(breakdown.rows.len() as u64),
-        format::compact(breakdown.totals.tokens.total)
+    tr!(
+        "usage.meta_workspaces_tokens",
+        workspaces = format::count(breakdown.rows.len() as u64),
+        tokens = format::compact(breakdown.totals.tokens.total)
     )
 }
 
 fn provider_meta(breakdown: &Breakdown) -> String {
-    format!(
-        "{} providers · {} requests",
-        format::count(breakdown.rows.len() as u64),
-        format::count(breakdown.totals.requests)
+    tr!(
+        "usage.meta_providers_requests",
+        providers = format::count(breakdown.rows.len() as u64),
+        requests = format::count(breakdown.totals.requests)
     )
 }
 
 fn tools_meta(snapshot: &UsageSnapshot) -> String {
     let tools = &snapshot.tools;
     match snapshot.summary.tool_error_rate() {
-        Some(rate) if tools.errors > 0 => format!(
-            "{} calls · {} failed ({})",
-            format::count(tools.calls),
-            format::count(tools.errors),
-            format::percent(rate)
+        Some(rate) if tools.errors > 0 => tr!(
+            "usage.meta_calls_failed_pct",
+            calls = format::count(tools.calls),
+            failed = format::count(tools.errors),
+            rate = format::percent(rate)
         ),
-        Some(_) => format!("{} calls · none failed", format::count(tools.calls)),
-        None => "no tool calls".to_string(),
+        Some(_) => tr!(
+            "usage.meta_calls_none_failed",
+            calls = format::count(tools.calls)
+        ),
+        None => tr!("usage.no_tool_calls"),
     }
 }
 
@@ -4221,38 +5026,31 @@ fn delta_sub(snapshot: &UsageSnapshot, metric: ChartMetric, fallback: &str) -> S
     // The sign already carries direction; the arrow only earns its place when
     // there is no percentage to read.
     match delta.pct {
-        Some(_) => format!("{} vs previous period", format::delta(delta.pct)),
+        Some(_) => tr!("usage.delta_vs_previous", delta = format::delta(delta.pct)),
         None => match delta.direction {
-            Direction::Up => "up from nothing last period".to_string(),
-            Direction::Down => "down from last period".to_string(),
-            Direction::Flat => "no change vs previous period".to_string(),
+            Direction::Up => tr!("usage.delta_up_from_nothing"),
+            Direction::Down => tr!("usage.delta_down_from_last"),
+            Direction::Flat => tr!("usage.delta_no_change"),
         },
     }
-}
-
-fn share_sub(part: u64, total: u64) -> String {
-    if total == 0 {
-        return "no tokens".into();
-    }
-    format!("{} of tokens", format::share(part as f64 / total as f64))
 }
 
 /// Why a metric is not offered, phrased for the data that is missing.
 fn unavailable_reason(unavailable: &[&str]) -> String {
     let mut reasons: Vec<String> = Vec::new();
-    if unavailable.contains(&"Cost") {
-        reasons.push("cost needs a price table for these models".to_string());
+    if unavailable.contains(&"cost") {
+        reasons.push(tr!("usage.reason_needs_price_table"));
     }
-    if unavailable.contains(&"Latency") {
-        reasons.push("response time needs measurable request gaps".to_string());
+    if unavailable.contains(&"latency") {
+        reasons.push(tr!("usage.reason_needs_request_gaps"));
     }
     if reasons.is_empty() {
         String::new()
     } else {
-        format!(
-            "{} not shown: {}",
-            unavailable.join(", "),
-            reasons.join("; ")
+        tr!(
+            "usage.not_shown",
+            metrics = unavailable.join(", "),
+            reasons = reasons.join("; ")
         )
     }
 }
@@ -4263,22 +5061,13 @@ struct KpiCell {
     value: String,
     sub: String,
     tone: CellTone,
-    click: Option<KpiClick>,
+    click: Option<ChartMetric>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CellTone {
     Normal,
-    Alert,
     Muted,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum KpiClick {
-    /// Focus the failures: show only failed requests.
-    ErrorsOnly,
-    /// Point the main chart at the metric this card measures.
-    Metric(ChartMetric),
 }
 
 // ── export ─────────────────────────────────────────────────────────────────
@@ -4425,7 +5214,7 @@ pub fn export_json(index: &UsageIndex, snapshot: &UsageSnapshot, search: &str) -
             serde_json::json!({
                 "timestamp_ms": row.ts_ms,
                 "session_id": index.session(row.session).id,
-                "kind": row.kind.label(),
+                "kind": row.kind.as_str(),
                 "model": index.model(row.model).label,
                 "message": row.message,
             })
@@ -4438,7 +5227,7 @@ pub fn export_json(index: &UsageIndex, snapshot: &UsageSnapshot, search: &str) -
         .map(|row| {
             serde_json::json!({
                 "tool": row.label,
-                "class": row.class.label(),
+                "class": row.class.as_str(),
                 "calls": row.calls,
                 "errors": row.errors,
                 "avg_duration_ms": row.avg_duration_ms(),
@@ -4451,10 +5240,10 @@ pub fn export_json(index: &UsageIndex, snapshot: &UsageSnapshot, search: &str) -
         "generated_at_ms": super::collect::now_ms(),
         "range": {
             "preset": snapshot.filter.range.preset.as_str(),
-            "label": snapshot.filter.range.label(),
+            "label": snapshot.filter.range.preset.as_str(),
             "start_ms": snapshot.filter.range.start_ms,
             "end_ms": snapshot.filter.range.end_ms,
-            "granularity": snapshot.series.granularity.label(),
+            "granularity": snapshot.series.granularity.as_str(),
         },
         "summary": {
             "requests": totals.requests,
@@ -4513,6 +5302,27 @@ pub fn export_json(index: &UsageIndex, snapshot: &UsageSnapshot, search: &str) -
         "workspaces": breakdown(&snapshot.workspaces.rows, "workspaces"),
         "sessions": sessions,
         "buckets": buckets,
+        // The calendar's days, in the same shape as the buckets/series so an
+        // export can be joined day by day. The calendar is a fixed trailing
+        // year, independent of the date range, and only the days it actually
+        // covers are exported.
+        "calendar": snapshot
+            .calendar
+            .in_range()
+            .map(|day| {
+                serde_json::json!({
+                    "start_ms": day.start_ms,
+                    "requests": day.totals.requests,
+                    "input": day.totals.tokens.input,
+                    "output": day.totals.tokens.output,
+                    "cache_read": day.totals.tokens.cache_read,
+                    "cache_write": day.totals.tokens.cache_write,
+                    "total": day.totals.tokens.total,
+                    "errors": day.totals.errors,
+                    "cost_usd": day.totals.cost_usd,
+                })
+            })
+            .collect::<Vec<_>>(),
         "tools": tools,
         "errors_detail": errors,
         "insights": snapshot.insights.iter().map(|insight| insight.text.clone()).collect::<Vec<_>>(),

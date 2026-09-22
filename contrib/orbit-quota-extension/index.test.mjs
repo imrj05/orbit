@@ -113,6 +113,38 @@ test("an unconfigured account appends nothing", async () => {
   });
 });
 
+test("a session-only Ollama Cloud setup still snapshots usage", async () => {
+  await withHome(
+    {
+      "ollama-cloud-session": {
+        type: "ollama_cloud_session",
+        session: "__Secure-session=abc123",
+      },
+    },
+    async () => {
+      globalThis.fetch = async (url) => ({
+        ok: true,
+        status: 200,
+        redirected: false,
+        url,
+        text: async () =>
+          '<h2>Cloud Usage</h2> (Pro) <div aria-label="Session usage 30% used"></div>',
+      });
+      const pi = fakePi();
+      await activate(pi);
+      await pi.fire("session_start", fakeCtx([]));
+      await pendingSnapshot();
+      assert.equal(pi.entries.length, 1);
+      const report = pi.entries[0].data.providers.find(
+        (provider) => provider.provider === "ollama",
+      );
+      assert.ok(report, "the session alone configures the ollama adapter");
+      assert.equal(report.windows.find((w) => w.id === "session").usedPercent, 30);
+      await pi.fire("session_shutdown");
+    },
+  );
+});
+
 test("a turn end inside the refresh gap does not append again", async () => {
   await withHome({ deepseek: { type: "api_key", key: "test-key" } }, async () => {
     let calls = 0;

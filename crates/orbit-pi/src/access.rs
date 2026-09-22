@@ -31,11 +31,7 @@ pub enum AccessMode {
 
 impl AccessMode {
     /// Every mode, in picker order.
-    pub const ALL: [AccessMode; 3] = [
-        Self::Supervised,
-        Self::AutoAcceptEdits,
-        Self::FullAccess,
-    ];
+    pub const ALL: [AccessMode; 3] = [Self::Supervised, Self::AutoAcceptEdits, Self::FullAccess];
 
     /// The wire/persistence id. Kept in sync with `MODES` in the extension's
     /// `policy.js`.
@@ -59,20 +55,20 @@ impl AccessMode {
     }
 
     /// Short label for the composer chip and picker rows.
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            Self::Supervised => "Supervised",
-            Self::AutoAcceptEdits => "Auto-accept edits",
-            Self::FullAccess => "Full access",
+            Self::Supervised => tr!("access.supervised"),
+            Self::AutoAcceptEdits => tr!("access.auto_accept_edits"),
+            Self::FullAccess => tr!("access.full_access"),
         }
     }
 
     /// One-line explanation shown under the label in the picker.
-    pub fn description(self) -> &'static str {
+    pub fn description(self) -> String {
         match self {
-            Self::Supervised => "Ask before commands and file changes",
-            Self::AutoAcceptEdits => "Auto-approve edits, ask before other actions",
-            Self::FullAccess => "Allow commands and edits without prompts",
+            Self::Supervised => tr!("access.supervised_hint"),
+            Self::AutoAcceptEdits => tr!("access.auto_accept_edits_hint"),
+            Self::FullAccess => tr!("access.full_access_hint"),
         }
     }
 
@@ -131,7 +127,10 @@ mod tests {
 
     #[test]
     fn unknown_wire_falls_back_to_default() {
-        assert_eq!(AccessMode::from_wire("bypass-everything"), AccessMode::default());
+        assert_eq!(
+            AccessMode::from_wire("bypass-everything"),
+            AccessMode::default()
+        );
         assert_eq!(AccessMode::from_wire(""), AccessMode::default());
     }
 

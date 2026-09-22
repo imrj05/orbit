@@ -146,8 +146,8 @@ pub fn share(fraction: f64) -> String {
 /// A signed percentage for a comparison: `+12.4%`, `-8.2%`, `no change`.
 pub fn delta(pct: Option<f64>) -> String {
     match pct {
-        None => "no change".into(),
-        Some(pct) if pct.abs() < 0.05 => "no change".into(),
+        None => tr!("usage.no_change"),
+        Some(pct) if pct.abs() < 0.05 => tr!("usage.no_change"),
         Some(pct) => format!("{:+.1}%", pct),
     }
 }
@@ -207,15 +207,15 @@ pub fn span_ms(ms: i64) -> String {
 /// Compact age for "updated just now" style labels.
 pub fn age_label(ms_ago: i64) -> String {
     if ms_ago < 45_000 {
-        return "just now".into();
+        return tr!("usage.just_now");
     }
     if ms_ago < 60_000 * 60 {
-        return format!("{}m ago", ms_ago / 60_000);
+        return tr!("usage.m_ago", count = ms_ago / 60_000);
     }
     if ms_ago < 86_400_000 {
-        return format!("{}h ago", ms_ago / 3_600_000);
+        return tr!("usage.h_ago", count = ms_ago / 3_600_000);
     }
-    format!("{}d ago", ms_ago / 86_400_000)
+    tr!("usage.d_ago", count = ms_ago / 86_400_000)
 }
 
 #[cfg(test)]

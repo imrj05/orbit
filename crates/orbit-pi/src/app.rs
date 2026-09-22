@@ -20,6 +20,7 @@
 //! - [`helpers`] — icons, file glyphs, and small formatting helpers
 
 use std::{
+    cell::Cell,
     collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
@@ -54,6 +55,7 @@ use crate::checkpoint;
 use crate::command_palette::{self, CommandPalette, PaletteCommand, PaletteSnapshot};
 use crate::composer::ComposerInput;
 use crate::context_meter::{self, ContextMeterData, ContextPopup};
+use crate::custom_ui::{CustomCancel, CustomFrame, CustomInput, CustomUi};
 use crate::dialog::{ApprovalRequest, Dialog, DialogRequest, DialogResponse};
 use crate::git_panel::GitPanel;
 use crate::mentions::{self, AcEntry, SharedAutocomplete, SlashCommand, Trigger, TriggerKind};
@@ -70,11 +72,12 @@ use crate::sessions::{self, SessionInfo};
 use crate::sidepane::{SidePane, SidePaneResize};
 use crate::skills::Skill;
 use crate::terminal::{TerminalPanel, TerminalResize};
-use crate::theme::{self, Theme, ThemeId, ThemeMode};
+use crate::theme::{self, Theme, ThemeMode};
 use crate::toast;
 use crate::transcript::{self, Transcript};
 use crate::usage::page::UsagePage;
 use crate::watch;
+use crate::widgets::{ExtensionWidget, WidgetPlacement};
 use crate::workspace_picker::{WorkspaceEntry, WorkspacePicker};
 
 const SIDEBAR_DEFAULT_W: f32 = 248.;
@@ -115,11 +118,11 @@ const QUOTA_ENTRY_POLL_INTERVAL: Duration = Duration::from_secs(60);
 const QUOTA_ENTRY_BOOTSTRAP_INTERVAL: Duration = Duration::from_secs(3);
 const QUOTA_ENTRY_BOOTSTRAP_POLLS: u8 = 10;
 
-/// Rows in the composer's "+" add menu (icon, label, trailing hint).
+/// Rows in the composer's "+" add menu (icon, label key, trailing hint).
 const ADD_MENU_ITEMS: [(&str, &str, &str); 3] = [
-    ("icons/image.svg", "Attach image…", ""),
-    ("icons/file.svg", "Attach file…", ""),
-    ("icons/at-sign.svg", "Mention file", "@"),
+    ("icons/image.svg", "composer.attach_image", ""),
+    ("icons/file.svg", "composer.attach_file", ""),
+    ("icons/at-sign.svg", "composer.mention_file", "@"),
 ];
 
 /// Maximum sessions kept alive in the background. Beyond this, the
@@ -143,6 +146,9 @@ struct ParkedSession {
     busy: bool,
     added: u64,
     removed: u64,
+    /// Extension `setWidget` blocks live at park time, so switching back to a
+    /// warm session restores them (a parked process never re-emits).
+    widgets: Vec<ExtensionWidget>,
     /// When this session was last parked; drives idle TTL reaping.
     parked_at: Instant,
 }
@@ -218,6 +224,9 @@ pub struct OrbitApp {
     /// Settings → Agent: `set_auto_retry` value. pi's `get_state` does not
     /// expose this, so it reflects the last value Orbit sent.
     auto_retry: bool,
+    /// Settings → Agent: auto session titles. Persisted to
+    /// `~/.orbit-pi/auto-title.json`, which the bundled title extension reads.
+    auto_title: crate::auto_title::AutoTitleConfig,
     /// Display name pi reports for the session (`get_state.sessionName`).
     session_name: Option<String>,
     /// pi is compacting right now (`get_state` / `compaction_*`).
@@ -240,7 +249,7 @@ pub struct OrbitApp {
     /// Text of the last optimistic follow-up. Cleared once pi confirms it in
     /// `queue_update`; restored to the composer if the command fails.
     pending_follow_up: Option<String>,
-    /// The Agent section's session rename field.
+    /// Rename field in the session-details popover.
     session_name_input: Entity<ComposerInput>,
     status: String,
     /// When the current `status` message was set; the status bar shows it
@@ -303,6 +312,18 @@ pub struct OrbitApp {
     ask_focus: FocusHandle,
     /// Focus the panel (or its text field) on the next paint.
     ask_focus_pending: bool,
+    /// Extension `setWidget` text blocks (above/below the composer), keyed by
+    /// the extension's `widgetKey`. Per-session, so it parks with the session.
+    extension_widgets: Vec<ExtensionWidget>,
+    /// Live `ctx.ui.custom()` surfaces, keyed by their RPC id. The newest
+    /// (last) owns focus; multiple may be open when a component nests.
+    custom_ui: Vec<Entity<CustomUi>>,
+    /// Focus the top custom surface on the next paint — `tick` has no window.
+    custom_ui_focus_pending: bool,
+    /// Whether pi advertises the `custom` extension-UI capability in
+    /// `get_state.capabilities`. Purely informational today: frames are
+    /// handled whenever they arrive.
+    custom_ui_supported: bool,
     /// Full-window image lightbox for a transcript attachment image. `None`
     /// is closed. Opened by clicking an image tile, dismissed by click or
     /// Escape.
@@ -352,8 +373,11 @@ pub struct OrbitApp {
     /// Non-active workspace groups the user has explicitly expanded.
     expanded_workspace_groups: HashSet<String>,
     /// Workspace groups whose session list is expanded past
-    /// [`SIDEBAR_GROUP_SESSIONS_VISIBLE`] (Show more).
-    expanded_session_groups: HashSet<String>,
+    /// [`SIDEBAR_GROUP_SESSIONS_VISIBLE`]. The value is how many extra
+    /// sessions are revealed; each "Show more" click adds one step of
+    /// [`SIDEBAR_GROUP_SESSIONS_VISIBLE`], so a long history grows ten rows
+    /// at a time instead of landing all at once.
+    expanded_session_groups: HashMap<String, usize>,
     /// The projects Orbit lists in its sidebar — its own, user-curated folder
     /// list. pi owns the session files; this only records which folders the
     /// user added, persisted to `~/.orbit-pi/workspaces.json`. A workspace is
@@ -413,13 +437,19 @@ pub struct OrbitApp {
     workspace_picker: Option<Entity<WorkspacePicker>>,
     /// A checkout/create is running on the background executor.
     branch_operation_pending: bool,
-    /// Persisted preferred open-in app id (see [`ExternalApp::id`]).
-    preferred_open_in_app: Option<String>,
+    /// Persisted open-in choices, resolved against the active workspace.
+    open_in_prefs: platform::OpenInPrefs,
+    /// Serializes preference writes so rapid selections cannot save out of order.
+    open_in_save_task: Option<gpui::Task<()>>,
     /// Keeps the theme global observer alive so a settings toggle redraws.
     _theme_sub: Subscription,
     /// Keeps the composer observer alive: edits re-render the app so the
     /// send button's quiet/ready state tracks the text live.
     _input_sub: Subscription,
+    /// Keeps the transcript `cmd-c` interceptor alive: a live transcript
+    /// selection wins over the focused composer's own copy, but only while
+    /// one exists (the composer keeps its copy otherwise).
+    _copy_selection_sub: Subscription,
     /// Onboarding dependency check results (pi, node, git).
     deps: Vec<Dependency>,
     /// Whether the setup page is open on request (Settings → About →
@@ -433,6 +463,9 @@ pub struct OrbitApp {
     refreshing: bool,
     /// Whether the top-bar session-details popover is open.
     session_details_open: bool,
+    /// A popover-triggered title generation is in flight; the next
+    /// `session_info_changed` seeds the rename field from its result.
+    title_generating: bool,
     /// Whether the top-bar provider-quota popover is open.
     quota_popup_open: bool,
     /// The `sessionId` pi reports for the active session (its task id).
@@ -445,6 +478,10 @@ pub struct OrbitApp {
     latest_turn: Option<usize>,
     /// Right side pane — Review (git diff).
     sidepane: Entity<SidePane>,
+    /// Right dock — the workspace file tree (cmd-shift-e).
+    project_panel: Entity<crate::explorer::ProjectPanel>,
+    /// Full-page read-only file viewer (the Files surface).
+    file_viewer: Entity<crate::explorer::FileViewer>,
     /// Bottom panel — an integrated shell (cmd-j).
     terminal_panel: Entity<TerminalPanel>,
     /// Whether the Git page replaces the chat area.
@@ -515,6 +552,8 @@ pub struct OrbitApp {
     provider_editor: Option<ProviderEditor>,
     /// Provider id awaiting inline remove confirmation.
     provider_remove_confirm: Option<String>,
+    /// Provider id whose usage/quota popup is open.
+    provider_usage_open: Option<String>,
     /// Refresh button spin state on the Providers page.
     providers_refreshing: bool,
     /// Search filter for the provider grid.
@@ -566,6 +605,37 @@ pub struct OrbitApp {
     /// The staged release's version (e.g. `0.0.3`), mirrored beside
     /// `updater_status` so the settings buttons can name the download.
     updater_version: Option<String>,
+    /// The staged release's notes from the feed, mirrored for the update
+    /// modal's changelog.
+    updater_notes: Option<String>,
+    /// The feed's releases, newest first, mirrored for the modal's Version
+    /// History. Empty until the first check answers.
+    updater_history: Vec<crate::updater::Release>,
+    /// Whether the modal is showing Version History instead of the state's
+    /// body. The dialog underneath is preserved, so Back returns to it.
+    updater_history_open: bool,
+    /// The open update modal, if any. `None` leaves the download control and
+    /// the Check for Updates command running against `updater_status` alone.
+    updater_dialog: Option<UpdateDialog>,
+    /// Focus handle that carries the `UpdateDialog` key context while the
+    /// modal is open, so Escape dismisses it instead of aborting the run.
+    updater_dialog_focus: FocusHandle,
+    /// Focus the update modal on the next paint (`tick` has no window).
+    updater_dialog_focus_pending: bool,
+    /// True while the pointer is over the sidebar updater pill, which expands
+    /// it from the download icon into the "Update" label (the reference app's
+    /// pattern).
+    updater_button_hovered: bool,
+    /// In-flight pill width and label cross-fade. The animation closure writes
+    /// them, so a reversal mid-flight starts from the last painted frame
+    /// instead of snapping back to the collapsed width.
+    updater_button_width: Rc<Cell<f32>>,
+    updater_button_label_reveal: Rc<Cell<f32>>,
+    /// Width/reveal the current pill animation started from, plus a generation
+    /// that keys `with_animation` so each hover change restarts it.
+    updater_button_animation_from_width: f32,
+    updater_button_animation_from_reveal: f32,
+    updater_button_animation_generation: u64,
     /// Mirror of the persisted automatic-check preference, refreshed when the
     /// updater reports and on toggle, so frames never read the file.
     automatic_updates_enabled: bool,
@@ -593,7 +663,7 @@ impl Attachment {
             gpui::ImageFormat::Tiff => "tiff",
         };
         Self {
-            name: format!("Pasted image {}.{ext}", index + 1),
+            name: tr!("app.pasted_image", index = index + 1, ext = ext),
             mime: image.format.mime_type().to_string(),
             data: base64::engine::general_purpose::STANDARD.encode(&image.bytes),
             preview: Some(Arc::new(image.clone())),
@@ -656,18 +726,18 @@ impl OrbitApp {
         // dispatch to the (unhandled) Picker actions rather than submitting.
         let settings_filter = cx.new(|cx| {
             ComposerInput::new(cx)
-                .with_placeholder("Filter…")
+                .with_placeholder_key("app.filter")
                 .with_key_context("Composer Picker")
         });
         let open_in_filter = cx.new(|cx| {
             ComposerInput::new(cx)
-                .with_placeholder("Filter…")
+                .with_placeholder_key("app.filter")
                 .with_key_context("Composer Picker")
         });
         let provider_filter = cx.new(|cx| {
             ComposerInput::new(cx)
                 .with_element_id("provider-filter")
-                .with_placeholder("Search providers…")
+                .with_placeholder_key("app.search_providers")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
         });
@@ -675,7 +745,7 @@ impl OrbitApp {
         let models_filter = cx.new(|cx| {
             ComposerInput::new(cx)
                 .with_element_id("models-filter")
-                .with_placeholder("Search models…")
+                .with_placeholder_key("app.search_models")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
         });
@@ -687,7 +757,7 @@ impl OrbitApp {
         let plugin_source_input = cx.new(|cx| {
             ComposerInput::new(cx)
                 .with_element_id("plugin-source-input")
-                .with_placeholder("npm:@scope/pkg, git:github.com/owner/repo, or ./path")
+                .with_placeholder_key("app.plugin_source_placeholder")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
         });
@@ -695,7 +765,7 @@ impl OrbitApp {
         let plugins_filter = cx.new(|cx| {
             ComposerInput::new(cx)
                 .with_element_id("plugins-filter")
-                .with_placeholder("Search installed plugins…")
+                .with_placeholder_key("app.search_installed_plugins")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
         });
@@ -706,7 +776,7 @@ impl OrbitApp {
         let skills_filter = cx.new(|cx| {
             ComposerInput::new(cx)
                 .with_element_id("skills-filter")
-                .with_placeholder("Search skills…")
+                .with_placeholder_key("app.search_skills")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
         });
@@ -719,7 +789,7 @@ impl OrbitApp {
         let session_name_input = cx.new(|cx| {
             ComposerInput::new(cx)
                 .with_element_id("session-name-input")
-                .with_placeholder("Session name…")
+                .with_placeholder_key("app.session_name")
                 .with_max_lines(1)
         });
 
@@ -733,7 +803,7 @@ impl OrbitApp {
         access_mode.persist();
         let (client, connect_error) = match extensions.spawn(&workspace) {
             Ok(client) => (Some(client), String::new()),
-            Err(err) => (None, format!("pi spawn failed: {err}")),
+            Err(err) => (None, tr!("runtime.pi_spawn_failed", error = err)),
         };
         let runtime = RuntimeStatus {
             started_at: client.as_ref().map(|_| Instant::now()),
@@ -754,6 +824,32 @@ impl OrbitApp {
         // the send button's quiet/ready state tracks the text as you type.
         let input_sub = cx.observe(&input, |_, _, cx| cx.notify());
 
+        // `cmd-c` with a live transcript selection copies that selection even
+        // while the composer holds focus — an interceptor is the only hook
+        // that runs before focus-path action dispatch, so the composer keeps
+        // its own copy whenever the transcript has nothing selected.
+        let copy_selection_sub = {
+            let app = cx.entity().downgrade();
+            cx.intercept_keystrokes(move |event, _window, cx| {
+                let keystroke = &event.keystroke;
+                if keystroke.key != "c"
+                    || !keystroke.modifiers.platform
+                    || keystroke.modifiers.shift
+                    || keystroke.modifiers.alt
+                    || keystroke.modifiers.control
+                {
+                    return;
+                }
+                let _ = app.update(cx, |app, cx| {
+                    let Some(text) = app.transcript.selected_text() else {
+                        return;
+                    };
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                    cx.stop_propagation();
+                });
+            })
+        };
+
         // Probe the runtime pieces we need (pi, node, git) so the setup page
         // can show install commands when something is missing.
         let deps = onboarding::check_dependencies();
@@ -767,6 +863,50 @@ impl OrbitApp {
         let git_panel = cx.new(GitPanel::new);
         // Usage analytics over pi's own session store.
         let usage = cx.new(UsagePage::new);
+        // Right dock — the workspace file tree. A row click routes to the app,
+        // which opens the Files surface; the panel stays viewer-agnostic.
+        let app_weak = cx.entity().downgrade();
+        let project_panel = cx.new(|cx| {
+            crate::explorer::ProjectPanel::new(
+                Rc::new({
+                    let app_weak = app_weak.clone();
+                    move |path, display, cx: &mut App| {
+                        let _ = app_weak.update(cx, |app, cx| {
+                            app.open_file_in_viewer(path, display, cx)
+                        });
+                    }
+                }),
+                Rc::new({
+                    let app_weak = app_weak.clone();
+                    move |request, cx: &mut App| {
+                        let _ = app_weak
+                            .update(cx, |app, cx| app.on_file_op(request, cx));
+                    }
+                }),
+                Rc::new(move |cx: &mut App| {
+                    // The panel closes itself inside its own listener (it already
+                    // holds that entity's lease), so this only repaints the
+                    // shell. Calling back into `project_panel.update` here would
+                    // double-lease the entity and abort.
+                    let _ = app_weak.update(cx, |_app, cx| cx.notify());
+                }),
+                cx,
+            )
+        });
+        // Full-page read-only file viewer.
+        let viewer_weak = cx.entity().downgrade();
+        let file_viewer = cx.new(|cx| {
+            crate::explorer::FileViewer::new(
+                Rc::new(move |cx: &mut App| {
+                    // The viewer hides itself inside its own listener (it already
+                    // holds that entity's lease), so this only repaints the
+                    // shell. Calling back into `file_viewer.update` here would
+                    // double-lease the entity and abort.
+                    let _ = viewer_weak.update(cx, |_app, cx| cx.notify());
+                }),
+                cx,
+            )
+        });
 
         let mut app = Self {
             client,
@@ -792,6 +932,7 @@ impl OrbitApp {
             follow_up_mode: "one-at-a-time".into(),
             auto_compaction: true,
             auto_retry: true,
+            auto_title: crate::auto_title::AutoTitleConfig::load(),
             session_name: None,
             is_compacting: false,
             retrying: false,
@@ -825,6 +966,10 @@ impl OrbitApp {
             ask_replay: None,
             ask_focus: cx.focus_handle(),
             ask_focus_pending: false,
+            extension_widgets: Vec::new(),
+            custom_ui: Vec::new(),
+            custom_ui_focus_pending: false,
+            custom_ui_supported: false,
             lightbox: None,
             transcript_search: None,
             session_menu: None,
@@ -844,7 +989,7 @@ impl OrbitApp {
             history_index: 0,
             collapsed_workspaces: HashSet::new(),
             expanded_workspace_groups: HashSet::new(),
-            expanded_session_groups: HashSet::new(),
+            expanded_session_groups: HashMap::new(),
             workspaces: load_workspaces(),
             workspace_menu: None,
             current_session_path: None,
@@ -869,20 +1014,25 @@ impl OrbitApp {
             branch_picker: None,
             workspace_picker: None,
             branch_operation_pending: false,
-            preferred_open_in_app: platform::load_preferred_open_in_app(),
+            open_in_prefs: platform::OpenInPrefs::load(),
+            open_in_save_task: None,
             _theme_sub: theme_sub,
             _input_sub: input_sub,
+            _copy_selection_sub: copy_selection_sub,
             deps,
             setup_open: false,
             host,
             refreshing: false,
             session_details_open: false,
+            title_generating: false,
             quota_popup_open: false,
             session_id: None,
             turn_count: 0,
             turn_open: false,
             latest_turn: None,
             sidepane,
+            project_panel,
+            file_viewer,
             terminal_panel,
             git_open: false,
             git_panel: git_panel.clone(),
@@ -910,6 +1060,7 @@ impl OrbitApp {
             provider_key_editor: None,
             provider_editor: None,
             provider_remove_confirm: None,
+            provider_usage_open: None,
             providers_refreshing: false,
             provider_filter: provider_filter.clone(),
             _provider_filter_sub: provider_filter_sub,
@@ -940,6 +1091,34 @@ impl OrbitApp {
                 .try_global::<crate::updater::UpdaterState>()
                 .and_then(|state| state.0.as_ref())
                 .and_then(|updater| updater.available_version()),
+            updater_notes: cx
+                .try_global::<crate::updater::UpdaterState>()
+                .and_then(|state| state.0.as_ref())
+                .and_then(|updater| updater.available_notes()),
+            updater_history: cx
+                .try_global::<crate::updater::UpdaterState>()
+                .and_then(|state| state.0.as_ref())
+                .map(|updater| updater.history())
+                .unwrap_or_default(),
+            updater_history_open: false,
+            updater_dialog: std::env::var_os("ORBIT_OPEN_UPDATE_DIALOG")
+                .is_some_and(|value| value == "1")
+                .then(|| UpdateDialog::Available {
+                    version: "0.0.11".into(),
+                    notes: Some(
+                        "### Contributors\n\n- **Dumitru Moloșnic** ([#11](https://github.com/imrj05/orbit/pull/11)) — light,\n  dark, and system appearance modes; transcript table sizing, streaming\n  scroll-position, and multiline command-preview fixes."
+                            .into(),
+                    ),
+                    from_check: false,
+                }),
+            updater_dialog_focus: cx.focus_handle(),
+            updater_dialog_focus_pending: false,
+            updater_button_hovered: false,
+            updater_button_width: Rc::new(Cell::new(updater_ui::UPDATER_PILL_COLLAPSED_W)),
+            updater_button_label_reveal: Rc::new(Cell::new(0.)),
+            updater_button_animation_from_width: updater_ui::UPDATER_PILL_COLLAPSED_W,
+            updater_button_animation_from_reveal: 0.,
+            updater_button_animation_generation: 0,
             automatic_updates_enabled: cx
                 .try_global::<crate::updater::UpdaterState>()
                 .and_then(|state| state.0.as_ref())
@@ -952,6 +1131,17 @@ impl OrbitApp {
         app.git_panel.update(cx, |panel, _| {
             panel.set_open_file(Rc::new(move |path, _window, cx| {
                 review_sidepane.update(cx, |pane, cx| pane.show_file(path, cx));
+            }));
+        });
+        // A conflicted (or history) file on the Git page opens in the Files
+        // editor. `open_file_in_viewer` leaves the Git page, which is the
+        // intended "resolve it, then continue the merge" flow.
+        let app_weak = cx.entity().downgrade();
+        app.git_panel.update(cx, |panel, _| {
+            panel.set_open_path(Rc::new(move |path, display, _window, cx| {
+                let _ = app_weak.update(cx, |app, cx| {
+                    app.open_file_in_viewer(path, display, cx);
+                });
             }));
         });
         // The Git page's Back button leaves the page. The panel closes itself
@@ -1042,7 +1232,7 @@ impl OrbitApp {
     /// Only sessions inside Orbit's own project list reach the sidebar (and
     /// the ⌘P palette); everything else pi has on disk is left where it is.
     pub(super) fn sidebar_sessions(&self) -> Vec<SessionInfo> {
-        let listed: Vec<SessionInfo> = self
+        let mut listed: Vec<SessionInfo> = self
             .sessions
             .iter()
             .filter(|session| {
@@ -1051,10 +1241,28 @@ impl OrbitApp {
             })
             .cloned()
             .collect();
+        // An explicit rename lives in memory until the next disk scan; keep
+        // the open row in step with the header so the sidebar doesn't lag.
+        if let Some(name) = self
+            .session_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            if let Some(path) = &self.current_session_path {
+                if let Some(session) = listed.iter_mut().find(|s| &s.path == path) {
+                    session.title = name.to_string();
+                }
+            }
+        }
+        let first_message = self.transcript.first_user_message();
         sessions_with_placeholder(
             &listed,
             self.current_session_path.as_deref(),
-            self.current_title.as_deref(),
+            self.session_name
+                .as_deref()
+                .or(self.current_title.as_deref()),
+            first_message.as_deref(),
             self.current_workspace.as_deref(),
             !self.transcript.is_empty(),
         )
@@ -1164,8 +1372,16 @@ enum SideRow {
     },
     /// Session row — index into the (newest-first) sessions list.
     Session(usize),
-    /// Expand a workspace group to reveal hidden sessions (`count` = how many).
-    ShowMore { label: String, count: usize },
+    /// Reveal the next batch of hidden sessions in a workspace group
+    /// (`count` = the step size, at most one
+    /// [`SIDEBAR_GROUP_SESSIONS_VISIBLE`]). `can_collapse` adds the
+    /// right-side collapse affordance once the group has grown past the
+    /// base cap.
+    ShowMore {
+        label: String,
+        count: usize,
+        can_collapse: bool,
+    },
     /// Collapse a workspace group back to the truncated list.
     ShowLess { label: String },
 }
@@ -1259,6 +1475,31 @@ pub(crate) enum SettingsSection {
     Appearance,
     Providers,
     About,
+}
+
+/// The update modal's state. One surface serves both entry points: the
+/// download control starts at [`Self::Available`] (a signed release is
+/// already staged), while Check for Updates starts at [`Self::Checking`] and
+/// lands on `Available`, `UpToDate`, or `Failed` when the worker reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum UpdateDialog {
+    /// A check is in flight; the modal shows "Searching for a new version…".
+    Checking,
+    /// A signed release is staged and ready. `from_check` picks the secondary
+    /// button's label: a check offers Cancel, the download control offers
+    /// Later.
+    Available {
+        version: String,
+        notes: Option<String>,
+        from_check: bool,
+    },
+    /// The check completed and this build is current.
+    UpToDate,
+    /// The check or install failed, with the message to show inline.
+    Failed(String),
+    /// This build can't check for updates itself — a dev run or a binary
+    /// outside a managed install. The modal explains instead of toasting.
+    Unavailable,
 }
 
 /// The provider editor's open state. Inputs are `ComposerInput` entities so
@@ -1397,12 +1638,12 @@ fn method_label(id: &str, label: &str, connected: bool) -> String {
     match id {
         "browser" | "oauth" => {
             if connected {
-                "Reconnect".to_string()
+                tr!("settings.reconnect")
             } else {
-                "Sign in".to_string()
+                tr!("settings.sign_in")
             }
         }
-        "device_code" => "Use device code".to_string(),
+        "device_code" => tr!("settings.use_device_code"),
         other => {
             let mut chars = other.replace(['_', '-'], " ").chars().collect::<Vec<_>>();
             if let Some(first) = chars.first_mut() {
@@ -1444,10 +1685,16 @@ enum ProviderAction {
     },
     /// Open the Ollama Cloud session editor (a pasted cookie header) — the
     /// legacy session/weekly path, distinct from the monthly-credit API key.
+    /// Carries the provider id that opened it (`ollama` or `ollama-cloud`).
     EditOllamaSession {
+        id: String,
         name: String,
     },
     SignOut {
+        id: String,
+    },
+    /// Open the provider's usage/quota popup (windows, balances, spend).
+    ShowUsage {
         id: String,
     },
     Configure {
@@ -1496,7 +1743,7 @@ enum RuntimeState {
 /// Which dropdown is open on the settings surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SettingsSelect {
-    Theme,
+    Theme(ThemeMode),
     Language,
     UiFontSize,
     TerminalFont,
@@ -1507,6 +1754,8 @@ enum SettingsSelect {
     BackdropBlur,
     BackdropCell,
     BackdropFade,
+    /// The model the auto-title extension asks (Settings → Agent).
+    TitleModel,
 }
 
 // ── feature modules ───────────────────────────────────────────────────────
@@ -1519,8 +1768,8 @@ mod dialogs;
 mod events;
 mod helpers;
 mod open_in;
-mod pickers;
 mod pi_update_ui;
+mod pickers;
 mod runtime;
 mod search;
 mod session;
@@ -1543,8 +1792,10 @@ mod popup_layout_tests;
 mod sidebar_active_reveal_tests;
 #[cfg(test)]
 mod sidebar_placeholder_tests;
+#[cfg(test)]
+mod titlebar_layout_tests;
 
 // `icon` and friends are part of the crate-wide UI kit; keep their original
 // `crate::app::…` paths stable for the other modules that import them.
-pub(crate) use helpers::{file_glyph, icon, icon_dyn, nerd_font_family};
+pub(crate) use helpers::{file_badge, file_glyph, icon, icon_dyn, nerd_font_family};
 use sidebar::sessions_with_placeholder;

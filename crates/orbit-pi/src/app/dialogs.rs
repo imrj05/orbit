@@ -59,9 +59,154 @@ impl OrbitApp {
                     self.input.update(cx, |input, cx| input.set_text(text, cx));
                 }
             }
-            // `setWidget` / `setTitle` are terminal chrome with no desktop home.
+            // `custom` streams a component's rendered frames; see
+            // `crate::custom_ui`.
+            "custom" => self.apply_custom_frame(value, cx),
+            // `setWidget` is a small text block the extension wants above or
+            // below the editor; render it natively.
+            "setWidget" => self.apply_extension_widget(value, cx),
+            // `setTitle` is terminal chrome with no desktop home.
             _ => {}
         }
+    }
+
+    /// Apply an extension `setWidget` request: replace — or, when the payload
+    /// carries no lines, clear — one keyed text block. RPC delivers only the
+    /// string-array form; component factories never reach Orbit.
+    fn apply_extension_widget(&mut self, value: &Value, cx: &mut Context<Self>) {
+        let Some(key) = value.get("widgetKey").and_then(Value::as_str) else {
+            return;
+        };
+        let placement = match value.get("widgetPlacement").and_then(Value::as_str) {
+            Some("belowEditor") => WidgetPlacement::BelowEditor,
+            _ => WidgetPlacement::AboveEditor,
+        };
+        let lines: Vec<String> = value
+            .get("widgetLines")
+            .and_then(Value::as_array)
+            .map(|lines| {
+                lines
+                    .iter()
+                    .map(|line| line.as_str().unwrap_or_default().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(ix) = self.extension_widgets.iter().position(|w| w.key == key) {
+            if lines.is_empty() {
+                self.extension_widgets.remove(ix);
+            } else {
+                self.extension_widgets[ix].lines = lines;
+                self.extension_widgets[ix].placement = placement;
+            }
+        } else if !lines.is_empty() {
+            self.extension_widgets.push(ExtensionWidget {
+                key: key.to_string(),
+                placement,
+                lines,
+            });
+        }
+        cx.notify();
+    }
+
+    /// Apply a `custom` extension-UI frame: open a surface, update it, or
+    /// close it. The server has already composited the component into final
+    /// lines, so each frame is just text plus a cursor.
+    fn apply_custom_frame(&mut self, value: &Value, cx: &mut Context<Self>) {
+        let Some(frame) = CustomFrame::from_event(value) else {
+            return;
+        };
+        match frame {
+            CustomFrame::Open(surface) => {
+                // A repeat `open` for a live id (e.g. a re-render) updates in
+                // place rather than stacking a duplicate surface.
+                if let Some(existing) = self
+                    .custom_ui
+                    .iter()
+                    .find(|ui| ui.read(cx).id() == surface.id)
+                    .cloned()
+                {
+                    existing.update(cx, |ui, cx| {
+                        ui.apply(surface);
+                        cx.notify();
+                    });
+                    return;
+                }
+                let id = surface.id.clone();
+                let this = cx.weak_entity();
+                let input_id = id.clone();
+                let on_input: CustomInput = Box::new(move |data, _window, cx| {
+                    let payload = serde_json::json!({
+                        "type": "extension_ui_input",
+                        "id": input_id,
+                        "data": data,
+                    });
+                    let _ = this.update(cx, |app, cx| {
+                        app.send(CommandBody::Raw(payload), "extension_ui_input");
+                        cx.notify();
+                    });
+                });
+                let this = cx.weak_entity();
+                let cancel_id = id.clone();
+                let on_cancel: CustomCancel = Box::new(move |_window, cx| {
+                    let _ = this.update(cx, |app, cx| app.close_custom_ui(&cancel_id, cx));
+                });
+                let ui = cx.new(|cx| CustomUi::new(surface, on_input, on_cancel, cx));
+                self.custom_ui.push(ui);
+                self.custom_ui_focus_pending = true;
+                self.send_custom_resize(&id);
+            }
+            CustomFrame::Render(surface) => {
+                let id = surface.id.clone();
+                if let Some(ui) = self
+                    .custom_ui
+                    .iter()
+                    .find(|ui| ui.read(cx).id() == id)
+                    .cloned()
+                {
+                    ui.update(cx, |ui, cx| {
+                        ui.apply(surface);
+                        cx.notify();
+                    });
+                }
+            }
+            CustomFrame::Close { id, .. } => {
+                self.custom_ui.retain(|ui| ui.read(cx).id() != id);
+                // Focus the new top surface, or the composer if none is left.
+                self.custom_ui_focus_pending = true;
+            }
+        }
+        cx.notify();
+    }
+
+    /// Report the host's viewport to a custom component so it re-renders at
+    /// the width the card will actually paint at.
+    fn send_custom_resize(&mut self, id: &str) {
+        let payload = serde_json::json!({
+            "type": "extension_ui_resize",
+            "id": id,
+            "width": crate::custom_ui::CUSTOM_UI_COLUMNS,
+            "height": crate::custom_ui::CUSTOM_UI_ROWS,
+        });
+        self.send(CommandBody::Raw(payload), "extension_ui_resize");
+    }
+
+    /// Cancel a custom surface and tell pi, so the extension's pending promise
+    /// resolves instead of waiting forever. Used by the scrim and on session
+    /// switches.
+    pub(super) fn close_custom_ui(&mut self, id: &str, cx: &mut Context<Self>) {
+        if !self.custom_ui.iter().any(|ui| ui.read(cx).id() == id) {
+            return;
+        }
+        let payload = serde_json::json!({
+            "type": "extension_ui_response",
+            "id": id,
+            "cancelled": true,
+        });
+        self.send(CommandBody::Raw(payload), "extension_ui_response");
+        self.custom_ui.retain(|ui| ui.read(cx).id() != id);
+        // Focus the new top surface, or the composer if none is left.
+        self.custom_ui_focus_pending = true;
+        cx.notify();
     }
 
     /// Open the modal dialog for a dialog request. pi blocks one request at a
@@ -192,6 +337,16 @@ impl OrbitApp {
         self.ask_questions.clear();
         self.ask_replay = None;
         self.ask_focus_pending = false;
+        // Custom-UI surfaces belong to the departing session too; cancel them
+        // so their parked runs can settle.
+        let custom_ids: Vec<String> = self
+            .custom_ui
+            .iter()
+            .map(|ui| ui.read(cx).id().to_string())
+            .collect();
+        for id in custom_ids {
+            self.close_custom_ui(&id, cx);
+        }
         let Some(dialog) = self.dialog.take() else {
             return;
         };

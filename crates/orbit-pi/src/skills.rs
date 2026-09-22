@@ -357,8 +357,13 @@ fn write_override(skill: &Skill, workspace: &Path, enabled: bool) -> Result<(), 
     }
     let mut root: Map<String, Value> = match fs::read_to_string(&path) {
         Ok(raw) if !raw.trim().is_empty() => {
-            let value: Value = serde_json::from_str(&raw)
-                .map_err(|err| format!("{} is not valid JSON: {err}", path.display()))?;
+            let value: Value = serde_json::from_str(&raw).map_err(|err| {
+                tr!(
+                    "errors.not_valid_json",
+                    path = path.display().to_string(),
+                    error = err
+                )
+            })?;
             match value {
                 Value::Object(map) => map,
                 _ => return Err(format!("{} is not a JSON object", path.display())),
@@ -366,15 +371,18 @@ fn write_override(skill: &Skill, workspace: &Path, enabled: bool) -> Result<(), 
         }
         Ok(_) => Map::new(),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Map::new(),
-        Err(err) => return Err(format!("Could not read {}: {err}", path.display())),
+        Err(err) => {
+            return Err(tr!(
+                "errors.could_not_read",
+                path = path.display().to_string(),
+                error = err
+            ))
+        }
     };
 
     if root.get("skills").is_some_and(|value| !value.is_array()) {
         // An older pi schema stored `skills` as an object — never clobber it.
-        return Err(
-            "settings.json has a non-array `skills` value; edit it by hand or run `pi config`"
-                .into(),
-        );
+        return Err(tr!("skills.settings_not_array"));
     }
     let mut entries: Vec<Value> = root
         .get("skills")
@@ -407,28 +415,49 @@ fn write_override(skill: &Skill, workspace: &Path, enabled: bool) -> Result<(), 
     root.insert("skills".to_string(), Value::Array(entries));
 
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|err| format!("Could not create {}: {err}", parent.display()))?;
+        fs::create_dir_all(parent).map_err(|err| {
+            tr!(
+                "errors.could_not_create",
+                path = parent.display().to_string(),
+                error = err
+            )
+        })?;
     }
     let mut serialized = serde_json::to_string_pretty(&Value::Object(root))
-        .map_err(|err| format!("Could not serialize settings: {err}"))?;
+        .map_err(|err| tr!("errors.could_not_serialize_settings", error = err))?;
     serialized.push('\n');
-    fs::write(&path, serialized).map_err(|err| format!("Could not write {}: {err}", path.display()))
+    fs::write(&path, serialized).map_err(|err| {
+        tr!(
+            "errors.could_not_write",
+            path = path.display().to_string(),
+            error = err
+        )
+    })
 }
 
 /// Delete a skill: remove its directory (or, for a skill declared directly at
 /// a discovery root, just its `SKILL.md`), then drop any override.
 pub(crate) fn delete(skill: &Skill, workspace: &Path) -> Result<(), String> {
     let Some(dir) = skill.dir() else {
-        return Err("skill has no parent directory".into());
+        return Err(tr!("skills.no_parent_dir"));
     };
     // Never remove a discovery root itself — only the skill folder under it.
     if dir.file_name().and_then(|name| name.to_str()) == Some("skills") {
-        fs::remove_file(&skill.file)
-            .map_err(|err| format!("Could not delete {}: {err}", skill.file.display()))?;
+        fs::remove_file(&skill.file).map_err(|err| {
+            tr!(
+                "errors.could_not_delete",
+                path = skill.file.display().to_string(),
+                error = err
+            )
+        })?;
     } else {
-        fs::remove_dir_all(dir)
-            .map_err(|err| format!("Could not delete {}: {err}", dir.display()))?;
+        fs::remove_dir_all(dir).map_err(|err| {
+            tr!(
+                "errors.could_not_delete",
+                path = dir.display().to_string(),
+                error = err
+            )
+        })?;
     }
     let _ = clear_overrides(skill, workspace);
     Ok(())
@@ -436,8 +465,13 @@ pub(crate) fn delete(skill: &Skill, workspace: &Path) -> Result<(), String> {
 
 /// The skill's markdown body, frontmatter stripped and line endings normalized.
 pub(crate) fn read_body(file: &Path) -> Result<String, String> {
-    let raw = fs::read_to_string(file)
-        .map_err(|err| format!("Could not read {}: {err}", file.display()))?;
+    let raw = fs::read_to_string(file).map_err(|err| {
+        tr!(
+            "errors.could_not_read",
+            path = file.display().to_string(),
+            error = err
+        )
+    })?;
     let normalized = raw.replace("\r\n", "\n").replace('\r', "\n");
     if !normalized.starts_with("---") {
         return Ok(normalized);

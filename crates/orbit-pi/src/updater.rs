@@ -118,6 +118,9 @@ struct StagedUpdate {
     /// The release version the payload carries, so the settings surfaces can
     /// name the download ("Download v0.0.3") without touching the feed again.
     version: Option<String>,
+    /// The release's notes from the feed's `<description>`, shown in the
+    /// update modal next to the version. `None` when the feed omitted them.
+    notes: Option<String>,
 }
 
 impl StagedUpdate {
@@ -126,6 +129,19 @@ impl StagedUpdate {
             path,
             cleanup: Some(cleanup),
             version: None,
+            notes: None,
+        }
+    }
+
+    /// The feed's release when this build can report but not install it (a
+    /// check-only build with no managed install). It carries the version and
+    /// notes the modal names; there is no payload to swap.
+    fn offered(item: &feed::AppcastItem) -> Self {
+        Self {
+            path: PathBuf::new(),
+            cleanup: None,
+            version: Some(item.version.clone()),
+            notes: item.notes.clone(),
         }
     }
 
@@ -147,9 +163,21 @@ impl Drop for StagedUpdate {
     }
 }
 
+/// One release from the update feed, for the modal's Version History. The
+/// version and notes are all the history view needs; the download URL and
+/// signature stay on the worker that fetched them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Release {
+    pub version: String,
+    pub notes: Option<String>,
+}
+
 pub struct Updater {
     status: Arc<Mutex<UpdateStatus>>,
     staged: Arc<Mutex<Option<StagedUpdate>>>,
+    /// The feed's releases, newest first: everything Version History shows.
+    /// Rewritten by each successful check, so a failed one keeps the last list.
+    history: Arc<Mutex<Vec<Release>>>,
     /// A check is running. Separate from `status` because a silent check is
     /// deliberately invisible, so the published status cannot keep two
     /// checks from overlapping.
@@ -161,8 +189,11 @@ pub struct Updater {
     preference_path: PathBuf,
     events: mpsc::Sender<UpdaterEvent>,
     receiver: mpsc::Receiver<UpdaterEvent>,
+    /// The managed install this build may replace, when there is one. A
+    /// forced dev build can check for updates without one (there is simply
+    /// nothing to install).
     #[cfg(unix)]
-    layout: InstallLayout,
+    layout: Option<InstallLayout>,
 }
 
 impl Updater {
@@ -182,8 +213,15 @@ impl Updater {
             return None;
         }
 
+        // A managed install is what the swap needs; `ORBIT_FORCE_UPDATER=1`
+        // keeps the checker alive without one so a dev run can exercise the
+        // modal, but installing stays unavailable.
         #[cfg(unix)]
-        let layout = InstallLayout::discover()?;
+        let layout = match InstallLayout::discover() {
+            Some(layout) => Some(layout),
+            None if forced => None,
+            None => return None,
+        };
 
         let preference_path = preference_path()?;
         let automatic = Arc::new(AtomicBool::new(read_automatic_preference(&preference_path)));
@@ -191,6 +229,7 @@ impl Updater {
         let updater = Self {
             status: Arc::new(Mutex::new(UpdateStatus::Idle)),
             staged: Arc::new(Mutex::new(None)),
+            history: Arc::new(Mutex::new(Vec::new())),
             checking: Arc::new(AtomicBool::new(false)),
             explicit_check: Arc::new(AtomicBool::new(false)),
             automatic,
@@ -202,8 +241,10 @@ impl Updater {
         };
 
         #[cfg(unix)]
-        if let Some(error) = take_update_error(&updater.layout) {
-            let _ = updater.events.send(UpdaterEvent::Failed(error));
+        if let Some(layout) = &updater.layout {
+            if let Some(error) = take_update_error(layout) {
+                let _ = updater.events.send(UpdaterEvent::Failed(error));
+            }
         }
 
         // Sparkle arms a scheduled checker on macOS; here one silent check
@@ -240,6 +281,7 @@ impl Updater {
 
         let status = self.status.clone();
         let staged = self.staged.clone();
+        let history = self.history.clone();
         let checking = self.checking.clone();
         let explicit_check = self.explicit_check.clone();
         let events = self.events.clone();
@@ -265,27 +307,38 @@ impl Updater {
             .name("orbit-updater-check".into())
             .spawn(move || {
                 #[cfg(unix)]
-                let outcome = fetch_and_stage(&layout);
+                let outcome = fetch_and_stage(layout.as_ref());
                 #[cfg(not(unix))]
                 let outcome = fetch_and_stage();
                 let report = explicit_check.load(Ordering::Relaxed);
                 match outcome {
-                    Ok(Some(update)) => {
-                        *staged
+                    Ok(Fetched {
+                        staged: update,
+                        history: releases,
+                    }) => {
+                        *history
                             .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(update);
-                        publish(UpdateStatus::Available);
-                    }
-                    Ok(None) => {
-                        publish(UpdateStatus::Idle);
-                        if report {
-                            let _ = events.send(UpdaterEvent::UpToDate);
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()) = releases;
+                        match update {
+                            Some(update) => {
+                                *staged
+                                    .lock()
+                                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                                    Some(update);
+                                publish(UpdateStatus::Available);
+                            }
+                            None => {
+                                publish(UpdateStatus::Idle);
+                                if report {
+                                    let _ = events.send(UpdaterEvent::UpToDate);
+                                }
+                            }
                         }
                     }
                     Err(error) => {
                         publish(UpdateStatus::Idle);
                         if report {
-                            let _ = events.send(UpdaterEvent::Failed(error.to_string()));
+                            let _ = events.send(UpdaterEvent::Failed(format!("{error:#}")));
                         } else {
                             eprintln!("Orbit updater: {error:#}");
                         }
@@ -302,6 +355,10 @@ impl Updater {
     /// acknowledgement. Only that acknowledgement emits `QuitAndInstall`.
     #[cfg(unix)]
     pub fn install_available_update(&self) -> bool {
+        // A check-only build (no managed install) has nothing to swap.
+        let Some(layout) = self.layout.as_ref() else {
+            return false;
+        };
         let update = {
             let mut staged = self
                 .staged
@@ -313,19 +370,19 @@ impl Updater {
             }
         };
 
-        let ready_file = self.layout.parent.join(format!(
+        let ready_file = layout.parent.join(format!(
             ".{}.update-ready-{}-{nonce}",
-            self.layout.prefix_name,
+            layout.prefix_name,
             std::process::id(),
             nonce = unique_nonce()
         ));
         let mut command = std::process::Command::new(
-            std::env::current_exe().unwrap_or_else(|_| self.layout.relaunch_executable()),
+            std::env::current_exe().unwrap_or_else(|_| layout.relaunch_executable()),
         );
         command
             .arg(INSTALL_HELPER_FLAG)
             .arg("--install-dir")
-            .arg(&self.layout.install_dir)
+            .arg(&layout.install_dir)
             .arg("--staged-dir")
             .arg(update.path())
             .arg("--parent-pid")
@@ -338,7 +395,7 @@ impl Updater {
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
-                self.fail_install(format!("could not start the update helper: {error}"));
+                self.fail_install(tr!("updater.helper_failed", error = error));
                 return false;
             }
         };
@@ -433,6 +490,19 @@ impl Updater {
         false
     }
 
+    /// Whether this build can install a release it reports. Forced dev builds
+    /// run without a managed install: they check and show the modal, but the
+    /// update itself is not offered.
+    #[cfg(unix)]
+    pub fn can_install(&self) -> bool {
+        self.layout.is_some()
+    }
+
+    #[cfg(not(unix))]
+    pub fn can_install(&self) -> bool {
+        cfg!(windows)
+    }
+
     pub fn status(&self) -> UpdateStatus {
         *self
             .status
@@ -449,6 +519,26 @@ impl Updater {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .as_ref()
             .and_then(|update| update.version.clone())
+    }
+
+    /// The staged release's notes from the feed, for the update modal. `None`
+    /// when nothing is staged or the feed carried no `<description>`.
+    pub fn available_notes(&self) -> Option<String> {
+        self.staged
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .and_then(|update| update.notes.clone())
+    }
+
+    /// Every release the last successful check's feed carried, newest first,
+    /// for the update modal's Version History. Empty before the first check
+    /// answers and after a check that never reached the feed.
+    pub fn history(&self) -> Vec<Release> {
+        self.history
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     /// Drain one pending event. The heartbeat calls this each tick.
@@ -710,10 +800,7 @@ fn run_install(flags: &HelperFlags) -> i32 {
 
     if let Err(error) = std::fs::rename(&flags.install_dir, &backup) {
         let _ = spawn_install(&flags.install_dir, &exe_name, None);
-        return helper_error(
-            flags,
-            &format!("could not move the running install aside: {error}"),
-        );
+        return helper_error(flags, &tr!("updater.move_aside_failed", error = error));
     }
     sync_directory(flags.parent_dir());
 
@@ -721,10 +808,7 @@ fn run_install(flags: &HelperFlags) -> i32 {
         let _ = std::fs::rename(&backup, &flags.install_dir);
         sync_directory(flags.parent_dir());
         let _ = spawn_install(&flags.install_dir, &exe_name, None);
-        return helper_error(
-            flags,
-            &format!("could not move the update into place: {error}"),
-        );
+        return helper_error(flags, &tr!("updater.move_into_place_failed", error = error));
     }
     sync_directory(flags.parent_dir());
 
@@ -735,7 +819,7 @@ fn run_install(flags: &HelperFlags) -> i32 {
             let _ = std::fs::rename(&backup, &flags.install_dir);
             sync_directory(flags.parent_dir());
             let _ = spawn_install(&flags.install_dir, &exe_name, None);
-            return helper_error(flags, &format!("could not relaunch the new build: {error}"));
+            return helper_error(flags, &tr!("updater.relaunch_failed", error = error));
         }
     };
 
@@ -756,7 +840,7 @@ fn run_install(flags: &HelperFlags) -> i32 {
             let _ = spawn_install(&flags.install_dir, &exe_name, None);
             helper_error(
                 flags,
-                &format!("the new build exited before its window opened ({status})"),
+                &tr!("updater.new_build_exited", status = status.to_string()),
             )
         }
         RelaunchState::TimedOut => {
@@ -986,30 +1070,64 @@ fn install_dir_for(executable: &Path) -> Option<PathBuf> {
 // ── staging ─────────────────────────────────────────────────────────────
 
 #[cfg(unix)]
-fn fetch_and_stage(layout: &InstallLayout) -> anyhow::Result<Option<StagedUpdate>> {
-    fetch_and_stage_impl(|archive, directory, version| {
-        stage_artifact(archive, directory, version, layout)
-    })
+fn fetch_and_stage(layout: Option<&InstallLayout>) -> anyhow::Result<Fetched> {
+    fetch_and_stage_impl(
+        layout.is_some(),
+        |archive, directory, version| match layout {
+            Some(layout) => stage_artifact(archive, directory, version, layout),
+            // Unreachable: a check-only build returns before it downloads.
+            None => Ok(None),
+        },
+    )
 }
 
 #[cfg(not(unix))]
-fn fetch_and_stage() -> anyhow::Result<Option<StagedUpdate>> {
-    fetch_and_stage_impl(|archive, directory, _version| stage_artifact(archive, directory))
+fn fetch_and_stage() -> anyhow::Result<Fetched> {
+    fetch_and_stage_impl(true, |archive, directory, _version| {
+        stage_artifact(archive, directory)
+    })
+}
+
+/// What one check fetched: the release to offer (when the feed names a newer
+/// one) and the feed's full release list for Version History.
+struct Fetched {
+    staged: Option<StagedUpdate>,
+    history: Vec<Release>,
 }
 
 /// Fetch the feed, and when it names a newer release, download and verify the
 /// artifact on a worker thread. `stage` turns the verified artifact into the
-/// platform's staged update.
-fn fetch_and_stage_impl<F>(stage: F) -> anyhow::Result<Option<StagedUpdate>>
+/// platform's staged update. The whole feed is returned either way, so the
+/// Version History survives an up-to-date answer.
+fn fetch_and_stage_impl<F>(installable: bool, stage: F) -> anyhow::Result<Fetched>
 where
     F: FnOnce(PathBuf, PathBuf, &str) -> anyhow::Result<Option<StagedUpdate>>,
 {
     let document = http_get(FEED_URL)?;
-    let Some(item) = feed::newest_item(&document) else {
+    let items = feed::items(&document);
+    let history = items
+        .iter()
+        .map(|item| Release {
+            version: item.version.clone(),
+            notes: item.notes.clone(),
+        })
+        .collect();
+    let Some(item) = items.into_iter().next() else {
         anyhow::bail!("the update feed has no signed release");
     };
     if !feed::is_newer(&item.version, env!("CARGO_PKG_VERSION")) {
-        return Ok(None);
+        return Ok(Fetched {
+            staged: None,
+            history,
+        });
+    }
+    if !installable {
+        // Check-only build: report the release for the modal without
+        // downloading or staging an artifact there is nowhere to install.
+        return Ok(Fetched {
+            staged: Some(StagedUpdate::offered(&item)),
+            history,
+        });
     }
     validate_release_version(&item.version)?;
     validate_download_url(&item.url)?;
@@ -1031,9 +1149,10 @@ where
     verify_artifact(&archive, &item)?;
     let mut staged = stage(archive, directory, &item.version)?;
     if let Some(update) = staged.as_mut() {
+        update.notes = item.notes.clone();
         update.version = Some(item.version);
     }
-    Ok(staged)
+    Ok(Fetched { staged, history })
 }
 
 #[cfg(unix)]
@@ -1283,16 +1402,25 @@ fn validate_download_url(value: &str) -> anyhow::Result<()> {
 fn http_client(timeout_seconds: u64) -> anyhow::Result<reqwest::blocking::Client> {
     Ok(reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(timeout_seconds))
+        // A host can advertise an IPv6 address that blackholes. Without a
+        // per-attempt cap the connector waits there instead of falling back
+        // to IPv4 — GitHub's release-asset CDN does exactly this on some
+        // networks.
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .user_agent(concat!("Orbit/", env!("CARGO_PKG_VERSION")))
         .build()?)
 }
 
 fn http_get(url: &str) -> anyhow::Result<String> {
-    let response = http_client(30)?
+    // The feed is a few kilobytes, but GitHub's release-asset CDN can be slow
+    // to redirect and cold-start; the check is interactive yet patient.
+    let response = http_client(60)?
         .get(url)
-        .header("User-Agent", concat!("Orbit/", env!("CARGO_PKG_VERSION")))
-        .send()?
-        .error_for_status()?;
-    let bytes = response.bytes()?;
+        .send()
+        .map_err(http_failure)?
+        .error_for_status()
+        .map_err(http_failure)?;
+    let bytes = response.bytes().map_err(http_failure)?;
     anyhow::ensure!(
         bytes.len() as u64 <= MAX_FEED_BYTES,
         "the update feed is implausibly large"
@@ -1310,9 +1438,10 @@ fn download_to(
 
     let mut response = http_client(timeout_seconds)?
         .get(url)
-        .header("User-Agent", concat!("Orbit/", env!("CARGO_PKG_VERSION")))
-        .send()?
-        .error_for_status()?;
+        .send()
+        .map_err(http_failure)?
+        .error_for_status()
+        .map_err(http_failure)?;
     let mut file = std::fs::File::create(destination)?;
     let copied = std::io::copy(&mut response.by_ref().take(limit + 1), &mut file)?;
     anyhow::ensure!(
@@ -1321,6 +1450,23 @@ fn download_to(
     );
     file.sync_all()?;
     Ok(())
+}
+
+/// Prefer the rustls/IO cause over reqwest's "error sending request for url"
+/// wrapper. The URL is already known, and a truncated banner otherwise hides
+/// whether this was TLS, DNS, or a blocked socket.
+fn http_failure(error: reqwest::Error) -> anyhow::Error {
+    anyhow::anyhow!("{}", deepest_cause(&error))
+}
+
+fn deepest_cause(error: &dyn std::error::Error) -> String {
+    let mut cause = error.to_string();
+    let mut current = error.source();
+    while let Some(err) = current {
+        cause = err.to_string();
+        current = err.source();
+    }
+    cause
 }
 
 // ── preferences and errors ──────────────────────────────────────────────
@@ -1419,13 +1565,18 @@ mod feed {
         pub(super) url: String,
         pub(super) signature: String,
         pub(super) length: Option<u64>,
+        /// The release notes the feed carries in `<description>`, already
+        /// XML-unescaped. `None` when absent or blank.
+        pub(super) notes: Option<String>,
     }
 
-    /// The newest signed item in a Sparkle appcast. The native feed writers
-    /// emit one `<item>` per release, each with a `sparkle:shortVersionString`
-    /// and a signed `<enclosure>`; items without a signature are ignored.
-    pub(super) fn newest_item(feed: &str) -> Option<AppcastItem> {
-        feed.split("<item>")
+    /// Every signed item in a Sparkle appcast, newest first. The native feed
+    /// writers emit one `<item>` per release, each with a
+    /// `sparkle:shortVersionString` and a signed `<enclosure>`; items without
+    /// a signature are ignored.
+    pub(super) fn items(feed: &str) -> Vec<AppcastItem> {
+        let mut items: Vec<AppcastItem> = feed
+            .split("<item>")
             .skip(1)
             .filter_map(|item| {
                 let item = item.split("</item>").next()?;
@@ -1436,9 +1587,12 @@ mod feed {
                     url: attribute(enclosure, "url")?,
                     signature: attribute(enclosure, "sparkle:edSignature")?,
                     length: attribute(enclosure, "length").and_then(|it| it.parse().ok()),
+                    notes: element(item, "description").map(|notes| unescape(&notes)),
                 })
             })
-            .max_by(|left, right| compare_versions(&left.version, &right.version))
+            .collect();
+        items.sort_by(|left, right| compare_versions(&right.version, &left.version));
+        items
     }
 
     fn attribute(tag: &str, name: &str) -> Option<String> {
@@ -1455,6 +1609,18 @@ mod feed {
             .0
             .trim();
         (!value.is_empty()).then(|| value.to_owned())
+    }
+
+    /// Decode the XML entities `appcast.py` escapes into `<description>`, so
+    /// the notes render as plain text. `&amp;` must be last or an `&amp;lt;`
+    /// would turn into `<`.
+    fn unescape(value: &str) -> String {
+        value
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&apos;", "'")
+            .replace("&amp;", "&")
     }
 
     pub(super) fn is_newer(candidate: &str, current: &str) -> bool {
@@ -1510,7 +1676,10 @@ mod feed {
 
         #[test]
         fn the_newest_signed_item_wins_regardless_of_feed_order() {
-            let item = newest_item(FEED).expect("feed has signed items");
+            let item = items(FEED)
+                .into_iter()
+                .next()
+                .expect("feed has signed items");
             assert_eq!(item.version, "0.2.0");
             assert_eq!(item.signature, "newsig");
             assert_eq!(item.length, Some(2048));
@@ -1520,14 +1689,17 @@ mod feed {
         #[test]
         fn an_unsigned_enclosure_is_never_offered() {
             let unsigned = FEED.replace(" sparkle:edSignature=\"newsig\"", "");
-            let item = newest_item(&unsigned).expect("the signed item remains");
+            let item = items(&unsigned)
+                .into_iter()
+                .next()
+                .expect("the signed item remains");
             assert_eq!(item.version, "0.1.4");
         }
 
         #[test]
         fn a_feed_without_signed_items_offers_nothing() {
-            assert_eq!(newest_item("<rss></rss>"), None);
-            assert_eq!(newest_item(""), None);
+            assert!(items("<rss></rss>").is_empty());
+            assert!(items("").is_empty());
         }
 
         #[test]
@@ -1539,6 +1711,49 @@ mod feed {
             assert!(!is_newer("1.2", "1.2.0"));
             assert!(is_newer("1.2.1", "1.2"));
             assert!(!is_newer("1.2.0+build.7", "1.2.0"));
+        }
+
+        #[test]
+        fn history_lists_every_signed_item_newest_first() {
+            let versions: Vec<_> = items(FEED)
+                .iter()
+                .map(|item| item.version.clone())
+                .collect();
+            assert_eq!(versions, ["0.2.0", "0.1.4"]);
+
+            // An unsigned item is never offered, so it never reaches history.
+            let unsigned = FEED.replace(" sparkle:edSignature=\"newsig\"", "");
+            let versions: Vec<_> = items(&unsigned)
+                .iter()
+                .map(|item| item.version.clone())
+                .collect();
+            assert_eq!(versions, ["0.1.4"]);
+        }
+
+        #[test]
+        fn release_notes_come_from_the_items_description() {
+            let with_notes = FEED.replace(
+                "<sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>",
+                "<sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>\n      \
+                 <description>### Added\n\n- Faster &amp; safer updates</description>",
+            );
+            let item = items(&with_notes)
+                .into_iter()
+                .next()
+                .expect("feed has signed items");
+            assert_eq!(
+                item.notes.as_deref(),
+                Some("### Added\n\n- Faster & safer updates")
+            );
+        }
+
+        #[test]
+        fn a_feed_without_a_description_has_no_notes() {
+            let item = items(FEED)
+                .into_iter()
+                .next()
+                .expect("feed has signed items");
+            assert_eq!(item.notes, None);
         }
     }
 }
@@ -1569,6 +1784,39 @@ mod tests {
         assert!(validate_release_version("../../tmp/payload").is_err());
         assert!(validate_release_version("1.2.3/evil").is_err());
         assert!(validate_release_version("").is_err());
+    }
+
+    #[test]
+    fn http_failure_prefers_the_root_cause() {
+        #[derive(Debug)]
+        struct Leaf;
+        impl std::fmt::Display for Leaf {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("invalid peer certificate: UnknownIssuer")
+            }
+        }
+        impl std::error::Error for Leaf {}
+
+        #[derive(Debug)]
+        struct Wrapper(Leaf);
+        impl std::fmt::Display for Wrapper {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(
+                    f,
+                    "error sending request for url (https://github.com/example/feed.xml)"
+                )
+            }
+        }
+        impl std::error::Error for Wrapper {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        assert_eq!(
+            deepest_cause(&Wrapper(Leaf)),
+            "invalid peer certificate: UnknownIssuer"
+        );
     }
 
     /// The interop the whole update path rests on: a signature produced by
@@ -1705,5 +1953,48 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Manual: build with `ORBIT_UPDATE_PUBLIC_KEY` set and run
+    /// `ORBIT_FORCE_UPDATER=1 cargo test -p orbit-pi forced_init -- --ignored`.
+    /// A forced build outside a managed install keeps the checker (so the
+    /// modal can run) but never claims it can install.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "manual: needs ORBIT_UPDATE_PUBLIC_KEY at build time and a real home"]
+    fn forced_init_keeps_the_checker_outside_a_managed_install() {
+        std::env::set_var("ORBIT_FORCE_UPDATER", "1");
+        let updater = Updater::init().expect("a forced build with a key must arm the updater");
+        assert!(
+            !updater.can_install(),
+            "a bare test binary is not a managed install"
+        );
+        std::env::remove_var("ORBIT_FORCE_UPDATER");
+    }
+
+    /// Manual: `cargo test -p orbit-pi live_feed -- --ignored`. Hits the real
+    /// release feed and proves the check-only path parses history without a
+    /// managed install. The feed must be published (signing key configured).
+    #[test]
+    #[ignore = "hits the real update feed"]
+    fn live_feed_reports_history_without_an_install() {
+        #[cfg(unix)]
+        let fetched = fetch_and_stage(None).expect("the update feed must answer");
+        #[cfg(not(unix))]
+        let fetched = fetch_and_stage().expect("the update feed must answer");
+        let newest = fetched
+            .history
+            .first()
+            .expect("the feed carries at least one signed release")
+            .version
+            .clone();
+        if feed::is_newer(&newest, env!("CARGO_PKG_VERSION")) {
+            let update = fetched.staged.expect("a newer feed must offer a release");
+            assert_eq!(update.version.as_deref(), Some(newest.as_str()));
+            assert!(
+                update.notes.is_some(),
+                "the offered release carries its notes"
+            );
+        }
     }
 }

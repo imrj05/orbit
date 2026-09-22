@@ -61,6 +61,12 @@ impl OrbitApp {
             self.sidepane
                 .update(cx, |pane, cx| pane.mark_review_stale(cx));
             self.git_panel.update(cx, |panel, cx| panel.refresh(cx));
+            self.project_panel
+                .update(cx, |panel, cx| panel.mark_stale(cx));
+            if let Some(path) = self.file_viewer.read(cx).active_path() {
+                self.file_viewer
+                    .update(cx, |viewer, cx| viewer.reload(&path, cx));
+            }
             self.refresh_branch_status(cx);
             cx.notify();
         }
@@ -122,11 +128,26 @@ impl OrbitApp {
                     cx.notify();
                 }
                 Event::SessionInfoChanged { name } => {
-                    // pi names the session after the first user message;
-                    // forward it live the way Waku does.
-                    if let Some(name) = name {
-                        self.current_title = Some(name.clone());
+                    // pi renamed the session (its own auto-title, the popover's
+                    // Generate title, or the rename field echoing back).
+                    // `session_name` wins over `current_title` in the header,
+                    // so both move together or a re-title would not show.
+                    match name {
+                        Some(name) => {
+                            self.current_title = Some(name.clone());
+                            // Seed the rename field from the new name, unless
+                            // the user is mid-edit; a manual generation owns
+                            // the field it asked to refresh.
+                            let seed = self.session_name.is_none() || self.title_generating;
+                            self.session_name = Some(name.clone());
+                            if seed {
+                                self.session_name_input
+                                    .update(cx, |input, cx| input.set_text(name, cx));
+                            }
+                        }
+                        None => self.session_name = None,
                     }
+                    self.title_generating = false;
                     refresh_sessions = true;
                 }
                 Event::Auth(event) => {
@@ -144,7 +165,7 @@ impl OrbitApp {
                         error: value
                             .get("errorMessage")
                             .and_then(Value::as_str)
-                            .unwrap_or("transient error")
+                            .unwrap_or(&tr!("events.transient_error"))
                             .to_string(),
                     });
                 }
@@ -156,8 +177,9 @@ impl OrbitApp {
                         let error = value
                             .get("finalError")
                             .and_then(|v| v.as_str())
-                            .unwrap_or("pi exhausted its automatic retries");
-                        self.set_error(format!("Automatic retry failed: {error}"));
+                            .map(str::to_string)
+                            .unwrap_or_else(|| tr!("events.retries_exhausted"));
+                        self.set_error(tr!("events.auto_retry_failed", error = error));
                     }
                 }
                 Event::QueueUpdate { value } => {
@@ -184,12 +206,22 @@ impl OrbitApp {
                     let hook = value
                         .get("event")
                         .and_then(Value::as_str)
-                        .unwrap_or("unknown");
+                        .map(str::to_string)
+                        .unwrap_or_else(|| tr!("events.unknown"));
                     let error = value
                         .get("error")
                         .and_then(Value::as_str)
-                        .unwrap_or("unknown error");
-                    self.set_error(format!("Extension {name} failed on {hook}: {error}"));
+                        .map(str::to_string)
+                        .unwrap_or_else(|| tr!("events.unknown_error"));
+                    self.set_error(tr!(
+                        "events.extension_failed",
+                        name = name,
+                        hook = hook,
+                        error = error
+                    ));
+                    // A failed title command never sends its
+                    // `session_info_changed`, so drop the in-flight flag here.
+                    self.title_generating = false;
                 }
                 Event::AgentSettled => {
                     self.busy = false;
@@ -225,9 +257,9 @@ impl OrbitApp {
                     self.is_compacting = false;
                     // A failed compaction carries `errorMessage` (docs).
                     if let Some(error) = value.get("errorMessage").and_then(Value::as_str) {
-                        self.set_error(format!("Compaction failed: {error}"));
+                        self.set_error(tr!("events.compaction_failed", error = error));
                     } else if value.get("aborted").and_then(Value::as_bool) == Some(true) {
-                        self.set_status("Compaction aborted");
+                        self.set_status(tr!("events.compaction_aborted"));
                     }
                     // Post-compaction usage is unknown until the next turn;
                     // refresh so the meter can show an empty/unknown state.
@@ -248,7 +280,7 @@ impl OrbitApp {
                     self.runtime.alive = false;
                     self.runtime.exited = true;
                     self.auth.on_disconnect();
-                    self.set_error("pi process exited — restart it from Settings → Runtime");
+                    self.set_error(tr!("events.process_exited"));
                 }
                 Event::MessageEnd { value } => {
                     // A failed LLM call ends the assistant message with
@@ -256,12 +288,10 @@ impl OrbitApp {
                     // unsupported model). Surface it in the banner; the
                     // transcript renders the same text inline.
                     if let Some(error) = transcript::message_error(value) {
-                        self.set_error(format!("Agent error: {error}"));
-                    } else if self
-                        .error
-                        .as_deref()
-                        .is_some_and(|error| error.starts_with("Agent error:"))
-                    {
+                        self.set_error(tr!("events.agent_error", error = error));
+                    } else if self.error.as_deref().is_some_and(|error| {
+                        error.starts_with(tr!("events.agent_error_prefix").as_str())
+                    }) {
                         // The next attempt produced a message — clear the
                         // stale agent-error banner.
                         self.error = None;
@@ -494,7 +524,7 @@ impl OrbitApp {
             // compacting state belongs before the data gate.
             "compact" => {
                 self.is_compacting = false;
-                self.toast_info("Context compacted");
+                self.toast_info(tr!("events.context_compacted"));
                 self.refresh_context_stats();
                 self.send(CommandBody::GetState, "get_state");
                 return;
@@ -504,6 +534,7 @@ impl OrbitApp {
             "clone" => {
                 self.transcript.clear();
                 self.current_title = None;
+                self.reset_session_name(cx);
                 self.current_session_path = None;
                 self.added = 0;
                 self.removed = 0;
@@ -522,7 +553,6 @@ impl OrbitApp {
                     }
                 }
                 *refresh_sessions = true;
-                self.toast_success("Session cloned");
                 self.send(CommandBody::GetMessages, "get_messages");
                 self.send(CommandBody::GetState, "get_state");
                 self.refresh_catalogs();
@@ -581,13 +611,23 @@ impl OrbitApp {
                     }
                     None if self.session_name.is_some() => {
                         self.session_name = None;
-                        self.session_name_input
-                            .update(cx, |input, cx| input.set_text(String::new(), cx));
+                        self.seed_session_name_input(cx);
                     }
                     _ => {}
                 }
                 self.sync_model_selector(cx);
                 self.refresh_context_stats();
+                // Capability probe: a pi that advertises `custom` will stream
+                // `method:"custom"` frames for `ctx.ui.custom()`.
+                if let Some(methods) = data
+                    .get("capabilities")
+                    .and_then(|caps| caps.get("extension_ui"))
+                    .and_then(Value::as_array)
+                {
+                    self.custom_ui_supported = methods
+                        .iter()
+                        .any(|method| method.as_str() == Some("custom"));
+                }
             }
             "get_messages" => {
                 self.apply_messages_snapshot(data);
@@ -631,6 +671,8 @@ impl OrbitApp {
                 self.sync_model_selector(cx);
             }
             "get_commands" => {
+                let home = crate::platform::home_dir_opt();
+                let workspace = self.current_workspace.clone();
                 self.slash_commands = data
                     .get("commands")
                     .and_then(serde_json::Value::as_array)
@@ -640,9 +682,26 @@ impl OrbitApp {
                                 let name = c.get("name").and_then(Value::as_str)?;
                                 let description =
                                     c.get("description").and_then(Value::as_str).unwrap_or("");
+                                // `source` + `sourceInfo` carry the command's
+                                // provenance; Orbit folds it into a scope badge.
+                                let source = c.get("source").and_then(Value::as_str).unwrap_or("");
+                                let info = c.get("sourceInfo");
+                                let scope =
+                                    info.and_then(|i| i.get("scope")).and_then(Value::as_str);
+                                let origin =
+                                    info.and_then(|i| i.get("origin")).and_then(Value::as_str);
+                                let path = info.and_then(|i| i.get("path")).and_then(Value::as_str);
                                 Some(SlashCommand {
                                     name: name.to_string(),
                                     description: description.to_string(),
+                                    scope: mentions::classify_scope(
+                                        source,
+                                        scope,
+                                        origin,
+                                        path,
+                                        workspace.as_deref(),
+                                        home.as_deref(),
+                                    ),
                                 })
                             })
                             .collect()
@@ -672,11 +731,14 @@ impl OrbitApp {
             "new_session" => {
                 self.transcript.clear();
                 self.current_title = None;
+                self.reset_session_name(cx);
                 self.current_session_path = None;
                 self.added = 0;
                 self.removed = 0;
                 self.context = None;
                 self.session_usage = None;
+                // Widgets belong to the process that sent them.
+                self.extension_widgets.clear();
                 self.reset_turns();
                 self.reset_queue();
                 *refresh_sessions = true;
@@ -719,9 +781,7 @@ impl OrbitApp {
                 self.auth.on_list_response(success, data, error);
                 if self.auth.support() != before && self.auth.support() == AuthSupport::Unsupported
                 {
-                    self.set_status(
-                        "This pi build has no auth RPC — provider sign-in uses Terminal",
-                    );
+                    self.set_status(tr!("events.auth_rpc_missing"));
                 }
             }
             "auth.status" => self.auth.on_status_response(success, data),
@@ -804,7 +864,7 @@ impl OrbitApp {
             .update(cx, |input, _| std::mem::take(&mut input.pasted_images));
         for image in &pasted {
             if self.attachments.len() >= MAX_ATTACHMENTS {
-                self.set_status(format!("at most {MAX_ATTACHMENTS} images per message"));
+                self.set_status(tr!("composer_ops.max_attachments", count = MAX_ATTACHMENTS));
                 break;
             }
             let index = self.attachments.len();
@@ -831,19 +891,23 @@ impl OrbitApp {
         }
         let (subtitle, fallback, kind) = if summary.failed {
             (
-                "Agent error",
-                "The turn ended with an error.",
+                tr!("events.notify_turn_failed"),
+                tr!("events.notify_turn_failed_body"),
                 ToastKind::Error,
             )
         } else {
-            ("Turn finished", "pi finished the turn.", ToastKind::Success)
+            (
+                tr!("events.notify_turn_finished"),
+                tr!("events.notify_turn_finished_body"),
+                ToastKind::Success,
+            )
         };
         let body = if summary.body.trim().is_empty() {
-            fallback
+            fallback.as_str()
         } else {
             summary.body.as_str()
         };
-        self.post_notification(session, title, subtitle, body, kind);
+        self.post_notification(session, title, &subtitle, body, kind);
     }
 
     /// A run is blocked on an extension dialog — the one event a user cannot
@@ -856,17 +920,18 @@ impl OrbitApp {
             .current_title
             .clone()
             .or_else(|| self.session_name.clone());
+        let waiting_body = tr!("events.notify_waiting_body");
         let body = value
             .get("title")
             .or_else(|| value.get("message"))
             .and_then(Value::as_str)
             .filter(|text| !text.trim().is_empty())
-            .unwrap_or("pi is waiting for your answer.");
+            .unwrap_or(&waiting_body);
         let session = self.current_session_path.clone();
         self.post_notification(
             session.as_deref(),
             title.as_deref(),
-            "Waiting for your answer",
+            &tr!("events.notify_waiting"),
             body,
             ToastKind::Warning,
         );
@@ -895,7 +960,10 @@ impl OrbitApp {
                 self.push_toast(
                     kind,
                     title,
-                    Some(notifications::preview(body, notifications::BODY_PREVIEW_CHARS)),
+                    Some(notifications::preview(
+                        body,
+                        notifications::BODY_PREVIEW_CHARS,
+                    )),
                 );
             }
             return;

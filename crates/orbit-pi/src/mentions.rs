@@ -1,4 +1,4 @@
-//! Composer autocomplete — Waku-style `/` command and `@` file mentions.
+//! Composer autocomplete — `/` command and `@` file mentions.
 //!
 //! Typing `/` at the very start of the composer (with the caret inside that
 //! first word) opens a slash-command menu fed by pi's `get_commands`; typing
@@ -43,7 +43,7 @@ pub struct Trigger {
 ///   between it and the caret — `@query` is the token.
 pub fn detect_trigger(content: &str, cursor: usize) -> Option<Trigger> {
     let cursor = cursor.min(content.len());
-    // Slash only opens at the very start of the message (Waku parity).
+    // Slash only opens at the very start of the message.
     if let Some(rest) = content.strip_prefix('/') {
         let token_end = 1 + rest.find(char::is_whitespace).unwrap_or(rest.len());
         if cursor <= token_end {
@@ -139,18 +139,103 @@ pub fn tokenize_mentions(content: &str) -> Vec<MentionSpan> {
     spans
 }
 
+/// Where a `/` command comes from — the scope badge shown on its row.
+///
+/// pi reports provenance in `source` (`extension`/`prompt`/`skill`) plus a
+/// `sourceInfo` of `scope`/`origin`/`path`; Orbit folds that into the five
+/// labels the autocomplete menu shows on the right of each command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandScope {
+    /// pi's built-in commands and installed packages (`npm:`/`git:`) — part
+    /// of the setup, available in every session.
+    Builtin,
+    /// A skill, invoked as `/skill:<name>`.
+    Skill,
+    /// One of Orbit's bundled extensions (materialized under `~/.orbit-pi/`).
+    Orbit,
+    /// A user-authored extension or prompt template (a top-level file in
+    /// `~/.pi/agent/` or `.agents/`, not an installed package).
+    Custom,
+    /// Project-local (workspace `.pi/` or `.agents/`); the badge is the
+    /// project folder's name.
+    Project(String),
+}
+
+impl CommandScope {
+    /// The badge text shown on the row (the project name is dynamic).
+    pub fn label(&self) -> String {
+        match self {
+            Self::Builtin => tr!("autocomplete.scope_builtin"),
+            Self::Skill => tr!("autocomplete.scope_skills"),
+            Self::Orbit => tr!("autocomplete.scope_orbit"),
+            Self::Custom => tr!("autocomplete.scope_custom"),
+            Self::Project(name) => name.clone(),
+        }
+    }
+}
+
+/// Classify a `get_commands` entry into a scope badge. Pure so the mapping is
+/// unit-testable; `workspace` names the project badge, `home` locates Orbit's
+/// bundled extensions.
+pub fn classify_scope(
+    source: &str,
+    scope: Option<&str>,
+    origin: Option<&str>,
+    path: Option<&str>,
+    workspace: Option<&Path>,
+    home: Option<&Path>,
+) -> CommandScope {
+    // Skills win over their scope: a project skill still reads as a skill.
+    if source == "skill" {
+        return CommandScope::Skill;
+    }
+    // Orbit's bundled extensions load with `--extension`, which pi reports as
+    // temporary; the install path is the only reliable tell.
+    if let (Some(home), Some(path)) = (home, path) {
+        if Path::new(path).starts_with(home.join(".orbit-pi")) {
+            return CommandScope::Orbit;
+        }
+    }
+    if scope == Some("project") {
+        let name = workspace
+            .and_then(|dir| dir.file_name())
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| tr!("autocomplete.scope_project"));
+        return CommandScope::Project(name);
+    }
+    // Installed packages (`npm:`/`git:`) and pi's own built-ins are part of
+    // the setup — "builtin". A synthetic path (`<inline:…>`, `<sdk:…>`) is
+    // built in too. Only a user-authored top-level file is "custom".
+    if origin == Some("package")
+        || source == "builtin"
+        || path.is_some_and(|path| path.starts_with('<'))
+    {
+        return CommandScope::Builtin;
+    }
+    if scope == Some("user") {
+        return CommandScope::Custom;
+    }
+    CommandScope::Builtin
+}
+
 /// One slash command from pi's `get_commands` (extensions + skills).
 #[derive(Debug, Clone)]
 pub struct SlashCommand {
     pub name: String,
     pub description: String,
+    /// Where this command came from — rendered as the row's scope badge.
+    pub scope: CommandScope,
 }
 
 /// One selectable row of the autocomplete menu.
 #[derive(Debug, Clone)]
 pub enum AcEntry {
     /// A pi command — commit inserts `/name ` into the composer.
-    Command { name: String, description: String },
+    Command {
+        name: String,
+        description: String,
+        scope: CommandScope,
+    },
     /// A workspace file — commit inserts `@path ` (pi expands @-mentions).
     File { path: String },
 }
@@ -209,6 +294,7 @@ pub fn filter_entries(
                 AcEntry::Command {
                     name: command.name.clone(),
                     description: command.description.clone(),
+                    scope: command.scope.clone(),
                 },
             ));
         }
@@ -381,6 +467,76 @@ pub fn file_type_badge(path: &str) -> (&'static str, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classify_scope_folds_pi_provenance() {
+        let home = Path::new("/home/u");
+        let workspace = Path::new("/work/orbit");
+        let classify = |source, scope, origin, path| {
+            classify_scope(source, scope, origin, path, Some(workspace), Some(home))
+        };
+        // Skills win over their scope, project or user.
+        assert_eq!(
+            classify("skill", Some("project"), None, None),
+            CommandScope::Skill
+        );
+        assert_eq!(
+            classify("skill", Some("user"), None, None),
+            CommandScope::Skill
+        );
+        // Orbit's bundled extensions live under `~/.orbit-pi/` and arrive as
+        // temporary CLI extensions.
+        assert_eq!(
+            classify(
+                "extension",
+                Some("temporary"),
+                Some("top-level"),
+                Some("/home/u/.orbit-pi/title-extension/index.js")
+            ),
+            CommandScope::Orbit
+        );
+        // Project commands badge with the workspace folder name.
+        assert_eq!(
+            classify(
+                "extension",
+                Some("project"),
+                Some("top-level"),
+                Some("/work/orbit/.pi/extensions/x.ts")
+            ),
+            CommandScope::Project("orbit".to_string())
+        );
+        // User-scoped, hand-written extensions/prompts read as custom; an
+        // installed package of the same scope is built in.
+        assert_eq!(
+            classify(
+                "extension",
+                Some("user"),
+                Some("top-level"),
+                Some("/home/u/.pi/agent/extensions/x.ts")
+            ),
+            CommandScope::Custom
+        );
+        assert_eq!(
+            classify(
+                "extension",
+                Some("user"),
+                Some("package"),
+                Some("/home/u/.pi/agent/npm/node_modules/x/index.ts")
+            ),
+            CommandScope::Builtin
+        );
+        // Anything synthetic or unplaceable falls back to builtin.
+        assert_eq!(
+            classify(
+                "extension",
+                Some("temporary"),
+                None,
+                Some("<inline:llama.cpp>")
+            ),
+            CommandScope::Builtin
+        );
+        assert_eq!(classify("", None, None, None), CommandScope::Builtin);
+    }
 
     #[test]
     fn slash_triggers_only_at_start_before_whitespace() {

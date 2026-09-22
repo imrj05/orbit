@@ -5,7 +5,7 @@
 //! rows, and a frame only indexes stored rows. Syntax tokens are computed at
 //! parse time via [`crate::highlight`], so painting is a pure color pass.
 //!
-//! Sources mirror Waku's `ReviewDiffSource`: the working tree is compared via
+//! Sources mirror the reference model: the working tree is compared via
 //! an isolated snapshot commit so untracked files and stage/unstage state are
 //! represented exactly, and `LastTurn` compares the turn's captured
 //! checkpoints rather than live Git state.
@@ -17,7 +17,7 @@ use crate::highlight::{self, Carry, Lang, Token};
 
 const COLLAPSED_CONTEXT_LINES: usize = 3;
 const COLLAPSED_CONTEXT_THRESHOLD: usize = 1;
-/// Waku expands a directional hunk control in 100-line increments.
+/// A directional hunk control expands in 100-line increments.
 pub const DEFAULT_EXPANSION_LINE_COUNT: usize = 100;
 /// A pathological generated patch must not turn one Review tab into an
 /// unbounded in-memory document.
@@ -356,7 +356,7 @@ fn parse(source: Source, numstat: &str, patch: &str, complete_context: bool) -> 
                 old_line: None,
                 new_line: None,
                 kind: LineKind::Meta,
-                content: "Binary file changed".into(),
+                content: tr!("review.binary_file_changed"),
                 tokens: Vec::new(),
             });
             continue;
@@ -763,7 +763,7 @@ pub enum TreeRow {
     },
 }
 
-/// Every directory that contains a changed file (Waku auto-expands these).
+/// Every directory that contains a changed file (auto-expanded by default).
 pub fn directory_paths(files: &[File]) -> HashSet<String> {
     let mut paths = HashSet::new();
     for file in files {

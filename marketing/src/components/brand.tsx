@@ -20,7 +20,7 @@ export function OrbitWordmark({
       width={2172}
       height={724}
       priority={priority}
-      className={className}
+      className={`${className} light:invert`}
     />
   );
 }

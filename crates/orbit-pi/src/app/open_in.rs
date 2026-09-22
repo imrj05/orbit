@@ -21,11 +21,8 @@ impl OrbitApp {
     }
 
     pub(super) fn preferred_open_in_app<'a>(&'a self, _: &App) -> Option<&'a ExternalApp> {
-        self.preferred_open_in_app
-            .as_deref()
-            .and_then(|id| self.open_in_apps.iter().find(|app| app.id == id))
-            .or_else(|| self.open_in_apps.iter().find(|app| app.id == "finder"))
-            .or_else(|| self.open_in_apps.first())
+        self.open_in_prefs
+            .preferred_app(self.current_workspace.as_deref(), &self.open_in_apps)
     }
 
     pub(super) fn open_workspace_in_app(
@@ -43,10 +40,24 @@ impl OrbitApp {
             return;
         };
         platform::open_path_in_app(path, bundle_id);
-        if self.preferred_open_in_app.as_deref() != Some(app_id) {
-            self.preferred_open_in_app = Some(app_id.to_owned());
-            platform::persist_preferred_open_in_app(app_id);
-        }
+        self.open_in_prefs.remember(path, app_id);
+        let prefs = self.open_in_prefs.clone();
+        let previous_save = self.open_in_save_task.take();
+        self.open_in_save_task = Some(cx.spawn(async move |this, cx| {
+            if let Some(previous_save) = previous_save {
+                previous_save.await;
+            }
+            let result = cx
+                .background_executor()
+                .spawn(async move { prefs.persist() })
+                .await;
+            if let Err(error) = result {
+                let _ = this.update(cx, |this, cx| {
+                    this.toast_error(tr!("open_in.save_failed", error = error));
+                    cx.notify();
+                });
+            }
+        }));
         self.open_in_menu_open = false;
         cx.notify();
     }
@@ -63,8 +74,11 @@ impl OrbitApp {
         let Some(app) = self.preferred_open_in_app(cx) else {
             return;
         };
-        let app_id = app.id;
-        self.open_workspace_in_app(&path, app_id, cx);
+        // Opening a fallback must not replace a saved app that is temporarily
+        // unavailable. Only an explicit menu selection changes the preference.
+        platform::open_path_in_app(&path, app.bundle_id);
+        self.open_in_menu_open = false;
+        cx.notify();
     }
 
     pub(super) fn on_open_in_caret(
@@ -112,15 +126,14 @@ impl OrbitApp {
         let primary = div()
             .id("header-open-in")
             .h_full()
-            .px(px(6.))
-            .rounded_tl(px(6.))
-            .rounded_bl(px(6.))
+            .px(px(7.))
+            .rounded_tl(px(HEADER_CTRL_R))
+            .rounded_bl(px(HEADER_CTRL_R))
             .flex_none()
             .flex()
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .hover(|s| s.bg(theme.overlay))
             .active(|s| s.bg(theme.active).text_color(theme.active_fg))
             .child(
                 img(ImageSource::Image(preferred_icon))
@@ -133,15 +146,14 @@ impl OrbitApp {
             .id("header-open-in-caret")
             .relative()
             .h_full()
-            .w(px(18.))
-            .rounded_tr(px(6.))
-            .rounded_br(px(6.))
+            .w(px(19.))
+            .rounded_tr(px(HEADER_CTRL_R))
+            .rounded_br(px(HEADER_CTRL_R))
             .flex_none()
             .flex()
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .hover(|s| s.bg(theme.overlay))
             .when(self.open_in_menu_open, |s| {
                 s.bg(theme.active).text_color(theme.active_fg)
             })
@@ -153,18 +165,19 @@ impl OrbitApp {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_open_in_caret));
 
         Some(
-            div()
-                .h(px(28.))
-                .rounded(px(7.))
-                .border_1()
-                .border_color(theme.border_strong)
-                .flex_none()
-                .flex()
-                .items_center()
-                .child(primary)
-                .child(div().w(px(1.)).h_full().flex_none().bg(theme.border))
-                .child(caret)
-                .into_any_element(),
+            header_chip(
+                div()
+                    .h(px(HEADER_CTRL_H))
+                    .rounded(px(HEADER_CTRL_R))
+                    .flex_none()
+                    .flex()
+                    .items_center(),
+                &theme,
+            )
+            .child(primary)
+            .child(div().w(px(1.)).h_full().flex_none().bg(theme.border))
+            .child(caret)
+            .into_any_element(),
         )
     }
 
@@ -247,7 +260,7 @@ impl OrbitApp {
                     .justify_center()
                     .text_size(theme.ui_px(12.))
                     .text_color(theme.text_3)
-                    .child("No matches"),
+                    .child(tr!("open_in.no_matches")),
             );
         }
 

@@ -129,6 +129,7 @@ impl OrbitApp {
         }
         self.transcript.clear();
         self.current_title = None;
+        self.reset_session_name(cx);
         // The parked run's busy state lives with the parked session; this
         // view starts idle.
         self.busy = false;
@@ -152,10 +153,10 @@ impl OrbitApp {
                 self.refresh_catalogs();
                 // Capability probes queue after the state request.
                 self.probe_auth();
-                self.set_status("New task started");
+                self.set_status(tr!("pickers.new_task_started"));
             }
             Err(err) => {
-                let message = format!("pi spawn failed: {err}");
+                let message = tr!("runtime.pi_spawn_failed", error = err);
                 self.client = None;
                 self.runtime.error = Some(message.clone());
                 self.set_status(message);
@@ -307,6 +308,7 @@ impl OrbitApp {
             sidebar_visible: self.sidebar_visible,
             side_panel_visible: self.sidepane.read(cx).is_open(),
             terminal_visible: self.terminal_panel.read(cx).is_open(),
+            project_panel_visible: self.project_panel.read(cx).is_open(),
             can_choose_model: !self.available_models.is_empty(),
             can_choose_thinking: !self.available_thinking_levels.is_empty(),
         };
@@ -380,6 +382,9 @@ impl OrbitApp {
                 self.terminal_panel
                     .update(cx, |panel, cx| panel.toggle(window, cx));
             }
+            PaletteCommand::ToggleProjectPanel => {
+                self.project_panel.update(cx, |panel, cx| panel.toggle(cx));
+            }
             PaletteCommand::ReviewChanges => {
                 self.sidepane.update(cx, |pane, cx| pane.show_review(cx));
             }
@@ -393,7 +398,7 @@ impl OrbitApp {
             PaletteCommand::CopySessionId => {
                 if let Some(id) = self.session_id.clone() {
                     cx.write_to_clipboard(ClipboardItem::new_string(id));
-                    self.toast_success("Session ID copied");
+                    self.toast_success(tr!("pickers.session_id_copied"));
                     cx.notify();
                 }
             }
@@ -436,13 +441,13 @@ impl OrbitApp {
             None => return,
         };
         if !crate::git::is_repo(&cwd) {
-            self.toast_warning("Not a Git repository");
+            self.toast_warning(tr!("git.not_a_repository"));
             cx.notify();
             return;
         }
         let current = crate::git::current_branch(&cwd).unwrap_or_else(|| "HEAD".into());
         let branches = crate::git::list_branches(&cwd).unwrap_or_else(|err| {
-            self.toast_error(format!("branch list failed: {err}"));
+            self.toast_error(tr!("pickers.branch_list_failed", error = err));
             vec![current.clone()]
         });
         let workspace_label = sessions::workspace_label(&cwd);
@@ -510,8 +515,8 @@ impl OrbitApp {
             let _ = this.update(cx, |app, cx| {
                 app.branch_operation_pending = false;
                 match result {
-                    Ok(()) => app.toast_success(format!("Switched to {label}")),
-                    Err(err) => app.toast_error(format!("Branch switch failed: {err}")),
+                    Ok(()) => app.toast_success(tr!("pickers.switched_to", label = label)),
+                    Err(err) => app.toast_error(tr!("pickers.branch_switch_failed", error = err)),
                 }
                 app.refresh_branch_status(cx);
                 cx.notify();
@@ -541,8 +546,8 @@ impl OrbitApp {
             let _ = this.update(cx, |app, cx| {
                 app.branch_operation_pending = false;
                 match result {
-                    Ok(()) => app.toast_success(format!("Created and switched to {label}")),
-                    Err(err) => app.toast_error(format!("Branch create failed: {err}")),
+                    Ok(()) => app.toast_success(tr!("pickers.created_and_switched", label = label)),
+                    Err(err) => app.toast_error(tr!("pickers.branch_create_failed", error = err)),
                 }
                 app.refresh_branch_status(cx);
                 cx.notify();

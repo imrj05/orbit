@@ -1,5 +1,6 @@
 const LATEST_RELEASE_API =
   "https://api.github.com/repos/imrj05/orbit/releases/latest";
+const REPO_API = "https://api.github.com/repos/imrj05/orbit";
 const RELEASES_PAGE = "https://github.com/imrj05/orbit/releases";
 
 /** Where to send someone when we cannot resolve a concrete asset. */
@@ -9,7 +10,6 @@ export type Release = {
   tag: string;
   version: string;
   name: string;
-  pageUrl: string;
   publishedAt: string;
   macos?: string;
   windows?: string;
@@ -38,7 +38,6 @@ export async function getLatestRelease(): Promise<Release | null> {
     const data = (await res.json()) as {
       tag_name?: string;
       name?: string;
-      html_url?: string;
       published_at?: string;
       assets?: GithubAsset[];
     };
@@ -51,14 +50,42 @@ export async function getLatestRelease(): Promise<Release | null> {
       tag,
       version: tag.replace(/^v/, ""),
       name: data.name || `Orbit ${tag}`,
-      pageUrl: data.html_url || `${RELEASES_PAGE}/tag/${tag}`,
       publishedAt: data.published_at ?? "",
       macos: assetUrl(assets, /\.dmg$/i),
-      windows: assetUrl(assets, /windows.*\.zip$/i) ?? assetUrl(assets, /\.zip$/i),
+      // Prefer the Windows installer, then the portable single-file build,
+      // then the zip — so Windows is a direct .exe download.
+      windows:
+        assetUrl(assets, /setup\.exe$/i) ??
+        assetUrl(assets, /^(?!.*setup).*\.exe$/i) ??
+        assetUrl(assets, /windows.*\.zip$/i) ??
+        assetUrl(assets, /\.zip$/i),
+      // Prefer the native package over the tarball.
       linux:
+        assetUrl(assets, /\.deb$/i) ??
         assetUrl(assets, /linux.*\.tar\.gz$/i) ??
         assetUrl(assets, /\.tar\.gz$/i),
     };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Stargazer count for the repository, cached for an hour. Returns `null` when
+ * the API is unavailable so the header can fall back to a plain link.
+ */
+export async function getRepoStars(): Promise<number | null> {
+  try {
+    const res = await fetch(REPO_API, {
+      next: { revalidate: 3600 },
+      headers: { Accept: "application/vnd.github+json" },
+    });
+    if (!res.ok) return null;
+
+    const data = (await res.json()) as { stargazers_count?: number };
+    return typeof data.stargazers_count === "number"
+      ? data.stargazers_count
+      : null;
   } catch {
     return null;
   }

@@ -19,7 +19,10 @@ use super::format;
 use super::model::{
     local_day_start, local_month_start, next_bucket, Granularity, RangePreset, UsageIndex,
 };
-use super::page::{ExportFormat, MenuKind, SessionSort, UsagePage, PAGE_SIZES};
+use super::page::{
+    BucketSort, ExportFormat, MenuKind, SeriesSort, SessionSort, UsagePage, PAGE_SIZES,
+};
+use super::table::FailureSort;
 use crate::theme::Theme;
 use crate::{app::icon, composer::ComposerInput};
 
@@ -47,10 +50,14 @@ pub fn chip_with_menu(
         .items_start()
         .child(chip)
         .children(open.then(|| {
+            // The anchor corner sits at the chip's own top edge, so the offset
+            // must clear the full 28px chip before the 5px gap — otherwise the
+            // panel hangs over the chip that opened it (and a second click
+            // lands inside the popup). See the same fix in `settings.rs`.
             anchored()
                 .position_mode(gpui::AnchoredPositionMode::Local)
                 .anchor(corner)
-                .offset(point(px(-1.), px(5.)))
+                .offset(point(px(-1.), px(33.)))
                 .snap_to_window()
                 .child(deferred(panel()))
         }))
@@ -339,7 +346,7 @@ pub fn multi_menu(
 
     let mut children: Vec<AnyElement> = vec![search_row(page.menu_query(), theme)];
     let list: Vec<AnyElement> =
-        std::iter::once((None, "All".to_string(), None::<String>, selected.is_empty()))
+        std::iter::once((None, tr!("usage.all"), None::<String>, selected.is_empty()))
             .chain(rows.iter().map(|option| {
                 (
                     Some(option.id),
@@ -394,22 +401,27 @@ pub fn multi_menu(
                 .pb(px(8.))
                 .text_size(theme.ui_px(11.5))
                 .text_color(theme.text_3)
-                .child(format!("No match for “{}”", query.trim()))
+                .child(tr!("usage.no_query_match", query = query.trim()))
                 .into_any_element(),
         );
     }
     let ids: Vec<u16> = all.iter().map(|option| option.id).collect();
     let entity = cx.entity();
-    let select_all = footer_row("usage-menu-all", "Select all", theme, {
+    let select_all = footer_row("usage-menu-all", &tr!("usage.select_all"), theme, {
         let ids = ids.clone();
         move |_, _, cx| {
             entity.update(cx, |page, cx| page.select_all(kind, &ids, cx));
         }
     });
     let entity = cx.entity();
-    let clear = footer_row("usage-menu-clear", "Clear", theme, move |_, _, cx| {
-        entity.update(cx, |page, cx| page.clear_dimension(kind, cx));
-    });
+    let clear = footer_row(
+        "usage-menu-clear",
+        &tr!("usage.clear"),
+        theme,
+        move |_, _, cx| {
+            entity.update(cx, |page, cx| page.clear_dimension(kind, cx));
+        },
+    );
     children.push(menu_footer(theme, select_all, clear));
     let page = cx.entity();
     panel("usage-filter-menu", 268., theme, children, page)
@@ -422,20 +434,23 @@ pub fn export_menu(cx: &mut gpui::Context<UsagePage>, theme: Theme) -> AnyElemen
     for (format, label, hint) in [
         (
             ExportFormat::Csv,
-            "Filtered requests (CSV)",
-            "one row per model request",
+            tr!("usage.export_csv"),
+            tr!("usage.export_csv_hint"),
         ),
         (
             ExportFormat::Json,
-            "Current view (JSON)",
-            "summary, series, breakdowns, tables",
+            tr!("usage.export_json"),
+            tr!("usage.export_json_hint"),
         ),
     ] {
         let entity = cx.entity();
         children.push(row(
-            ElementId::Name(SharedString::from(format!("usage-export-{label}"))),
-            label,
-            Some(hint),
+            ElementId::Name(SharedString::from(format!(
+                "usage-export-{}",
+                format.as_str()
+            ))),
+            &label,
+            Some(&hint),
             false,
             false,
             theme,
@@ -459,7 +474,7 @@ pub fn page_size_menu(
     theme: Theme,
 ) -> AnyElement {
     let current = page.page_size();
-    let mut children: Vec<AnyElement> = vec![menu_title("Rows per page", theme)];
+    let mut children: Vec<AnyElement> = vec![menu_title(&tr!("usage.rows_per_page"), theme)];
     for size in PAGE_SIZES {
         let selected = size == current;
         let entity = cx.entity();
@@ -487,7 +502,7 @@ pub fn columns_menu(
     cx: &mut gpui::Context<UsagePage>,
     theme: Theme,
 ) -> AnyElement {
-    let mut children: Vec<AnyElement> = vec![menu_title("Columns", theme)];
+    let mut children: Vec<AnyElement> = vec![menu_title(&tr!("usage.columns"), theme)];
     // The display order of the table's own plan, minus the fixed title/open.
     let columns: [SessionSort; 11] = [
         SessionSort::Workspace,
@@ -510,7 +525,7 @@ pub fn columns_menu(
                 "usage-column-{}",
                 column.as_str()
             ))),
-            column.label(),
+            &column.label(),
             None,
             selected,
             false,
@@ -522,9 +537,14 @@ pub fn columns_menu(
         ));
     }
     let entity = cx.entity();
-    let show_all = footer_row("usage-columns-all", "Show all", theme, move |_, _, cx| {
-        entity.update(cx, |page, cx| page.show_all_columns(cx));
-    });
+    let show_all = footer_row(
+        "usage-columns-all",
+        &tr!("usage.show_all"),
+        theme,
+        move |_, _, cx| {
+            entity.update(cx, |page, cx| page.show_all_columns(cx));
+        },
+    );
     children.push(menu_footer(theme, show_all, div().into_any_element()));
     let page = cx.entity();
     panel("usage-columns-menu", 220., theme, children, page)
@@ -537,13 +557,13 @@ pub fn breakdown_columns_menu(
     cx: &mut gpui::Context<UsagePage>,
     theme: Theme,
 ) -> AnyElement {
-    let mut children: Vec<AnyElement> = vec![menu_title("Columns", theme)];
+    let mut children: Vec<AnyElement> = vec![menu_title(&tr!("usage.columns"), theme)];
     for (id, label) in page.breakdown_column_options() {
         let selected = page.breakdown_column_visible(id);
         let entity = cx.entity();
         children.push(row(
             ElementId::Name(SharedString::from(format!("usage-breakdown-col-{id}"))),
-            label,
+            &label,
             None,
             selected,
             false,
@@ -557,7 +577,7 @@ pub fn breakdown_columns_menu(
     let entity = cx.entity();
     let show_all = footer_row(
         "usage-breakdown-columns-all",
-        "Show all",
+        &tr!("usage.show_all"),
         theme,
         move |_, _, cx| {
             entity.update(cx, |page, cx| page.show_all_breakdown_columns(cx));
@@ -575,7 +595,7 @@ pub fn breakdown_page_size_menu(
     theme: Theme,
 ) -> AnyElement {
     let current = page.breakdown_view(page.breakdown_tab()).page_size;
-    let mut children: Vec<AnyElement> = vec![menu_title("Rows per page", theme)];
+    let mut children: Vec<AnyElement> = vec![menu_title(&tr!("usage.rows_per_page"), theme)];
     for size in PAGE_SIZES {
         let selected = size == current;
         let entity = cx.entity();
@@ -600,6 +620,215 @@ pub fn breakdown_page_size_menu(
         children,
         page,
     )
+}
+
+/// The usage-over-time table's column-visibility picker. Time is fixed.
+pub fn series_columns_menu(
+    page: &UsagePage,
+    cx: &mut gpui::Context<UsagePage>,
+    theme: Theme,
+) -> AnyElement {
+    let mut children: Vec<AnyElement> = vec![menu_title(&tr!("usage.columns"), theme)];
+    for column in SeriesSort::HIDEABLE {
+        let selected = page.series_column_visible(column);
+        let label = if column == SeriesSort::Value {
+            page.metric().label()
+        } else {
+            column.label()
+        };
+        let entity = cx.entity();
+        children.push(row(
+            ElementId::Name(SharedString::from(format!(
+                "usage-series-col-{}",
+                column.id()
+            ))),
+            &label,
+            None,
+            selected,
+            false,
+            theme,
+            move |_, _, cx| {
+                entity.update(cx, |page, cx| page.toggle_series_column(column, cx));
+            },
+            |_, _, _| {},
+        ));
+    }
+    let entity = cx.entity();
+    let show_all = footer_row(
+        "usage-series-columns-all",
+        &tr!("usage.show_all"),
+        theme,
+        move |_, _, cx| {
+            entity.update(cx, |page, cx| page.show_all_series_columns(cx));
+        },
+    );
+    children.push(menu_footer(theme, show_all, div().into_any_element()));
+    let page = cx.entity();
+    panel("usage-series-columns-menu", 220., theme, children, page)
+}
+
+/// The usage-over-time table's rows-per-page picker.
+pub fn series_page_size_menu(
+    page: &UsagePage,
+    cx: &mut gpui::Context<UsagePage>,
+    theme: Theme,
+) -> AnyElement {
+    let current = page.series_page_size();
+    let mut children: Vec<AnyElement> = vec![menu_title(&tr!("usage.rows_per_page"), theme)];
+    for size in PAGE_SIZES {
+        let selected = size == current;
+        let entity = cx.entity();
+        children.push(row(
+            ElementId::NamedInteger("usage-series-page-size".into(), size as u64),
+            &size.to_string(),
+            None,
+            selected,
+            false,
+            theme,
+            move |_, _, cx| {
+                entity.update(cx, |page, cx| page.set_series_page_size(size, cx));
+            },
+            |_, _, _| {},
+        ));
+    }
+    let page = cx.entity();
+    panel("usage-series-page-size-menu", 180., theme, children, page)
+}
+
+/// The Daily records table's column-visibility picker. Date is fixed.
+pub fn bucket_columns_menu(
+    page: &UsagePage,
+    cx: &mut gpui::Context<UsagePage>,
+    theme: Theme,
+) -> AnyElement {
+    let mut children: Vec<AnyElement> = vec![menu_title(&tr!("usage.columns"), theme)];
+    for column in BucketSort::HIDEABLE {
+        let selected = page.bucket_column_visible(column);
+        let entity = cx.entity();
+        children.push(row(
+            ElementId::Name(SharedString::from(format!(
+                "usage-bucket-col-{}",
+                column.id()
+            ))),
+            &column.label(),
+            None,
+            selected,
+            false,
+            theme,
+            move |_, _, cx| {
+                entity.update(cx, |page, cx| page.toggle_bucket_column(column, cx));
+            },
+            |_, _, _| {},
+        ));
+    }
+    let entity = cx.entity();
+    let show_all = footer_row(
+        "usage-bucket-columns-all",
+        &tr!("usage.show_all"),
+        theme,
+        move |_, _, cx| {
+            entity.update(cx, |page, cx| page.show_all_bucket_columns(cx));
+        },
+    );
+    children.push(menu_footer(theme, show_all, div().into_any_element()));
+    let page = cx.entity();
+    panel("usage-bucket-columns-menu", 220., theme, children, page)
+}
+
+/// The Daily records table's rows-per-page picker.
+pub fn bucket_page_size_menu(
+    page: &UsagePage,
+    cx: &mut gpui::Context<UsagePage>,
+    theme: Theme,
+) -> AnyElement {
+    let current = page.bucket_page_size();
+    let mut children: Vec<AnyElement> = vec![menu_title(&tr!("usage.rows_per_page"), theme)];
+    for size in PAGE_SIZES {
+        let selected = size == current;
+        let entity = cx.entity();
+        children.push(row(
+            ElementId::NamedInteger("usage-bucket-page-size".into(), size as u64),
+            &size.to_string(),
+            None,
+            selected,
+            false,
+            theme,
+            move |_, _, cx| {
+                entity.update(cx, |page, cx| page.set_bucket_page_size(size, cx));
+            },
+            |_, _, _| {},
+        ));
+    }
+    let page = cx.entity();
+    panel("usage-bucket-page-size-menu", 180., theme, children, page)
+}
+
+/// The Failures records table's column-visibility picker. When is fixed.
+pub fn failure_columns_menu(
+    page: &UsagePage,
+    cx: &mut gpui::Context<UsagePage>,
+    theme: Theme,
+) -> AnyElement {
+    let mut children: Vec<AnyElement> = vec![menu_title(&tr!("usage.columns"), theme)];
+    for column in FailureSort::HIDEABLE {
+        let selected = page.failure_column_visible(column);
+        let entity = cx.entity();
+        children.push(row(
+            ElementId::Name(SharedString::from(format!(
+                "usage-failure-col-{}",
+                column.id()
+            ))),
+            &column.label(),
+            None,
+            selected,
+            false,
+            theme,
+            move |_, _, cx| {
+                entity.update(cx, |page, cx| page.toggle_failure_column(column, cx));
+            },
+            |_, _, _| {},
+        ));
+    }
+    let entity = cx.entity();
+    let show_all = footer_row(
+        "usage-failure-columns-all",
+        &tr!("usage.show_all"),
+        theme,
+        move |_, _, cx| {
+            entity.update(cx, |page, cx| page.show_all_failure_columns(cx));
+        },
+    );
+    children.push(menu_footer(theme, show_all, div().into_any_element()));
+    let page = cx.entity();
+    panel("usage-failure-columns-menu", 220., theme, children, page)
+}
+
+/// The Failures records table's rows-per-page picker.
+pub fn failure_page_size_menu(
+    page: &UsagePage,
+    cx: &mut gpui::Context<UsagePage>,
+    theme: Theme,
+) -> AnyElement {
+    let current = page.failure_page_size();
+    let mut children: Vec<AnyElement> = vec![menu_title(&tr!("usage.rows_per_page"), theme)];
+    for size in PAGE_SIZES {
+        let selected = size == current;
+        let entity = cx.entity();
+        children.push(row(
+            ElementId::NamedInteger("usage-failure-page-size".into(), size as u64),
+            &size.to_string(),
+            None,
+            selected,
+            false,
+            theme,
+            move |_, _, cx| {
+                entity.update(cx, |page, cx| page.set_failure_page_size(size, cx));
+            },
+            |_, _, _| {},
+        ));
+    }
+    let page = cx.entity();
+    panel("usage-failure-page-size-menu", 180., theme, children, page)
 }
 
 /// A small heading at the top of a menu.
@@ -631,7 +860,7 @@ pub fn range_menu(page: &UsagePage, cx: &mut gpui::Context<UsagePage>, theme: Th
                 preset.as_str()
             ))),
             &label,
-            preset_summary(preset),
+            preset_summary(preset).as_deref(),
             selected,
             false,
             theme,
@@ -673,14 +902,14 @@ pub fn range_menu(page: &UsagePage, cx: &mut gpui::Context<UsagePage>, theme: Th
 }
 
 /// The hint shown on the right of each preset row.
-fn preset_summary(preset: RangePreset) -> Option<&'static str> {
+fn preset_summary(preset: RangePreset) -> Option<String> {
     match preset {
-        RangePreset::Today => Some("compare with yesterday"),
-        RangePreset::Last7 => Some("vs previous 7 days"),
-        RangePreset::Last14 => Some("vs previous 14 days"),
-        RangePreset::Last30 => Some("vs previous 30 days"),
-        RangePreset::PreviousMonth => Some("complete month"),
-        RangePreset::All => Some("no comparison"),
+        RangePreset::Today => Some(tr!("usage.compare_with_yesterday")),
+        RangePreset::Last7 => Some(tr!("usage.vs_previous_7_days")),
+        RangePreset::Last14 => Some(tr!("usage.vs_previous_14_days")),
+        RangePreset::Last30 => Some(tr!("usage.vs_previous_30_days")),
+        RangePreset::PreviousMonth => Some(tr!("usage.complete_month")),
+        RangePreset::All => Some(tr!("usage.no_comparison")),
         _ => None,
     }
 }
@@ -843,8 +1072,8 @@ fn calendar(page: &UsagePage, cx: &mut gpui::Context<UsagePage>, theme: Theme) -
 
     let hint = match (start, end) {
         (Some(from), Some(to)) => super::model::DateRange::custom(from, to).label(),
-        (Some(_), None) => "Pick the end date".to_string(),
-        _ => "Pick the start date".to_string(),
+        (Some(_), None) => tr!("usage.pick_end_date"),
+        _ => tr!("usage.pick_start_date"),
     };
 
     div()
@@ -873,7 +1102,7 @@ pub fn selection_label(
     match selected.len() {
         0 => all.to_string(),
         1 => label_of(selected[0]).unwrap_or_else(|| all.to_string()),
-        count => format!("{count} selected"),
+        count => tr!("usage.n_selected", count = count),
     }
 }
 
@@ -944,6 +1173,40 @@ pub fn text_button(
                 .on_mouse_down(MouseButton::Left, on_click)
         })
         .children(icon_path.map(|path| icon(path, 12., color)))
+        .child(label.to_string())
+        .into_any_element()
+}
+
+/// Outlined pager control: Previous / Next sit under the table card.
+pub fn outline_button(
+    id: &'static str,
+    label: &str,
+    enabled: bool,
+    theme: Theme,
+    on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    div()
+        .id(ElementId::Name(SharedString::from(id)))
+        .h(px(28.))
+        .px(px(12.))
+        .rounded(px(8.))
+        .border_1()
+        .border_color(theme.border)
+        .bg(if enabled {
+            theme.bg_main
+        } else {
+            theme.overlay
+        })
+        .flex()
+        .items_center()
+        .text_size(theme.ui_px(12.))
+        .text_color(if enabled { theme.text } else { theme.text_3 })
+        .when(enabled, |button| {
+            button
+                .cursor_pointer()
+                .hover(|style| style.bg(theme.bg_hover).border_color(theme.border_strong))
+                .on_mouse_down(MouseButton::Left, on_click)
+        })
         .child(label.to_string())
         .into_any_element()
 }

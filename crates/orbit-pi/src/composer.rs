@@ -1,4 +1,4 @@
-//! Multi-line composer input (Waku-style): text wraps, the editor grows to
+//! Multi-line composer input: text wraps, the editor grows to
 //! `MAX_LINES` and then scrolls internally, `Enter` submits, `Shift+Enter`
 //! inserts a newline, and ↑/↓ move the caret between visual rows.
 //!
@@ -7,7 +7,7 @@
 //! approximated as plain replaces — flag for P2 polish.
 
 use std::ops::Range;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use unicode_segmentation::UnicodeSegmentation;
 
 use gpui::{
@@ -19,10 +19,11 @@ use gpui::{
 };
 
 use crate::{
+    highlight::{self, Lang},
     mentions::{detect_trigger, tokenize_mentions, MentionKind, SharedAutocomplete, Trigger},
     theme, Backspace, Copy, Cut, Delete, Down, End, Home, Left, LineLeft, LineRight, Newline,
-    Paste, Right, SelectAll, SelectLeft, SelectLineLeft, SelectLineRight, SelectRight,
-    SelectWordLeft, SelectWordRight, Up, WordLeft, WordRight,
+    Paste, Redo, Right, SelectAll, SelectLeft, SelectLineLeft, SelectLineRight, SelectRight,
+    SelectWordLeft, SelectWordRight, Undo, Up, WordLeft, WordRight,
 };
 
 /// Visual rows the editor grows to before it scrolls internally.
@@ -34,10 +35,38 @@ const BLINK_RESUME_DELAY: Duration = Duration::from_millis(300);
 /// Caret on/off half-period (a ~1s cycle).
 const BLINK_INTERVAL: Duration = Duration::from_millis(530);
 
+/// Undo history bounds: at most this many snapshots, and this many bytes of
+/// buffer across them. A whole-file editor produces large snapshots, so the
+/// byte budget matters more than the count.
+const UNDO_LIMIT: usize = 128;
+const UNDO_BYTES: usize = 16 * 1024 * 1024;
+/// Edits within this window coalesce into one undo step (a typing run).
+const UNDO_COALESCE: Duration = Duration::from_millis(400);
+
+/// One undo point: the buffer plus the caret/selection to restore.
+#[derive(Clone)]
+struct Snapshot {
+    content: String,
+    selected_range: Range<usize>,
+    selection_reversed: bool,
+}
+
 pub struct ComposerInput {
     focus_handle: FocusHandle,
     content: String,
     placeholder: SharedString,
+    /// True while the field still uses the shared default placeholder, which
+    /// is resolved at paint time so a language change is picked up live.
+    placeholder_is_default: bool,
+    /// Translation key for the placeholder, resolved at paint time (like the
+    /// default placeholder) so switching the interface language updates the
+    /// field without rebuilding it. Preferred over [`Self::with_placeholder`]
+    /// for user-facing copy; `with_placeholder` stays for literal text such
+    /// as `sk-…` or a URL example.
+    placeholder_key: Option<SharedString>,
+    /// Named `%{…}` values substituted into [`Self::placeholder_key`] at paint
+    /// time. Empty for keys without interpolation.
+    placeholder_vars: Vec<(SharedString, SharedString)>,
     /// Element id used in `render`. Defaults to `composer-input`; form
     /// fields override it so several inputs can coexist as siblings.
     element_id: SharedString,
@@ -86,6 +115,30 @@ pub struct ComposerInput {
     /// hold the caret solid for a beat before it resumes blinking.
     blink_content: String,
     blink_selection: Range<usize>,
+    /// When set, the editor paints syntax colors for `lang` (the Explorer's
+    /// code files). `None` keeps the plain/mention ink.
+    syntax: Option<Lang>,
+    /// Paint a line-number gutter (the Explorer's editor).
+    gutter: bool,
+    /// Wrap long lines. The Explorer disables it so one logical line is one
+    /// visual row and the gutter stays aligned.
+    wrap: bool,
+    /// Fill the parent's height and scroll internally, instead of auto-growing
+    /// to `max_lines`.
+    fill: bool,
+    /// Bumped on every text mutation. Observers use it to tell an edit from a
+    /// caret move or blink without cloning the buffer on each notify.
+    revision: u64,
+    /// Gutter width from the last prepaint, for mouse hit-testing.
+    last_gutter: Pixels,
+    /// Undo/redo history. Bounded by count and total bytes so a whole-file
+    /// buffer cannot balloon memory.
+    undo_stack: Vec<Snapshot>,
+    redo_stack: Vec<Snapshot>,
+    undo_bytes: usize,
+    /// Timestamp of the last recorded edit, for coalescing a typing run into
+    /// one undo step. `None` after a caret move or undo/redo.
+    last_edit: Option<Instant>,
 }
 
 impl ComposerInput {
@@ -93,7 +146,10 @@ impl ComposerInput {
         Self {
             focus_handle: cx_focus_handle(_cx),
             content: String::new(),
-            placeholder: "Do anything…".into(),
+            placeholder: "".into(),
+            placeholder_is_default: true,
+            placeholder_key: None,
+            placeholder_vars: Vec::new(),
             element_id: "composer-input".into(),
             key_context: "Composer".into(),
             selected_range: 0..0,
@@ -116,13 +172,63 @@ impl ComposerInput {
             _blink_task: None,
             blink_content: String::new(),
             blink_selection: 0..0,
+            syntax: None,
+            gutter: false,
+            wrap: true,
+            fill: false,
+            revision: 0,
+            last_gutter: px(0.),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            undo_bytes: 0,
+            last_edit: None,
         }
     }
 
-    /// Override the placeholder text.
+    /// Override the placeholder with literal text (not translated). Prefer
+    /// [`Self::with_placeholder_key`] for any copy a translator should see.
     pub fn with_placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
         self.placeholder = placeholder.into();
+        self.placeholder_key = None;
+        self.placeholder_vars.clear();
+        self.placeholder_is_default = false;
         self
+    }
+
+    /// Set the placeholder from a translation key, resolved at paint time so
+    /// a language change updates it live. Pair with
+    /// [`Self::with_placeholder_var`] when the key interpolates `%{…}`.
+    pub fn with_placeholder_key(mut self, key: impl Into<SharedString>) -> Self {
+        self.placeholder_key = Some(key.into());
+        self.placeholder = SharedString::default();
+        self.placeholder_vars.clear();
+        self.placeholder_is_default = false;
+        self
+    }
+
+    /// Supply a named interpolation value for the placeholder key
+    /// (`%{name}`), resolved at paint time.
+    pub fn with_placeholder_var(
+        mut self,
+        name: impl Into<SharedString>,
+        value: impl Into<SharedString>,
+    ) -> Self {
+        self.placeholder_vars.push((name.into(), value.into()));
+        self
+    }
+
+    /// The placeholder text to paint in the current locale. Default, keyed,
+    /// and literal placeholders all converge here so the paint path and tests
+    /// share one implementation.
+    pub(crate) fn resolved_placeholder(&self) -> SharedString {
+        resolve_placeholder(
+            self.placeholder_is_default,
+            self.placeholder_key.as_ref().map(|key| key.as_ref()),
+            &self.placeholder,
+            &self.placeholder_vars,
+            None,
+        )
+        .into()
     }
 
     /// Replace the key context flags for this input (space separated).
@@ -151,6 +257,35 @@ impl ComposerInput {
         self
     }
 
+    /// Set the syntax language after construction — the file's language is
+    /// only known once the background read finishes.
+    pub fn set_syntax(&mut self, lang: Option<Lang>, cx: &mut Context<Self>) {
+        if self.syntax == lang {
+            return;
+        }
+        self.syntax = lang;
+        cx.notify();
+    }
+
+    /// Paint a line-number gutter down the left edge.
+    pub fn with_gutter(mut self, gutter: bool) -> Self {
+        self.gutter = gutter;
+        self
+    }
+
+    /// Disable wrapping so one logical line is one visual row.
+    pub fn with_wrap(mut self, wrap: bool) -> Self {
+        self.wrap = wrap;
+        self
+    }
+
+    /// Fill the parent's height and scroll internally, instead of growing to
+    /// `max_lines`.
+    pub fn with_fill(mut self, fill: bool) -> Self {
+        self.fill = fill;
+        self
+    }
+
     /// Share the `/`+`@` autocomplete state (see `mentions::AutocompleteState`).
     pub fn with_autocomplete(mut self, state: SharedAutocomplete) -> Self {
         self.autocomplete = Some(state);
@@ -159,6 +294,12 @@ impl ComposerInput {
 
     pub fn text(&self) -> String {
         self.content.clone()
+    }
+
+    /// Monotonic text-revision counter; changes only on actual edits, not on
+    /// caret moves or blinks.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// The active `/`-command or `@`-file trigger at the caret, if any.
@@ -173,16 +314,20 @@ impl ComposerInput {
 
     /// Replace `range` with `text` (used by autocomplete commits).
     pub fn replace_range(&mut self, range: Range<usize>, text: &str, cx: &mut Context<Self>) {
+        self.record_undo();
         let start = range.start.min(self.content.len());
         let end = range.end.min(self.content.len()).max(start);
         self.content = self.content[0..start].to_owned() + text + &self.content[end..];
         self.selected_range = start + text.len()..start + text.len();
+        self.revision = self.revision.wrapping_add(1);
         cx.notify();
     }
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.content.clear();
         self.selected_range = 0..0;
         self.scroll_offset = px(0.);
+        self.revision = self.revision.wrapping_add(1);
+        self.reset_history();
         cx.notify();
     }
 
@@ -193,6 +338,20 @@ impl ComposerInput {
         self.selected_range = self.content.len()..self.content.len();
         self.selection_reversed = false;
         self.scroll_offset = px(0.);
+        self.revision = self.revision.wrapping_add(1);
+        self.reset_history();
+        cx.notify();
+    }
+
+    /// Replace the whole content and place the caret at the start. The Explorer
+    /// opens a file at the top, not scrolled to its last line.
+    pub fn set_text_at_start(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
+        self.content = text.into();
+        self.selected_range = 0..0;
+        self.selection_reversed = false;
+        self.scroll_offset = px(0.);
+        self.revision = self.revision.wrapping_add(1);
+        self.reset_history();
         cx.notify();
     }
 
@@ -285,7 +444,7 @@ impl ComposerInput {
 
     fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
         // While the autocomplete menu is open the arrows navigate it, not
-        // the caret (Waku parity).
+        // the caret.
         if self.autocomplete_navigate(-1, cx) {
             return;
         }
@@ -408,6 +567,80 @@ impl ComposerInput {
         self.replace_text_in_range(None, "\n", window, cx);
     }
 
+    // ── undo / redo ────────────────────────────────────────────────────
+
+    fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            content: self.content.clone(),
+            selected_range: self.selected_range.clone(),
+            selection_reversed: self.selection_reversed,
+        }
+    }
+
+    /// Record the pre-edit buffer as an undo point. A run of edits within
+    /// [`UNDO_COALESCE`] shares one point, so `cmd-z` rewinds a burst of typing
+    /// rather than one keystroke at a time.
+    fn record_undo(&mut self) {
+        let now = Instant::now();
+        let coalesce = self
+            .last_edit
+            .is_some_and(|at| now.duration_since(at) < UNDO_COALESCE);
+        if !coalesce {
+            self.push_undo(self.snapshot());
+        }
+        self.redo_stack.clear();
+        self.last_edit = Some(now);
+    }
+
+    fn push_undo(&mut self, snapshot: Snapshot) {
+        self.undo_bytes = self.undo_bytes.saturating_add(snapshot.content.len());
+        self.undo_stack.push(snapshot);
+        while self.undo_stack.len() > UNDO_LIMIT || self.undo_bytes > UNDO_BYTES {
+            let dropped = self.undo_stack.remove(0);
+            self.undo_bytes = self.undo_bytes.saturating_sub(dropped.content.len());
+            if self.undo_stack.is_empty() {
+                break;
+            }
+        }
+    }
+
+    /// A programmatic whole-buffer replacement (seeding a file, clearing a
+    /// field) is a new document, not an edit: it starts a fresh history.
+    fn reset_history(&mut self) {
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.undo_bytes = 0;
+        self.last_edit = None;
+    }
+
+    fn apply_snapshot(&mut self, snapshot: Snapshot, cx: &mut Context<Self>) {
+        self.content = snapshot.content;
+        self.selected_range = snapshot.selected_range;
+        self.selection_reversed = snapshot.selection_reversed;
+        self.scroll_offset = px(0.);
+        self.revision = self.revision.wrapping_add(1);
+        self.last_edit = None;
+        cx.notify();
+    }
+
+    fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(snapshot) = self.undo_stack.pop() else {
+            return;
+        };
+        self.undo_bytes = self.undo_bytes.saturating_sub(snapshot.content.len());
+        let current = self.snapshot();
+        self.redo_stack.push(current);
+        self.apply_snapshot(snapshot, cx);
+    }
+
+    fn redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(snapshot) = self.redo_stack.pop() else {
+            return;
+        };
+        self.push_undo(self.snapshot());
+        self.apply_snapshot(snapshot, cx);
+    }
+
     // ── editing ────────────────────────────────────────────────────────
 
     fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
@@ -492,7 +725,7 @@ impl ComposerInput {
         let Some(item) = cx.read_from_clipboard() else {
             return;
         };
-        // Pasted images become message attachments (Waku: "Show pasted
+        // Pasted images become message attachments ("Show pasted
         // images as attachments") — the app drains `pasted_images` and
         // renders chips above the composer.
         let images: Vec<Image> = item
@@ -534,6 +767,8 @@ impl ComposerInput {
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.selected_range = offset..offset;
+        // A caret move ends the current undo run.
+        self.last_edit = None;
         cx.notify()
     }
 
@@ -551,7 +786,7 @@ impl ComposerInput {
             return point(px(0.), px(0.));
         };
         point(
-            position.x - bounds.origin.x,
+            position.x - bounds.origin.x - self.last_gutter,
             position.y - bounds.origin.y + self.scroll_offset,
         )
     }
@@ -803,6 +1038,7 @@ impl EntityInputHandler for ComposerInput {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.record_undo();
         let range = range_utf16
             .as_ref()
             .map(|range| self.range_from_utf16(range))
@@ -810,6 +1046,7 @@ impl EntityInputHandler for ComposerInput {
         self.content =
             self.content[0..range.start].to_owned() + new_text + &self.content[range.end..];
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
+        self.revision = self.revision.wrapping_add(1);
         cx.notify();
     }
 
@@ -822,6 +1059,7 @@ impl EntityInputHandler for ComposerInput {
         cx: &mut Context<Self>,
     ) {
         // IME composition is stubbed; treat as a plain replace.
+        self.record_undo();
         let range = range_utf16
             .as_ref()
             .map(|range| self.range_from_utf16(range))
@@ -833,6 +1071,7 @@ impl EntityInputHandler for ComposerInput {
             .map(|r| self.range_from_utf16(r))
             .map(|r| r.start + new_text.len()..r.end + new_text.len())
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
+        self.revision = self.revision.wrapping_add(1);
         cx.notify();
     }
 
@@ -971,6 +1210,50 @@ fn line_range_at(text: &str, offset: usize) -> Range<usize> {
     start..end
 }
 
+/// Overlay scrollbar thumb height. `Ord::clamp` panics when min > max, so
+/// the 24px minimum is lowered when the track itself is shorter — a
+/// one-line form field is typically ~18px and used to abort if a wrapped
+/// session name overflowed it.
+fn scrollbar_thumb_height(track: Pixels, visible_rows: usize, total_rows: usize) -> Pixels {
+    if track <= px(0.) || total_rows == 0 {
+        return px(0.);
+    }
+    let ratio = (visible_rows as f32 / total_rows as f32).clamp(0.0, 1.0);
+    let min_thumb = px(24.).min(track);
+    (track * ratio).clamp(min_thumb, track)
+}
+
+/// Resolve a placeholder for `locale` (or the active locale when `locale` is
+/// `None`). Shared by the paint path and tests so both agree on precedence:
+/// default key → explicit key (+ interpolated vars) → literal.
+fn resolve_placeholder(
+    placeholder_is_default: bool,
+    placeholder_key: Option<&str>,
+    placeholder: &str,
+    vars: &[(SharedString, SharedString)],
+    locale: Option<&str>,
+) -> String {
+    if placeholder_is_default {
+        return match locale {
+            Some(locale) => crate::i18n::translate_in(locale, "composer.placeholder"),
+            None => tr!("composer.placeholder"),
+        };
+    }
+    let Some(key) = placeholder_key else {
+        return placeholder.to_owned();
+    };
+    let mut text = match locale {
+        Some(locale) => crate::i18n::translate_in(locale, key),
+        None => crate::i18n::translate(key),
+    };
+    if !vars.is_empty() {
+        let names: Vec<&str> = vars.iter().map(|(name, _)| name.as_ref()).collect();
+        let values: Vec<String> = vars.iter().map(|(_, value)| value.to_string()).collect();
+        text = rust_i18n::replace_patterns(&text, &names, &values);
+    }
+    text
+}
+
 /// Split the composer text into paint runs: the base ink plus the
 /// `/command` and `@file` token colors. Gaps keep `base`'s color. Runs span
 /// the whole text (newlines included) so `shape_text` never runs dry.
@@ -1011,6 +1294,61 @@ fn mention_runs(text: &str, base: &TextRun, theme: &theme::Theme) -> Vec<TextRun
     runs
 }
 
+/// Build syntax-colored runs over the whole content for `shape_text`.
+///
+/// The lexer returns one token list per `\n`-split line; runs must cover the
+/// text byte-for-byte, newlines included, so the shaped layout is identical to
+/// the plain path and caret/selection geometry stays valid.
+fn syntax_runs(text: &str, lang: Lang, base: &TextRun, theme: &theme::Theme) -> Vec<TextRun> {
+    let tokens = highlight::tokenize_cached(lang, text);
+    let mut runs: Vec<TextRun> = Vec::new();
+    let lines: Vec<&str> = text.split('\n').collect();
+    for (i, line) in lines.iter().enumerate() {
+        let spans = tokens.get(i).map(Vec::as_slice).unwrap_or(&[]);
+        let mut offset = 0usize;
+        for token in spans {
+            let start = token.range.start.min(line.len());
+            let end = token.range.end.min(line.len());
+            if start > offset {
+                runs.push(TextRun {
+                    len: start - offset,
+                    color: base.color,
+                    ..base.clone()
+                });
+            }
+            if end > start {
+                runs.push(TextRun {
+                    len: end - start,
+                    color: theme.token_color(token.class),
+                    ..base.clone()
+                });
+            }
+            offset = offset.max(end);
+        }
+        if offset < line.len() {
+            runs.push(TextRun {
+                len: line.len() - offset,
+                color: base.color,
+                ..base.clone()
+            });
+        }
+        if i + 1 < lines.len() {
+            runs.push(TextRun {
+                len: 1,
+                color: base.color,
+                ..base.clone()
+            });
+        }
+    }
+    if runs.is_empty() {
+        runs.push(TextRun {
+            len: text.len(),
+            ..base.clone()
+        });
+    }
+    runs
+}
+
 /// The painted text element for the input.
 struct TextElement {
     input: Entity<ComposerInput>,
@@ -1034,6 +1372,12 @@ struct PrepaintState {
     caret: Option<PaintQuad>,
     /// Scroll thumb, painted at the right edge while the text overflows.
     scrollbar: Option<PaintQuad>,
+    /// Line-number rows for the visible slice (empty without a gutter).
+    numbers: Vec<WrappedLine>,
+    /// Index of the first painted line number.
+    number_first: usize,
+    /// Gutter width, so the text paints to its right.
+    gutter: Pixels,
 }
 
 impl Element for TextElement {
@@ -1062,7 +1406,13 @@ impl Element for TextElement {
         let visible_rows = input.last_total_rows.max(1).min(input.max_lines);
         let mut style = Style::default();
         style.size.width = relative(1.).into();
-        style.size.height = (visible_rows as f32 * line_height).into();
+        style.size.height = if input.fill {
+            // A full-height editor fills its pane; prepaint derives the visible
+            // row count from the real bounds.
+            relative(1.).into()
+        } else {
+            (visible_rows as f32 * line_height).into()
+        };
         (window.request_layout(style, [], cx), ())
     }
 
@@ -1076,7 +1426,18 @@ impl Element for TextElement {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let line_height = window.line_height();
-        let (content, selected_range, cursor, max_lines, caret_visible, last_caret) = {
+        let (
+            content,
+            selected_range,
+            cursor,
+            max_lines,
+            caret_visible,
+            last_caret,
+            fill_height,
+            gutter,
+            wrap,
+            syntax,
+        ) = {
             let input = self.input.read(cx);
             (
                 input.content.clone(),
@@ -1085,6 +1446,10 @@ impl Element for TextElement {
                 input.max_lines,
                 input.caret_visible,
                 input.last_caret,
+                input.fill,
+                input.gutter,
+                input.wrap,
+                input.syntax,
             )
         };
         let style = window.text_style();
@@ -1101,11 +1466,18 @@ impl Element for TextElement {
             strikethrough: None,
         };
         let (display_text, runs) = if content.is_empty() {
-            let placeholder = self.input.read(cx).placeholder.clone();
+            let placeholder = self.input.read(cx).resolved_placeholder();
             let mut run = base.clone();
             run.len = placeholder.len();
             run.color = theme.text_3;
             (placeholder, vec![run])
+        } else if let Some(lang) = syntax {
+            // Code files: paint the whole buffer with the same lexer the
+            // read-only viewer uses.
+            (
+                SharedString::from(content.clone()),
+                syntax_runs(&content, lang, &base, theme),
+            )
         } else {
             // Token colors belong to mention-capable inputs (the main
             // composer); plain form fields keep one ink.
@@ -1121,7 +1493,12 @@ impl Element for TextElement {
         };
 
         let font_size = style.font_size.to_pixels(window.rem_size());
-        let wrap_width = (bounds.size.width > px(0.)).then_some(bounds.size.width);
+        let wrap_width = (wrap && bounds.size.width > px(0.)).then_some(bounds.size.width);
+        let gutter_width = if gutter {
+            px(content.split('\n').count().to_string().len().max(3) as f32 * 7.0 + 16.0)
+        } else {
+            px(0.)
+        };
         let lines: Vec<WrappedLine> = window
             .text_system()
             .shape_text(display_text, font_size, &runs, wrap_width, None)
@@ -1147,7 +1524,13 @@ impl Element for TextElement {
             .map(|line| line.wrap_boundaries().len() + 1)
             .sum::<usize>()
             .max(1);
-        let visible_rows = total_rows.min(max_lines);
+        // A full-height editor pins the visible row count to the pane, not to
+        // `max_lines` (the auto-growing composer's cap).
+        let visible_rows = if fill_height {
+            ((bounds.size.height / line_height).floor() as usize).max(1)
+        } else {
+            total_rows.min(max_lines)
+        };
         let content_height = total_rows as f32 * line_height;
         let visible_height = visible_rows as f32 * line_height;
 
@@ -1170,7 +1553,10 @@ impl Element for TextElement {
 
         // Window-coordinate mapping of a content point.
         let map = |x: Pixels, y: Pixels| -> gpui::Point<Pixels> {
-            point(bounds.origin.x + x, bounds.origin.y + y - scroll_offset)
+            point(
+                bounds.origin.x + gutter_width + x,
+                bounds.origin.y + y - scroll_offset,
+            )
         };
         let caret_fallback = |line: &WrappedLine| -> gpui::Point<Pixels> {
             point(
@@ -1251,11 +1637,12 @@ impl Element for TextElement {
 
         // Overlay scrollbar: a thin thumb at the right edge, sized to the
         // visible share of the text and positioned by the scroll offset. Only
-        // painted while the content overflows `max_lines`.
-        let scrollbar = (max_scroll > px(0.)).then(|| {
-            let track = bounds.size.height;
-            let thumb_height =
-                (track * (visible_rows as f32 / total_rows as f32)).clamp(px(24.), track);
+        // painted while the content overflows `max_lines` *and* the track is
+        // tall enough — a one-line form field is shorter than the 24px
+        // minimum thumb, and `Ord::clamp(24, track)` panics when min > max.
+        let track = bounds.size.height;
+        let scrollbar = (max_scroll > px(0.) && track >= px(24.)).then(|| {
+            let thumb_height = scrollbar_thumb_height(track, visible_rows, total_rows);
             let travel = track - thumb_height;
             let thumb_top = (scroll_offset / max_scroll) * travel;
             let width = px(4.);
@@ -1272,6 +1659,36 @@ impl Element for TextElement {
             )
         });
 
+        // Gutter numbers: shape only the visible slice. Wrapping is off for
+        // the Explorer editor, so a logical line is exactly one row and the
+        // numbers align with `line_y` without extra measurement.
+        let number_first = if gutter {
+            (scroll_offset / line_height).floor().max(0.) as usize
+        } else {
+            0
+        };
+        let number_lines: Vec<WrappedLine> = if gutter && !lines.is_empty() {
+            let last = (number_first + visible_rows + 1).min(lines.len());
+            if number_first < last {
+                let text = (number_first..last)
+                    .map(|i| (i + 1).to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let mut run = base.clone();
+                run.len = text.len();
+                run.color = theme.text_3.opacity(0.7);
+                window
+                    .text_system()
+                    .shape_text(text.into(), font_size, &[run], None, None)
+                    .map(|shaped| shaped.to_vec())
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+
         let width_changed = self.input.read(cx).last_wrap_width != wrap_width;
         let rows_changed = self.input.read(cx).last_total_rows != total_rows;
         let snapshot = (lines.clone(), line_starts.clone(), scroll_offset);
@@ -1284,6 +1701,7 @@ impl Element for TextElement {
             input.last_bounds = Some(bounds);
             input.last_wrap_width = wrap_width;
             input.last_total_rows = total_rows;
+            input.last_gutter = gutter_width;
         });
         // A resize changed the wrap width *and* the row count — the height
         // used at request_layout was one frame stale; re-layout.
@@ -1298,6 +1716,9 @@ impl Element for TextElement {
             selection,
             caret,
             scrollbar,
+            numbers: number_lines,
+            number_first,
+            gutter: gutter_width,
         }
     }
 
@@ -1332,7 +1753,7 @@ impl Element for TextElement {
             for (i, line) in prepaint.lines.iter().enumerate() {
                 line.paint(
                     point(
-                        bounds.origin.x,
+                        bounds.origin.x + prepaint.gutter,
                         bounds.origin.y + prepaint.line_y[i] - scroll,
                     ),
                     line_height,
@@ -1342,6 +1763,21 @@ impl Element for TextElement {
                     cx,
                 )
                 .unwrap();
+            }
+            // Line numbers, right-aligned in the gutter.
+            for (k, number) in prepaint.numbers.iter().enumerate() {
+                let i = prepaint.number_first + k;
+                if let Some(y) = prepaint.line_y.get(i).copied() {
+                    let x = bounds.origin.x + prepaint.gutter - px(9.) - number.width();
+                    let _ = number.paint(
+                        point(x, bounds.origin.y + y - scroll),
+                        line_height,
+                        TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    );
+                }
             }
             // Caret over the text.
             if focused {
@@ -1395,6 +1831,8 @@ impl Render for ComposerInput {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
+            .on_action(cx.listener(Self::undo))
+            .on_action(cx.listener(Self::redo))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
@@ -1406,7 +1844,60 @@ impl Render for ComposerInput {
 
 #[cfg(test)]
 mod tests {
-    use super::{line_at_offset, line_range_at, word_range_at};
+    use super::{
+        line_at_offset, line_range_at, resolve_placeholder, scrollbar_thumb_height, word_range_at,
+    };
+    use gpui::{px, SharedString};
+
+    /// A placeholder built from a translation key must follow the locale it is
+    /// painted in, so switching the interface language updates search fields
+    /// that were constructed long before (the provider/model/settings filters).
+    #[test]
+    fn placeholder_keys_follow_the_locale() {
+        let en = resolve_placeholder(false, Some("app.search_providers"), "", &[], Some("en"));
+        let zh = resolve_placeholder(false, Some("app.search_providers"), "", &[], Some("zh-CN"));
+        assert_eq!(en, "Search providers…");
+        assert_ne!(en, zh, "keyed placeholder still renders English in zh-CN");
+        assert!(!zh.is_empty());
+
+        // A literal placeholder (`sk-…`, a URL example) is never translated.
+        assert_eq!(
+            resolve_placeholder(false, None, "sk-…", &[], Some("zh-CN")),
+            "sk-…"
+        );
+
+        // The shared default placeholder follows the locale too.
+        assert_ne!(
+            resolve_placeholder(true, None, "", &[], Some("en")),
+            resolve_placeholder(true, None, "", &[], Some("zh-CN")),
+        );
+    }
+
+    /// `%{…}` values in a keyed placeholder are substituted at paint time, so
+    /// the branch picker's "Search <workspace> branches" stays translated.
+    #[test]
+    fn keyed_placeholder_vars_are_interpolated() {
+        let vars = [(SharedString::from("workspace"), SharedString::from("orbit"))];
+        let text = resolve_placeholder(
+            false,
+            Some("branch_picker.search_branches"),
+            "",
+            &vars,
+            Some("en"),
+        );
+        assert!(text.contains("orbit"), "{text}");
+        assert!(!text.contains("%{workspace}"), "{text}");
+    }
+
+    /// The paint path resolves against the *active* locale (`None`), not a
+    /// string baked when the field was built. Tests never change the global
+    /// locale, so the active one is English here.
+    #[test]
+    fn resolved_placeholder_uses_the_active_locale() {
+        let live = resolve_placeholder(false, Some("app.search_providers"), "", &[], None);
+        let en = resolve_placeholder(false, Some("app.search_providers"), "", &[], Some("en"));
+        assert_eq!(live, en);
+    }
 
     /// A caret on the newline byte (`"abc\n"` at offset 3) must resolve to
     /// the end of the preceding line, not underflow into the next line's
@@ -1474,6 +1965,17 @@ mod tests {
         assert_eq!(line_range_at(text, 9), 8..13);
         // An offset at the end still selects the last line.
         assert_eq!(line_range_at(text, text.len()), 8..13);
+    }
+
+    /// A one-line form field is shorter than the 24px thumb minimum.
+    /// `Ord::clamp(24, track)` panics when min > max — the crash opening
+    /// the session-details rename field with a wrapped title.
+    #[test]
+    fn scrollbar_thumb_fits_a_short_track() {
+        assert_eq!(scrollbar_thumb_height(px(18.), 1, 8), px(18.));
+        assert_eq!(scrollbar_thumb_height(px(0.), 1, 8), px(0.));
+        assert_eq!(scrollbar_thumb_height(px(100.), 1, 8), px(24.));
+        assert_eq!(scrollbar_thumb_height(px(100.), 8, 8), px(100.));
     }
 }
 
@@ -1813,5 +2315,117 @@ mod geometry_tests {
             11,
             "the primary modifier + right moves to the line end"
         );
+    }
+
+    /// A fixed-height harness: `with_fill(true)` needs a definite parent
+    /// height to derive its visible row count from.
+    struct EditorHarness {
+        input: Entity<ComposerInput>,
+    }
+
+    impl Render for EditorHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            // A column, like the Explorer's body: `flex_1` must grow vertically
+            // and the editor must fill the parent's (definite) height.
+            div()
+                .flex()
+                .flex_col()
+                .w(px(500.))
+                .h(px(300.))
+                .child(self.input.clone())
+        }
+    }
+
+    fn draw_editor(cx: &mut VisualTestContext, harness: &Entity<EditorHarness>) {
+        let _ = cx.draw(point(px(0.), px(0.)), size(px(500.), px(300.)), |_, _| {
+            harness.clone()
+        });
+    }
+
+    /// The Explorer editor path — gutter, no wrap, fill, syntax runs — paints
+    /// without panicking, and hit-testing subtracts the gutter width.
+    #[gpui::test]
+    fn gutter_syntax_editor_paints_and_hit_tests(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let input = cx.update(|_, cx| {
+            cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit));
+            let input = cx.new(|cx| {
+                ComposerInput::new(cx)
+                    .with_gutter(true)
+                    .with_wrap(false)
+                    .with_fill(true)
+            });
+            input.update(cx, |input, cx| {
+                input.set_syntax(Some(Lang::Rust), cx);
+                input.set_text_at_start("fn main() {\n    let x = 1;\n}\n", cx);
+            });
+            input
+        });
+        let harness = cx.update(|_, cx| {
+            cx.new(|_| EditorHarness {
+                input: input.clone(),
+            })
+        });
+        draw_editor(cx, &harness);
+
+        let (gutter, rows) = cx.update(|_, cx| {
+            let input = input.read(cx);
+            (input.last_gutter, input.last_total_rows)
+        });
+        assert!(gutter > px(0.), "the gutter took width");
+        assert!(rows >= 3, "the three logical lines are rows");
+
+        // A click just right of the gutter maps to column 0 of the first line.
+        let bounds = cx.update(|_, cx| input.read(cx).last_bounds.expect("bounds"));
+        // Regression guard: the editor must actually occupy the pane. A row
+        // parent left it zero-height and the file rendered blank.
+        assert!(
+            bounds.size.height >= px(100.),
+            "editor collapsed to {}px",
+            bounds.size.height
+        );
+        let idx = cx.update(|_, cx| {
+            input.update(cx, |input, _| {
+                input.index_for_mouse_position(point(
+                    bounds.origin.x + gutter + px(1.),
+                    bounds.origin.y + px(2.),
+                ))
+            })
+        });
+        assert_eq!(idx, 0, "click to the right of the gutter is line start");
+    }
+
+    /// Undo rewinds an edit and redo replays it; a programmatic `set_text`
+    /// starts a clean history.
+    #[gpui::test]
+    fn undo_and_redo_round_trip(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let input = cx.update(|_, cx| {
+            cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit));
+            cx.new(ComposerInput::new)
+        });
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.set_text("abc", cx);
+                // Two separate commits (the caret move breaks coalescing).
+                input.replace_range(3..3, "d", cx);
+                input.move_to(0, cx);
+                input.replace_range(0..0, "X", cx);
+            });
+            assert_eq!(input.read(cx).text(), "Xabcd");
+
+            input.update(cx, |input, cx| input.undo(&Undo, window, cx));
+            assert_eq!(input.read(cx).text(), "abcd");
+            input.update(cx, |input, cx| input.undo(&Undo, window, cx));
+            assert_eq!(input.read(cx).text(), "abc");
+            // Nothing left to undo is a no-op, not a panic.
+            input.update(cx, |input, cx| input.undo(&Undo, window, cx));
+            assert_eq!(input.read(cx).text(), "abc");
+
+            input.update(cx, |input, cx| input.redo(&Redo, window, cx));
+            assert_eq!(input.read(cx).text(), "abcd");
+            input.update(cx, |input, cx| input.redo(&Redo, window, cx));
+            assert_eq!(input.read(cx).text(), "Xabcd");
+        });
     }
 }

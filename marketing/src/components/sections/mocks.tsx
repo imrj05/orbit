@@ -1,18 +1,19 @@
 import {
-  Brain,
-  CaretDown,
-  CaretRight,
-  CaretUp,
-  ChartBar,
-  Check,
-  Cpu,
-  Keyboard,
-  ListPlus,
-  LockSimple,
-  MagnifyingGlass,
-  ShieldCheck,
-  Sparkle,
-} from "@phosphor-icons/react/dist/ssr";
+  ArrowDown01Icon,
+  ArrowRight01Icon,
+  ArrowUp01Icon,
+  BrainIcon,
+  ChartBarLineIcon,
+  CpuIcon,
+  KeyboardIcon,
+  ListPlusIcon,
+  LockIcon,
+  Search01Icon,
+  ShieldCheckIcon,
+  SparklesIcon,
+  Tick02Icon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 
 export function TranscriptMock() {
   return (
@@ -21,14 +22,14 @@ export function TranscriptMock() {
         Port the theme switcher.
       </p>
       <div className="flex items-center gap-2 text-ink-3">
-        <Brain className="size-3.5" />
+        <HugeiconsIcon icon={BrainIcon} className="size-3.5" />
         <span className="shimmer-text font-mono text-[10.5px]">
           thinking · 8.1s
         </span>
       </div>
-      <div className="flex items-center gap-2 rounded-md bg-[#ffffff0a] px-2.5 py-1.5 font-mono text-[10.5px] text-ink-2">
+      <div className="flex items-center gap-2 rounded-md bg-tint-0a px-2.5 py-1.5 font-mono text-[10.5px] text-ink-2">
         Run bun test
-        <Check className="size-3 text-ink-3" />
+        <HugeiconsIcon icon={Tick02Icon} className="size-3 text-ink-3" />
       </div>
       <p className="text-ink-2">
         Ported the switcher; 412 tests pass. Restyling the controls now
@@ -66,7 +67,7 @@ export function SessionsMock() {
             <div
               key={s.title}
               className={`flex items-center gap-2 rounded-[5px] px-2 py-1 ${
-                s.active ? "bg-[#ffffff12] text-ink" : "text-ink-2"
+                s.active ? "bg-tint-12 text-ink" : "text-ink-2"
               }`}
             >
               <span
@@ -97,7 +98,8 @@ export function ToolsMock() {
       {tools.map((t) => (
         <div key={t.target} className="flex flex-col gap-1.5">
           <div className="flex items-baseline gap-2">
-            <CaretRight
+            <HugeiconsIcon
+              icon={ArrowRight01Icon}
               className={`size-3 text-ink-3 ${t.open ? "rotate-90" : ""}`}
             />
             <span className="text-ink-2">{t.verb}</span>
@@ -105,7 +107,7 @@ export function ToolsMock() {
             <span className="ml-auto text-ink-3">{t.meta}</span>
           </div>
           {t.open ? (
-            <div className="ml-4 rounded-md bg-[#ffffff0a] px-2.5 py-1.5 text-ink-2">
+            <div className="ml-4 rounded-md bg-tint-0a px-2.5 py-1.5 text-ink-2">
               {"{ density: 1.0, motion: false }"}
             </div>
           ) : null}
@@ -118,26 +120,26 @@ export function ToolsMock() {
 export function ComposerMock() {
   return (
     <div className="flex flex-col gap-2.5 text-[11.5px]">
-      <div className="rounded-[9px] bg-[#ffffff0a] px-3 py-2.5 text-ink shadow-[inset_0_0_0_1px_#ffffff0f]">
+      <div className="rounded-[9px] bg-tint-0a px-3 py-2.5 text-ink shadow-[inset_0_0_0_1px_var(--tint-0f)]">
         Refactor the parser, then run the suite
         <span className="caret" />
       </div>
       <div className="flex flex-wrap items-center gap-1.5 font-mono text-[10px] text-ink-2">
-        <span className="inline-flex items-center gap-1.5 rounded-md bg-[#ffffff0a] px-2 py-1 shadow-[inset_0_0_0_1px_#ffffff0f]">
-          <Cpu className="size-3 text-ink-3" />
+        <span className="inline-flex items-center gap-1.5 rounded-md bg-tint-0a px-2 py-1 shadow-[inset_0_0_0_1px_var(--tint-0f)]">
+          <HugeiconsIcon icon={CpuIcon} className="size-3 text-ink-3" />
           deepseek-v4-flash
         </span>
-        <span className="inline-flex items-center gap-1.5 rounded-md bg-[#ffffff0a] px-2 py-1 shadow-[inset_0_0_0_1px_#ffffff0f]">
-          <Brain className="size-3 text-ink-3" />
+        <span className="inline-flex items-center gap-1.5 rounded-md bg-tint-0a px-2 py-1 shadow-[inset_0_0_0_1px_var(--tint-0f)]">
+          <HugeiconsIcon icon={BrainIcon} className="size-3 text-ink-3" />
           High
         </span>
-        <span className="inline-flex items-center gap-1.5 rounded-md bg-[#ffffff0a] px-2 py-1 shadow-[inset_0_0_0_1px_#ffffff0f]">
-          <LockSimple className="size-3 text-ink-3" />
+        <span className="inline-flex items-center gap-1.5 rounded-md bg-tint-0a px-2 py-1 shadow-[inset_0_0_0_1px_var(--tint-0f)]">
+          <HugeiconsIcon icon={LockIcon} className="size-3 text-ink-3" />
           Full access
         </span>
       </div>
       <div className="flex items-center gap-2 text-[10.5px] text-ink-3">
-        <ListPlus className="size-3.5" />
+        <HugeiconsIcon icon={ListPlusIcon} className="size-3.5" />
         <span>follow-up queued — “then run the tests”</span>
       </div>
     </div>
@@ -147,13 +149,16 @@ export function ComposerMock() {
 export function FindMock() {
   return (
     <div className="flex flex-col gap-2.5 text-[11.5px] leading-[1.55]">
-      <div className="flex items-center gap-2 rounded-md bg-[#ffffff0a] px-2.5 py-1.5 font-mono text-[10.5px] text-ink-2 shadow-[inset_0_0_0_1px_#ffffff0f]">
-        <MagnifyingGlass className="size-3.5 text-ink-3" />
+      <div className="flex items-center gap-2 rounded-md bg-tint-0a px-2.5 py-1.5 font-mono text-[10.5px] text-ink-2 shadow-[inset_0_0_0_1px_var(--tint-0f)]">
+        <HugeiconsIcon
+          icon={Search01Icon}
+          className="size-3.5 text-ink-3"
+        />
         <span className="text-ink">review</span>
         <span className="ml-auto text-ink-3">3 / 12</span>
         <span className="flex items-center gap-1 text-ink-3">
-          <CaretUp className="size-3" />
-          <CaretDown className="size-3" />
+          <HugeiconsIcon icon={ArrowUp01Icon} className="size-3" />
+          <HugeiconsIcon icon={ArrowDown01Icon} className="size-3" />
         </span>
       </div>
       <p className="text-ink-2">
@@ -166,7 +171,7 @@ export function FindMock() {
         when the run settles.
       </p>
       <div className="flex items-center gap-2 text-ink-3">
-        <Sparkle className="size-3.5" />
+        <HugeiconsIcon icon={SparklesIcon} className="size-3.5" />
         <span className="font-mono text-[10.5px]">image · click to expand</span>
       </div>
     </div>
@@ -180,14 +185,14 @@ export function ApprovalMock() {
         Refactor the parser, then run the suite.
       </p>
 
-      <div className="rounded-xl bg-[#ffffff0a] p-3 shadow-[inset_0_0_0_1px_#ffffff12]">
+      <div className="rounded-xl bg-tint-0a p-3 shadow-[inset_0_0_0_1px_var(--tint-12)]">
         <div className="flex flex-wrap items-center gap-2 text-[11.5px] text-ink-2">
-          <ShieldCheck className="size-3.5 text-brand" />
+          <HugeiconsIcon icon={ShieldCheckIcon} className="size-3.5 text-brand" />
           <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-ink-3">
             orbit-guard
           </span>
           <span className="text-ink">Agent wants to run</span>
-          <code className="rounded bg-[#ffffff0f] px-1.5 py-px font-mono text-[10.5px] text-ink">
+          <code className="rounded bg-tint-0f px-1.5 py-px font-mono text-[10.5px] text-ink">
             bun test
           </code>
         </div>
@@ -195,23 +200,23 @@ export function ApprovalMock() {
           <span className="rounded-md bg-ink px-2.5 py-1 text-[10.5px] font-medium text-page">
             Allow once
           </span>
-          <span className="rounded-md bg-[#ffffff0f] px-2.5 py-1 text-[10.5px] text-ink-2 shadow-[inset_0_0_0_1px_#ffffff12]">
+          <span className="rounded-md bg-tint-0f px-2.5 py-1 text-[10.5px] text-ink-2 shadow-[inset_0_0_0_1px_var(--tint-12)]">
             Always allow this tool
           </span>
-          <span className="rounded-md bg-[#ffffff0f] px-2.5 py-1 text-[10.5px] text-ink-2 shadow-[inset_0_0_0_1px_#ffffff12]">
+          <span className="rounded-md bg-tint-0f px-2.5 py-1 text-[10.5px] text-ink-2 shadow-[inset_0_0_0_1px_var(--tint-12)]">
             Deny
           </span>
           <span className="ml-auto inline-flex items-center gap-1 font-mono text-[9.5px] text-ink-3">
-            <Keyboard className="size-3" />
+            <HugeiconsIcon icon={KeyboardIcon} className="size-3" />
             ↑↓ ⏎ esc
           </span>
         </div>
       </div>
 
       <div className="flex items-center gap-2 text-[10.5px] text-ink-3">
-        <LockSimple className="size-3.5" />
+        <HugeiconsIcon icon={LockIcon} className="size-3.5" />
         <span>access mode</span>
-        <span className="rounded-md bg-[#ffffff0a] px-2 py-0.5 font-mono text-ink-2 shadow-[inset_0_0_0_1px_#ffffff0f]">
+        <span className="rounded-md bg-tint-0a px-2 py-0.5 font-mono text-ink-2 shadow-[inset_0_0_0_1px_var(--tint-0f)]">
           Supervised
         </span>
       </div>
@@ -232,7 +237,7 @@ export function WorkbenchMock() {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center gap-2 text-[11px] text-ink-2">
-        <ChartBar className="size-3.5 text-ink-3" />
+        <HugeiconsIcon icon={ChartBarLineIcon} className="size-3.5 text-ink-3" />
         <span className="font-mono text-[10.5px] text-ink-3">
           usage · last 30 days
         </span>
@@ -245,7 +250,7 @@ export function WorkbenchMock() {
           <span
             key={i}
             className={`flex-1 rounded-[3px] ${
-              i === bars.length - 1 ? "bg-brand/70" : "bg-[#ffffff1a]"
+              i === bars.length - 1 ? "bg-brand/70" : "bg-tint-1a"
             }`}
             style={{ height: `${h}%` }}
           />
@@ -255,7 +260,7 @@ export function WorkbenchMock() {
         {pages.map((p) => (
           <span
             key={p}
-            className="rounded-md bg-[#ffffff0a] px-2 py-1 text-center shadow-[inset_0_0_0_1px_#ffffff0f]"
+            className="rounded-md bg-tint-0a px-2 py-1 text-center shadow-[inset_0_0_0_1px_var(--tint-0f)]"
           >
             {p}
           </span>

@@ -90,10 +90,10 @@ pub fn checkout_branch(cwd: &Path, branch: &str) -> Result<(), String> {
 pub fn create_and_checkout_branch(cwd: &Path, name: &str) -> Result<(), String> {
     let name = name.trim();
     if name.is_empty() {
-        return Err("branch name is empty".into());
+        return Err(tr!("git.branch_name_empty"));
     }
     if name.contains([' ', '\t', '~', '^', ':', '?', '*', '[']) || name.contains("..") {
-        return Err("branch name contains invalid characters".into());
+        return Err(tr!("git.branch_name_invalid"));
     }
     if run_git(cwd, &["switch", "-c", name]).is_ok() {
         return Ok(());
@@ -106,18 +106,18 @@ pub fn create_and_checkout_branch(cwd: &Path, name: &str) -> Result<(), String> 
 pub fn commit(cwd: &Path, message: &str, include_unstaged: bool) -> Result<String, String> {
     let message = message.trim();
     if message.is_empty() {
-        return Err("enter a commit message".into());
+        return Err(tr!("git.enter_commit_message"));
     }
     if include_unstaged {
         run_git(cwd, &["add", "-A", "--", "."])?;
     } else {
         let staged = run_git(cwd, &["diff", "--cached", "--name-only"]).unwrap_or_default();
         if staged.trim().is_empty() {
-            return Err("no staged changes to commit".into());
+            return Err(tr!("git.no_staged_changes"));
         }
     }
     run_git(cwd, &["commit", "-m", message])?;
-    Ok("Committed".into())
+    Ok(tr!("git.committed"))
 }
 
 /// Push the current branch, setting its upstream on the first push.
@@ -126,14 +126,34 @@ pub fn push(cwd: &Path) -> Result<String, String> {
     // auth/network, not a missing upstream).
     if run_git(cwd, &["rev-parse", "--abbrev-ref", "@{upstream}"]).is_ok() {
         run_git(cwd, &["push"])?;
-        return Ok("Pushed".into());
+        return Ok(tr!("git.pushed"));
     }
     match current_branch(cwd) {
         Some(branch) => {
             run_git(cwd, &["push", "-u", "origin", &branch])?;
-            Ok("Pushed and set upstream".into())
+            Ok(tr!("git.pushed_and_set_upstream"))
         }
-        None => Err("no branch to push".into()),
+        None => Err(tr!("git.no_branch_to_push")),
+    }
+}
+
+/// Push the current branch with `--force-with-lease`, never bare `--force`.
+/// The lease aborts the push if the remote moved since our last fetch, so this
+/// cannot silently discard someone else's commits.
+pub fn push_force_with_lease(cwd: &Path) -> Result<String, String> {
+    if run_git(cwd, &["rev-parse", "--abbrev-ref", "@{upstream}"]).is_ok() {
+        run_git(cwd, &["push", "--force-with-lease"])?;
+        return Ok(tr!("git.force_pushed"));
+    }
+    match current_branch(cwd) {
+        Some(branch) => {
+            run_git(
+                cwd,
+                &["push", "--force-with-lease", "-u", "origin", &branch],
+            )?;
+            Ok(tr!("git.force_pushed_and_set_upstream"))
+        }
+        None => Err(tr!("git.no_branch_to_push")),
     }
 }
 
@@ -142,7 +162,7 @@ pub fn push(cwd: &Path) -> Result<String, String> {
 /// [`merge_upstream`] for that case.
 pub fn pull(cwd: &Path) -> Result<String, String> {
     run_git(cwd, &["pull", "--ff-only"])?;
-    Ok("Pulled".into())
+    Ok(tr!("git.pulled"))
 }
 
 /// Fetch and merge the upstream into the current branch, tolerating
@@ -153,7 +173,14 @@ pub fn merge_upstream(cwd: &Path) -> Result<String, String> {
     // `--ff` overrides a `pull.ff = only` config that would otherwise refuse
     // the merge; `--no-rebase` keeps this a merge, never a rebase.
     run_git(cwd, &["pull", "--no-rebase", "--ff", "--no-edit"])?;
-    Ok("Merged".into())
+    Ok(tr!("git.merged"))
+}
+
+/// Rebase the current branch onto its upstream. `--autostash` carries a dirty
+/// worktree across the rebase instead of refusing to start.
+pub fn rebase_upstream(cwd: &Path) -> Result<String, String> {
+    run_git(cwd, &["pull", "--rebase", "--autostash"])?;
+    Ok(tr!("git.rebased"))
 }
 
 /// Update remote-tracking refs without touching the working tree. Used after
@@ -177,7 +204,7 @@ pub(crate) fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
     let output = command(cwd)
         .args(args)
         .output()
-        .map_err(|err| format!("git not available: {err}"))?;
+        .map_err(|err| tr!("git.not_available", error = err))?;
     if !output.status.success() {
         return Err(command_error(&output));
     }
@@ -201,7 +228,7 @@ where
 fn command_error(output: &Output) -> String {
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     if stderr.is_empty() {
-        format!("git exited with {}", output.status)
+        tr!("git.exited_with", status = output.status.to_string())
     } else {
         stderr
     }
@@ -345,12 +372,12 @@ fn ensure_repository(cwd: &Path) -> anyhow::Result<()> {
         Ok(output) => output,
         // A missing directory or unusable git binary is, for our purposes,
         // "not a repository".
-        Err(_) => bail!("not a git repository"),
+        Err(_) => bail!("{}", tr!("git.not_a_repository")),
     };
     if output.status.success() {
         Ok(())
     } else {
-        bail!("not a git repository");
+        bail!("{}", tr!("git.not_a_repository"));
     }
 }
 
@@ -624,8 +651,11 @@ pub fn history(cwd: &Path, limit: usize, skip: usize) -> Result<Vec<CommitEntry>
             &format!("--format={format}"),
         ],
     )?;
-    Ok(out
-        .lines()
+    Ok(parse_history(&out))
+}
+
+fn parse_history(out: &str) -> Vec<CommitEntry> {
+    out.lines()
         .filter_map(|line| {
             let mut fields = line.split('\u{1f}');
             let hash = fields.next()?.to_string();
@@ -648,7 +678,226 @@ pub fn history(cwd: &Path, limit: usize, skip: usize) -> Result<Vec<CommitEntry>
                 refs,
             })
         })
-        .collect())
+        .collect()
+}
+
+/// Recent commits authored by `author`, newest first, for the commit-message
+/// style sample.
+pub fn history_by_author(
+    cwd: &Path,
+    author: &str,
+    limit: usize,
+) -> Result<Vec<CommitEntry>, String> {
+    let format = "%H%x1f%h%x1f%an%x1f%ae%x1f%ar%x1f%s%x1f%D";
+    let out = run_git(
+        cwd,
+        &[
+            "-c",
+            "core.quotePath=false",
+            "log",
+            "--date-order",
+            &format!("--max-count={limit}"),
+            &format!("--author={author}"),
+            &format!("--format={format}"),
+        ],
+    )?;
+    Ok(parse_history(&out))
+}
+
+/// The configured `user.name`, used to separate the author's own commits from
+/// the rest of the repository's when sampling commit style.
+pub fn user_name(cwd: &Path) -> Option<String> {
+    run_git(cwd, &["config", "user.name"])
+        .ok()
+        .filter(|name| !name.is_empty())
+}
+
+/// A file's content at HEAD, for the commit-message prompt's ORIGINAL CODE
+/// context. `None` when the path did not exist at HEAD (a new file) or looks
+/// binary.
+pub fn file_at_head(cwd: &Path, path: &str) -> Option<String> {
+    let content = run_git(cwd, &["show", &format!("HEAD:{path}")]).ok()?;
+    (!content.is_empty() && !content.contains('\u{0}')).then_some(content)
+}
+
+// ── History: commit detail, file history, filters ──────────────────────────
+
+/// One changed file inside a commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitFile {
+    pub path: String,
+    /// A/M/D/T (renames are normalized away, like the rest of the page).
+    pub status: char,
+    pub additions: u64,
+    pub deletions: u64,
+}
+
+/// Everything the commit-detail panel shows for one commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitDetail {
+    pub hash: String,
+    pub short: String,
+    pub subject: String,
+    /// Everything after the subject line, trimmed.
+    pub body: String,
+    pub author: String,
+    pub author_email: String,
+    pub author_date: String,
+    pub committer: String,
+    pub committer_date: String,
+    pub parents: Vec<String>,
+    pub refs: Vec<RefLabel>,
+    pub files: Vec<CommitFile>,
+}
+
+/// Full metadata plus the changed-file list for one commit.
+pub fn commit_detail(cwd: &Path, rev: &str) -> Result<CommitDetail, String> {
+    let format =
+        "%H\u{1f}%h\u{1f}%s\u{1f}%an\u{1f}%ae\u{1f}%aI\u{1f}%cn\u{1f}%ce\u{1f}%cI\u{1f}%P\u{1f}%D\u{1f}%b";
+    let out = run_git(cwd, &["show", "-s", &format!("--format={format}"), rev])?;
+    let mut fields = out.splitn(12, '\u{1f}');
+    let hash = fields.next().unwrap_or_default().to_string();
+    if hash.is_empty() {
+        return Err(tr!("git_panel.commit_unavailable"));
+    }
+    let detail = CommitDetail {
+        short: fields.next().unwrap_or_default().to_string(),
+        subject: fields.next().unwrap_or_default().to_string(),
+        author: fields.next().unwrap_or_default().to_string(),
+        author_email: fields.next().unwrap_or_default().to_string(),
+        author_date: fields.next().unwrap_or_default().to_string(),
+        committer: fields.next().unwrap_or_default().to_string(),
+        committer_date: fields.next().unwrap_or_default().to_string(),
+        parents: fields
+            .next()
+            .unwrap_or("")
+            .split_whitespace()
+            .map(str::to_string)
+            .collect(),
+        refs: parse_refs(fields.next().unwrap_or("")),
+        body: fields.next().unwrap_or("").trim().to_string(),
+        files: commit_files(cwd, &hash)?,
+        hash,
+    };
+    Ok(detail)
+}
+
+/// The changed files of a commit with numstat counts, in Git's order.
+fn commit_files(cwd: &Path, rev: &str) -> Result<Vec<CommitFile>, String> {
+    let name_status = run_git(
+        cwd,
+        &[
+            "-c",
+            "core.quotePath=false",
+            "show",
+            "--name-status",
+            "--format=",
+            "--no-renames",
+            rev,
+        ],
+    )?;
+    let numstat = run_git(
+        cwd,
+        &[
+            "-c",
+            "core.quotePath=false",
+            "show",
+            "--numstat",
+            "--format=",
+            "--no-renames",
+            rev,
+        ],
+    )?;
+    let mut stats: HashMap<String, (u64, u64)> = HashMap::new();
+    for line in numstat.lines() {
+        let mut columns = line.splitn(3, '\t');
+        let (Some(added), Some(removed), Some(path)) =
+            (columns.next(), columns.next(), columns.next())
+        else {
+            continue;
+        };
+        stats.insert(
+            path.to_string(),
+            (added.parse().unwrap_or(0), removed.parse().unwrap_or(0)),
+        );
+    }
+    let mut files = Vec::new();
+    for line in name_status.lines() {
+        let Some((status, path)) = line.split_once('\t') else {
+            continue;
+        };
+        let (additions, deletions) = stats.get(path).copied().unwrap_or((0, 0));
+        files.push(CommitFile {
+            path: path.to_string(),
+            status: status.chars().next().unwrap_or('M'),
+            additions,
+            deletions,
+        });
+    }
+    Ok(files)
+}
+
+/// Filters the History tab applies before `git log` runs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HistoryFilter {
+    /// Include every local branch (`--all`), not just the current one.
+    pub all_branches: bool,
+    /// Only commits whose author matches this string.
+    pub author: Option<String>,
+    /// Only commits touching this path.
+    pub path: Option<String>,
+    /// Follow renames when `path` is set (`--follow`).
+    pub follow: bool,
+    /// Only commits whose message matches this substring (case-insensitive).
+    pub grep: Option<String>,
+}
+
+impl HistoryFilter {
+    /// Whether any filter is active (drives the "filtered" affordance).
+    pub fn is_active(&self) -> bool {
+        self.all_branches
+            || self.author.as_deref().is_some_and(|v| !v.is_empty())
+            || self.path.as_deref().is_some_and(|v| !v.is_empty())
+            || self.grep.as_deref().is_some_and(|v| !v.is_empty())
+    }
+}
+
+/// `git log` under a [`HistoryFilter`], newest first.
+pub fn history_filtered(
+    cwd: &Path,
+    filter: &HistoryFilter,
+    limit: usize,
+    skip: usize,
+) -> Result<Vec<CommitEntry>, String> {
+    let format = "%H%x1f%h%x1f%an%x1f%ae%x1f%ar%x1f%s%x1f%D";
+    let mut args: Vec<String> = ["-c", "core.quotePath=false", "log", "--date-order"]
+        .iter()
+        .map(|value| (*value).to_string())
+        .collect();
+    if filter.all_branches {
+        args.push("--all".to_string());
+    }
+    if let Some(author) = filter.author.as_deref().filter(|v| !v.trim().is_empty()) {
+        args.push(format!("--author={author}"));
+    }
+    if let Some(grep) = filter.grep.as_deref().filter(|v| !v.trim().is_empty()) {
+        args.push("-i".to_string());
+        args.push(format!("--grep={grep}"));
+    }
+    args.push(format!("--max-count={limit}"));
+    args.push(format!("--skip={skip}"));
+    args.push(format!("--format={format}"));
+    let path = filter.path.as_deref().filter(|v| !v.trim().is_empty());
+    if let Some(path) = path {
+        if filter.follow {
+            args.push("--follow".to_string());
+        }
+        args.push("--".to_string());
+        args.push(path.to_string());
+    }
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = run_git(cwd, &refs)?;
+    Ok(parse_history(&out))
 }
 
 fn parse_refs(decor: &str) -> Vec<RefLabel> {
@@ -701,20 +950,21 @@ pub struct GraphCommit {
 /// [`history`] (the current branch only), the Graph tab shows all local
 /// branches so merges and parallel work get their own lanes. Internal refs
 /// (remotes, tags, checkpoints) are deliberately excluded.
-pub fn graph_history(cwd: &Path, limit: usize) -> Result<Vec<GraphCommit>, String> {
+pub fn graph_history(cwd: &Path, limit: usize, all_refs: bool) -> Result<Vec<GraphCommit>, String> {
     let format = "%H%x1f%h%x1f%an%x1f%ae%x1f%ar%x1f%s%x1f%P%x1f%D";
-    let out = run_git(
-        cwd,
-        &[
-            "-c",
-            "core.quotePath=false",
-            "log",
-            "--branches",
-            "--date-order",
-            &format!("--max-count={limit}"),
-            &format!("--format={format}"),
-        ],
-    )?;
+    let mut args = vec!["-c", "core.quotePath=false", "log", "--branches", "HEAD"];
+    // "All refs" extends the graph to remote-tracking branches and tags, so
+    // commits that only exist on a teammate's branch or a release tag appear.
+    if all_refs {
+        args.push("--remotes");
+        args.push("--tags");
+    }
+    let max_count = format!("--max-count={limit}");
+    let format_arg = format!("--format={format}");
+    args.push("--date-order");
+    args.push(&max_count);
+    args.push(&format_arg);
+    let out = run_git(cwd, &args)?;
     Ok(out.lines().filter_map(parse_graph_commit).collect())
 }
 
@@ -1121,7 +1371,7 @@ mod tests {
             ],
         );
 
-        let commits = graph_history(&root, 50).unwrap();
+        let commits = graph_history(&root, 50, false).unwrap();
         assert_eq!(commits.len(), 3, "all local branches are reachable");
         assert!(commits.iter().any(|c| c.subject == "merge feature"));
 
@@ -1161,6 +1411,58 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert!(rows[0].parents.is_empty());
         assert_eq!(rows[0].lane_count, 1);
+    }
+
+    #[test]
+    fn layout_graph_handles_an_octopus_merge() {
+        let commit = |hash: &str, parents: Vec<&str>| GraphCommit {
+            hash: hash.into(),
+            short: hash.into(),
+            author: "Orbit".into(),
+            author_email: "orbit@example.com".into(),
+            relative: "now".into(),
+            subject: hash.into(),
+            parents: parents.into_iter().map(str::to_string).collect(),
+            refs: Vec::new(),
+        };
+        let commits = vec![
+            commit("m", vec!["a", "b", "c"]),
+            commit("a", vec![]),
+            commit("b", vec![]),
+            commit("c", vec![]),
+        ];
+        let rows = layout_graph(&commits);
+        let merge = &rows[0];
+        assert_eq!(merge.parents.len(), 3);
+        assert_ne!(merge.parents[0], merge.parents[1]);
+        assert_ne!(merge.parents[1], merge.parents[2]);
+        assert_ne!(merge.parents[0], merge.parents[2]);
+        assert!(merge.lane_count >= 3);
+    }
+
+    #[test]
+    fn graph_all_refs_includes_remote_only_commits() {
+        let root = repository();
+        git_ok(&root, &["switch", "-c", "temp"]);
+        fs::write(root.join("remote.txt"), "remote\n").unwrap();
+        git_ok(&root, &["add", "."]);
+        git_ok(&root, &["commit", "--quiet", "-m", "remote only"]);
+        let hash = run_git(&root, &["rev-parse", "HEAD"]).unwrap();
+        git_ok(&root, &["switch", "main"]);
+        git_ok(&root, &["branch", "-D", "temp"]);
+        // Keep the commit alive through a remote-tracking ref only.
+        git_ok(&root, &["update-ref", "refs/remotes/origin/feature", &hash]);
+
+        let local = graph_history(&root, 50, false).unwrap();
+        assert!(!local.iter().any(|commit| commit.subject == "remote only"));
+        let all = graph_history(&root, 50, true).unwrap();
+        assert!(all.iter().any(|commit| commit.subject == "remote only"));
+        let rows = layout_graph(&all);
+        assert_eq!(rows.len(), all.len());
+        for row in &rows {
+            assert!(row.node_lane < row.lane_count);
+        }
+        fs::remove_dir_all(root).ok();
     }
 
     fn summary(data: &ReviewDiff) -> (usize, u64, u64) {
@@ -1265,7 +1567,8 @@ mod tests {
             None,
         )
         .unwrap_err();
-        assert!(error.contains("not a git repository"), "{error}");
+        let expected = tr!("git.not_a_repository");
+        assert!(error.contains(expected.as_str()), "{error}");
     }
 
     #[test]
@@ -1287,6 +1590,173 @@ mod tests {
         assert_eq!(row.change_badge(), 'M');
         assert_eq!(row.unstaged_additions, 1);
         assert_eq!(row.unstaged_deletions, 1);
+        fs::remove_dir_all(root).ok();
+    }
+
+    /// A leased force push may overwrite a *diverged* remote, but never a
+    /// remote that moved since the last fetch. This is the safety property that
+    /// separates `--force-with-lease` from bare `--force`.
+    #[test]
+    fn force_push_uses_the_lease_and_refuses_a_stale_remote() {
+        let base = repository();
+        let stem = base.file_name().unwrap().to_string_lossy().into_owned();
+        let parent = base.parent().unwrap().to_path_buf();
+        let remote = parent.join(format!("{stem}-remote.git"));
+        let clone = parent.join(format!("{stem}-clone"));
+
+        git_ok(
+            &base,
+            &["init", "--bare", "--quiet", remote.to_str().unwrap()],
+        );
+        git_ok(
+            &base,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        git_ok(&base, &["push", "--quiet", "-u", "origin", "main"]);
+
+        let status = command(&base)
+            .args([
+                "clone",
+                "--quiet",
+                "--branch",
+                "main",
+                remote.to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ])
+            .status()
+            .unwrap();
+        assert!(status.success(), "clone failed");
+        git_ok(&clone, &["config", "user.name", "Other"]);
+        git_ok(&clone, &["config", "user.email", "other@example.com"]);
+        fs::write(clone.join("other.txt"), "other\n").unwrap();
+        git_ok(&clone, &["add", "."]);
+        git_ok(&clone, &["commit", "--quiet", "-m", "other"]);
+        git_ok(&clone, &["push", "--quiet"]);
+
+        // base diverges and fetches: the lease is satisfied, so a plain push
+        // is rejected but the leased force push is allowed.
+        fs::write(base.join("local.txt"), "local\n").unwrap();
+        git_ok(&base, &["add", "."]);
+        git_ok(&base, &["commit", "--quiet", "-m", "local"]);
+        git_ok(&base, &["fetch", "--quiet"]);
+        assert!(push(&base).is_err(), "a diverged push must be rejected");
+        assert!(push_force_with_lease(&base).is_ok());
+
+        // The remote moves again without base fetching; the lease is now stale
+        // and the force push must be refused.
+        fs::write(clone.join("other.txt"), "other2\n").unwrap();
+        git_ok(&clone, &["commit", "--quiet", "-am", "other2"]);
+        // base's leased force push rewrote the remote, so the clone's own push
+        // needs to overwrite it too; this is test setup, not the property under
+        // test.
+        git_ok(&clone, &["push", "--quiet", "--force"]);
+        fs::write(base.join("local.txt"), "local2\n").unwrap();
+        git_ok(&base, &["commit", "--quiet", "-am", "local2"]);
+        assert!(
+            push_force_with_lease(&base).is_err(),
+            "--force-with-lease must refuse a remote that moved since the last fetch"
+        );
+
+        fs::remove_dir_all(&base).ok();
+        fs::remove_dir_all(&remote).ok();
+        fs::remove_dir_all(&clone).ok();
+    }
+
+    #[test]
+    fn commit_detail_reports_metadata_and_files() {
+        let root = repository();
+        let head = run_git(&root, &["rev-parse", "HEAD"]).unwrap();
+        let detail = commit_detail(&root, &head).unwrap();
+        assert_eq!(detail.subject, "baseline");
+        assert_eq!(detail.author, "Orbit Test");
+        assert!(detail.short.len() >= 7);
+        let file = detail
+            .files
+            .iter()
+            .find(|file| file.path == "src/lib.rs")
+            .unwrap();
+        assert_eq!(file.status, 'A');
+        assert_eq!(file.additions, 1);
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn history_follows_one_path_across_renames() {
+        let root = repository();
+        fs::write(
+            root.join("src/lib.rs"),
+            "fn baseline() {}\nfn second() {}\n",
+        )
+        .unwrap();
+        git_ok(&root, &["commit", "--quiet", "-am", "touch lib"]);
+        let entries = history_filtered(
+            &root,
+            &HistoryFilter {
+                path: Some("src/lib.rs".into()),
+                follow: true,
+                ..Default::default()
+            },
+            10,
+            0,
+        )
+        .unwrap();
+        assert!(entries.iter().any(|commit| commit.subject == "touch lib"));
+        assert!(entries.len() >= 2);
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn history_filters_by_author_and_path() {
+        let root = repository();
+        let all = history_filtered(&root, &HistoryFilter::default(), 10, 0).unwrap();
+        assert_eq!(all.len(), 1);
+
+        let authored = history_filtered(
+            &root,
+            &HistoryFilter {
+                author: Some("Orbit Test".into()),
+                ..Default::default()
+            },
+            10,
+            0,
+        )
+        .unwrap();
+        assert_eq!(authored.len(), 1);
+
+        let missing = history_filtered(
+            &root,
+            &HistoryFilter {
+                author: Some("Nobody".into()),
+                ..Default::default()
+            },
+            10,
+            0,
+        )
+        .unwrap();
+        assert!(missing.is_empty());
+
+        let by_path = history_filtered(
+            &root,
+            &HistoryFilter {
+                path: Some("src/lib.rs".into()),
+                ..Default::default()
+            },
+            10,
+            0,
+        )
+        .unwrap();
+        assert_eq!(by_path.len(), 1);
+        let no_path = history_filtered(
+            &root,
+            &HistoryFilter {
+                path: Some("nope.txt".into()),
+                ..Default::default()
+            },
+            10,
+            0,
+        )
+        .unwrap();
+        assert!(no_path.is_empty());
         fs::remove_dir_all(root).ok();
     }
 }

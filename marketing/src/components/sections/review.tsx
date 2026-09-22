@@ -1,4 +1,5 @@
-import { Check } from "@phosphor-icons/react/dist/ssr";
+import { Tick02Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { Shot } from "@/components/shot";
 import { Band, SectionLabel, Shell } from "@/components/ui";
 
@@ -28,7 +29,10 @@ export function Review() {
             <ul className="flex flex-col gap-3">
               {points.map((p) => (
                 <li key={p} className="flex items-start gap-2.5">
-                  <Check className="mt-0.5 size-3.5 shrink-0 text-ink-3" />
+                  <HugeiconsIcon
+                    icon={Tick02Icon}
+                    className="mt-0.5 size-3.5 shrink-0 text-ink-3"
+                  />
                   <span className="max-w-[44ch] text-[13px] leading-[1.7] text-ink-2">
                     {p}
                   </span>
@@ -39,6 +43,7 @@ export function Review() {
 
           <Shot
             src="/screens/review.png"
+            srcLight="/screens/review-light.png"
             alt="The Orbit Review panel open beside a session, showing a selected file's diff on the left and the changed-file tree on the right."
           />
         </div>

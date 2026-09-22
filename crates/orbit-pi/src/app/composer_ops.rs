@@ -200,6 +200,12 @@ impl OrbitApp {
                     _ => String::new(),
                 },
             };
+            // Commands carry a scope badge on the right (skills, orbit,
+            // custom, the project name…); files have no scope.
+            let scope_badge: Option<String> = match &entry {
+                AcEntry::Command { scope, .. } => Some(scope.label()),
+                AcEntry::File { .. } => None,
+            };
             list = list.child(
                 div()
                     .id(ElementId::NamedInteger("ac-row".into(), ix as u64))
@@ -252,7 +258,22 @@ impl OrbitApp {
                                         .child(subtitle),
                                 )
                             }),
-                    ),
+                    )
+                    .when_some(scope_badge, |row, badge| {
+                        row.child(
+                            div()
+                                .h(px(18.))
+                                .px(px(6.))
+                                .rounded(px(5.))
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .bg(theme.overlay_strong)
+                                .text_size(theme.ui_px(10.5))
+                                .text_color(theme.text_3)
+                                .child(badge),
+                        )
+                    }),
             );
         }
         // Full width of the chat box, so long paths are never cut.
@@ -394,7 +415,7 @@ impl OrbitApp {
         }
         for path in paths.paths() {
             if self.attachments.len() >= MAX_ATTACHMENTS {
-                self.set_status(format!("at most {MAX_ATTACHMENTS} images per message"));
+                self.set_status(tr!("composer_ops.max_attachments", count = MAX_ATTACHMENTS));
                 break;
             }
             match Attachment::from_path(path) {
@@ -413,7 +434,7 @@ impl OrbitApp {
     /// Add menu → "Attach image…": pick an image file and queue it.
     pub(super) fn attach_image(&mut self, cx: &mut Context<Self>) {
         if self.attachments.len() >= MAX_ATTACHMENTS {
-            self.set_status(format!("at most {MAX_ATTACHMENTS} images per message"));
+            self.set_status(tr!("composer_ops.max_attachments", count = MAX_ATTACHMENTS));
             cx.notify();
             return;
         }
@@ -423,7 +444,7 @@ impl OrbitApp {
         // `already borrowed`. The async panel shows as a sheet and resolves
         // once the user answers, by which point the borrow is released.
         let dialog = rfd::AsyncFileDialog::new()
-            .set_title("Attach an image")
+            .set_title(tr!("composer_ops.attach_image_title"))
             .add_filter("Image", &["png", "jpg", "jpeg", "webp", "gif", "bmp"]);
         cx.spawn(async move |this, cx| {
             let Some(handle) = dialog.pick_file().await else {
@@ -434,13 +455,16 @@ impl OrbitApp {
                 match Attachment::from_path(&path) {
                     Some(attachment) => {
                         if app.attachments.len() >= MAX_ATTACHMENTS {
-                            app.set_status(format!("at most {MAX_ATTACHMENTS} images per message"));
+                            app.set_status(tr!(
+                                "composer_ops.max_attachments",
+                                count = MAX_ATTACHMENTS
+                            ));
                         } else {
                             app.attachments.push(attachment);
                         }
                     }
                     None => {
-                        app.set_status("unsupported image format");
+                        app.set_status(tr!("composer_ops.unsupported_image_format"));
                     }
                 }
                 cx.notify();
@@ -455,7 +479,7 @@ impl OrbitApp {
     pub(super) fn attach_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // See `attach_image` — never block the main thread on the native panel
         // while this entity is borrowed.
-        let dialog = rfd::AsyncFileDialog::new().set_title("Attach a file");
+        let dialog = rfd::AsyncFileDialog::new().set_title(tr!("composer_ops.attach_file_title"));
         cx.spawn_in(window, async move |this, cx| {
             let Some(handle) = dialog.pick_file().await else {
                 return;
@@ -464,7 +488,10 @@ impl OrbitApp {
             let _ = this.update_in(cx, |app, window, cx| {
                 if let Some(attachment) = Attachment::from_path(&path) {
                     if app.attachments.len() >= MAX_ATTACHMENTS {
-                        app.set_status(format!("at most {MAX_ATTACHMENTS} images per message"));
+                        app.set_status(tr!(
+                            "composer_ops.max_attachments",
+                            count = MAX_ATTACHMENTS
+                        ));
                     } else {
                         app.attachments.push(attachment);
                     }
@@ -750,12 +777,9 @@ impl OrbitApp {
         self.access_mode = mode;
         mode.persist();
         if self.extensions.guard().is_none() {
-            self.toast_warning(format!(
-                "Access mode set to {}, but the guard extension is unavailable",
-                mode.label()
-            ));
+            self.toast_warning(tr!("access.mode_set_unavailable", mode = mode.label()));
         } else {
-            self.set_status(format!("Access mode: {}", mode.label()));
+            self.set_status(tr!("access.mode_set", mode = mode.label()));
         }
         cx.notify();
     }

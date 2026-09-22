@@ -183,7 +183,7 @@ test("OllamaCloudParser handles zero usage as a real value, not missing", () => 
 
 test("only these three ids are registered for the network-free no-credential path", () => {
   const { orbitQuotaAdapters } = loadHandler();
-  for (const id of ["google", "google-vertex", "ollama"]) {
+  for (const id of ["google", "google-vertex", "ollama", "ollama-cloud"]) {
     assert.equal(typeof orbitQuotaAdapters[id], "function", `${id} registered`);
   }
 });
@@ -231,6 +231,20 @@ test("ollama with a real cloud key maps the monthly credit fraction", async () =
       assert.equal(window.usedPercent, 28, "0.28 fraction becomes 28% cleanly");
       // The anniversary reset is not in the payload: never fabricated.
       assert.equal(window.resetsAt, undefined);
+    },
+  );
+});
+
+test("ollama-cloud (third-party provider id) uses the stored cloud key", async () => {
+  await withAuth(
+    { "ollama-cloud": { type: "api_key", key: "real-cloud-key" } },
+    async () => {
+      const { orbitQuotaReport } = loadHandler({
+        fetch: jsonFetch({ limits: { monthly: { usage: 0.4 } } }),
+      });
+      const report = await orbitQuotaReport("ollama-cloud");
+      assert.equal(report.kind, "subscription");
+      assert.equal(report.windows.find((w) => w.id === "monthly").usedPercent, 40);
     },
   );
 });

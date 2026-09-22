@@ -1,42 +1,43 @@
 import {
-  BracketsCurly,
-  ChartLine,
-  Cube,
-  Palette,
-  Plugs,
-  Sparkle,
-} from "@phosphor-icons/react/dist/ssr";
+  ChartLineData01Icon,
+  CubeIcon,
+  PaintBoardIcon,
+  PlugIcon,
+  SourceCodeIcon,
+  SparklesIcon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { Card } from "@/components/ui/card";
 import { Band, SectionLabel, Shell } from "@/components/ui";
 
 const features = [
   {
-    Icon: Plugs,
+    Icon: PlugIcon,
     title: "Providers",
     body: "pi's live catalog plus custom providers — sign in with a key or OAuth, and watch usage by window.",
   },
   {
-    Icon: Cube,
+    Icon: CubeIcon,
     title: "Plugins",
     body: "Install pi packages from npm, git, or a local path — global or per project — and update or remove them in place.",
   },
   {
-    Icon: BracketsCurly,
+    Icon: SourceCodeIcon,
     title: "Models",
     body: "Pick from pi's model catalog per task, with thinking effort set alongside it.",
   },
   {
-    Icon: Sparkle,
+    Icon: SparklesIcon,
     title: "Skills",
     body: "The skills pi has loaded for this machine and this project.",
   },
   {
-    Icon: ChartLine,
+    Icon: ChartLineData01Icon,
     title: "Usage",
     body: "Tokens, sessions, and cost from pi's own meter — with cached and context figures.",
   },
   {
-    Icon: Palette,
+    Icon: PaintBoardIcon,
     title: "Appearance",
     body: "Theme palette, background image, fonts, sizes, spacing density, and language.",
   },
@@ -67,7 +68,7 @@ export function Workbench() {
                 key={title}
                 className="gap-3 rounded-2xl p-5 ring-0"
               >
-                <Icon className="size-5 text-ink-3" />
+                <HugeiconsIcon icon={Icon} className="size-5 text-ink-3" />
                 <h3 className="text-[15px] font-medium text-ink">{title}</h3>
                 <p className="text-[13.5px] leading-[1.6] text-ink-2">{body}</p>
               </Card>

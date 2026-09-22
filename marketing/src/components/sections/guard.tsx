@@ -48,7 +48,7 @@ export function Guard() {
               {modes.map((m) => (
                 <li
                   key={m.name}
-                  className="flex gap-5 border-t border-[#ffffff0f] py-4"
+                  className="flex gap-5 border-t border-tint-0f py-4"
                 >
                   <div>
                     <p className="text-[14px] font-[450] text-ink">{m.name}</p>

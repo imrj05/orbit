@@ -13,7 +13,7 @@ use std::{cell::Cell, ops::Range, rc::Rc};
 
 use gpui::{
     div, linear_color_stop, linear_gradient, prelude::*, px, rems, svg, ElementId, ListAlignment,
-    ListOffset, ListScrollEvent, ListState,
+    ListOffset, ListScrollEvent, ListState, Pixels,
 };
 
 use crate::theme::Theme;
@@ -90,7 +90,7 @@ impl MessageScrollerState {
     }
 
     /// True when the transcript holds more content than the viewport shows
-    /// (drives the Waku navigation-rail visibility).
+    /// (drives the navigation-rail visibility).
     pub fn is_scrollable(&self) -> bool {
         self.list.max_offset_for_scrollbar().height > px(0.)
     }
@@ -135,9 +135,17 @@ impl MessageScrollerState {
         if !self.valid_range(&range) || range.start == range.end {
             return false;
         }
+        // These are the same rows, not replacements. GPUI's splice clears
+        // the intra-row offset when the anchor lies in the invalidated range;
+        // streaming a tall answer must not move the reader on every delta.
+        let anchor = (!self.is_following_tail()).then(|| self.list.logical_scroll_top());
         let count = range.end - range.start;
         self.list.splice(range, count);
-        self.stick_if_following();
+        if let Some(anchor) = anchor {
+            self.list.scroll_to(anchor);
+        } else {
+            self.stick_if_following();
+        }
         true
     }
 
@@ -218,6 +226,32 @@ impl MessageScrollerState {
         });
     }
 
+    /// Scroll the transcript by `distance` pixels — positive moves toward the
+    /// live edge, negative back through history. Used to chain a wheel event
+    /// from a nested scroll area (the "Thought" card) once it bottoms out.
+    pub fn scroll_by(&self, distance: Pixels) {
+        if distance == px(0.) {
+            return;
+        }
+        // At the tail GPUI's logical offset is past-the-end, a full viewport
+        // below the actual scroll top. Clamp that sentinel to the real pixel
+        // range before applying a chained wheel delta; otherwise small upward
+        // gestures over a Thought card get clamped straight back to the tail.
+        let max = self.list.max_offset_for_scrollbar().height;
+        let current = (-self.list.scroll_px_offset_for_scrollbar().y).clamp(px(0.), max);
+        let target = (current + distance).clamp(px(0.), max);
+        if target == max {
+            self.scroll_to_end();
+        } else {
+            self.following_tail.set(false);
+            self.list
+                .set_offset_from_scrollbar(gpui::point(px(0.), -target));
+            // Programmatic scrolling does not invoke the list's scroll handler.
+            self.visible_start
+                .set(self.list.logical_scroll_top().item_ix);
+        }
+    }
+
     fn stick_if_following(&self) {
         if self.is_following_tail() {
             self.scroll_to_end();
@@ -290,7 +324,7 @@ fn render_jump_button(state: MessageScrollerState, theme: Theme) -> impl IntoEle
         .flex()
         .justify_center()
         .child(
-            // Waku's floating round scroll-to-bottom affordance.
+            // Floating round scroll-to-bottom affordance.
             div()
                 .id(ElementId::Name("message-scroller-jump".into()))
                 .h(px(32.))
@@ -324,7 +358,7 @@ fn render_jump_button(state: MessageScrollerState, theme: Theme) -> impl IntoEle
                             .text_size(px(11.5))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(theme.text)
-                            .child("New activity"),
+                            .child(tr!("message_scroller.new_activity")),
                     )
                 }),
         )
@@ -484,6 +518,122 @@ mod tests {
             before.bottom(),
             "the run stays pinned to the bottom of the panel"
         );
+    }
+
+    #[gpui::test]
+    fn streaming_preserves_the_readers_offset_inside_the_live_row(cx: &mut gpui::TestAppContext) {
+        let state = MessageScrollerState::new(3);
+        let heights: RowHeights =
+            Rc::new(std::cell::RefCell::new(std::collections::HashMap::new()));
+        heights.borrow_mut().insert(2, 1200.);
+        let cx = cx.add_empty_window();
+        let probe = cx.update(|_, cx| {
+            cx.new(|_| TranscriptProbe {
+                state: state.clone(),
+                heights: heights.clone(),
+            })
+        });
+        draw_probe(cx, &probe);
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: gpui::point(px(300.), px(200.)),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(150.))),
+            ..Default::default()
+        });
+        draw_probe(cx, &probe);
+        assert!(!state.is_following_tail());
+        let before = state.list_state().logical_scroll_top();
+        assert_eq!(before.item_ix, 2);
+        assert!(before.offset_in_item > px(0.));
+        let top = cx.debug_bounds("probe-row-2").unwrap().top();
+
+        for height in [1300., 1450., 1600.] {
+            heights.borrow_mut().insert(2, height);
+            assert!(state.remeasure_items(2..3));
+            state.note_activity();
+            draw_probe(cx, &probe);
+            assert_eq!(
+                state.list_state().logical_scroll_top().offset_in_item,
+                before.offset_in_item
+            );
+            assert_eq!(cx.debug_bounds("probe-row-2").unwrap().top(), top);
+            assert!(!state.is_following_tail());
+            assert!(state.has_unread());
+        }
+
+        state.scroll_to_end();
+        heights.borrow_mut().insert(2, 1800.);
+        state.remeasure_items(2..3);
+        draw_probe(cx, &probe);
+        assert!(state.is_following_tail());
+        assert!(!state.has_unread());
+        assert_eq!(cx.debug_bounds("probe-row-2").unwrap().bottom(), px(400.));
+    }
+
+    #[gpui::test]
+    fn streaming_and_appending_below_history_keep_the_visible_row_fixed(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let state = MessageScrollerState::new(40);
+        let heights: RowHeights =
+            Rc::new(std::cell::RefCell::new(std::collections::HashMap::new()));
+        let cx = cx.add_empty_window();
+        let probe = cx.update(|_, cx| {
+            cx.new(|_| TranscriptProbe {
+                state: state.clone(),
+                heights: heights.clone(),
+            })
+        });
+        draw_probe(cx, &probe);
+        state.scroll_to_item(20);
+        draw_probe(cx, &probe);
+        let before = cx.debug_bounds("probe-row-20").unwrap();
+
+        heights.borrow_mut().insert(39, 1200.);
+        state.remeasure_items(39..40);
+        state.append(1);
+        state.note_activity();
+        draw_probe(cx, &probe);
+
+        assert_eq!(cx.debug_bounds("probe-row-20").unwrap().top(), before.top());
+        assert!(!state.is_following_tail());
+        assert!(state.has_unread());
+    }
+
+    #[gpui::test]
+    fn chained_scroll_leaves_the_tail_and_resumes_following_at_the_bottom(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let state = MessageScrollerState::new(3);
+        let heights: RowHeights =
+            Rc::new(std::cell::RefCell::new(std::collections::HashMap::new()));
+        heights.borrow_mut().insert(2, 1200.);
+        let cx = cx.add_empty_window();
+        let probe = cx.update(|_, cx| {
+            cx.new(|_| TranscriptProbe {
+                state: state.clone(),
+                heights: heights.clone(),
+            })
+        });
+        draw_probe(cx, &probe);
+        let bottom = cx.debug_bounds("probe-row-2").unwrap();
+
+        // A small residual from a nested Thought card must move immediately,
+        // not require a single gesture larger than the viewport.
+        state.scroll_by(px(-20.));
+        draw_probe(cx, &probe);
+        assert!(!state.is_following_tail());
+        assert_eq!(
+            cx.debug_bounds("probe-row-2").unwrap().top(),
+            bottom.top() + px(20.)
+        );
+        assert_eq!(state.first_visible_index(), 2);
+        state.note_activity();
+
+        state.scroll_by(px(20.));
+        draw_probe(cx, &probe);
+        assert!(state.is_following_tail());
+        assert!(!state.has_unread());
+        assert_eq!(cx.debug_bounds("probe-row-2").unwrap().top(), bottom.top());
     }
 
     #[test]

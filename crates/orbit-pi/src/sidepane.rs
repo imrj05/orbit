@@ -1,4 +1,4 @@
-//! Right side pane — the workbench's second column (Waku parity): a
+//! Right side pane — the workbench's second column: a
 //! **Review** panel showing the workspace's git changes.
 //!
 //! The diff reads from a selectable [`review::Source`] — the last agent turn
@@ -39,11 +39,15 @@ const TREE_MIN_PANE_W: f32 = 440.;
 /// Directory tree column width range.
 const TREE_MIN_COL_W: f32 = 180.;
 const TREE_MAX_COL_W: f32 = 240.;
-/// Review diff row metrics (Waku `DiffRowStyle::review`).
+/// Review diff row metrics.
 const DIFF_TEXT_SIZE: f32 = 12.5;
 const REVIEW_FILE_HEADER_HEIGHT: f32 = 36.;
 const REVIEW_HUNK_HEIGHT: f32 = 24.;
 const REVIEW_GAP_HEIGHT: f32 = 32.;
+
+/// How long the Review refresh button spins after a click, so a fast diff
+/// read still reads as acknowledged (the same floor Settings uses).
+const REFRESH_FEEDBACK: Duration = Duration::from_millis(650);
 
 /// Drag marker for the side-pane resize handle (gpui typed drag state).
 pub struct SidePaneResize;
@@ -68,6 +72,9 @@ pub struct SidePane {
     /// next time the pane is visible.
     review_stale: bool,
     review_error: Option<String>,
+    /// Manual-refresh feedback: the header button spins until this instant,
+    /// so a click is acknowledged even when the diff read finishes instantly.
+    refresh_spin_until: Option<Instant>,
     /// Which git snapshot is shown; changing it reloads the diff.
     source: Source,
     /// Monotonic id so a slow load for a previous source can be discarded.
@@ -85,8 +92,8 @@ pub struct SidePane {
     tree_open: bool,
     tree_filter: Entity<ComposerInput>,
     tree_list: ListState,
-    /// Directories explicitly expanded; Waku auto-expands every directory a
-    /// fresh snapshot introduces.
+    /// Directories explicitly expanded; every directory a fresh snapshot
+    /// introduces is auto-expanded.
     expanded_paths: HashSet<String>,
     /// File whose diff is highlighted.
     selected_file: Option<usize>,
@@ -106,7 +113,7 @@ impl SidePane {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let tree_filter = cx.new(|cx| {
             ComposerInput::new(cx)
-                .with_placeholder("Filter files…")
+                .with_placeholder_key("sidepane.filter_files")
                 .with_key_context("Composer Picker")
         });
         Self {
@@ -119,6 +126,7 @@ impl SidePane {
             review_loading: false,
             review_stale: true,
             review_error: None,
+            refresh_spin_until: None,
             source: Source::default(),
             load_generation: 0,
             source_menu_open: false,
@@ -233,7 +241,12 @@ impl SidePane {
         }
     }
 
-    fn close(&mut self, cx: &mut Context<Self>) {
+    /// Close the pane if it is open. Used when the Explorer opens — the two
+    /// right docks are mutually exclusive.
+    pub fn close(&mut self, cx: &mut Context<Self>) {
+        if !self.open {
+            return;
+        }
         self.open = false;
         self.source_menu_open = false;
         cx.notify();
@@ -272,7 +285,7 @@ impl SidePane {
     }
 
     /// Open the pane on Review — wired to the transcript's changed-files
-    /// cards' "Review" buttons and the command palette (Waku parity).
+    /// cards' "Review" buttons and the command palette.
     pub fn show_review(&mut self, cx: &mut Context<Self>) {
         self.open = true;
         if self.review_stale && !self.review_loading {
@@ -296,6 +309,9 @@ impl SidePane {
         let generation = self.load_generation;
         self.review_loading = true;
         self.review_stale = false;
+        // Paint the loading state on the click's own frame; without this the
+        // spinner can be replaced by the result before it is ever drawn.
+        cx.notify();
         cx.spawn(async move |this, cx| {
             let parsed = cx
                 .background_executor()
@@ -407,6 +423,28 @@ impl SidePane {
         }
     }
 
+    /// Refresh from the header button: same reload, plus a short minimum spin
+    /// so the click is visibly acknowledged even when the diff is instant.
+    fn refresh_from_button(&mut self, cx: &mut Context<Self>) {
+        self.refresh_review(cx);
+        self.refresh_spin_until = Some(Instant::now() + REFRESH_FEEDBACK);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(REFRESH_FEEDBACK).await;
+            let _ = this.update(cx, |pane, cx| {
+                // A second click extends the floor; only the last timer clears.
+                if pane
+                    .refresh_spin_until
+                    .is_some_and(|until| Instant::now() >= until)
+                {
+                    pane.refresh_spin_until = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     // ── source filter ──────────────────────────────────────────────────
 
     fn toggle_source_menu(&mut self, cx: &mut Context<Self>) {
@@ -491,14 +529,14 @@ impl SidePane {
     fn source_label(&self, source: Source) -> String {
         match source {
             Source::LastTurn { turn_count } if self.latest_turn == Some(turn_count) => {
-                "Last Turn".to_string()
+                tr!("sidepane.last_turn")
             }
-            Source::LastTurn { turn_count } => format!("Turn {turn_count}"),
-            Source::Uncommitted => "Uncommitted".into(),
-            Source::Unstaged => "Unstaged".into(),
-            Source::Staged => "Staged".into(),
-            Source::Committed => "Committed".into(),
-            Source::Branch => "Branch".into(),
+            Source::LastTurn { turn_count } => tr!("sidepane.turn_n", count = turn_count),
+            Source::Uncommitted => tr!("sidepane.uncommitted"),
+            Source::Unstaged => tr!("git_panel.unstaged"),
+            Source::Staged => tr!("git_panel.staged"),
+            Source::Committed => tr!("sidepane.committed"),
+            Source::Branch => tr!("sidepane.branch"),
         }
     }
 
@@ -626,7 +664,7 @@ impl SidePane {
                     .text_size(theme.ui_px(12.5))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text)
-                    .child("Review"),
+                    .child(tr!("sidepane.review")),
             )
             .children(tree_available.then(|| {
                 div()
@@ -654,13 +692,15 @@ impl SidePane {
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.bg_hover))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.refresh_review(cx);
+                        this.refresh_from_button(cx);
                     }))
-                    .child(if self.review_loading {
-                        spinner("review-spinner", theme)
-                    } else {
-                        icon("icons/refresh.svg", 13., theme.text_3).into_any_element()
-                    }),
+                    .child(
+                        if self.review_loading || self.refresh_spin_until.is_some() {
+                            spinner("review-spinner", theme)
+                        } else {
+                            icon("icons/refresh.svg", 13., theme.text_3).into_any_element()
+                        },
+                    ),
             )
             .child(
                 div()
@@ -722,7 +762,7 @@ impl SidePane {
                     div()
                         .text_size(theme.ui_px(11.))
                         .text_color(theme.warn)
-                        .child("partial"),
+                        .child(tr!("sidepane.partial")),
                 )
             })
             .children((!compact).then(|| {
@@ -756,18 +796,20 @@ impl SidePane {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let diff = if self.review_loading && self.review.is_none() {
-            centered_message(theme, "Loading changes…", None).into_any_element()
+            centered_message(theme, &tr!("sidepane.loading_changes"), None).into_any_element()
         } else if let Some(error) = self.review_error.as_deref() {
-            centered_message(theme, "Changes unavailable", Some(error)).into_any_element()
+            centered_message(theme, &tr!("sidepane.changes_unavailable"), Some(error))
+                .into_any_element()
         } else if let Some(snapshot) = self.review.clone() {
             if snapshot.files.is_empty() {
                 let empty = self.source.empty_description();
-                centered_message(theme, "No changes", Some(empty.as_str())).into_any_element()
+                centered_message(theme, &tr!("sidepane.no_changes"), Some(&empty))
+                    .into_any_element()
             } else {
                 self.render_diff(snapshot, theme, cx)
             }
         } else {
-            centered_message(theme, "No changes", None).into_any_element()
+            centered_message(theme, &tr!("sidepane.no_changes"), None).into_any_element()
         };
 
         let mut content = div()
@@ -959,7 +1001,7 @@ impl SidePane {
                         this.expand_gap(index, direction, cx);
                     }))
             })
-            .child(format!("{} unmodified lines", gap.count()));
+            .child(tr!("sidepane.unmodified_lines", count = gap.count()));
 
         div()
             .h(px(REVIEW_GAP_HEIGHT))
@@ -1214,7 +1256,7 @@ impl SidePane {
 
         let last_turn = self.last_turn_source();
         menu = menu.child(source_row(
-            "Last Turn",
+            &tr!("sidepane.last_turn"),
             last_turn.is_some(),
             last_turn.is_some() && last_turn == Some(self.source),
             last_turn,
@@ -1300,7 +1342,7 @@ fn source_row(
                     .flex_none()
                     .text_size(theme.ui_px(10.))
                     .text_color(theme.text_3)
-                    .child("no turns yet"),
+                    .child(tr!("sidepane.no_turns_yet")),
             )
         })
         .when(selected, |row| {
@@ -1320,7 +1362,7 @@ fn separator(theme: Theme) -> AnyElement {
 
 // ── diff row rendering ─────────────────────────────────────────────────────
 
-/// Waku's sticky/normal file header: icon, path, +additions, -deletions.
+/// Sticky/normal file header: icon, path, +additions, -deletions.
 fn render_file_header(
     file: &review::File,
     theme: Theme,
@@ -1440,8 +1482,8 @@ fn diff_row_height() -> f32 {
     (DIFF_TEXT_SIZE * 1.5).round()
 }
 
-/// One context/addition/deletion row: a single line-number gutter (Waku shows
-/// the new number, falling back to the old one) and syntax-coloured code.
+/// One context/addition/deletion row: a single line-number gutter (the new
+/// number, falling back to the old one) and syntax-coloured code.
 fn render_code_row(line: &review::Line, theme: Theme) -> AnyElement {
     let row_height = diff_row_height();
     let (body_bg, gutter_bg, edge, number_color) = match line.kind {
@@ -1630,12 +1672,12 @@ impl Source {
     /// Reader-facing empty-state copy for each source.
     fn empty_description(self) -> String {
         match self {
-            Source::LastTurn { .. } => "This turn didn't change any files.".into(),
-            Source::Uncommitted => "The working tree matches HEAD.".into(),
-            Source::Unstaged => "Everything is staged.".into(),
-            Source::Staged => "Nothing is staged.".into(),
-            Source::Committed => "No commits on this branch beyond its base.".into(),
-            Source::Branch => "This branch matches its base branch.".into(),
+            Source::LastTurn { .. } => tr!("sidepane.empty_last_turn"),
+            Source::Uncommitted => tr!("sidepane.empty_uncommitted"),
+            Source::Unstaged => tr!("sidepane.empty_unstaged"),
+            Source::Staged => tr!("sidepane.empty_staged"),
+            Source::Committed => tr!("sidepane.empty_committed"),
+            Source::Branch => tr!("sidepane.empty_branch"),
         }
     }
 }

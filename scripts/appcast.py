@@ -107,12 +107,16 @@ def pick_artifact(assets, globs):
     return None
 
 
-def item_xml(version, url, length, signature):
+def item_xml(version, url, length, signature, notes=None):
     url = escape(url, {'"': "&quot;"})
+    description = (
+        f"      <description>{escape(notes)}</description>\n" if notes else ""
+    )
     return (
         "    <item>\n"
         f"      <title>{escape(version)}</title>\n"
         f"      <sparkle:shortVersionString>{escape(version)}</sparkle:shortVersionString>\n"
+        f"{description}"
         f'      <enclosure url="{url}" length="{length}" '
         f'type="application/octet-stream" sparkle:edSignature="{signature}" />\n'
         "    </item>\n"
@@ -140,7 +144,19 @@ def main():
     parser.add_argument("--assets", default="artifacts")
     parser.add_argument("--out", default="artifacts")
     parser.add_argument("--key-file", help="Ed25519 private key PEM")
+    parser.add_argument(
+        "--notes-file",
+        help="Release notes to embed as each item's <description> (the "
+        "update modal renders them as the changelog)",
+    )
     args = parser.parse_args()
+
+    notes = None
+    if args.notes_file and os.path.exists(args.notes_file):
+        with open(args.notes_file, encoding="utf-8") as fh:
+            notes = fh.read().strip() or None
+        if notes is None:
+            print(f"  note  {args.notes_file} is empty; appcasts ship without notes")
 
     key_file, cleanup = private_key_file(args.key_file)
     os.makedirs(args.out, exist_ok=True)
@@ -159,7 +175,11 @@ def main():
             signature = sign(key_file, artifact)
 
             path = os.path.join(args.out, f"appcast-{feed}.xml")
-            body = merge(path, item_xml(args.version, url, length, signature), args.version)
+            body = merge(
+                path,
+                item_xml(args.version, url, length, signature, notes),
+                args.version,
+            )
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(RSS_HEADER + body + RSS_FOOTER)
             print(f"  wrote {path}  ({name}, {length} bytes)")

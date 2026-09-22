@@ -205,13 +205,13 @@ fn write_config(dir: &Path, config: &Config) {
 /// Copy `source` into `dir` as the processed PNG, remembering its name and
 /// keeping the tuning already chosen. Returns that name for the settings card.
 pub fn choose(dir: &Path, source: &Path) -> Result<String, String> {
-    let decoded = image::open(source).map_err(|err| format!("Could not read that image: {err}"))?;
+    let decoded = image::open(source).map_err(|err| tr!("dither.could_not_read", error = err))?;
     let fitted = fit(decoded);
-    std::fs::create_dir_all(dir).map_err(|err| format!("Could not save the image: {err}"))?;
+    std::fs::create_dir_all(dir).map_err(|err| tr!("dither.could_not_save", error = err))?;
     fitted
         .into_rgba8()
         .save(image_path(dir))
-        .map_err(|err| format!("Could not save the image: {err}"))?;
+        .map_err(|err| tr!("dither.could_not_save", error = err))?;
     let label = source
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())

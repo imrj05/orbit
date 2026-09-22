@@ -17,21 +17,20 @@ use std::rc::Rc;
 
 use gpui::{
     div, prelude::*, px, AnyElement, App, CursorStyle, DragMoveEvent, ElementId, Empty, FontWeight,
-    Hsla, IntoElement, MouseButton, Pixels, Render, SharedString, TextAlign, Window,
+    Hsla, IntoElement, MouseButton, Pixels, Render, SharedString, Window,
 };
 
 use crate::theme::Theme;
 
 /// A body row's height. Every table height is a whole number of these plus the
 /// header, so a table never ends by cutting a row in half.
-pub(super) const ROW_H: f32 = 26.;
+pub(super) const ROW_H: f32 = 40.;
 /// The header row's height.
-pub(super) const HEADER_H: f32 = 28.;
+pub(super) const HEADER_H: f32 = 40.;
 
-/// The framework-free cell padding (each side). Matches the 14px gutter a card
-/// uses for its header, tabs and toolbars, so a table's first column lines up
-/// with everything above it.
-pub(super) const CELL_PADDING: f32 = 14.;
+/// Horizontal cell padding (each side). Matches the search field's 12px inset
+/// so the first column lines up with the toolbar above the table card.
+pub(super) const CELL_PADDING: f32 = 16.;
 
 /// Width the resize divider's hit area gets.
 const HANDLE_W: f32 = 5.;
@@ -45,6 +44,7 @@ pub enum TableKind {
     Buckets,
     Failures,
     Breakdown,
+    Series,
 }
 
 /// The sort state drawn on a column header. Three states, like a desktop grid:
@@ -170,11 +170,13 @@ impl TableHandlers {
     }
 }
 
-/// A data table: a fixed header over a scrollable body.
+/// A data table: a rounded, hairline-framed board with a fixed header over a
+/// body. Search, columns, and pagination sit outside this frame.
 ///
-/// The body scrolls vertically; the whole table scrolls horizontally once a
-/// column has been dragged past the width it was given. The header stays put
-/// while the body scrolls.
+/// The whole table scrolls horizontally once a column has been dragged past
+/// the width it was given. The body only scrolls vertically when the frame is
+/// shorter than its rows — otherwise the page is the scroller, so a wheel
+/// over the table still moves the page.
 pub fn data_table(
     id: &'static str,
     columns: &[Column],
@@ -185,6 +187,13 @@ pub fn data_table(
     handlers: TableHandlers,
 ) -> AnyElement {
     let total_w: f32 = columns.iter().map(|column| column.width).sum();
+    let content_h = px(HEADER_H + ROW_H * rows.len().max(1) as f32);
+    let scroll_y = !rows.is_empty() && height < content_h;
+    let frame_h = if rows.is_empty() || scroll_y {
+        height
+    } else {
+        content_h
+    };
 
     let mut header = div()
         .flex_none()
@@ -204,10 +213,11 @@ pub fn data_table(
             .min_h_0()
             .min_w(px(total_w))
             .flex()
+            .items_center()
             .justify_center()
             .child(empty)
             .into_any_element()
-    } else {
+    } else if scroll_y {
         div()
             .id(ElementId::Name(SharedString::from(format!("{id}-body"))))
             .flex_1()
@@ -218,21 +228,38 @@ pub fn data_table(
             .overflow_y_scroll()
             .children(rows)
             .into_any_element()
+    } else {
+        div()
+            .id(ElementId::Name(SharedString::from(format!("{id}-body"))))
+            .flex_none()
+            .min_w(px(total_w))
+            .flex()
+            .flex_col()
+            .children(rows)
+            .into_any_element()
     };
 
     div()
-        .id(ElementId::Name(SharedString::from(id)))
         .w_full()
-        .h(height)
-        .overflow_x_scroll()
+        .rounded(px(12.))
+        .border_1()
+        .border_color(theme.border)
+        .overflow_hidden()
         .child(
             div()
-                .h_full()
-                .min_w(px(total_w))
-                .flex()
-                .flex_col()
-                .child(header)
-                .child(body),
+                .id(ElementId::Name(SharedString::from(id)))
+                .w_full()
+                .h(frame_h)
+                .overflow_x_scroll()
+                .child(
+                    div()
+                        .h_full()
+                        .min_w(px(total_w))
+                        .flex()
+                        .flex_col()
+                        .child(header)
+                        .child(body),
+                ),
         )
         .into_any_element()
 }
@@ -248,14 +275,8 @@ fn header_cell(ix: usize, column: &Column, theme: Theme, handlers: TableHandlers
     let resize_start = handlers.resize_start.clone();
     let resize_move = handlers.resize_move.clone();
     let resize_end = handlers.resize_end.clone();
-    // A sorted column's label steps up a register, so the active sort reads
-    // even before the caret is noticed.
-    let label_color = if column.sort == SortState::Default {
-        theme.text_3
-    } else {
-        theme.text_2
-    };
-
+    // Sorted columns keep the same ink as the rest of the header; the caret
+    // is what marks the active key.
     let mut content = div()
         .h_full()
         .w(px(column.width))
@@ -263,7 +284,9 @@ fn header_cell(ix: usize, column: &Column, theme: Theme, handlers: TableHandlers
         .relative()
         .flex()
         .items_center()
+        .gap(px(6.))
         .px(px(CELL_PADDING))
+        .when(column.numeric, |cell| cell.justify_end())
         .when(column.sortable, |cell| {
             cell.cursor_pointer()
                 .hover(|style| style.bg(theme.bg_hover))
@@ -273,27 +296,16 @@ fn header_cell(ix: usize, column: &Column, theme: Theme, handlers: TableHandlers
         })
         .child(
             div()
-                .flex_1()
                 .min_w_0()
                 .truncate()
-                .text_size(theme.ui_px(11.))
+                .text_size(theme.ui_px(13.))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(label_color)
-                .when(column.numeric, |label| label.text_align(TextAlign::Right))
-                .child(column.label.to_uppercase()),
+                .text_color(theme.text)
+                .child(column.label.clone()),
         );
 
     if column.sortable {
-        content = content.child(
-            div()
-                .absolute()
-                .top_0()
-                .right(px(2.))
-                .h_full()
-                .flex()
-                .items_center()
-                .child(sort_caret(column.sort, theme)),
-        );
+        content = content.child(sort_caret(column.sort, theme));
     }
 
     if column.resizable {
@@ -340,18 +352,19 @@ fn header_cell(ix: usize, column: &Column, theme: Theme, handlers: TableHandlers
     content.into_any_element()
 }
 
-/// The sort caret: an up or down chevron on the active column, nothing on the
-/// others (a grid that draws carets everywhere reads as noise).
+/// The sort caret: both directions on the active column (↑↓), nothing on the
+/// others — a grid that draws carets everywhere reads as noise.
 fn sort_caret(sort: SortState, theme: Theme) -> AnyElement {
-    let (path, visible) = match sort {
-        SortState::Ascending => ("icons/chevron-up.svg", true),
-        SortState::Descending => ("icons/chevron-down.svg", true),
-        SortState::Default => ("icons/chevron-down.svg", false),
-    };
+    let visible = sort != SortState::Default;
+    let color = if visible { theme.text_2 } else { theme.text_3 };
     div()
         .flex_none()
+        .flex()
+        .flex_col()
+        .items_center()
         .when(!visible, |caret| caret.opacity(0.))
-        .child(crate::app::icon(path, 10., theme.text_3))
+        .child(crate::app::icon("icons/chevron-up.svg", 8., color))
+        .child(crate::app::icon("icons/chevron-down.svg", 8., color))
         .into_any_element()
 }
 
@@ -374,8 +387,8 @@ pub(super) fn text_cell(column: &Column, text: String, color: Hsla, theme: Theme
     let text = clip_to(
         &text,
         column.width,
-        CELL_PADDING,
-        theme.ui_px(11.5).into(),
+        CELL_PADDING * 2.,
+        theme.ui_px(13.).into(),
         0.52,
     );
     if column.numeric {
@@ -384,7 +397,7 @@ pub(super) fn text_cell(column: &Column, text: String, color: Hsla, theme: Theme
                 div()
                     .font(super::view::num_font())
                     .whitespace_nowrap()
-                    .text_size(theme.ui_px(11.5))
+                    .text_size(theme.ui_px(13.))
                     .text_color(color)
                     .child(text),
             )
@@ -396,7 +409,7 @@ pub(super) fn text_cell(column: &Column, text: String, color: Hsla, theme: Theme
                 .flex_1()
                 .min_w_0()
                 .truncate()
-                .text_size(theme.ui_px(11.5))
+                .text_size(theme.ui_px(13.))
                 .text_color(color)
                 .child(text),
         )
@@ -406,10 +419,10 @@ pub(super) fn text_cell(column: &Column, text: String, color: Hsla, theme: Theme
 /// The empty state, centered in the table body.
 pub(super) fn empty_cell(text: &str, theme: Theme) -> AnyElement {
     div()
-        .py(px(24.))
+        .py(px(28.))
         .flex()
         .justify_center()
-        .text_size(theme.ui_px(12.))
+        .text_size(theme.ui_px(13.))
         .text_color(theme.text_3)
         .child(text.to_string())
         .into_any_element()
@@ -441,17 +454,32 @@ pub enum FailureSort {
     Kind,
     Model,
     Session,
+    Message,
 }
 
 impl FailureSort {
-    pub fn label(self) -> &'static str {
+    pub fn id(self) -> &'static str {
         match self {
             Self::When => "When",
             Self::Kind => "Type",
             Self::Model => "Model",
             Self::Session => "Session",
+            Self::Message => "message",
         }
     }
+
+    pub fn label(self) -> String {
+        match self {
+            Self::When => tr!("usage.col_when"),
+            Self::Kind => tr!("usage.col_type"),
+            Self::Model => tr!("usage.col_model"),
+            Self::Session => tr!("usage.col_session"),
+            Self::Message => tr!("usage.col_message"),
+        }
+    }
+
+    /// Hideable columns; When is always shown.
+    pub const HIDEABLE: [Self; 4] = [Self::Kind, Self::Model, Self::Session, Self::Message];
 }
 
 /// One row of the failures table, already resolved against the index so the
@@ -468,10 +496,7 @@ pub struct FailureRow {
 
 /// The failure-kind label and its register: provider errors are critical, tool
 /// failures a warning.
-pub(super) fn failure_kind_register(
-    kind: super::model::ErrorKind,
-    theme: Theme,
-) -> (&'static str, Hsla) {
+pub(super) fn failure_kind_register(kind: super::model::ErrorKind, theme: Theme) -> (String, Hsla) {
     match kind {
         super::model::ErrorKind::Provider => (kind.label(), theme.crit),
         super::model::ErrorKind::Tool => (kind.label(), theme.warn),

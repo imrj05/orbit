@@ -1,7 +1,7 @@
 //! Integrated terminal — a real shell in a bottom panel.
 //!
-//! The emulator is [`alacritty_terminal`] (the same Apache-2.0 crate Zed and
-//! Waku build their terminals on), not a bundled terminal app: `tty` opens the
+//! The emulator is [`alacritty_terminal`] (the same Apache-2.0 crate Zed
+//! builds its terminal on), not a bundled terminal app: `tty` opens the
 //! PTY, `Term` owns the VT grid and the ANSI parser, and `EventLoop` drives
 //! PTY I/O on its own thread. Orbit owns the shell selection, the GPUI
 //! rendering, and the key/mouse translation.
@@ -21,8 +21,8 @@
 //! line, and copies it into the composer — without switching apps.
 //! FIRST VIEWPORT: a resizable bottom panel, header first (title, cwd,
 //! restart/close), then the grid, focus already in the shell.
-//! FORM: a bottom workbench panel (the placement Waku gives its right-hand
-//! terminal, rotated to the bottom edge) with Waku's session/view split.
+//! FORM: a bottom workbench panel — a right-hand terminal rotated to the
+//! bottom edge — with a session/view split.
 
 use std::borrow::Cow;
 use std::cell::Cell;
@@ -30,7 +30,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop, EventLoopSender, Msg};
@@ -45,11 +45,12 @@ use alacritty_terminal::vte::ansi::{Color as AnsiColor, CursorShape, NamedColor,
 use anyhow::{Context as _, Result};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use gpui::{
-    canvas, div, fill, point, prelude::*, px, size, AnyElement, App, Background, Bounds,
-    ClipboardItem, Context, CursorStyle, Entity, FocusHandle, Focusable, Font, FontFallbacks,
-    FontFeatures, FontStyle, FontWeight, Hsla, IntoElement, Keystroke, MouseButton, MouseDownEvent,
-    MouseMoveEvent, ParentElement, Pixels, Point, Render, Rgba, ScrollDelta, ScrollWheelEvent,
-    SharedString, StrikethroughStyle, Styled, Task, TextRun, UnderlineStyle, Window,
+    canvas, div, fill, point, prelude::*, px, radians, size, Animation, AnimationExt, AnyElement,
+    App, Background, Bounds, ClipboardItem, Context, CursorStyle, Entity, FocusHandle, Focusable,
+    Font, FontFallbacks, FontFeatures, FontStyle, FontWeight, Hsla, IntoElement, Keystroke,
+    MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, Render, Rgba,
+    ScrollDelta, ScrollWheelEvent, SharedString, StrikethroughStyle, Styled, Task, TextRun,
+    Transformation, UnderlineStyle, Window,
 };
 
 use crate::app::{icon, nerd_font_family};
@@ -59,7 +60,7 @@ use crate::theme::{self, Theme};
 /// a zero-sized window.
 const MIN_COLUMNS: usize = 2;
 const MIN_ROWS: usize = 1;
-/// History kept above the visible grid (Waku's default).
+/// History kept above the visible grid.
 const SCROLLBACK_LINES: usize = 10_000;
 /// Fallback advance until the terminal font has been measured.
 const CELL_WIDTH_FALLBACK: f32 = 7.8;
@@ -75,13 +76,17 @@ const PANEL_MIN_H: f32 = 96.;
 /// Header height — the panel's title row.
 const HEADER_H: f32 = 32.;
 
+/// How long the restart button spins after a click, so restarting a shell
+/// that comes back quickly still reads as acknowledged.
+const RESTART_FEEDBACK: Duration = Duration::from_millis(650);
+
 // ── palette ────────────────────────────────────────────────────────────────
 
 /// The 16 ANSI slots plus the three terminal defaults, resolved from the
 /// active theme. Phase 1 derives every slot from an existing semantic role, so
 /// the terminal recolors with the workbench and needs no second palette file.
 #[derive(Debug, Clone, PartialEq)]
-struct Palette {
+pub(crate) struct Palette {
     ansi: [Hsla; 16],
     foreground: Hsla,
     background: Hsla,
@@ -89,7 +94,7 @@ struct Palette {
 }
 
 impl Palette {
-    fn from_theme(theme: &Theme) -> Self {
+    pub(crate) fn from_theme(theme: &Theme) -> Self {
         let foreground = theme.code_text;
         let background = theme.code_bg;
         Self {
@@ -132,7 +137,7 @@ impl Palette {
     }
 
     /// xterm's 256-color table: 16 system slots, a 6×6×6 cube, then greys.
-    fn indexed(&self, index: usize) -> Hsla {
+    pub(crate) fn indexed(&self, index: usize) -> Hsla {
         match index {
             0..=15 => self.ansi[index],
             16..=231 => {
@@ -159,7 +164,7 @@ impl Palette {
     }
 }
 
-fn rgb_to_hsla(rgb: Rgb) -> Hsla {
+pub(crate) fn rgb_to_hsla(rgb: Rgb) -> Hsla {
     Hsla::from(Rgba {
         r: rgb.r as f32 / 255.,
         g: rgb.g as f32 / 255.,
@@ -401,7 +406,12 @@ impl TerminalSession {
             *window_size.lock().unwrap_or_else(|e| e.into_inner()),
             0,
         )
-        .with_context(|| format!("spawn shell in {}", working_directory.display()))?;
+        .with_context(|| {
+            tr!(
+                "terminal.spawn_shell_in",
+                dir = working_directory.display().to_string()
+            )
+        })?;
         let event_loop = EventLoop::new(term.clone(), proxy, pty, false, false)
             .context("create terminal event loop")?;
         let sender = event_loop.channel();
@@ -763,7 +773,7 @@ fn cursor_bytes(final_byte: u8, application: bool) -> Vec<u8> {
 
 /// Translate a GPUI keystroke into the bytes a terminal expects, or `None`
 /// when the key belongs to the app (every `cmd`/`super` combination).
-fn encode_key(keystroke: &Keystroke, mode: TermMode) -> Option<Vec<u8>> {
+pub(crate) fn encode_key(keystroke: &Keystroke, mode: TermMode) -> Option<Vec<u8>> {
     let modifiers = &keystroke.modifiers;
     // `cmd`/`super` is app territory; the terminal never sees it.
     if modifiers.platform {
@@ -1232,9 +1242,11 @@ impl Render for TerminalView {
         // so there is no reason to spend a frame every 500 ms on it.
         self.focused = focused;
         let body = match (&self.session, self.error.clone()) {
-            (_, Some(error)) => terminal_message(&theme, "Terminal unavailable", Some(&error)),
+            (_, Some(error)) => {
+                terminal_message(&theme, &tr!("terminal.unavailable"), Some(&error))
+            }
             (Some(_), None) => self.grid_element(&theme, &font, focused, window, cx),
-            (None, None) => terminal_message(&theme, "Starting shell…", None),
+            (None, None) => terminal_message(&theme, &tr!("terminal.starting_shell"), None),
         };
 
         div()
@@ -1500,6 +1512,9 @@ pub struct TerminalPanel {
     height: Pixels,
     workspace: Option<PathBuf>,
     terminal: Option<Entity<TerminalView>>,
+    /// Restart feedback: the header button spins until this instant, so the
+    /// click is acknowledged while the fresh shell starts.
+    restart_spin_until: Option<Instant>,
 }
 
 impl TerminalPanel {
@@ -1509,6 +1524,7 @@ impl TerminalPanel {
             height: px(PANEL_DEFAULT_H),
             workspace: None,
             terminal: None,
+            restart_spin_until: None,
         }
     }
 
@@ -1559,6 +1575,23 @@ impl TerminalPanel {
         if self.open {
             self.ensure_terminal(cx);
         }
+        // A short spin on the header button: the fresh shell usually starts in
+        // well under a frame, leaving the click otherwise invisible.
+        self.restart_spin_until = Some(Instant::now() + RESTART_FEEDBACK);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(RESTART_FEEDBACK).await;
+            let _ = this.update(cx, |panel, cx| {
+                // A second click extends the floor; only the last timer clears.
+                if panel
+                    .restart_spin_until
+                    .is_some_and(|until| Instant::now() >= until)
+                {
+                    panel.restart_spin_until = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
         cx.notify();
     }
 
@@ -1656,7 +1689,7 @@ impl TerminalPanel {
                     .bg(theme.stop_red.opacity(0.15))
                     .text_size(theme.ui_px(10.5))
                     .text_color(theme.stop_red)
-                    .child("exited"),
+                    .child(tr!("terminal.exited")),
             );
         }
         header
@@ -1672,11 +1705,32 @@ impl TerminalPanel {
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| this.restart(cx)),
                     )
-                    .child(icon(
-                        "icons/refresh.svg",
-                        14.,
-                        if exited { theme.accent } else { theme.text_2 },
-                    )),
+                    .child(
+                        if self.restart_spin_until.is_some() && !theme.ui.reduce_motion {
+                            gpui::svg()
+                                .path("icons/loader.svg")
+                                .flex_none()
+                                .size(px(14.))
+                                .text_color(if exited { theme.accent } else { theme.text_2 })
+                                .with_animation(
+                                    "terminal-restart-spin",
+                                    Animation::new(Duration::from_millis(900)).repeat(),
+                                    |svg, delta| {
+                                        svg.with_transformation(Transformation::rotate(radians(
+                                            delta * std::f32::consts::TAU,
+                                        )))
+                                    },
+                                )
+                                .into_any_element()
+                        } else {
+                            icon(
+                                "icons/refresh.svg",
+                                14.,
+                                if exited { theme.accent } else { theme.text_2 },
+                            )
+                            .into_any_element()
+                        },
+                    ),
             )
             .child(
                 div()
@@ -1725,7 +1779,7 @@ impl TerminalPanel {
                             div()
                                 .text_size(theme.ui_px(12.5))
                                 .text_color(theme.text_2)
-                                .child("Shell exited"),
+                                .child(tr!("terminal.shell_exited")),
                         )
                         .child(
                             div()
@@ -1747,7 +1801,7 @@ impl TerminalPanel {
                                     cx.listener(|this, _, _, cx| this.restart(cx)),
                                 )
                                 .child(icon("icons/refresh.svg", 13., theme.active_fg))
-                                .child("Restart"),
+                                .child(tr!("terminal.restart")),
                         ),
                 )
                 .into_any_element(),

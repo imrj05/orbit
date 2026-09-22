@@ -67,6 +67,19 @@ pub fn format_percent(usage: &ContextUsage) -> Option<String> {
     }
 }
 
+/// Whole-number label for a cache hit rate: rounds to nearest, but a rate
+/// that merely *rounds* to 100 (e.g. 99.9%) shows `99`, since claiming a
+/// perfect hit rate would be false — pi still served uncached input tokens.
+/// Only an exact 100 prints as `100`.
+pub fn hit_percent_label(percent: f32) -> String {
+    let rounded = (percent.round() as i32).clamp(0, 100);
+    if rounded == 100 && percent < 100.0 {
+        String::from("99")
+    } else {
+        rounded.to_string()
+    }
+}
+
 /// Compact token label (`151K`, `1.0K`, `688`) matching the reference UI.
 pub fn format_tokens(n: u64) -> String {
     if n >= 1_000_000 {
@@ -114,9 +127,9 @@ pub fn usage_slices(
     let mut out = Vec::new();
     if other > 0 {
         let label = if conversation == 0 {
-            "In use"
+            tr!("context_meter.in_use")
         } else {
-            "Other context"
+            tr!("context_meter.other_context")
         };
         out.push(ContextSlice {
             label: label.into(),
@@ -130,7 +143,7 @@ pub fn usage_slices(
     }
     if conversation > 0 {
         out.push(ContextSlice {
-            label: "Conversation".into(),
+            label: tr!("context_meter.conversation").into(),
             tokens: conversation,
             color: theme.accent,
         });
@@ -235,19 +248,25 @@ pub fn compact_card(
     let (title, subtitle) = match usage {
         Some(usage) => {
             let title = format_percent(usage)
-                .map(|p| format!("{p} context used"))
-                .unwrap_or_else(|| "Context usage".into());
+                .map(|p| tr!("context_meter.context_used", percent = p))
+                .unwrap_or_else(|| tr!("context_meter.context_usage"));
             let subtitle = match usage.tokens {
-                Some(used) => format!(
-                    "{} / {} tokens",
-                    format_tokens(used),
-                    format_tokens(usage.context_window)
+                Some(used) => tr!(
+                    "context_meter.tokens_of",
+                    used = format_tokens(used),
+                    total = format_tokens(usage.context_window)
                 ),
-                None => format!("of {} tokens", format_tokens(usage.context_window)),
+                None => tr!(
+                    "context_meter.of_tokens",
+                    total = format_tokens(usage.context_window)
+                ),
             };
             (title, subtitle)
         }
-        None => ("Context usage".into(), "Waiting for the pi agent".into()),
+        None => (
+            tr!("context_meter.context_usage"),
+            tr!("context_meter.waiting_for_agent"),
+        ),
     };
     let cost = session.and_then(|s| s.cost).map(format_cost);
     div()
@@ -281,7 +300,7 @@ pub fn compact_card(
                 .text_size(theme.ui_px(12.))
                 .text_color(theme.text_3)
                 .whitespace_nowrap()
-                .child(format!("{cost} spent"))
+                .child(tr!("context_meter.spent", cost = cost))
         }))
 }
 
@@ -314,12 +333,15 @@ pub fn details_card(
 ) -> impl IntoElement {
     let percent = usage.and_then(format_percent);
     let totals = usage.map(|u| match u.tokens {
-        Some(used) => format!(
-            "~{} / {} Tokens",
-            format_tokens(used),
-            format_tokens(u.context_window)
+        Some(used) => tr!(
+            "context_meter.tokens_of",
+            used = format_tokens(used),
+            total = format_tokens(u.context_window)
         ),
-        None => format!("of {} Tokens", format_tokens(u.context_window)),
+        None => tr!(
+            "context_meter.of_tokens",
+            total = format_tokens(u.context_window)
+        ),
     });
     let window_tokens = usage.map(|u| u.context_window).unwrap_or(0);
 
@@ -347,7 +369,7 @@ pub fn details_card(
                         .flex_1()
                         .text_size(theme.ui_px(13.))
                         .text_color(theme.text_2)
-                        .child("Context Usage"),
+                        .child(tr!("context_meter.context_usage")),
                 )
                 .child(
                     div()
@@ -379,8 +401,8 @@ pub fn details_card(
                         .text_color(theme.text)
                         .child(
                             percent
-                                .map(|p| format!("{p} Full"))
-                                .unwrap_or_else(|| "Unknown".into()),
+                                .map(|p| tr!("context_meter.percent_full", percent = p))
+                                .unwrap_or_else(|| tr!("context_meter.unknown")),
                         ),
                 )
                 .children(totals.map(|label| {
@@ -417,7 +439,7 @@ fn compact_action(is_compacting: bool, on_compact: Rc<ActionClick>, theme: Theme
         button
             .text_color(theme.text_3)
             .cursor_default()
-            .child("Compacting\u{2026}")
+            .child(tr!("context_meter.compacting"))
             .into_any_element()
     } else {
         button
@@ -425,7 +447,7 @@ fn compact_action(is_compacting: bool, on_compact: Rc<ActionClick>, theme: Theme
             .cursor_pointer()
             .hover(|s| s.bg(theme.bg_hover))
             .on_click(move |event, window, cx| on_compact(event, window, cx))
-            .child("Compact now")
+            .child(tr!("context_meter.compact_now"))
             .into_any_element()
     }
 }
@@ -456,7 +478,7 @@ fn legend(slices: &[ContextSlice], theme: Theme) -> impl IntoElement + use<> {
         return div()
             .text_size(theme.ui_px(12.))
             .text_color(theme.text_3)
-            .child("No usage reported for this session yet.")
+            .child(tr!("context_meter.no_usage_reported_for_this_session_yet"))
             .into_any_element();
     }
     div()
@@ -502,39 +524,44 @@ pub fn session_usage_section(usage: &SessionUsage, theme: Theme) -> AnyElement {
             div()
                 .text_size(theme.ui_px(12.))
                 .text_color(theme.text_3)
-                .child("Session usage"),
+                .child(tr!("context_meter.session_usage")),
         )
         .child(session_row(
             "icons/usage-input.svg",
-            "Input",
+            tr!("context_meter.input"),
             format_tokens(usage.input),
             theme,
         ))
         .child(session_row(
             "icons/usage-output.svg",
-            "Output",
+            tr!("context_meter.output"),
             format_tokens(usage.output),
             theme,
         ))
         .child(session_row(
             "icons/cache-read.svg",
-            "Cache read",
+            tr!("context_meter.cache_read"),
             cache_read_label(usage),
             theme,
         ))
         .child(session_row(
             "icons/cache-write.svg",
-            "Cache write",
+            tr!("context_meter.cache_write"),
             format_tokens(usage.cache_write),
             theme,
         ))
         .child(session_row(
             "icons/usage-total.svg",
-            "Total",
+            tr!("context_meter.total"),
             format_tokens(usage.total),
             theme,
         ))
-        .child(session_row("icons/usage-cost.svg", "Cost", cost, theme))
+        .child(session_row(
+            "icons/usage-cost.svg",
+            tr!("context_meter.cost"),
+            cost,
+            theme,
+        ))
         .into_any_element()
 }
 
@@ -543,7 +570,11 @@ pub fn session_usage_section(usage: &SessionUsage, theme: Theme) -> AnyElement {
 fn cache_read_label(usage: &SessionUsage) -> String {
     let tokens = format_tokens(usage.cache_read);
     match usage.cache_read_percent() {
-        Some(percent) => format!("{tokens} · {percent:.0}%"),
+        Some(percent) => tr!(
+            "context_meter.cache_read_share",
+            tokens = tokens,
+            percent = hit_percent_label(percent)
+        ),
         None => tokens,
     }
 }
@@ -553,10 +584,11 @@ fn cache_read_label(usage: &SessionUsage) -> String {
 /// regardless of label or value length.
 fn session_row(
     icon_path: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     value: String,
     theme: Theme,
 ) -> impl IntoElement {
+    let label = label.into();
     div()
         .w_full()
         .flex()

@@ -55,12 +55,13 @@ impl BranchPicker {
     ) -> Self {
         let filter = cx.new(|cx| {
             ComposerInput::new(cx)
-                .with_placeholder(format!("Search {workspace_label} branches"))
+                .with_placeholder_key("branch_picker.search_branches")
+                .with_placeholder_var("workspace", workspace_label)
                 .with_key_context("Composer Picker")
         });
         let create_input = cx.new(|cx| {
             ComposerInput::new(cx)
-                .with_placeholder("New branch name")
+                .with_placeholder_key("branch_picker.new_branch_name")
                 .with_key_context("Composer Picker")
         });
         Self {
@@ -227,13 +228,13 @@ impl Render for BranchPicker {
                                 .text_size(theme.ui_px(12.5))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(theme.text)
-                                .child("Create and checkout new branch"),
+                                .child(tr!("branch_picker.create_and_checkout_new_branch")),
                         )
                         .child(
                             div()
                                 .text_size(theme.ui_px(11.5))
                                 .text_color(theme.text_3)
-                                .child("Uncommitted changes come with you."),
+                                .child(tr!("branch_picker.uncommitted_changes_come_with_you")),
                         )
                         .child(self.create_input.clone()),
                 )
@@ -261,7 +262,7 @@ impl Render for BranchPicker {
                                 }
                             }),
                         )
-                        .child("Create branch"),
+                        .child(tr!("branch_picker.create_branch")),
                 );
         }
 
@@ -391,7 +392,7 @@ impl Render for BranchPicker {
                     .text_size(theme.ui_px(10.5))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_3)
-                    .child("Branches"),
+                    .child(tr!("branch_picker.branches")),
             )
             .child(if rows.is_empty() {
                 div()
@@ -401,7 +402,7 @@ impl Render for BranchPicker {
                     .justify_center()
                     .text_size(theme.ui_px(12.))
                     .text_color(theme.text_3)
-                    .child("No branches match")
+                    .child(tr!("branch_picker.no_branches_match"))
                     .into_any_element()
             } else {
                 list.into_any_element()
@@ -430,7 +431,7 @@ impl Render for BranchPicker {
                                 div()
                                     .text_size(theme.ui_px(12.))
                                     .text_color(theme.text_2)
-                                    .child("Create and checkout new branch…"),
+                                    .child(tr!("branch_picker.create_and_checkout_new_branch_2")),
                             ),
                     ),
             )

@@ -47,9 +47,7 @@ impl OrbitApp {
             }
             if this
                 .update(cx, |app, cx| {
-                    app.toast_info(format!(
-                        "pi v{latest} is available — updating in the background…"
-                    ));
+                    app.toast_info(tr!("pi_update.available_background", version = latest));
                     cx.notify();
                 })
                 .is_err()
@@ -77,9 +75,7 @@ impl OrbitApp {
             }
             if !quiet {
                 let _ = this.update(cx, |app, cx| {
-                    app.toast_info(format!(
-                        "pi v{latest} will update on the next launch — a run is in progress"
-                    ));
+                    app.toast_info(tr!("pi_update.available_next_launch", version = latest));
                     cx.notify();
                 });
                 return;
@@ -123,16 +119,16 @@ impl OrbitApp {
                 if let Some(version) = updated.filter(|v| pi_update::is_newer(v, installed)) {
                     // Keep the dependency board truthful about what is on disk.
                     self.deps = deps;
-                    self.toast_success(format!("pi updated to v{version} — new sessions use it"));
+                    self.toast_success(tr!("pi_update.updated", version = version));
                 }
                 // Otherwise pi reported no change (a stale release endpoint or
                 // a managed install pi left alone): nothing to announce.
             }
             Ok(output) => {
                 let detail = pi_update::failure_detail(&output.stdout, &output.stderr);
-                self.toast_error(format!("pi update failed: {detail}"));
+                self.toast_error(tr!("pi_update.failed", detail = detail));
             }
-            Err(err) => self.toast_error(format!("pi update failed: {err}")),
+            Err(err) => self.toast_error(tr!("pi_update.failed_detail", error = err)),
         }
         cx.notify();
     }

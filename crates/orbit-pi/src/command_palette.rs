@@ -17,9 +17,9 @@
 //! tall search row with a search glyph; sectioned rows (Sessions / Commands /
 //! Settings) with icon, label, inline detail, and a shortcut chip; a quiet
 //! footer naming the keys.
-//! FORM: Waku's `command_palette.rs` anatomy (sections, fuzzy scoring,
-//! wrap-around navigation, scrim layer, in-memory results) adapted to Orbit's
-//! entity + callback conventions. Opened with ⌘P or the sidebar Search row.
+//! FORM: a command-palette anatomy (sections, fuzzy scoring, wrap-around
+//! navigation, scrim layer, in-memory results) adapted to Orbit's entity +
+//! callback conventions. Opened with ⌘P or the sidebar Search row.
 //!
 //! Key handling reuses the existing `Picker` bindings (enter/escape/↑/↓),
 //! which are registered after the composer's and therefore win at the same
@@ -69,6 +69,7 @@ pub enum PaletteCommand {
     ToggleSidebar,
     ToggleSidePanel,
     ToggleTerminal,
+    ToggleProjectPanel,
     ReviewChanges,
     OpenGit,
     ChooseModel,
@@ -81,7 +82,7 @@ pub enum PaletteCommand {
 
 /// Everything the palette needs to build its items, captured by the app at
 /// open time. The palette never reaches back into app state — render reads
-/// only this in-memory snapshot (Waku's render-purity rule).
+/// only this in-memory snapshot (render-purity rule).
 pub struct PaletteSnapshot {
     pub sessions: Vec<SessionInfo>,
     /// The open session's path, so its row can be emphasized.
@@ -93,6 +94,7 @@ pub struct PaletteSnapshot {
     pub sidebar_visible: bool,
     pub side_panel_visible: bool,
     pub terminal_visible: bool,
+    pub project_panel_visible: bool,
     pub can_choose_model: bool,
     pub can_choose_thinking: bool,
 }
@@ -106,11 +108,11 @@ enum Section {
 }
 
 impl Section {
-    fn label(self) -> &'static str {
+    fn label(self) -> String {
         match self {
-            Self::Sessions => "Sessions",
-            Self::Commands => "Commands",
-            Self::Settings => "Settings",
+            Self::Sessions => tr!("command_palette.sessions"),
+            Self::Commands => tr!("command_palette.commands"),
+            Self::Settings => tr!("command_palette.settings"),
         }
     }
 }
@@ -156,7 +158,7 @@ impl PaletteItem {
             },
             icon,
             detail: match command {
-                PaletteCommand::OpenSettings(_) => Some("Settings".into()),
+                PaletteCommand::OpenSettings(_) => Some(tr!("command_palette.settings")),
                 _ => None,
             },
             shortcut,
@@ -226,7 +228,7 @@ impl CommandPalette {
     ) -> Self {
         let filter = cx.new(|cx| {
             ComposerInput::new(cx)
-                .with_placeholder("Search sessions, commands, settings…")
+                .with_placeholder_key("command_palette.search_sessions_commands_settings")
                 .with_key_context("Composer Picker")
         });
         Self {
@@ -285,7 +287,7 @@ impl CommandPalette {
                     crate::sessions::relative_time(session.modified)
                 );
                 if active {
-                    detail.push_str(" · Current");
+                    detail.push_str(&tr!("command_palette.current"));
                 }
                 PaletteItem {
                     section: Section::Sessions,
@@ -322,7 +324,7 @@ impl CommandPalette {
         };
         let mut items = vec![
             PaletteItem::command(
-                "New Session",
+                tr!("command_palette.new_session"),
                 "icons/plus.svg",
                 Some(crate::platform::shortcuts::NEW_SESSION),
                 PaletteCommand::NewSession,
@@ -330,7 +332,7 @@ impl CommandPalette {
                 next(),
             ),
             PaletteItem::command(
-                "Focus Composer",
+                tr!("command_palette.focus_composer"),
                 "icons/compose.svg",
                 None,
                 PaletteCommand::FocusComposer,
@@ -338,7 +340,7 @@ impl CommandPalette {
                 next(),
             ),
             PaletteItem::command(
-                "Refresh Sessions",
+                tr!("command_palette.refresh_sessions"),
                 "icons/refresh.svg",
                 Some(crate::platform::shortcuts::REFRESH),
                 PaletteCommand::RefreshSessions,
@@ -347,9 +349,9 @@ impl CommandPalette {
             ),
             PaletteItem::command(
                 if self.snapshot.sidebar_visible {
-                    "Hide Sidebar"
+                    tr!("command_palette.hide_sidebar")
                 } else {
-                    "Show Sidebar"
+                    tr!("command_palette.show_sidebar")
                 },
                 "icons/layout-left.svg",
                 None,
@@ -359,9 +361,9 @@ impl CommandPalette {
             ),
             PaletteItem::command(
                 if self.snapshot.side_panel_visible {
-                    "Hide Side Panel"
+                    tr!("command_palette.hide_side_panel")
                 } else {
-                    "Show Side Panel"
+                    tr!("command_palette.show_side_panel")
                 },
                 "icons/panel-right.svg",
                 None,
@@ -371,9 +373,9 @@ impl CommandPalette {
             ),
             PaletteItem::command(
                 if self.snapshot.terminal_visible {
-                    "Hide Terminal"
+                    tr!("command_palette.hide_terminal")
                 } else {
-                    "Show Terminal"
+                    tr!("command_palette.show_terminal")
                 },
                 "icons/terminal.svg",
                 Some(crate::platform::shortcuts::TERMINAL),
@@ -382,7 +384,19 @@ impl CommandPalette {
                 next(),
             ),
             PaletteItem::command(
-                "Review Changes",
+                if self.snapshot.project_panel_visible {
+                    tr!("explorer.hide")
+                } else {
+                    tr!("explorer.show")
+                },
+                "icons/folder.svg",
+                Some("⌘⇧E"),
+                PaletteCommand::ToggleProjectPanel,
+                "explorer files project panel tree folders workspace toggle show hide",
+                next(),
+            ),
+            PaletteItem::command(
+                tr!("command_palette.review_changes"),
                 "icons/file-diff.svg",
                 None,
                 PaletteCommand::ReviewChanges,
@@ -390,7 +404,7 @@ impl CommandPalette {
                 next(),
             ),
             PaletteItem::command(
-                "Open Git",
+                tr!("command_palette.open_git"),
                 "icons/git-commit.svg",
                 None,
                 PaletteCommand::OpenGit,
@@ -400,7 +414,7 @@ impl CommandPalette {
         ];
         if self.snapshot.can_choose_model {
             items.push(PaletteItem::command(
-                "Choose Model",
+                tr!("command_palette.choose_model"),
                 "icons/spark.svg",
                 None,
                 PaletteCommand::ChooseModel,
@@ -410,7 +424,7 @@ impl CommandPalette {
         }
         if self.snapshot.can_choose_thinking {
             items.push(PaletteItem::command(
-                "Choose Thinking Level",
+                tr!("command_palette.choose_thinking_level"),
                 "icons/thinking-medium.svg",
                 None,
                 PaletteCommand::ChooseThinking,
@@ -420,7 +434,7 @@ impl CommandPalette {
         }
         if self.snapshot.busy {
             items.push(PaletteItem::command(
-                "Abort Run",
+                tr!("command_palette.abort_run"),
                 "icons/stop.svg",
                 Some("Esc"),
                 PaletteCommand::AbortRun,
@@ -430,7 +444,7 @@ impl CommandPalette {
         }
         if self.snapshot.session_id.is_some() {
             items.push(PaletteItem::command(
-                "Copy Session ID",
+                tr!("command_palette.copy_session_id"),
                 "icons/copy.svg",
                 None,
                 PaletteCommand::CopySessionId,
@@ -438,7 +452,7 @@ impl CommandPalette {
                 next(),
             ));
             items.push(PaletteItem::command(
-                "Clone Session",
+                tr!("command_palette.clone_session"),
                 "icons/git-fork.svg",
                 None,
                 PaletteCommand::CloneSession,
@@ -450,55 +464,55 @@ impl CommandPalette {
             (
                 SettingsSection::General,
                 "icons/settings.svg",
-                "General",
+                tr!("settings.general"),
                 "settings preferences general language font",
             ),
             (
                 SettingsSection::Runtime,
                 "icons/server-stack.svg",
-                "Runtime",
+                tr!("settings.runtime"),
                 "settings preferences runtime process pi start stop restart",
             ),
             (
                 SettingsSection::Agent,
                 "icons/spark.svg",
-                "Agent",
+                tr!("settings.agent"),
                 "settings preferences agent steer follow-up compaction retry",
             ),
             (
                 SettingsSection::Skills,
                 "icons/magic-wand.svg",
-                "Skills",
+                tr!("settings.skills"),
                 "settings preferences skills skill.md instructions agent",
             ),
             (
                 SettingsSection::Plugins,
                 "icons/extensions.svg",
-                "Plugins",
+                tr!("settings.plugins"),
                 "settings preferences plugins extensions packages install npm git",
             ),
             (
                 SettingsSection::Models,
                 "icons/tag-01.svg",
-                "Models",
+                tr!("settings.models"),
                 "settings preferences models catalog favorites providers",
             ),
             (
                 SettingsSection::Appearance,
                 "icons/contrast.svg",
-                "Appearance",
+                tr!("settings.appearance"),
                 "settings preferences appearance theme light dark",
             ),
             (
                 SettingsSection::Providers,
                 "icons/cloud.svg",
-                "Providers",
+                tr!("settings.providers"),
                 "settings preferences providers models api",
             ),
             (
                 SettingsSection::About,
                 "icons/info.svg",
-                "About",
+                tr!("settings.about"),
                 "settings about version app",
             ),
         ] {
@@ -546,7 +560,7 @@ impl CommandPalette {
         rows
     }
 
-    /// Wrap-around ↑/↓ navigation (Waku parity), keeping the highlighted row
+    /// Wrap-around ↑/↓ navigation, keeping the highlighted row
     /// fully visible in the scroll window.
     fn step(&mut self, dir: isize, cx: &mut Context<Self>) {
         let rows = self.results(&self.last_filter);
@@ -691,13 +705,15 @@ impl Render for CommandPalette {
                             .text_size(theme.ui_px(13.))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.text_2)
-                            .child("No results"),
+                            .child(tr!("command_palette.no_results")),
                     )
                     .child(
                         div()
                             .text_size(theme.ui_px(12.))
                             .text_color(theme.text_3)
-                            .child("Try a session title, a command, or a setting"),
+                            .child(tr!(
+                                "command_palette.try_a_session_title_a_command_or_a_setting"
+                            )),
                     ),
             );
         } else {
@@ -787,9 +803,9 @@ impl Render for CommandPalette {
                     .border_color(theme.border)
                     .text_size(theme.ui_px(11.))
                     .text_color(theme.text_3)
-                    .child("↑↓ Navigate")
-                    .child("⏎ Select")
-                    .child("Esc Close"),
+                    .child(tr!("command_palette.navigate"))
+                    .child(tr!("command_palette.select"))
+                    .child(tr!("command_palette.esc_close")),
             );
 
         // ── scrim layer ──

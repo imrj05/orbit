@@ -68,8 +68,10 @@ pub struct Dependency {
     pub version: Option<String>,
     /// Shell command that installs it *on this host* (see [`install_hint`]).
     pub install_hint: &'static str,
-    /// One-line explanation of what it's used for.
-    pub detail: &'static str,
+    /// Translation key for the one-line explanation. Stored as a key (not the
+    /// translated text) so the setup page follows a language change without
+    /// re-probing the host.
+    pub detail_key: &'static str,
 }
 
 /// A read-only fact about the machine, shown under the dependency list.
@@ -79,7 +81,7 @@ pub struct Dependency {
 /// above have to work against, and they are the first thing to check when the
 /// app comes up with an empty sidebar.
 pub struct HostFact {
-    pub label: &'static str,
+    pub label: String,
     pub value: String,
     /// Trailing state, e.g. `not created yet`.
     pub note: Option<String>,
@@ -90,24 +92,9 @@ pub struct HostFact {
 /// Probe every known dependency, in display order (required first).
 pub fn check_dependencies() -> Vec<Dependency> {
     vec![
-        dependency(
-            "pi",
-            "pi",
-            true,
-            "The pi coding agent — Orbit's agent runtime.",
-        ),
-        dependency(
-            "node",
-            "Node.js",
-            true,
-            "Runtime that runs the pi CLI (pi is a Node script).",
-        ),
-        dependency(
-            "git",
-            "git",
-            false,
-            "Used for the branch picker and diff panel.",
-        ),
+        dependency("pi", "pi", true, "onboarding.pi_detail"),
+        dependency("node", "Node.js", true, "onboarding.node_detail"),
+        dependency("git", "git", false, "onboarding.git_detail"),
     ]
 }
 
@@ -116,16 +103,19 @@ pub fn check_dependencies() -> Vec<Dependency> {
 /// never runs a probe while rendering.
 pub fn host_facts(host: &crate::platform::Host) -> Vec<HostFact> {
     let platform = HostFact {
-        label: "Platform",
+        label: tr!("onboarding.platform"),
         value: format!("{} · {}", host.label, host.arch),
         alert: host.unsupported.is_some(),
         note: host.unsupported.clone(),
     };
     vec![
         platform,
-        path_fact("pi sessions", crate::sessions::sessions_dir()),
         path_fact(
-            "Orbit config",
+            tr!("onboarding.pi_sessions"),
+            crate::sessions::sessions_dir(),
+        ),
+        path_fact(
+            tr!("onboarding.orbit_config"),
             crate::platform::home_dir().join(".orbit-pi"),
         ),
     ]
@@ -133,8 +123,8 @@ pub fn host_facts(host: &crate::platform::Host) -> Vec<HostFact> {
 
 /// A row for a directory the app expects to exist. A missing one is a
 /// statement, not an error: pi and Orbit both create theirs on first use.
-fn path_fact(label: &'static str, path: PathBuf) -> HostFact {
-    let note = (!path.is_dir()).then(|| "not created yet".to_string());
+fn path_fact(label: String, path: PathBuf) -> HostFact {
+    let note = (!path.is_dir()).then(|| tr!("onboarding.not_created_yet"));
     HostFact {
         label,
         // Displayed with forward slashes on every platform — the store path is
@@ -160,7 +150,7 @@ fn dependency(
     bin: &'static str,
     name: &'static str,
     required: bool,
-    detail: &'static str,
+    detail_key: &'static str,
 ) -> Dependency {
     let found = locate(bin);
     let version = found.as_deref().and_then(version_of);
@@ -171,7 +161,7 @@ fn dependency(
         installed: found.is_some(),
         version,
         install_hint: install_hint(bin),
-        detail,
+        detail_key,
     }
 }
 
@@ -282,6 +272,10 @@ fn home_dir() -> Option<PathBuf> {
 pub(crate) fn version_of(bin: &Path) -> Option<String> {
     let mut command = Command::new(bin);
     command.arg("--version");
+    // pi's launcher is `#!/usr/bin/env node`, so the probe needs the same
+    // augmented PATH as spawns: a bundled `.app` PATH has no `node` dir, and
+    // the raw `env: node: ...` stderr would otherwise read as a version.
+    command.env("PATH", orbit_rpc::augmented_path(bin.parent()));
     orbit_rpc::hide_console(&mut command);
     let output = command.output().ok()?;
     let text = if output.stdout.is_empty() {

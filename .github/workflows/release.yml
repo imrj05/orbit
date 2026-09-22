@@ -351,6 +351,37 @@ jobs:
             echo "::warning::ORBIT_UPDATE_PRIVATE_KEY is not set; shipping without update feeds. Installed apps poll releases/latest/download and will see no update."
           fi
 
+      # Waku-style: the release body is this version's CHANGELOG.md section,
+      # and the same notes ship as an asset so they can be linked directly.
+      # Written first so the appcasts below can embed them as each item's
+      # <description>, which the in-app update modal renders as the changelog.
+      - name: Write release notes from CHANGELOG.md
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          if python3 scripts/release-notes.py CHANGELOG.md "$VERSION" > release-notes.md 2>/dev/null; then
+            echo "Notes for $VERSION taken from CHANGELOG.md"
+          else
+            echo "See CHANGELOG.md for details." > release-notes.md
+          fi
+          cp release-notes.md "artifacts/Orbit-Pi-$VERSION.md"
+          cat release-notes.md
+
+      # Seed the appcast merge with the previous release's feeds, so each
+      # release accumulates Version History (appcast.py keeps the newest 20
+      # items). Drafts are excluded from `latest`, so this fetches the last
+      # published release; the first release simply has nothing to seed.
+      - name: Seed the appcasts with the previous release
+        if: steps.signing.outputs.available == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download --repo "$GITHUB_REPOSITORY" \
+            --pattern 'appcast-*.xml' --dir artifacts --clobber \
+            || echo "No previous appcasts to seed"
+
       # Sign each artifact and attach the update feeds to the same release, so a
       # published release serves them at
       # https://github.com/<owner>/<repo>/releases/latest/download/appcast-*.xml
@@ -369,23 +400,8 @@ jobs:
             --tag "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --assets artifacts \
-            --out artifacts
-
-      # Waku-style: the release body is this version's CHANGELOG.md section,
-      # and the same notes ship as an asset so they can be linked directly.
-      - name: Write release notes from CHANGELOG.md
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
-        run: |
-          set -euo pipefail
-          mkdir -p artifacts
-          if python3 scripts/release-notes.py CHANGELOG.md "$VERSION" > release-notes.md 2>/dev/null; then
-            echo "Notes for $VERSION taken from CHANGELOG.md"
-          else
-            echo "See CHANGELOG.md for details." > release-notes.md
-          fi
-          cp release-notes.md "artifacts/Orbit-Pi-$VERSION.md"
-          cat release-notes.md
+            --out artifacts \
+            --notes-file release-notes.md
 
       - name: Create the release
         env:

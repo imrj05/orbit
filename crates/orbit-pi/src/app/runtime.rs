@@ -54,9 +54,9 @@ impl OrbitApp {
         cx: &mut Context<Self>,
     ) {
         if command == "parse" {
-            self.set_error(format!(
-                "Protocol error: {}",
-                error.unwrap_or("pi could not parse the request")
+            self.set_error(tr!(
+                "runtime.protocol_error",
+                error = error.unwrap_or(&tr!("runtime.parse_failed"))
             ));
             return;
         }
@@ -72,21 +72,26 @@ impl OrbitApp {
                 }
             }
         }
-        let detail = error.unwrap_or("pi reported an unspecified error");
-        self.set_error(format!("{}: {detail}", humanize_command(command)));
+        let fallback = tr!("runtime.unspecified_error");
+        let detail = error.unwrap_or(&fallback);
+        self.set_error(tr!(
+            "helpers.command_failed_detail",
+            label = humanize_command(command),
+            detail = detail
+        ));
     }
 
     /// Send a command to pi. Returns `false` when the write failed (or
     /// there is no process) so callers can keep the user's input intact.
     pub(super) fn send(&mut self, body: CommandBody, label: &str) -> bool {
         let Some(client) = self.client.as_ref() else {
-            self.toast_warning("pi is not running");
+            self.toast_warning(tr!("runtime.pi_not_running"));
             return false;
         };
         match client.send(body) {
             Ok(_) => true,
             Err(err) => {
-                self.set_error(format!("Failed to send {label}: {err}"));
+                self.set_error(tr!("runtime.send_failed", label = label, error = err));
                 false
             }
         }
@@ -130,6 +135,8 @@ impl OrbitApp {
     pub(super) fn drop_client(&mut self) {
         self.client = None;
         self.runtime = RuntimeStatus::default();
+        // Extension widgets belonged to the departing process.
+        self.extension_widgets.clear();
         // A login in flight dies with its process; remember the provider so
         // the next `auth.list` can reconcile a completion that happened while
         // Orbit was reconnecting.
@@ -236,7 +243,7 @@ impl OrbitApp {
             match effect {
                 AuthEffect::OpenUrl(url) => {
                     if let Err(err) = platform::open_url(&url) {
-                        self.toast_warning(format!("Could not open the browser: {err}"));
+                        self.toast_warning(tr!("runtime.browser_failed", error = err));
                     }
                 }
                 AuthEffect::CancelLogin(session_id) => {
@@ -248,7 +255,10 @@ impl OrbitApp {
                     self.provider_auth_dirty = false;
                     if let Some(session) = self.auth.login() {
                         if session.phase == LoginPhase::Succeeded {
-                            self.toast_success(format!("Signed in to {}", session.provider));
+                            self.toast_success(tr!(
+                                "runtime.signed_in_to",
+                                provider = session.provider
+                            ));
                         }
                     }
                     self.send(CommandBody::AuthList, "auth.list");
@@ -327,10 +337,10 @@ impl OrbitApp {
                 self.refresh_catalogs();
                 // Capability probes queue after the state request.
                 self.probe_auth();
-                self.toast_info("pi process started");
+                self.toast_info(tr!("runtime.pi_process_started"));
             }
             Err(err) => {
-                let message = format!("pi spawn failed: {err}");
+                let message = tr!("runtime.pi_spawn_failed", error = err);
                 self.client = None;
                 self.runtime.error = Some(message.clone());
                 self.toast_error(message);
@@ -346,7 +356,7 @@ impl OrbitApp {
         }
         self.drop_client();
         self.busy = false;
-        self.toast_info("pi process stopped");
+        self.toast_info(tr!("runtime.pi_process_stopped"));
         cx.notify();
     }
 

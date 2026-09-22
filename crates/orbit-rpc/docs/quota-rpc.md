@@ -136,7 +136,7 @@ approximated.
 | `fireworks` | spend | `/v1/accounts/{id}/billing/summary` |
 | `baseten` | spend | `/v1/billing/usage_summary` |
 | `google`, `google-vertex` | unsupported | no account quota API (AI Studio only) |
-| `ollama` | subscription | `/api/usage` (monthly credits) or authenticated `/settings` (legacy session/weekly) |
+| `ollama`, `ollama-cloud` | subscription | `/api/usage` (monthly credits) or authenticated `/settings` (legacy session/weekly) |
 | everything else | unsupported | — |
 
 `google`/`google-vertex` are registered explicitly so a connected account gets a
@@ -160,10 +160,15 @@ instead of throwing when the markup changes).
 The credential is explicit and comes from `auth.json` (never a browser cookie).
 The session lives under its own key so it can never shadow the `ollama` provider
 credential — pi treats any stored credential under a provider id as
-authoritative, so an unknown type there would break the local endpoint:
+authoritative, so an unknown type there would break the local endpoint. Both
+Ollama provider ids resolve the same account: the local endpoint's `ollama`
+and the `ollama-cloud` id registered by the third-party
+`pi-ollama-cloud-provider` package. The session is stored once and read for
+either id:
 
 ```json
 "ollama":               {"type":"api_key","key":"<real ollama.com key>"}
+"ollama-cloud":         {"type":"api_key","key":"<real ollama.com key>"}
 "ollama-cloud-session": {"type":"ollama_cloud_session","session":"__Secure-session=…"}
 ```
 

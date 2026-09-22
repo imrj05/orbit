@@ -9,12 +9,40 @@
 // diagnostics stay visible while developing.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+// Compile every `locales/<locale>.yml` into the binary and make `en` the
+// fallback for any key a translation is still missing. Must precede the
+// `tr!` macro and every `mod` below so child modules inherit the macros.
+rust_i18n::i18n!("locales", fallback = "en");
+
+/// Translate a key in the active locale, returning an owned `String`.
+///
+/// Prefer [`tr_cow!`] on hot render paths — a literal lookup borrows when the
+/// active locale is the fallback and only allocates for a real translation.
+macro_rules! tr {
+    ($key:expr) => {
+        $crate::i18n::translate($key)
+    };
+    ($key:expr, $($args:tt)*) => {
+        rust_i18n::t!($key, $($args)*).into_owned()
+    };
+}
+
+/// Borrowed translation for hot render paths (no interpolation). Kept for
+/// call sites that can borrow; plain `tr!` allocates and is the default.
+#[allow(unused_macros)]
+macro_rules! tr_cow {
+    ($key:literal) => {
+        rust_i18n::t!($key)
+    };
+}
+
 mod access;
 mod app;
 mod app_icon;
 mod ask;
 mod assets;
 mod auth;
+mod auto_title;
 mod branch_picker;
 mod bundled_extensions;
 mod checkpoint;
@@ -22,13 +50,18 @@ mod command_palette;
 mod commit_message;
 mod composer;
 mod context_meter;
+mod custom_ui;
 mod dialog;
 mod dither;
+mod explorer;
 mod favorites;
+mod gh;
 mod git;
+mod git_ops;
 mod git_panel;
 mod highlight;
 mod http;
+mod i18n;
 mod mentions;
 mod message_scroller;
 mod model_selector;
@@ -36,6 +69,7 @@ mod model_selector_match;
 mod notifications;
 mod onboarding;
 mod pi_update;
+mod pins;
 mod platform;
 mod plugins;
 mod providers;
@@ -53,6 +87,7 @@ mod transcript_view;
 mod updater;
 mod usage;
 mod watch;
+mod widgets;
 mod workspace_picker;
 
 use std::time::Duration;
@@ -90,6 +125,8 @@ actions!(
         Paste,
         Cut,
         Copy,
+        Undo,
+        Redo,
         AutocompleteAccept,
         Submit,
     ]
@@ -118,7 +155,16 @@ actions!(
         SearchNext,
         SearchPrev,
         SearchClose,
-        ToggleTerminal
+        ToggleTerminal,
+        ToggleProjectPanel,
+        CloseFiles,
+        CloseFileTab,
+        SaveFile,
+        GitTabChanges,
+        GitTabHistory,
+        GitTabGraph,
+        GitTabIssues,
+        GitTabPulls
     ]
 );
 
@@ -135,6 +181,10 @@ actions!(
 );
 // Terminal-panel actions (bound to the `Terminal` context on the grid).
 actions!(terminal_keys, [TerminalEscape]);
+
+// Custom-UI surface action (bound to the `CustomUi` context on the surface's
+// focus handle) so Escape reaches the component instead of aborting the run.
+actions!(custom_ui_keys, [CustomUiEscape]);
 
 // Composer "+" add-menu actions (bound to the `AddMenu` context, which
 // rides on the open menu's focus handle).
@@ -176,6 +226,16 @@ actions!(
     [AskNext, AskPrev, AskConfirm, AskSubmit, AskClose]
 );
 
+// Update-modal action (bound to the `UpdateDialog` context on the modal's
+// focus handle) so Escape dismisses the modal instead of aborting the run.
+actions!(update_dialog_keys, [UpdateDialogClose]);
+
+// Explorer inline name-prompt actions (bound to the `ExplorerEntry` context on
+// the prompt's text field, which also carries `Composer`). Registered after the
+// Composer bindings so Enter confirms the name instead of submitting the
+// composer and Escape cancels instead of aborting the run.
+actions!(explorer_entry_keys, [ExplorerEntryConfirm, ExplorerEntryCancel]);
+
 fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("secondary-q", Quit, None),
@@ -204,6 +264,8 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-v", Paste, Some("Composer")),
         KeyBinding::new("secondary-c", Copy, Some("Composer")),
         KeyBinding::new("secondary-x", Cut, Some("Composer")),
+        KeyBinding::new("cmd-z", Undo, Some("Composer")),
+        KeyBinding::new("cmd-shift-z", Redo, Some("Composer")),
         KeyBinding::new("enter", Submit, Some("Composer")),
         KeyBinding::new("secondary-enter", Submit, Some("Composer")),
         // Steer: inject the composer text into the running turn instead of
@@ -216,16 +278,59 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("shift-enter", Newline, Some("Composer")),
         KeyBinding::new("up", Up, Some("Composer")),
         KeyBinding::new("down", Down, Some("Composer")),
+        // The Explorer's code editor reuses the composer's text actions but
+        // keeps its own context: Enter inserts a newline (it must not submit a
+        // chat message), and cmd-s writes the file.
+        KeyBinding::new("backspace", Backspace, Some("Editor")),
+        KeyBinding::new("delete", Delete, Some("Editor")),
+        KeyBinding::new("left", Left, Some("Editor")),
+        KeyBinding::new("right", Right, Some("Editor")),
+        KeyBinding::new("shift-left", SelectLeft, Some("Editor")),
+        KeyBinding::new("shift-right", SelectRight, Some("Editor")),
+        KeyBinding::new("cmd-left", LineLeft, Some("Editor")),
+        KeyBinding::new("cmd-right", LineRight, Some("Editor")),
+        KeyBinding::new("cmd-shift-left", SelectLineLeft, Some("Editor")),
+        KeyBinding::new("cmd-shift-right", SelectLineRight, Some("Editor")),
+        KeyBinding::new("alt-left", WordLeft, Some("Editor")),
+        KeyBinding::new("alt-right", WordRight, Some("Editor")),
+        KeyBinding::new("alt-shift-left", SelectWordLeft, Some("Editor")),
+        KeyBinding::new("alt-shift-right", SelectWordRight, Some("Editor")),
+        KeyBinding::new("cmd-a", SelectAll, Some("Editor")),
+        KeyBinding::new("home", Home, Some("Editor")),
+        KeyBinding::new("end", End, Some("Editor")),
+        KeyBinding::new("cmd-v", Paste, Some("Editor")),
+        KeyBinding::new("cmd-c", Copy, Some("Editor")),
+        KeyBinding::new("cmd-x", Cut, Some("Editor")),
+        KeyBinding::new("cmd-z", Undo, Some("Editor")),
+        KeyBinding::new("cmd-shift-z", Redo, Some("Editor")),
+        KeyBinding::new("up", Up, Some("Editor")),
+        KeyBinding::new("down", Down, Some("Editor")),
+        KeyBinding::new("enter", Newline, Some("Editor")),
+        KeyBinding::new("shift-enter", Newline, Some("Editor")),
+        KeyBinding::new("cmd-s", SaveFile, Some("Editor")),
         KeyBinding::new("secondary-n", NewSession, None),
         KeyBinding::new("secondary-r", RefreshSessions, None),
         KeyBinding::new("secondary-,", OpenSettings, None),
         // The Usage page is a destination: the primary modifier + U matches
         // the sidebar row.
         KeyBinding::new("secondary-u", ToggleUsage, None),
+        // Git page tabs: cmd-1..cmd-5 switch tabs while the page is open; the
+        // handler is a no-op elsewhere, so they never surprise a chat session.
+        KeyBinding::new("cmd-1", GitTabChanges, None),
+        KeyBinding::new("cmd-2", GitTabHistory, None),
+        KeyBinding::new("cmd-3", GitTabGraph, None),
+        KeyBinding::new("cmd-4", GitTabIssues, None),
+        KeyBinding::new("cmd-5", GitTabPulls, None),
         // Bottom terminal panel: the primary modifier + J is the workbench
         // convention for the panel toggle (and stays live while the shell has
         // focus, since app actions are not scoped to a key context).
         KeyBinding::new("secondary-j", ToggleTerminal, None),
+        // Left project panel (Explorer): cmd-shift-e is the convention.
+        KeyBinding::new("cmd-shift-e", ToggleProjectPanel, None),
+        // On the Files surface, cmd-w closes the active file tab (the whole
+        // surface when it was the last tab); cmd-shift-w closes the surface.
+        KeyBinding::new("cmd-w", CloseFileTab, Some("Files")),
+        KeyBinding::new("cmd-shift-w", CloseFiles, Some("Files")),
         KeyBinding::new("secondary-p", ToggleCommandPalette, None),
         KeyBinding::new("secondary-period", AbortRun, None),
         // Transcript accelerators (work regardless of focus):
@@ -286,6 +391,9 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("enter", AskSubmit, Some("AskInput")),
         KeyBinding::new("up", AskPrev, Some("AskPanel")),
         KeyBinding::new("down", AskNext, Some("AskPanel")),
+        // Update modal. Registered after the Composer bindings so Escape
+        // dismisses the modal instead of aborting the run.
+        KeyBinding::new("escape", UpdateDialogClose, Some("UpdateDialog")),
         // In-transcript find (⌘F). The find field carries `Composer Search`,
         // so editing keys stay live; these bindings are registered after the
         // composer ones and win the same-depth tie, keeping Enter from
@@ -300,6 +408,15 @@ fn bind_keys(cx: &mut App) {
         // an equal-depth tie by registration order, so this wins while the
         // grid owns focus.
         KeyBinding::new("escape", TerminalEscape, Some("Terminal")),
+        // Custom-UI surface: Escape must reach the component (which cancels
+        // itself), but the global `escape`-to-`AbortRun` binding is always
+        // enabled, so the `CustomUi` context re-binds it and forwards ESC.
+        KeyBinding::new("escape", CustomUiEscape, Some("CustomUi")),
+        // Explorer inline name prompt. The field carries `Composer
+        // ExplorerEntry`, so caret/clipboard keys stay live; these win the
+        // same-depth tie against `Submit`/`AbortRun` (registered later).
+        KeyBinding::new("enter", ExplorerEntryConfirm, Some("ExplorerEntry")),
+        KeyBinding::new("escape", ExplorerEntryCancel, Some("ExplorerEntry")),
     ]);
 }
 
@@ -312,51 +429,62 @@ fn bind_keys(cx: &mut App) {
 /// submenu — there is no selector for the standard Hide/Hide Others/Show All
 /// or Window items — so this is deliberately the smallest set that matches the
 /// real commands the app can perform.
-fn app_menus() -> Vec<Menu> {
+///
+/// Rebuilt (see `set_app_menus`) whenever the interface language changes, so
+/// the labels always read in the active locale.
+pub(crate) fn app_menus() -> Vec<Menu> {
+    let app = tr!("app.name");
     vec![
         Menu {
-            name: "Orbit".into(),
+            name: app.clone().into(),
             items: vec![
-                MenuItem::action("About Orbit Pi", OpenAbout),
-                MenuItem::action("Check for Updates…", CheckForUpdates),
+                MenuItem::action(tr!("menu.about", app = app.clone()), OpenAbout),
+                MenuItem::action(tr!("menu.check_for_updates"), CheckForUpdates),
                 MenuItem::separator(),
-                MenuItem::action("Settings…", OpenSettings),
+                MenuItem::action(tr!("menu.settings"), OpenSettings),
                 MenuItem::separator(),
-                MenuItem::os_submenu("Services", SystemMenuType::Services),
+                MenuItem::os_submenu(tr!("menu.services"), SystemMenuType::Services),
                 MenuItem::separator(),
-                MenuItem::action("Quit Orbit Pi", Quit),
+                MenuItem::action(tr!("menu.quit", app = app.clone()), Quit),
             ],
         },
         Menu {
-            name: "File".into(),
+            name: tr!("menu.file").into(),
             items: vec![
-                MenuItem::action("New Task", NewSession),
-                MenuItem::action("Refresh Sessions", RefreshSessions),
+                MenuItem::action(tr!("menu.new_task"), NewSession),
+                MenuItem::action(tr!("menu.refresh_sessions"), RefreshSessions),
             ],
         },
         // Editing keys ride the `Composer` context, so these enable while a
         // text field owns focus and grey out elsewhere.
         Menu {
-            name: "Edit".into(),
+            name: tr!("menu.edit").into(),
             items: vec![
-                MenuItem::action("Cut", Cut),
-                MenuItem::action("Copy", Copy),
-                MenuItem::action("Paste", Paste),
-                MenuItem::action("Select All", SelectAll),
+                MenuItem::action(tr!("menu.cut"), Cut),
+                MenuItem::action(tr!("menu.copy"), Copy),
+                MenuItem::action(tr!("menu.paste"), Paste),
+                MenuItem::action(tr!("menu.select_all"), SelectAll),
             ],
         },
         Menu {
-            name: "View".into(),
+            name: tr!("menu.view").into(),
             items: vec![
-                MenuItem::action("Command Palette…", ToggleCommandPalette),
-                MenuItem::action("Find in Transcript…", ToggleSearch),
+                MenuItem::action(tr!("menu.command_palette"), ToggleCommandPalette),
+                MenuItem::action(tr!("menu.find_in_transcript"), ToggleSearch),
                 MenuItem::separator(),
-                MenuItem::action("Toggle Terminal", ToggleTerminal),
+                MenuItem::action(tr!("menu.toggle_terminal"), ToggleTerminal),
+                MenuItem::action(tr!("explorer.toggle"), ToggleProjectPanel),
                 MenuItem::separator(),
-                MenuItem::action("Usage", ToggleUsage),
+                MenuItem::action(tr!("menu.usage"), ToggleUsage),
             ],
         },
     ]
+}
+
+/// Install the native menu bar for the active locale. Called once at startup
+/// and again whenever the interface language changes.
+pub(crate) fn set_app_menus(cx: &mut App) {
+    cx.set_menus(app_menus());
 }
 
 fn main() {
@@ -377,10 +505,13 @@ fn main() {
         // application menu "Orbit" instead of the executable (`orbit-pi`).
         platform::set_process_name("Orbit");
         bind_keys(cx);
+        theme::init(cx);
+        // Adopt the persisted interface language before the first paint (and
+        // before the menu bar below reads its labels).
+        i18n::set_language(theme::get(cx).ui.language);
         // Install the native menu bar after the keymap exists so each item
         // picks up its key equivalent.
-        cx.set_menus(app_menus());
-        theme::init(cx);
+        set_app_menus(cx);
         // Arm the background updater before the app reads its global. Debug
         // builds, a keyless build, and a bare `cargo run` binary all leave it
         // dormant. The launch check runs on its own thread.
@@ -393,7 +524,7 @@ fn main() {
         app_icon::set_dock_icon();
 
         // Open maximized: full width of the screen, filling the visible
-        // frame (Waku-style workbench). The computed bounds are the
+        // frame. The computed bounds are the
         // restore size macOS returns to when the window is un-zoomed,
         // sized relative to the display so it always fits even on
         // small/scaled screens.
@@ -418,6 +549,7 @@ fn main() {
                     ..Default::default()
                 },
                 |window, cx| {
+                    theme::watch_system_appearance(window, cx);
                     let app: Entity<OrbitApp> = cx.new(OrbitApp::new);
 
                     // Focus the composer so typing works immediately; track

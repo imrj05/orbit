@@ -1,6 +1,6 @@
 //! Orbit's bundled pi extensions.
 //!
-//! Orbit ships two small pi extensions under `contrib/` and loads them with
+//! Orbit ships three small pi extensions under `contrib/` and loads them with
 //! `pi --extension <path>` on every session process it spawns:
 //!
 //! - **quota bridge** (`contrib/orbit-quota-extension/`) — fetches each
@@ -9,6 +9,10 @@
 //! - **guard** (`contrib/orbit-guard-extension/`) — intercepts `tool_call` and
 //!   confirms the mutating calls the active access mode does not
 //!   auto-approve (see [`crate::access`]).
+//! - **auto-title** (`contrib/orbit-title-extension/`) — after the first turn
+//!   settles, asks a model for a short session title and sets it through
+//!   `pi.setSessionName` (see [`crate::auto_title`]).
+//!
 //!
 //! Nothing is installed and no settings file is touched: each extension is
 //! materialized under `~/.orbit-pi/` and rewritten only when its contents
@@ -21,10 +25,11 @@ use std::path::{Path, PathBuf};
 use orbit_rpc::PiClient;
 
 const QUOTA_INDEX_JS: &str = include_str!("../../../contrib/orbit-quota-extension/index.js");
-const QUOTA_ADAPTERS_JS: &str =
-    include_str!("../../../contrib/orbit-quota-extension/adapters.js");
+const QUOTA_ADAPTERS_JS: &str = include_str!("../../../contrib/orbit-quota-extension/adapters.js");
 const GUARD_INDEX_JS: &str = include_str!("../../../contrib/orbit-guard-extension/index.js");
 const GUARD_POLICY_JS: &str = include_str!("../../../contrib/orbit-guard-extension/policy.js");
+const TITLE_INDEX_JS: &str = include_str!("../../../contrib/orbit-title-extension/index.js");
+const TITLE_HELPERS_JS: &str = include_str!("../../../contrib/orbit-title-extension/title.js");
 
 /// The bundled extensions materialized on disk, kept for the process lifetime.
 #[derive(Default)]
@@ -35,6 +40,9 @@ pub(crate) struct BundledExtensions {
     /// The guard's `index.js`; `None` when it could not be written (the app
     /// then runs unguarded and the access-mode chip is honest about it).
     guard: Option<PathBuf>,
+    /// The auto-title extension's `index.js`; `None` when it could not be
+    /// written (sessions then keep their first-message title).
+    title: Option<PathBuf>,
 }
 
 impl BundledExtensions {
@@ -44,6 +52,7 @@ impl BundledExtensions {
         Self {
             quota: install_quota_bridge(),
             guard: install_guard(),
+            title: install_title_extension(),
         }
     }
 
@@ -60,7 +69,7 @@ impl BundledExtensions {
     /// Spawn a pi session process with every available bundled extension
     /// loaded. Every session spawn in the app goes through here.
     pub(crate) fn spawn(&self, workspace: &Path) -> anyhow::Result<PiClient> {
-        let extensions: Vec<PathBuf> = [&self.quota, &self.guard]
+        let extensions: Vec<PathBuf> = [&self.quota, &self.guard, &self.title]
             .into_iter()
             .flatten()
             .cloned()
@@ -102,10 +111,15 @@ fn install_guard() -> Option<PathBuf> {
     install_extension(
         &home_dir()?,
         "guard-extension",
-        &[
-            ("index.js", GUARD_INDEX_JS),
-            ("policy.js", GUARD_POLICY_JS),
-        ],
+        &[("index.js", GUARD_INDEX_JS), ("policy.js", GUARD_POLICY_JS)],
+    )
+}
+
+fn install_title_extension() -> Option<PathBuf> {
+    install_extension(
+        &home_dir()?,
+        "title-extension",
+        &[("index.js", TITLE_INDEX_JS), ("title.js", TITLE_HELPERS_JS)],
     )
 }
 
@@ -167,6 +181,25 @@ mod tests {
         assert!(entry.with_file_name("helper.js").exists());
         // A directory named without an `index.js` yields no entry point.
         assert!(install_extension(&dir, "no-entry", &[("other.js", "x")]).is_none());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn title_extension_ships_its_entry_and_helpers() {
+        // The embedded sources are real JS entry points, and the entry's
+        // sibling `title.js` import resolves next to it.
+        assert!(TITLE_INDEX_JS.contains("agent_settled"));
+        assert!(TITLE_INDEX_JS.contains("./title.js"));
+        assert!(TITLE_HELPERS_JS.contains("buildTitlePrompt"));
+        let dir = scratch_dir();
+        let entry = install_extension(
+            &dir,
+            "title-extension",
+            &[("index.js", TITLE_INDEX_JS), ("title.js", TITLE_HELPERS_JS)],
+        )
+        .expect("title extension installs");
+        assert!(entry.ends_with("title-extension/index.js"));
+        assert!(entry.with_file_name("title.js").exists());
         fs::remove_dir_all(&dir).ok();
     }
 }

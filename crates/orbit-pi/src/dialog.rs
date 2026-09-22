@@ -462,7 +462,7 @@ impl Dialog {
                 .pb(px(14.))
                 .text_size(theme.ui_px(13.))
                 .text_color(theme.text_3)
-                .child("No options were provided.")
+                .child(tr!("dialog.no_options_were_provided"))
                 .into_any_element();
         }
         let list_h = (options.len() as f32 * OPTION_H).min(LIST_MAX_H);
@@ -719,8 +719,11 @@ mod tests {
 
     #[test]
     fn plain_select_and_confirm_are_not_approvals() {
-        let plain =
-            ApprovalRequest::from_event("id".into(), "select", &json!({"title": "Pick", "options": []}));
+        let plain = ApprovalRequest::from_event(
+            "id".into(),
+            "select",
+            &json!({"title": "Pick", "options": []}),
+        );
         assert!(plain.is_none(), "an unmarked select is a normal dialog");
         let confirm =
             ApprovalRequest::from_event("id".into(), "confirm", &json!({"title": "Sure?"}));

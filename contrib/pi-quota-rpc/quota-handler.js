@@ -665,6 +665,8 @@ async function orbitQuotaGoogle() {
 // `ollama` pointing at 127.0.0.1). Accepted auth.json shapes:
 //
 //   "ollama"                {"type":"api_key","key":"<real key>"}          → current model
+//   "ollama-cloud"          {"type":"api_key","key":"<real key>"}          → current model
+//                           (the third-party pi-ollama-cloud-provider id)
 //   "ollama-cloud-session"  {"type":"ollama_cloud_session","session":"<cookie>"} → legacy page
 //
 // The session lives under its own key, never the `ollama` provider id: pi's
@@ -927,6 +929,7 @@ const orbitQuotaAdapters = {
   google: orbitQuotaGoogle,
   "google-vertex": orbitQuotaGoogle,
   ollama: orbitQuotaOllama,
+  "ollama-cloud": orbitQuotaOllama,
   "moonshotai": orbitQuotaMoonshot,
   "moonshotai-cn": orbitQuotaMoonshot,
   "minimax": orbitQuotaMiniMax,
@@ -1032,6 +1035,14 @@ async function orbitQuotaHandle(command) {
     : providers
         .map((provider) => provider.id)
         .filter((providerId) => session.modelRuntime.hasConfiguredAuth(providerId));
+  // A cookie-only Ollama Cloud setup stores the session under its own
+  // non-provider key: pi reports no configured credential for it, so the
+  // session itself still targets the adapter.
+  if (!command.provider) {
+    const auth = await orbitQuotaReadAuth();
+    const hasOllama = targets.some((t) => t === "ollama" || t === "ollama-cloud");
+    if (!hasOllama && auth[OLLAMA_SESSION_KEY] != null) targets.push("ollama");
+  }
   const reports = [];
   for (const providerId of targets) {
     reports.push(await orbitQuotaReport(providerId));

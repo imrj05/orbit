@@ -48,13 +48,19 @@ fn read_custom_at(path: &Path) -> Result<Vec<CustomProvider>, String> {
     let raw = match std::fs::read_to_string(path) {
         Ok(raw) => raw,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(err) => return Err(format!("Could not read {}: {err}", path.display())),
+        Err(err) => {
+            return Err(tr!(
+                "errors.could_not_read",
+                path = path.display().to_string(),
+                error = err
+            ))
+        }
     };
     if raw.trim().is_empty() {
         return Ok(Vec::new());
     }
-    let root: Value = serde_json::from_str(&raw)
-        .map_err(|err| format!("models.json is not valid JSON: {err}"))?;
+    let root: Value =
+        serde_json::from_str(&raw).map_err(|err| tr!("errors.models_json_invalid", error = err))?;
     let Some(providers) = root.get("providers").and_then(Value::as_object) else {
         return Ok(Vec::new());
     };
@@ -137,7 +143,7 @@ fn write_provider_at(
 ) -> Result<(), String> {
     let id = id.trim();
     if id.is_empty() {
-        return Err("Provider id is required.".into());
+        return Err(tr!("settings.provider_id_required"));
     }
     let mut root = read_root_at(path)?;
     let providers = root
@@ -147,7 +153,7 @@ fn write_provider_at(
         .or_insert_with(|| Value::Object(Map::new()));
     let providers = providers
         .as_object_mut()
-        .ok_or_else(|| "models.json has a non-object `providers` value.".to_string())?;
+        .ok_or_else(|| tr!("providers.models_json_providers_not_object"))?;
 
     let existing = providers.get(id).and_then(Value::as_object).cloned();
     let mut entry = existing.clone().unwrap_or_default();
@@ -239,15 +245,21 @@ fn read_root_at(path: &Path) -> Result<Value, String> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             return Ok(serde_json::json!({ "providers": {} }));
         }
-        Err(err) => return Err(format!("Could not read {}: {err}", path.display())),
+        Err(err) => {
+            return Err(tr!(
+                "errors.could_not_read",
+                path = path.display().to_string(),
+                error = err
+            ))
+        }
     };
     if raw.trim().is_empty() {
         return Ok(serde_json::json!({ "providers": {} }));
     }
     match serde_json::from_str::<Value>(&raw) {
         Ok(value @ Value::Object(_)) => Ok(value),
-        Ok(_) => Err("models.json must contain a JSON object.".into()),
-        Err(err) => Err(format!("models.json is not valid JSON: {err}")),
+        Ok(_) => Err(tr!("providers.models_json_not_object")),
+        Err(err) => Err(tr!("errors.models_json_invalid", error = err)),
     }
 }
 
@@ -255,17 +267,31 @@ fn read_root_at(path: &Path) -> Result<Value, String> {
 /// mid-write can never leave a truncated config behind.
 fn write_root_at(path: &Path, root: &Value) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|err| format!("Could not create {}: {err}", parent.display()))?;
+        std::fs::create_dir_all(parent).map_err(|err| {
+            tr!(
+                "errors.could_not_create",
+                path = parent.display().to_string(),
+                error = err
+            )
+        })?;
     }
     let pretty = serde_json::to_string_pretty(root)
-        .map_err(|err| format!("Could not serialize models.json: {err}"))?;
+        .map_err(|err| tr!("errors.could_not_serialize_models_json", error = err))?;
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, format!("{pretty}\n"))
-        .map_err(|err| format!("Could not write {}: {err}", tmp.display()))?;
+    std::fs::write(&tmp, format!("{pretty}\n")).map_err(|err| {
+        tr!(
+            "errors.could_not_write",
+            path = tmp.display().to_string(),
+            error = err
+        )
+    })?;
     std::fs::rename(&tmp, path).map_err(|err| {
         let _ = std::fs::remove_file(&tmp);
-        format!("Could not replace {}: {err}", path.display())
+        tr!(
+            "errors.could_not_replace",
+            path = path.display().to_string(),
+            error = err
+        )
     })
 }
 
@@ -283,6 +309,14 @@ pub(crate) fn auth_path() -> PathBuf {
 /// would shadow that provider's own (placeholder) key and make pi report
 /// `Provider is not configured: ollama`.
 const OLLAMA_SESSION_KEY: &str = "ollama-cloud-session";
+
+/// The provider ids Ollama Cloud usage attaches to: the local Ollama
+/// endpoint's id, and the `ollama-cloud` id used by the third-party
+/// `pi-ollama-cloud-provider` package. Orbit treats both as the same account
+/// for the session editor, sign-out, and quota display.
+pub(crate) fn is_ollama_cloud_provider(id: &str) -> bool {
+    id == "ollama" || id == "ollama-cloud"
+}
 
 /// A provider pi ships with, independent of whether it is authenticated.
 /// Mirrors `builtinProviders()` in `@earendil-works/pi-ai` plus the docs'
@@ -391,6 +425,29 @@ fn pi_ai_data_dir() -> Option<PathBuf> {
 /// from the curated table; `""` when there is nothing to add.
 pub(crate) fn provider_note(id: &str) -> &'static str {
     builtin(id).map(|provider| provider.note).unwrap_or("")
+}
+
+/// Translate a provider note for display. The curated table stores English
+/// copy; this maps each note to its localized string.
+pub(crate) fn localize_note(note: &str) -> String {
+    match note {
+        "" => String::new(),
+        "ChatGPT Plus/Pro subscription." => tr!("providers.note_chatgpt_codex"),
+        "Also needs AZURE_OPENAI_BASE_URL or AZURE_OPENAI_RESOURCE_NAME." => {
+            tr!("providers.note_azure_openai")
+        }
+        "Or Application Default Credentials plus GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION." => {
+            tr!("providers.note_google_vertex")
+        }
+        "Or ambient AWS credentials (profile, IAM keys, SSO)." => {
+            tr!("providers.note_amazon_bedrock")
+        }
+        "Also needs CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_GATEWAY_ID." => {
+            tr!("providers.note_cloudflare_gateway")
+        }
+        "Also needs CLOUDFLARE_ACCOUNT_ID." => tr!("providers.note_cloudflare_workers_ai"),
+        other => other.to_string(),
+    }
 }
 
 /// Provider metadata introspected from pi-ai — authoritative, so Orbit does
@@ -584,13 +641,19 @@ fn read_auth_at(path: &Path) -> Result<HashMap<String, ProviderAuth>, String> {
     let raw = match std::fs::read_to_string(path) {
         Ok(raw) => raw,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
-        Err(err) => return Err(format!("Could not read {}: {err}", path.display())),
+        Err(err) => {
+            return Err(tr!(
+                "errors.could_not_read",
+                path = path.display().to_string(),
+                error = err
+            ))
+        }
     };
     if raw.trim().is_empty() {
         return Ok(HashMap::new());
     }
     let root: Value =
-        serde_json::from_str(&raw).map_err(|err| format!("auth.json is not valid JSON: {err}"))?;
+        serde_json::from_str(&raw).map_err(|err| tr!("errors.auth_json_invalid", error = err))?;
     let Some(entries) = root.as_object() else {
         return Ok(HashMap::new());
     };
@@ -614,16 +677,16 @@ fn read_auth_at(path: &Path) -> Result<HashMap<String, ProviderAuth>, String> {
         };
         out.insert(id.clone(), ProviderAuth { kind });
     }
-    // The session cookie lives outside the provider credential; surface it as
-    // `ollama` so the card shows it and offers Disconnect. A real credential
-    // stored under `ollama` wins.
-    if has_ollama_session && !out.contains_key("ollama") {
-        out.insert(
-            "ollama".to_string(),
-            ProviderAuth {
+    // The session cookie lives outside the provider credential; surface it
+    // under both Ollama ids so whichever card exists (the local `ollama`
+    // endpoint or the third-party `ollama-cloud` provider) shows it and
+    // offers Disconnect. A real credential under either id wins.
+    if has_ollama_session {
+        for id in ["ollama", "ollama-cloud"] {
+            out.entry(id.to_string()).or_insert(ProviderAuth {
                 kind: AuthKind::OllamaSession,
-            },
-        );
+            });
+        }
     }
     Ok(out)
 }
@@ -638,15 +701,15 @@ fn write_api_key_at(path: &Path, id: &str, key: &str) -> Result<(), String> {
     let id = id.trim();
     let key = key.trim();
     if id.is_empty() {
-        return Err("Provider id is required.".into());
+        return Err(tr!("settings.provider_id_required"));
     }
     if key.is_empty() {
-        return Err("API key is required.".into());
+        return Err(tr!("providers.api_key_required"));
     }
     let mut root = read_auth_root_at(path)?;
     let entries = root
         .as_object_mut()
-        .ok_or_else(|| "auth.json must contain a JSON object.".to_string())?;
+        .ok_or_else(|| tr!("providers.auth_json_not_object"))?;
     let mut entry = Map::new();
     entry.insert("type".into(), Value::String("api_key".into()));
     entry.insert("key".into(), Value::String(key.to_string()));
@@ -677,7 +740,7 @@ pub(crate) fn write_ollama_cloud_session(session: &str) -> Result<(), String> {
 fn write_ollama_cloud_session_at(path: &Path, session: &str) -> Result<(), String> {
     let session = session.trim();
     if session.is_empty() {
-        return Err("A session cookie is required.".into());
+        return Err(tr!("providers.session_cookie_required"));
     }
     // A pasted value must look like a cookie header, not an API key. Reject
     // anything without a `name=value` pair so a stray key can't be stored as
@@ -688,7 +751,7 @@ fn write_ollama_cloud_session_at(path: &Path, session: &str) -> Result<(), Strin
     let mut root = read_auth_root_at(path)?;
     let entries = root
         .as_object_mut()
-        .ok_or_else(|| "auth.json must contain a JSON object.".to_string())?;
+        .ok_or_else(|| tr!("providers.auth_json_not_object"))?;
     // Repair a cookie written by an older build under the provider id; leaving
     // it there keeps the local endpoint broken.
     let legacy_session = entries
@@ -736,29 +799,45 @@ fn read_auth_root_at(path: &Path) -> Result<Value, String> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             return Ok(serde_json::json!({}));
         }
-        Err(err) => return Err(format!("Could not read {}: {err}", path.display())),
+        Err(err) => {
+            return Err(tr!(
+                "errors.could_not_read",
+                path = path.display().to_string(),
+                error = err
+            ))
+        }
     };
     if raw.trim().is_empty() {
         return Ok(serde_json::json!({}));
     }
     match serde_json::from_str::<Value>(&raw) {
         Ok(value @ Value::Object(_)) => Ok(value),
-        Ok(_) => Err("auth.json must contain a JSON object.".into()),
-        Err(err) => Err(format!("auth.json is not valid JSON: {err}")),
+        Ok(_) => Err(tr!("providers.auth_json_not_object")),
+        Err(err) => Err(tr!("errors.auth_json_invalid", error = err)),
     }
 }
 
 /// Atomic write with owner-only permissions (matching pi's own `0600`).
 fn write_json_secure(path: &Path, root: &Value) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|err| format!("Could not create {}: {err}", parent.display()))?;
+        std::fs::create_dir_all(parent).map_err(|err| {
+            tr!(
+                "errors.could_not_create",
+                path = parent.display().to_string(),
+                error = err
+            )
+        })?;
     }
     let pretty = serde_json::to_string_pretty(root)
-        .map_err(|err| format!("Could not serialize auth.json: {err}"))?;
+        .map_err(|err| tr!("errors.could_not_serialize_auth_json", error = err))?;
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, format!("{pretty}\n"))
-        .map_err(|err| format!("Could not write {}: {err}", tmp.display()))?;
+    std::fs::write(&tmp, format!("{pretty}\n")).map_err(|err| {
+        tr!(
+            "errors.could_not_write",
+            path = tmp.display().to_string(),
+            error = err
+        )
+    })?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -766,7 +845,11 @@ fn write_json_secure(path: &Path, root: &Value) -> Result<(), String> {
     }
     std::fs::rename(&tmp, path).map_err(|err| {
         let _ = std::fs::remove_file(&tmp);
-        format!("Could not replace {}: {err}", path.display())
+        tr!(
+            "errors.could_not_replace",
+            path = path.display().to_string(),
+            error = err
+        )
     })
 }
 
@@ -788,6 +871,7 @@ pub(crate) fn provider_display_name(id: &str) -> String {
         "minimax-cn" => "MiniMax (CN)",
         "nvidia" => "NVIDIA",
         "ollama" => "Ollama",
+        "ollama-cloud" => "Ollama Cloud",
         "github-copilot" => "GitHub Copilot",
         "cloudflare-ai-gateway" => "Cloudflare AI Gateway",
         "cloudflare-workers-ai" => "Cloudflare Workers AI",
@@ -1002,9 +1086,10 @@ mod tests {
             session.get("session").unwrap(),
             "__Secure-session=abc123; cf_clearance=xyz"
         );
-        // The UI surfaces it as an `ollama` credential, distinct from a key.
+        // The UI surfaces it under both Ollama ids, distinct from a key.
         let auth = read_auth_at(&path).unwrap();
         assert_eq!(auth["ollama"].kind, AuthKind::OllamaSession);
+        assert_eq!(auth["ollama-cloud"].kind, AuthKind::OllamaSession);
         // The unrelated key survives the write.
         assert!(root.get("anthropic").is_some());
 

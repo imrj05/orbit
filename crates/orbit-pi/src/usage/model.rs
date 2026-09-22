@@ -99,18 +99,18 @@ impl RangePreset {
         Self::All,
     ];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            Self::Today => "Today",
-            Self::Yesterday => "Yesterday",
-            Self::Last7 => "Last 7 days",
-            Self::Last14 => "Last 14 days",
-            Self::Last30 => "Last 30 days",
-            Self::ThisWeek => "This week",
-            Self::ThisMonth => "This month",
-            Self::PreviousMonth => "Previous month",
-            Self::Custom => "Custom…",
-            Self::All => "All time",
+            Self::Today => tr!("usage.range_today"),
+            Self::Yesterday => tr!("usage.range_yesterday"),
+            Self::Last7 => tr!("usage.range_last7"),
+            Self::Last14 => tr!("usage.range_last14"),
+            Self::Last30 => tr!("usage.range_last30"),
+            Self::ThisWeek => tr!("usage.range_this_week"),
+            Self::ThisMonth => tr!("usage.range_this_month"),
+            Self::PreviousMonth => tr!("usage.range_previous_month"),
+            Self::Custom => tr!("usage.range_custom"),
+            Self::All => tr!("usage.range_all_time"),
         }
     }
 
@@ -145,7 +145,17 @@ pub enum Granularity {
 }
 
 impl Granularity {
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
+        match self {
+            Self::Hour => tr!("usage.granularity_hour"),
+            Self::Day => tr!("usage.granularity_day"),
+            Self::Week => tr!("usage.granularity_week"),
+            Self::Month => tr!("usage.granularity_month"),
+        }
+    }
+
+    /// Stable identifier for export and search — never localized.
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Hour => "hour",
             Self::Day => "day",
@@ -434,10 +444,18 @@ pub enum ErrorKind {
 }
 
 impl ErrorKind {
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            Self::Provider => "Provider",
-            Self::Tool => "Tool",
+            Self::Provider => tr!("usage.error_kind_provider"),
+            Self::Tool => tr!("usage.error_kind_tool"),
+        }
+    }
+
+    /// Stable identifier for sorting and search — never localized.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Provider => "provider",
+            Self::Tool => "tool",
         }
     }
 }
@@ -519,16 +537,30 @@ impl ToolClass {
         Self::Other,
     ];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            Self::Terminal => "Terminal",
-            Self::Read => "Read",
-            Self::Edit => "Edit",
-            Self::Search => "Search",
-            Self::Web => "Web",
-            Self::Plan => "Plan",
-            Self::Ask => "Ask",
-            Self::Other => "Other",
+            Self::Terminal => tr!("usage.class_terminal"),
+            Self::Read => tr!("usage.class_read"),
+            Self::Edit => tr!("usage.class_edit"),
+            Self::Search => tr!("usage.class_search"),
+            Self::Web => tr!("usage.class_web"),
+            Self::Plan => tr!("usage.class_plan"),
+            Self::Ask => tr!("usage.class_ask"),
+            Self::Other => tr!("usage.class_other"),
+        }
+    }
+
+    /// Stable identifier for search and export — never localized.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Terminal => "terminal",
+            Self::Read => "read",
+            Self::Edit => "edit",
+            Self::Search => "search",
+            Self::Web => "web",
+            Self::Plan => "plan",
+            Self::Ask => "ask",
+            Self::Other => "other",
         }
     }
 
@@ -743,6 +775,29 @@ impl UsageFilter {
         self.matches_scope(index, r.session, r.model)
     }
 
+    /// The calendar's match: the same scope and errors/cache tests as
+    /// [`Self::matches_request`], but against a caller-supplied window instead
+    /// of the date range. The activity calendar is a fixed trailing year, so it
+    /// does not read the range — and never the focus bucket, which lives inside
+    /// the range.
+    pub fn matches_request_window(
+        &self,
+        index: &UsageIndex,
+        r: &UsageRecord,
+        window: &DateRange,
+    ) -> bool {
+        if !window.contains(r.ts_ms) {
+            return false;
+        }
+        if self.errors_only && !r.outcome.is_error() {
+            return false;
+        }
+        if self.cached_only && r.tokens.cache_read == 0 {
+            return false;
+        }
+        self.matches_scope(index, r.session, r.model)
+    }
+
     pub fn matches_tool(&self, index: &UsageIndex, t: &ToolRun) -> bool {
         if !self.matches_time(t.ts_ms) {
             return false;
@@ -923,7 +978,7 @@ pub fn stamp_label(ms: i64, granularity: Granularity) -> String {
     match granularity {
         Granularity::Hour => dt.format("%b %-d, %H:%M").to_string(),
         Granularity::Day => dt.format("%b %-d, %Y").to_string(),
-        Granularity::Week => format!("Week of {}", dt.format("%b %-d, %Y")),
+        Granularity::Week => tr!("usage.week_of", date = dt.format("%b %-d, %Y").to_string()),
         Granularity::Month => dt.format("%B %Y").to_string(),
     }
 }
