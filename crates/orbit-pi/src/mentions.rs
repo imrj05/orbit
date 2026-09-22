@@ -1,4 +1,4 @@
-//! Composer autocomplete — Waku-style `/` command and `@` file mentions.
+//! Composer autocomplete — `/` command and `@` file mentions.
 //!
 //! Typing `/` at the very start of the composer (with the caret inside that
 //! first word) opens a slash-command menu fed by pi's `get_commands`; typing
@@ -43,7 +43,7 @@ pub struct Trigger {
 ///   between it and the caret — `@query` is the token.
 pub fn detect_trigger(content: &str, cursor: usize) -> Option<Trigger> {
     let cursor = cursor.min(content.len());
-    // Slash only opens at the very start of the message (Waku parity).
+    // Slash only opens at the very start of the message.
     if let Some(rest) = content.strip_prefix('/') {
         let token_end = 1 + rest.find(char::is_whitespace).unwrap_or(rest.len());
         if cursor <= token_end {

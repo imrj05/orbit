@@ -1,29 +1,36 @@
 # Explorer — project panel + file viewer
 
 Design for Orbit's file-and-folder explorer: a Zed-style project panel for
-understanding a workspace's structure, plus a read-only viewer for seeing file
-contents. Approved direction: **right dock + full-page Files surface**,
-**read-only browse + view** for the first pass, **gitignore-aware** walking with
-a hidden-files toggle.
+understanding a workspace's structure, plus an editor for reading and changing
+file contents. Approved direction: **right dock + full-page Files surface**,
+**gitignore-aware** walking with a hidden-files toggle, and **debounced
+autosave** for text files.
 
-Status: **implemented** (phases 1–4). Later ideas (quick-open, directory
-folding, sticky scroll, file operations) remain open — see [Rollout](#rollout).
+Status: **implemented** (phases 1–6). Text and code files open in an editable,
+syntax-highlighted buffer that writes back to disk; Markdown, images, binary,
+and oversized files stay read-only. Files and folders can be created, renamed,
+and deleted (to the Trash) from the panel. Later ideas (quick-open, directory
+folding, sticky scroll) remain open — see [Rollout](#rollout).
 
 ## Goals
 
 - Browse the active workspace as a folder tree — expand/collapse, folder and
   file glyphs, git status badges, filter, hidden-files toggle.
-- Open a file and read it: syntax highlighting for code, rendered Markdown for
-  `.md`, line numbers, with honest handling of binary and oversized files.
+- Open a file, read it, and edit it: line-numbered editing with syntax
+  highlighting for code, rendered Markdown for `.md` (with an Edit/Preview
+toggle), and honest handling of
+  binary, oversized, and non-UTF-8 files.
+- Save edits without ceremony: debounced autosave (plus `cmd-s`), atomic
+  writes, dirty markers, and a visible save status.
 - Stay inside Orbit's hard rules: GPUI only, no I/O on a frame, virtualized
   lists, paint-only syntax highlighting, every user-facing string in
   `locales/en.yml`.
 - Leave room for Zed-parity later (quick-open, git decorations, file
   operations) without re-architecting.
 
-Non-goals for this pass: editing, saving, file operations (new/rename/delete),
-multi-select, drag-and-drop, multi-worktree. The panel is a viewer, not an
-editor — and it must not pretend otherwise.
+Non-goals for this pass: multi-select, drag-and-drop, multi-worktree. Editing
+covers **valid-UTF-8 text files only**: truncated and non-UTF-8 files stay
+read-only so a save can never destroy bytes the viewer never held.
 
 ## Where it lives
 
@@ -60,7 +67,7 @@ explorer/
   walk.rs     off-thread snapshot: gitignore-aware tree + git-status map
   tree.rs     DirNode/Row model, expand/collapse, filter, visible-row flatten
   panel.rs    ProjectPanel entity — virtualized list, keyboard nav, context menu
-  viewer.rs   FileViewer entity — off-thread read, highlight/markdown paint
+  viewer.rs   FileViewer entity — off-thread read + write, editor, highlight
 ```
 
 ```
@@ -71,7 +78,11 @@ TreeIndex { nodes, status badges, truncated }
 [Row]  →  panel.rs  (GPUI list(), fixed row height)
 file path
     ↓  viewer::load     (background thread; size + binary guards)
-FileContent { lines, lang, mode }  →  viewer.rs (StyledText, line numbers)
+FileContent { text, lines, lang, mode }  →  viewer.rs
+    ↓  ComposerInput (gutter, no wrap, syntax runs)
+edits
+    ↓  viewer::save_file (background thread; temp file + rename)
+workspace dir
 ```
 
 ## Data layer
@@ -130,7 +141,7 @@ Git badges come from `git::status_rows` (already off-thread), reduced to a
 renamed). Files inherit an "inside a changed dir" dot on their parent directory,
 like Zed.
 
-### Viewer (`viewer.rs`)
+### Viewer / editor (`viewer.rs`)
 
 ```rust
 pub enum Mode { Code { lang: Lang }, Markdown, Text, Image, Binary, TooLarge }
@@ -138,24 +149,63 @@ pub enum Mode { Code { lang: Lang }, Markdown, Text, Image, Binary, TooLarge }
 pub struct FileContent {
     pub path: PathBuf,
     pub mode: Mode,
-    pub lines: Vec<String>,      // empty for Image/Binary/TooLarge
+    pub text: String,        // decoded bytes, verbatim (seeds the editor)
+    pub lines: Vec<String>,  // read-only rendering (truncated / lossy text)
     pub tokens: Option<Vec<Vec<Token>>>, // paint-only, computed off-thread
     pub bytes: u64,
     pub truncated: bool,
+    pub lossy: bool,         // invalid UTF-8; never editable
 }
 ```
 
 - **Guards before reading:** reject directories, cap at `MAX_FILE_BYTES`
   (e.g. 2 MiB) → `TooLarge` with the size shown; NUL-byte sniff → `Binary` with
   a hex/“cannot preview” notice. Never allocate a multi-GB string.
-- **Code:** `highlight::tokenize` per line at load time (background thread),
-  painted with the same `StyledText`/`TextRun` path `sidepane.rs` uses for diff
-  rows, so highlighting is paint-only. Line numbers in a fixed gutter.
-- **Markdown:** `transcript_view::render_markdown_document` (the Skills page
-  already renders `SKILL.md` this way).
-- **Images:** reuse the existing `gpui::Image` loader used by attachments.
-- **Read-only** is stated in the UI (breadcrumb + a lock/read-only hint), not
-  implied.
+- **Editable modes:** `Mode::Code` and `Mode::Text` open in a `ComposerInput`
+  configured with a line-number gutter, no wrapping, and fill-height. The
+  buffer is seeded from `FileContent::text`; edits are tracked by the input's
+  monotonic `revision` counter.
+- **Editing:** `ComposerInput` provides undo/redo (`cmd-z` / `cmd-shift-z`,
+  coalescing a typing run into one step) as well as the text actions.
+- **Autosave:** the first edit marks the tab dirty and arms a 500 ms debounce.
+  A flush grabs the buffer text on the UI thread and writes it off-thread with
+  `save_file` (sibling temp file + rename, direct-write fallback). `cmd-s`
+  flushes immediately; closing a tab or the surface flushes every dirty tab.
+  The toolbar shows `Saved / Unsaved / Saving… / Save failed`.
+- **External changes:** the workspace watcher still drives `reload`. A reload
+  keeps the old content on screen (no spinner flash), then compares disk text
+  to the last read/written text. A tab with unsaved edits keeps its buffer; if
+  the disk text really changed underneath it the toolbar flags *Changed on
+  disk*, otherwise our own save echoing back through the watcher is ignored.
+- **Read-only modes:** Markdown opens in the editor and can be toggled to the
+  rendered preview, which reads the *live* buffer so edits show immediately
+  (rendering uses `transcript_view::render_markdown_document`; images reuse the
+  `gpui::Image` loader). Binary/oversized/truncated/non-UTF-8 files render a
+  notice or a read-only highlighted body.
+- **Syntax highlighting:** live in the editor via the same `highlight::tokenize`
+  lexer the transcript and read-only viewer use; Markdown has no lexer and
+  stays rendered.
+
+### File operations (`ops.rs` + `panel.rs`)
+
+`ops.rs` is pure and synchronous — the app runs it on the background executor,
+so no I/O touches a frame. Names are validated before anything reaches the
+filesystem (empty, `.`/`..`, separators, control characters, and over-long
+names are rejected with a locale keyed message), `create_*` use
+`create_new`/`create_dir` so they never clobber, and `rename` refuses an
+existing destination.
+
+The panel owns the inline prompts: **New File** / **New Folder** from the
+header or a directory's context menu, **Rename** from any row's context menu
+(edited in place), and **Delete** via a confirmation card. The panel sends a
+[`FileOpRequest`] (workspace-relative) to the app, which resolves the absolute
+path, performs the operation, then reconciles the tree and any open Files tabs
+(`FileViewer::reconcile_rename` / `close_under`). Rename and delete are refused
+while a tab under the target has unsaved edits, so an operation can never race
+the autosave or discard a buffer. Delete moves to the OS Trash on macOS
+(`platform::trash_path`, `NSFileManager`) and falls back to a permanent delete
+elsewhere — the confirmation is worded from `TRASH_IS_RECOVERABLE`, so it never
+promises a restore the platform cannot deliver.
 
 ## UI
 
@@ -170,19 +220,26 @@ pub struct FileContent {
   `enter` opens (or toggles a dir), `cmd-→`/`cmd-←` expand/collapse all.
   Focus handle carries a `ProjectPanel` key context.
 - Footer/status: entry count, "truncated" note when the cap hit.
-- Context menu: Open, Open in editor (existing `open_in` apps), Reveal in
-  Finder, Copy Path, Copy Relative Path, Toggle Hidden Files. Read-only — no
-  destructive rows in this pass.
+- Context menu: opened at the pointer. A directory offers Expand/Collapse,
+  New File, New Folder, Rename, Delete, Open in Default App, Reveal, and Copy
+  Path / Relative Path; a file offers Open, Rename, Delete, Open in Default
+  App, Reveal, and Copy Path / Relative Path.
 
 ### FileViewer (Files page)
 
-- Tab strip: open paths, active tab, close button per tab, dirty markers are
-  `None` (read-only). Middle-click/`cmd-w` closes.
-- Toolbar: breadcrumb of the path, file size, line count, “Read-only” hint,
-  Open in editor, Reveal.
-- Body: virtualized `list()` of lines with a gutter; Markdown renders in a
-  centered column like the Skills page; Binary/TooLarge render a centered
-  notice.
+- Tab strip: open paths, active tab, close button per tab, and an accent dot
+  for unsaved edits. `cmd-w` closes the active tab (the whole surface when it
+  was the last tab); `cmd-shift-w` closes the surface. Closing flushes first.
+- Focus: opening, closing, or switching a tab moves focus to the new active
+  editor; when that tab is a preview or read-only body the surface itself takes
+  focus, so the `Files` shortcuts (`cmd-w`, `cmd-s`) keep working instead of
+  being dropped with the removed editor.
+- Toolbar: breadcrumb of the path, file size, line count, and a status chip —
+  autosave state for editable files, a lock/read-only hint otherwise.
+- Body: editable `ComposerInput` (gutter, no wrap, fill) for code/text and
+  for Markdown source (toggle to preview); the preview renders in a centered
+  column like the Skills page; Binary/TooLarge render a centered notice;
+  truncated/lossy text renders the read-only highlighted list.
 - Empty state: “Select a file to view” with the tree’s keyboard hint.
 
 ## Integration points
@@ -201,15 +258,18 @@ pub struct FileContent {
 
 ## Performance rules
 
-- Snapshot, git status, and file reads are background-executor jobs; the UI
-  only ever indexes in-memory state.
+- Snapshot, git status, file reads, **and file writes** are
+  background-executor jobs; the UI only ever indexes in-memory state.
 - Rows are a flat `Vec` rendered through `list()`; frame cost is independent of
   tree size.
-- Tokens are computed once per file (off-thread at load) and stored with the
-  content; rendering only indexes them.
+- The editor re-tokenizes the buffer per paint through the memoized
+  `highlight::tokenize_cached`; the same cache keys the read-only viewer and
+  transcript blocks.
+- Autosave is debounced (500 ms) and coalesced through a save epoch, so typing
+  never queues a write per keystroke.
 - The `WorkspaceWatcher` already debounces and filters; reuse it rather than
-  starting a second watch. A dirty signal marks the tree and the open file
-  stale; both reload off-thread.
+  starting a second watch. A dirty signal re-reads the active file; the
+  completion distinguishes our own save from an external change.
 
 ## Risks
 
@@ -217,8 +277,13 @@ pub struct FileContent {
   bound.
 - **Symlinks** → never followed.
 - **Non-UTF-8 / binary / huge files** → explicit `Binary` / `TooLarge` modes
-  with the real size, never a lossy dump.
-- **Watch storms** → debounced watcher, filtered paths (existing behaviour).
+  with the real size, never a lossy dump. Lossy and truncated text is
+  read-only, so a save cannot corrupt it.
+- **Watch storms** → debounced watcher, filtered paths (existing behaviour);
+  our own writes echo back and are recognised by comparing disk text to the
+  last written text.
+- **Crash mid-write** → saves go to a sibling temp file and rename, so the
+  real file is never left half-written.
 - **GPUI pre-1.0** → only `list()`/`uniform_list`, `ComposerInput`, and the
   existing icon/highlight helpers; no new GPUI surface area.
 - **`ignore` dependency** → already in the lock file; documented reason.
@@ -229,7 +294,10 @@ pub struct FileContent {
   pruning, empty-dir retention, badge mapping.
 - `walk.rs`: `.gitignore` respected, hidden toggle, entry cap/truncation,
   symlinks not followed.
-- `viewer.rs`: binary sniff, size cap, UTF-8-lossy decode, language mapping.
+- `viewer.rs`: binary sniff, size cap, UTF-8-lossy decode, language mapping,
+  editability gating (lossy/truncated stay read-only), atomic save round-trip.
+- `composer.rs`: geometry tests cover the gutter/fill/syntax editor path
+  (paint + gutter-aware hit-testing) alongside the existing caret tests.
 - i18n completeness (`cargo test -p orbit-pi i18n`).
 - `cargo build --workspace` clean (zero warnings); `cargo test --workspace`.
 
@@ -243,5 +311,11 @@ pub struct FileContent {
    highlight/markdown/image/binary modes.
 4. ✅ **Integration** — command palette, `cmd-shift-e` / `cmd-w`, watcher-driven
    refresh, open-in-editor/reveal, i18n keys, docs.
-5. ⬜ **Later (out of scope)** — quick-open (`cmd-p`), directory folding, sticky
-   scroll, git-diff-vs-head on file select, then file operations.
+5. ✅ **Editing** — `ComposerInput` syntax/gutter/wrap/fill modes + per-tab
+   editors + debounced autosave (`cmd-s`) + dirty/conflict status.
+6. ✅ **File operations** — New File / New Folder / Rename (inline name prompts)
+   and Delete (confirmed, moved to the Trash) from the panel header and row
+   context menu; `ops.rs` validates names and never clobbers; the app
+   reconciles open Files tabs and refuses while a buffer is dirty.
+7. ⬜ **Later (out of scope)** — quick-open (`cmd-p`), directory folding, sticky
+   scroll, git-diff-vs-head on file select.

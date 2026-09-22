@@ -1,4 +1,5 @@
 use super::*;
+use crate::theme::ThemeId;
 use gpui::size;
 
 fn solid_image(width: u32, height: u32) -> std::sync::Arc<gpui::RenderImage> {

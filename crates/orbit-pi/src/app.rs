@@ -72,7 +72,7 @@ use crate::sessions::{self, SessionInfo};
 use crate::sidepane::{SidePane, SidePaneResize};
 use crate::skills::Skill;
 use crate::terminal::{TerminalPanel, TerminalResize};
-use crate::theme::{self, Theme, ThemeId, ThemeMode};
+use crate::theme::{self, Theme, ThemeMode};
 use crate::toast;
 use crate::transcript::{self, Transcript};
 use crate::usage::page::UsagePage;
@@ -866,9 +866,17 @@ impl OrbitApp {
         let app_weak = cx.entity().downgrade();
         let project_panel = cx.new(|cx| {
             crate::explorer::ProjectPanel::new(
-                Rc::new(move |path, display, cx: &mut App| {
-                    let _ =
-                        app_weak.update(cx, |app, cx| app.open_file_in_viewer(path, display, cx));
+                Rc::new({
+                    let app_weak = app_weak.clone();
+                    move |path, display, cx: &mut App| {
+                        let _ = app_weak.update(cx, |app, cx| {
+                            app.open_file_in_viewer(path, display, cx)
+                        });
+                    }
+                }),
+                Rc::new(move |request, cx: &mut App| {
+                    let _ = app_weak
+                        .update(cx, |app, cx| app.on_file_op(request, cx));
                 }),
                 cx,
             )
@@ -1080,7 +1088,16 @@ impl OrbitApp {
                 .map(|updater| updater.history())
                 .unwrap_or_default(),
             updater_history_open: false,
-            updater_dialog: None,
+            updater_dialog: std::env::var_os("ORBIT_OPEN_UPDATE_DIALOG")
+                .is_some_and(|value| value == "1")
+                .then(|| UpdateDialog::Available {
+                    version: "0.0.11".into(),
+                    notes: Some(
+                        "### Contributors\n\n- **Dumitru Moloșnic** ([#11](https://github.com/imrj05/orbit/pull/11)) — light,\n  dark, and system appearance modes; transcript table sizing, streaming\n  scroll-position, and multiline command-preview fixes."
+                            .into(),
+                    ),
+                    from_check: false,
+                }),
             updater_dialog_focus: cx.focus_handle(),
             updater_dialog_focus_pending: false,
             updater_button_hovered: false,
@@ -1702,7 +1719,7 @@ enum RuntimeState {
 /// Which dropdown is open on the settings surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SettingsSelect {
-    Theme,
+    Theme(ThemeMode),
     Language,
     UiFontSize,
     TerminalFont,

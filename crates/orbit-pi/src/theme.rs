@@ -2,7 +2,8 @@
 //!
 //! Colors are semantic roles (backgrounds, text, borders, transcript
 //! surfaces) rather than raw steps, so every paint site reads from one
-//! place. A [`ThemeId`] names the Orbit dark or light palette. The UI
+//! place. A [`ThemeId`] names a palette; [`AppearancePrefs`] chooses which
+//! light or dark palette to use, optionally following the system. The UI
 //! face is Zed's bundled IBM Plex Sans (`.ZedSans`); code surfaces use
 //! Zed's Lilex (`.ZedMono`).
 
@@ -13,6 +14,9 @@ use gpui::{hsla, point, px, rgb, App, BoxShadow, Global, Hsla, Pixels, SharedStr
 use serde_json::Value;
 
 use crate::highlight::TokenClass;
+
+mod appearance;
+pub use appearance::*;
 
 /// Dark or light appearance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +30,8 @@ pub enum ThemeMode {
 pub enum ThemeId {
     Orbit,
     OrbitLight,
+    OrbitPaper,
+    OrbitContrast,
     /// Ported Zed community themes (all dark).
     Vague,
     Batsignal,
@@ -58,14 +64,26 @@ pub enum ThemeId {
     OpenChamber,
     Vesper,
     Vitesse,
+    /// Curated light counterparts of the editor themes above.
+    CatppuccinLatte,
+    SolarizedLight,
+    OneLight,
+    NordLight,
+    GruvboxLight,
+    FlexokiLight,
+    TokyoNightLight,
+    AyuLight,
 }
 
 impl ThemeId {
-    /// Selectable themes, in the order shown in the settings dropdown
-    /// (the two Orbit palettes first, then the ported/curated dark themes).
-    pub const ALL: [ThemeId; 32] = [
+    /// Selectable themes, in the order shown in the settings dropdown: the
+    /// Orbit family first, then the ported/curated dark themes, then their
+    /// curated light counterparts.
+    pub const ALL: [ThemeId; 42] = [
         Self::Orbit,
         Self::OrbitLight,
+        Self::OrbitPaper,
+        Self::OrbitContrast,
         Self::Vague,
         Self::Batsignal,
         Self::Ashwood,
@@ -96,6 +114,14 @@ impl ThemeId {
         Self::TokyoNight,
         Self::Vesper,
         Self::Vitesse,
+        Self::AyuLight,
+        Self::CatppuccinLatte,
+        Self::FlexokiLight,
+        Self::GruvboxLight,
+        Self::NordLight,
+        Self::OneLight,
+        Self::SolarizedLight,
+        Self::TokyoNightLight,
     ];
 
     /// Persisted key; also accepts legacy theme names (mapped to Orbit).
@@ -103,6 +129,8 @@ impl ThemeId {
         match self {
             Self::Orbit => "orbit",
             Self::OrbitLight => "orbit-light",
+            Self::OrbitPaper => "orbit-paper",
+            Self::OrbitContrast => "orbit-contrast",
             Self::Vague => "vague",
             Self::Batsignal => "batsignal-dark",
             Self::Ashwood => "ashwood",
@@ -133,6 +161,14 @@ impl ThemeId {
             Self::OpenChamber => "open-chamber",
             Self::Vesper => "vesper",
             Self::Vitesse => "vitesse",
+            Self::CatppuccinLatte => "catppuccin-latte",
+            Self::SolarizedLight => "solarized-light",
+            Self::OneLight => "one-light",
+            Self::NordLight => "nord-light",
+            Self::GruvboxLight => "gruvbox-light",
+            Self::FlexokiLight => "flexoki-light",
+            Self::TokyoNightLight => "tokyo-night-light",
+            Self::AyuLight => "ayu-light",
         }
     }
 
@@ -149,8 +185,10 @@ impl ThemeId {
             | "zedokai-filter-spectrum"
             | "zedokai-darker-filter-spectrum"
             | "flexoki-dark" => Some(Self::Orbit),
-            // Current key, plus legacy light theme names → Orbit Light.
-            "orbit-light" | "light" | "one-light" | "flexoki-light" => Some(Self::OrbitLight),
+            // Current key, plus the legacy generic light aliases → Orbit Light.
+            "orbit-light" | "light" => Some(Self::OrbitLight),
+            "orbit-paper" => Some(Self::OrbitPaper),
+            "orbit-contrast" | "orbit-high-contrast" => Some(Self::OrbitContrast),
             // Ported Zed community themes (aliases included).
             "vague" => Some(Self::Vague),
             "batsignal-dark" | "batsignal" => Some(Self::Batsignal),
@@ -183,6 +221,17 @@ impl ThemeId {
             "open-chamber" | "openchamber" => Some(Self::OpenChamber),
             "vesper" => Some(Self::Vesper),
             "vitesse" => Some(Self::Vitesse),
+            // Curated light counterparts (plus common aliases).
+            "catppuccin-latte" | "catppuccin-light" | "latte" => Some(Self::CatppuccinLatte),
+            "solarized-light" => Some(Self::SolarizedLight),
+            "one-light" | "one-light-pro" => Some(Self::OneLight),
+            "nord-light" | "nord-snow-storm" => Some(Self::NordLight),
+            "gruvbox-light" => Some(Self::GruvboxLight),
+            "flexoki-light" => Some(Self::FlexokiLight),
+            "tokyo-night-light" | "tokyonight-light" | "tokyo-night-day" => {
+                Some(Self::TokyoNightLight)
+            }
+            "ayu-light" => Some(Self::AyuLight),
             _ => None,
         }
     }
@@ -192,6 +241,8 @@ impl ThemeId {
         match self {
             Self::Orbit => "Orbit",
             Self::OrbitLight => "Orbit Light",
+            Self::OrbitPaper => "Orbit Paper",
+            Self::OrbitContrast => "Orbit Contrast",
             Self::Vague => "Vague",
             Self::Batsignal => "Batsignal (Dark)",
             Self::Ashwood => "Ashwood",
@@ -222,12 +273,30 @@ impl ThemeId {
             Self::OpenChamber => "OpenChamber",
             Self::Vesper => "Vesper",
             Self::Vitesse => "Vitesse",
+            Self::CatppuccinLatte => "Catppuccin Latte",
+            Self::SolarizedLight => "Solarized Light",
+            Self::OneLight => "One Light",
+            Self::NordLight => "Nord Light",
+            Self::GruvboxLight => "Gruvbox Light",
+            Self::FlexokiLight => "Flexoki Light",
+            Self::TokyoNightLight => "Tokyonight Light",
+            Self::AyuLight => "Ayu Light",
         }
     }
 
     pub fn appearance(self) -> ThemeMode {
         match self {
-            Self::OrbitLight => ThemeMode::Light,
+            Self::OrbitLight
+            | Self::OrbitPaper
+            | Self::OrbitContrast
+            | Self::CatppuccinLatte
+            | Self::SolarizedLight
+            | Self::OneLight
+            | Self::NordLight
+            | Self::GruvboxLight
+            | Self::FlexokiLight
+            | Self::TokyoNightLight
+            | Self::AyuLight => ThemeMode::Light,
             Self::Orbit
             | Self::Vague
             | Self::Batsignal
@@ -261,21 +330,6 @@ impl ThemeId {
             | Self::Vitesse => ThemeMode::Dark,
         }
     }
-
-    fn load() -> Self {
-        std::fs::read_to_string(persist_path())
-            .ok()
-            .and_then(|raw| Self::parse(&raw))
-            .unwrap_or(Self::Orbit)
-    }
-
-    fn persist(self) {
-        let path = persist_path();
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::write(path, self.as_str());
-    }
 }
 
 /// Semantic palette. Copy so list closures and hover styles can capture it
@@ -284,7 +338,7 @@ impl ThemeId {
 pub struct Theme {
     pub theme_id: ThemeId,
     pub mode: ThemeMode,
-    /// UI customization (Waku's General settings): language + font sizes.
+    /// UI customization (General settings): language + font sizes.
     pub ui: UiPrefs,
     pub bg_main: Hsla,
     pub bg_sidebar: Hsla,
@@ -310,6 +364,10 @@ pub struct Theme {
     pub send_bg: Hsla,
     pub send_bg_hover: Hsla,
     pub send_fg: Hsla,
+    /// Knob of a toggle switch. Kept light in both modes so it reads on the
+    /// accent (on) and the raised track (off); `text` is dark in light mode,
+    /// which painted a black dot on the light track.
+    pub toggle_knob: Hsla,
     pub overlay: Hsla,
     pub overlay_strong: Hsla,
     pub border_strong: Hsla,
@@ -347,19 +405,19 @@ impl Global for Theme {}
 /// `Language` name stays stable for the settings surface.
 pub use crate::i18n::AppLanguage as Language;
 
-/// Waku General-settings customization: language, type sizes, and density.
-/// Every size is px with the Waku defaults (UI 14, terminal / editor 13);
+/// General-settings customization: language, type sizes, and density.
+/// Every size is px with the built-in defaults (UI 14, terminal / editor 13);
 /// only spacing density remains a percentage.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct UiPrefs {
     pub language: Language,
-    /// Interface text size, px (Waku's "UI font size").
+    /// Interface text size, px ("UI font size").
     pub ui_font_size: f32,
-    /// Terminal / tool-output size, px (Waku's "Terminal Font Size").
+    /// Terminal / tool-output size, px ("Terminal Font Size").
     pub terminal_font_size: f32,
-    /// Editor / diff / code-block size, px (Waku's "Editor Font Size").
+    /// Editor / diff / code-block size, px ("Editor Font Size").
     pub editor_font_size: f32,
-    /// Global spacing multiplier, percent (Waku's "Spacing Density").
+    /// Global spacing multiplier, percent ("Spacing Density").
     pub spacing_density: u32,
     /// Honor reduce-motion: perpetual/looping animations (spinners, the
     /// running-session shimmer, the drop-overlay fade) render static.
@@ -367,7 +425,7 @@ pub struct UiPrefs {
 }
 
 /// The interface text size authored against, px. Chrome sizes scale relative
-/// to this, exactly like Waku's `sp()` authored at its default UI font size.
+/// to this, like a rem authored at its default UI font size.
 pub const DEFAULT_UI_FONT_SIZE: f32 = 14.;
 /// Selectable interface / terminal / editor font sizes, px.
 pub const FONT_SIZES: [f32; 8] = [11., 12., 13., 14., 15., 16., 18., 20.];
@@ -570,7 +628,7 @@ pub struct FontChoice {
     pub family: &'static str,
 }
 
-/// Orbit's curated interface faces (Waku's list + a System escape hatch).
+/// Orbit's curated interface faces (plus a System escape hatch).
 pub const UI_FONTS: [FontChoice; 10] = [
     FontChoice {
         label: "Inter",
@@ -614,8 +672,8 @@ pub const UI_FONTS: [FontChoice; 10] = [
     },
 ];
 
-/// Orbit's curated code faces (Waku's list + a System Mono escape hatch).
-pub const CODE_FONTS: [FontChoice; 9] = [
+/// Orbit's curated code faces (plus a System Mono escape hatch).
+pub const CODE_FONTS: [FontChoice; 16] = [
     FontChoice {
         label: "JetBrains Mono",
         family: "JetBrains Mono",
@@ -647,6 +705,34 @@ pub const CODE_FONTS: [FontChoice; 9] = [
     FontChoice {
         label: "Iosevka",
         family: "Iosevka",
+    },
+    FontChoice {
+        label: "DM Mono",
+        family: "DM Mono",
+    },
+    FontChoice {
+        label: "IBM Plex Mono",
+        family: "IBM Plex Mono",
+    },
+    FontChoice {
+        label: "Inconsolata",
+        family: "Inconsolata",
+    },
+    FontChoice {
+        label: "Noto Sans Mono",
+        family: "Noto Sans Mono",
+    },
+    FontChoice {
+        label: "Space Mono",
+        family: "Space Mono",
+    },
+    FontChoice {
+        label: "Anonymous Pro",
+        family: "Anonymous Pro",
+    },
+    FontChoice {
+        label: "Martian Mono",
+        family: "Martian Mono",
     },
     FontChoice {
         label: "Lilex",
@@ -724,7 +810,7 @@ struct Palette {
     trough: u32,
 }
 
-/// Waku dark: near-black canvas, light primary buttons, orange ring accent.
+/// Orbit dark: near-black canvas, light primary buttons, orange ring accent.
 const ORBIT: Palette = Palette {
     bg_main: 0x1A1A1A,
     bg_sidebar: 0x181818,
@@ -767,7 +853,7 @@ const ORBIT: Palette = Palette {
     trough: 0x232323,
 };
 
-/// Waku light: warm off-white canvas, dark primary buttons, orange accent.
+/// Orbit light: warm off-white canvas, dark primary buttons, orange accent.
 const ORBIT_LIGHT: Palette = Palette {
     bg_main: 0xF6F5F6,
     bg_sidebar: 0xF3F3F3,
@@ -807,6 +893,429 @@ const ORBIT_LIGHT: Palette = Palette {
     warn: 0x99631E,
     crit: 0xC3433B,
     trough: 0xECECEC,
+};
+
+/// Orbit Paper: a cooler, neutral paper canvas in the Orbit grammar — a light
+/// counterpart to Orbit's warm off-white, with the same ember accent.
+const ORBIT_PAPER: Palette = Palette {
+    bg_main: 0xF7F7F8,
+    bg_sidebar: 0xF1F1F3,
+    bg_raised: 0xE9E9EC,
+    bg_hover: 0xE3E3E7,
+    active: 0xDBDBE0,
+    active_fg: 0x232327,
+    border: 0xE0E0E4,
+    text: 0x232327,
+    text_2: 0x62626A,
+    text_3: 0x83838C,
+    ok_green: 0x297E48,
+    stop_red: 0xC3433B,
+    stop_red_hover: 0xD5604F,
+    add_green: 0x297E48,
+    del_red: 0xC3433B,
+    accent: 0xB55035,
+    menu_bg: 0xE9E9EC,
+    send_bg: 0xB55035,
+    send_bg_hover: 0xC25F43,
+    send_fg: 0xF7F7F8,
+    assistant_text: 0x232327,
+    code_bg: 0xEDEDF0,
+    code_text: 0x232327,
+    syn_string: 0x297E48,
+    syn_number: 0x99631E,
+    syn_function: 0x232327,
+    syn_type: 0x232327,
+    syn_comment: 0x666666,
+    syn_literal: 0xB55035,
+    syn_meta: 0xC3433B,
+    syn_operator: 0x6F6F6F,
+    tool_border: 0xE0E0E4,
+    tool_meta: 0x666666,
+    ring_track: 0xE9E9EC,
+    ring_fill: 0x232327,
+    warn: 0x99631E,
+    crit: 0xC3433B,
+    trough: 0xEDEDF0,
+};
+
+/// Orbit Contrast: a near-white, high-contrast light palette with deeper ink
+/// and a stronger hairline, for maximum legibility.
+const ORBIT_CONTRAST: Palette = Palette {
+    bg_main: 0xFFFFFF,
+    bg_sidebar: 0xF7F7F7,
+    bg_raised: 0xEDEDED,
+    bg_hover: 0xE6E6E6,
+    active: 0xDBDBDB,
+    active_fg: 0x101010,
+    border: 0xC9C9C9,
+    text: 0x0F0F0F,
+    text_2: 0x454545,
+    text_3: 0x6B6B6B,
+    ok_green: 0x1E6B39,
+    stop_red: 0xB02A22,
+    stop_red_hover: 0xC84037,
+    add_green: 0x1E6B39,
+    del_red: 0xB02A22,
+    accent: 0xA8431F,
+    menu_bg: 0xEDEDED,
+    send_bg: 0xA8431F,
+    send_bg_hover: 0xBA5430,
+    send_fg: 0xFFFFFF,
+    assistant_text: 0x0F0F0F,
+    code_bg: 0xF2F2F2,
+    code_text: 0x0F0F0F,
+    syn_string: 0x1E6B39,
+    syn_number: 0x8A5310,
+    syn_function: 0x0F0F0F,
+    syn_type: 0x0F0F0F,
+    syn_comment: 0x5A5A5A,
+    syn_literal: 0xA8431F,
+    syn_meta: 0xB02A22,
+    syn_operator: 0x5F5F5F,
+    tool_border: 0xC9C9C9,
+    tool_meta: 0x454545,
+    ring_track: 0xEDEDED,
+    ring_fill: 0x0F0F0F,
+    warn: 0x8A5310,
+    crit: 0xB02A22,
+    trough: 0xF2F2F2,
+};
+
+/// Catppuccin Latte — the canonical light counterpart to Catppuccin Mocha,
+/// tuned so its syntax stays legible on the light code wash.
+const CATPPUCCIN_LATTE: Palette = Palette {
+    bg_main: 0xEFF1F5,
+    bg_sidebar: 0xE6E9EF,
+    bg_raised: 0xCCD0DA,
+    bg_hover: 0xBCC0CC,
+    active: 0xACB0BE,
+    active_fg: 0x34374B,
+    border: 0xBCC0CC,
+    text: 0x4C4F69,
+    text_2: 0x6C6F85,
+    text_3: 0x868A9C,
+    ok_green: 0x40A02B,
+    stop_red: 0xD20F39,
+    stop_red_hover: 0xE64553,
+    add_green: 0x40A02B,
+    del_red: 0xD20F39,
+    accent: 0x8839EF,
+    menu_bg: 0xCCD0DA,
+    send_bg: 0x8839EF,
+    send_bg_hover: 0x9A5CF2,
+    send_fg: 0xEFF1F5,
+    assistant_text: 0x4C4F69,
+    code_bg: 0xE6E9EF,
+    code_text: 0x4C4F69,
+    syn_string: 0x378A25,
+    syn_number: 0xD34E01,
+    syn_function: 0x1E66F5,
+    syn_type: 0xAB6D16,
+    syn_comment: 0x818498,
+    syn_literal: 0xD34E01,
+    syn_meta: 0x8839EF,
+    syn_operator: 0x15878E,
+    tool_border: 0xBCC0CC,
+    tool_meta: 0x6C6F85,
+    ring_track: 0xCCD0DA,
+    ring_fill: 0x4C4F69,
+    warn: 0xDF8E1D,
+    crit: 0xD20F39,
+    trough: 0xE6E9EF,
+};
+
+/// Solarized Light — the canonical light counterpart to Solarized Dark.
+const SOLARIZED_LIGHT: Palette = Palette {
+    bg_main: 0xFDF6E3,
+    bg_sidebar: 0xF5EEDA,
+    bg_raised: 0xE9E2CD,
+    bg_hover: 0xDDD6C1,
+    active: 0xCEC7B2,
+    active_fg: 0x073642,
+    border: 0xD6CFBA,
+    text: 0x073642,
+    text_2: 0x586E75,
+    text_3: 0x809294,
+    ok_green: 0x859900,
+    stop_red: 0xDC322F,
+    stop_red_hover: 0xE25754,
+    add_green: 0x859900,
+    del_red: 0xDC322F,
+    accent: 0xC44815,
+    menu_bg: 0xE9E2CD,
+    send_bg: 0xC44815,
+    send_bg_hover: 0xD96B3A,
+    send_fg: 0xFDF6E3,
+    assistant_text: 0x073642,
+    code_bg: 0xEEE8D5,
+    code_text: 0x073642,
+    syn_string: 0x718200,
+    syn_number: 0x23877F,
+    syn_function: 0x227EBF,
+    syn_type: 0x997400,
+    syn_comment: 0x768888,
+    syn_literal: 0xD33682,
+    syn_meta: 0xCB4B16,
+    syn_operator: 0x6C71C4,
+    tool_border: 0xD6CFBA,
+    tool_meta: 0x586E75,
+    ring_track: 0xE9E2CD,
+    ring_fill: 0x073642,
+    warn: 0xB58900,
+    crit: 0xDC322F,
+    trough: 0xEEE8D5,
+};
+
+/// One Light — the canonical light counterpart to One Dark Pro.
+const ONE_LIGHT: Palette = Palette {
+    bg_main: 0xFAFAFA,
+    bg_sidebar: 0xF0F0F1,
+    bg_raised: 0xE5E5E6,
+    bg_hover: 0xDADADC,
+    active: 0xCFCFD1,
+    active_fg: 0x383A42,
+    border: 0xD4D4D6,
+    text: 0x383A42,
+    text_2: 0x696C77,
+    text_3: 0x919194,
+    ok_green: 0x50A14F,
+    stop_red: 0xE45649,
+    stop_red_hover: 0xEA6B5F,
+    add_green: 0x50A14F,
+    del_red: 0xE45649,
+    accent: 0x2D6AF1,
+    menu_bg: 0xE5E5E6,
+    send_bg: 0x2D6AF1,
+    send_bg_hover: 0x5A8CF5,
+    send_fg: 0xFAFAFA,
+    assistant_text: 0x383A42,
+    code_bg: 0xF0F0F1,
+    code_text: 0x383A42,
+    syn_string: 0x478E46,
+    syn_number: 0x986801,
+    syn_function: 0x4078F2,
+    syn_type: 0xAA7401,
+    syn_comment: 0x888991,
+    syn_literal: 0x986801,
+    syn_meta: 0xA626A4,
+    syn_operator: 0x0184BC,
+    tool_border: 0xD4D4D6,
+    tool_meta: 0x696C77,
+    ring_track: 0xE5E5E6,
+    ring_fill: 0x383A42,
+    warn: 0xC18401,
+    crit: 0xE45649,
+    trough: 0xF0F0F1,
+};
+
+/// Nord Light (Snow Storm) — the light counterpart to Nord.
+const NORD_LIGHT: Palette = Palette {
+    bg_main: 0xECEFF4,
+    bg_sidebar: 0xE5E9F0,
+    bg_raised: 0xD8DEE9,
+    bg_hover: 0xCCD3E0,
+    active: 0xBFC7D6,
+    active_fg: 0x2E3440,
+    border: 0xCBD2E0,
+    text: 0x2E3440,
+    text_2: 0x4C566A,
+    text_3: 0x7B88A1,
+    ok_green: 0xA3BE8C,
+    stop_red: 0xBF616A,
+    stop_red_hover: 0xCB7D85,
+    add_green: 0xA3BE8C,
+    del_red: 0xBF616A,
+    accent: 0x4D6E96,
+    menu_bg: 0xD8DEE9,
+    send_bg: 0x4D6E96,
+    send_bg_hover: 0x7592B8,
+    send_fg: 0xECEFF4,
+    assistant_text: 0x2E3440,
+    code_bg: 0xE5E9F0,
+    code_text: 0x2E3440,
+    syn_string: 0x64834A,
+    syn_number: 0x9C6992,
+    syn_function: 0x3C8398,
+    syn_type: 0x9E721B,
+    syn_comment: 0x78859F,
+    syn_literal: 0x9C6992,
+    syn_meta: 0xBF5D3F,
+    syn_operator: 0x537DA8,
+    tool_border: 0xCBD2E0,
+    tool_meta: 0x4C566A,
+    ring_track: 0xD8DEE9,
+    ring_fill: 0x2E3440,
+    warn: 0xD08770,
+    crit: 0xBF616A,
+    trough: 0xE5E9F0,
+};
+
+/// Gruvbox Light — the canonical light counterpart to Gruvbox.
+const GRUVBOX_LIGHT: Palette = Palette {
+    bg_main: 0xFBF1C7,
+    bg_sidebar: 0xF2E5BC,
+    bg_raised: 0xEBDBB2,
+    bg_hover: 0xD5C4A1,
+    active: 0xBDAE93,
+    active_fg: 0x282828,
+    border: 0xD5C4A1,
+    text: 0x3C3836,
+    text_2: 0x665C54,
+    text_3: 0x7C6F64,
+    ok_green: 0x79740E,
+    stop_red: 0x9D0006,
+    stop_red_hover: 0xBC1F24,
+    add_green: 0x79740E,
+    del_red: 0x9D0006,
+    accent: 0xAF3A03,
+    menu_bg: 0xEBDBB2,
+    send_bg: 0xAF3A03,
+    send_bg_hover: 0xC4511B,
+    send_fg: 0xFBF1C7,
+    assistant_text: 0x3C3836,
+    code_bg: 0xEBDBB2,
+    code_text: 0x3C3836,
+    syn_string: 0x79740E,
+    syn_number: 0x8F3F71,
+    syn_function: 0x076678,
+    syn_type: 0x9C6611,
+    syn_comment: 0x897A6B,
+    syn_literal: 0x8F3F71,
+    syn_meta: 0xAF3A03,
+    syn_operator: 0x427B58,
+    tool_border: 0xD5C4A1,
+    tool_meta: 0x665C54,
+    ring_track: 0xEBDBB2,
+    ring_fill: 0x3C3836,
+    warn: 0xB57614,
+    crit: 0x9D0006,
+    trough: 0xEBDBB2,
+};
+
+/// Flexoki Light — the canonical light counterpart to Flexoki.
+const FLEXOKI_LIGHT: Palette = Palette {
+    bg_main: 0xFFFCF0,
+    bg_sidebar: 0xF2F0E5,
+    bg_raised: 0xE6E4D9,
+    bg_hover: 0xDAD8CE,
+    active: 0xCECDC3,
+    active_fg: 0x282726,
+    border: 0xDAD8CE,
+    text: 0x282726,
+    text_2: 0x575653,
+    text_3: 0x878580,
+    ok_green: 0x66800B,
+    stop_red: 0xAF3029,
+    stop_red_hover: 0xC4483F,
+    add_green: 0x66800B,
+    del_red: 0xAF3029,
+    accent: 0xBC5215,
+    menu_bg: 0xE6E4D9,
+    send_bg: 0xBC5215,
+    send_bg_hover: 0xCC6A32,
+    send_fg: 0xFFFCF0,
+    assistant_text: 0x282726,
+    code_bg: 0xF2F0E5,
+    code_text: 0x282726,
+    syn_string: 0x24837B,
+    syn_number: 0x5E409D,
+    syn_function: 0xBC5215,
+    syn_type: 0xA07901,
+    syn_comment: 0x878580,
+    syn_literal: 0x5E409D,
+    syn_meta: 0xA02F6F,
+    syn_operator: 0xAF3029,
+    tool_border: 0xDAD8CE,
+    tool_meta: 0x575653,
+    ring_track: 0xE6E4D9,
+    ring_fill: 0x282726,
+    warn: 0xAD8301,
+    crit: 0xAF3029,
+    trough: 0xF2F0E5,
+};
+
+/// Tokyonight Light (Day) — the canonical light counterpart to Tokyonight.
+const TOKYO_NIGHT_LIGHT: Palette = Palette {
+    bg_main: 0xE1E2E7,
+    bg_sidebar: 0xD5D6DB,
+    bg_raised: 0xCBCCD1,
+    bg_hover: 0xC0C1C6,
+    active: 0xB4B5BA,
+    active_fg: 0x343B58,
+    border: 0xC0C1C6,
+    text: 0x343B58,
+    text_2: 0x4F5D99,
+    text_3: 0x767FAC,
+    ok_green: 0x587539,
+    stop_red: 0xF52A65,
+    stop_red_hover: 0xF64F7D,
+    add_green: 0x587539,
+    del_red: 0xF52A65,
+    accent: 0x1561CA,
+    menu_bg: 0xCBCCD1,
+    send_bg: 0x1561CA,
+    send_bg_hover: 0x4A90EC,
+    send_fg: 0xE1E2E7,
+    assistant_text: 0x343B58,
+    code_bg: 0xD5D6DB,
+    code_text: 0x343B58,
+    syn_string: 0x587539,
+    syn_number: 0xA95800,
+    syn_function: 0x176ADC,
+    syn_type: 0x88693C,
+    syn_comment: 0x6C76A7,
+    syn_literal: 0xA95800,
+    syn_meta: 0x8B3FEF,
+    syn_operator: 0x007197,
+    tool_border: 0xC0C1C6,
+    tool_meta: 0x4F5D99,
+    ring_track: 0xCBCCD1,
+    ring_fill: 0x343B58,
+    warn: 0x8C6C3E,
+    crit: 0xF52A65,
+    trough: 0xD5D6DB,
+};
+
+/// Ayu Light — the canonical light counterpart to Ayu.
+const AYU_LIGHT: Palette = Palette {
+    bg_main: 0xFAFAFA,
+    bg_sidebar: 0xF0F0F0,
+    bg_raised: 0xE8E8E8,
+    bg_hover: 0xDEDEDE,
+    active: 0xD2D2D2,
+    active_fg: 0x3D4247,
+    border: 0xDEDEDE,
+    text: 0x3D4247,
+    text_2: 0x5C6166,
+    text_3: 0x8C929B,
+    ok_green: 0x86B300,
+    stop_red: 0xF07171,
+    stop_red_hover: 0xF38B8B,
+    add_green: 0x86B300,
+    del_red: 0xF07171,
+    accent: 0xBE5305,
+    menu_bg: 0xE8E8E8,
+    send_bg: 0xBE5305,
+    send_bg_hover: 0xFB9C55,
+    send_fg: 0xFAFAFA,
+    assistant_text: 0x3D4247,
+    code_bg: 0xF0F0F0,
+    code_text: 0x3D4247,
+    syn_string: 0x678A00,
+    syn_number: 0x9869C6,
+    syn_function: 0xB66E0A,
+    syn_type: 0x2A88A8,
+    syn_comment: 0x838B94,
+    syn_literal: 0x9869C6,
+    syn_meta: 0xD25B05,
+    syn_operator: 0xD45719,
+    tool_border: 0xDEDEDE,
+    tool_meta: 0x5C6166,
+    ring_track: 0xE8E8E8,
+    ring_fill: 0x3D4247,
+    warn: 0xF29718,
+    crit: 0xF07171,
+    trough: 0xF0F0F0,
 };
 
 /// Vague (dark): a low-contrast, near-monochrome editor palette ported from
@@ -2089,6 +2598,8 @@ fn palette(id: ThemeId) -> Palette {
     match id {
         ThemeId::Orbit => ORBIT,
         ThemeId::OrbitLight => ORBIT_LIGHT,
+        ThemeId::OrbitPaper => ORBIT_PAPER,
+        ThemeId::OrbitContrast => ORBIT_CONTRAST,
         ThemeId::Vague => VAGUE,
         ThemeId::Batsignal => BATSIGNAL,
         ThemeId::Ashwood => ASHWOOD,
@@ -2119,6 +2630,14 @@ fn palette(id: ThemeId) -> Palette {
         ThemeId::OpenChamber => OPEN_CHAMBER,
         ThemeId::Vesper => VESPER,
         ThemeId::Vitesse => VITESSE,
+        ThemeId::CatppuccinLatte => CATPPUCCIN_LATTE,
+        ThemeId::SolarizedLight => SOLARIZED_LIGHT,
+        ThemeId::OneLight => ONE_LIGHT,
+        ThemeId::NordLight => NORD_LIGHT,
+        ThemeId::GruvboxLight => GRUVBOX_LIGHT,
+        ThemeId::FlexokiLight => FLEXOKI_LIGHT,
+        ThemeId::TokyoNightLight => TOKYO_NIGHT_LIGHT,
+        ThemeId::AyuLight => AYU_LIGHT,
     }
 }
 
@@ -2144,7 +2663,7 @@ impl Theme {
     }
 
     /// Scale an interface text size by the UI font size setting, the way
-    /// Waku's `sp()` rems resolve against its UI font size (`ui_font_size /
+    /// rems resolve against the UI font size (`ui_font_size /
     /// DEFAULT_UI_FONT_SIZE`). Chrome sizes are authored at the 14px default,
     /// so at the default setting this resolves to the authored pixel value.
     pub fn ui_px(&self, value: f32) -> Pixels {
@@ -2152,13 +2671,13 @@ impl Theme {
     }
 
     /// Scale an editor-surface size (code blocks, diffs) by the Editor font
-    /// size setting (`editor_font_size / 13`, the Waku default).
+    /// size setting (`editor_font_size / 13`, the default).
     pub fn code_px(&self, value: f32) -> Pixels {
         px(value * (self.ui.editor_font_size / 13.))
     }
 
     /// Scale a terminal/tool-output size by the Terminal font size setting
-    /// (`terminal_font_size / 13`, the Waku default).
+    /// (`terminal_font_size / 13`, the default).
     pub fn term_px(&self, value: f32) -> Pixels {
         px(value * (self.ui.terminal_font_size / 13.))
     }
@@ -2247,6 +2766,10 @@ impl Theme {
             send_bg: hex(p.send_bg),
             send_bg_hover: hex(p.send_bg_hover),
             send_fg: hex(p.send_fg),
+            toggle_knob: match mode {
+                ThemeMode::Light => hex(0xFFFFFF),
+                ThemeMode::Dark => text,
+            },
             overlay: text.opacity(wash),
             overlay_strong: text.opacity(wash_strong),
             border_strong: text.opacity(border_strong),
@@ -2332,10 +2855,11 @@ fn persist_path() -> PathBuf {
     crate::platform::home_dir().join(".orbit-pi").join("theme")
 }
 
-/// Install the persisted (or default Orbit) theme as a GPUI global and
-/// load the persisted font families into the statics.
+/// Install the persisted appearance (System by default) and font preferences.
 pub fn init(cx: &mut App) {
-    cx.set_global(Theme::for_id(ThemeId::load()).with_ui(UiPrefs::load()));
+    let prefs = AppearancePrefs::load();
+    cx.set_global(prefs);
+    cx.set_global(Theme::for_id(prefs.resolve(cx.window_appearance())).with_ui(UiPrefs::load()));
     let prefs = FontPrefs::load();
     *UI_FONT_FAMILY.write().unwrap() = prefs.ui_font_family;
     *CODE_FONT_FAMILY.write().unwrap() = prefs.code_font_family;
@@ -2350,17 +2874,6 @@ pub fn get(cx: &App) -> &Theme {
 /// static when this is true.
 pub fn reduce_motion(cx: &App) -> bool {
     get(cx).ui.reduce_motion
-}
-
-/// Switch to a palette, persist the choice, and notify global observers.
-pub fn set_theme(cx: &mut App, id: ThemeId) {
-    if get(cx).theme_id == id {
-        return;
-    }
-    id.persist();
-    // The palette switches; UI customization carries over.
-    let ui = get(cx).ui;
-    cx.set_global(Theme::for_id(id).with_ui(ui));
 }
 
 /// Apply new UI / code font families to the statics and persist them.
@@ -2403,10 +2916,31 @@ mod tests {
         assert_eq!(ThemeId::parse("dark"), Some(ThemeId::Orbit));
         assert_eq!(ThemeId::parse("light"), Some(ThemeId::OrbitLight));
         assert_eq!(ThemeId::parse("one-dark"), Some(ThemeId::Orbit));
-        assert_eq!(ThemeId::parse("one-light"), Some(ThemeId::OrbitLight));
+        assert_eq!(ThemeId::parse("one-light"), Some(ThemeId::OneLight));
         assert_eq!(ThemeId::parse("zedokai"), Some(ThemeId::Orbit));
         assert_eq!(ThemeId::parse("flexoki-dark"), Some(ThemeId::Orbit));
-        assert_eq!(ThemeId::parse("flexoki-light"), Some(ThemeId::OrbitLight));
+        assert_eq!(ThemeId::parse("flexoki-light"), Some(ThemeId::FlexokiLight));
+        // Orbit-family and curated light themes.
+        assert_eq!(ThemeId::parse("orbit-paper"), Some(ThemeId::OrbitPaper));
+        assert_eq!(
+            ThemeId::parse("orbit-contrast"),
+            Some(ThemeId::OrbitContrast)
+        );
+        assert_eq!(
+            ThemeId::parse("catppuccin-latte"),
+            Some(ThemeId::CatppuccinLatte)
+        );
+        assert_eq!(
+            ThemeId::parse("solarized-light"),
+            Some(ThemeId::SolarizedLight)
+        );
+        assert_eq!(ThemeId::parse("nord-light"), Some(ThemeId::NordLight));
+        assert_eq!(ThemeId::parse("gruvbox-light"), Some(ThemeId::GruvboxLight));
+        assert_eq!(
+            ThemeId::parse("tokyo-night-day"),
+            Some(ThemeId::TokyoNightLight)
+        );
+        assert_eq!(ThemeId::parse("ayu-light"), Some(ThemeId::AyuLight));
         // Ported Zed themes + their aliases.
         assert_eq!(ThemeId::parse("batsignal-dark"), Some(ThemeId::Batsignal));
         assert_eq!(ThemeId::parse("batsignal"), Some(ThemeId::Batsignal));
@@ -2448,6 +2982,26 @@ mod tests {
         }
     }
 
+    /// The toggle knob must read on both the accent (on) and the raised track
+    /// (off) in every palette. Light mode used `text` — a near-black dot on
+    /// the pale track — so the knob is its own light token there.
+    #[test]
+    fn toggle_knob_stays_light_on_light_tracks() {
+        for id in ThemeId::ALL {
+            let theme = Theme::for_id(id);
+            match theme.mode {
+                ThemeMode::Light => assert!(
+                    theme.toggle_knob.l > theme.bg_raised.l,
+                    "toggle knob is not lighter than the off track in {id:?}"
+                ),
+                ThemeMode::Dark => assert_eq!(
+                    theme.toggle_knob, theme.text,
+                    "dark toggle knob drifted in {id:?}"
+                ),
+            }
+        }
+    }
+
     #[test]
     fn ported_zed_themes_are_dark_and_labelled() {
         let ported = [
@@ -2470,7 +3024,7 @@ mod tests {
         assert_eq!(ThemeId::Discord.label(), "Discord Dark");
     }
 
-    /// The full curated catalog (Waku's list) is selectable under its names.
+    /// The full curated catalog is selectable under its names.
     #[test]
     fn full_curated_theme_catalog_is_present() {
         let labels: Vec<&str> = ThemeId::ALL.iter().map(|id| id.label()).collect();
@@ -2497,6 +3051,16 @@ mod tests {
             "Tokyonight",
             "Vesper",
             "Vitesse",
+            "Orbit Paper",
+            "Orbit Contrast",
+            "Catppuccin Latte",
+            "Solarized Light",
+            "One Light",
+            "Nord Light",
+            "Gruvbox Light",
+            "Flexoki Light",
+            "Tokyonight Light",
+            "Ayu Light",
         ] {
             assert!(labels.contains(&wanted), "missing theme {wanted}");
         }
@@ -2560,7 +3124,7 @@ mod tests {
         }
     }
 
-    /// One surface grammar for all thirty-one palettes: on dark, each step up
+    /// One surface grammar for all forty-two palettes: on dark, each step up
     /// the ramp is lighter than the one below (canvas → raised → hover →
     /// active); on light it is the inverse. Menu surfaces float at `raised`,
     /// and the send button always answers a hover with a visible step.
@@ -2640,8 +3204,14 @@ mod tests {
     fn theme_appearance_matches_label() {
         assert_eq!(ThemeId::Orbit.appearance(), ThemeMode::Dark);
         assert_eq!(ThemeId::OrbitLight.appearance(), ThemeMode::Light);
+        assert_eq!(ThemeId::OrbitPaper.appearance(), ThemeMode::Light);
+        assert_eq!(ThemeId::OrbitContrast.appearance(), ThemeMode::Light);
+        assert_eq!(ThemeId::CatppuccinLatte.appearance(), ThemeMode::Light);
         assert_eq!(ThemeId::Orbit.label(), "Orbit");
         assert_eq!(ThemeId::OrbitLight.label(), "Orbit Light");
+        assert_eq!(ThemeId::OrbitPaper.label(), "Orbit Paper");
+        assert_eq!(ThemeId::OrbitContrast.label(), "Orbit Contrast");
+        assert_eq!(ThemeId::CatppuccinLatte.label(), "Catppuccin Latte");
     }
 
     #[test]
@@ -2690,7 +3260,7 @@ mod tests {
             (f32::from(a) - f32::from(b)).abs() < 0.01
         }
         let mut theme = Theme::dark();
-        // Defaults are the Waku values — no scaling.
+        // Defaults are unscaled.
         assert_eq!(theme.ui_px(14.), px(14.));
         assert_eq!(theme.code_px(13.), px(13.));
         assert_eq!(theme.term_px(13.), px(13.));
@@ -2723,14 +3293,7 @@ mod tests {
         }
         // Orbit is dark; Orbit Light is light.
         for id in ThemeId::ALL {
-            assert_eq!(
-                Theme::for_id(id).mode,
-                if id == ThemeId::OrbitLight {
-                    ThemeMode::Light
-                } else {
-                    ThemeMode::Dark
-                }
-            );
+            assert_eq!(Theme::for_id(id).mode, id.appearance());
         }
     }
 

@@ -340,7 +340,7 @@ fn image_from_block(block: &Value) -> Option<Arc<Image>> {
 
 /// Extract a tool result message: `(toolCallId, output, isError)`. pi sends
 /// `role: "toolResult"` messages — not chat rows; their output belongs on
-/// the matching tool call (Waku renders it inside the activity detail).
+/// the matching tool call (rendered inside the activity detail).
 fn tool_result_parts(value: &Value) -> Option<(String, Option<Value>, bool)> {
     let value = value.get("message").unwrap_or(value);
     if value.get("role").and_then(Value::as_str) != Some("toolResult") {
@@ -695,7 +695,7 @@ pub struct Transcript {
     stream_started: Rc<Cell<Option<Instant>>>,
     /// When the current step's reasoning began (the per-thought clock).
     thinking_started: Rc<Cell<Option<Instant>>>,
-    /// Settled turns whose thinking/tools are disclosed (Waku turn fold).
+    /// Settled turns whose thinking/tools are disclosed (turn fold).
     expanded_turns: Rc<RefCell<HashSet<usize>>>,
     /// Messages whose changed-files list is fully expanded.
     expanded_files: Rc<RefCell<HashSet<usize>>>,
@@ -734,7 +734,7 @@ pub struct Transcript {
     rail_hint_dismissed: Rc<Cell<bool>>,
     /// When the hint first rendered — drives its self-dismiss timeout.
     rail_hint_shown_at: Rc<Cell<Option<Instant>>>,
-    /// Scroll position of the conversation-turn rail (Waku's scrollable rail).
+    /// Scroll position of the conversation-turn rail.
     rail_scroll: ScrollHandle,
     /// Last turn the rail auto-scrolled to — re-fires only when it changes.
     rail_autoscroll: Rc<Cell<Option<usize>>>,
@@ -813,7 +813,7 @@ impl Transcript {
                 }
                 if let Some(parsed_message) = ChatMessage::from_value(message) {
                     // Consecutive assistant messages are one logical turn
-                    // (Waku): one row, one fold, one footer — not a stack of
+                    // one row, one fold, one footer — not a stack of
                     // "Worked" dividers per streaming step. A user message
                     // always begins a new turn — never merged into the run
                     // before it (the whole trail used to collapse into one
@@ -961,7 +961,7 @@ impl Transcript {
             return false;
         }
         // Assistant message starts. A turn's steps stream into ONE row
-        // (Waku): when the previous row is an assistant message, this step
+        // when the previous row is an assistant message, this step
         // continues it instead of stacking another "Worked" fold.
         //
         // The start snapshot may already hold the first content chunk (some
@@ -2063,7 +2063,7 @@ mod tests {
     fn real_session_payload_renders_changed_files_card() {
         // Ground-truth check against the live pi session when present:
         // `get_messages` snapshots must yield edit/write tools with paths and
-        // line counts, otherwise the Waku changed-files card never appears.
+        // line counts, otherwise the changed-files card never appears.
         // Regenerates the payload from the newest real session on disk.
         let mut data = None;
         if let Ok(sample) = std::fs::read_to_string("/tmp/orbit-sample.json") {

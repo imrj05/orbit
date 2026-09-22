@@ -2,6 +2,10 @@
 target
 crates/**/target
 
+# Python bytecode caches (scripts/)
+__pycache__/
+*.pyc
+
 # Packaging output (DMGs, tarballs, checksums). Never commit these: stale
 # artifacts get swept up by the release workflow's dist/*.dmg globs.
 dist/

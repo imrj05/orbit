@@ -17,9 +17,9 @@
 //! tall search row with a search glyph; sectioned rows (Sessions / Commands /
 //! Settings) with icon, label, inline detail, and a shortcut chip; a quiet
 //! footer naming the keys.
-//! FORM: Waku's `command_palette.rs` anatomy (sections, fuzzy scoring,
-//! wrap-around navigation, scrim layer, in-memory results) adapted to Orbit's
-//! entity + callback conventions. Opened with ⌘P or the sidebar Search row.
+//! FORM: a command-palette anatomy (sections, fuzzy scoring, wrap-around
+//! navigation, scrim layer, in-memory results) adapted to Orbit's entity +
+//! callback conventions. Opened with ⌘P or the sidebar Search row.
 //!
 //! Key handling reuses the existing `Picker` bindings (enter/escape/↑/↓),
 //! which are registered after the composer's and therefore win at the same
@@ -82,7 +82,7 @@ pub enum PaletteCommand {
 
 /// Everything the palette needs to build its items, captured by the app at
 /// open time. The palette never reaches back into app state — render reads
-/// only this in-memory snapshot (Waku's render-purity rule).
+/// only this in-memory snapshot (render-purity rule).
 pub struct PaletteSnapshot {
     pub sessions: Vec<SessionInfo>,
     /// The open session's path, so its row can be emphasized.
@@ -559,7 +559,7 @@ impl CommandPalette {
         rows
     }
 
-    /// Wrap-around ↑/↓ navigation (Waku parity), keeping the highlighted row
+    /// Wrap-around ↑/↓ navigation, keeping the highlighted row
     /// fully visible in the scroll window.
     fn step(&mut self, dir: isize, cx: &mut Context<Self>) {
         let rows = self.results(&self.last_filter);

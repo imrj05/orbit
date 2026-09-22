@@ -494,7 +494,7 @@ impl OrbitApp {
                     app.set_automatic_updates(next, cx);
                 });
             })
-            .child(div().size(px(14.)).rounded_full().bg(theme.text))
+            .child(div().size(px(14.)).rounded_full().bg(theme.toggle_knob))
             .into_any_element()
     }
 
@@ -567,10 +567,15 @@ impl OrbitApp {
 
     /// The update modal: a scrim and a centered card shared by every update
     /// path. `None` when closed.
-    pub(super) fn updater_dialog_layer(&self, cx: &Context<Self>) -> Option<AnyElement> {
+    pub(super) fn updater_dialog_layer(
+        &self,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> Option<AnyElement> {
         let dialog = self.updater_dialog.as_ref()?;
         let theme = *theme::get(cx);
         let can_install = self.updater_can_install(cx);
+        let (card_width, card_max_height) = update_dialog_card_size(window.viewport_size());
 
         let mut title = match dialog {
             UpdateDialog::Checking => tr!("updater_ui.checking_for_updates"),
@@ -585,8 +590,8 @@ impl OrbitApp {
 
         let mut card = div()
             .id("update-dialog-card")
-            .w_full()
-            .max_w(px(520.))
+            .w(card_width)
+            .max_h(card_max_height)
             .rounded(px(14.))
             .border_1()
             .border_color(theme.border_strong)
@@ -875,9 +880,34 @@ fn parse_release_notes(notes: &str) -> Vec<NoteBlock> {
 }
 
 /// Drop the light inline Markdown the changelog uses, so the plain-text notes
-/// read cleanly: code ticks and bold markers.
+/// read cleanly: code ticks and bold markers, and links collapsed to their
+/// label (`[#11](https://…)` → `#11`).
 fn inline_notes_text(text: &str) -> String {
-    text.replace('`', "").replace("**", "")
+    let text = text.replace('`', "").replace("**", "");
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(open) = rest.find('[') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        match after.split_once(']') {
+            Some((label, tail)) if tail.starts_with('(') => match tail.find(')') {
+                Some(close) => {
+                    out.push_str(label);
+                    rest = &tail[close + 1..];
+                }
+                None => {
+                    out.push('[');
+                    rest = after;
+                }
+            },
+            _ => {
+                out.push('[');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// The changelog column in the update modal.
@@ -1048,14 +1078,32 @@ fn updater_pill_content(theme: Theme, label: String, reveal: f32) -> impl IntoEl
         )
 }
 
+/// The modal card's definite size for a viewport: never wider than 520 px or
+/// taller than the window minus the scrim's 24 px margins. The width must be
+/// definite — with `w_full().max_w()` the body's text is measured against the
+/// viewport before the clamp, under-reporting the card's height and pushing
+/// the footer out of the clipped card. The height cap keeps the footer on
+/// screen in a short window; the body scrolls when it hits.
+fn update_dialog_card_size(viewport: gpui::Size<gpui::Pixels>) -> (gpui::Pixels, gpui::Pixels) {
+    (
+        (viewport.width - px(48.)).min(px(520.)),
+        viewport.height - px(48.),
+    )
+}
+
 /// The body of an update dialog: the app icon at the leading edge, then the
 /// state's content. Shared by every state, so the icon lands in the same
 /// place whichever dialog is open.
 fn update_dialog_body(content: AnyElement) -> AnyElement {
     div()
+        .id("update-dialog-body")
+        .debug_selector(|| "update-dialog-body".to_string())
         .px(px(18.))
         .pb(px(16.))
         .flex()
+        .flex_1()
+        .min_h_0()
+        .overflow_y_scroll()
         .items_start()
         .gap(px(12.))
         .child(embedded_image(crate::app_icon::ASSET, 48.))
@@ -1140,6 +1188,18 @@ mod tests {
     }
 
     #[test]
+    fn inline_notes_text_collapses_links_to_their_label() {
+        assert_eq!(
+            inline_notes_text(
+                "Dumitru Moloşnic ([#11](https://github.com/imrj05/orbit/pull/11)) — fixes"
+            ),
+            "Dumitru Moloşnic (#11) — fixes"
+        );
+        // An unmatched bracket is left alone rather than eaten.
+        assert_eq!(inline_notes_text("an [open bracket"), "an [open bracket");
+    }
+
+    #[test]
     fn up_to_date_copy_names_the_version_it_checked() {
         let text = tr!("updater_ui.up_to_date_detail", version = "9.9.9");
         assert!(text.contains("9.9.9"), "{text}");
@@ -1188,6 +1248,94 @@ mod tests {
         assert!(
             copy.right() <= card.right() - px(18.),
             "long copy must wrap inside the card padding: copy {copy:?}, card {card:?}"
+        );
+    }
+
+    /// The modal's footer must be laid out *inside* the card: the card clips
+    /// with `overflow_hidden`, so a body that reports a full-height content
+    /// box would push the footer past the card's bottom edge and hide it.
+    #[gpui::test]
+    fn update_dialog_card_keeps_its_footer_inside_the_card(cx: &mut gpui::TestAppContext) {
+        struct Probe;
+        impl Render for Probe {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let theme = Theme::dark();
+                let notes = "### Contributors\n\n- **Dumitru Moloșnic** ([#11](https://github.com/imrj05/orbit/pull/11)) — light,\n  dark, and system appearance modes; transcript table sizing, streaming\n  scroll-position, and multiline command-preview fixes.";
+                let (card_width, card_max_height) =
+                    update_dialog_card_size(gpui::size(px(800.), px(600.)));
+                div()
+                    .id("probe-update-scrim")
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .id("probe-update-card")
+                            .debug_selector(|| "probe-update-card".to_string())
+                            .w(card_width)
+                            .max_h(card_max_height)
+                            .flex()
+                            .flex_col()
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .p(px(12.))
+                                    .child("Update available"),
+                            )
+                            .child(update_dialog_body(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(10.))
+                                    .child("Orbit Pi v0.0.11 is available.")
+                                    .child(
+                                        div()
+                                            .text_size(theme.ui_px(11.))
+                                            .child("What's new"),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("probe-update-notes")
+                                            .debug_selector(|| "probe-update-notes".to_string())
+                                            .max_h(px(280.))
+                                            .child(release_notes_view(notes, theme)),
+                                    )
+                                    .into_any_element(),
+                            ))
+                            .child(
+                                div()
+                                    .id("probe-update-footer")
+                                    .debug_selector(|| "probe-update-footer".to_string())
+                                    .h(px(60.))
+                                    .flex_none()
+                                    .child("Close"),
+                            ),
+                    )
+            }
+        }
+
+        let cx = cx.add_empty_window();
+        let _ = cx.draw(
+            gpui::point(px(0.), px(0.)),
+            gpui::size(px(800.), px(600.)),
+            |_, cx| cx.new(|_| Probe),
+        );
+        let card = cx.debug_bounds("probe-update-card").expect("card laid out");
+        let footer = cx
+            .debug_bounds("probe-update-footer")
+            .expect("footer laid out");
+        eprintln!(
+            "card={card:?} body={:?} footer={footer:?} notes={:?}",
+            cx.debug_bounds("update-dialog-body"),
+            cx.debug_bounds("probe-update-notes"),
+        );
+        assert!(
+            footer.bottom() <= card.bottom(),
+            "the footer must stay inside the clipped card: footer {footer:?}, card {card:?}"
         );
     }
 }

@@ -1,4 +1,4 @@
-//! Right side pane — the workbench's second column (Waku parity): a
+//! Right side pane — the workbench's second column: a
 //! **Review** panel showing the workspace's git changes.
 //!
 //! The diff reads from a selectable [`review::Source`] — the last agent turn
@@ -39,7 +39,7 @@ const TREE_MIN_PANE_W: f32 = 440.;
 /// Directory tree column width range.
 const TREE_MIN_COL_W: f32 = 180.;
 const TREE_MAX_COL_W: f32 = 240.;
-/// Review diff row metrics (Waku `DiffRowStyle::review`).
+/// Review diff row metrics.
 const DIFF_TEXT_SIZE: f32 = 12.5;
 const REVIEW_FILE_HEADER_HEIGHT: f32 = 36.;
 const REVIEW_HUNK_HEIGHT: f32 = 24.;
@@ -92,8 +92,8 @@ pub struct SidePane {
     tree_open: bool,
     tree_filter: Entity<ComposerInput>,
     tree_list: ListState,
-    /// Directories explicitly expanded; Waku auto-expands every directory a
-    /// fresh snapshot introduces.
+    /// Directories explicitly expanded; every directory a fresh snapshot
+    /// introduces is auto-expanded.
     expanded_paths: HashSet<String>,
     /// File whose diff is highlighted.
     selected_file: Option<usize>,
@@ -241,7 +241,12 @@ impl SidePane {
         }
     }
 
-    fn close(&mut self, cx: &mut Context<Self>) {
+    /// Close the pane if it is open. Used when the Explorer opens — the two
+    /// right docks are mutually exclusive.
+    pub fn close(&mut self, cx: &mut Context<Self>) {
+        if !self.open {
+            return;
+        }
         self.open = false;
         self.source_menu_open = false;
         cx.notify();
@@ -280,7 +285,7 @@ impl SidePane {
     }
 
     /// Open the pane on Review — wired to the transcript's changed-files
-    /// cards' "Review" buttons and the command palette (Waku parity).
+    /// cards' "Review" buttons and the command palette.
     pub fn show_review(&mut self, cx: &mut Context<Self>) {
         self.open = true;
         if self.review_stale && !self.review_loading {
@@ -1357,7 +1362,7 @@ fn separator(theme: Theme) -> AnyElement {
 
 // ── diff row rendering ─────────────────────────────────────────────────────
 
-/// Waku's sticky/normal file header: icon, path, +additions, -deletions.
+/// Sticky/normal file header: icon, path, +additions, -deletions.
 fn render_file_header(
     file: &review::File,
     theme: Theme,
@@ -1477,8 +1482,8 @@ fn diff_row_height() -> f32 {
     (DIFF_TEXT_SIZE * 1.5).round()
 }
 
-/// One context/addition/deletion row: a single line-number gutter (Waku shows
-/// the new number, falling back to the old one) and syntax-coloured code.
+/// One context/addition/deletion row: a single line-number gutter (the new
+/// number, falling back to the old one) and syntax-coloured code.
 fn render_code_row(line: &review::Line, theme: Theme) -> AnyElement {
     let row_height = diff_row_height();
     let (body_bg, gutter_bg, edge, number_color) = match line.kind {

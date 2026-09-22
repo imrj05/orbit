@@ -123,6 +123,8 @@ actions!(
         Paste,
         Cut,
         Copy,
+        Undo,
+        Redo,
         AutocompleteAccept,
         Submit,
     ]
@@ -153,7 +155,9 @@ actions!(
         SearchClose,
         ToggleTerminal,
         ToggleProjectPanel,
-        CloseFiles
+        CloseFiles,
+        CloseFileTab,
+        SaveFile
     ]
 );
 
@@ -219,6 +223,12 @@ actions!(
 // focus handle) so Escape dismisses the modal instead of aborting the run.
 actions!(update_dialog_keys, [UpdateDialogClose]);
 
+// Explorer inline name-prompt actions (bound to the `ExplorerEntry` context on
+// the prompt's text field, which also carries `Composer`). Registered after the
+// Composer bindings so Enter confirms the name instead of submitting the
+// composer and Escape cancels instead of aborting the run.
+actions!(explorer_entry_keys, [ExplorerEntryConfirm, ExplorerEntryCancel]);
+
 fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("cmd-q", Quit, None),
@@ -246,6 +256,8 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-v", Paste, Some("Composer")),
         KeyBinding::new("cmd-c", Copy, Some("Composer")),
         KeyBinding::new("cmd-x", Cut, Some("Composer")),
+        KeyBinding::new("cmd-z", Undo, Some("Composer")),
+        KeyBinding::new("cmd-shift-z", Redo, Some("Composer")),
         KeyBinding::new("enter", Submit, Some("Composer")),
         KeyBinding::new("cmd-enter", Submit, Some("Composer")),
         // Steer: inject the composer text into the running turn instead of
@@ -258,6 +270,36 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("shift-enter", Newline, Some("Composer")),
         KeyBinding::new("up", Up, Some("Composer")),
         KeyBinding::new("down", Down, Some("Composer")),
+        // The Explorer's code editor reuses the composer's text actions but
+        // keeps its own context: Enter inserts a newline (it must not submit a
+        // chat message), and cmd-s writes the file.
+        KeyBinding::new("backspace", Backspace, Some("Editor")),
+        KeyBinding::new("delete", Delete, Some("Editor")),
+        KeyBinding::new("left", Left, Some("Editor")),
+        KeyBinding::new("right", Right, Some("Editor")),
+        KeyBinding::new("shift-left", SelectLeft, Some("Editor")),
+        KeyBinding::new("shift-right", SelectRight, Some("Editor")),
+        KeyBinding::new("cmd-left", LineLeft, Some("Editor")),
+        KeyBinding::new("cmd-right", LineRight, Some("Editor")),
+        KeyBinding::new("cmd-shift-left", SelectLineLeft, Some("Editor")),
+        KeyBinding::new("cmd-shift-right", SelectLineRight, Some("Editor")),
+        KeyBinding::new("alt-left", WordLeft, Some("Editor")),
+        KeyBinding::new("alt-right", WordRight, Some("Editor")),
+        KeyBinding::new("alt-shift-left", SelectWordLeft, Some("Editor")),
+        KeyBinding::new("alt-shift-right", SelectWordRight, Some("Editor")),
+        KeyBinding::new("cmd-a", SelectAll, Some("Editor")),
+        KeyBinding::new("home", Home, Some("Editor")),
+        KeyBinding::new("end", End, Some("Editor")),
+        KeyBinding::new("cmd-v", Paste, Some("Editor")),
+        KeyBinding::new("cmd-c", Copy, Some("Editor")),
+        KeyBinding::new("cmd-x", Cut, Some("Editor")),
+        KeyBinding::new("cmd-z", Undo, Some("Editor")),
+        KeyBinding::new("cmd-shift-z", Redo, Some("Editor")),
+        KeyBinding::new("up", Up, Some("Editor")),
+        KeyBinding::new("down", Down, Some("Editor")),
+        KeyBinding::new("enter", Newline, Some("Editor")),
+        KeyBinding::new("shift-enter", Newline, Some("Editor")),
+        KeyBinding::new("cmd-s", SaveFile, Some("Editor")),
         KeyBinding::new("cmd-n", NewSession, None),
         KeyBinding::new("cmd-r", RefreshSessions, None),
         KeyBinding::new("cmd-,", OpenSettings, None),
@@ -269,8 +311,10 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-j", ToggleTerminal, None),
         // Left project panel (Explorer): cmd-shift-e is the convention.
         KeyBinding::new("cmd-shift-e", ToggleProjectPanel, None),
-        // On the Files surface, cmd-w closes the active tab's surface.
-        KeyBinding::new("cmd-w", CloseFiles, Some("Files")),
+        // On the Files surface, cmd-w closes the active file tab (the whole
+        // surface when it was the last tab); cmd-shift-w closes the surface.
+        KeyBinding::new("cmd-w", CloseFileTab, Some("Files")),
+        KeyBinding::new("cmd-shift-w", CloseFiles, Some("Files")),
         KeyBinding::new("cmd-p", ToggleCommandPalette, None),
         KeyBinding::new("cmd-period", AbortRun, None),
         // Transcript accelerators (work regardless of focus):
@@ -352,6 +396,11 @@ fn bind_keys(cx: &mut App) {
         // itself), but the global `escape`-to-`AbortRun` binding is always
         // enabled, so the `CustomUi` context re-binds it and forwards ESC.
         KeyBinding::new("escape", CustomUiEscape, Some("CustomUi")),
+        // Explorer inline name prompt. The field carries `Composer
+        // ExplorerEntry`, so caret/clipboard keys stay live; these win the
+        // same-depth tie against `Submit`/`AbortRun` (registered later).
+        KeyBinding::new("enter", ExplorerEntryConfirm, Some("ExplorerEntry")),
+        KeyBinding::new("escape", ExplorerEntryCancel, Some("ExplorerEntry")),
     ]);
 }
 
@@ -459,7 +508,7 @@ fn main() {
         app_icon::set_dock_icon();
 
         // Open maximized: full width of the screen, filling the visible
-        // frame (Waku-style workbench). The computed bounds are the
+        // frame. The computed bounds are the
         // restore size macOS returns to when the window is un-zoomed,
         // sized relative to the display so it always fits even on
         // small/scaled screens.
@@ -484,6 +533,7 @@ fn main() {
                     ..Default::default()
                 },
                 |window, cx| {
+                    theme::watch_system_appearance(window, cx);
                     let app: Entity<OrbitApp> = cx.new(OrbitApp::new);
 
                     // Focus the composer so typing works immediately; track

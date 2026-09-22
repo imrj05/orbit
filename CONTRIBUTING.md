@@ -96,6 +96,12 @@ fix/sidebar-watcher
 docs/open-source-files
 ```
 
+When a pull request from an outside contributor is merged into `main`,
+`.github/workflows/contributors.yml` appends them to the `### Contributors`
+list under `[Unreleased]` in `CHANGELOG.md`
+(`scripts/changelog-contributors.py`). `scripts/bump-version.sh` rolls that
+list into the release section, so the credit ships with the release notes.
+
 ## Pull requests
 
 1. Fork the repository and branch from `main`.

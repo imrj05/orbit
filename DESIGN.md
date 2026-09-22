@@ -106,7 +106,7 @@ rationed: selection, focus, the caret, the active series. Everything else is ink
 canvas at three weights of emphasis.
 
 The system is monochrome-by-default with semantic color reserved for state, so a
-screenshot in any of the thirty-two palettes still reads as Orbit. Depth is delivered by
+screenshot in any of the forty-two palettes still reads as Orbit. Depth is delivered by
 hairlines and tonal steps rather than shadows; shadows exist only for surfaces that
 genuinely float above the page (composer, popovers, modals).
 
@@ -117,7 +117,7 @@ genuinely float above the page (composer, popovers, modals).
 - Density with air: 28–34px controls, 6–10px padding, 44px page headers. The
   Appearance panel exposes this as UI, Terminal/Editor font sizes (px), and
   Spacing Density (a global multiplier through `theme.space`).
-- Thirty-two palettes, one grammar: every color is read from `theme::get(cx)`, never hardcoded.
+- Forty-two palettes, one grammar: every color is read from `theme::get(cx)`, never hardcoded.
 
 ## Colors
 
@@ -167,7 +167,7 @@ The composer paints two inline token roles. They are read as content — sibling
   a command. Chroma-less palettes (Ashwood, Mono) stay monochrome and split the two by
   ink instead of hue.
 
-Both are derived in `Theme`, so all thirty-two palettes stay legible without per-palette tuning.
+Both are derived in `Theme`, so all forty-two palettes stay legible without per-palette tuning.
 
 ## Typography
 
@@ -183,8 +183,10 @@ diffs, paths, token counts in tables.
 (`theme::UI_FONTS` / `CODE_FONTS`) of bundled OFL faces — Inter, Fixel Text,
 Geist Sans, Atkinson Hyperlegible, Source Sans 3, Roboto, Noto Sans, DM Sans,
 Manrope, and JetBrains Mono, Fira Code, Geist Mono, Commit Mono, Source Code
-Pro, Cascadia Code, Roboto Mono, Iosevka. Every family ships as statically
-instanced, subset 400/500/600/700 TTFs under `assets/fonts/bundled/` (glyph set
+Pro, Cascadia Code, Roboto Mono, Iosevka, DM Mono, IBM Plex Mono, Inconsolata,
+Noto Sans Mono, Space Mono, Anonymous Pro, Martian Mono. Every family ships as
+statically instanced, subset TTFs at the 400–700 weights it offers, under
+`assets/fonts/bundled/` (glyph set
 is Latin + punctuation + box-drawing + powerline), so a picked face never
 depends on the OS. The bundled IBM Plex Sans and Lilex faces stay in the list
 under their own names (their gpui aliases are `.ZedSans` / `.ZedMono`).
@@ -318,7 +320,7 @@ element, not the palette.
 
 ### Do:
 - **Do** read every color, size, and radius from `theme::get(cx)`; add a role to
-  `Palette` when a new semantic need appears so all thirty-two palettes stay legible.
+  `Palette` when a new semantic need appears so all forty-two palettes stay legible.
 - **Do** use hairlines and whitespace to separate sections; reserve rounded bordered
   surfaces for objects that are conceptually singular (composer, metric board, popover).
 - **Do** keep controls at 28px (compact) / 34px (primary) so a 900px-tall window shows

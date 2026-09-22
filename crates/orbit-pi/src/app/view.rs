@@ -184,12 +184,13 @@ impl Render for OrbitApp {
             .current_workspace
             .clone()
             .or_else(|| std::env::current_dir().ok());
-        // The rail gates on the main area's width (Waku: 872px transcript
+        // The rail gates on the main area's width (872px transcript
         // container), which excludes the sessions sidebar when visible.
         let viewport = window.viewport_size();
         // The right side pane is hidden while settings/onboarding own the
         // main area (same rule as the sessions sidebar).
-        let pane_visible = self.sidepane.read(cx).is_open()
+        let pane_open = self.sidepane.read(cx).is_open();
+        let pane_visible = pane_open
             && !self.settings_open
             && !self.usage_open
             && self.dependencies_ready();
@@ -245,8 +246,12 @@ impl Render for OrbitApp {
         });
         // ── project panel (right dock) ── hidden while Settings owns the
         // window, like the sessions sidebar. Sync the workspace each render;
-        // a change rebuilds the tree off-thread.
-        let explorer_visible = self.project_panel.read(cx).is_open() && !self.settings_open;
+        // a change rebuilds the tree off-thread. The Explorer and the Review
+        // pane are mutually exclusive right docks: while Review is open the
+        // tree stays closed.
+        let explorer_visible = self.project_panel.read(cx).is_open()
+            && !self.settings_open
+            && !pane_open;
         let explorer_width = if explorer_visible {
             self.project_panel.read(cx).width()
         } else {
@@ -265,6 +270,12 @@ impl Render for OrbitApp {
             panel.set_workspace(explorer_workspace, cx);
             panel.set_active(explorer_active, cx);
             panel.set_reserve_controls(explorer_reserve_controls, cx);
+            // Review is open, so the Explorer must not be: close it here to
+            // catch every path that opens the pane (diff chip, transcript
+            // cards, Git page file rows), not just the top-bar toggle.
+            if pane_open {
+                panel.close(cx);
+            }
         });
         let main_width = viewport.width
             - if self.sidebar_visible && !self.settings_open {
@@ -942,7 +953,7 @@ impl Render for OrbitApp {
                                             .children(self.attachments_row(cx))
                                             .child(self.input.clone())
                                             .child(self.composer_row(composer_compact, cx))
-                                            // Drop-target overlay (Waku): fades
+                                            // Drop-target overlay: fades
                                             // in over the box while files are
                                             // dragged across it. Absolute, so
                                             // highlighting never shifts layout.
@@ -1095,7 +1106,7 @@ impl Render for OrbitApp {
             // ── update modal — the search, changelog, and install decision,
             // opened by the download control and Check for Updates. Below the
             // extension dialog (a run blocks on it) and the lightbox.
-            .children(self.updater_dialog_layer(cx))
+            .children(self.updater_dialog_layer(window, cx))
             // ── image lightbox — full-window, above everything; opened from a
             // transcript image tile, dismissed by click or Escape.
             .children(
@@ -2794,7 +2805,7 @@ impl OrbitApp {
             )
     }
 
-    /// Sidebar nav row — Waku `render_sidebar_action_row` shape: fixed height,
+    /// Sidebar nav row — fixed height,
     /// icon in a 20px slot, secondary label, rounded hover surface.
     /// The sidebar's primary action: a raised New Task button with the
     /// ⌘N shortcut hint — the one emphasized control in the nav column.

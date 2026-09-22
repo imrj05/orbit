@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.12] - 2026-09-22
+
+## [0.0.11] - 2026-09-22
+
+### Contributors
+
+### Added
+
+- **Ten more palettes** — the appearance catalog grows from 32 to 42. Two new
+  Orbit-family light palettes join the set: **Orbit Paper**, a cooler neutral
+  paper canvas that is the light counterpart to Orbit's warm off-white (same
+  ember accent), and **Orbit Contrast**, a near-white, high-contrast palette
+  with deeper ink and a stronger hairline for maximum legibility. The curated
+  light counterparts of the editor themes also land — **Ayu Light**,
+  **Catppuccin Latte**, **Flexoki Light**, **Gruvbox Light**, **Nord Light**,
+  **One Light**, **Solarized Light**, and **Tokyonight Light** — so light is a
+  family in the Appearance dropdown rather than a single option. The picker
+  partitions the catalog by mode, so every choice it offers matches the active
+  mode.
+
+- **`toggle_knob` palette role** — a mode-aware token for the knob of a toggle
+  switch, kept light in both modes so it reads on the accent (on) and the
+  raised track (off). The knob previously used `text`, which painted a black
+  dot on the light track in light mode.
+
+### Changed
+
+- The saved theme keys `one-light` and `flexoki-light` now resolve to the real
+  **One Light** and **Flexoki Light** palettes instead of being folded into
+  Orbit Light; the generic `light` alias still maps to Orbit Light.
+
+### Fixed
+
+- Clicking a radio row no longer leaves a stray accent focus ring behind.
+  gpui 0.2 has no `:focus-visible`, so the automatic focus transfer on
+  mouse-down is suppressed; the ring appears only for keyboard focus, while
+  the row's own click still selects on mouse-up.
+
+- **Dumitru Moloșnic** ([#11](https://github.com/imrj05/orbit/pull/11)) — light,
+  dark, and system appearance modes; transcript table sizing, streaming
+  scroll-position, and multiline command-preview fixes.
+
+## [0.0.10] - 2026-09-21
+
 ### Added
 
 - **Explorer** — a Zed-style file-and-folder explorer for the active workspace.
@@ -19,14 +63,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and runs off-thread with a bounded entry cap surfaced honestly as
   "truncated". Right-clicking a row offers Open, Open in Default App, Reveal
   in File Manager, and Copy Path / Relative Path. Clicking a file opens a
-  full-page read-only **Files** viewer: a tab strip over syntax-highlighted
-  code, rendered Markdown, or an image, with a path/size/line-count toolbar and
-  a Read-only mark. Binary files, oversized files (2 MiB), and directories get
-  an honest notice instead of a lossy dump; the workspace watcher refreshes the
-  tree and the open file on change. `cmd-w` or the toolbar X returns to the
-  chat.
+  full-page **Files** editor: a tab strip over syntax-highlighted
+  code with line numbers, editable Markdown (with an Edit/Preview toggle), or
+  an image, with a path/size/line-count toolbar and a save-status chip. Code,
+  text, and Markdown files are editable and autosave to disk (debounced;
+  `cmd-s` saves now); unsaved tabs carry a dot, and external changes are
+  flagged rather than silently overwriting edits. Binary files, oversized
+  files (2 MiB), truncated files, non-UTF-8 files, and directories get an
+  honest notice instead of a lossy dump, and never enter the editor. The
+  workspace watcher refreshes the tree and the open file on change. `cmd-w`
+  closes the active tab (the last tab, or `cmd-shift-w`, closes the surface),
+  and the toolbar X returns to the chat.
+
+- **Editing** — the Explorer's editor (and the chat composer) supports
+  **undo/redo** (`cmd-z` / `cmd-shift-z`), where a run of typing within 400 ms
+  coalesces into a single undo step and a caret move starts a new one. History
+  is bounded by both step count and total bytes so a whole-file buffer cannot
+  balloon memory.
+
+- **Explorer file operations** — create, rename, and delete files and folders
+  from the project panel. **New File** and **New Folder** sit in the panel
+  header and in a directory's right-click menu; **Rename** edits a row's name
+  in place; **Delete** asks first and moves the item to the OS Trash on macOS
+  (permanent delete elsewhere, with the confirmation worded to match). Names
+  are validated before anything touches disk, a create never clobbers an
+  existing file, and a rename refuses an occupied name. An operation is refused
+  while an open Files tab under the target has unsaved edits, so it can never
+  race an autosave or silently discard a buffer; a renamed file's open tab
+  follows the new path, and a deleted one closes.
+
+- **More code fonts** — the Code font picker now offers seven more bundled
+  faces alongside the existing set: **DM Mono**, **IBM Plex Mono**,
+  **Inconsolata**, **Noto Sans Mono**, **Space Mono**, **Anonymous Pro**, and
+  **Martian Mono**. Like the rest of the catalog they ship as subset static
+  TTFs, so a picked face resolves without an OS dependency.
 
 ### Fixed
+
+- Explorer rows now fill the panel width, matching the Review pane's file tree.
+  The selection/hover highlight no longer collapses to a narrow pill around the
+  devicon, and git badges align to the right. This also fixes the inline rename
+  and new-file prompts, which rendered as an empty bubble: the prompt input is
+  a `ComposerInput`, which has no intrinsic width, so on a content-sized row
+  its `flex_1` collapsed to zero. A regression test renders the real panel and
+  asserts the prompt input keeps a usable width.
+
+- The Explorer's row context menu opens at the pointer, flipping above/left
+  when it would overflow the window. It was pinned to the panel's top-left, so
+  a row's menu always appeared at the top of the tree regardless of where the
+  row was right-clicked.
+
+- Closing a file tab keeps keyboard focus inside the Files surface: it moves to
+  the newly active editor, or to the surface itself for preview/read-only tabs,
+  instead of being dropped with the removed editor. Previously focus was lost
+  after the first close (when the next tab did not paint an editor), so `cmd-w`
+  stopped working. Closing a tab to the left of the active one also selected the
+  wrong neighbour.
 
 - Search and filter placeholders (provider, model, settings, plugins, skills,
   side pane, git panel, usage, in-transcript find, branch/workspace pickers)
@@ -146,7 +238,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - In-transcript find (⌘F) and a full-window image lightbox.
 - Native macOS app bundle, Developer-ID signed and notarizable.
 
-[Unreleased]: https://github.com/imrj05/orbit/compare/v0.0.9...HEAD
+[Unreleased]: https://github.com/imrj05/orbit/compare/v0.0.12...HEAD
 [0.0.1]: https://github.com/imrj05/orbit/releases/tag/v0.0.1
 [0.0.2]: https://github.com/imrj05/orbit/releases/tag/v0.0.2
 [0.0.3]: https://github.com/imrj05/orbit/releases/tag/v0.0.3
@@ -156,3 +248,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.0.7]: https://github.com/imrj05/orbit/releases/tag/v0.0.7
 [0.0.8]: https://github.com/imrj05/orbit/releases/tag/v0.0.8
 [0.0.9]: https://github.com/imrj05/orbit/releases/tag/v0.0.9
+[0.0.10]: https://github.com/imrj05/orbit/releases/tag/v0.0.10
+[0.0.11]: https://github.com/imrj05/orbit/releases/tag/v0.0.11
+[0.0.12]: https://github.com/imrj05/orbit/releases/tag/v0.0.12
