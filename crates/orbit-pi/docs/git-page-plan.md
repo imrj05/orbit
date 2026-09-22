@@ -61,6 +61,55 @@ Decisions locked: `gh` CLI only · read + full write issues/PRs · GitHub only �
   Deferred: visually muting lanes for remote-only commits (needs a reliable
   local-reachability set; ref badges already distinguish them).
   `cargo test -p orbit-pi` green (630 tests).
+- **Phase 5 — done (core).** `gh.rs` gained `GhUser`/`GhLabel`/`GhComment`/
+  `GhIssue`, `IssueFilter`/`IssueState`, `list_issues`, `view_issue`,
+  `create_issue`, `comment_issue`, `edit_issue_labels`, `close_issue`,
+  `reopen_issue`, `list_labels`, and `relative_time`, with serde tests against
+  real `gh --json` shapes. The Issues tab is real: Open/Closed/All chips, a
+  search field, a repository-label filter/picker (clicking a label in an open
+  issue toggles it on the issue), a **New issue** form (title + Markdown body),
+  list rows (state, labels, author avatar, comment count, relative time), and a
+  detail view with the rendered Markdown body, every comment, a comment
+  composer, **Close/Reopen**, **Edit labels**, and **Open on GitHub**. Setup
+  states still cover a missing or signed-out `gh`. Deferred: assignee editing,
+  and virtualizing the issue list (bounded at `gh`'s 50-result page).
+  `cargo test -p orbit-pi` green (633 tests).
+- **Phase 6 — done (core).** `gh.rs` gained `GhCheck` (CheckRun + StatusContext,
+  normalized to a `CheckBucket`), `GhReview`, `GhPullCommit`, `GhPullFile`,
+  `GhPull` (+ `checks_summary`/`is_open`/`is_merged`), `PrFilter`/`PrState`,
+  `MergeMethod`, `ReviewAction`, and `list_pulls`, `view_pull`, `create_pull`,
+  `comment_pull`, `review_pull`, `merge_pull`, `close_pull`, `reopen_pull`,
+  `checkout_pull`, with serde tests for the PR and check shapes. The Pulls tab
+  is real: Open/Closed/Merged/All chips, search, a **New pull request** form
+  (title, Markdown body, base-branch picker, draft toggle), list rows with CI
+  rollup and review-decision chips, and a detail view with the Markdown
+  description, checks (each linking out), commits, changed files (diff opens in
+  Review), comments, submitted reviews, a comment/review composer,
+  **Approve** / **Request changes**, **Merge** behind a method + delete-branch
+  confirmation, **Close/Reopen**, **Checkout branch**, and **Open on GitHub**.
+  `gh pr checkout` is refused unless the worktree is clean and no operation is
+  in progress. Deferred: an inline PR diff (files open the working-tree diff
+  via Review), label/assignee editing on PRs, and a neutral review-comment
+  action. `cargo test -p orbit-pi` green (636 tests).
+- **Phase 7 — done (core).** Keyboard: `⌘1`–`⌘5` switch the Git page's tabs
+  (handled globally but a no-op unless the page is open). Reduce motion now
+  renders the Git page's spinner statically. Performance: the `gh` probe is
+  cached (first load, workspace change, and the manual refresh only) instead of
+  running two subprocesses on every tab switch; commit/PR changed-file lists
+  cap at `MAX_FILE_ROWS` (300) and summarize the rest; issue/PR lists stay
+  bounded at `gh`'s 50-result page. i18n: every new key is in `en.yml` and
+  propagated to all nine generated locales (English fallback where a glossary
+  entry does not exist yet), and the completeness test is green. Docs:
+  `crates/orbit-pi/docs/git-page.md` documents the tabs, recovery model,
+  operation state machine, `gh` requirement, and limits, and the `AGENT.md` Git
+  page row is rewritten to match. Deferred: real translations for the new
+  strings (glossary-driven), virtualizing the issue/PR lists, a keyboard row
+  cursor, `git blame`, open-at-revision, per-hunk staging, and assignee
+  editing. `cargo test -p orbit-pi` green (636 tests); clippy clean apart from
+  the pre-existing `section_header` lint.
+
+All seven phases are now implemented. The plan remains the reference for the
+feature's shape; `docs/git-page.md` is the user-facing design note.
 
 ## Goal
 

@@ -159,7 +159,12 @@ actions!(
         ToggleProjectPanel,
         CloseFiles,
         CloseFileTab,
-        SaveFile
+        SaveFile,
+        GitTabChanges,
+        GitTabHistory,
+        GitTabGraph,
+        GitTabIssues,
+        GitTabPulls
     ]
 );
 
@@ -307,6 +312,13 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-,", OpenSettings, None),
         // The Usage page is a destination: cmd-u matches the sidebar row.
         KeyBinding::new("cmd-u", ToggleUsage, None),
+        // Git page tabs: cmd-1..cmd-5 switch tabs while the page is open; the
+        // handler is a no-op elsewhere, so they never surprise a chat session.
+        KeyBinding::new("cmd-1", GitTabChanges, None),
+        KeyBinding::new("cmd-2", GitTabHistory, None),
+        KeyBinding::new("cmd-3", GitTabGraph, None),
+        KeyBinding::new("cmd-4", GitTabIssues, None),
+        KeyBinding::new("cmd-5", GitTabPulls, None),
         // Bottom terminal panel: cmd-j is the workbench convention for the
         // panel toggle (and stays live while the shell has focus, since app
         // actions are not scoped to a key context).

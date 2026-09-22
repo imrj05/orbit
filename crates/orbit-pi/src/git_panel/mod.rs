@@ -50,6 +50,10 @@ pub type Close = std::rc::Rc<dyn Fn(&mut Window, &mut gpui::App)>;
 
 const HISTORY_PAGE: usize = 40;
 
+/// The most changed-file rows a commit/PR detail renders. Beyond this the
+/// list is summarized, so one enormous commit cannot stall a frame.
+const MAX_FILE_ROWS: usize = 300;
+
 /// How long the header refresh button keeps spinning after a click, so a
 /// fast git read still reads as acknowledged (the same floor Settings uses).
 const REFRESH_FEEDBACK: Duration = Duration::from_millis(650);
@@ -84,6 +88,12 @@ enum PendingConfirm {
     Abort(InProgress),
     /// Delete a branch (force-discarding unmerged commits).
     DeleteBranch(String),
+    /// Merge a pull request after confirmation.
+    MergePull {
+        number: u64,
+        method: gh::MergeMethod,
+        delete_branch: bool,
+    },
 }
 
 /// Which ref picker is open.
@@ -93,6 +103,8 @@ enum RefTarget {
     Merge,
     /// "Rebase onto…": rebase the current branch onto the chosen ref.
     Rebase,
+    /// The new-PR form's base branch picker.
+    PrBase,
 }
 
 /// What the branch-name prompt is for.
@@ -194,6 +206,51 @@ pub struct GitPanel {
     gh_authenticated: bool,
     /// Auth error or version line, shown in the Issues/Pulls setup state.
     gh_detail: String,
+    /// Whether the `gh` probe has run for this workspace. The probe is two
+    /// subprocesses, so it is not repeated on every tab switch — only on the
+    /// first load, on a workspace change, and on the manual refresh.
+    gh_probed: bool,
+
+    // ── issues (gh) ──
+    issues: Vec<gh::GhIssue>,
+    issues_loading: bool,
+    issues_error: Option<String>,
+    issue_filter: gh::IssueFilter,
+    issue_search: Entity<crate::composer::ComposerInput>,
+    /// The issue whose detail view is open, if any.
+    issue_detail: Option<gh::GhIssue>,
+    issue_detail_loading: bool,
+    issue_comment: Entity<crate::composer::ComposerInput>,
+    /// Repository labels for the picker.
+    issue_labels: Vec<gh::GhLabel>,
+    label_menu_open: bool,
+    /// True while an issue mutation runs.
+    issue_busy: bool,
+    /// The new-issue form.
+    issue_new_open: bool,
+    issue_new_title: Entity<crate::composer::ComposerInput>,
+    issue_new_body: Entity<crate::composer::ComposerInput>,
+
+    // ── pull requests (gh) ──
+    pulls: Vec<gh::GhPull>,
+    pulls_loading: bool,
+    pulls_error: Option<String>,
+    pr_filter: gh::PrFilter,
+    pr_search: Entity<crate::composer::ComposerInput>,
+    /// The PR whose detail view is open, if any.
+    pr_detail: Option<gh::GhPull>,
+    pr_detail_loading: bool,
+    pr_comment: Entity<crate::composer::ComposerInput>,
+    pr_busy: bool,
+    /// The merge method the merge confirmation will use.
+    pr_merge_method: gh::MergeMethod,
+    pr_delete_branch: bool,
+    /// The new-PR form.
+    pr_new_open: bool,
+    pr_new_title: Entity<crate::composer::ComposerInput>,
+    pr_new_body: Entity<crate::composer::ComposerInput>,
+    pr_new_base: Option<String>,
+    pr_new_draft: bool,
 
     // ── header ──
     branch: Option<String>,
@@ -243,6 +300,54 @@ impl GitPanel {
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
         });
+        let issue_search = cx.new(|cx| {
+            crate::composer::ComposerInput::new(cx)
+                .with_placeholder_key("git_panel.issue_search_placeholder")
+                .with_key_context("Composer Picker")
+                .with_max_lines(1)
+        });
+        let issue_comment = cx.new(|cx| {
+            crate::composer::ComposerInput::new(cx)
+                .with_placeholder_key("git_panel.issue_comment_placeholder")
+                .with_key_context("Composer Picker")
+                .with_max_lines(5)
+        });
+        let issue_new_title = cx.new(|cx| {
+            crate::composer::ComposerInput::new(cx)
+                .with_placeholder_key("git_panel.issue_title_placeholder")
+                .with_key_context("Composer Picker")
+                .with_max_lines(1)
+        });
+        let issue_new_body = cx.new(|cx| {
+            crate::composer::ComposerInput::new(cx)
+                .with_placeholder_key("git_panel.issue_body_placeholder")
+                .with_key_context("Composer Picker")
+                .with_max_lines(8)
+        });
+        let pr_search = cx.new(|cx| {
+            crate::composer::ComposerInput::new(cx)
+                .with_placeholder_key("git_panel.pr_search_placeholder")
+                .with_key_context("Composer Picker")
+                .with_max_lines(1)
+        });
+        let pr_comment = cx.new(|cx| {
+            crate::composer::ComposerInput::new(cx)
+                .with_placeholder_key("git_panel.pr_comment_placeholder")
+                .with_key_context("Composer Picker")
+                .with_max_lines(5)
+        });
+        let pr_new_title = cx.new(|cx| {
+            crate::composer::ComposerInput::new(cx)
+                .with_placeholder_key("git_panel.pr_title_placeholder")
+                .with_key_context("Composer Picker")
+                .with_max_lines(1)
+        });
+        let pr_new_body = cx.new(|cx| {
+            crate::composer::ComposerInput::new(cx)
+                .with_placeholder_key("git_panel.pr_body_placeholder")
+                .with_key_context("Composer Picker")
+                .with_max_lines(10)
+        });
         Self {
             open: false,
             tab: GitTab::Changes,
@@ -287,6 +392,37 @@ impl GitPanel {
             gh_installed: false,
             gh_authenticated: false,
             gh_detail: String::new(),
+            gh_probed: false,
+            issues: Vec::new(),
+            issues_loading: false,
+            issues_error: None,
+            issue_filter: gh::IssueFilter::default(),
+            issue_search,
+            issue_detail: None,
+            issue_detail_loading: false,
+            issue_comment,
+            issue_labels: Vec::new(),
+            label_menu_open: false,
+            issue_busy: false,
+            issue_new_open: false,
+            issue_new_title,
+            issue_new_body,
+            pulls: Vec::new(),
+            pulls_loading: false,
+            pulls_error: None,
+            pr_filter: gh::PrFilter::default(),
+            pr_search,
+            pr_detail: None,
+            pr_detail_loading: false,
+            pr_comment,
+            pr_busy: false,
+            pr_merge_method: gh::MergeMethod::default(),
+            pr_delete_branch: false,
+            pr_new_open: false,
+            pr_new_title,
+            pr_new_body,
+            pr_new_base: None,
+            pr_new_draft: false,
             branch: None,
             ahead_behind: None,
             has_commits: false,
@@ -313,6 +449,25 @@ impl GitPanel {
     pub fn hide(&mut self, cx: &mut Context<Self>) {
         self.open = false;
         self.branch_menu_open = false;
+        cx.notify();
+    }
+
+    /// Switch to a tab by index (0=Changes, 1=History, 2=Graph, 3=Issues,
+    /// 4=Pull requests), reloading it. Driven by the ⌘1–⌘5 shortcuts.
+    pub fn set_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+        let tab = match index {
+            1 => GitTab::History,
+            2 => GitTab::Graph,
+            3 => GitTab::Issues,
+            4 => GitTab::Pulls,
+            _ => GitTab::Changes,
+        };
+        if self.tab != tab {
+            self.tab = tab;
+            self.branch_menu_open = false;
+            self.ref_menu = None;
+            self.refresh_all(cx);
+        }
         cx.notify();
     }
 
@@ -351,6 +506,15 @@ impl GitPanel {
             self.commit_detail = None;
             self.history_filter = git::HistoryFilter::default();
             self.file_menu = None;
+            self.issues.clear();
+            self.issue_detail = None;
+            self.issue_new_open = false;
+            self.issue_filter = gh::IssueFilter::default();
+            self.pulls.clear();
+            self.pr_detail = None;
+            self.pr_new_open = false;
+            self.pr_filter = gh::PrFilter::default();
+            self.gh_probed = false;
             if self.open {
                 self.refresh_all(cx);
             }
@@ -401,13 +565,17 @@ impl GitPanel {
         match self.tab {
             GitTab::History => self.refresh_history(cx),
             GitTab::Graph => self.refresh_graph(cx),
-            GitTab::Changes | GitTab::Issues | GitTab::Pulls => {}
+            GitTab::Issues => self.refresh_issues(cx),
+            GitTab::Pulls => self.refresh_pulls(cx),
+            GitTab::Changes => {}
         }
     }
 
     /// Refresh from the header button: same reload, plus a short minimum spin
     /// so the click is visibly acknowledged even when the read is instant.
     fn refresh_from_button(&mut self, cx: &mut Context<Self>) {
+        // The manual refresh re-probes `gh` (auth may have changed since).
+        self.gh_probed = false;
         self.refresh_all(cx);
         self.refresh_spin_until = Some(Instant::now() + REFRESH_FEEDBACK);
         cx.spawn(async move |this, cx| {
@@ -433,7 +601,8 @@ impl GitPanel {
             GitTab::Changes => self.changes_loading,
             GitTab::History => self.history_loading,
             GitTab::Graph => self.graph_loading,
-            GitTab::Issues | GitTab::Pulls => false,
+            GitTab::Issues => self.issues_loading,
+            GitTab::Pulls => self.pulls_loading,
         }
     }
 
@@ -520,6 +689,9 @@ impl GitPanel {
     /// requests tabs. Two quick subprocesses, run off-thread; never blocks a
     /// frame.
     fn refresh_gh(&mut self, cx: &mut Context<Self>) {
+        if self.gh_probed {
+            return;
+        }
         let Some(cwd) = self.cwd() else {
             return;
         };
@@ -532,9 +704,440 @@ impl GitPanel {
                     panel.gh_authenticated = status.authenticated;
                     panel.gh_detail = status.detail;
                 }
+                panel.gh_probed = true;
                 cx.notify();
             },
         );
+    }
+
+    // ── issues ─────────────────────────────────────────────────────────
+
+    /// Load the issue list under the current filter. Repository labels for the
+    /// picker are fetched once, on the first load.
+    fn refresh_issues(&mut self, cx: &mut Context<Self>) {
+        let Some(cwd) = self.cwd() else { return };
+        self.issues_loading = true;
+        self.issues_error = None;
+        let filter = self.issue_filter.clone();
+        let need_labels = self.issue_labels.is_empty();
+        self.spawn_data(
+            cx,
+            move || {
+                let issues = gh::list_issues(&cwd, &filter)?;
+                let labels = if need_labels {
+                    gh::list_labels(&cwd).unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                Ok((issues, labels))
+            },
+            |panel, result, cx| {
+                panel.issues_loading = false;
+                match result {
+                    Ok((issues, labels)) => {
+                        panel.issues = issues;
+                        if !labels.is_empty() {
+                            panel.issue_labels = labels;
+                        }
+                    }
+                    Err(err) => panel.issues_error = Some(err),
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    /// Load one issue (body + comments) into the detail view.
+    fn open_issue(&mut self, number: u64, cx: &mut Context<Self>) {
+        let Some(cwd) = self.cwd() else { return };
+        self.issue_detail = None;
+        self.issue_detail_loading = true;
+        self.label_menu_open = false;
+        cx.notify();
+        self.spawn_data(
+            cx,
+            move || gh::view_issue(&cwd, number),
+            |panel, result, cx| {
+                panel.issue_detail_loading = false;
+                match result {
+                    Ok(issue) => panel.issue_detail = Some(issue),
+                    Err(err) => panel.set_failure(err),
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    fn close_issue_detail(&mut self, cx: &mut Context<Self>) {
+        self.issue_detail = None;
+        self.issue_new_open = false;
+        self.label_menu_open = false;
+        cx.notify();
+    }
+
+    /// Run an issue mutation off-thread, then reload the list and any open
+    /// detail so the page reflects GitHub's truth.
+    fn run_issue_op<F>(&mut self, work: F, cx: &mut Context<Self>)
+    where
+        F: FnOnce() -> Result<String, String> + Send + 'static,
+    {
+        self.issue_busy = true;
+        cx.notify();
+        self.spawn_data(cx, work, |panel, result, cx| {
+            panel.issue_busy = false;
+            match result {
+                Ok(note) => {
+                    panel.clear_failure();
+                    panel.set_status(note);
+                }
+                Err(err) => panel.set_failure(err),
+            }
+            if panel.tab == GitTab::Issues {
+                panel.refresh_issues(cx);
+            }
+            if let Some(number) = panel.issue_detail.as_ref().map(|issue| issue.number) {
+                panel.open_issue(number, cx);
+            }
+            cx.notify();
+        });
+    }
+
+    fn comment_issue(&mut self, cx: &mut Context<Self>) {
+        let Some(number) = self.issue_detail.as_ref().map(|issue| issue.number) else {
+            return;
+        };
+        let body = self.issue_comment.read(cx).text();
+        if body.trim().is_empty() {
+            return;
+        }
+        let Some(cwd) = self.cwd() else { return };
+        self.issue_comment.update(cx, |input, cx| input.clear(cx));
+        self.run_issue_op(move || gh::comment_issue(&cwd, number, &body), cx);
+    }
+
+    fn toggle_issue_state(&mut self, cx: &mut Context<Self>) {
+        let Some(issue) = self.issue_detail.as_ref() else {
+            return;
+        };
+        let (number, open) = (issue.number, issue.is_open());
+        let Some(cwd) = self.cwd() else { return };
+        self.run_issue_op(
+            move || {
+                if open {
+                    gh::close_issue(&cwd, number, None)
+                } else {
+                    gh::reopen_issue(&cwd, number)
+                }
+            },
+            cx,
+        );
+    }
+
+    fn toggle_issue_label(&mut self, label: String, cx: &mut Context<Self>) {
+        let Some(issue) = self.issue_detail.as_ref() else {
+            return;
+        };
+        let number = issue.number;
+        let has = issue.labels.iter().any(|entry| entry.name == label);
+        let Some(cwd) = self.cwd() else { return };
+        let add = if has { Vec::new() } else { vec![label.clone()] };
+        let remove = if has { vec![label] } else { Vec::new() };
+        self.run_issue_op(
+            move || gh::edit_issue_labels(&cwd, number, &add, &remove),
+            cx,
+        );
+    }
+
+    fn create_issue(&mut self, cx: &mut Context<Self>) {
+        let title = self.issue_new_title.read(cx).text().trim().to_string();
+        if title.is_empty() {
+            self.set_failure(tr!("git_panel.issue_title_required"));
+            cx.notify();
+            return;
+        }
+        let body = self.issue_new_body.read(cx).text();
+        let Some(cwd) = self.cwd() else { return };
+        self.issue_busy = true;
+        cx.notify();
+        self.spawn_data(
+            cx,
+            move || gh::create_issue(&cwd, &title, &body, &[], &[]),
+            |panel, result, cx| {
+                panel.issue_busy = false;
+                match result {
+                    Ok(url) => {
+                        panel.clear_failure();
+                        panel.set_status(tr!("git_panel.issue_created"));
+                        panel.issue_new_open = false;
+                        panel
+                            .issue_new_title
+                            .update(cx, |input, cx| input.clear(cx));
+                        panel.issue_new_body.update(cx, |input, cx| input.clear(cx));
+                        if let Some(number) = url.rsplit('/').next().and_then(|n| n.parse().ok()) {
+                            panel.open_issue(number, cx);
+                        }
+                    }
+                    Err(err) => panel.set_failure(err),
+                }
+                panel.refresh_issues(cx);
+                cx.notify();
+            },
+        );
+    }
+
+    fn set_issue_state(&mut self, state: gh::IssueState, cx: &mut Context<Self>) {
+        if self.issue_filter.state == state {
+            return;
+        }
+        self.issue_filter.state = state;
+        self.refresh_issues(cx);
+        cx.notify();
+    }
+
+    fn apply_issue_search(&mut self, cx: &mut Context<Self>) {
+        let text = self.issue_search.read(cx).text().trim().to_string();
+        self.issue_filter.search = (!text.is_empty()).then_some(text);
+        self.refresh_issues(cx);
+        cx.notify();
+    }
+
+    fn set_issue_label_filter(&mut self, label: Option<String>, cx: &mut Context<Self>) {
+        self.issue_filter.label = label;
+        self.label_menu_open = false;
+        self.refresh_issues(cx);
+        cx.notify();
+    }
+
+    fn clear_issue_filter(&mut self, cx: &mut Context<Self>) {
+        self.issue_filter = gh::IssueFilter::default();
+        let len = self.issue_search.read(cx).text().len();
+        self.issue_search
+            .update(cx, |input, cx| input.replace_range(0..len, "", cx));
+        self.refresh_issues(cx);
+        cx.notify();
+    }
+
+    // ── pull requests ──────────────────────────────────────────────────
+
+    fn refresh_pulls(&mut self, cx: &mut Context<Self>) {
+        let Some(cwd) = self.cwd() else { return };
+        self.pulls_loading = true;
+        self.pulls_error = None;
+        let filter = self.pr_filter.clone();
+        self.spawn_data(
+            cx,
+            move || gh::list_pulls(&cwd, &filter),
+            |panel, result, cx| {
+                panel.pulls_loading = false;
+                match result {
+                    Ok(pulls) => panel.pulls = pulls,
+                    Err(err) => panel.pulls_error = Some(err),
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    fn open_pull(&mut self, number: u64, cx: &mut Context<Self>) {
+        let Some(cwd) = self.cwd() else { return };
+        self.pr_detail = None;
+        self.pr_detail_loading = true;
+        cx.notify();
+        self.spawn_data(
+            cx,
+            move || gh::view_pull(&cwd, number),
+            |panel, result, cx| {
+                panel.pr_detail_loading = false;
+                match result {
+                    Ok(pull) => panel.pr_detail = Some(pull),
+                    Err(err) => panel.set_failure(err),
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    fn close_pull_detail(&mut self, cx: &mut Context<Self>) {
+        self.pr_detail = None;
+        self.pr_new_open = false;
+        cx.notify();
+    }
+
+    /// Run a PR mutation off-thread, then reload the list and any open detail.
+    fn run_pr_op<F>(&mut self, work: F, cx: &mut Context<Self>)
+    where
+        F: FnOnce() -> Result<String, String> + Send + 'static,
+    {
+        self.pr_busy = true;
+        cx.notify();
+        self.spawn_data(cx, work, |panel, result, cx| {
+            panel.pr_busy = false;
+            match result {
+                Ok(note) => {
+                    panel.clear_failure();
+                    panel.set_status(note);
+                }
+                Err(err) => panel.set_failure(err),
+            }
+            if panel.tab == GitTab::Pulls {
+                panel.refresh_pulls(cx);
+            }
+            if let Some(number) = panel.pr_detail.as_ref().map(|pull| pull.number) {
+                panel.open_pull(number, cx);
+            }
+            cx.notify();
+        });
+    }
+
+    fn comment_pull(&mut self, cx: &mut Context<Self>) {
+        let Some(number) = self.pr_detail.as_ref().map(|pull| pull.number) else {
+            return;
+        };
+        let body = self.pr_comment.read(cx).text();
+        if body.trim().is_empty() {
+            return;
+        }
+        let Some(cwd) = self.cwd() else { return };
+        self.pr_comment.update(cx, |input, cx| input.clear(cx));
+        self.run_pr_op(move || gh::comment_pull(&cwd, number, &body), cx);
+    }
+
+    fn review_pull(&mut self, action: gh::ReviewAction, cx: &mut Context<Self>) {
+        let Some(number) = self.pr_detail.as_ref().map(|pull| pull.number) else {
+            return;
+        };
+        let body = self.pr_comment.read(cx).text();
+        let Some(cwd) = self.cwd() else { return };
+        self.pr_comment.update(cx, |input, cx| input.clear(cx));
+        self.run_pr_op(
+            move || gh::review_pull(&cwd, number, action, Some(&body)),
+            cx,
+        );
+    }
+
+    /// Confirm the merge first; the popup carries the chosen method.
+    fn request_merge_pull(&mut self, cx: &mut Context<Self>) {
+        let Some(number) = self.pr_detail.as_ref().map(|pull| pull.number) else {
+            return;
+        };
+        self.pending_confirm = Some(PendingConfirm::MergePull {
+            number,
+            method: self.pr_merge_method,
+            delete_branch: self.pr_delete_branch,
+        });
+        cx.notify();
+    }
+
+    fn toggle_pull_state(&mut self, cx: &mut Context<Self>) {
+        let Some(pull) = self.pr_detail.as_ref() else {
+            return;
+        };
+        let (number, open) = (pull.number, pull.is_open());
+        let Some(cwd) = self.cwd() else { return };
+        self.run_pr_op(
+            move || {
+                if open {
+                    gh::close_pull(&cwd, number)
+                } else {
+                    gh::reopen_pull(&cwd, number)
+                }
+            },
+            cx,
+        );
+    }
+
+    fn checkout_pull(&mut self, cx: &mut Context<Self>) {
+        let Some(number) = self.pr_detail.as_ref().map(|pull| pull.number) else {
+            return;
+        };
+        // `gh pr checkout` rewrites the worktree; never run it dirty or
+        // mid-operation.
+        if self.git_operation.is_some() || !self.staged.is_empty() || !self.unstaged.is_empty() {
+            self.set_failure(tr!("git_panel.checkout_dirty"));
+            cx.notify();
+            return;
+        }
+        let Some(cwd) = self.cwd() else { return };
+        self.run_pr_op(move || gh::checkout_pull(&cwd, number), cx);
+    }
+
+    fn create_pull(&mut self, cx: &mut Context<Self>) {
+        let title = self.pr_new_title.read(cx).text().trim().to_string();
+        if title.is_empty() {
+            self.set_failure(tr!("git_panel.pr_title_required"));
+            cx.notify();
+            return;
+        }
+        let body = self.pr_new_body.read(cx).text();
+        let base = self.pr_new_base.clone().unwrap_or_default();
+        let draft = self.pr_new_draft;
+        let Some(cwd) = self.cwd() else { return };
+        self.pr_busy = true;
+        cx.notify();
+        self.spawn_data(
+            cx,
+            move || gh::create_pull(&cwd, &title, &body, &base, draft),
+            |panel, result, cx| {
+                panel.pr_busy = false;
+                match result {
+                    Ok(url) => {
+                        panel.clear_failure();
+                        panel.set_status(tr!("git_panel.pr_created"));
+                        panel.pr_new_open = false;
+                        panel.pr_new_title.update(cx, |input, cx| input.clear(cx));
+                        panel.pr_new_body.update(cx, |input, cx| input.clear(cx));
+                        if let Some(number) = url.rsplit('/').next().and_then(|n| n.parse().ok()) {
+                            panel.open_pull(number, cx);
+                        }
+                    }
+                    Err(err) => panel.set_failure(err),
+                }
+                panel.refresh_pulls(cx);
+                cx.notify();
+            },
+        );
+    }
+
+    fn set_pr_state(&mut self, state: gh::PrState, cx: &mut Context<Self>) {
+        if self.pr_filter.state == state {
+            return;
+        }
+        self.pr_filter.state = state;
+        self.refresh_pulls(cx);
+        cx.notify();
+    }
+
+    fn apply_pr_search(&mut self, cx: &mut Context<Self>) {
+        let text = self.pr_search.read(cx).text().trim().to_string();
+        self.pr_filter.search = (!text.is_empty()).then_some(text);
+        self.refresh_pulls(cx);
+        cx.notify();
+    }
+
+    fn clear_pr_filter(&mut self, cx: &mut Context<Self>) {
+        self.pr_filter = gh::PrFilter::default();
+        let len = self.pr_search.read(cx).text().len();
+        self.pr_search
+            .update(cx, |input, cx| input.replace_range(0..len, "", cx));
+        self.refresh_pulls(cx);
+        cx.notify();
+    }
+
+    /// The default base branch for a new PR (`main`/`master` when present).
+    fn default_base(&self) -> String {
+        for candidate in ["main", "master"] {
+            if self.refs.iter().any(|entry| entry.name == candidate) {
+                return candidate.to_string();
+            }
+        }
+        self.refs
+            .iter()
+            .find(|entry| {
+                entry.kind == git::RefKind::Branch
+                    && Some(entry.name.as_str()) != self.branch.as_deref()
+            })
+            .map(|entry| entry.name.clone())
+            .unwrap_or_else(|| "main".to_string())
     }
 
     fn refresh_history(&mut self, cx: &mut Context<Self>) {
@@ -1105,6 +1708,17 @@ impl GitPanel {
             PendingConfirm::Abort(op) => self.abort_operation(op, cx),
             PendingConfirm::DeleteBranch(name) => {
                 self.run_operation(move |cwd| git_ops::delete_branch(cwd, &name, true), cx)
+            }
+            PendingConfirm::MergePull {
+                number,
+                method,
+                delete_branch,
+            } => {
+                let Some(cwd) = self.cwd() else { return };
+                self.run_pr_op(
+                    move || gh::merge_pull(&cwd, number, method, delete_branch),
+                    cx,
+                );
             }
         }
     }
@@ -2705,7 +3319,7 @@ impl GitPanel {
         ));
         column = column.child(meta);
 
-        for file in &detail.files {
+        for file in detail.files.iter().take(MAX_FILE_ROWS) {
             let path = file.path.clone();
             let fallback = icon("icons/file.svg", 12., theme.text_3).into_any_element();
             let glyph = crate::app::file_glyph(&path, dark, nerd.as_ref(), 12., fallback);
@@ -2764,6 +3378,15 @@ impl GitPanel {
                         }),
                     )),
             );
+        }
+        if detail.files.len() > MAX_FILE_ROWS {
+            column = column.child(detail_note(
+                theme,
+                &tr!(
+                    "git_panel.more_files",
+                    count = detail.files.len() - MAX_FILE_ROWS
+                ),
+            ));
         }
         column.into_any_element()
     }
@@ -2976,6 +3599,1177 @@ impl GitPanel {
             .into_any_element()
     }
 
+    // ── issues rendering ───────────────────────────────────────────────
+
+    /// The Issues tab: the real browser once `gh` is installed and signed in,
+    /// otherwise the honest setup state.
+    fn issues_tab(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        if !self.gh_installed || !self.gh_authenticated {
+            return self.gh_setup_tab(
+                theme,
+                "git_panel.gh_issues_title",
+                "git_panel.gh_issues_body",
+            );
+        }
+        if self.issue_new_open {
+            return self.issue_new_view(theme, cx);
+        }
+        if let Some(issue) = self.issue_detail.clone() {
+            return self.issue_detail_view(&issue, theme, cx);
+        }
+        self.issues_list_view(theme, cx)
+    }
+
+    fn issue_filter_bar(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let filter = &self.issue_filter;
+        let state_id = |state: gh::IssueState| match state {
+            gh::IssueState::Open => "git-issues-open",
+            gh::IssueState::Closed => "git-issues-closed",
+            gh::IssueState::All => "git-issues-all",
+        };
+        let label_label = match filter.label.as_deref() {
+            Some(label) => tr!("git_panel.label_chip", name = label),
+            None => tr!("git_panel.label_filter"),
+        };
+        div()
+            .id("git-issue-filters")
+            .flex_none()
+            .px(theme.space(16.))
+            .py(theme.space(8.))
+            .border_b_1()
+            .border_color(theme.border)
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .children(
+                [
+                    (gh::IssueState::Open, "git_panel.issue_open"),
+                    (gh::IssueState::Closed, "git_panel.issue_closed"),
+                    (gh::IssueState::All, "git_panel.issue_all"),
+                ]
+                .into_iter()
+                .map(|(state, key)| {
+                    filter_toggle_chip(
+                        state_id(state),
+                        &tr!(key),
+                        filter.state == state,
+                        theme,
+                        cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.set_issue_state(state, cx)
+                        }),
+                    )
+                }),
+            )
+            .child(
+                div()
+                    .w(px(180.))
+                    .ml(theme.space(4.))
+                    .px(theme.space(8.))
+                    .h(px(26.))
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.bg_composer)
+                    .flex()
+                    .items_center()
+                    .child(div().flex_1().min_w_0().child(self.issue_search.clone())),
+            )
+            .child(action_button(
+                "git-issue-search",
+                &tr!("git_panel.search"),
+                Some(icon("icons/search.svg", 12., theme.text_2).into_any_element()),
+                false,
+                false,
+                theme,
+                cx.listener(|this, _: &ClickEvent, _, cx| this.apply_issue_search(cx)),
+            ))
+            .child(filter_chip(
+                "git-issue-label-filter",
+                &label_label,
+                theme,
+                cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.label_menu_open = !this.label_menu_open;
+                    cx.notify();
+                }),
+            ))
+            .children(filter.is_active().then(|| {
+                filter_chip(
+                    "git-issue-clear",
+                    &tr!("git_panel.clear_filter"),
+                    theme,
+                    cx.listener(|this, _: &ClickEvent, _, cx| this.clear_issue_filter(cx)),
+                )
+            }))
+            .child(div().flex_1())
+            .child(action_button(
+                "git-issue-new",
+                &tr!("git_panel.new_issue"),
+                Some(icon("icons/plus.svg", 12., theme.send_fg).into_any_element()),
+                true,
+                self.issue_busy,
+                theme,
+                cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.issue_new_open = true;
+                    this.issue_detail = None;
+                    cx.notify();
+                }),
+            ))
+            .into_any_element()
+    }
+
+    fn issues_list_view(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let mut body = div().flex_1().min_h_0().flex().flex_col();
+        if let Some(error) = &self.issues_error {
+            body = body.child(empty_note(
+                theme,
+                "icons/stop.svg",
+                &tr!("git_panel.issues_unavailable"),
+                Some(error),
+            ));
+        } else if self.issues.is_empty() && self.issues_loading {
+            body = body.child(empty_note(
+                theme,
+                "icons/github.svg",
+                &tr!("git_panel.reading_issues"),
+                None,
+            ));
+        } else if self.issues.is_empty() {
+            body = body.child(empty_note(
+                theme,
+                "icons/github.svg",
+                &tr!("git_panel.no_issues"),
+                Some(&tr!("git_panel.no_issues_detail")),
+            ));
+        } else {
+            let mut list = div().flex().flex_col().py(px(6.));
+            let total = self.issues.len();
+            for (ix, issue) in self.issues.iter().enumerate() {
+                list = list.child(issue_row(issue, theme, cx));
+                if ix + 1 < total {
+                    list = list.child(commit_separator(theme));
+                }
+            }
+            body = body.child(
+                div()
+                    .id("git-issue-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(list),
+            );
+        }
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(self.issue_filter_bar(theme, cx))
+            .child(body)
+            .into_any_element()
+    }
+
+    fn issue_detail_view(
+        &self,
+        issue: &gh::GhIssue,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let state_color = if issue.is_open() {
+            theme.add_green
+        } else {
+            theme.del_red
+        };
+        let state_label = if issue.is_open() {
+            tr!("git_panel.issue_open")
+        } else {
+            tr!("git_panel.issue_closed")
+        };
+        let mut content = div()
+            .flex()
+            .flex_col()
+            .gap(theme.space(12.))
+            .px(theme.space(20.))
+            .py(theme.space(16.))
+            .max_w(px(780.));
+        content = content.child(
+            div()
+                .flex()
+                .items_start()
+                .gap(theme.space(8.))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .text_size(theme.ui_px(16.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(theme.text)
+                                .whitespace_normal()
+                                .child(issue.title.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .child(state_chip(&state_label, state_color, theme))
+                                .child(
+                                    div()
+                                        .text_size(theme.ui_px(11.5))
+                                        .text_color(theme.text_3)
+                                        .child(format!(
+                                            "#{} \u{b7} {} \u{b7} {}",
+                                            issue.number,
+                                            issue.author.login,
+                                            gh::relative_time(&issue.created_at)
+                                        )),
+                                ),
+                        ),
+                )
+                .child(action_button(
+                    "git-issue-back",
+                    &tr!("git_panel.back"),
+                    None,
+                    false,
+                    false,
+                    theme,
+                    cx.listener(|this, _: &ClickEvent, _, cx| this.close_issue_detail(cx)),
+                )),
+        );
+        content = content.child(
+            div()
+                .flex()
+                .items_center()
+                .flex_wrap()
+                .gap(px(6.))
+                .children(
+                    issue
+                        .labels
+                        .iter()
+                        .map(|label| issue_label_chip(label, theme)),
+                )
+                .child(action_button(
+                    "git-issue-labels",
+                    &tr!("git_panel.edit_labels"),
+                    None,
+                    false,
+                    self.issue_busy,
+                    theme,
+                    cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.label_menu_open = !this.label_menu_open;
+                        cx.notify();
+                    }),
+                )),
+        );
+        if !issue.body.trim().is_empty() {
+            content = content.child(
+                div()
+                    .p(theme.space(12.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.bg_raised)
+                    .child(crate::transcript_view::render_markdown_document(
+                        &issue.body,
+                        theme,
+                    )),
+            );
+        }
+        content = content.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(action_button(
+                    "git-issue-state",
+                    &if issue.is_open() {
+                        tr!("git_panel.close_issue")
+                    } else {
+                        tr!("git_panel.reopen_issue")
+                    },
+                    None,
+                    false,
+                    self.issue_busy,
+                    theme,
+                    cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_issue_state(cx)),
+                ))
+                .children((!issue.url.is_empty()).then(|| {
+                    let url = issue.url.clone();
+                    action_button(
+                        "git-issue-web",
+                        &tr!("git_panel.open_on_github"),
+                        Some(
+                            icon("icons/arrow-up-right.svg", 12., theme.text_2).into_any_element(),
+                        ),
+                        false,
+                        false,
+                        theme,
+                        cx.listener(move |_, _: &ClickEvent, _, cx| cx.open_url(&url)),
+                    )
+                })),
+        );
+        for comment in &issue.comments {
+            content = content.child(issue_comment_card(comment, theme));
+        }
+        content = content.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(theme.space(6.))
+                .child(composer_field(theme, self.issue_comment.clone()))
+                .child(div().flex().justify_end().child(action_button(
+                    "git-issue-comment",
+                    &tr!("git_panel.comment"),
+                    None,
+                    true,
+                    self.issue_busy,
+                    theme,
+                    cx.listener(|this, _: &ClickEvent, _, cx| this.comment_issue(cx)),
+                ))),
+        );
+        div()
+            .id("git-issue-detail-scroll")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .child(content)
+            .into_any_element()
+    }
+
+    fn issue_new_view(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let card = div()
+            .flex()
+            .flex_col()
+            .gap(theme.space(12.))
+            .px(theme.space(20.))
+            .py(theme.space(16.))
+            .max_w(px(780.))
+            .child(
+                div()
+                    .text_size(theme.ui_px(16.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text)
+                    .child(tr!("git_panel.new_issue_title")),
+            )
+            .child(composer_field(theme, self.issue_new_title.clone()))
+            .child(composer_field(theme, self.issue_new_body.clone()))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .gap(px(8.))
+                    .child(action_button(
+                        "git-issue-new-cancel",
+                        &tr!("git_panel.cancel"),
+                        None,
+                        false,
+                        false,
+                        theme,
+                        cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.issue_new_open = false;
+                            cx.notify();
+                        }),
+                    ))
+                    .child(action_button(
+                        "git-issue-new-create",
+                        &tr!("git_panel.create_issue"),
+                        None,
+                        true,
+                        self.issue_busy,
+                        theme,
+                        cx.listener(|this, _: &ClickEvent, _, cx| this.create_issue(cx)),
+                    )),
+            );
+        div()
+            .id("git-issue-new-scroll")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .child(card)
+            .into_any_element()
+    }
+
+    /// The repo-label popover. On an open issue it toggles labels on that
+    /// issue; otherwise it sets the list's label filter.
+    fn label_picker_popup(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.label_menu_open {
+            return None;
+        }
+        let detail = self.issue_detail.clone();
+        let mut menu = div()
+            .id("git-label-menu")
+            .absolute()
+            .top(px(42.))
+            .right(px(12.))
+            .w(px(240.))
+            .max_h(px(320.))
+            .overflow_y_scroll()
+            .py(px(4.))
+            .rounded(px(10.))
+            .border_1()
+            .border_color(theme.border_strong)
+            .bg(theme.menu_bg)
+            .shadow(theme.popover_shadow())
+            .flex()
+            .flex_col()
+            .occlude()
+            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                this.label_menu_open = false;
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .px(px(10.))
+                    .py(px(4.))
+                    .text_size(theme.ui_px(11.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text_3)
+                    .child(tr!("git_panel.labels")),
+            );
+        if self.issue_labels.is_empty() {
+            menu = menu.child(
+                div()
+                    .px(px(10.))
+                    .py(px(6.))
+                    .text_size(theme.ui_px(12.))
+                    .text_color(theme.text_3)
+                    .child(tr!("git_panel.no_labels")),
+            );
+        }
+        for label in &self.issue_labels {
+            let name = label.name.clone();
+            let selected = detail
+                .as_ref()
+                .is_some_and(|issue| issue.labels.iter().any(|entry| entry.name == name));
+            menu = menu.child(
+                div()
+                    .id(gpui::ElementId::Name(format!("git-label-{name}").into()))
+                    .h(px(26.))
+                    .mx(px(4.))
+                    .px(px(8.))
+                    .rounded(px(6.))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme.overlay))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        if this.issue_detail.is_some() {
+                            this.toggle_issue_label(name.clone(), cx);
+                        } else {
+                            this.set_issue_label_filter(Some(name.clone()), cx);
+                        }
+                    }))
+                    .child(issue_label_chip(label, theme))
+                    .child(div().flex_1())
+                    .when(selected, |row| {
+                        row.child(icon("icons/check.svg", 11., theme.accent))
+                    }),
+            );
+        }
+        Some(menu.into_any_element())
+    }
+
+    // ── pull request rendering ─────────────────────────────────────────
+
+    fn pulls_tab(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        if !self.gh_installed || !self.gh_authenticated {
+            return self.gh_setup_tab(theme, "git_panel.gh_pulls_title", "git_panel.gh_pulls_body");
+        }
+        if self.pr_new_open {
+            return self.pr_new_view(theme, cx);
+        }
+        if let Some(pull) = self.pr_detail.clone() {
+            return self.pr_detail_view(&pull, theme, cx);
+        }
+        self.pulls_list_view(theme, cx)
+    }
+
+    fn pr_filter_bar(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let filter = &self.pr_filter;
+        let state_id = |state: gh::PrState| match state {
+            gh::PrState::Open => "git-prs-open",
+            gh::PrState::Closed => "git-prs-closed",
+            gh::PrState::Merged => "git-prs-merged",
+            gh::PrState::All => "git-prs-all",
+        };
+        div()
+            .id("git-pr-filters")
+            .flex_none()
+            .px(theme.space(16.))
+            .py(theme.space(8.))
+            .border_b_1()
+            .border_color(theme.border)
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .children(
+                [
+                    (gh::PrState::Open, "git_panel.issue_open"),
+                    (gh::PrState::Closed, "git_panel.issue_closed"),
+                    (gh::PrState::Merged, "git_panel.pr_merged"),
+                    (gh::PrState::All, "git_panel.issue_all"),
+                ]
+                .into_iter()
+                .map(|(state, key)| {
+                    filter_toggle_chip(
+                        state_id(state),
+                        &tr!(key),
+                        filter.state == state,
+                        theme,
+                        cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.set_pr_state(state, cx)
+                        }),
+                    )
+                }),
+            )
+            .child(
+                div()
+                    .w(px(180.))
+                    .ml(theme.space(4.))
+                    .px(theme.space(8.))
+                    .h(px(26.))
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.bg_composer)
+                    .flex()
+                    .items_center()
+                    .child(div().flex_1().min_w_0().child(self.pr_search.clone())),
+            )
+            .child(action_button(
+                "git-pr-search",
+                &tr!("git_panel.search"),
+                Some(icon("icons/search.svg", 12., theme.text_2).into_any_element()),
+                false,
+                false,
+                theme,
+                cx.listener(|this, _: &ClickEvent, _, cx| this.apply_pr_search(cx)),
+            ))
+            .children(filter.is_active().then(|| {
+                filter_chip(
+                    "git-pr-clear",
+                    &tr!("git_panel.clear_filter"),
+                    theme,
+                    cx.listener(|this, _: &ClickEvent, _, cx| this.clear_pr_filter(cx)),
+                )
+            }))
+            .child(div().flex_1())
+            .child(action_button(
+                "git-pr-new",
+                &tr!("git_panel.new_pull"),
+                Some(icon("icons/plus.svg", 12., theme.send_fg).into_any_element()),
+                true,
+                self.pr_busy,
+                theme,
+                cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.pr_new_base = Some(this.default_base());
+                    this.pr_new_open = true;
+                    this.pr_detail = None;
+                    cx.notify();
+                }),
+            ))
+            .into_any_element()
+    }
+
+    fn pulls_list_view(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let mut body = div().flex_1().min_h_0().flex().flex_col();
+        if let Some(error) = &self.pulls_error {
+            body = body.child(empty_note(
+                theme,
+                "icons/stop.svg",
+                &tr!("git_panel.pulls_unavailable"),
+                Some(error),
+            ));
+        } else if self.pulls.is_empty() && self.pulls_loading {
+            body = body.child(empty_note(
+                theme,
+                "icons/git-pull-request.svg",
+                &tr!("git_panel.reading_pulls"),
+                None,
+            ));
+        } else if self.pulls.is_empty() {
+            body = body.child(empty_note(
+                theme,
+                "icons/git-pull-request.svg",
+                &tr!("git_panel.no_pulls"),
+                Some(&tr!("git_panel.no_pulls_detail")),
+            ));
+        } else {
+            let mut list = div().flex().flex_col().py(px(6.));
+            let total = self.pulls.len();
+            for (ix, pull) in self.pulls.iter().enumerate() {
+                list = list.child(pr_row(pull, theme, cx));
+                if ix + 1 < total {
+                    list = list.child(commit_separator(theme));
+                }
+            }
+            body = body.child(
+                div()
+                    .id("git-pr-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(list),
+            );
+        }
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(self.pr_filter_bar(theme, cx))
+            .child(body)
+            .into_any_element()
+    }
+
+    fn pr_detail_view(
+        &self,
+        pull: &gh::GhPull,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let state_color = if pull.is_merged() {
+            theme.accent
+        } else if pull.is_open() {
+            theme.add_green
+        } else {
+            theme.del_red
+        };
+        let state_label = if pull.is_merged() {
+            tr!("git_panel.pr_merged")
+        } else if pull.is_open() {
+            tr!("git_panel.issue_open")
+        } else {
+            tr!("git_panel.issue_closed")
+        };
+        let mut content = div()
+            .flex()
+            .flex_col()
+            .gap(theme.space(12.))
+            .px(theme.space(20.))
+            .py(theme.space(16.))
+            .max_w(px(780.));
+        content = content.child(
+            div()
+                .flex()
+                .items_start()
+                .gap(theme.space(8.))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .text_size(theme.ui_px(16.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(theme.text)
+                                .whitespace_normal()
+                                .child(pull.title.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .child(state_chip(&state_label, state_color, theme))
+                                .children(pull.is_draft.then(|| {
+                                    state_chip(&tr!("git_panel.pr_draft"), theme.text_3, theme)
+                                }))
+                                .child(
+                                    div()
+                                        .text_size(theme.ui_px(11.5))
+                                        .text_color(theme.text_3)
+                                        .child(format!(
+                                            "#{} \u{b7} {} \u{b7} {} \u{2192} {}",
+                                            pull.number,
+                                            pull.author.login,
+                                            pull.base_ref,
+                                            pull.head_ref
+                                        )),
+                                ),
+                        ),
+                )
+                .child(action_button(
+                    "git-pr-back",
+                    &tr!("git_panel.back"),
+                    None,
+                    false,
+                    false,
+                    theme,
+                    cx.listener(|this, _: &ClickEvent, _, cx| this.close_pull_detail(cx)),
+                )),
+        );
+        content = content.child(
+            div()
+                .flex()
+                .items_center()
+                .flex_wrap()
+                .gap(px(6.))
+                .children(
+                    pull.labels
+                        .iter()
+                        .map(|label| issue_label_chip(label, theme)),
+                )
+                .children(review_chip(pull, theme))
+                .children(check_bucket_chip(pull.checks_summary(), theme))
+                .child(
+                    div()
+                        .text_size(theme.ui_px(11.))
+                        .text_color(theme.text_3)
+                        .child(format!(
+                            "+{} -{} \u{b7} {}",
+                            pull.additions,
+                            pull.deletions,
+                            tr!("git_panel.files_count", count = pull.changed_files)
+                        )),
+                ),
+        );
+        if !pull.body.trim().is_empty() {
+            content = content.child(
+                div()
+                    .p(theme.space(12.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.bg_raised)
+                    .child(crate::transcript_view::render_markdown_document(
+                        &pull.body, theme,
+                    )),
+            );
+        }
+
+        // Checks.
+        if !pull.checks.is_empty() {
+            let mut checks = div()
+                .rounded(px(8.))
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.bg_raised)
+                .flex()
+                .flex_col()
+                .child(section_label(theme, &tr!("git_panel.checks")));
+            for check in &pull.checks {
+                let label = check.label().to_string();
+                let link = check.link().to_string();
+                let mut row = div()
+                    .id(gpui::ElementId::Name(format!("git-check-{label}").into()))
+                    .px(theme.space(12.))
+                    .py(theme.space(6.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(
+                        check_bucket_chip(Some(check.bucket_kind()), theme).unwrap_or_else(|| {
+                            icon("icons/check.svg", 11., theme.text_3).into_any_element()
+                        }),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_size(theme.ui_px(11.5))
+                            .text_color(theme.text_2)
+                            .child(label.clone()),
+                    );
+                if !link.is_empty() {
+                    row = row.child(row_button(
+                        "git-check-open",
+                        "icons/arrow-up-right.svg",
+                        theme,
+                        move |_, _, cx| cx.open_url(&link),
+                    ));
+                }
+                checks = checks.child(row);
+            }
+            content = content.child(checks);
+        }
+
+        // Commits.
+        if !pull.commits.is_empty() {
+            let mut commits = div()
+                .rounded(px(8.))
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.bg_raised)
+                .flex()
+                .flex_col()
+                .child(section_label(theme, &tr!("git_panel.commits")));
+            for commit in &pull.commits {
+                commits = commits.child(
+                    div()
+                        .px(theme.space(12.))
+                        .py(theme.space(5.))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .font_family(theme::code_font_family())
+                                .text_size(theme.ui_px(11.))
+                                .text_color(theme.text_3)
+                                .child(commit.oid.chars().take(7).collect::<String>()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_size(theme.ui_px(11.5))
+                                .text_color(theme.text_2)
+                                .child(commit.headline.clone()),
+                        ),
+                );
+            }
+            content = content.child(commits);
+        }
+
+        // Changed files.
+        if !pull.files.is_empty() {
+            let mut files = div()
+                .rounded(px(8.))
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.bg_raised)
+                .flex()
+                .flex_col()
+                .child(section_label(theme, &tr!("git_panel.files_changed")));
+            for file in pull.files.iter().take(MAX_FILE_ROWS) {
+                let path = file.path.clone();
+                files = files.child(
+                    div()
+                        .px(theme.space(12.))
+                        .py(theme.space(5.))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .w(px(14.))
+                                .flex_none()
+                                .text_size(theme.ui_px(10.5))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(status_color(
+                                    file.change_type.chars().next().unwrap_or('M'),
+                                    theme,
+                                ))
+                                .child(file.change_type.chars().next().unwrap_or('M').to_string()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_size(theme.ui_px(11.5))
+                                .text_color(theme.text)
+                                .child(path.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_size(theme.ui_px(10.5))
+                                .text_color(theme.add_green)
+                                .child(format!("+{}", file.additions)),
+                        )
+                        .child(
+                            div()
+                                .text_size(theme.ui_px(10.5))
+                                .text_color(theme.del_red)
+                                .child(format!("-{}", file.deletions)),
+                        )
+                        .child(row_button(
+                            format!("git-pr-file-{path}"),
+                            "icons/git-compare.svg",
+                            theme,
+                            cx.listener({
+                                let path = path.clone();
+                                move |this, _: &ClickEvent, window, cx| {
+                                    if let Some(on_open) = this.on_open_file.clone() {
+                                        on_open(path.clone(), window, cx);
+                                    }
+                                }
+                            }),
+                        )),
+                );
+            }
+            if pull.files.len() > MAX_FILE_ROWS {
+                files = files.child(
+                    div()
+                        .px(theme.space(12.))
+                        .py(theme.space(6.))
+                        .text_size(theme.ui_px(11.))
+                        .text_color(theme.text_3)
+                        .child(tr!(
+                            "git_panel.more_files",
+                            count = pull.files.len() - MAX_FILE_ROWS
+                        )),
+                );
+            }
+            content = content.child(files);
+        }
+
+        for comment in &pull.comments {
+            content = content.child(issue_comment_card(comment, theme));
+        }
+        for review in &pull.reviews {
+            content = content.child(review_card(review, theme));
+        }
+
+        content = content.child(composer_field(theme, self.pr_comment.clone()));
+        content = content.child(
+            div()
+                .flex()
+                .items_center()
+                .flex_wrap()
+                .gap(px(8.))
+                .child(action_button(
+                    "git-pr-comment",
+                    &tr!("git_panel.comment"),
+                    None,
+                    false,
+                    self.pr_busy,
+                    theme,
+                    cx.listener(|this, _: &ClickEvent, _, cx| this.comment_pull(cx)),
+                ))
+                .child(action_button(
+                    "git-pr-approve",
+                    &tr!("git_panel.approve"),
+                    None,
+                    false,
+                    self.pr_busy,
+                    theme,
+                    cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.review_pull(gh::ReviewAction::Approve, cx)
+                    }),
+                ))
+                .child(action_button(
+                    "git-pr-changes",
+                    &tr!("git_panel.request_changes"),
+                    None,
+                    false,
+                    self.pr_busy,
+                    theme,
+                    cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.review_pull(gh::ReviewAction::RequestChanges, cx)
+                    }),
+                )),
+        );
+
+        // Merge controls.
+        if pull.is_open() {
+            let mut merge_row = div()
+                .flex()
+                .items_center()
+                .flex_wrap()
+                .gap(px(8.))
+                .child(
+                    div().flex().items_center().gap(px(4.)).children(
+                        [
+                            (gh::MergeMethod::Merge, "git_panel.merge_method_merge"),
+                            (gh::MergeMethod::Squash, "git_panel.merge_method_squash"),
+                            (gh::MergeMethod::Rebase, "git_panel.merge_method_rebase"),
+                        ]
+                        .into_iter()
+                        .map(|(method, key)| {
+                            filter_toggle_chip(
+                                match method {
+                                    gh::MergeMethod::Merge => "git-merge-method-merge",
+                                    gh::MergeMethod::Squash => "git-merge-method-squash",
+                                    gh::MergeMethod::Rebase => "git-merge-method-rebase",
+                                },
+                                &tr!(key),
+                                self.pr_merge_method == method,
+                                theme,
+                                cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                    this.pr_merge_method = method;
+                                    cx.notify();
+                                }),
+                            )
+                        }),
+                    ),
+                )
+                .child(filter_toggle_chip(
+                    "git-pr-delete-branch",
+                    &tr!("git_panel.delete_branch_after"),
+                    self.pr_delete_branch,
+                    theme,
+                    cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.pr_delete_branch = !this.pr_delete_branch;
+                        cx.notify();
+                    }),
+                ))
+                .child(action_button(
+                    "git-pr-merge",
+                    &tr!("git_panel.merge_pull"),
+                    Some(icon("icons/git-merge.svg", 12., theme.send_fg).into_any_element()),
+                    true,
+                    self.pr_busy,
+                    theme,
+                    cx.listener(|this, _: &ClickEvent, _, cx| this.request_merge_pull(cx)),
+                ));
+            merge_row = merge_row.child(action_button(
+                "git-pr-close",
+                &tr!("git_panel.close_pull"),
+                None,
+                false,
+                self.pr_busy,
+                theme,
+                cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_pull_state(cx)),
+            ));
+            content = content.child(merge_row);
+        } else {
+            content = content.child(div().flex().items_center().flex_wrap().gap(px(8.)).child(
+                action_button(
+                    "git-pr-reopen",
+                    &tr!("git_panel.reopen_pull"),
+                    None,
+                    false,
+                    self.pr_busy,
+                    theme,
+                    cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_pull_state(cx)),
+                ),
+            ));
+        }
+        content = content.child(
+            div()
+                .flex()
+                .items_center()
+                .flex_wrap()
+                .gap(px(8.))
+                .child(action_button(
+                    "git-pr-checkout",
+                    &tr!("git_panel.checkout_pull"),
+                    None,
+                    false,
+                    self.pr_busy || !pull.is_open(),
+                    theme,
+                    cx.listener(|this, _: &ClickEvent, _, cx| this.checkout_pull(cx)),
+                ))
+                .children((!pull.url.is_empty()).then(|| {
+                    let url = pull.url.clone();
+                    action_button(
+                        "git-pr-web",
+                        &tr!("git_panel.open_on_github"),
+                        Some(
+                            icon("icons/arrow-up-right.svg", 12., theme.text_2).into_any_element(),
+                        ),
+                        false,
+                        false,
+                        theme,
+                        cx.listener(move |_, _: &ClickEvent, _, cx| cx.open_url(&url)),
+                    )
+                })),
+        );
+        div()
+            .id("git-pr-detail-scroll")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .child(content)
+            .into_any_element()
+    }
+
+    fn pr_new_view(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let base_label = self
+            .pr_new_base
+            .clone()
+            .unwrap_or_else(|| tr!("git_panel.choose_base"));
+        let card = div()
+            .flex()
+            .flex_col()
+            .gap(theme.space(12.))
+            .px(theme.space(20.))
+            .py(theme.space(16.))
+            .max_w(px(780.))
+            .child(
+                div()
+                    .text_size(theme.ui_px(16.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text)
+                    .child(tr!("git_panel.new_pull_title")),
+            )
+            .child(composer_field(theme, self.pr_new_title.clone()))
+            .child(composer_field(theme, self.pr_new_body.clone()))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .text_size(theme.ui_px(11.5))
+                            .text_color(theme.text_3)
+                            .child(tr!("git_panel.base_branch")),
+                    )
+                    .child(filter_toggle_chip(
+                        "git-pr-new-base",
+                        &base_label,
+                        false,
+                        theme,
+                        cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.ref_menu = Some(RefTarget::PrBase);
+                            cx.notify();
+                        }),
+                    ))
+                    .child(filter_toggle_chip(
+                        "git-pr-new-draft",
+                        &tr!("git_panel.pr_draft"),
+                        self.pr_new_draft,
+                        theme,
+                        cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.pr_new_draft = !this.pr_new_draft;
+                            cx.notify();
+                        }),
+                    )),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .gap(px(8.))
+                    .child(action_button(
+                        "git-pr-new-cancel",
+                        &tr!("git_panel.cancel"),
+                        None,
+                        false,
+                        false,
+                        theme,
+                        cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.pr_new_open = false;
+                            cx.notify();
+                        }),
+                    ))
+                    .child(action_button(
+                        "git-pr-new-create",
+                        &tr!("git_panel.create_pull"),
+                        None,
+                        true,
+                        self.pr_busy,
+                        theme,
+                        cx.listener(|this, _: &ClickEvent, _, cx| this.create_pull(cx)),
+                    )),
+            );
+        div()
+            .id("git-pr-new-scroll")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .child(card)
+            .into_any_element()
+    }
+
     /// The Issues / Pull requests body until those browsers land. It is honest
     /// about the `gh` requirement — install or sign in — and never paints fake
     /// data. The host tabs only render when `gh` is installed (see
@@ -3153,6 +4947,7 @@ impl GitPanel {
         let title = match target {
             RefTarget::Merge => tr!("git_panel.merge_branch"),
             RefTarget::Rebase => tr!("git_panel.rebase_onto"),
+            RefTarget::PrBase => tr!("git_panel.base_branch"),
         };
         let mut menu = div()
             .id("git-ref-menu")
@@ -3231,6 +5026,10 @@ impl GitPanel {
             );
         }
         for entry in &self.refs {
+            // The new-PR base picker only offers branches, not tags/remotes.
+            if target == RefTarget::PrBase && entry.kind != git::RefKind::Branch {
+                continue;
+            }
             let name = entry.name.clone();
             let label = entry.name.clone();
             menu = menu.child(
@@ -3251,6 +5050,10 @@ impl GitPanel {
                         cx.listener(move |this, _: &ClickEvent, _, cx| match target {
                             RefTarget::Merge => this.merge_ref(&name, cx),
                             RefTarget::Rebase => this.rebase_ref(&name, cx),
+                            RefTarget::PrBase => {
+                                this.pr_new_base = Some(name.clone());
+                                this.close_ref_picker(cx);
+                            }
                         }),
                     )
                     .child(icon(ref_icon(entry.kind), 11., theme.text_3))
@@ -3497,6 +5300,18 @@ impl GitPanel {
                 tr!("git_panel.confirm_delete_body"),
                 tr!("git_panel.delete_branch"),
             ),
+            PendingConfirm::MergePull { number, method, .. } => {
+                let method_label = match method {
+                    gh::MergeMethod::Merge => tr!("git_panel.merge_method_merge"),
+                    gh::MergeMethod::Squash => tr!("git_panel.merge_method_squash"),
+                    gh::MergeMethod::Rebase => tr!("git_panel.merge_method_rebase"),
+                };
+                (
+                    tr!("git_panel.confirm_merge_title", number = number),
+                    tr!("git_panel.confirm_merge_body", method = method_label),
+                    tr!("git_panel.merge_pull"),
+                )
+            }
         };
         let card = div()
             .w_full()
@@ -3593,14 +5408,8 @@ impl Render for GitPanel {
             GitTab::Changes => self.changes_tab(theme, window, cx),
             GitTab::History => self.history_tab(theme, cx),
             GitTab::Graph => self.graph_tab(theme, cx),
-            GitTab::Issues => self.gh_setup_tab(
-                theme,
-                "git_panel.gh_issues_title",
-                "git_panel.gh_issues_body",
-            ),
-            GitTab::Pulls => {
-                self.gh_setup_tab(theme, "git_panel.gh_pulls_title", "git_panel.gh_pulls_body")
-            }
+            GitTab::Issues => self.issues_tab(theme, cx),
+            GitTab::Pulls => self.pulls_tab(theme, cx),
         };
         div()
             .id("git-page")
@@ -3626,6 +5435,7 @@ impl Render for GitPanel {
             .children(self.branch_menu(theme, cx))
             .children(self.ref_picker_popup(theme, cx))
             .children(self.file_actions_menu(theme, cx))
+            .children(self.label_picker_popup(theme, cx))
             .children(self.stage_prompt_popup(theme, cx))
             .children(self.confirm_popup(theme, cx))
             .children(self.branch_prompt_popup(theme, window, cx))
@@ -3876,6 +5686,425 @@ fn detail_note(theme: Theme, label: &str) -> AnyElement {
         .text_size(theme.ui_px(12.))
         .text_color(theme.text_3)
         .child(label.to_string())
+        .into_any_element()
+}
+
+// ── Issues ─────────────────────────────────────────────────────────
+
+/// One issue row in the list: state glyph, number/title, labels, author,
+/// comment count, and relative time.
+fn issue_row(issue: &gh::GhIssue, theme: Theme, cx: &Context<GitPanel>) -> AnyElement {
+    let number = issue.number;
+    let state_color = if issue.is_open() {
+        theme.add_green
+    } else {
+        theme.del_red
+    };
+    let state_label = if issue.is_open() {
+        tr!("git_panel.issue_open")
+    } else {
+        tr!("git_panel.issue_closed")
+    };
+    let mut row = div()
+        .id(gpui::ElementId::Name(format!("git-issue-{number}").into()))
+        .mx(theme.space(12.))
+        .px(theme.space(8.))
+        .py(theme.space(8.))
+        .rounded_md()
+        .flex()
+        .items_center()
+        .gap(theme.space(10.))
+        .cursor_pointer()
+        .hover(|s| s.bg(theme.bg_hover))
+        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open_issue(number, cx)))
+        .child(icon("icons/github.svg", 15., state_color))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(3.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .min_w_0()
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(theme.ui_px(11.5))
+                                .text_color(theme.text_3)
+                                .child(format!("#{number}")),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_size(theme.ui_px(12.5))
+                                .text_color(theme.text)
+                                .child(issue.title.clone()),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .min_w_0()
+                        .children(
+                            issue
+                                .labels
+                                .iter()
+                                .take(4)
+                                .map(|label| issue_label_chip(label, theme)),
+                        )
+                        .child(author_avatar(&issue.author.login, "", theme))
+                        .child(
+                            div()
+                                .text_size(theme.ui_px(11.))
+                                .text_color(theme.text_3)
+                                .child(issue.author.login.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(3.))
+                                .text_size(theme.ui_px(11.))
+                                .text_color(theme.text_3)
+                                .child(icon("icons/chat.svg", 10., theme.text_3))
+                                .child(issue.comments.len().to_string()),
+                        )
+                        .child(
+                            div()
+                                .text_size(theme.ui_px(11.))
+                                .text_color(theme.text_3)
+                                .child(gh::relative_time(&issue.updated_at)),
+                        ),
+                ),
+        )
+        .child(state_chip(&state_label, state_color, theme));
+    if !issue.url.is_empty() {
+        let url = issue.url.clone();
+        row = row.child(row_button(
+            "git-issue-open",
+            "icons/arrow-up-right.svg",
+            theme,
+            move |_, _, cx| cx.open_url(&url),
+        ));
+    }
+    row.into_any_element()
+}
+
+/// A GitHub label as a filled chip in its own color, with a contrasting text
+/// color chosen from the fill's luminance.
+fn issue_label_chip(label: &gh::GhLabel, theme: Theme) -> AnyElement {
+    let color = label_color(&label.color);
+    let fg = if color.l > 0.6 {
+        hsla(0., 0., 0.12, 1.)
+    } else {
+        hsla(0., 0., 0.98, 1.)
+    };
+    div()
+        .h(px(18.))
+        .px(px(6.))
+        .rounded(px(4.))
+        .bg(color)
+        .flex()
+        .items_center()
+        .text_size(theme.ui_px(10.5))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(fg)
+        .child(label.name.clone())
+        .into_any_element()
+}
+
+/// A 6-digit hex label color (`d73a4a`) as an `Hsla`.
+fn label_color(hex: &str) -> Hsla {
+    let value = u32::from_str_radix(hex.trim_start_matches('#'), 16).unwrap_or(0x80_80_80);
+    Hsla::from(gpui::rgba((value << 8) | 0xff))
+}
+
+/// A pill chip for an issue/PR state.
+fn state_chip(label: &str, color: Hsla, theme: Theme) -> AnyElement {
+    div()
+        .h(px(20.))
+        .px(px(8.))
+        .rounded(px(10.))
+        .bg(color.opacity(0.15))
+        .border_1()
+        .border_color(color.opacity(0.5))
+        .flex()
+        .items_center()
+        .text_size(theme.ui_px(10.5))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(color)
+        .child(label.to_string())
+        .into_any_element()
+}
+
+/// A bordered field wrapper for a `ComposerInput` (issue title/body/comment).
+fn composer_field(theme: Theme, input: Entity<crate::composer::ComposerInput>) -> AnyElement {
+    div()
+        .px(theme.space(10.))
+        .py(theme.space(8.))
+        .rounded(px(8.))
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.bg_composer)
+        .flex()
+        .child(div().flex_1().min_w_0().child(input))
+        .into_any_element()
+}
+
+/// One comment under an issue: author header plus the rendered markdown body.
+fn issue_comment_card(comment: &gh::GhComment, theme: Theme) -> AnyElement {
+    let author = comment
+        .author
+        .as_ref()
+        .map(|user| user.login.clone())
+        .unwrap_or_default();
+    div()
+        .rounded(px(8.))
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.bg_raised)
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .px(theme.space(12.))
+                .py(theme.space(8.))
+                .border_b_1()
+                .border_color(theme.border)
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(author_avatar(&author, "", theme))
+                .child(
+                    div()
+                        .text_size(theme.ui_px(11.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.text_2)
+                        .child(author),
+                )
+                .child(
+                    div()
+                        .text_size(theme.ui_px(11.))
+                        .text_color(theme.text_3)
+                        .child(gh::relative_time(&comment.created_at)),
+                ),
+        )
+        .child(div().px(theme.space(12.)).py(theme.space(10.)).child(
+            crate::transcript_view::render_markdown_document(&comment.body, theme),
+        ))
+        .into_any_element()
+}
+
+// ── Pull requests ───────────────────────────────────────────────────
+
+/// One PR row: state glyph, number/title, draft chip, labels, author,
+/// base→head, review decision, CI rollup, ± and files, relative time.
+fn pr_row(pull: &gh::GhPull, theme: Theme, cx: &Context<GitPanel>) -> AnyElement {
+    let number = pull.number;
+    let state_color = if pull.is_merged() {
+        theme.accent
+    } else if pull.is_open() {
+        theme.add_green
+    } else {
+        theme.del_red
+    };
+    let mut row =
+        div()
+            .id(gpui::ElementId::Name(format!("git-pr-{number}").into()))
+            .mx(theme.space(12.))
+            .px(theme.space(8.))
+            .py(theme.space(8.))
+            .rounded_md()
+            .flex()
+            .items_center()
+            .gap(theme.space(10.))
+            .cursor_pointer()
+            .hover(|s| s.bg(theme.bg_hover))
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open_pull(number, cx)))
+            .child(icon("icons/git-pull-request.svg", 15., state_color))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_size(theme.ui_px(11.5))
+                                    .text_color(theme.text_3)
+                                    .child(format!("#{number}")),
+                            )
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_size(theme.ui_px(12.5))
+                                    .text_color(theme.text)
+                                    .child(pull.title.clone()),
+                            )
+                            .children(pull.is_draft.then(|| {
+                                state_chip(&tr!("git_panel.pr_draft"), theme.text_3, theme)
+                            })),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .min_w_0()
+                            .children(
+                                pull.labels
+                                    .iter()
+                                    .take(3)
+                                    .map(|label| issue_label_chip(label, theme)),
+                            )
+                            .child(author_avatar(&pull.author.login, "", theme))
+                            .child(
+                                div()
+                                    .text_size(theme.ui_px(11.))
+                                    .text_color(theme.text_3)
+                                    .child(pull.author.login.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(theme.ui_px(11.))
+                                    .text_color(theme.text_3)
+                                    .child(format!("{} \u{2192} {}", pull.base_ref, pull.head_ref)),
+                            )
+                            .children(review_chip(pull, theme))
+                            .children(check_bucket_chip(pull.checks_summary(), theme))
+                            .child(
+                                div()
+                                    .text_size(theme.ui_px(11.))
+                                    .text_color(theme.text_3)
+                                    .child(format!("+{} -{}", pull.additions, pull.deletions)),
+                            )
+                            .child(
+                                div()
+                                    .text_size(theme.ui_px(11.))
+                                    .text_color(theme.text_3)
+                                    .child(gh::relative_time(&pull.updated_at)),
+                            ),
+                    ),
+            );
+    if !pull.url.is_empty() {
+        let url = pull.url.clone();
+        row = row.child(row_button(
+            "git-pr-open",
+            "icons/arrow-up-right.svg",
+            theme,
+            move |_, _, cx| cx.open_url(&url),
+        ));
+    }
+    row.into_any_element()
+}
+
+/// A chip for the PR's overall CI state, or `None` when it has no checks.
+fn check_bucket_chip(bucket: Option<gh::CheckBucket>, theme: Theme) -> Option<AnyElement> {
+    let bucket = bucket?;
+    let (label, color) = match bucket {
+        gh::CheckBucket::Passed => (tr!("git_panel.checks_passed"), theme.add_green),
+        gh::CheckBucket::Failed => (tr!("git_panel.checks_failed"), theme.del_red),
+        gh::CheckBucket::Pending => (tr!("git_panel.checks_pending"), theme.warn),
+        gh::CheckBucket::Skipped => (tr!("git_panel.checks_skipped"), theme.text_3),
+        gh::CheckBucket::Unknown => (tr!("git_panel.checks_pending"), theme.text_3),
+    };
+    Some(state_chip(&label, color, theme))
+}
+
+/// A chip for the PR's review decision, or `None` when GitHub has none.
+fn review_chip(pull: &gh::GhPull, theme: Theme) -> Option<AnyElement> {
+    let decision = pull.review_decision.as_deref()?;
+    let (label, color) = match decision {
+        "APPROVED" => (tr!("git_panel.review_approved"), theme.add_green),
+        "CHANGES_REQUESTED" => (tr!("git_panel.review_changes"), theme.del_red),
+        "REVIEW_REQUIRED" => (tr!("git_panel.review_required"), theme.warn),
+        _ => return None,
+    };
+    Some(state_chip(&label, color, theme))
+}
+
+/// One submitted review: author header with a state chip and optional body.
+fn review_card(review: &gh::GhReview, theme: Theme) -> AnyElement {
+    let author = review
+        .author
+        .as_ref()
+        .map(|user| user.login.clone())
+        .unwrap_or_default();
+    let (label, color) = match review.state.as_str() {
+        "APPROVED" => (tr!("git_panel.review_approved"), theme.add_green),
+        "CHANGES_REQUESTED" => (tr!("git_panel.review_changes"), theme.del_red),
+        _ => (tr!("git_panel.review_commented"), theme.text_3),
+    };
+    div()
+        .rounded(px(8.))
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.bg_raised)
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .px(theme.space(12.))
+                .py(theme.space(8.))
+                .border_b_1()
+                .border_color(theme.border)
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(author_avatar(&author, "", theme))
+                .child(
+                    div()
+                        .text_size(theme.ui_px(11.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.text_2)
+                        .child(author),
+                )
+                .child(state_chip(&label, color, theme))
+                .child(
+                    div()
+                        .text_size(theme.ui_px(11.))
+                        .text_color(theme.text_3)
+                        .child(gh::relative_time(&review.submitted_at)),
+                ),
+        )
+        .when(!review.body.trim().is_empty(), |card| {
+            card.child(div().px(theme.space(12.)).py(theme.space(10.)).child(
+                crate::transcript_view::render_markdown_document(&review.body, theme),
+            ))
+        })
+        .into_any_element()
+}
+
+/// A small uppercase section header inside a bordered card.
+fn section_label(theme: Theme, label: &str) -> AnyElement {
+    div()
+        .px(theme.space(12.))
+        .py(theme.space(6.))
+        .border_b_1()
+        .border_color(theme.border)
+        .text_size(theme.ui_px(10.5))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(theme.text_3)
+        .child(label.to_uppercase())
         .into_any_element()
 }
 

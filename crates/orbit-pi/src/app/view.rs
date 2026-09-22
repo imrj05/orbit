@@ -1206,6 +1206,21 @@ impl Render for OrbitApp {
             .on_action(cx.listener(Self::on_toggle_command_palette))
             .on_action(cx.listener(Self::on_check_for_updates))
             .on_action(cx.listener(Self::on_toggle_search))
+            .on_action(cx.listener(|this, _: &crate::GitTabChanges, window, cx| {
+                this.on_git_tab(0, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::GitTabHistory, window, cx| {
+                this.on_git_tab(1, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::GitTabGraph, window, cx| {
+                this.on_git_tab(2, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::GitTabIssues, window, cx| {
+                this.on_git_tab(3, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::GitTabPulls, window, cx| {
+                this.on_git_tab(4, window, cx)
+            }))
     }
 }
 

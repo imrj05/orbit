@@ -52,22 +52,26 @@ pub fn check_box(checked: bool, theme: Theme) -> gpui::Div {
 }
 
 /// A rotating loader for in-flight buttons (matches the Review pane spinner).
+/// With Reduce motion on it renders statically instead of spinning.
 pub fn spinner(id: &'static str, size: f32, theme: Theme) -> AnyElement {
-    gpui::svg()
+    let svg = gpui::svg()
         .path("icons/loader.svg")
         .flex_none()
         .size(px(size))
-        .text_color(theme.accent)
-        .with_animation(
-            id,
-            Animation::new(Duration::from_millis(900)).repeat(),
-            |svg, delta| {
-                svg.with_transformation(Transformation::rotate(radians(
-                    delta * std::f32::consts::TAU,
-                )))
-            },
-        )
-        .into_any_element()
+        .text_color(theme.accent);
+    if theme.ui.reduce_motion {
+        return svg.into_any_element();
+    }
+    svg.with_animation(
+        id,
+        Animation::new(Duration::from_millis(900)).repeat(),
+        |svg, delta| {
+            svg.with_transformation(Transformation::rotate(radians(
+                delta * std::f32::consts::TAU,
+            )))
+        },
+    )
+    .into_any_element()
 }
 
 /// A 28px action button with an optional leading glyph. `primary` paints it in

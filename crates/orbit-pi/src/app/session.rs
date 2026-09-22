@@ -1661,6 +1661,15 @@ impl OrbitApp {
         cx.notify();
     }
 
+    /// Switch the Git page's tab (⌘1–⌘5). A no-op unless the page is open, so
+    /// the shortcuts never surprise a chat session.
+    pub(super) fn on_git_tab(&mut self, index: usize, _: &mut Window, cx: &mut Context<Self>) {
+        if self.git_open {
+            self.git_panel
+                .update(cx, |panel, cx| panel.set_tab(index, cx));
+        }
+    }
+
     // ── Explorer (project panel + Files surface) ───────────────────────
 
     /// Flip the left project-panel dock (cmd-shift-e).
