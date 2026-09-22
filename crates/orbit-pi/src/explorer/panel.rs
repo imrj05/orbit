@@ -149,12 +149,15 @@ pub struct ProjectPanel {
     on_open: OpenHandler,
     /// The app's file-operation callback.
     on_file_op: FileOpHandler,
+    /// The app's close callback (the header's X).
+    on_close: Rc<dyn Fn(&mut App)>,
 }
 
 impl ProjectPanel {
     pub fn new(
         on_open: OpenHandler,
         on_file_op: FileOpHandler,
+        on_close: Rc<dyn Fn(&mut App)>,
         cx: &mut Context<Self>,
     ) -> Self {
         let filter = cx.new(|cx| {
@@ -192,6 +195,7 @@ impl ProjectPanel {
             notice: None,
             on_open,
             on_file_op,
+            on_close,
         }
     }
 
@@ -838,6 +842,20 @@ impl ProjectPanel {
                     this.stale = true;
                     this.ensure_loaded(cx);
                     cx.notify();
+                }),
+            ))
+            .child(ghost_icon(
+                &theme,
+                "explorer-close",
+                "icons/x.svg",
+                theme.text_3,
+                cx.listener(|this, _: &ClickEvent, _, cx| {
+                    // Close here — this listener already holds the panel's
+                    // lease, so the app callback must not re-enter `update`
+                    // on this entity (that would double-lease and abort).
+                    let on_close = this.on_close.clone();
+                    this.close(cx);
+                    on_close(cx);
                 }),
             ))
             .into_any_element()
@@ -1693,7 +1711,9 @@ mod tests {
 
         let open: OpenHandler = Rc::new(|_, _, _| {});
         let op: FileOpHandler = Rc::new(|_, _| {});
-        let panel = cx.update(|_, app| app.new(|cx| ProjectPanel::new(open, op, cx)));
+        let panel = cx.update(|_, app| {
+            app.new(|cx| ProjectPanel::new(open, op, Rc::new(|_: &mut App| {}), cx))
+        });
 
         let snapshot = walk::snapshot(&root, false);
         cx.update(|window, app| {

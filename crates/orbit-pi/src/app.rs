@@ -874,9 +874,19 @@ impl OrbitApp {
                         });
                     }
                 }),
-                Rc::new(move |request, cx: &mut App| {
-                    let _ = app_weak
-                        .update(cx, |app, cx| app.on_file_op(request, cx));
+                Rc::new({
+                    let app_weak = app_weak.clone();
+                    move |request, cx: &mut App| {
+                        let _ = app_weak
+                            .update(cx, |app, cx| app.on_file_op(request, cx));
+                    }
+                }),
+                Rc::new(move |cx: &mut App| {
+                    // The panel closes itself inside its own listener (it already
+                    // holds that entity's lease), so this only repaints the
+                    // shell. Calling back into `project_panel.update` here would
+                    // double-lease the entity and abort.
+                    let _ = app_weak.update(cx, |_app, cx| cx.notify());
                 }),
                 cx,
             )
@@ -1118,6 +1128,17 @@ impl OrbitApp {
         app.git_panel.update(cx, |panel, _| {
             panel.set_open_file(Rc::new(move |path, _window, cx| {
                 review_sidepane.update(cx, |pane, cx| pane.show_file(path, cx));
+            }));
+        });
+        // A conflicted (or history) file on the Git page opens in the Files
+        // editor. `open_file_in_viewer` leaves the Git page, which is the
+        // intended "resolve it, then continue the merge" flow.
+        let app_weak = cx.entity().downgrade();
+        app.git_panel.update(cx, |panel, _| {
+            panel.set_open_path(Rc::new(move |path, display, _window, cx| {
+                let _ = app_weak.update(cx, |app, cx| {
+                    app.open_file_in_viewer(path, display, cx);
+                });
             }));
         });
         // The Git page's Back button leaves the page. The panel closes itself

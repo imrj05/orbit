@@ -19,8 +19,8 @@ use std::time::Duration;
 use gpui::{
     div, img, prelude::*, px, Animation, AnimationExt, AnyElement, App, ClickEvent, Context,
     Entity, FocusHandle, Focusable, Font, FontFeatures, FontStyle, FontWeight, Hsla, Image,
-    ImageFormat, ImageSource, ListAlignment, ListState, ObjectFit, Render, StyledText,
-    Subscription, TextAlign, TextRun, Timer, Transformation, Window,
+    ImageFormat, ImageSource, ListAlignment, ListState, ObjectFit, Render, ScrollHandle,
+    StyledText, Subscription, TextAlign, TextRun, Timer, Transformation, Window,
 };
 
 use crate::app::{file_badge, file_glyph, icon, nerd_font_family};
@@ -376,7 +376,6 @@ impl FileViewer {
             active: 0,
             loading: false,
             list: ListState::new(0, ListAlignment::Top, px(400.)),
-            image: None,
             chrome_leading: 12.,
             reserve_controls: false,
             tab_scroll: ScrollHandle::new(),
@@ -826,11 +825,10 @@ impl FileViewer {
                             .hover(|el| el.bg(theme.bg_hover).text_color(theme.text_2))
                     })
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.active = index;
-                        let (path, display) = this.tab_target(cx);
-                        this.read(path, display, cx);
+                        this.activate(index, cx);
+                        // Reveal the tab the user just activated if the strip has
+                        // scrolled.
                         this.tab_scroll.scroll_to_item(index);
-                        cx.notify();
                     }))
                     .child(glyph)
                     .child(

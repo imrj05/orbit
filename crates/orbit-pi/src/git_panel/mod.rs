@@ -16,19 +16,33 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    canvas, div, fill, hsla, img, point, prelude::*, px, radians, size, Animation, AnimationExt,
-    AnyElement, Background, Bounds, ClickEvent, Context, Entity, Focusable, FontWeight, Hsla,
-    MouseDownEvent, ObjectFit, PathBuilder, Pixels, Render, Transformation, Window,
+    canvas, div, fill, hsla, img, point, prelude::*, px, size, AnyElement, Background, Bounds,
+    ClickEvent, Context, Entity, Focusable, FontWeight, Hsla, MouseDownEvent, ObjectFit,
+    PathBuilder, Pixels, Render, Window,
 };
 
 use crate::app::{icon, nerd_font_family};
 use crate::commit_message;
-use crate::git::{self, CommitEntry, RefKind, StatusRow};
+use crate::gh;
+use crate::git::{self, CommitEntry, StatusRow};
+use crate::git_ops::{self, InProgress};
 use crate::theme::{self, Theme, ThemeMode};
+
+mod failure;
+mod widgets;
+
+use failure::{ActionError, RecoveryAction};
+use widgets::{
+    action_button, check_box, empty_note, load_more, ref_badge, row_button, spinner, status_color,
+};
 
 /// Callback the app installs so a changed-file row can open its diff in the
 /// Review pane.
 pub type OpenFile = std::rc::Rc<dyn Fn(String, &mut Window, &mut gpui::App)>;
+
+/// Callback the app installs so a history/conflict file can open in the Files
+/// editor. The path is absolute; the label is workspace-relative.
+pub type OpenPath = std::rc::Rc<dyn Fn(PathBuf, String, &mut Window, &mut gpui::App)>;
 
 /// Callback the app installs so the panel's Back button also leaves the Git
 /// page (the app owns that flag, not the panel).
@@ -45,6 +59,8 @@ enum GitTab {
     Changes,
     History,
     Graph,
+    Issues,
+    Pulls,
 }
 
 /// Which commit-bar action is running, for the button state.
@@ -55,19 +71,37 @@ enum GitAction {
     Push,
     Pull,
     Merge,
+    Rebase,
+    ForcePush,
 }
 
-/// A failed Git operation shown on the page until dismissed.
-///
-/// `title` is a short human summary (usually including the fix); `detail`
-/// keeps the command's own output, including the multi-line `hint:` blocks
-/// that a rejected push or a merge conflict prints. Unlike the transient
-/// [`GitPanel::status`] line, a failure is never truncated and never expires
-/// on a timer, so push/pull/merge errors are actually readable.
-#[derive(Clone, Debug)]
-struct GitFailure {
-    title: String,
-    detail: String,
+/// A destructive action waiting for the user's confirmation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PendingConfirm {
+    /// Overwrite the remote with the local branch (`--force-with-lease`).
+    ForcePush,
+    /// Abandon the in-progress merge/rebase/cherry-pick.
+    Abort(InProgress),
+    /// Delete a branch (force-discarding unmerged commits).
+    DeleteBranch(String),
+}
+
+/// Which ref picker is open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RefTarget {
+    /// "Merge branch…": merge the chosen ref into the current branch.
+    Merge,
+    /// "Rebase onto…": rebase the current branch onto the chosen ref.
+    Rebase,
+}
+
+/// What the branch-name prompt is for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum BranchPrompt {
+    /// Create and check out a branch from HEAD.
+    New,
+    /// Rename the current branch (carries its name).
+    Rename(String),
 }
 
 /// What to do once the user answers the "stage unstaged changes?" prompt.
@@ -92,6 +126,13 @@ pub struct GitPanel {
     generating: bool,
     /// A pending "stage unstaged changes first?" confirmation.
     stage_prompt: Option<PendingAfterStage>,
+    /// A destructive action waiting for confirmation (force push / abort).
+    pending_confirm: Option<PendingConfirm>,
+    /// The last commit-bar action, so a failed one can be retried. Kept even
+    /// across failures because the failure banner's Retry reads it.
+    last_action: Option<(GitAction, Option<String>)>,
+    /// True while a continue/abort/skip runs off-thread.
+    operation_busy: bool,
 
     // ── changes ──
     staged: Vec<StatusRow>,
@@ -100,19 +141,59 @@ pub struct GitPanel {
     changes_error: Option<String>,
     /// The last operation failure, painted as a persistent banner above the
     /// tab body. Cleared by a later success or the dismiss button.
-    failure: Option<GitFailure>,
+    failure: Option<ActionError>,
     /// Path awaiting a discard confirmation.
     pending_discard: Option<String>,
+    /// Merge/rebase/cherry-pick/revert/bisect Git has left half-finished, if
+    /// any. Drives the operation bar and the conflict recovery actions.
+    git_operation: Option<InProgress>,
+    /// Files with unresolved conflicts while `git_operation` is active.
+    conflicts: Vec<String>,
 
     // ── history ──
     history: Vec<CommitEntry>,
     history_loading: bool,
     history_error: Option<String>,
+    /// The expanded commit's detail (message body + changed files).
+    commit_detail: Option<git::CommitDetail>,
+    commit_detail_loading: bool,
+    /// The commit row currently expanded, if any.
+    selected_commit: Option<String>,
+    /// Active History filters (all-branches, author, path, grep).
+    history_filter: git::HistoryFilter,
+    /// An open per-file actions menu: (workspace-relative path, commit hash).
+    file_menu: Option<(String, String)>,
 
     // ── graph (all local branches) ──
     graph: Vec<git::GraphRow>,
     graph_loading: bool,
     graph_error: Option<String>,
+    /// Whether the graph also includes remote-tracking branches and tags.
+    graph_all_refs: bool,
+
+    // ── refs / branches / stash ──
+    /// Merge/rebase targets: local branches, remote-tracking branches, tags.
+    refs: Vec<git_ops::RefEntry>,
+    /// Which ref picker is open, if any.
+    ref_menu: Option<RefTarget>,
+    /// How a branch merge combines the target (ff / merge commit / squash).
+    merge_mode: git_ops::MergeMode,
+    /// The branch-name field used by the New/Rename prompt.
+    branch_input: Entity<crate::composer::ComposerInput>,
+    /// A pending New/Rename branch prompt.
+    branch_prompt: Option<BranchPrompt>,
+    /// The stash stack, newest first.
+    stashes: Vec<git_ops::StashEntry>,
+    /// Whether the Stashes section on the Changes tab is expanded.
+    stash_open: bool,
+
+    // ── github (gh CLI) ──
+    /// Whether the `gh` binary is installed and runnable.
+    gh_installed: bool,
+    /// Whether `gh` has a signed-in host.
+    gh_authenticated: bool,
+    /// Auth error or version line, shown in the Issues/Pulls setup state.
+    gh_detail: String,
 
     // ── header ──
     branch: Option<String>,
@@ -142,6 +223,8 @@ pub struct GitPanel {
     chrome_leading: f32,
     /// Opens a changed file's diff in the Review pane (installed by the app).
     on_open_file: Option<OpenFile>,
+    /// Opens a file in the Files editor (installed by the app).
+    on_open_path: Option<OpenPath>,
     /// Leaves the Git page entirely (installed by the app).
     on_close: Option<Close>,
 }
@@ -154,6 +237,12 @@ impl GitPanel {
                 .with_key_context("Composer Picker")
                 .with_max_lines(6)
         });
+        let branch_input = cx.new(|cx| {
+            crate::composer::ComposerInput::new(cx)
+                .with_placeholder_key("git_panel.branch_name_placeholder")
+                .with_key_context("Composer Picker")
+                .with_max_lines(1)
+        });
         Self {
             open: false,
             tab: GitTab::Changes,
@@ -165,18 +254,39 @@ impl GitPanel {
             pending: None,
             generating: false,
             stage_prompt: None,
+            pending_confirm: None,
+            last_action: None,
+            operation_busy: false,
             staged: Vec::new(),
             unstaged: Vec::new(),
             changes_loading: false,
             changes_error: None,
             failure: None,
             pending_discard: None,
+            git_operation: None,
+            conflicts: Vec::new(),
             history: Vec::new(),
             history_loading: false,
             history_error: None,
+            commit_detail: None,
+            commit_detail_loading: false,
+            selected_commit: None,
+            history_filter: git::HistoryFilter::default(),
+            file_menu: None,
             graph: Vec::new(),
             graph_loading: false,
             graph_error: None,
+            graph_all_refs: false,
+            refs: Vec::new(),
+            ref_menu: None,
+            merge_mode: git_ops::MergeMode::Merge,
+            branch_input,
+            branch_prompt: None,
+            stashes: Vec::new(),
+            stash_open: false,
+            gh_installed: false,
+            gh_authenticated: false,
+            gh_detail: String::new(),
             branch: None,
             ahead_behind: None,
             has_commits: false,
@@ -189,6 +299,7 @@ impl GitPanel {
             remote_web: None,
             chrome_leading: 12.,
             on_open_file: None,
+            on_open_path: None,
             on_close: None,
         }
     }
@@ -236,6 +347,10 @@ impl GitPanel {
             self.graph.clear();
             self.remote_web = None;
             self.status = None;
+            self.selected_commit = None;
+            self.commit_detail = None;
+            self.history_filter = git::HistoryFilter::default();
+            self.file_menu = None;
             if self.open {
                 self.refresh_all(cx);
             }
@@ -247,6 +362,11 @@ impl GitPanel {
     /// Install the callback that opens a changed file's diff in Review.
     pub fn set_open_file(&mut self, open: OpenFile) {
         self.on_open_file = Some(open);
+    }
+
+    /// Install the callback that opens a workspace file in the Files editor.
+    pub fn set_open_path(&mut self, open: OpenPath) {
+        self.on_open_path = Some(open);
     }
 
     /// Set by `OrbitApp` on every render: how far the header's leading edge sits
@@ -277,10 +397,11 @@ impl GitPanel {
     fn refresh_all(&mut self, cx: &mut Context<Self>) {
         self.refresh_status(cx);
         self.refresh_branch(cx);
+        self.refresh_gh(cx);
         match self.tab {
             GitTab::History => self.refresh_history(cx),
             GitTab::Graph => self.refresh_graph(cx),
-            GitTab::Changes => {}
+            GitTab::Changes | GitTab::Issues | GitTab::Pulls => {}
         }
     }
 
@@ -312,6 +433,7 @@ impl GitPanel {
             GitTab::Changes => self.changes_loading,
             GitTab::History => self.history_loading,
             GitTab::Graph => self.graph_loading,
+            GitTab::Issues | GitTab::Pulls => false,
         }
     }
 
@@ -323,16 +445,30 @@ impl GitPanel {
         self.changes_error = None;
         self.spawn_data(
             cx,
-            move || git::status_rows(&cwd),
+            move || {
+                let rows = git::status_rows(&cwd)?;
+                let operation = git_ops::operation_state(&cwd);
+                let conflicts = match operation {
+                    Some(_) => git_ops::conflicted_files(&cwd),
+                    None => Vec::new(),
+                };
+                Ok((rows, operation, conflicts))
+            },
             |panel, result, cx| {
                 panel.changes_loading = false;
                 match result {
-                    Ok(rows) => {
+                    Ok((rows, operation, conflicts)) => {
                         panel.staged = rows.iter().filter(|row| row.staged()).cloned().collect();
                         panel.unstaged =
                             rows.iter().filter(|row| row.unstaged()).cloned().collect();
+                        panel.git_operation = operation;
+                        panel.conflicts = conflicts;
                     }
-                    Err(err) => panel.changes_error = Some(err),
+                    Err(err) => {
+                        panel.changes_error = Some(err);
+                        panel.git_operation = None;
+                        panel.conflicts.clear();
+                    }
                 }
                 cx.notify();
             },
@@ -352,15 +488,49 @@ impl GitPanel {
                     git::list_branches(&cwd).unwrap_or_default(),
                     git::has_commits(&cwd),
                     git::remote_web(&cwd),
+                    git_ops::list_refs(&cwd),
+                    git_ops::list_stashes(&cwd),
                 ))
             },
             |panel, result, cx| {
-                if let Ok((branch, ahead_behind, branches, has_commits, remote_web)) = result {
+                if let Ok((
+                    branch,
+                    ahead_behind,
+                    branches,
+                    has_commits,
+                    remote_web,
+                    refs,
+                    stashes,
+                )) = result
+                {
                     panel.branch = branch;
                     panel.ahead_behind = ahead_behind;
                     panel.branches = branches;
                     panel.has_commits = has_commits;
                     panel.remote_web = remote_web;
+                    panel.refs = refs;
+                    panel.stashes = stashes;
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    /// Probe the `gh` CLI (availability + sign-in) for the Issues and Pull
+    /// requests tabs. Two quick subprocesses, run off-thread; never blocks a
+    /// frame.
+    fn refresh_gh(&mut self, cx: &mut Context<Self>) {
+        let Some(cwd) = self.cwd() else {
+            return;
+        };
+        self.spawn_data(
+            cx,
+            move || Ok(gh::status(&cwd)),
+            |panel, result, cx| {
+                if let Ok(status) = result {
+                    panel.gh_installed = status.installed;
+                    panel.gh_authenticated = status.authenticated;
+                    panel.gh_detail = status.detail;
                 }
                 cx.notify();
             },
@@ -374,9 +544,10 @@ impl GitPanel {
         self.history_loading = true;
         self.history_error = None;
         let limit = self.history.len().max(HISTORY_PAGE) + HISTORY_PAGE;
+        let filter = self.history_filter.clone();
         self.spawn_data(
             cx,
-            move || git::history(&cwd, limit, 0),
+            move || git::history_filtered(&cwd, &filter, limit, 0),
             |panel, result, cx| {
                 panel.history_loading = false;
                 match result {
@@ -388,6 +559,91 @@ impl GitPanel {
         );
     }
 
+    /// Expand or collapse a commit's detail panel.
+    fn toggle_commit(&mut self, hash: String, cx: &mut Context<Self>) {
+        if self.selected_commit.as_deref() == Some(hash.as_str()) {
+            self.selected_commit = None;
+            self.commit_detail = None;
+            cx.notify();
+            return;
+        }
+        self.selected_commit = Some(hash.clone());
+        self.commit_detail = None;
+        self.commit_detail_loading = true;
+        self.file_menu = None;
+        cx.notify();
+        let Some(cwd) = self.cwd() else { return };
+        self.spawn_data(
+            cx,
+            move || git::commit_detail(&cwd, &hash),
+            |panel, result, cx| {
+                panel.commit_detail_loading = false;
+                match result {
+                    Ok(detail) => panel.commit_detail = Some(detail),
+                    Err(err) => panel.set_failure(err),
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    /// Filter History to one path. `follow` tracks renames — that is the
+    /// "File history" action.
+    fn filter_history_path(&mut self, path: String, follow: bool, cx: &mut Context<Self>) {
+        self.history_filter.path = Some(path);
+        self.history_filter.follow = follow;
+        self.selected_commit = None;
+        self.commit_detail = None;
+        self.file_menu = None;
+        self.refresh_history(cx);
+        cx.notify();
+    }
+
+    fn filter_history_author(&mut self, author: String, cx: &mut Context<Self>) {
+        self.history_filter.author = Some(author);
+        self.selected_commit = None;
+        self.commit_detail = None;
+        self.refresh_history(cx);
+        cx.notify();
+    }
+
+    fn toggle_all_branches(&mut self, cx: &mut Context<Self>) {
+        self.history_filter.all_branches = !self.history_filter.all_branches;
+        self.refresh_history(cx);
+        cx.notify();
+    }
+
+    fn clear_history_filter(&mut self, cx: &mut Context<Self>) {
+        self.history_filter = git::HistoryFilter::default();
+        self.selected_commit = None;
+        self.commit_detail = None;
+        self.refresh_history(cx);
+        cx.notify();
+    }
+
+    /// Reveal a workspace-relative path in the OS file manager.
+    fn reveal_path(&self, path: &str) {
+        let Some(base) = self
+            .workspace
+            .clone()
+            .or_else(|| std::env::current_dir().ok())
+        else {
+            return;
+        };
+        crate::platform::reveal_in_file_manager(&base.join(path));
+    }
+
+    fn open_file_menu(&mut self, path: String, hash: String, cx: &mut Context<Self>) {
+        self.file_menu = Some((path, hash));
+        cx.notify();
+    }
+
+    fn close_file_menu(&mut self, cx: &mut Context<Self>) {
+        if self.file_menu.take().is_some() {
+            cx.notify();
+        }
+    }
+
     /// Fetch the all-branches graph. Grows the window by a page each call, the
     /// same way History does, so "Load more" deepens the graph.
     fn refresh_graph(&mut self, cx: &mut Context<Self>) {
@@ -397,10 +653,11 @@ impl GitPanel {
         self.graph_loading = true;
         self.graph_error = None;
         let limit = self.graph.len().max(HISTORY_PAGE) + HISTORY_PAGE;
+        let all_refs = self.graph_all_refs;
         self.spawn_data(
             cx,
             move || {
-                let commits = git::graph_history(&cwd, limit)?;
+                let commits = git::graph_history(&cwd, limit, all_refs)?;
                 Ok(git::layout_graph(&commits))
             },
             |panel, result, cx| {
@@ -477,6 +734,9 @@ impl GitPanel {
     }
 
     fn after_git(&mut self, result: Result<(), String>, success: &str, cx: &mut Context<Self>) {
+        // Staging/discard failures are not commit-bar actions, so a stale
+        // Retry from an earlier push/pull must not linger.
+        self.last_action = None;
         match result {
             Ok(()) => {
                 self.clear_failure();
@@ -501,8 +761,7 @@ impl GitPanel {
     /// title; both it and the full output are shown (and copyable).
     fn set_failure(&mut self, raw: impl Into<String>) {
         let raw = raw.into();
-        let (title, detail) = classify_git_failure(&raw);
-        self.failure = Some(GitFailure { title, detail });
+        self.failure = Some(ActionError::from_raw(&raw));
         // The transient success line and the failure banner never co-exist.
         self.status = None;
     }
@@ -583,15 +842,20 @@ impl GitPanel {
         cx.notify();
     }
 
-    /// Dismiss the stage confirmation (Escape / Cancel / outside click).
+    /// Dismiss the active modal (stage prompt, confirm, or branch prompt).
     pub fn dismiss_modal(&mut self, cx: &mut Context<Self>) {
-        if self.stage_prompt.take().is_some() {
+        let stage = self.stage_prompt.take().is_some();
+        let confirm = self.pending_confirm.take().is_some();
+        let branch = self.branch_prompt.take().is_some();
+        if stage || confirm || branch {
             cx.notify();
         }
     }
 
     pub fn has_modal(&self) -> bool {
         self.stage_prompt.is_some()
+            || self.pending_confirm.is_some()
+            || self.branch_prompt.is_some()
     }
 
     fn generate_then(&mut self, action: Option<GitAction>, cx: &mut Context<Self>) {
@@ -660,6 +924,8 @@ impl GitPanel {
     ) {
         let Some(cwd) = self.cwd() else { return };
         self.pending = Some(action);
+        // Remember the attempt so the failure banner's Retry can repeat it.
+        self.last_action = Some((action, message.clone()));
         cx.notify();
         let include_unstaged = self.include_unstaged;
         cx.spawn(async move |this, cx| {
@@ -674,6 +940,8 @@ impl GitPanel {
                         GitAction::Push => git::push(&cwd),
                         GitAction::Pull => git::pull(&cwd),
                         GitAction::Merge => git::merge_upstream(&cwd),
+                        GitAction::Rebase => git::rebase_upstream(&cwd),
+                        GitAction::ForcePush => git::push_force_with_lease(&cwd),
                     }
                 })
                 .await;
@@ -719,6 +987,250 @@ impl GitPanel {
         );
     }
 
+    // ── recovery ───────────────────────────────────────────────────────
+
+    /// Run one recovery action offered by the failure banner.
+    fn recover(&mut self, action: RecoveryAction, window: &mut Window, cx: &mut Context<Self>) {
+        match action {
+            RecoveryAction::Pull => self.run_git_action(GitAction::Pull, None, cx),
+            RecoveryAction::Merge => self.run_git_action(GitAction::Merge, None, cx),
+            RecoveryAction::Rebase => self.run_git_action(GitAction::Rebase, None, cx),
+            RecoveryAction::PublishBranch => self.run_git_action(GitAction::Push, None, cx),
+            RecoveryAction::ForceWithLease => {
+                // Force pushing rewrites the remote; always confirm first.
+                self.pending_confirm = Some(PendingConfirm::ForcePush);
+                cx.notify();
+            }
+            RecoveryAction::Retry => {
+                if let Some((action, message)) = self.last_action.clone() {
+                    self.run_git_action(action, message, cx);
+                }
+            }
+            RecoveryAction::Reauthenticate => {
+                // The terminal panel has no "run command" API, so hand the user
+                // the exact command and a place to run it rather than fake it.
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string("gh auth login".into()));
+                self.set_status(tr!("git_panel.reauth_copied"));
+                cx.notify();
+            }
+            RecoveryAction::OpenConflicts => self.open_conflicts(window, cx),
+            RecoveryAction::AbortOperation => {
+                if let Some(op) = self.git_operation {
+                    // Aborting discards resolution work; confirm first.
+                    self.pending_confirm = Some(PendingConfirm::Abort(op));
+                    cx.notify();
+                }
+            }
+            RecoveryAction::ContinueOperation => self.continue_operation(cx),
+            RecoveryAction::SkipOperation => self.skip_operation(cx),
+        }
+    }
+
+    /// Open the first conflicted file in the Files editor. Conflicts are
+    /// resolved there; the operation bar then continues the merge/rebase.
+    fn open_conflicts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self.conflicts.first().cloned() else {
+            self.set_status(tr!("git_panel.no_conflicts"));
+            cx.notify();
+            return;
+        };
+        self.open_path(path, window, cx);
+    }
+
+    /// Open a workspace-relative path in the Files editor (installed by the
+    /// app). No-op when the callback is missing.
+    fn open_path(&self, relative: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(on_open) = self.on_open_path.clone() else {
+            return;
+        };
+        let Some(base) = self
+            .workspace
+            .clone()
+            .or_else(|| std::env::current_dir().ok())
+        else {
+            return;
+        };
+        on_open(base.join(&relative), relative, window, cx);
+    }
+
+    fn continue_operation(&mut self, cx: &mut Context<Self>) {
+        let Some(op) = self.git_operation else { return };
+        self.run_operation(move |cwd| git_ops::continue_operation(cwd, op), cx);
+    }
+
+    fn skip_operation(&mut self, cx: &mut Context<Self>) {
+        let Some(op) = self.git_operation else { return };
+        self.run_operation(move |cwd| git_ops::skip_operation(cwd, op), cx);
+    }
+
+    fn abort_operation(&mut self, op: InProgress, cx: &mut Context<Self>) {
+        self.run_operation(move |cwd| git_ops::abort_operation(cwd, op), cx);
+    }
+
+    /// Run a continue/abort/skip off-thread and reconcile the page with Git's
+    /// resulting state.
+    fn run_operation<F>(&mut self, work: F, cx: &mut Context<Self>)
+    where
+        F: FnOnce(&std::path::Path) -> Result<String, String> + Send + 'static,
+    {
+        let Some(cwd) = self.cwd() else { return };
+        self.operation_busy = true;
+        self.clear_failure();
+        cx.notify();
+        self.spawn_data(
+            cx,
+            move || work(&cwd),
+            |panel, result, cx| {
+                panel.operation_busy = false;
+                match result {
+                    Ok(note) => {
+                        panel.clear_failure();
+                        panel.set_status(note);
+                    }
+                    Err(err) => panel.set_failure(err),
+                }
+                panel.refresh_all(cx);
+                cx.notify();
+            },
+        );
+    }
+
+    /// Execute the confirmed destructive action.
+    fn confirm_pending(&mut self, cx: &mut Context<Self>) {
+        let Some(confirm) = self.pending_confirm.take() else {
+            return;
+        };
+        match confirm {
+            PendingConfirm::ForcePush => self.run_git_action(GitAction::ForcePush, None, cx),
+            PendingConfirm::Abort(op) => self.abort_operation(op, cx),
+            PendingConfirm::DeleteBranch(name) => {
+                self.run_operation(move |cwd| git_ops::delete_branch(cwd, &name, true), cx)
+            }
+        }
+    }
+
+    // ── merge / rebase / branches / stash ──────────────────────────────
+
+    /// Merge the chosen ref into the current branch.
+    fn merge_ref(&mut self, reference: &str, cx: &mut Context<Self>) {
+        let reference = reference.to_string();
+        let mode = self.merge_mode;
+        self.close_ref_picker(cx);
+        self.run_operation(move |cwd| git_ops::merge_ref(cwd, &reference, mode), cx);
+    }
+
+    /// Rebase the current branch onto the chosen ref. A dirty worktree is
+    /// autostashed rather than refused.
+    fn rebase_ref(&mut self, reference: &str, cx: &mut Context<Self>) {
+        let reference = reference.to_string();
+        let autostash = !self.staged.is_empty() || !self.unstaged.is_empty();
+        self.close_ref_picker(cx);
+        self.run_operation(
+            move |cwd| git_ops::rebase_ref(cwd, &reference, autostash),
+            cx,
+        );
+    }
+
+    fn close_ref_picker(&mut self, cx: &mut Context<Self>) {
+        self.ref_menu = None;
+        self.branch_menu_open = false;
+        self.menu_dismissed_at = Some(Instant::now());
+        cx.notify();
+    }
+
+    /// Open the branch-name prompt, prefilled for a rename.
+    fn open_branch_prompt(
+        &mut self,
+        prompt: BranchPrompt,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let text = match &prompt {
+            BranchPrompt::New => String::new(),
+            BranchPrompt::Rename(name) => name.clone(),
+        };
+        let len = self.branch_input.read(cx).text().len();
+        self.branch_input
+            .update(cx, |input, cx| input.replace_range(0..len, &text, cx));
+        self.branch_prompt = Some(prompt);
+        self.branch_menu_open = false;
+        self.menu_dismissed_at = Some(Instant::now());
+        let focus = self.branch_input.read(cx).focus_handle(cx);
+        window.focus(&focus);
+        cx.notify();
+    }
+
+    /// Create the new branch or apply the rename.
+    fn confirm_branch_prompt(&mut self, cx: &mut Context<Self>) {
+        let Some(prompt) = self.branch_prompt.take() else {
+            return;
+        };
+        let name = self.branch_input.read(cx).text().trim().to_string();
+        if name.is_empty() {
+            self.set_failure(tr!("git.branch_name_empty"));
+            cx.notify();
+            return;
+        }
+        match prompt {
+            BranchPrompt::New => self.run_operation(
+                move |cwd| {
+                    git::create_and_checkout_branch(cwd, &name)?;
+                    Ok(tr!("git_panel.branch_created", name = name))
+                },
+                cx,
+            ),
+            BranchPrompt::Rename(from) => {
+                self.run_operation(move |cwd| git_ops::rename_branch(cwd, &from, &name), cx)
+            }
+        }
+    }
+
+    /// Delete a branch, trying the safe `-d` first. An unmerged branch then
+    /// asks for confirmation before the forced `-D`.
+    fn delete_branch(&mut self, name: String, cx: &mut Context<Self>) {
+        self.branch_menu_open = false;
+        self.menu_dismissed_at = Some(Instant::now());
+        let Some(cwd) = self.cwd() else { return };
+        let for_work = name.clone();
+        self.spawn_data(
+            cx,
+            move || git_ops::delete_branch(&cwd, &for_work, false),
+            move |panel, result, cx| {
+                match result {
+                    Ok(note) => {
+                        panel.clear_failure();
+                        panel.set_status(note);
+                    }
+                    // The safe delete refused because the branch has unmerged
+                    // commits; offer the forced delete behind a confirmation.
+                    Err(err) if err.contains("not fully merged") => {
+                        panel.pending_confirm = Some(PendingConfirm::DeleteBranch(name.clone()));
+                    }
+                    Err(err) => panel.set_failure(err),
+                }
+                panel.refresh_branch(cx);
+                cx.notify();
+            },
+        );
+    }
+
+    fn stash_push(&mut self, cx: &mut Context<Self>) {
+        // Stash everything, new files included, so a rebase/checkout can start.
+        self.run_operation(move |cwd| git_ops::stash_push(cwd, None, true), cx);
+    }
+
+    fn stash_pop(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.run_operation(move |cwd| git_ops::stash_pop(cwd, index), cx);
+    }
+
+    fn stash_apply(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.run_operation(move |cwd| git_ops::stash_apply(cwd, index), cx);
+    }
+
+    fn stash_drop(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.run_operation(move |cwd| git_ops::stash_drop(cwd, index), cx);
+    }
+
     fn toggle_branch_menu(&mut self, cx: &mut Context<Self>) {
         // mouse-down-out closes the menu; the chip's mouse-up would otherwise
         // toggle it open again on the same click (see AGENT.md popovers).
@@ -728,6 +1240,8 @@ impl GitPanel {
                 return;
             }
         }
+        // A click on the chip closes the ref picker and toggles the branch menu.
+        self.ref_menu = None;
         self.branch_menu_open = !self.branch_menu_open;
         cx.notify();
     }
@@ -756,7 +1270,10 @@ impl GitPanel {
                         panel.clear_failure();
                         panel.set_status(tr!("git_panel.branch_checked_out"));
                     }
-                    Err(err) => panel.set_failure(err),
+                    Err(err) => {
+                        panel.last_action = None;
+                        panel.set_failure(err)
+                    }
                 }
                 panel.refresh_branch(cx);
                 panel.refresh_status(cx);
@@ -944,7 +1461,7 @@ impl GitPanel {
     }
 
     fn tab_bar(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
-        let tabs = [
+        let mut tabs = vec![
             (
                 GitTab::Changes,
                 "icons/git-compare.svg",
@@ -953,6 +1470,16 @@ impl GitPanel {
             (GitTab::History, "icons/clock.svg", "git_panel.tab_history"),
             (GitTab::Graph, "icons/git-fork.svg", "git_panel.tab_graph"),
         ];
+        // Host tabs only appear when `gh` exists, so a repo without it keeps
+        // the page exactly as it was. Sign-in state is handled inside the tab.
+        if self.gh_installed {
+            tabs.push((GitTab::Issues, "icons/github.svg", "git_panel.tab_issues"));
+            tabs.push((
+                GitTab::Pulls,
+                "icons/git-pull-request.svg",
+                "git_panel.tab_pulls",
+            ));
+        }
         div()
             .h(px(40.))
             .flex_none()
@@ -962,7 +1489,7 @@ impl GitPanel {
             .gap(theme.space(6.))
             .border_b_1()
             .border_color(theme.border)
-            .children(tabs.map(|(tab, tab_icon, key)| {
+            .children(tabs.into_iter().map(|(tab, tab_icon, key)| {
                 let label = tr!(key);
                 let selected = self.tab == tab;
                 div()
@@ -1029,6 +1556,11 @@ impl GitPanel {
     fn failure_banner(&self, theme: Theme, cx: &Context<Self>) -> Option<AnyElement> {
         let failure = self.failure.as_ref()?;
         let copy_text = format!("{}: {}", failure.title, failure.detail);
+        let mut actions = failure.recovery_actions();
+        // Retry only makes sense when there is an attempt to repeat.
+        if self.last_action.is_none() {
+            actions.retain(|action| *action != RecoveryAction::Retry);
+        }
         Some(
             div()
                 .id("git-failure")
@@ -1074,7 +1606,16 @@ impl GitPanel {
                                 .text_color(theme.text_2)
                                 .whitespace_normal()
                                 .child(failure.detail.clone()),
-                        ),
+                        )
+                        .when(!actions.is_empty(), |column| {
+                            column.child(
+                                div().flex().flex_wrap().gap(px(6.)).pt(px(3.)).children(
+                                    actions
+                                        .into_iter()
+                                        .map(|action| recovery_button(action, theme, cx)),
+                                ),
+                            )
+                        }),
                 )
                 .child(
                     div()
@@ -1124,6 +1665,124 @@ impl GitPanel {
         )
     }
 
+    /// The single "operation in progress" strip: which merge/rebase/cherry-pick
+    /// Git is waiting on, the conflicting files, and Continue / Skip / Abort.
+    /// It is the page's only source of truth for "you are mid-merge".
+    fn operation_bar(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let op = self.git_operation?;
+        let conflicts = self.conflicts.len();
+        let can_continue = conflicts == 0 && !self.operation_busy;
+        let count_label = if conflicts == 1 {
+            tr!("git_panel.op_conflicts_one", count = conflicts)
+        } else {
+            tr!("git_panel.op_conflicts_other", count = conflicts)
+        };
+
+        let mut buttons = div().flex().items_center().gap(px(6.)).flex_none();
+        if op.can_skip() {
+            buttons = buttons.child(action_button(
+                "git-op-skip",
+                &tr!("git_panel.op_skip"),
+                None,
+                false,
+                self.operation_busy,
+                theme,
+                cx.listener(|this, _: &ClickEvent, _, cx| this.skip_operation(cx)),
+            ));
+        }
+        buttons = buttons
+            .child(action_button(
+                "git-op-abort",
+                &tr!("git_panel.op_abort"),
+                None,
+                false,
+                self.operation_busy,
+                theme,
+                cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.pending_confirm = Some(PendingConfirm::Abort(op));
+                    cx.notify();
+                }),
+            ))
+            .child(action_button(
+                "git-op-continue",
+                &tr!("git_panel.op_continue"),
+                Some(if self.operation_busy {
+                    spinner("git-op-spinner", 12., theme)
+                } else {
+                    icon("icons/check.svg", 12., theme.send_fg).into_any_element()
+                }),
+                true,
+                !can_continue,
+                theme,
+                cx.listener(|this, _: &ClickEvent, _, cx| this.continue_operation(cx)),
+            ));
+
+        Some(
+            div()
+                .id("git-operation")
+                .flex_none()
+                .mx(theme.space(20.))
+                .mt(theme.space(12.))
+                .bg(theme.warn.opacity(0.1))
+                .border_1()
+                .border_color(theme.warn.opacity(0.45))
+                .rounded_lg()
+                .px(px(12.))
+                .py(px(9.))
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(icon("icons/git-merge.svg", 15., theme.warn))
+                        .child(
+                            div()
+                                .text_size(theme.ui_px(12.5))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(theme.text)
+                                .child(tr!(op.label_key())),
+                        )
+                        .children((conflicts > 0).then(|| {
+                            div()
+                                .text_size(theme.ui_px(11.5))
+                                .text_color(theme.text_2)
+                                .child(count_label)
+                        }))
+                        .child(div().flex_1())
+                        .child(buttons),
+                )
+                .children((!self.conflicts.is_empty()).then(|| {
+                    div().flex().flex_wrap().gap(px(6.)).children(
+                        self.conflicts.iter().take(8).map(|path| {
+                            let target = path.clone();
+                            div()
+                                .id(gpui::ElementId::Name(format!("git-conflict-{path}").into()))
+                                .h(px(22.))
+                                .px(px(7.))
+                                .rounded(px(6.))
+                                .border_1()
+                                .border_color(theme.border)
+                                .bg(theme.bg_raised)
+                                .flex()
+                                .items_center()
+                                .cursor_pointer()
+                                .text_size(theme.ui_px(11.))
+                                .text_color(theme.text_2)
+                                .hover(|s| s.bg(theme.bg_hover).text_color(theme.text))
+                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                    this.open_path(target.clone(), window, cx)
+                                }))
+                                .child(path.clone())
+                        }),
+                    )
+                }))
+                .into_any_element(),
+        )
+    }
+
     fn changes_tab(&self, theme: Theme, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         div()
             .flex_1()
@@ -1146,7 +1805,7 @@ impl GitPanel {
     }
 
     fn commit_bar(&self, theme: Theme, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let busy = self.pending.is_some() || self.generating;
+        let busy = self.pending.is_some() || self.generating || self.operation_busy;
         let has_changes = !self.staged.is_empty() || !self.unstaged.is_empty();
         let can_commit = !busy
             && (!self.staged.is_empty() || (self.include_unstaged && !self.unstaged.is_empty()));
@@ -1444,7 +2103,8 @@ impl GitPanel {
                 None,
             )];
         }
-        if self.staged.is_empty() && self.unstaged.is_empty() {
+        let has_changes = !self.staged.is_empty() || !self.unstaged.is_empty();
+        if !has_changes && self.stashes.is_empty() {
             return vec![empty_note(
                 theme,
                 "icons/check.svg",
@@ -1453,6 +2113,11 @@ impl GitPanel {
             )];
         }
         let mut out = Vec::new();
+        // Stashes (and the changes that could become one) always render first,
+        // so a stash-only working tree still has something to show.
+        if has_changes || !self.stashes.is_empty() {
+            out.push(self.stash_section(theme, cx));
+        }
         if !self.staged.is_empty() {
             out.push(self.section_header(
                 theme,
@@ -1478,6 +2143,83 @@ impl GitPanel {
             out.push(self.change_rows(self.unstaged.clone(), false, theme, cx));
         }
         out
+    }
+
+    /// The collapsible Stashes section at the top of the Changes tab.
+    fn stash_section(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let count = self.stashes.len();
+        let has_changes = !self.staged.is_empty() || !self.unstaged.is_empty();
+        let mut header = div()
+            .id("git-stash-header")
+            .px(theme.space(20.))
+            .pt(theme.space(12.))
+            .pb(theme.space(8.))
+            .border_b_1()
+            .border_color(theme.border)
+            .flex()
+            .items_center()
+            .gap(theme.space(8.))
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.stash_open = !this.stash_open;
+                cx.notify();
+            }))
+            .child(icon(
+                if self.stash_open {
+                    "icons/arrow-down.svg"
+                } else {
+                    "icons/arrow-right.svg"
+                },
+                11.,
+                theme.text_3,
+            ))
+            .child(
+                div()
+                    .text_size(theme.ui_px(11.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text_3)
+                    .child(format!(
+                        "{} \u{b7} {count}",
+                        tr!("git_panel.stashes").to_uppercase()
+                    )),
+            )
+            .child(div().flex_1());
+        if has_changes {
+            header = header.child(
+                div()
+                    .id("git-stash-all")
+                    .h(px(28.))
+                    .px(theme.space(8.))
+                    .rounded(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(theme.space(4.))
+                    .cursor_pointer()
+                    .text_size(theme.ui_px(11.5))
+                    .text_color(theme.text_2)
+                    .hover(|s| s.bg(theme.bg_hover).text_color(theme.text))
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.stash_push(cx)))
+                    .child(icon("icons/arrow-down.svg", 11., theme.text_3))
+                    .child(tr!("git_panel.stash_changes")),
+            );
+        }
+        let mut section = div().flex().flex_col().child(header);
+        if self.stash_open {
+            if self.stashes.is_empty() {
+                section = section.child(
+                    div()
+                        .px(theme.space(20.))
+                        .py(theme.space(10.))
+                        .text_size(theme.ui_px(12.))
+                        .text_color(theme.text_3)
+                        .child(tr!("git_panel.no_stashes")),
+                );
+            }
+            for stash in &self.stashes {
+                section = section.child(stash_row(stash, theme, cx));
+            }
+        }
+        section.into_any_element()
     }
 
     fn change_rows(
@@ -1727,105 +2469,545 @@ impl GitPanel {
     }
 
     fn history_tab(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let mut body = div().flex_1().min_h_0().flex().flex_col();
         if let Some(error) = &self.history_error {
-            return empty_note(
+            body = body.child(empty_note(
                 theme,
                 "icons/stop.svg",
                 &tr!("git_panel.history_unavailable"),
                 Some(error),
-            );
-        }
-        if self.history.is_empty() && self.history_loading {
-            return empty_note(
+            ));
+        } else if self.history.is_empty() && self.history_loading {
+            body = body.child(empty_note(
                 theme,
                 "icons/clock.svg",
                 &tr!("git_panel.reading_history"),
                 None,
-            );
-        }
-        if self.history.is_empty() {
-            return empty_note(
+            ));
+        } else if self.history.is_empty() {
+            let detail = if self.history_filter.is_active() {
+                tr!("git_panel.no_matching_commits")
+            } else {
+                tr!("git_panel.commits_will_show_up")
+            };
+            body = body.child(empty_note(
                 theme,
                 "icons/clock.svg",
                 &tr!("git_panel.no_commits_yet"),
-                Some(&tr!("git_panel.commits_will_show_up")),
+                Some(&detail),
+            ));
+        } else {
+            let history_entity = cx.entity();
+            let mut list = div().flex().flex_col().py(px(6.));
+            let total = self.history.len();
+            for (ix, commit) in self.history.iter().enumerate() {
+                let url = self
+                    .remote_web
+                    .as_ref()
+                    .map(|remote| remote.commit_url(&commit.hash));
+                let selected = self.selected_commit.as_deref() == Some(commit.hash.as_str());
+                let on_author = {
+                    let entity = history_entity.clone();
+                    move |author: String, _window: &mut Window, cx: &mut gpui::App| {
+                        entity.update(cx, |panel, cx| panel.filter_history_author(author, cx));
+                    }
+                };
+                list = list.child(commit_row(
+                    commit,
+                    url.as_deref(),
+                    selected,
+                    theme,
+                    cx.listener({
+                        let hash = commit.hash.clone();
+                        move |this, _: &ClickEvent, _, cx| this.toggle_commit(hash.clone(), cx)
+                    }),
+                    on_author,
+                ));
+                if selected {
+                    match self
+                        .commit_detail
+                        .as_ref()
+                        .filter(|detail| detail.hash == commit.hash)
+                    {
+                        Some(detail) => {
+                            list = list.child(self.commit_detail_body(
+                                detail,
+                                url.as_deref(),
+                                theme,
+                                cx,
+                            ));
+                        }
+                        None => {
+                            list = list.child(detail_note(
+                                theme,
+                                &tr!(if self.commit_detail_loading {
+                                    "git_panel.reading_commit"
+                                } else {
+                                    "git_panel.commit_unavailable"
+                                }),
+                            ));
+                        }
+                    }
+                }
+                if ix + 1 < total {
+                    list = list.child(commit_separator(theme));
+                }
+            }
+            list = list.child(load_more(
+                theme,
+                self.history_loading,
+                cx.listener(|this, _: &ClickEvent, _, cx| this.refresh_history(cx)),
+            ));
+            body = body.child(
+                div()
+                    .id("git-history-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(list),
             );
         }
-        let mut list = div().flex().flex_col().py(px(6.));
-        let total = self.history.len();
-        for (ix, commit) in self.history.iter().enumerate() {
-            let url = self
-                .remote_web
-                .as_ref()
-                .map(|remote| remote.commit_url(&commit.hash));
-            list = list.child(commit_row(commit, url.as_deref(), theme));
-            if ix + 1 < total {
-                list = list.child(commit_separator(theme));
-            }
-        }
-        list = list.child(load_more(
-            theme,
-            self.history_loading,
-            cx.listener(|this, _: &ClickEvent, _, cx| this.refresh_history(cx)),
-        ));
         div()
-            .id("git-history-scroll")
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
-            .child(list)
+            .flex()
+            .flex_col()
+            .child(self.history_filter_bar(theme, cx))
+            .child(body)
             .into_any_element()
     }
 
+    /// The History filter chips: all-branches toggle plus removable author and
+    /// path (file-history) chips.
+    fn history_filter_bar(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let filter = &self.history_filter;
+        let mut bar = div()
+            .id("git-history-filters")
+            .flex_none()
+            .px(theme.space(16.))
+            .py(theme.space(8.))
+            .border_b_1()
+            .border_color(theme.border)
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .child(filter_toggle_chip(
+                "git-filter-all",
+                &tr!("git_panel.all_branches"),
+                filter.all_branches,
+                theme,
+                cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_all_branches(cx)),
+            ));
+        if let Some(author) = filter.author.clone() {
+            bar = bar.child(filter_chip(
+                "git-filter-author",
+                &tr!("git_panel.author_chip", name = author),
+                theme,
+                cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.history_filter.author = None;
+                    this.refresh_history(cx);
+                    cx.notify();
+                }),
+            ));
+        }
+        if let Some(path) = filter.path.clone() {
+            let label = if filter.follow {
+                tr!("git_panel.file_history_chip", path = path)
+            } else {
+                tr!("git_panel.path_chip", path = path)
+            };
+            bar = bar.child(filter_chip(
+                "git-filter-path",
+                &label,
+                theme,
+                cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.history_filter.path = None;
+                    this.history_filter.follow = false;
+                    this.refresh_history(cx);
+                    cx.notify();
+                }),
+            ));
+        }
+        let active = filter.is_active();
+        bar.child(div().flex_1())
+            .children(active.then(|| {
+                filter_chip(
+                    "git-filter-clear",
+                    &tr!("git_panel.clear_filter"),
+                    theme,
+                    cx.listener(|this, _: &ClickEvent, _, cx| this.clear_history_filter(cx)),
+                )
+            }))
+            .into_any_element()
+    }
+
+    /// The expanded commit: full message, committer facts, and changed files
+    /// with per-file actions.
+    fn commit_detail_body(
+        &self,
+        detail: &git::CommitDetail,
+        url: Option<&str>,
+        theme: Theme,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let nerd = nerd_font_family(cx);
+        let dark = theme.mode == ThemeMode::Dark;
+        let mut column = div()
+            .mx(theme.space(12.))
+            .mb(theme.space(6.))
+            .px(theme.space(12.))
+            .py(theme.space(10.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.bg_raised)
+            .flex()
+            .flex_col()
+            .gap(theme.space(8.));
+        if !detail.body.is_empty() {
+            column = column.child(
+                div()
+                    .text_size(theme.ui_px(12.))
+                    .line_height(theme.ui_px(18.))
+                    .text_color(theme.text_2)
+                    .whitespace_normal()
+                    .child(detail.body.clone()),
+            );
+        }
+        let hash = detail.short.clone();
+        let mut meta = div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .text_size(theme.ui_px(11.))
+            .text_color(theme.text_3)
+            .child(format!("{} \u{b7} {}", detail.author, detail.author_date))
+            .when(detail.committer != detail.author, |row| {
+                row.child(format!(
+                    "committed by {} \u{b7} {}",
+                    detail.committer, detail.committer_date
+                ))
+            })
+            .child(div().flex_1());
+        if let Some(url) = url.map(str::to_string) {
+            meta = meta.child(row_button(
+                "git-detail-open",
+                "icons/arrow-up-right.svg",
+                theme,
+                move |_, _, cx| cx.open_url(&url),
+            ));
+        }
+        meta = meta.child(row_button(
+            "git-detail-copy-hash",
+            "icons/copy.svg",
+            theme,
+            move |_, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(hash.clone())),
+        ));
+        column = column.child(meta);
+
+        for file in &detail.files {
+            let path = file.path.clone();
+            let fallback = icon("icons/file.svg", 12., theme.text_3).into_any_element();
+            let glyph = crate::app::file_glyph(&path, dark, nerd.as_ref(), 12., fallback);
+            let color = status_color(file.status, theme);
+            let hash = detail.hash.clone();
+            column = column.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(theme.space(8.))
+                    .h(px(26.))
+                    .child(
+                        div()
+                            .w(px(14.))
+                            .flex_none()
+                            .text_size(theme.ui_px(10.5))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(color)
+                            .child(file.status.to_string()),
+                    )
+                    .child(glyph)
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex_1()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_size(theme.ui_px(11.5))
+                            .text_color(theme.text)
+                            .child(path.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(theme.ui_px(10.5))
+                            .text_color(theme.add_green)
+                            .child(format!("+{}", file.additions)),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(theme.ui_px(10.5))
+                            .text_color(theme.del_red)
+                            .child(format!("-{}", file.deletions)),
+                    )
+                    .child(row_button(
+                        format!("git-detail-more-{path}"),
+                        "icons/more.svg",
+                        theme,
+                        cx.listener({
+                            let path = path.clone();
+                            let hash = hash.clone();
+                            move |this, _: &ClickEvent, _, cx| {
+                                this.open_file_menu(path.clone(), hash.clone(), cx)
+                            }
+                        }),
+                    )),
+            );
+        }
+        column.into_any_element()
+    }
+
+    /// The per-file actions menu: open, reveal, copy path, file history.
+    fn file_actions_menu(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (path, _hash) = self.file_menu.clone()?;
+        let menu = div()
+            .id("git-file-menu")
+            .absolute()
+            .top(px(42.))
+            .right(px(12.))
+            .w(px(220.))
+            .py(px(4.))
+            .rounded(px(10.))
+            .border_1()
+            .border_color(theme.border_strong)
+            .bg(theme.menu_bg)
+            .shadow(theme.popover_shadow())
+            .flex()
+            .flex_col()
+            .occlude()
+            .on_mouse_down_out(
+                cx.listener(|this, _: &MouseDownEvent, _, cx| this.close_file_menu(cx)),
+            )
+            .child(menu_row(
+                "git-file-open",
+                "icons/arrow-up-right.svg",
+                &tr!("git_panel.open_file"),
+                theme,
+                cx.listener({
+                    let path = path.clone();
+                    move |this, _: &ClickEvent, window, cx| {
+                        this.close_file_menu(cx);
+                        this.open_path(path.clone(), window, cx);
+                    }
+                }),
+            ))
+            .child(menu_row(
+                "git-file-diff",
+                "icons/git-compare.svg",
+                &tr!("git_panel.open_diff"),
+                theme,
+                cx.listener({
+                    let path = path.clone();
+                    move |this, _: &ClickEvent, window, cx| {
+                        this.close_file_menu(cx);
+                        if let Some(on_open) = this.on_open_file.clone() {
+                            on_open(path.clone(), window, cx);
+                        }
+                    }
+                }),
+            ))
+            .child(menu_row(
+                "git-file-reveal",
+                "icons/folder.svg",
+                &tr!("git_panel.reveal_file"),
+                theme,
+                cx.listener({
+                    let path = path.clone();
+                    move |this, _: &ClickEvent, _, cx| {
+                        this.close_file_menu(cx);
+                        this.reveal_path(&path);
+                    }
+                }),
+            ))
+            .child(menu_row(
+                "git-file-copy",
+                "icons/copy.svg",
+                &tr!("git_panel.copy_path"),
+                theme,
+                cx.listener({
+                    let path = path.clone();
+                    move |this, _: &ClickEvent, _, cx| {
+                        this.close_file_menu(cx);
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(path.clone()));
+                    }
+                }),
+            ))
+            .child(menu_separator(theme))
+            .child(menu_row(
+                "git-file-history",
+                "icons/clock.svg",
+                &tr!("git_panel.file_history"),
+                theme,
+                cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.filter_history_path(path.clone(), true, cx)
+                }),
+            ));
+        Some(menu.into_any_element())
+    }
+
     fn graph_tab(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let mut body = div().flex_1().min_h_0().flex().flex_col();
         if let Some(error) = &self.graph_error {
-            return empty_note(
+            body = body.child(empty_note(
                 theme,
                 "icons/stop.svg",
                 &tr!("git_panel.graph_unavailable"),
                 Some(error),
-            );
-        }
-        if self.graph.is_empty() && self.graph_loading {
-            return empty_note(
+            ));
+        } else if self.graph.is_empty() && self.graph_loading {
+            body = body.child(empty_note(
                 theme,
                 "icons/git-fork.svg",
                 &tr!("git_panel.reading_history"),
                 None,
-            );
-        }
-        if self.graph.is_empty() {
-            return empty_note(
+            ));
+        } else if self.graph.is_empty() {
+            body = body.child(empty_note(
                 theme,
                 "icons/git-fork.svg",
                 &tr!("git_panel.no_commits_yet"),
                 Some(&tr!("git_panel.commits_across_branches")),
+            ));
+        } else {
+            let mut list = div().flex().flex_col().py(px(6.));
+            let total = self.graph.len();
+            for (ix, row) in self.graph.iter().enumerate() {
+                let url = self
+                    .remote_web
+                    .as_ref()
+                    .map(|remote| remote.commit_url(&row.commit.hash));
+                let selected = self.selected_commit.as_deref() == Some(row.commit.hash.as_str());
+                list = list.child(graph_row(
+                    row,
+                    url.as_deref(),
+                    selected,
+                    theme,
+                    cx.listener({
+                        let hash = row.commit.hash.clone();
+                        move |this, _: &ClickEvent, _, cx| this.toggle_commit(hash.clone(), cx)
+                    }),
+                ));
+                if selected {
+                    match self
+                        .commit_detail
+                        .as_ref()
+                        .filter(|detail| detail.hash == row.commit.hash)
+                    {
+                        Some(detail) => {
+                            list = list.child(self.commit_detail_body(
+                                detail,
+                                url.as_deref(),
+                                theme,
+                                cx,
+                            ));
+                        }
+                        None => {
+                            list = list.child(detail_note(
+                                theme,
+                                &tr!(if self.commit_detail_loading {
+                                    "git_panel.reading_commit"
+                                } else {
+                                    "git_panel.commit_unavailable"
+                                }),
+                            ));
+                        }
+                    }
+                }
+                if ix + 1 < total {
+                    list = list.child(commit_separator(theme));
+                }
+            }
+            list = list.child(load_more(
+                theme,
+                self.graph_loading,
+                cx.listener(|this, _: &ClickEvent, _, cx| this.refresh_graph(cx)),
+            ));
+            body = body.child(
+                div()
+                    .id("git-graph-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(list),
             );
         }
-        let mut list = div().flex().flex_col().py(px(6.));
-        let total = self.graph.len();
-        for (ix, row) in self.graph.iter().enumerate() {
-            let url = self
-                .remote_web
-                .as_ref()
-                .map(|remote| remote.commit_url(&row.commit.hash));
-            list = list.child(graph_row(row, url.as_deref(), theme));
-            if ix + 1 < total {
-                list = list.child(commit_separator(theme));
-            }
-        }
-        list = list.child(load_more(
-            theme,
-            self.graph_loading,
-            cx.listener(|this, _: &ClickEvent, _, cx| this.refresh_graph(cx)),
-        ));
         div()
-            .id("git-graph-scroll")
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
-            .child(list)
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .id("git-graph-filters")
+                    .flex_none()
+                    .px(theme.space(16.))
+                    .py(theme.space(8.))
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(filter_toggle_chip(
+                        "git-graph-all-refs",
+                        &tr!("git_panel.all_refs"),
+                        self.graph_all_refs,
+                        theme,
+                        cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.graph_all_refs = !this.graph_all_refs;
+                            this.selected_commit = None;
+                            this.commit_detail = None;
+                            this.refresh_graph(cx);
+                            cx.notify();
+                        }),
+                    )),
+            )
+            .child(body)
             .into_any_element()
+    }
+
+    /// The Issues / Pull requests body until those browsers land. It is honest
+    /// about the `gh` requirement — install or sign in — and never paints fake
+    /// data. The host tabs only render when `gh` is installed (see
+    /// [`Self::tab_bar`]).
+    fn gh_setup_tab(&self, theme: Theme, title_key: &str, body_key: &str) -> AnyElement {
+        if !self.gh_installed {
+            return empty_note(
+                theme,
+                "icons/github.svg",
+                &tr!("git_panel.gh_missing_title"),
+                Some(&tr!("git_panel.gh_missing_body")),
+            );
+        }
+        if !self.gh_authenticated {
+            let detail = if self.gh_detail.is_empty() {
+                tr!("git_panel.gh_auth_body")
+            } else {
+                self.gh_detail.clone()
+            };
+            return empty_note(
+                theme,
+                "icons/github.svg",
+                &tr!("git_panel.gh_auth_title"),
+                Some(&detail),
+            );
+        }
+        empty_note(
+            theme,
+            "icons/github.svg",
+            &tr!(title_key),
+            Some(&tr!(body_key)),
+        )
     }
 
     fn branch_menu(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1837,8 +3019,8 @@ impl GitPanel {
             .absolute()
             .top(px(42.))
             .right(px(12.))
-            .w(px(240.))
-            .max_h(px(320.))
+            .w(px(260.))
+            .max_h(px(360.))
             .overflow_y_scroll()
             .py(px(4.))
             .rounded(px(10.))
@@ -1852,11 +3034,208 @@ impl GitPanel {
             .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                 this.dismiss_branch_menu(cx);
             }));
+
+        // Merge/rebase onto any ref (local, remote, or tag).
+        menu = menu.child(menu_row(
+            "git-menu-merge",
+            "icons/git-merge.svg",
+            &tr!("git_panel.merge_branch"),
+            theme,
+            cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.branch_menu_open = false;
+                this.ref_menu = Some(RefTarget::Merge);
+                cx.notify();
+            }),
+        ));
+        menu = menu.child(menu_row(
+            "git-menu-rebase",
+            "icons/git-compare.svg",
+            &tr!("git_panel.rebase_onto"),
+            theme,
+            cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.branch_menu_open = false;
+                this.ref_menu = Some(RefTarget::Rebase);
+                cx.notify();
+            }),
+        ));
+        menu = menu.child(menu_separator(theme));
+
         for branch in &self.branches {
             let selected = self.branch.as_deref() == Some(branch.as_str());
+            let mut row = div()
+                .id(gpui::ElementId::Name(format!("git-branch-{branch}").into()))
+                .h(px(28.))
+                .mx(px(4.))
+                .px(px(8.))
+                .rounded(px(6.))
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .cursor_pointer()
+                .text_size(theme.ui_px(12.))
+                .when(selected, |row| row.bg(theme.active))
+                .when(!selected, |row| row.hover(|s| s.bg(theme.overlay)))
+                .on_click(cx.listener({
+                    let branch = branch.clone();
+                    move |this, _: &ClickEvent, _, cx| this.checkout_branch(branch.clone(), cx)
+                }))
+                .child(icon("icons/branch.svg", 11., theme.text_3))
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_color(if selected {
+                            theme.active_fg
+                        } else {
+                            theme.text_2
+                        })
+                        .child(branch.clone()),
+                );
+            if selected {
+                row = row.child(icon("icons/check.svg", 11., theme.accent));
+            } else {
+                // Delete a non-current branch. The safe `-d` is tried first; an
+                // unmerged branch then asks before the forced `-D`.
+                row = row.child(
+                    div()
+                        .id(gpui::ElementId::Name(
+                            format!("git-branch-delete-{branch}").into(),
+                        ))
+                        .size(px(18.))
+                        .rounded(px(4.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme.overlay))
+                        .on_click(cx.listener({
+                            let branch = branch.clone();
+                            move |this, _: &ClickEvent, _, cx| {
+                                cx.stop_propagation();
+                                this.delete_branch(branch.clone(), cx);
+                            }
+                        }))
+                        .child(icon("icons/trash.svg", 11., theme.text_3)),
+                );
+            }
+            menu = menu.child(row);
+        }
+
+        menu = menu.child(menu_separator(theme));
+        menu = menu.child(menu_row(
+            "git-menu-new-branch",
+            "icons/plus.svg",
+            &tr!("git_panel.new_branch"),
+            theme,
+            cx.listener(|this, _: &ClickEvent, window, cx| {
+                this.open_branch_prompt(BranchPrompt::New, window, cx)
+            }),
+        ));
+        if let Some(current) = self.branch.clone() {
+            menu = menu.child(menu_row(
+                "git-menu-rename-branch",
+                "icons/pencil.svg",
+                &tr!("git_panel.rename_branch"),
+                theme,
+                cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    this.open_branch_prompt(BranchPrompt::Rename(current.clone()), window, cx)
+                }),
+            ));
+        }
+        Some(menu.into_any_element())
+    }
+
+    /// The ref picker opened by "Merge branch…" / "Rebase onto…".
+    fn ref_picker_popup(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let target = self.ref_menu?;
+        let title = match target {
+            RefTarget::Merge => tr!("git_panel.merge_branch"),
+            RefTarget::Rebase => tr!("git_panel.rebase_onto"),
+        };
+        let mut menu = div()
+            .id("git-ref-menu")
+            .absolute()
+            .top(px(42.))
+            .right(px(12.))
+            .w(px(300.))
+            .max_h(px(360.))
+            .overflow_y_scroll()
+            .py(px(4.))
+            .rounded(px(10.))
+            .border_1()
+            .border_color(theme.border_strong)
+            .bg(theme.menu_bg)
+            .shadow(theme.popover_shadow())
+            .flex()
+            .flex_col()
+            .occlude()
+            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                this.close_ref_picker(cx);
+            }))
+            .child(
+                div()
+                    .px(px(10.))
+                    .py(px(4.))
+                    .text_size(theme.ui_px(11.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text_3)
+                    .child(title),
+            );
+        if target == RefTarget::Merge {
+            // How the merge combines the target, chosen before picking a ref.
+            menu = menu.child(
+                div().px(px(6.)).pb(px(4.)).flex().gap(px(4.)).children(
+                    [
+                        (git_ops::MergeMode::Merge, "git_panel.merge_mode_ff"),
+                        (git_ops::MergeMode::NoFf, "git_panel.merge_mode_commit"),
+                        (git_ops::MergeMode::Squash, "git_panel.merge_mode_squash"),
+                    ]
+                    .into_iter()
+                    .map(|(mode, key)| {
+                        let selected = self.merge_mode == mode;
+                        div()
+                            .id(gpui::ElementId::Name(
+                                format!("git-merge-mode-{key}").into(),
+                            ))
+                            .h(px(22.))
+                            .px(px(8.))
+                            .rounded(px(6.))
+                            .flex()
+                            .items_center()
+                            .cursor_pointer()
+                            .text_size(theme.ui_px(11.))
+                            .when(selected, |s| s.bg(theme.active).text_color(theme.active_fg))
+                            .when(!selected, |s| {
+                                s.text_color(theme.text_3)
+                                    .hover(|s| s.bg(theme.overlay).text_color(theme.text))
+                            })
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                this.merge_mode = mode;
+                                cx.notify();
+                            }))
+                            .child(tr!(key))
+                    }),
+                ),
+            );
+        }
+        if self.refs.is_empty() {
             menu = menu.child(
                 div()
-                    .id(gpui::ElementId::Name(format!("git-branch-{branch}").into()))
+                    .px(px(10.))
+                    .py(px(6.))
+                    .text_size(theme.ui_px(12.))
+                    .text_color(theme.text_3)
+                    .child(tr!("git_panel.no_refs")),
+            );
+        }
+        for entry in &self.refs {
+            let name = entry.name.clone();
+            let label = entry.name.clone();
+            menu = menu.child(
+                div()
+                    .id(gpui::ElementId::Name(format!("git-ref-{name}").into()))
                     .h(px(28.))
                     .mx(px(4.))
                     .px(px(8.))
@@ -1866,32 +3245,130 @@ impl GitPanel {
                     .gap(px(6.))
                     .cursor_pointer()
                     .text_size(theme.ui_px(12.))
-                    .when(selected, |row| row.bg(theme.active))
-                    .when(!selected, |row| row.hover(|s| s.bg(theme.overlay)))
-                    .on_click(cx.listener({
-                        let branch = branch.clone();
-                        move |this, _: &ClickEvent, _, cx| this.checkout_branch(branch.clone(), cx)
-                    }))
-                    .child(icon("icons/branch.svg", 11., theme.text_3))
+                    .text_color(theme.text_2)
+                    .hover(|s| s.bg(theme.overlay).text_color(theme.text))
+                    .on_click(
+                        cx.listener(move |this, _: &ClickEvent, _, cx| match target {
+                            RefTarget::Merge => this.merge_ref(&name, cx),
+                            RefTarget::Rebase => this.rebase_ref(&name, cx),
+                        }),
+                    )
+                    .child(icon(ref_icon(entry.kind), 11., theme.text_3))
                     .child(
                         div()
                             .min_w_0()
                             .flex_1()
                             .overflow_hidden()
                             .whitespace_nowrap()
-                            .text_color(if selected {
-                                theme.active_fg
-                            } else {
-                                theme.text_2
-                            })
-                            .child(branch.clone()),
-                    )
-                    .when(selected, |row| {
-                        row.child(icon("icons/check.svg", 11., theme.accent))
-                    }),
+                            .child(label),
+                    ),
             );
         }
         Some(menu.into_any_element())
+    }
+
+    /// The New/Rename branch prompt.
+    fn branch_prompt_popup(
+        &self,
+        theme: Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let prompt = self.branch_prompt.as_ref()?;
+        let (title, confirm_label) = match prompt {
+            BranchPrompt::New => (
+                tr!("git_panel.new_branch_title"),
+                tr!("git_panel.create_branch"),
+            ),
+            BranchPrompt::Rename(_) => (
+                tr!("git_panel.rename_branch_title"),
+                tr!("git_panel.rename_branch"),
+            ),
+        };
+        let focused = self
+            .branch_input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
+        let card = div()
+            .w_full()
+            .max_w(px(420.))
+            .rounded(px(12.))
+            .border_1()
+            .border_color(theme.border_strong)
+            .bg(theme.menu_bg)
+            .shadow(theme.card_shadow())
+            .p(px(16.))
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .occlude()
+            .on_mouse_down_out(
+                cx.listener(|this, _: &MouseDownEvent, _, cx| this.dismiss_modal(cx)),
+            )
+            .child(
+                div()
+                    .text_size(theme.ui_px(13.5))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text)
+                    .child(title),
+            )
+            .child(
+                div()
+                    .px(theme.space(10.))
+                    .py(theme.space(6.))
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(if focused {
+                        theme.border_strong
+                    } else {
+                        theme.border
+                    })
+                    .bg(theme.bg_composer)
+                    .flex()
+                    .child(div().flex_1().min_w_0().child(self.branch_input.clone())),
+            )
+            .child(
+                div()
+                    .mt(px(2.))
+                    .w_full()
+                    .min_w_0()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_end()
+                    .gap(px(8.))
+                    .child(action_button(
+                        "git-branch-prompt-cancel",
+                        &tr!("git_panel.cancel"),
+                        None,
+                        false,
+                        false,
+                        theme,
+                        cx.listener(|this, _: &ClickEvent, _, cx| this.dismiss_modal(cx)),
+                    ))
+                    .child(action_button(
+                        "git-branch-prompt-ok",
+                        &confirm_label,
+                        None,
+                        true,
+                        false,
+                        theme,
+                        cx.listener(|this, _: &ClickEvent, _, cx| this.confirm_branch_prompt(cx)),
+                    )),
+            );
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .px(px(16.))
+                .bg(theme.bg_main.opacity(0.55))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(card)
+                .into_any_element(),
+        )
     }
 
     /// The "stage unstaged changes?" confirmation, painted over the page.
@@ -2000,6 +3477,100 @@ impl GitPanel {
                 .into_any_element(),
         )
     }
+
+    /// The confirmation for a destructive recovery action (force push, abort).
+    fn confirm_popup(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let confirm = self.pending_confirm.clone()?;
+        let (title, body, confirm_label) = match confirm {
+            PendingConfirm::ForcePush => (
+                tr!("git_panel.confirm_force_title"),
+                tr!("git_panel.confirm_force_body"),
+                tr!("git_panel.recover_force"),
+            ),
+            PendingConfirm::Abort(_) => (
+                tr!("git_panel.confirm_abort_title"),
+                tr!("git_panel.confirm_abort_body"),
+                tr!("git_panel.op_abort"),
+            ),
+            PendingConfirm::DeleteBranch(name) => (
+                tr!("git_panel.confirm_delete_title", name = name),
+                tr!("git_panel.confirm_delete_body"),
+                tr!("git_panel.delete_branch"),
+            ),
+        };
+        let card = div()
+            .w_full()
+            .max_w(px(420.))
+            .rounded(px(12.))
+            .border_1()
+            .border_color(theme.border_strong)
+            .bg(theme.menu_bg)
+            .shadow(theme.card_shadow())
+            .p(px(16.))
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .occlude()
+            .on_mouse_down_out(
+                cx.listener(|this, _: &MouseDownEvent, _, cx| this.dismiss_modal(cx)),
+            )
+            .child(
+                div()
+                    .text_size(theme.ui_px(13.5))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text)
+                    .child(title),
+            )
+            .child(
+                div()
+                    .text_size(theme.ui_px(12.5))
+                    .line_height(theme.ui_px(17.))
+                    .text_color(theme.text_2)
+                    .whitespace_normal()
+                    .child(body),
+            )
+            .child(
+                div()
+                    .mt(px(2.))
+                    .w_full()
+                    .min_w_0()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_end()
+                    .gap(px(8.))
+                    .child(action_button(
+                        "git-confirm-cancel",
+                        &tr!("git_panel.cancel"),
+                        None,
+                        false,
+                        false,
+                        theme,
+                        cx.listener(|this, _: &ClickEvent, _, cx| this.dismiss_modal(cx)),
+                    ))
+                    .child(action_button(
+                        "git-confirm-ok",
+                        &confirm_label,
+                        None,
+                        true,
+                        false,
+                        theme,
+                        cx.listener(|this, _: &ClickEvent, _, cx| this.confirm_pending(cx)),
+                    )),
+            );
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .px(px(16.))
+                .bg(theme.bg_main.opacity(0.55))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(card)
+                .into_any_element(),
+        )
+    }
 }
 
 // (The `OpenFile` callback type is declared near the top of the module.)
@@ -2022,6 +3593,14 @@ impl Render for GitPanel {
             GitTab::Changes => self.changes_tab(theme, window, cx),
             GitTab::History => self.history_tab(theme, cx),
             GitTab::Graph => self.graph_tab(theme, cx),
+            GitTab::Issues => self.gh_setup_tab(
+                theme,
+                "git_panel.gh_issues_title",
+                "git_panel.gh_issues_body",
+            ),
+            GitTab::Pulls => {
+                self.gh_setup_tab(theme, "git_panel.gh_pulls_title", "git_panel.gh_pulls_body")
+            }
         };
         div()
             .id("git-page")
@@ -2039,9 +3618,17 @@ impl Render for GitPanel {
             // Failures stay pinned under the tabs (never inside the scrolling
             // body) so push/pull/merge errors are readable on every tab.
             .children(self.failure_banner(theme, cx))
+            // An unfinished merge/rebase sits directly under the failure banner,
+            // above every tab, so it is the page's single "you are mid-merge"
+            // signal regardless of tab.
+            .children(self.operation_bar(theme, cx))
             .child(content)
             .children(self.branch_menu(theme, cx))
+            .children(self.ref_picker_popup(theme, cx))
+            .children(self.file_actions_menu(theme, cx))
             .children(self.stage_prompt_popup(theme, cx))
+            .children(self.confirm_popup(theme, cx))
+            .children(self.branch_prompt_popup(theme, window, cx))
             .into_any_element()
     }
 }
@@ -2085,151 +3672,210 @@ fn bar_actions(
     }
 }
 
-// ── shared bits ────────────────────────────────────────────────────────────
-
-fn status_color(badge: char, theme: Theme) -> Hsla {
-    match badge {
-        'A' | '?' => theme.add_green,
-        'D' => theme.del_red,
-        'U' => theme.add_green,
-        'R' | 'C' => theme.warn,
-        _ => theme.warn,
-    }
+/// One recovery button in the failure banner. The action is a plain intent; the
+/// panel's `recover` decides how to run it.
+fn recovery_button(action: RecoveryAction, theme: Theme, cx: &Context<GitPanel>) -> AnyElement {
+    let (id, key, primary) = match action {
+        RecoveryAction::Pull => ("git-recover-pull", "git_panel.recover_pull", false),
+        RecoveryAction::Merge => ("git-recover-merge", "git_panel.recover_merge", false),
+        RecoveryAction::Rebase => ("git-recover-rebase", "git_panel.recover_rebase", false),
+        RecoveryAction::ForceWithLease => ("git-recover-force", "git_panel.recover_force", false),
+        RecoveryAction::AbortOperation => ("git-recover-abort", "git_panel.recover_abort", false),
+        RecoveryAction::ContinueOperation => {
+            ("git-recover-continue", "git_panel.recover_continue", true)
+        }
+        RecoveryAction::SkipOperation => ("git-recover-skip", "git_panel.recover_skip", false),
+        RecoveryAction::OpenConflicts => (
+            "git-recover-conflicts",
+            "git_panel.recover_open_conflicts",
+            false,
+        ),
+        RecoveryAction::Reauthenticate => ("git-recover-reauth", "git_panel.recover_reauth", false),
+        RecoveryAction::Retry => ("git-recover-retry", "git_panel.recover_retry", true),
+        RecoveryAction::PublishBranch => ("git-recover-publish", "git_panel.recover_publish", true),
+    };
+    action_button(
+        id,
+        &tr!(key),
+        None,
+        primary,
+        false,
+        theme,
+        cx.listener(move |this, _: &ClickEvent, window, cx| this.recover(action, window, cx)),
+    )
 }
 
-fn check_box(checked: bool, theme: Theme) -> gpui::Div {
-    div()
-        .size(px(16.))
-        .rounded(px(4.))
-        .border_1()
-        .border_color(if checked {
-            theme.accent
-        } else {
-            theme.border_strong
-        })
-        .bg(if checked {
-            theme.accent
-        } else {
-            theme.bg_composer
-        })
-        .flex()
-        .items_center()
-        .justify_center()
-        .when(checked, |box_| {
-            box_.child(icon("icons/check.svg", 10., theme.send_fg))
-        })
-}
-
-/// A rotating loader for in-flight buttons (matches the Review pane spinner).
-fn spinner(id: &'static str, size: f32, theme: Theme) -> AnyElement {
-    gpui::svg()
-        .path("icons/loader.svg")
-        .flex_none()
-        .size(px(size))
-        .text_color(theme.accent)
-        .with_animation(
-            id,
-            Animation::new(Duration::from_millis(900)).repeat(),
-            |svg, delta| {
-                svg.with_transformation(Transformation::rotate(radians(
-                    delta * std::f32::consts::TAU,
-                )))
-            },
-        )
-        .into_any_element()
-}
-
-fn action_button(
+/// A labeled row in the branch/ref popovers.
+fn menu_row(
     id: &'static str,
+    icon_path: &'static str,
     label: &str,
-    leading: Option<AnyElement>,
-    primary: bool,
-    disabled: bool,
     theme: Theme,
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
-    let mut button = div()
+    div()
         .id(id)
         .h(px(28.))
-        .px(px(10.))
-        .rounded(px(8.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .gap(px(5.))
-        .text_size(theme.ui_px(12.))
-        .font_weight(FontWeight::MEDIUM)
-        .border_1();
-    if disabled {
-        button = button
-            .border_color(theme.border)
-            .bg(theme.overlay)
-            .text_color(theme.text_3);
-    } else if primary {
-        button = button
-            .border_color(gpui::transparent_black())
-            .bg(theme.send_bg)
-            .text_color(theme.send_fg)
-            .cursor_pointer()
-            .hover(|s| s.bg(theme.send_bg_hover))
-            .on_click(listener);
-    } else {
-        button = button
-            .border_color(theme.border)
-            .bg(theme.bg_raised)
-            .text_color(theme.text)
-            .cursor_pointer()
-            .hover(|s| s.bg(theme.bg_hover).border_color(theme.border_strong))
-            .on_click(listener);
-    }
-    if let Some(leading) = leading {
-        button = button.child(leading);
-    }
-    button.child(label.to_string()).into_any_element()
-}
-
-fn row_button(
-    id: impl Into<gpui::SharedString>,
-    icon_path: &'static str,
-    theme: Theme,
-    listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
-) -> AnyElement {
-    div()
-        .id(gpui::ElementId::Name(id.into()))
-        .size(px(22.))
+        .mx(px(4.))
+        .px(px(8.))
         .rounded(px(6.))
         .flex()
         .items_center()
-        .justify_center()
+        .gap(px(6.))
         .cursor_pointer()
-        .hover(|s| s.bg(theme.overlay))
-        .on_click(move |event, window, cx| {
-            cx.stop_propagation();
-            listener(event, window, cx);
-        })
-        .child(icon(icon_path, 12., theme.text_3))
+        .text_size(theme.ui_px(12.))
+        .text_color(theme.text_2)
+        .hover(|s| s.bg(theme.overlay).text_color(theme.text))
+        .on_click(listener)
+        .child(icon(icon_path, 11., theme.text_3))
+        .child(label.to_string())
         .into_any_element()
 }
 
-fn ref_badge(name: &str, kind: RefKind, theme: Theme) -> AnyElement {
-    let (fg, border) = match kind {
-        RefKind::Head => (theme.accent, theme.accent),
-        RefKind::Branch => (theme.text_2, theme.border_strong),
-        RefKind::Remote => (theme.text_3, theme.border),
-        RefKind::Tag => (theme.warn, theme.warn),
-    };
+/// A hairline between menu groups.
+fn menu_separator(theme: Theme) -> AnyElement {
     div()
-        .h(px(18.))
-        .px(px(6.))
-        .rounded(px(4.))
-        .border_1()
-        .border_color(border.opacity(0.6))
+        .my(px(4.))
+        .mx(px(8.))
+        .h(px(1.))
+        .bg(theme.border)
+        .into_any_element()
+}
+
+/// The glyph for a ref kind in the picker.
+fn ref_icon(kind: git::RefKind) -> &'static str {
+    match kind {
+        git::RefKind::Head | git::RefKind::Branch => "icons/branch.svg",
+        git::RefKind::Remote => "icons/cloud.svg",
+        git::RefKind::Tag => "icons/tag-01.svg",
+    }
+}
+
+/// One row in the Stashes section: message plus pop / apply / drop.
+fn stash_row(stash: &git_ops::StashEntry, theme: Theme, cx: &Context<GitPanel>) -> AnyElement {
+    let index = stash.index;
+    div()
+        .id(gpui::ElementId::Name(format!("git-stash-{index}").into()))
+        .mx(theme.space(12.))
+        .h(px(30.))
+        .px(theme.space(8.))
+        .rounded(px(8.))
         .flex()
         .items_center()
-        .text_size(theme.ui_px(10.5))
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(fg)
-        .child(name.to_string())
+        .gap(theme.space(8.))
+        .hover(|s| s.bg(theme.bg_hover))
+        .child(icon("icons/clock.svg", 12., theme.text_3))
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_size(theme.ui_px(12.))
+                .text_color(theme.text)
+                .child(stash.message.clone()),
+        )
+        .child(row_button(
+            format!("git-stash-pop-{index}"),
+            "icons/upload.svg",
+            theme,
+            cx.listener(move |this, _: &ClickEvent, _, cx| this.stash_pop(index, cx)),
+        ))
+        .child(row_button(
+            format!("git-stash-apply-{index}"),
+            "icons/check.svg",
+            theme,
+            cx.listener(move |this, _: &ClickEvent, _, cx| this.stash_apply(index, cx)),
+        ))
+        .child(row_button(
+            format!("git-stash-drop-{index}"),
+            "icons/trash.svg",
+            theme,
+            cx.listener(move |this, _: &ClickEvent, _, cx| this.stash_drop(index, cx)),
+        ))
+        .into_any_element()
+}
+
+/// A removable filter chip (label plus an × affordance).
+fn filter_chip(
+    id: &'static str,
+    label: &str,
+    theme: Theme,
+    listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    div()
+        .id(id)
+        .h(px(22.))
+        .px(px(8.))
+        .rounded(px(6.))
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.bg_raised)
+        .flex()
+        .items_center()
+        .gap(px(5.))
+        .cursor_pointer()
+        .text_size(theme.ui_px(11.))
+        .text_color(theme.text_2)
+        .hover(|s| s.bg(theme.bg_hover).text_color(theme.text))
+        .on_click(listener)
+        .child(label.to_string())
+        .child(icon("icons/x.svg", 9., theme.text_3))
+        .into_any_element()
+}
+
+/// An on/off filter chip ("All branches").
+fn filter_toggle_chip(
+    id: &'static str,
+    label: &str,
+    active: bool,
+    theme: Theme,
+    listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    div()
+        .id(id)
+        .h(px(22.))
+        .px(px(8.))
+        .rounded(px(6.))
+        .border_1()
+        .border_color(if active { theme.accent } else { theme.border })
+        .when(active, |chip| {
+            chip.bg(theme.accent).text_color(theme.send_fg)
+        })
+        .when(!active, |chip| {
+            chip.text_color(theme.text_3)
+                .hover(|s| s.bg(theme.bg_hover).text_color(theme.text))
+        })
+        .flex()
+        .items_center()
+        .gap(px(5.))
+        .cursor_pointer()
+        .text_size(theme.ui_px(11.))
+        .on_click(listener)
+        .child(icon(
+            "icons/git-fork.svg",
+            10.,
+            if active { theme.send_fg } else { theme.text_3 },
+        ))
+        .child(label.to_string())
+        .into_any_element()
+}
+
+/// A small placeholder shown inside an expanding commit row while its detail
+/// loads (or when it could not be loaded).
+fn detail_note(theme: Theme, label: &str) -> AnyElement {
+    div()
+        .mx(theme.space(12.))
+        .mb(theme.space(6.))
+        .px(theme.space(12.))
+        .py(theme.space(10.))
+        .rounded(px(8.))
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.bg_raised)
+        .text_size(theme.ui_px(12.))
+        .text_color(theme.text_3)
+        .child(label.to_string())
         .into_any_element()
 }
 
@@ -2245,10 +3891,14 @@ const GRAPH_ROW_HEIGHT: f32 = 38.;
 
 /// One row in the Graph list: the lane drawing on the left, then the same
 /// subject, refs, author meta, and short hash as a History row.
-fn graph_row(row: &git::GraphRow, url: Option<&str>, theme: Theme) -> AnyElement {
+fn graph_row(
+    row: &git::GraphRow,
+    url: Option<&str>,
+    selected: bool,
+    theme: Theme,
+    listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> AnyElement {
     let commit = &row.commit;
-    let target = url.map(str::to_string);
-    let linked = target.is_some();
 
     let meta = div()
         .flex()
@@ -2269,7 +3919,7 @@ fn graph_row(row: &git::GraphRow, url: Option<&str>, theme: Theme) -> AnyElement
                 .child(commit.relative.clone()),
         );
 
-    div()
+    let mut element = div()
         .id(gpui::ElementId::Name(
             format!("git-graph-{}", commit.short).into(),
         ))
@@ -2280,15 +3930,10 @@ fn graph_row(row: &git::GraphRow, url: Option<&str>, theme: Theme) -> AnyElement
         .flex()
         .items_center()
         .gap(px(10.))
-        .when(linked, |row| {
-            row.cursor_pointer()
-                .hover(|s| s.bg(theme.bg_hover))
-                .on_click(move |_, _, cx| {
-                    if let Some(target) = target.clone() {
-                        cx.open_url(&target);
-                    }
-                })
-        })
+        .cursor_pointer()
+        .hover(|s| s.bg(theme.bg_hover))
+        .when(selected, |s| s.bg(theme.overlay))
+        .on_click(listener)
         .child(graph_gutter(row, theme))
         .child(
             div()
@@ -2325,20 +3970,29 @@ fn graph_row(row: &git::GraphRow, url: Option<&str>, theme: Theme) -> AnyElement
         .child(
             div()
                 .flex_none()
-                .flex()
-                .items_center()
-                .gap(px(5.))
-                .child(
-                    div()
-                        .font_family(theme::code_font_family())
-                        .text_size(theme.ui_px(11.))
-                        .text_color(theme.text_3)
-                        .child(commit.short.clone()),
-                )
-                .when(linked, |s| {
-                    s.child(icon("icons/arrow-up-right.svg", 12., theme.text_3))
-                }),
-        )
+                .font_family(theme::code_font_family())
+                .text_size(theme.ui_px(11.))
+                .text_color(theme.text_3)
+                .child(commit.short.clone()),
+        );
+    if let Some(url) = url.map(str::to_string) {
+        element = element.child(row_button(
+            "git-graph-open",
+            "icons/arrow-up-right.svg",
+            theme,
+            move |_, _, cx| cx.open_url(&url),
+        ));
+    }
+    element
+        .child(icon(
+            if selected {
+                "icons/arrow-down.svg"
+            } else {
+                "icons/arrow-right.svg"
+            },
+            12.,
+            theme.text_3,
+        ))
         .into_any_element()
 }
 
@@ -2430,17 +4084,37 @@ fn lane_color(lane: usize, theme: Theme) -> Hsla {
 /// One row in the History list: an author monogram, the subject with its ref
 /// badges, an author · relative-time meta line, and the short hash with an
 /// external-link mark when the commit can be opened on the remote.
-fn commit_row(commit: &CommitEntry, url: Option<&str>, theme: Theme) -> AnyElement {
-    let target = url.map(str::to_string);
-    let linked = target.is_some();
-
+fn commit_row(
+    commit: &CommitEntry,
+    url: Option<&str>,
+    selected: bool,
+    theme: Theme,
+    listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+    on_author: impl Fn(String, &mut Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    let author = commit.author.clone();
     let meta = div()
         .flex()
         .items_center()
         .gap(px(6.))
         .text_size(theme.ui_px(11.))
         .child(author_avatar(&commit.author, &commit.author_email, theme))
-        .child(div().text_color(theme.text_2).child(commit.author.clone()))
+        .child({
+            // Clicking the author filters History to their commits.
+            let author_for_click = author.clone();
+            div()
+                .id(gpui::ElementId::Name(
+                    format!("git-commit-author-{}", commit.short).into(),
+                ))
+                .text_color(theme.text_2)
+                .cursor_pointer()
+                .hover(|s| s.text_color(theme.accent))
+                .on_click(move |_, window, cx: &mut gpui::App| {
+                    cx.stop_propagation();
+                    on_author(author_for_click.clone(), window, cx);
+                })
+                .child(author.clone())
+        })
         .child(
             div()
                 .size(px(3.))
@@ -2453,7 +4127,7 @@ fn commit_row(commit: &CommitEntry, url: Option<&str>, theme: Theme) -> AnyEleme
                 .child(commit.relative.clone()),
         );
 
-    div()
+    let mut row = div()
         .id(gpui::ElementId::Name(
             format!("git-commit-{}", commit.short).into(),
         ))
@@ -2464,15 +4138,10 @@ fn commit_row(commit: &CommitEntry, url: Option<&str>, theme: Theme) -> AnyEleme
         .flex()
         .items_center()
         .gap(px(10.))
-        .when(linked, |row| {
-            row.cursor_pointer()
-                .hover(|s| s.bg(theme.bg_hover))
-                .on_click(move |_, _, cx| {
-                    if let Some(target) = target.clone() {
-                        cx.open_url(&target);
-                    }
-                })
-        })
+        .cursor_pointer()
+        .hover(|s| s.bg(theme.bg_hover))
+        .when(selected, |row| row.bg(theme.overlay))
+        .on_click(listener)
         .child(history_marker(theme))
         .child(
             div()
@@ -2507,23 +4176,34 @@ fn commit_row(commit: &CommitEntry, url: Option<&str>, theme: Theme) -> AnyEleme
                 .child(meta),
         )
         .child(
-            div()
-                .flex_none()
-                .flex()
-                .items_center()
-                .gap(px(5.))
-                .child(
-                    div()
-                        .font_family(theme::code_font_family())
-                        .text_size(theme.ui_px(11.))
-                        .text_color(theme.text_3)
-                        .child(commit.short.clone()),
-                )
-                .when(linked, |s| {
-                    s.child(icon("icons/arrow-up-right.svg", 12., theme.text_3))
-                }),
-        )
-        .into_any_element()
+            div().flex_none().flex().items_center().gap(px(5.)).child(
+                div()
+                    .font_family(theme::code_font_family())
+                    .text_size(theme.ui_px(11.))
+                    .text_color(theme.text_3)
+                    .child(commit.short.clone()),
+            ),
+        );
+    // Opening the commit on the forge is a separate affordance from expanding
+    // its detail, so it gets its own button that stops propagation.
+    if let Some(url) = url.map(str::to_string) {
+        row = row.child(row_button(
+            "git-commit-open",
+            "icons/arrow-up-right.svg",
+            theme,
+            move |_, _, cx| cx.open_url(&url),
+        ));
+    }
+    row.child(icon(
+        if selected {
+            "icons/arrow-down.svg"
+        } else {
+            "icons/arrow-right.svg"
+        },
+        12.,
+        theme.text_3,
+    ))
+    .into_any_element()
 }
 
 /// Diameter of a row's leading git marker. The separator inset below is
@@ -2674,162 +4354,6 @@ fn commit_separator(theme: Theme) -> AnyElement {
         .into_any_element()
 }
 
-fn load_more(
-    theme: Theme,
-    loading: bool,
-    listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
-) -> AnyElement {
-    div()
-        .id("git-load-more")
-        .mx(px(12.))
-        .mt(px(6.))
-        .h(px(32.))
-        .rounded_md()
-        .border_1()
-        .border_color(theme.border)
-        .flex()
-        .items_center()
-        .justify_center()
-        .gap(px(6.))
-        .cursor_pointer()
-        .text_size(theme.ui_px(12.))
-        .text_color(theme.text_2)
-        .hover(|s| s.bg(theme.bg_hover))
-        .on_click(listener)
-        .child(if loading {
-            tr!("git_panel.loading")
-        } else {
-            tr!("git_panel.load_more")
-        })
-        .into_any_element()
-}
-
-fn empty_note(theme: Theme, glyph: &'static str, title: &str, detail: Option<&str>) -> AnyElement {
-    let mut column = div()
-        .flex_1()
-        .min_h_0()
-        .min_w_0()
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .px(px(16.))
-        .py(px(60.))
-        .child(
-            div()
-                .size(px(32.))
-                .rounded(px(8.))
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.bg_raised)
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(icon(glyph, 16., theme.text_2)),
-        )
-        .child(
-            div()
-                .mt(px(12.))
-                .text_size(theme.ui_px(13.))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text)
-                .child(title.to_string()),
-        );
-    if let Some(detail) = detail {
-        column = column.child(
-            div()
-                .mt(px(6.))
-                .max_w(px(320.))
-                .text_align(gpui::TextAlign::Center)
-                .text_size(theme.ui_px(12.))
-                .line_height(theme.ui_px(17.))
-                .text_color(theme.text_3)
-                .child(detail.to_string()),
-        );
-    }
-    column.into_any_element()
-}
-
-/// Map raw `git` stderr to a one-line title plus the (cleaned) raw detail.
-/// The title says what happened and, where possible, what to do next; the
-/// detail preserves the command's own words — including multi-line `hint:`
-/// blocks — so nothing is lost to truncation.
-fn classify_git_failure(raw: &str) -> (String, String) {
-    let detail = clean_git_detail(raw);
-    let haystack = raw.to_lowercase();
-    let title = if haystack.contains("[rejected]")
-        || haystack.contains("non-fast-forward")
-        || haystack.contains("failed to push some refs")
-        || haystack.contains("fetch first")
-    {
-        tr!("git_panel.fail_push_rejected")
-    } else if haystack.contains("not possible to fast-forward")
-        || haystack.contains("divergent branches")
-        || haystack.contains("need to specify how to reconcile")
-    {
-        tr!("git_panel.fail_diverged")
-    } else if haystack.contains("automatic merge failed")
-        || haystack.contains("merge conflict")
-        || haystack.contains("conflict")
-    {
-        tr!("git_panel.fail_merge_conflicts")
-    } else if haystack.contains("would be overwritten") || haystack.contains("your local changes") {
-        tr!("git_panel.fail_local_overwritten")
-    } else if haystack.contains("authentication failed")
-        || haystack.contains("could not read username")
-        || haystack.contains("could not read password")
-        || haystack.contains("permission denied")
-        || haystack.contains("403 forbidden")
-        || haystack.contains("401 unauthorized")
-    {
-        tr!("git_panel.fail_auth")
-    } else if haystack.contains("repository not found")
-        || haystack.contains("does not appear to be a git repository")
-        || haystack.contains("couldn't find remote ref")
-        || haystack.contains("no such remote")
-    {
-        tr!("git_panel.fail_remote_not_found")
-    } else if haystack.contains("could not resolve host")
-        || haystack.contains("unable to access")
-        || haystack.contains("network is unreachable")
-        || haystack.contains("timed out")
-    {
-        tr!("git_panel.fail_network")
-    } else if haystack.contains("no upstream branch")
-        || haystack.contains("has no upstream branch")
-        || haystack.contains("no branch to push")
-    {
-        tr!("git_panel.fail_no_upstream")
-    } else if haystack.contains("not a git repository") {
-        tr!("git_panel.fail_not_a_repo")
-    } else {
-        tr!("git_panel.fail_generic")
-    };
-    (title, detail)
-}
-
-/// Tidy raw Git output for display: trim trailing whitespace, drop repeated
-/// blank lines, and never hand the banner an empty string.
-fn clean_git_detail(raw: &str) -> String {
-    let mut lines: Vec<&str> = Vec::new();
-    let mut prev_blank = false;
-    for line in raw.lines() {
-        let line = line.trim_end();
-        let blank = line.is_empty();
-        if blank && prev_blank {
-            continue;
-        }
-        lines.push(line);
-        prev_blank = blank;
-    }
-    let joined = lines.join("\n").trim().to_string();
-    if joined.is_empty() {
-        tr!("git_panel.git_no_error_message")
-    } else {
-        joined
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2863,54 +4387,5 @@ mod tests {
         );
         // Empty repo (no commits, no upstream) is not a publish.
         assert_eq!(bar_actions(false, 0, false, false, 0), BarActions::UpToDate);
-    }
-
-    #[test]
-    fn rejected_push_is_explained() {
-        let raw = "To https://github.com/acme/repo.git\n \
-                   ! [rejected]        main -> main (fetch first)\n\
-                   error: failed to push some refs to 'https://github.com/acme/repo.git'\n\
-                   hint: Updates were rejected because the remote contains work\n\
-                   hint: that you do not have locally.";
-        let (title, detail) = classify_git_failure(raw);
-        assert!(title.contains("Push rejected"), "{title}");
-        // The full multi-line stderr survives for the banner to wrap.
-        assert!(detail.contains("failed to push some refs"));
-        assert!(detail.contains("Updates were rejected"));
-    }
-
-    #[test]
-    fn diverged_and_conflict_failures_are_recognized() {
-        let (diverged, _) = classify_git_failure("fatal: Not possible to fast-forward, aborting.");
-        assert!(diverged.contains("diverged"), "{diverged}");
-
-        let raw = "CONFLICT (content): Merge conflict in src/lib.rs\n\
-                   Automatic merge failed; fix conflicts and then commit the result.";
-        let (conflict, detail) = classify_git_failure(raw);
-        assert!(conflict.contains("Merge conflicts"), "{conflict}");
-        assert!(detail.contains("Automatic merge failed"));
-    }
-
-    #[test]
-    fn auth_and_network_failures_are_recognized() {
-        let (auth, _) = classify_git_failure(
-            "remote: Invalid username or password.\nfatal: Authentication failed for 'https://github.com/acme/repo.git/'",
-        );
-        assert!(auth.contains("Authentication failed"), "{auth}");
-
-        let (network, _) = classify_git_failure(
-            "fatal: unable to access 'https://github.com/acme/repo.git/': Could not resolve host: github.com",
-        );
-        assert!(network.contains("Network error"), "{network}");
-    }
-
-    #[test]
-    fn clean_git_detail_collapses_blank_runs_and_defaults() {
-        assert_eq!(clean_git_detail(""), "git exited without an error message");
-        assert_eq!(
-            clean_git_detail("  \n \n"),
-            "git exited without an error message"
-        );
-        assert_eq!(clean_git_detail("one\n\n\n\ntwo\n"), "one\n\ntwo",);
     }
 }
