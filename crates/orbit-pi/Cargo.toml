@@ -152,6 +152,17 @@ libc = "0.2"
 # adds no package — it only names the version gpui itself uses.
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "0.6"
+# Enumerate installed editors/terminals and extract their icons for the
+# header's "open in" menu. Already in the graph through gpui, so this adds no
+# package — it names the version and the Win32 surface (shell, GDI, windows &
+# messaging) the icon extraction needs.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Storage_FileSystem",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [build-dependencies]
 # Embeds the Windows icon, version metadata, and per-monitor-DPI manifest into

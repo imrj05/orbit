@@ -1,5 +1,9 @@
-//! macOS helpers for detecting installed folder-capable apps and opening a
-//! workspace path in one of them (editors, terminals, Finder, etc.).
+//! Platform helpers for detecting installed folder-capable apps and opening a
+//! workspace path in one of them (editors, terminals, the file manager).
+//!
+//! macOS resolves apps through Launch Services bundle ids; Windows probes the
+//! usual install locations and `PATH` and launches the executable directly.
+//! Both feed the same [`ExternalApp`] menu the header renders.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -19,8 +23,11 @@ pub struct ExternalApp {
     /// Stable identifier persisted as the user's preferred target.
     pub id: &'static str,
     pub label: &'static str,
-    /// The bundle id that resolved here, for launching.
-    pub bundle_id: &'static str,
+    /// The launch target that resolved here: a Launch Services bundle id on
+    /// macOS, the executable's full path on Windows. Handed back to
+    /// [`open_path_in_app`] together with the [`ExternalApp`] so the platform
+    /// can also recover any app-specific arguments.
+    pub target: String,
     pub icon: Arc<Image>,
 }
 
@@ -91,7 +98,7 @@ pub fn detect_open_in_apps() -> Vec<ExternalApp> {
                 Some(ExternalApp {
                     id,
                     label,
-                    bundle_id,
+                    target: bundle_id.to_string(),
                     icon: app_icon_for_application_path(&application_path)?,
                 })
             })
@@ -99,18 +106,416 @@ pub fn detect_open_in_apps() -> Vec<ExternalApp> {
         .collect()
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Known folder-capable apps on Windows, in menu order. Each app lists the
+/// executables it normally installs as, probe paths first and `PATH` names
+/// second; `pre_args` are arguments that must precede the folder path (Windows
+/// Terminal's `-d`). Editors take the folder path directly.
+#[cfg(windows)]
+mod windows_open_in {
+    use std::ffi::c_void;
+    use std::os::windows::ffi::OsStrExt as _;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
+    use gpui::Image;
+    use windows_sys::Win32::Graphics::Gdi::{
+        BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC,
+        DeleteObject, GetDIBits, GetObjectW, HBITMAP, HDC,
+    };
+    use windows_sys::Win32::UI::Shell::{SHFILEINFOW, SHGFI_ICON, SHGetFileInfoW};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        DestroyIcon, GetIconInfo, HICON, ICONINFO,
+    };
+
+    use super::ExternalApp;
+
+    struct WindowsApp {
+        id: &'static str,
+        label: &'static str,
+        paths: &'static [&'static str],
+        commands: &'static [&'static str],
+        pre_args: &'static [&'static str],
+    }
+
+    /// The shell's icon APIs can race for the same file — a second concurrent
+    /// caller may see an icon the first one is about to free — so extraction is
+    /// serialized. Detection runs once, off-thread, so the lock is never hot.
+    static ICON_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    const CATALOG: &[WindowsApp] = &[
+        WindowsApp {
+            id: "vscode",
+            label: "VS Code",
+            paths: &[
+                "%LOCALAPPDATA%\\Programs\\Microsoft VS Code\\Code.exe",
+                "%ProgramFiles%\\Microsoft VS Code\\Code.exe",
+                "%ProgramFiles(x86)%\\Microsoft VS Code\\Code.exe",
+            ],
+            commands: &["Code.exe"],
+            pre_args: &[],
+        },
+        WindowsApp {
+            id: "cursor",
+            label: "Cursor",
+            paths: &[
+                "%LOCALAPPDATA%\\Programs\\cursor\\Cursor.exe",
+                "%LOCALAPPDATA%\\Programs\\Cursor\\Cursor.exe",
+                "%ProgramFiles%\\Cursor\\Cursor.exe",
+            ],
+            commands: &["Cursor.exe"],
+            pre_args: &[],
+        },
+        WindowsApp {
+            id: "zed",
+            label: "Zed",
+            paths: &[
+                "%LOCALAPPDATA%\\Programs\\Zed\\Zed.exe",
+                "%ProgramFiles%\\Zed\\Zed.exe",
+            ],
+            commands: &["Zed.exe", "zed.exe"],
+            pre_args: &[],
+        },
+        WindowsApp {
+            id: "explorer",
+            label: "File Explorer",
+            paths: &["%WINDIR%\\explorer.exe"],
+            commands: &["explorer.exe"],
+            pre_args: &[],
+        },
+        WindowsApp {
+            id: "terminal",
+            label: "Windows Terminal",
+            paths: &["%LOCALAPPDATA%\\Microsoft\\WindowsApps\\wt.exe"],
+            commands: &["wt.exe"],
+            pre_args: &["-d"],
+        },
+        WindowsApp {
+            id: "rider",
+            label: "Rider",
+            paths: &[
+                "%LOCALAPPDATA%\\Programs\\Rider\\bin\\rider64.exe",
+                "%ProgramFiles%\\JetBrains\\JetBrains Rider\\bin\\rider64.exe",
+            ],
+            commands: &["rider64.exe"],
+            pre_args: &[],
+        },
+        WindowsApp {
+            id: "android-studio",
+            label: "Android Studio",
+            paths: &[
+                "%ProgramFiles%\\Android\\Android Studio\\bin\\studio64.exe",
+                "%LOCALAPPDATA%\\Programs\\Android Studio\\bin\\studio64.exe",
+            ],
+            commands: &["studio64.exe"],
+            pre_args: &[],
+        },
+    ];
+
+    /// Resolve the installed apps with their icons. Runs off-thread.
+    pub(super) fn detect() -> Vec<ExternalApp> {
+        CATALOG
+            .iter()
+            .filter_map(|app| {
+                let exe = resolve(app)?;
+                Some(ExternalApp {
+                    id: app.id,
+                    label: app.label,
+                    target: exe.to_string_lossy().into_owned(),
+                    icon: icon_image(&exe),
+                })
+            })
+            .collect()
+    }
+
+    /// Open `path` in the app, using the catalog entry's leading arguments
+    /// (Windows Terminal needs `-d` before the folder).
+    pub(super) fn open(path: &Path, app: &ExternalApp) {
+        let Some(entry) = CATALOG.iter().find(|entry| entry.id == app.id) else {
+            return;
+        };
+        let mut command = std::process::Command::new(&app.target);
+        command.args(entry.pre_args).arg(path);
+        orbit_rpc::hide_console(&mut command);
+        let _ = command.spawn();
+    }
+
+    fn resolve(app: &WindowsApp) -> Option<PathBuf> {
+        app.paths
+            .iter()
+            .filter_map(|raw| expand_env(raw))
+            .find(|path| path.is_file())
+            .or_else(|| app.commands.iter().find_map(|command| which(command)))
+    }
+
+    /// Expand the `%VAR%` segments a catalog path may contain.
+    pub(super) fn expand_env(raw: &str) -> Option<PathBuf> {
+        let mut out = String::new();
+        let mut rest = raw;
+        while let Some(start) = rest.find('%') {
+            out.push_str(&rest[..start]);
+            let after = &rest[start + 1..];
+            let end = after.find('%')?;
+            out.push_str(&env_var(&after[..end])?);
+            rest = &after[end + 1..];
+        }
+        out.push_str(rest);
+        Some(PathBuf::from(out))
+    }
+
+    /// Environment lookup that tolerates the casing a user typed. Windows
+    /// variable names are case-insensitive; `std::env::var` is not.
+    fn env_var(name: &str) -> Option<String> {
+        if let Ok(value) = std::env::var(name) {
+            return Some(value);
+        }
+        std::env::vars().find_map(|(key, value)| key.eq_ignore_ascii_case(name).then_some(value))
+    }
+
+    /// First executable named `command` on `PATH`, without spawning `where`.
+    fn which(command: &str) -> Option<PathBuf> {
+        let path = std::env::var_os("PATH")?;
+        std::env::split_paths(&path)
+            .map(|dir| dir.join(command))
+            .find(|candidate| candidate.is_file())
+    }
+
+    /// The executable's shell icon as a 32px PNG, or a neutral placeholder for
+    /// the rare file whose icon the shell cannot hand back.
+    fn icon_image(exe: &Path) -> Arc<Image> {
+        let bytes = extract_icon_png(exe)
+            .or_else(fallback_png)
+            .expect("a fallback icon always encodes");
+        Arc::new(Image::from_bytes(gpui::ImageFormat::Png, bytes))
+    }
+
+    /// Pull the executable's icon out of the shell and re-encode it as PNG.
+    ///
+    /// The shell's icon cache can transiently refuse a cold request, so a
+    /// failed extraction is retried once. Detection runs off-thread anyway, so
+    /// the extra attempt is invisible.
+    pub(super) fn extract_icon_png(exe: &Path) -> Option<Vec<u8>> {
+        let _guard = ICON_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        (0..2).find_map(|_| extract_icon_png_once(exe))
+    }
+
+    fn extract_icon_png_once(exe: &Path) -> Option<Vec<u8>> {
+        let wide: Vec<u16> = exe
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        // SAFETY: `wide` is a NUL-terminated UTF-16 path and `info` is a valid
+        // `SHFILEINFOW` for the shell to fill. `SHGFI_ICON` hands back an HICON
+        // (32px, since large-icon is the default) that we own and destroy.
+        unsafe {
+            let mut info: SHFILEINFOW = std::mem::zeroed();
+            let result = SHGetFileInfoW(
+                wide.as_ptr(),
+                0,
+                &mut info,
+                std::mem::size_of::<SHFILEINFOW>() as u32,
+                SHGFI_ICON,
+            );
+            if result == 0 || info.hIcon.is_null() {
+                return None;
+            }
+            let png = icon_to_png(info.hIcon);
+            DestroyIcon(info.hIcon);
+            png
+        }
+    }
+
+    /// Convert an `HICON` into PNG bytes via its two GDI bitmaps.
+    ///
+    /// SAFETY: `hicon` must be a valid icon handle owned by the caller.
+    unsafe fn icon_to_png(hicon: HICON) -> Option<Vec<u8>> {
+        let mut info: ICONINFO = std::mem::zeroed();
+        if unsafe { GetIconInfo(hicon, &mut info) } == 0 {
+            return None;
+        }
+        let png = unsafe { bitmap_to_png(info.hbmColor, info.hbmMask) };
+        // `GetIconInfo` hands us ownership of both bitmaps.
+        for bitmap in [info.hbmColor, info.hbmMask] {
+            if !bitmap.is_null() {
+                unsafe { DeleteObject(bitmap) };
+            }
+        }
+        png
+    }
+
+    /// SAFETY: `color` (and `mask`, when non-null) must be valid GDI bitmaps.
+    unsafe fn bitmap_to_png(color: HBITMAP, mask: HBITMAP) -> Option<Vec<u8>> {
+        let mut bitmap: BITMAP = unsafe { std::mem::zeroed() };
+        if unsafe {
+            GetObjectW(
+                color,
+                std::mem::size_of::<BITMAP>() as i32,
+                &mut bitmap as *mut _ as *mut c_void,
+            )
+        } == 0
+        {
+            return None;
+        }
+        let width = bitmap.bmWidth;
+        let height = bitmap.bmHeight;
+        if width <= 0 || height <= 0 {
+            return None;
+        }
+        let stride = width as usize * 4;
+        let length = stride * height as usize;
+
+        // Ask for 32-bit BGRA; a positive `biHeight` means the rows come back
+        // bottom-up, so they are flipped below.
+        let mut header: BITMAPINFO = unsafe { std::mem::zeroed() };
+        header.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+        header.bmiHeader.biWidth = width;
+        header.bmiHeader.biHeight = height;
+        header.bmiHeader.biPlanes = 1;
+        header.bmiHeader.biBitCount = 32;
+        header.bmiHeader.biCompression = BI_RGB;
+
+        let dc: HDC = unsafe { CreateCompatibleDC(std::ptr::null_mut()) };
+        if dc.is_null() {
+            return None;
+        }
+        let mut pixels = vec![0u8; length];
+        let lines = unsafe {
+            GetDIBits(
+                dc,
+                color,
+                0,
+                height as u32,
+                pixels.as_mut_ptr() as *mut c_void,
+                &mut header,
+                DIB_RGB_COLORS,
+            )
+        };
+        if lines == 0 {
+            unsafe { DeleteDC(dc) };
+            return None;
+        }
+
+        // A 32-bit icon from before the alpha channel was common stores its
+        // transparency in the 1-bit mask instead; with no alpha set, apply it.
+        let has_alpha = pixels.chunks_exact(4).any(|pixel| pixel[3] != 0);
+        if !has_alpha && !mask.is_null() {
+            unsafe { apply_mask(dc, mask, width, height, stride, &mut pixels) };
+        }
+        unsafe { DeleteDC(dc) };
+
+        // BGRA bottom-up -> RGBA top-down.
+        let mut rgba = vec![0u8; length];
+        for y in 0..height as usize {
+            let source = (height as usize - 1 - y) * stride;
+            let target = y * stride;
+            for x in 0..width as usize {
+                let s = source + x * 4;
+                let t = target + x * 4;
+                rgba[t] = pixels[s + 2];
+                rgba[t + 1] = pixels[s + 1];
+                rgba[t + 2] = pixels[s];
+                rgba[t + 3] = pixels[s + 3];
+            }
+        }
+
+        let image = image::RgbaImage::from_raw(width as u32, height as u32, rgba)?;
+        let mut out = Vec::new();
+        image
+            .write_to(
+                &mut std::io::Cursor::new(&mut out),
+                image::ImageFormat::Png,
+            )
+            .ok()?;
+        Some(out)
+    }
+
+    /// OR the icon's 1-bit mask into the alpha channel: a set mask bit means
+    /// the pixel is transparent.
+    ///
+    /// SAFETY: `dc` must be a valid DC and `mask` a valid 1-bit GDI bitmap.
+    unsafe fn apply_mask(
+        dc: HDC,
+        mask: HBITMAP,
+        width: i32,
+        height: i32,
+        stride: usize,
+        pixels: &mut [u8],
+    ) {
+        let mask_stride = (width as usize).div_ceil(32) * 4;
+        let mut header: BITMAPINFO = unsafe { std::mem::zeroed() };
+        header.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+        header.bmiHeader.biWidth = width;
+        header.bmiHeader.biHeight = height;
+        header.bmiHeader.biPlanes = 1;
+        header.bmiHeader.biBitCount = 1;
+        header.bmiHeader.biCompression = BI_RGB;
+        let mut bits = vec![0u8; mask_stride * height as usize];
+        if unsafe {
+            GetDIBits(
+                dc,
+                mask,
+                0,
+                height as u32,
+                bits.as_mut_ptr() as *mut c_void,
+                &mut header,
+                DIB_RGB_COLORS,
+            )
+        } == 0
+        {
+            return;
+        }
+        for y in 0..height as usize {
+            let row = (height as usize - 1 - y) * mask_stride;
+            for x in 0..width as usize {
+                let transparent = (bits[row + x / 8] >> (7 - (x % 8))) & 1 == 1;
+                pixels[y * stride + x * 4 + 3] = if transparent { 0 } else { 255 };
+            }
+        }
+    }
+
+    /// A neutral inset square for an app whose real icon could not be read.
+    fn fallback_png() -> Option<Vec<u8>> {
+        const SIZE: u32 = 32;
+        const INSET: u32 = 5;
+        let mut image = image::RgbaImage::new(SIZE, SIZE);
+        let ink = image::Rgba([0x8a, 0x8f, 0x98, 0xff]);
+        for (x, y, pixel) in image.enumerate_pixels_mut() {
+            if x >= INSET && x < SIZE - INSET && y >= INSET && y < SIZE - INSET {
+                *pixel = ink;
+            }
+        }
+        let mut out = Vec::new();
+        image
+            .write_to(
+                &mut std::io::Cursor::new(&mut out),
+                image::ImageFormat::Png,
+            )
+            .ok()?;
+        Some(out)
+    }
+}
+
+#[cfg(windows)]
+pub fn detect_open_in_apps() -> Vec<ExternalApp> {
+    windows_open_in::detect()
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 pub fn detect_open_in_apps() -> Vec<ExternalApp> {
     Vec::new()
 }
 
-/// Open `path` in the application `bundle_id`, activating it. Launch Services
-/// delivers the open asynchronously, so this never blocks.
+/// Open `path` in the application `app`, activating it. macOS resolves the
+/// bundle id through Launch Services, which delivers the open asynchronously;
+/// Windows starts the executable directly.
 #[cfg(target_os = "macos")]
-pub fn open_path_in_app(path: &Path, bundle_id: &str) {
+pub fn open_path_in_app(path: &Path, app: &ExternalApp) {
     use objc2_app_kit::{NSWorkspace, NSWorkspaceOpenConfiguration};
     use objc2_foundation::{NSArray, NSString, NSURL};
 
+    let bundle_id = app.target.as_str();
     let workspace = NSWorkspace::sharedWorkspace();
     let Some(application_url) =
         workspace.URLForApplicationWithBundleIdentifier(&NSString::from_str(bundle_id))
@@ -141,8 +546,13 @@ fn termy_open_url(path: &Path) -> String {
     url.into()
 }
 
-#[cfg(not(target_os = "macos"))]
-pub fn open_path_in_app(_: &Path, _: &str) {}
+#[cfg(windows)]
+pub fn open_path_in_app(path: &Path, app: &ExternalApp) {
+    windows_open_in::open(path, app);
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+pub fn open_path_in_app(_: &Path, _: &ExternalApp) {}
 
 /// Reveal `path` in the OS file manager, selecting it. Used by the skills
 /// page to open a skill's directory.
@@ -285,6 +695,13 @@ pub mod shortcuts {
     pub const TURNS: &str = "Ctrl+↑ Ctrl+↓";
 }
 
+/// The catalog id of the platform's own file manager, preferred when the user
+/// has not chosen an app. macOS calls it Finder; Windows, File Explorer.
+#[cfg(target_os = "macos")]
+const DEFAULT_OPEN_IN_FILE_MANAGER: &str = "finder";
+#[cfg(not(target_os = "macos"))]
+const DEFAULT_OPEN_IN_FILE_MANAGER: &str = "explorer";
+
 fn open_in_prefs_path() -> PathBuf {
     home_dir().join(".orbit-pi").join("open-in.json")
 }
@@ -330,7 +747,7 @@ impl OpenInPrefs {
             .into_iter()
             .flatten()
             .find_map(|id| apps.iter().find(|app| app.id == id))
-            .or_else(|| apps.iter().find(|app| app.id == "finder"))
+            .or_else(|| apps.iter().find(|app| app.id == DEFAULT_OPEN_IN_FILE_MANAGER))
             .or_else(|| apps.first())
     }
 
@@ -767,7 +1184,9 @@ pub fn draws_window_controls() -> bool {
 /// press is treated as handled, which makes GPUI drop the window-control
 /// path entirely — no move loop, and no caption-button commands. So the press
 /// hands the move to the OS itself (`WM_NCLBUTTONDOWN` + `HTCAPTION`), which
-/// is the standard way a custom titlebar drags a Windows window.
+/// is the standard way a custom titlebar drags a Windows window. That message
+/// is posted rather than sent so the move loop does not nest inside the
+/// mouse-down update — see `windows_chrome::start_drag` for why that matters.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn start_window_drag(window: &Window) {
     #[cfg(windows)]
@@ -811,7 +1230,6 @@ mod windows_chrome {
     #[link(name = "user32")]
     extern "system" {
         fn ReleaseCapture() -> i32;
-        fn SendMessageW(hwnd: *mut c_void, msg: u32, wparam: usize, lparam: isize) -> isize;
         fn PostMessageW(hwnd: *mut c_void, msg: u32, wparam: usize, lparam: isize) -> i32;
     }
 
@@ -834,15 +1252,25 @@ mod windows_chrome {
         // SAFETY: `hwnd` is the window's own handle for as long as `window`
         // lives, and both calls are the documented sequence for starting a
         // system move loop (`ReleaseCapture` drops the current capture so the
-        // window can take it; `SendMessageW` of a non-client left-button-down
-        // with `HTCAPTION` is what the OS reads as "the user grabbed the
-        // titlebar"). `SendMessageW` does not return until the move ends.
-        eprintln!("DRAG-DEBUG start_drag called");
+        // window can take it; a non-client left-button-down with `HTCAPTION`
+        // is what the OS reads as "the user grabbed the titlebar").
+        //
+        // Posted, not sent. `SendMessageW` runs the move loop *synchronously*,
+        // i.e. still inside the mouse-down event this handler is called from.
+        // GPUI moves a window's state out of its window map for the duration
+        // of that event update (`App::update_window_id` takes it), so every
+        // `WM_SIZE` the loop delivers re-enters `handle.update` while the
+        // window is already taken — the update fails, `bounds_changed` never
+        // runs, and `viewport_size` stays stuck at the maximized size. The
+        // layout then paints at the old width inside the smaller restored
+        // window (issue #15). Posting defers the loop to the message queue, so
+        // it runs *after* the update has put the window back and its resize
+        // callbacks can land. `PostMessageW` returns immediately; the move
+        // loop owns the mouse until the user releases it.
         unsafe {
             ReleaseCapture();
-            SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+            PostMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
         }
-        eprintln!("DRAG-DEBUG move loop returned");
     }
 
     pub(super) fn command(window: &Window, command: WindowCommand) {
@@ -917,12 +1345,12 @@ mod tests {
     use super::*;
 
     fn open_in_test_apps() -> Vec<ExternalApp> {
-        ["vscode", "rider", "finder"]
+        ["vscode", "rider", DEFAULT_OPEN_IN_FILE_MANAGER]
             .into_iter()
             .map(|id| ExternalApp {
                 id,
                 label: id,
-                bundle_id: id,
+                target: id.to_string(),
                 icon: Arc::new(Image::from_bytes(gpui::ImageFormat::Png, Vec::new())),
             })
             .collect()
@@ -959,13 +1387,13 @@ mod tests {
         let project_a = Path::new("/projects/Game with spaces");
         let project_b = Path::new("/projects/游戏");
         prefs.remember(project_a, "rider");
-        prefs.remember(project_b, "finder");
+        prefs.remember(project_b, DEFAULT_OPEN_IN_FILE_MANAGER);
         let raw = serde_json::to_string(&prefs).unwrap();
         let mut prefs: OpenInPrefs = serde_json::from_str(&raw).unwrap();
         let apps = open_in_test_apps();
         for (path, expected) in [
             (project_a, "rider"),
-            (project_b, "finder"),
+            (project_b, DEFAULT_OPEN_IN_FILE_MANAGER),
             (project_a, "rider"),
         ] {
             assert_eq!(prefs.preferred_app(Some(path), &apps).unwrap().id, expected);
@@ -977,7 +1405,7 @@ mod tests {
         );
         assert_eq!(
             prefs.preferred_app(Some(project_b), &apps).unwrap().id,
-            "finder"
+            DEFAULT_OPEN_IN_FILE_MANAGER
         );
         assert_eq!(prefs.preferred_app(None, &apps).unwrap().id, "vscode");
     }
@@ -1001,13 +1429,56 @@ mod tests {
     }
 
     #[test]
-    fn open_in_defaults_to_finder_then_first_installed_app() {
+    fn open_in_defaults_to_file_manager_then_first_installed_app() {
         let prefs: OpenInPrefs = serde_json::from_str(r#"{"open_in_app":"uninstalled"}"#).unwrap();
         let apps = open_in_test_apps();
-        assert_eq!(prefs.preferred_app(None, &apps).unwrap().id, "finder");
+        assert_eq!(
+            prefs.preferred_app(None, &apps).unwrap().id,
+            DEFAULT_OPEN_IN_FILE_MANAGER
+        );
         assert_eq!(prefs.preferred_app(None, &apps[..1]).unwrap().id, "vscode");
         assert!(prefs.preferred_app(None, &[]).is_none());
         assert!(OpenInPrefs::default().preferred_app(None, &[]).is_none());
+    }
+
+    /// End-to-end smoke test for the Windows icon path: the file manager is
+    /// always installed, and its executable must decode to a real PNG.
+    #[cfg(windows)]
+    #[test]
+    fn windows_extracts_a_png_icon_for_explorer() {
+        let explorer = std::env::var("WINDIR")
+            .map(PathBuf::from)
+            .expect("WINDIR is set on Windows")
+            .join("explorer.exe");
+        let png = windows_open_in::extract_icon_png(&explorer).expect("explorer has an icon");
+        assert_eq!(&png[..4], b"\x89PNG");
+        assert!(png.len() > 64);
+    }
+
+    /// Detection always offers File Explorer on Windows — it ships with the OS.
+    #[cfg(windows)]
+    #[test]
+    fn windows_always_detects_file_explorer() {
+        let apps = detect_open_in_apps();
+        let explorer = apps
+            .iter()
+            .find(|app| app.id == "explorer")
+            .expect("File Explorer is always present");
+        assert!(!explorer.target.is_empty());
+        assert!(Path::new(&explorer.target).is_file());
+    }
+
+    /// A `%VAR%` path with an unknown variable cannot resolve, and one with a
+    /// present variable resolves to that variable's value.
+    #[cfg(windows)]
+    #[test]
+    fn windows_expands_environment_paths() {
+        assert!(windows_open_in::expand_env("%ORBIT_DEFINITELY_UNSET_VAR%\\x").is_none());
+        let windir = std::env::var("WINDIR").unwrap();
+        assert_eq!(
+            windows_open_in::expand_env("%WINDIR%\\explorer.exe").unwrap(),
+            PathBuf::from(windir).join("explorer.exe")
+        );
     }
 
     #[test]

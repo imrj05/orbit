@@ -58,8 +58,16 @@ pub(super) const SIDEBAR_EDGE_PAD: f32 = 6.;
 /// edge, so they ride both a resize drag and the open/close slide. Collapsed,
 /// there is no column to hug and the chips fall back to the fixed lead past
 /// the OS window buttons.
+///
+/// Windows is the exception: it has no OS buttons on the left at all — the app
+/// paints the caption itself, at the window's right
+/// ([`platform::draws_window_controls`]) — so the cluster left-aligns on the
+/// fixed lead whether the sidebar is open or not, the way a Windows app's own
+/// titlebar controls sit. Nothing else changes there: the lead still clears
+/// the window edge, and the sidebar's drag strip and wordmark live on other
+/// rows of that column.
 pub(super) fn titlebar_controls_left(sidebar_visible: bool, sidebar_width: f32) -> f32 {
-    if sidebar_visible {
+    if sidebar_visible && !cfg!(windows) {
         sidebar_width - TITLEBAR_CONTROLS_W - SIDEBAR_EDGE_PAD
     } else {
         TRAFFIC_LIGHT_CLEARANCE + TITLEBAR_CONTROLS_LEAD
@@ -1022,7 +1030,9 @@ impl Render for OrbitApp {
             // those pages inset their own headers to clear it. The controls
             // right-align inside the sidebar's strip when it is open (hugging
             // its edge, and tracking it through a resize or the slide) and
-            // fall back to the fixed lead when it is collapsed. The container
+            // fall back to the fixed lead when it is collapsed; on Windows,
+            // which has no left-hand OS buttons, they take that fixed lead
+            // whether it is open or not. The container
             // is not itself a hitbox, so the drag strip beneath still drags the
             // window in the gaps between buttons while each button takes its
             // own clicks.
@@ -2743,7 +2753,8 @@ impl OrbitApp {
     /// The window's left titlebar controls: sidebar toggle + session history.
     /// They sit beside the macOS traffic lights in the sidebar's drag strip
     /// when the sessions sidebar is open, and fall back to the main top bar
-    /// (clearing the lights) when it is hidden.
+    /// (clearing the lights) when it is hidden. Windows has no OS buttons on
+    /// that side, so the cluster stays left-aligned there either way.
     pub(super) fn titlebar_left_controls(
         &self,
         theme: Theme,
