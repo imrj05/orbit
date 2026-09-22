@@ -66,6 +66,18 @@ pub(super) fn titlebar_controls_left(sidebar_visible: bool, sidebar_width: f32) 
     }
 }
 
+/// Leading inset the full-window pages (Git, Usage, Files) give their headers.
+/// With the sidebar open they start after it and only need the normal page
+/// padding; collapsed, they own the window's left edge and must clear the
+/// macOS traffic lights and the overlaid titlebar controls.
+pub(super) fn page_header_leading(sidebar_visible: bool) -> f32 {
+    if sidebar_visible {
+        12.
+    } else {
+        TITLEBAR_LEADING
+    }
+}
+
 /// Duration of the sidebar collapse/expand slide.
 const SIDEBAR_SLIDE_MS: u64 = 180;
 
@@ -96,6 +108,16 @@ impl Render for OrbitApp {
         // A pinned session leads its project group; the sidebar sorts and
         // marks pinned rows from this snapshot (Orbit-owned state).
         let pinned: Rc<HashSet<PathBuf>> = Rc::new(crate::pins::all().paths());
+        // Parked (background) sessions mid-run — they keep their row under a
+        // collapsed workspace header, like the open session, so a live task
+        // is never hidden by a collapse. Also drives the running loader.
+        let running_paths: Rc<HashSet<PathBuf>> = Rc::new(
+            self.lives
+                .iter()
+                .filter(|(_, parked)| parked.busy)
+                .map(|(path, _)| path.clone())
+                .collect(),
+        );
         let side_rows = Rc::new(build_sidebar_rows(
             &sidebar_sessions,
             &self.workspaces,
@@ -105,6 +127,7 @@ impl Render for OrbitApp {
             &self.expanded_session_groups,
             &pinned,
             &self.current_session_path,
+            &running_paths,
         ));
         let old = self.sidebar_list.item_count();
         if old != side_rows.len() {
@@ -115,18 +138,42 @@ impl Render for OrbitApp {
         let session_menu = Rc::new(self.session_menu.clone());
         let workspace_menu = Rc::new(self.workspace_menu.clone());
         let this = cx.entity();
-        // The open session's agent activity, plus which parked (background)
-        // sessions are mid-run — both drive the sidebar's running loader.
+        // The open session's agent activity drives the sidebar's running
+        // loader (parked runs come in via `running_paths` above).
         let agent_running = self.busy || self.transcript.is_streaming();
-        let running_paths: Rc<HashSet<PathBuf>> = Rc::new(
-            self.lives
-                .iter()
-                .filter(|(_, parked)| parked.busy)
-                .map(|(path, _)| path.clone())
-                .collect(),
-        );
         // Every live process (running or warm-idle) — guards delete.
         let live_paths: Rc<HashSet<PathBuf>> = Rc::new(self.lives.keys().cloned().collect());
+        // Pinned header for the open, expanded workspace: it stays at the
+        // top of the session list while its own sessions scroll, and the
+        // next group's header pushes it away (see `sticky_sidebar_header`).
+        // Its row is rendered twice while pinned (the real one scrolls under
+        // the overlay), so the pinned index also tells the list to skip that
+        // row's workspace menu — the overlay owns the single open popup.
+        let sticky = sticky_sidebar_header(&self.sidebar_list, &side_rows, &working_label);
+        let sticky_ix = sticky.as_ref().map(|sticky| sticky.ix);
+        let sticky_header = sticky.map(|sticky| {
+            div()
+                .absolute()
+                .top(sticky.top_offset)
+                .left_0()
+                .w_full()
+                .bg(theme.bg_sidebar)
+                .child(render_side_row(
+                    &side_rows,
+                    &sessions_data,
+                    active_path.as_deref(),
+                    sticky.ix,
+                    &this,
+                    agent_running,
+                    &running_paths,
+                    &pinned,
+                    &live_paths,
+                    session_menu.as_ref().as_ref(),
+                    workspace_menu.as_ref().as_ref(),
+                    theme,
+                ))
+                .into_any_element()
+        });
 
         let workspace_label = self.workspace_label();
         // Focus ring on the composer box: the border strengthens while the
@@ -177,18 +224,24 @@ impl Render for OrbitApp {
         let git_workspace = self.current_workspace.clone();
         let git_provider = self.model_provider.clone();
         let git_model = self.model_id.clone();
-        // Leading inset the full-window pages (Git/Usage) give their headers.
-        // With the sidebar open they start after it and only need the normal
-        // page padding; collapsed, they own the window's left edge and must
-        // clear the macOS traffic lights and the overlaid titlebar controls.
-        let page_leading = if self.sidebar_visible {
-            12.
-        } else {
-            TITLEBAR_LEADING
-        };
+        // Leading inset the full-window pages (Git/Usage/Files) give their
+        // headers while the sidebar is collapsed.
+        let page_leading = view::page_header_leading(self.sidebar_visible);
         self.git_panel.update(cx, |panel, cx| {
             panel.set_context(git_workspace, git_provider, git_model, cx);
             panel.set_chrome_leading(page_leading, cx);
+        });
+        // ── file viewer (Files surface) ── spans the main column, so it gives
+        // its tab strip the same leading inset as the Git/Usage page headers;
+        // it carries the caption-control clearance only while it owns the
+        // window's right edge (no project panel, Review pane, or Settings).
+        let viewer_reserve_controls = platform::draws_window_controls()
+            && !self.settings_open
+            && !self.project_panel.read(cx).is_open()
+            && !pane_visible;
+        self.file_viewer.update(cx, |viewer, cx| {
+            viewer.set_chrome_leading(page_leading, cx);
+            viewer.set_reserve_controls(viewer_reserve_controls, cx);
         });
         // ── project panel (right dock) ── hidden while Settings owns the
         // window, like the sessions sidebar. Sync the workspace each render;
@@ -531,28 +584,47 @@ impl Render for OrbitApp {
                                             .px_2()
                                             .relative()
                                             .child(
-                                                list(
-                                                    self.sidebar_list.clone(),
-                                                    move |ix, _window, cx| {
-                                                        render_side_row(
-                                                            &side_rows,
-                                                            &sessions_data,
-                                                            active_path.as_deref(),
-                                                            ix,
-                                                            &this,
-                                                            agent_running,
-                                                            &running_paths,
-                                                            &pinned,
-                                                            &live_paths,
-                                                            session_menu.as_ref().as_ref(),
-                                                            workspace_menu.as_ref().as_ref(),
-                                                            *theme::get(cx),
+                                                div()
+                                                    .w_full()
+                                                    .h_full()
+                                                    .relative()
+                                                    // Clips the pinned header as
+                                                    // the next group pushes it
+                                                    // up past the list top.
+                                                    .overflow_hidden()
+                                                    .child(
+                                                        list(
+                                                            self.sidebar_list.clone(),
+                                                            move |ix, _window, cx| {
+                                                                let row_workspace_menu =
+                                                                    if sticky_ix == Some(ix) {
+                                                                        None
+                                                                    } else {
+                                                                        workspace_menu
+                                                                            .as_ref()
+                                                                            .as_ref()
+                                                                    };
+                                                                render_side_row(
+                                                                    &side_rows,
+                                                                    &sessions_data,
+                                                                    active_path.as_deref(),
+                                                                    ix,
+                                                                    &this,
+                                                                    agent_running,
+                                                                    &running_paths,
+                                                                    &pinned,
+                                                                    &live_paths,
+                                                                    session_menu.as_ref().as_ref(),
+                                                                    row_workspace_menu,
+                                                                    *theme::get(cx),
+                                                                )
+                                                                .into_any_element()
+                                                            },
                                                         )
-                                                        .into_any_element()
-                                                    },
-                                                )
-                                                .w_full()
-                                                .h_full(),
+                                                        .w_full()
+                                                        .h_full(),
+                                                    )
+                                                    .children(sticky_header),
                                             ),
                                     )
                                     .into_any_element()
@@ -705,14 +777,16 @@ impl Render for OrbitApp {
                             // right cluster stops short of them — unless the
                             // side pane owns the window's right edge, and
                             // carries the clearance itself.
-                            .pr(px(if platform::draws_window_controls()
-                                && !pane_visible
-                                && !explorer_visible
-                            {
-                                platform::WINDOW_CONTROLS_W
-                            } else {
-                                12.
-                            }))
+                            .pr(px(
+                                if platform::draws_window_controls()
+                                    && !pane_visible
+                                    && !explorer_visible
+                                {
+                                    platform::WINDOW_CONTROLS_W
+                                } else {
+                                    12.
+                                },
+                            ))
                             .child(
                                 window_drag_region(
                                     div()
@@ -926,9 +1000,7 @@ impl Render for OrbitApp {
             })
             // ── project panel ── the Explorer's right dock, between the main
             // column and the Review pane so the pane keeps the window edge.
-            .children(explorer_visible.then(|| {
-                self.project_panel.clone().into_any_element()
-            }))
+            .children(explorer_visible.then(|| self.project_panel.clone().into_any_element()))
             // ── right side pane (Review) ──
             .children(pane_visible.then(|| self.sidepane.clone().into_any_element()))
             // ── titlebar controls ── a fixed overlay pinned just past the
@@ -1252,7 +1324,7 @@ impl OrbitApp {
                         theme.active_fg,
                         "access-caret-turn",
                         cx,
-                    ))
+                    )),
             )
     }
 
@@ -1294,7 +1366,9 @@ impl OrbitApp {
                 animation_id,
                 Animation::new(Duration::from_millis(150)).with_easing(|d| 1.0 - (1.0 - d).powi(3)),
                 |svg, d| {
-                    svg.with_transformation(Transformation::rotate(radians(std::f32::consts::PI * d)))
+                    svg.with_transformation(Transformation::rotate(radians(
+                        std::f32::consts::PI * d,
+                    )))
                 },
             )
             .into_any_element()
@@ -1930,9 +2004,7 @@ impl OrbitApp {
                                             .text_size(theme.ui_px(13.))
                                             .text_color(theme.text_3)
                                             .text_align(TextAlign::Center)
-                                            .child(
-                                                tr!("workspace.pick_workspace_hint"),
-                                            ),
+                                            .child(tr!("workspace.pick_workspace_hint")),
                                     ),
                             )
                             // Workspace — a labeled select field, not a ghost
@@ -2176,15 +2248,11 @@ impl OrbitApp {
                                             }),
                                     ),
                             )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(10.))
-                                    .children(self.deps.iter().enumerate().map(|(ix, dep)| {
-                                        self.render_dependency_row(dep, ix, cx).into_any_element()
-                                    })),
-                            )
+                            .child(div().flex().flex_col().gap(px(10.)).children(
+                                self.deps.iter().enumerate().map(|(ix, dep)| {
+                                    self.render_dependency_row(dep, ix, cx).into_any_element()
+                                }),
+                            ))
                             .child(self.render_host_facts(cx))
                             .child(
                                 div()
@@ -2203,11 +2271,13 @@ impl OrbitApp {
                                                 // Green once nothing is
                                                 // missing: the page doubles
                                                 // as a health report.
-                                                div().size(px(8.)).rounded_full().bg(if missing > 0 {
-                                                    theme.stop_red
-                                                } else {
-                                                    theme.ok_green
-                                                }),
+                                                div().size(px(8.)).rounded_full().bg(
+                                                    if missing > 0 {
+                                                        theme.stop_red
+                                                    } else {
+                                                        theme.ok_green
+                                                    },
+                                                ),
                                             )
                                             .child(if missing > 0 {
                                                 tr!("setup.missing_count", count = missing)
@@ -2418,7 +2488,11 @@ impl OrbitApp {
                     .text_size(theme.ui_px(11.5))
                     .text_color(theme.ok_green)
                     .child(icon("icons/check.svg", 12., theme.ok_green))
-                    .child(dep.version.clone().unwrap_or_else(|| tr!("setup.installed")))
+                    .child(
+                        dep.version
+                            .clone()
+                            .unwrap_or_else(|| tr!("setup.installed")),
+                    )
                     .into_any_element()
             } else {
                 let cmd = dep.install_hint;
@@ -2948,7 +3022,11 @@ impl OrbitApp {
                             .truncate()
                             .text_size(theme.ui_px(11.5))
                             .text_color(theme.text_2)
-                            .child(tr!("runtime.retrying", attempt = attempt, error = retry.error)),
+                            .child(tr!(
+                                "runtime.retrying",
+                                attempt = attempt,
+                                error = retry.error
+                            )),
                     )
                     .child(
                         div()

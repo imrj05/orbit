@@ -289,13 +289,9 @@ impl OrbitApp {
                     // transcript renders the same text inline.
                     if let Some(error) = transcript::message_error(value) {
                         self.set_error(tr!("events.agent_error", error = error));
-                    } else if self
-                        .error
-                        .as_deref()
-                        .is_some_and(|error| {
-                            error.starts_with(tr!("events.agent_error_prefix").as_str())
-                        })
-                    {
+                    } else if self.error.as_deref().is_some_and(|error| {
+                        error.starts_with(tr!("events.agent_error_prefix").as_str())
+                    }) {
                         // The next attempt produced a message — clear the
                         // stale agent-error banner.
                         self.error = None;
@@ -868,10 +864,7 @@ impl OrbitApp {
             .update(cx, |input, _| std::mem::take(&mut input.pasted_images));
         for image in &pasted {
             if self.attachments.len() >= MAX_ATTACHMENTS {
-                self.set_status(tr!(
-                    "composer_ops.max_attachments",
-                    count = MAX_ATTACHMENTS
-                ));
+                self.set_status(tr!("composer_ops.max_attachments", count = MAX_ATTACHMENTS));
                 break;
             }
             let index = self.attachments.len();

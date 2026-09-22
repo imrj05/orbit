@@ -756,7 +756,10 @@ impl UsagePage {
         let meta = if insights.len() == 1 {
             tr!("usage.one_note")
         } else {
-            tr!("usage.n_notes", count = format::count(insights.len() as u64))
+            tr!(
+                "usage.n_notes",
+                count = format::count(insights.len() as u64)
+            )
         };
         section(
             "usage-signals",
@@ -1009,10 +1012,7 @@ impl UsagePage {
             theme,
             "icons/usage-total.svg",
             &tr!("usage.no_data_yet"),
-            &tr!(
-                "usage.no_data_hint",
-                store = self.store_hint()
-            ),
+            &tr!("usage.no_data_hint", store = self.store_hint()),
             None,
         );
         if let Some(note) = note {
@@ -1255,7 +1255,10 @@ impl UsagePage {
                         count = format::count(snapshot.latency.samples)
                     )
                 } else {
-                    tr!("usage.sub_measured", count = format::count(snapshot.latency.samples))
+                    tr!(
+                        "usage.sub_measured",
+                        count = format::count(snapshot.latency.samples)
+                    )
                 },
                 tone: CellTone::Normal,
                 click: Some(ChartMetric::Latency),
@@ -1282,7 +1285,10 @@ impl UsagePage {
     ) -> AnyElement {
         let totals = &snapshot.summary.totals;
         let headline: Vec<(String, String)> = vec![
-            (tr!("usage.stat_input_tokens"), format::compact(totals.tokens.input)),
+            (
+                tr!("usage.stat_input_tokens"),
+                format::compact(totals.tokens.input),
+            ),
             (
                 tr!("usage.stat_output_tokens"),
                 format::compact(totals.tokens.output),
@@ -1311,7 +1317,10 @@ impl UsagePage {
                 tr!("usage.stat_sessions"),
                 format::count(snapshot.summary.sessions),
             ),
-            (tr!("usage.stat_turns"), format::count(snapshot.summary.turns)),
+            (
+                tr!("usage.stat_turns"),
+                format::count(snapshot.summary.turns),
+            ),
             (
                 tr!("usage.stat_tool_calls"),
                 format::count(snapshot.summary.tool_runs),
@@ -1358,7 +1367,10 @@ impl UsagePage {
         if totals.reasoning_reported > 0 {
             extra.push((
                 tr!("usage.stat_reasoning"),
-                tr!("usage.stat_reasoning_of_output", value = format::compact(totals.reasoning)),
+                tr!(
+                    "usage.stat_reasoning_of_output",
+                    value = format::compact(totals.reasoning)
+                ),
             ));
         }
 
@@ -2053,14 +2065,20 @@ impl UsagePage {
                         page.set_bucket_page(current.saturating_sub(1), cx)
                     });
                 }
-            });
-        let next =
-            filters::outline_button("usage-bucket-page-next", &tr!("usage.next"), current < pages, theme, {
+            },
+        );
+        let next = filters::outline_button(
+            "usage-bucket-page-next",
+            &tr!("usage.next"),
+            current < pages,
+            theme,
+            {
                 let entity = cx.entity();
                 move |_, _, cx| {
                     entity.update(cx, |page, cx| page.set_bucket_page(current + 1, cx));
                 }
-            });
+            },
+        );
         table_pager(summary, size_control, prev, next, current, pages, theme)
     }
 
@@ -2162,14 +2180,20 @@ impl UsagePage {
                         page.set_failure_page(current.saturating_sub(1), cx)
                     });
                 }
-            });
-        let next =
-            filters::outline_button("usage-failure-page-next", &tr!("usage.next"), current < pages, theme, {
+            },
+        );
+        let next = filters::outline_button(
+            "usage-failure-page-next",
+            &tr!("usage.next"),
+            current < pages,
+            theme,
+            {
                 let entity = cx.entity();
                 move |_, _, cx| {
                     entity.update(cx, |page, cx| page.set_failure_page(current + 1, cx));
                 }
-            });
+            },
+        );
         table_pager(summary, size_control, prev, next, current, pages, theme)
     }
 
@@ -2213,17 +2237,14 @@ impl UsagePage {
                     .text_size(theme.ui_px(10.5))
                     .text_color(theme.text_3)
                     .child(if latency.has_percentiles() {
-                    tr!(
-                        "usage.sub_measured",
-                        count = format::count(latency.samples)
-                    )
-                } else {
-                    tr!(
-                        "usage.sub_measured_needs_min",
-                        count = format::count(latency.samples),
-                        min = LatencyStats::MIN_SAMPLES
-                    )
-                }),
+                        tr!("usage.sub_measured", count = format::count(latency.samples))
+                    } else {
+                        tr!(
+                            "usage.sub_measured_needs_min",
+                            count = format::count(latency.samples),
+                            min = LatencyStats::MIN_SAMPLES
+                        )
+                    }),
             )
             .into_any_element()
     }
@@ -2980,10 +3001,7 @@ impl UsagePage {
         let hit = cache.hit_rate;
         let mut content = div().flex().flex_col().gap(px(10.));
         if !available {
-            content = content.child(empty_line(
-                &tr!("usage.cache_unavailable_range"),
-                theme,
-            ));
+            content = content.child(empty_line(&tr!("usage.cache_unavailable_range"), theme));
             return div().w_full().child(content).into_any_element();
         }
 
@@ -3034,7 +3052,10 @@ impl UsagePage {
             div().flex().flex_col().gap(px(2.)).children(
                 [
                     (tr!("usage.cache_reads"), format::compact(cache.cache_read)),
-                    (tr!("usage.cache_writes"), format::compact(cache.cache_write)),
+                    (
+                        tr!("usage.cache_writes"),
+                        format::compact(cache.cache_write),
+                    ),
                     (
                         tr!("usage.uncached_input"),
                         format::compact(cache.uncached_input),
@@ -3132,10 +3153,9 @@ impl UsagePage {
             tr!("usage.n_tokens", count = format::compact(tokens.total))
         };
         let cache_meta = match snapshot.cache.hit_rate {
-            Some(rate) if snapshot.cache.is_available() => tr!(
-                "usage.n_hit_rate",
-                rate = format::percent(rate)
-            ),
+            Some(rate) if snapshot.cache.is_available() => {
+                tr!("usage.n_hit_rate", rate = format::percent(rate))
+            }
             _ => tr!("usage.unavailable_short"),
         };
         let composition = subpanel(
@@ -3684,7 +3704,12 @@ impl UsagePage {
         let plan: [(SeriesSort, String, f32, bool); 4] = [
             (SeriesSort::Time, tr!("usage.col_time"), 0., false),
             (SeriesSort::Value, metric.label(), 112., true),
-            (SeriesSort::Requests, tr!("usage.metric_requests"), 104., true),
+            (
+                SeriesSort::Requests,
+                tr!("usage.metric_requests"),
+                104.,
+                true,
+            ),
             (SeriesSort::Tokens, tr!("usage.metric_tokens"), 96., true),
         ];
         let keep: Vec<(SeriesSort, String, f32, bool)> = plan
@@ -4081,18 +4106,30 @@ impl UsagePage {
             move || size_panel.unwrap_or_else(|| div().into_any_element()),
         );
 
-        let prev = filters::outline_button("usage-page-prev", &tr!("usage.previous"), current > 1, theme, {
-            let entity = cx.entity();
-            move |_, _, cx| {
-                entity.update(cx, |page, cx| page.set_page(current.saturating_sub(1), cx));
-            }
-        });
-        let next = filters::outline_button("usage-page-next", &tr!("usage.next"), current < pages, theme, {
-            let entity = cx.entity();
-            move |_, _, cx| {
-                entity.update(cx, |page, cx| page.set_page(current + 1, cx));
-            }
-        });
+        let prev = filters::outline_button(
+            "usage-page-prev",
+            &tr!("usage.previous"),
+            current > 1,
+            theme,
+            {
+                let entity = cx.entity();
+                move |_, _, cx| {
+                    entity.update(cx, |page, cx| page.set_page(current.saturating_sub(1), cx));
+                }
+            },
+        );
+        let next = filters::outline_button(
+            "usage-page-next",
+            &tr!("usage.next"),
+            current < pages,
+            theme,
+            {
+                let entity = cx.entity();
+                move |_, _, cx| {
+                    entity.update(cx, |page, cx| page.set_page(current + 1, cx));
+                }
+            },
+        );
 
         table_pager(summary, size_control, prev, next, current, pages, theme)
     }
@@ -4916,7 +4953,10 @@ fn toggle(list: &mut Vec<u16>, value: u16) {
 
 fn session_title(entry: &super::model::SessionEntry) -> String {
     if entry.title.is_empty() {
-        tr!("usage.session_fallback", id = entry.id.chars().take(8).collect::<String>())
+        tr!(
+            "usage.session_fallback",
+            id = entry.id.chars().take(8).collect::<String>()
+        )
     } else {
         entry.title.clone()
     }
@@ -4955,7 +4995,10 @@ fn tools_meta(snapshot: &UsageSnapshot) -> String {
             failed = format::count(tools.errors),
             rate = format::percent(rate)
         ),
-        Some(_) => tr!("usage.meta_calls_none_failed", calls = format::count(tools.calls)),
+        Some(_) => tr!(
+            "usage.meta_calls_none_failed",
+            calls = format::count(tools.calls)
+        ),
         None => tr!("usage.no_tool_calls"),
     }
 }

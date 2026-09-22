@@ -47,10 +47,7 @@ impl OrbitApp {
             }
             if this
                 .update(cx, |app, cx| {
-                    app.toast_info(tr!(
-                        "pi_update.available_background",
-                        version = latest
-                    ));
+                    app.toast_info(tr!("pi_update.available_background", version = latest));
                     cx.notify();
                 })
                 .is_err()
@@ -78,10 +75,7 @@ impl OrbitApp {
             }
             if !quiet {
                 let _ = this.update(cx, |app, cx| {
-                    app.toast_info(tr!(
-                        "pi_update.available_next_launch",
-                        version = latest
-                    ));
+                    app.toast_info(tr!("pi_update.available_next_launch", version = latest));
                     cx.notify();
                 });
                 return;
@@ -125,10 +119,7 @@ impl OrbitApp {
                 if let Some(version) = updated.filter(|v| pi_update::is_newer(v, installed)) {
                     // Keep the dependency board truthful about what is on disk.
                     self.deps = deps;
-                    self.toast_success(tr!(
-                        "pi_update.updated",
-                        version = version
-                    ));
+                    self.toast_success(tr!("pi_update.updated", version = version));
                 }
                 // Otherwise pi reported no change (a stale release endpoint or
                 // a managed install pi left alone): nothing to announce.

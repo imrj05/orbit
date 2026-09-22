@@ -2259,7 +2259,9 @@ mod tests {
             "role": "system", "content": "",
             "sections": {"preamble": "You are an expert…"}
         }});
-        t.apply_event(&Event::MessageStart { value: system.clone() });
+        t.apply_event(&Event::MessageStart {
+            value: system.clone(),
+        });
         t.apply_event(&Event::MessageEnd {
             value: json!({"type": "message_end", "message": {
                 "role": "system", "content": "",

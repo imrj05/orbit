@@ -48,13 +48,19 @@ fn read_custom_at(path: &Path) -> Result<Vec<CustomProvider>, String> {
     let raw = match std::fs::read_to_string(path) {
         Ok(raw) => raw,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(err) => return Err(tr!("errors.could_not_read", path = path.display().to_string(), error = err)),
+        Err(err) => {
+            return Err(tr!(
+                "errors.could_not_read",
+                path = path.display().to_string(),
+                error = err
+            ))
+        }
     };
     if raw.trim().is_empty() {
         return Ok(Vec::new());
     }
-    let root: Value = serde_json::from_str(&raw)
-        .map_err(|err| tr!("errors.models_json_invalid", error = err))?;
+    let root: Value =
+        serde_json::from_str(&raw).map_err(|err| tr!("errors.models_json_invalid", error = err))?;
     let Some(providers) = root.get("providers").and_then(Value::as_object) else {
         return Ok(Vec::new());
     };
@@ -239,7 +245,13 @@ fn read_root_at(path: &Path) -> Result<Value, String> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             return Ok(serde_json::json!({ "providers": {} }));
         }
-        Err(err) => return Err(tr!("errors.could_not_read", path = path.display().to_string(), error = err)),
+        Err(err) => {
+            return Err(tr!(
+                "errors.could_not_read",
+                path = path.display().to_string(),
+                error = err
+            ))
+        }
     };
     if raw.trim().is_empty() {
         return Ok(serde_json::json!({ "providers": {} }));
@@ -255,17 +267,31 @@ fn read_root_at(path: &Path) -> Result<Value, String> {
 /// mid-write can never leave a truncated config behind.
 fn write_root_at(path: &Path, root: &Value) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|err| tr!("errors.could_not_create", path = parent.display().to_string(), error = err))?;
+        std::fs::create_dir_all(parent).map_err(|err| {
+            tr!(
+                "errors.could_not_create",
+                path = parent.display().to_string(),
+                error = err
+            )
+        })?;
     }
     let pretty = serde_json::to_string_pretty(root)
         .map_err(|err| tr!("errors.could_not_serialize_models_json", error = err))?;
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, format!("{pretty}\n"))
-        .map_err(|err| tr!("errors.could_not_write", path = tmp.display().to_string(), error = err))?;
+    std::fs::write(&tmp, format!("{pretty}\n")).map_err(|err| {
+        tr!(
+            "errors.could_not_write",
+            path = tmp.display().to_string(),
+            error = err
+        )
+    })?;
     std::fs::rename(&tmp, path).map_err(|err| {
         let _ = std::fs::remove_file(&tmp);
-        tr!("errors.could_not_replace", path = path.display().to_string(), error = err)
+        tr!(
+            "errors.could_not_replace",
+            path = path.display().to_string(),
+            error = err
+        )
     })
 }
 
@@ -615,7 +641,13 @@ fn read_auth_at(path: &Path) -> Result<HashMap<String, ProviderAuth>, String> {
     let raw = match std::fs::read_to_string(path) {
         Ok(raw) => raw,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
-        Err(err) => return Err(tr!("errors.could_not_read", path = path.display().to_string(), error = err)),
+        Err(err) => {
+            return Err(tr!(
+                "errors.could_not_read",
+                path = path.display().to_string(),
+                error = err
+            ))
+        }
     };
     if raw.trim().is_empty() {
         return Ok(HashMap::new());
@@ -767,7 +799,13 @@ fn read_auth_root_at(path: &Path) -> Result<Value, String> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             return Ok(serde_json::json!({}));
         }
-        Err(err) => return Err(tr!("errors.could_not_read", path = path.display().to_string(), error = err)),
+        Err(err) => {
+            return Err(tr!(
+                "errors.could_not_read",
+                path = path.display().to_string(),
+                error = err
+            ))
+        }
     };
     if raw.trim().is_empty() {
         return Ok(serde_json::json!({}));
@@ -782,14 +820,24 @@ fn read_auth_root_at(path: &Path) -> Result<Value, String> {
 /// Atomic write with owner-only permissions (matching pi's own `0600`).
 fn write_json_secure(path: &Path, root: &Value) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|err| tr!("errors.could_not_create", path = parent.display().to_string(), error = err))?;
+        std::fs::create_dir_all(parent).map_err(|err| {
+            tr!(
+                "errors.could_not_create",
+                path = parent.display().to_string(),
+                error = err
+            )
+        })?;
     }
     let pretty = serde_json::to_string_pretty(root)
         .map_err(|err| tr!("errors.could_not_serialize_auth_json", error = err))?;
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, format!("{pretty}\n"))
-        .map_err(|err| tr!("errors.could_not_write", path = tmp.display().to_string(), error = err))?;
+    std::fs::write(&tmp, format!("{pretty}\n")).map_err(|err| {
+        tr!(
+            "errors.could_not_write",
+            path = tmp.display().to_string(),
+            error = err
+        )
+    })?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -797,7 +845,11 @@ fn write_json_secure(path: &Path, root: &Value) -> Result<(), String> {
     }
     std::fs::rename(&tmp, path).map_err(|err| {
         let _ = std::fs::remove_file(&tmp);
-        tr!("errors.could_not_replace", path = path.display().to_string(), error = err)
+        tr!(
+            "errors.could_not_replace",
+            path = path.display().to_string(),
+            error = err
+        )
     })
 }
 

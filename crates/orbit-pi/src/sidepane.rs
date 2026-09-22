@@ -996,10 +996,7 @@ impl SidePane {
                         this.expand_gap(index, direction, cx);
                     }))
             })
-            .child(tr!(
-                "sidepane.unmodified_lines",
-                count = gap.count()
-            ));
+            .child(tr!("sidepane.unmodified_lines", count = gap.count()));
 
         div()
             .h(px(REVIEW_GAP_HEIGHT))

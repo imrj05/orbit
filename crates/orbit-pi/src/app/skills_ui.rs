@@ -302,7 +302,9 @@ impl OrbitApp {
                     div()
                         .text_size(theme.ui_px(12.))
                         .text_color(theme.text_2)
-                        .child(tr!("skills_ui.pick_one_from_the_list_to_see_its_details_and_sk")),
+                        .child(tr!(
+                            "skills_ui.pick_one_from_the_list_to_see_its_details_and_sk"
+                        )),
                 )
                 .into_any_element();
         };

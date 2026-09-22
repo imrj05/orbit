@@ -290,7 +290,9 @@ mod tests {
         assert_eq!(locales.len(), 10);
         for language in AppLanguage::EXPLICIT {
             assert!(
-                locales.iter().any(|locale| locale.as_ref() == language.locale()),
+                locales
+                    .iter()
+                    .any(|locale| locale.as_ref() == language.locale()),
                 "locale file missing for {}",
                 language.locale()
             );
@@ -325,8 +327,14 @@ mod tests {
             assert_eq!(AppLanguage::parse(language.as_str()), Some(language));
         }
         // Legacy / regional tags fold onto a shipped locale.
-        assert_eq!(AppLanguage::parse("zh_CN"), Some(AppLanguage::SimplifiedChinese));
-        assert_eq!(AppLanguage::parse("pt"), Some(AppLanguage::PortugueseBrazil));
+        assert_eq!(
+            AppLanguage::parse("zh_CN"),
+            Some(AppLanguage::SimplifiedChinese)
+        );
+        assert_eq!(
+            AppLanguage::parse("pt"),
+            Some(AppLanguage::PortugueseBrazil)
+        );
         assert_eq!(AppLanguage::parse("fr-CA"), Some(AppLanguage::French));
     }
 
@@ -340,7 +348,10 @@ mod tests {
             AppLanguage::SimplifiedChinese
         );
         // Traditional Chinese is deliberately not enabled.
-        assert_eq!(AppLanguage::from_locale_id("zh-Hant-TW"), AppLanguage::English);
+        assert_eq!(
+            AppLanguage::from_locale_id("zh-Hant-TW"),
+            AppLanguage::English
+        );
         assert_eq!(AppLanguage::from_locale_id("nl-NL"), AppLanguage::English);
     }
 
@@ -405,7 +416,11 @@ mod tests {
         // A canary key that must exist in every shipped locale file.
         for language in AppLanguage::EXPLICIT {
             let value = rust_i18n::t!("language.title", locale = language.locale());
-            assert!(!value.is_empty(), "missing language.title for {}", language.locale());
+            assert!(
+                !value.is_empty(),
+                "missing language.title for {}",
+                language.locale()
+            );
         }
     }
 

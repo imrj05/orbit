@@ -41,23 +41,51 @@ impl OrbitApp {
         let this = cx.entity();
         let theme = *theme::get(cx);
         let sections: [(SettingsSection, &'static str, String); 9] = [
-            (SettingsSection::General, "icons/settings.svg", tr!("settings.general")),
+            (
+                SettingsSection::General,
+                "icons/settings.svg",
+                tr!("settings.general"),
+            ),
             (
                 SettingsSection::Runtime,
                 "icons/server-stack.svg",
                 tr!("settings.runtime"),
             ),
-            (SettingsSection::Agent, "icons/spark.svg", tr!("settings.agent")),
-            (SettingsSection::Skills, "icons/magic-wand.svg", tr!("settings.skills")),
-            (SettingsSection::Plugins, "icons/extensions.svg", tr!("settings.plugins")),
-            (SettingsSection::Models, "icons/tag-01.svg", tr!("settings.models")),
+            (
+                SettingsSection::Agent,
+                "icons/spark.svg",
+                tr!("settings.agent"),
+            ),
+            (
+                SettingsSection::Skills,
+                "icons/magic-wand.svg",
+                tr!("settings.skills"),
+            ),
+            (
+                SettingsSection::Plugins,
+                "icons/extensions.svg",
+                tr!("settings.plugins"),
+            ),
+            (
+                SettingsSection::Models,
+                "icons/tag-01.svg",
+                tr!("settings.models"),
+            ),
             (
                 SettingsSection::Appearance,
                 "icons/contrast.svg",
                 tr!("settings.appearance"),
             ),
-            (SettingsSection::Providers, "icons/cloud.svg", tr!("settings.providers")),
-            (SettingsSection::About, "icons/info.svg", tr!("settings.about")),
+            (
+                SettingsSection::Providers,
+                "icons/cloud.svg",
+                tr!("settings.providers"),
+            ),
+            (
+                SettingsSection::About,
+                "icons/info.svg",
+                tr!("settings.about"),
+            ),
         ];
 
         div()
@@ -141,95 +169,82 @@ impl OrbitApp {
                     // leading bar and semibold label, not a hard fill: the
                     // row stays readable as part of the list rather than a
                     // button that took over.
-                    .child(
-                        div()
-                            .px_2()
-                            .flex()
-                            .flex_col()
-                            .gap(px(3.))
-                            .children(sections.iter().map(
-                                |&(section, section_icon, ref label)| {
-                                    let this = this.clone();
-                                    let selected = self.settings_section == section;
-                                    // Group starts: Skills opens the pi
-                                    // resources block, Appearance opens
-                                    // personalisation + About.
-                                    let group_start =
-                                        matches!(section, SettingsSection::Skills | SettingsSection::Appearance);
-                                    let row = div()
-                                        .id(ElementId::Name(
-                                            format!("settings-nav-{label}").into(),
-                                        ))
-                                        .relative()
-                                        .w_full()
-                                        .h(px(30.))
-                                        .pl(px(12.))
-                                        .pr(px(10.))
-                                        .rounded_md()
-                                        .text_size(theme.ui_px(13.))
-                                        .flex()
-                                        .items_center()
-                                        .gap_2()
-                                        .cursor_pointer()
-                                        .when(selected, |row| {
-                                            row.bg(theme.accent.opacity(0.10))
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                        })
-                                        .when(!selected, |row| {
-                                            row.hover(|s| s.bg(theme.bg_hover))
-                                        })
-                                        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                                            this.update(cx, |app, cx| {
-                                                app.set_settings_section(section, cx);
-                                            });
-                                        })
-                                        .when(selected, |row| {
-                                            row.child(
-                                                div()
-                                                    .absolute()
-                                                    .left_0()
-                                                    .top(px(8.))
-                                                    .w(px(2.))
-                                                    .h(px(14.))
-                                                    .rounded_full()
-                                                    .bg(theme.accent),
-                                            )
-                                        })
-                                        .child(icon(
-                                            section_icon,
-                                            13.,
-                                            if selected {
-                                                theme.accent
-                                            } else {
-                                                theme.text_3
-                                            },
-                                        ))
-                                        .child(
-                                            div()
-                                                .text_color(if selected {
-                                                    theme.text
-                                                } else {
-                                                    theme.text_2
-                                                })
-                                                .child(label.to_string()),
-                                        );
-                                    if group_start {
+                    .child(div().px_2().flex().flex_col().gap(px(3.)).children(
+                        sections.iter().map(|&(section, section_icon, ref label)| {
+                            let this = this.clone();
+                            let selected = self.settings_section == section;
+                            // Group starts: Skills opens the pi
+                            // resources block, Appearance opens
+                            // personalisation + About.
+                            let group_start = matches!(
+                                section,
+                                SettingsSection::Skills | SettingsSection::Appearance
+                            );
+                            let row = div()
+                                .id(ElementId::Name(format!("settings-nav-{label}").into()))
+                                .relative()
+                                .w_full()
+                                .h(px(30.))
+                                .pl(px(12.))
+                                .pr(px(10.))
+                                .rounded_md()
+                                .text_size(theme.ui_px(13.))
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .cursor_pointer()
+                                .when(selected, |row| {
+                                    row.bg(theme.accent.opacity(0.10))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                })
+                                .when(!selected, |row| row.hover(|s| s.bg(theme.bg_hover)))
+                                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                                    this.update(cx, |app, cx| {
+                                        app.set_settings_section(section, cx);
+                                    });
+                                })
+                                .when(selected, |row| {
+                                    row.child(
                                         div()
-                                            .flex()
-                                            .flex_col()
-                                            .gap(px(3.))
-                                            .pt(px(7.))
-                                            .mt(px(4.))
-                                            .border_t_1()
-                                            .border_color(theme.border)
-                                            .child(row)
-                                            .into_any_element()
-                                    } else {
-                                        row.into_any_element()
-                                    }
-                                },
-                            )),
-                    )
+                                            .absolute()
+                                            .left_0()
+                                            .top(px(8.))
+                                            .w(px(2.))
+                                            .h(px(14.))
+                                            .rounded_full()
+                                            .bg(theme.accent),
+                                    )
+                                })
+                                .child(icon(
+                                    section_icon,
+                                    13.,
+                                    if selected { theme.accent } else { theme.text_3 },
+                                ))
+                                .child(
+                                    div()
+                                        .text_color(if selected {
+                                            theme.text
+                                        } else {
+                                            theme.text_2
+                                        })
+                                        .child(label.to_string()),
+                                );
+                            if group_start {
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(3.))
+                                    .pt(px(7.))
+                                    .mt(px(4.))
+                                    .border_t_1()
+                                    .border_color(theme.border)
+                                    .child(row)
+                                    .into_any_element()
+                            } else {
+                                row.into_any_element()
+                            }
+                        }),
+                    ))
                     // Footer: the build identity, pinned bottom-left in the
                     // same tertiary register the About page uses — a quiet
                     // closer for the column.
@@ -343,30 +358,18 @@ impl OrbitApp {
 
     pub(super) fn settings_header(&self, theme: Theme) -> impl IntoElement + use<> {
         let (title, subtitle): (String, String) = match self.settings_section {
-            SettingsSection::General => (
-                tr!("settings.general"),
-                tr!("settings.general_description"),
-            ),
-            SettingsSection::Runtime => (
-                tr!("settings.runtime"),
-                tr!("settings.runtime_description"),
-            ),
-            SettingsSection::Agent => (
-                tr!("settings.agent"),
-                tr!("settings.agent_description"),
-            ),
-            SettingsSection::Skills => (
-                tr!("settings.skills"),
-                tr!("settings.skills_description"),
-            ),
-            SettingsSection::Plugins => (
-                tr!("settings.plugins"),
-                tr!("settings.plugins_description"),
-            ),
-            SettingsSection::Models => (
-                tr!("settings.models"),
-                tr!("settings.models_description"),
-            ),
+            SettingsSection::General => {
+                (tr!("settings.general"), tr!("settings.general_description"))
+            }
+            SettingsSection::Runtime => {
+                (tr!("settings.runtime"), tr!("settings.runtime_description"))
+            }
+            SettingsSection::Agent => (tr!("settings.agent"), tr!("settings.agent_description")),
+            SettingsSection::Skills => (tr!("settings.skills"), tr!("settings.skills_description")),
+            SettingsSection::Plugins => {
+                (tr!("settings.plugins"), tr!("settings.plugins_description"))
+            }
+            SettingsSection::Models => (tr!("settings.models"), tr!("settings.models_description")),
             SettingsSection::Appearance => (
                 tr!("settings.appearance"),
                 tr!("settings.appearance_description"),
@@ -375,10 +378,7 @@ impl OrbitApp {
                 tr!("settings.providers"),
                 tr!("settings.providers_description"),
             ),
-            SettingsSection::About => (
-                tr!("settings.about"),
-                tr!("settings.about_description"),
-            ),
+            SettingsSection::About => (tr!("settings.about"), tr!("settings.about_description")),
         };
         div()
             .flex()
@@ -426,14 +426,18 @@ impl OrbitApp {
                         self.setting_row(
                             theme,
                             &tr!("settings.pi_agent"),
-                            Some(&tr!("settings.spawned_as_a_child_process_newline_delimited_jso")),
+                            Some(&tr!(
+                                "settings.spawned_as_a_child_process_newline_delimited_jso"
+                            )),
                             None,
                             Some(self.connection_status(theme)),
                         ),
                         self.setting_row(
                             theme,
                             &tr!("settings.local_by_default"),
-                            Some(&tr!("settings.sessions_live_in_pi_s_own_store_on_this_computer")),
+                            Some(&tr!(
+                                "settings.sessions_live_in_pi_s_own_store_on_this_computer"
+                            )),
                             Some(&sessions::sessions_dir().to_string_lossy()),
                             None,
                         ),
@@ -481,7 +485,9 @@ impl OrbitApp {
                     self.setting_row(
                         theme,
                         &tr!("settings.gpui"),
-                        Some(&tr!("settings.gpu_accelerated_ui_framework_pinned_runtime_shad")),
+                        Some(&tr!(
+                            "settings.gpu_accelerated_ui_framework_pinned_runtime_shad"
+                        )),
                         None,
                         Some(
                             div()
@@ -495,14 +501,18 @@ impl OrbitApp {
                 about.push(self.setting_row(
                     theme,
                     &tr!("settings.pi_cli"),
-                    Some(&tr!("settings.the_only_agent_runtime_pi_speaks_its_own_rpc_pro")),
+                    Some(&tr!(
+                        "settings.the_only_agent_runtime_pi_speaks_its_own_rpc_pro"
+                    )),
                     None,
                     Some(self.connection_status(theme)),
                 ));
                 about.push(self.setting_row(
                     theme,
                     &tr!("settings.source"),
-                    Some(&tr!("settings.open_source_under_apache_2_0_code_issues_and_rel")),
+                    Some(&tr!(
+                        "settings.open_source_under_apache_2_0_code_issues_and_rel"
+                    )),
                     None,
                     Some(self.about_github_button(theme)),
                 ));
@@ -734,10 +744,7 @@ impl OrbitApp {
                                     .flex_none()
                                     .text_size(theme.ui_px(11.))
                                     .text_color(theme.text_3)
-                                    .child(tr!(
-                                        "settings.n_models",
-                                        count = models.len()
-                                    )),
+                                    .child(tr!("settings.n_models", count = models.len())),
                             ),
                     )
                     .child(
@@ -1693,11 +1700,7 @@ impl OrbitApp {
                                 div()
                                     .text_size(theme.ui_px(11.5))
                                     .text_color(theme.text_2)
-                                    .child(
-                                        tr!(
-                                            "settings.restart_pi_credentials_hint"
-                                        ),
-                                    ),
+                                    .child(tr!("settings.restart_pi_credentials_hint")),
                             ),
                     )
                     .child(self.provider_button(
@@ -1815,7 +1818,9 @@ impl OrbitApp {
                         div()
                             .text_size(theme.ui_px(11.5))
                             .text_color(theme.text_3)
-                            .child(tr!("settings.fix_or_remove_the_file_before_editing_providers_")),
+                            .child(tr!(
+                                "settings.fix_or_remove_the_file_before_editing_providers_"
+                            )),
                     ),
             )
             .into_any_element()
@@ -1987,11 +1992,7 @@ impl OrbitApp {
     ) -> Option<AnyElement> {
         let session = self.auth.login_for(&view.id)?;
         let (headline, detail, tint) = match session.phase {
-            LoginPhase::Connecting => (
-                tr!("status.connecting"),
-                tr!("auth.asking_pi"),
-                theme.warn,
-            ),
+            LoginPhase::Connecting => (tr!("status.connecting"), tr!("auth.asking_pi"), theme.warn),
             LoginPhase::AwaitingBrowser => (
                 tr!("auth.waiting_browser"),
                 tr!("auth.finish_in_browser"),
@@ -2236,7 +2237,11 @@ impl OrbitApp {
             let value = if let Some(percent) = window.used_percent {
                 tr!("session.percent_used", percent = format!("{percent:.0}"))
             } else if let (Some(used), Some(limit)) = (window.used, window.limit) {
-                tr!("session.used_of_limit", used = amount(used), limit = amount(limit))
+                tr!(
+                    "session.used_of_limit",
+                    used = amount(used),
+                    limit = amount(limit)
+                )
             } else if let Some(used) = window.used {
                 match &window.unit {
                     Some(unit) => tr!("session.amount_unit", amount = amount(used), unit = unit),
@@ -3054,10 +3059,7 @@ impl OrbitApp {
                             .text_size(theme.ui_px(15.))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.text)
-                            .child(tr!(
-                                "settings.usage_for",
-                                name = view.name
-                            )),
+                            .child(tr!("settings.usage_for", name = view.name)),
                     )
                     .child(
                         div()
@@ -3131,10 +3133,7 @@ impl OrbitApp {
         let editor = self.provider_key_editor.as_ref()?;
 
         let (field_label, hint) = match editor.kind {
-            ProviderKeyKind::ApiKey => (
-                tr!("settings.api_key"),
-                tr!("settings.api_key_hint"),
-            ),
+            ProviderKeyKind::ApiKey => (tr!("settings.api_key"), tr!("settings.api_key_hint")),
             ProviderKeyKind::OllamaCloudSession => (
                 tr!("settings.session_cookie"),
                 tr!("settings.session_cookie_hint"),
@@ -3194,7 +3193,9 @@ impl OrbitApp {
                             .flex_1()
                             .text_size(theme.ui_px(11.))
                             .text_color(theme.text_3)
-                            .child(tr!("settings.prefer_a_subscription_sign_in_with_oauth_instead")),
+                            .child(tr!(
+                                "settings.prefer_a_subscription_sign_in_with_oauth_instead"
+                            )),
                     )
                     .child(self.provider_button(
                         format!("provider-key-signin-{id}"),
@@ -3288,10 +3289,7 @@ impl OrbitApp {
                             .text_size(theme.ui_px(15.))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.text)
-                            .child(tr!(
-                                "settings.api_key_for",
-                                name = editor.provider_name
-                            )),
+                            .child(tr!("settings.api_key_for", name = editor.provider_name)),
                     )
                     .child(
                         div()
@@ -3521,7 +3519,11 @@ impl OrbitApp {
                     )
                     .child(api_chips),
             )
-            .child(field(&tr!("settings.api_key"), Some(&api_key_hint), editor.api_key.clone()))
+            .child(field(
+                &tr!("settings.api_key"),
+                Some(&api_key_hint),
+                editor.api_key.clone(),
+            ))
             .child(field(
                 &tr!("settings.models_field"),
                 Some(if editor.in_catalog {
@@ -3877,7 +3879,9 @@ impl OrbitApp {
             self.setting_row(
                 theme,
                 &tr!("settings.desktop_notifications"),
-                Some(&tr!("settings.show_a_system_banner_when_a_run_finishes_while_o")),
+                Some(&tr!(
+                    "settings.show_a_system_banner_when_a_run_finishes_while_o"
+                )),
                 None,
                 Some(self.settings_toggle(
                     "notification-desktop-toggle",
@@ -3890,7 +3894,9 @@ impl OrbitApp {
             self.setting_row(
                 theme,
                 &tr!("settings.in_app_toasts"),
-                Some(&tr!("settings.show_a_toast_in_the_window_when_a_run_finishes_o")),
+                Some(&tr!(
+                    "settings.show_a_toast_in_the_window_when_a_run_finishes_o"
+                )),
                 None,
                 Some(self.settings_toggle(
                     "notification-toasts-toggle",
@@ -3903,7 +3909,9 @@ impl OrbitApp {
             self.setting_row(
                 theme,
                 &tr!("settings.notification_sound"),
-                Some(&tr!("settings.play_the_system_alert_sound_when_a_background_ru")),
+                Some(&tr!(
+                    "settings.play_the_system_alert_sound_when_a_background_ru"
+                )),
                 None,
                 Some(self.settings_toggle(
                     "notification-sound-toggle",
@@ -3919,7 +3927,9 @@ impl OrbitApp {
                 notifications::DesktopAuth::Denied => rows.push(self.setting_row(
                     theme,
                     &tr!("settings.blocked_in_system_settings"),
-                    Some(&tr!("settings.macos_is_not_allowing_orbit_pi_to_post_notificat")),
+                    Some(&tr!(
+                        "settings.macos_is_not_allowing_orbit_pi_to_post_notificat"
+                    )),
                     None,
                     Some(self.runtime_button(
                         "notification-open-settings",
@@ -3935,7 +3945,9 @@ impl OrbitApp {
                 notifications::DesktopAuth::Unbundled => rows.push(self.setting_row(
                     theme,
                     &tr!("settings.developer_build"),
-                    Some(&tr!("settings.orbit_is_running_from_a_bare_binary_so_banners_a")),
+                    Some(&tr!(
+                        "settings.orbit_is_running_from_a_bare_binary_so_banners_a"
+                    )),
                     None,
                     None,
                 )),
@@ -4140,10 +4152,7 @@ impl OrbitApp {
             &tr!("settings.transport"),
             None,
             None,
-            Some(runtime_text(
-                theme,
-                tr!("settings.transport_stdio"),
-            )),
+            Some(runtime_text(theme, tr!("settings.transport_stdio"))),
         ));
         process.push(self.setting_row(
             theme,
@@ -4285,14 +4294,18 @@ impl OrbitApp {
             self.setting_row(
                 theme,
                 &tr!("settings.follow_up_messages"),
-                Some(&tr!("settings.messages_sent_while_the_agent_is_running_wait_in")),
+                Some(&tr!(
+                    "settings.messages_sent_while_the_agent_is_running_wait_in"
+                )),
                 None,
                 Some(self.follow_up_mode_toggle(theme, this.clone())),
             ),
             self.setting_row(
                 theme,
                 &tr!("settings.auto_compaction"),
-                Some(&tr!("settings.compact_conversation_context_automatically_when_")),
+                Some(&tr!(
+                    "settings.compact_conversation_context_automatically_when_"
+                )),
                 None,
                 Some(self.settings_toggle(
                     "auto-compaction-toggle",
@@ -4305,7 +4318,9 @@ impl OrbitApp {
             self.setting_row(
                 theme,
                 &tr!("settings.auto_retry"),
-                Some(&tr!("settings.retry_automatically_on_transient_errors_overload")),
+                Some(&tr!(
+                    "settings.retry_automatically_on_transient_errors_overload"
+                )),
                 None,
                 Some(self.settings_toggle(
                     "auto-retry-toggle",
@@ -4325,7 +4340,9 @@ impl OrbitApp {
                 vec![self.setting_row(
                     theme,
                     &tr!("settings.retrying"),
-                    Some(&tr!("settings.pi_is_waiting_out_a_transient_provider_error_bef")),
+                    Some(&tr!(
+                        "settings.pi_is_waiting_out_a_transient_provider_error_bef"
+                    )),
                     None,
                     Some(self.runtime_button(
                         "abort-retry",
@@ -4345,7 +4362,9 @@ impl OrbitApp {
                 vec![self.setting_row(
                     theme,
                     &tr!("settings.pi_is_not_connected"),
-                    Some(&tr!("settings.start_the_runtime_from_settings_runtime_to_chang")),
+                    Some(&tr!(
+                        "settings.start_the_runtime_from_settings_runtime_to_chang"
+                    )),
                     None,
                     None,
                 )],
@@ -4440,36 +4459,35 @@ impl OrbitApp {
         let (one_id, all_id) = ("follow-up-mode-one", "follow-up-mode-all");
         let one_label = tr!("settings.one_at_a_time");
         let all_label = tr!("settings.all");
-        let button =
-            |label: String, value_all: bool, id: &'static str, this: Entity<OrbitApp>| {
-                let active = all == value_all;
-                div()
-                    .id(id)
-                    .h(px(28.))
-                    .px(px(10.))
-                    .rounded_md()
-                    .border_1()
-                    .flex()
-                    .items_center()
-                    .text_size(theme.ui_px(12.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .cursor_pointer()
-                    .when(active, |b| {
-                        b.border_color(theme.border)
-                            .bg(theme.active)
-                            .text_color(theme.active_fg)
-                    })
-                    .when(!active, |b| {
-                        b.border_color(theme.border)
-                            .bg(theme.bg_raised)
-                            .text_color(theme.text_2)
-                            .hover(|s| s.bg(theme.bg_hover))
-                    })
-                    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                        this.update(cx, |app, cx| app.set_follow_up_mode(value_all, cx));
-                    })
-                    .child(label)
-            };
+        let button = |label: String, value_all: bool, id: &'static str, this: Entity<OrbitApp>| {
+            let active = all == value_all;
+            div()
+                .id(id)
+                .h(px(28.))
+                .px(px(10.))
+                .rounded_md()
+                .border_1()
+                .flex()
+                .items_center()
+                .text_size(theme.ui_px(12.))
+                .font_weight(FontWeight::MEDIUM)
+                .cursor_pointer()
+                .when(active, |b| {
+                    b.border_color(theme.border)
+                        .bg(theme.active)
+                        .text_color(theme.active_fg)
+                })
+                .when(!active, |b| {
+                    b.border_color(theme.border)
+                        .bg(theme.bg_raised)
+                        .text_color(theme.text_2)
+                        .hover(|s| s.bg(theme.bg_hover))
+                })
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    this.update(cx, |app, cx| app.set_follow_up_mode(value_all, cx));
+                })
+                .child(label)
+        };
         div()
             .flex()
             .items_center()
@@ -4680,7 +4698,9 @@ impl OrbitApp {
         theme_rows.push(self.setting_row(
             theme,
             &tr!("settings.theme"),
-            Some(&tr!("settings.pick_a_zed_compatible_palette_for_the_workbench")),
+            Some(&tr!(
+                "settings.pick_a_zed_compatible_palette_for_the_workbench"
+            )),
             None,
             Some(self.theme_control(theme, this.clone(), cx)),
         ));
@@ -4786,14 +4806,18 @@ impl OrbitApp {
                     self.setting_row(
                         theme,
                         &tr!("settings.show_sidebar"),
-                        Some(&tr!("settings.show_the_sessions_sidebar_also_toggleable_from_t")),
+                        Some(&tr!(
+                            "settings.show_the_sessions_sidebar_also_toggleable_from_t"
+                        )),
                         None,
                         Some(self.sidebar_toggle(theme, this.clone())),
                     ),
                     self.setting_row(
                         theme,
                         &tr!("settings.reduce_motion"),
-                        Some(&tr!("settings.stop_looping_animations_spinners_and_the_running")),
+                        Some(&tr!(
+                            "settings.stop_looping_animations_spinners_and_the_running"
+                        )),
                         None,
                         Some(self.settings_toggle(
                             "reduce-motion",
@@ -4818,7 +4842,9 @@ impl OrbitApp {
                         self.setting_row(
                             theme,
                             &tr!("settings.blur"),
-                            Some(&tr!("settings.softens_the_picture_before_the_dither_pass_so_a_")),
+                            Some(&tr!(
+                                "settings.softens_the_picture_before_the_dither_pass_so_a_"
+                            )),
                             None,
                             Some(self.tuning_select(
                                 SettingsSelect::BackdropBlur,
@@ -4830,7 +4856,9 @@ impl OrbitApp {
                         self.setting_row(
                             theme,
                             &tr!("settings.pixel_size"),
-                            Some(&tr!("settings.the_dither_cell_edge_fine_cells_read_as_halftone")),
+                            Some(&tr!(
+                                "settings.the_dither_cell_edge_fine_cells_read_as_halftone"
+                            )),
                             None,
                             Some(self.tuning_select(
                                 SettingsSelect::BackdropCell,
@@ -4842,7 +4870,9 @@ impl OrbitApp {
                         self.setting_row(
                             theme,
                             &tr!("settings.bottom_fade"),
-                            Some(&tr!("settings.how_far_the_picture_fades_into_the_page_behind_t")),
+                            Some(&tr!(
+                                "settings.how_far_the_picture_fades_into_the_page_behind_t"
+                            )),
                             None,
                             Some(self.tuning_select(
                                 SettingsSelect::BackdropFade,
@@ -5027,8 +5057,14 @@ impl OrbitApp {
             .py(theme.space(12.))
             .flex()
             .gap(theme.space(16.))
-            .child(column(&tr!("settings.interface_preview"), interface.into_any_element()))
-            .child(column(&tr!("settings.terminal_preview"), terminal.into_any_element()))
+            .child(column(
+                &tr!("settings.interface_preview"),
+                interface.into_any_element(),
+            ))
+            .child(column(
+                &tr!("settings.terminal_preview"),
+                terminal.into_any_element(),
+            ))
             .into_any_element()
     }
 
@@ -5241,7 +5277,10 @@ impl OrbitApp {
             "language-select",
             SettingsSelect::Language,
             theme.ui.language.label(),
-            Language::ALL.iter().map(|language| language.label()).collect(),
+            Language::ALL
+                .iter()
+                .map(|language| language.label())
+                .collect(),
             selected,
             theme,
             this,
@@ -5717,12 +5756,12 @@ impl OrbitApp {
                 let model = if ix == 0 {
                     None
                 } else {
-                    self.available_models.get(ix - 1).map(|model| {
-                        crate::auto_title::TitleModel {
+                    self.available_models
+                        .get(ix - 1)
+                        .map(|model| crate::auto_title::TitleModel {
                             provider: model.provider.clone(),
                             id: model.id.clone(),
-                        }
-                    })
+                        })
                 };
                 self.auto_title.model = model;
                 self.auto_title.persist();
@@ -5923,8 +5962,16 @@ impl OrbitApp {
             PluginOp::Update => tr!("settings.verb_updating"),
             PluginOp::Remove => tr!("settings.verb_removing"),
         };
-        self.plugin_action = Some(tr!("settings.plugin_progress", verb = verb, source = source));
-        let done = tr!("settings.plugin_progress_plain", verb = verb, source = source);
+        self.plugin_action = Some(tr!(
+            "settings.plugin_progress",
+            verb = verb,
+            source = source
+        ));
+        let done = tr!(
+            "settings.plugin_progress_plain",
+            verb = verb,
+            source = source
+        );
         let workspace = self.workspace_dir();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -5947,9 +5994,7 @@ impl OrbitApp {
                             .find(|line| !line.trim().is_empty())
                             .map(str::to_string);
                         app.toast_success(
-                            last.unwrap_or_else(|| {
-                                tr!("settings.plugin_done", done = done)
-                            }),
+                            last.unwrap_or_else(|| tr!("settings.plugin_done", done = done)),
                         );
                         app.refresh_plugins(cx);
                     }
@@ -6210,11 +6255,7 @@ impl OrbitApp {
                     ProviderKeyKind::ApiKey => tr!("settings.api_key"),
                     ProviderKeyKind::OllamaCloudSession => tr!("settings.ollama_cloud_session"),
                 };
-                self.toast_success(tr!(
-                    "settings.key_saved_for",
-                    what = what,
-                    name = name
-                ));
+                self.toast_success(tr!("settings.key_saved_for", what = what, name = name));
             }
             Err(err) => {
                 if let Some(editor) = self.provider_key_editor.as_mut() {
@@ -6238,10 +6279,7 @@ impl OrbitApp {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
         {
-            self.toast_error(tr!(
-                "settings.refuse_invalid_login",
-                id = id
-            ));
+            self.toast_error(tr!("settings.refuse_invalid_login", id = id));
             cx.notify();
             return;
         }
@@ -6249,10 +6287,7 @@ impl OrbitApp {
         match platform::open_terminal_command(&command) {
             Ok(()) => {
                 self.provider_auth_dirty = true;
-                self.toast_info(tr!(
-                    "settings.finish_sign_in_terminal",
-                    name = name
-                ));
+                self.toast_info(tr!("settings.finish_sign_in_terminal", name = name));
             }
             Err(err) => {
                 self.toast_warning(tr!(
@@ -6514,10 +6549,7 @@ impl OrbitApp {
                 self.provider_editor = None;
                 self.reload_custom_providers(cx);
                 self.refresh_catalogs();
-                self.toast_success(tr!(
-                    "settings.provider_saved",
-                    id = id
-                ));
+                self.toast_success(tr!("settings.provider_saved", id = id));
             }
             Err(err) => {
                 if let Some(editor) = self.provider_editor.as_mut() {
@@ -6578,7 +6610,11 @@ fn model_count_label(total: usize, shown: usize, favorites: usize, filtered: boo
             favorites = favorites
         )
     } else {
-        tr!("settings.count_models", total = total, favorites = favorites)
+        tr!(
+            "settings.count_models",
+            total = total,
+            favorites = favorites
+        )
     }
 }
 

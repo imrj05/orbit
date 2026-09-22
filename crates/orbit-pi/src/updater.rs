@@ -800,10 +800,7 @@ fn run_install(flags: &HelperFlags) -> i32 {
 
     if let Err(error) = std::fs::rename(&flags.install_dir, &backup) {
         let _ = spawn_install(&flags.install_dir, &exe_name, None);
-        return helper_error(
-            flags,
-            &tr!("updater.move_aside_failed", error = error),
-        );
+        return helper_error(flags, &tr!("updater.move_aside_failed", error = error));
     }
     sync_directory(flags.parent_dir());
 
@@ -811,10 +808,7 @@ fn run_install(flags: &HelperFlags) -> i32 {
         let _ = std::fs::rename(&backup, &flags.install_dir);
         sync_directory(flags.parent_dir());
         let _ = spawn_install(&flags.install_dir, &exe_name, None);
-        return helper_error(
-            flags,
-            &tr!("updater.move_into_place_failed", error = error),
-        );
+        return helper_error(flags, &tr!("updater.move_into_place_failed", error = error));
     }
     sync_directory(flags.parent_dir());
 
@@ -1077,11 +1071,14 @@ fn install_dir_for(executable: &Path) -> Option<PathBuf> {
 
 #[cfg(unix)]
 fn fetch_and_stage(layout: Option<&InstallLayout>) -> anyhow::Result<Fetched> {
-    fetch_and_stage_impl(layout.is_some(), |archive, directory, version| match layout {
-        Some(layout) => stage_artifact(archive, directory, version, layout),
-        // Unreachable: a check-only build returns before it downloads.
-        None => Ok(None),
-    })
+    fetch_and_stage_impl(
+        layout.is_some(),
+        |archive, directory, version| match layout {
+            Some(layout) => stage_artifact(archive, directory, version, layout),
+            // Unreachable: a check-only build returns before it downloads.
+            None => Ok(None),
+        },
+    )
 }
 
 #[cfg(not(unix))]
@@ -1679,7 +1676,10 @@ mod feed {
 
         #[test]
         fn the_newest_signed_item_wins_regardless_of_feed_order() {
-            let item = items(FEED).into_iter().next().expect("feed has signed items");
+            let item = items(FEED)
+                .into_iter()
+                .next()
+                .expect("feed has signed items");
             assert_eq!(item.version, "0.2.0");
             assert_eq!(item.signature, "newsig");
             assert_eq!(item.length, Some(2048));
@@ -1749,7 +1749,10 @@ mod feed {
 
         #[test]
         fn a_feed_without_a_description_has_no_notes() {
-            let item = items(FEED).into_iter().next().expect("feed has signed items");
+            let item = items(FEED)
+                .into_iter()
+                .next()
+                .expect("feed has signed items");
             assert_eq!(item.notes, None);
         }
     }
@@ -1986,11 +1989,12 @@ mod tests {
             .version
             .clone();
         if feed::is_newer(&newest, env!("CARGO_PKG_VERSION")) {
-            let update = fetched
-                .staged
-                .expect("a newer feed must offer a release");
+            let update = fetched.staged.expect("a newer feed must offer a release");
             assert_eq!(update.version.as_deref(), Some(newest.as_str()));
-            assert!(update.notes.is_some(), "the offered release carries its notes");
+            assert!(
+                update.notes.is_some(),
+                "the offered release carries its notes"
+            );
         }
     }
 }

@@ -233,9 +233,7 @@ impl ProjectPanel {
                     let badges = git::status_rows(&root)
                         .map(|rows| {
                             rows.into_iter()
-                                .map(|row| {
-                                    (row.path.clone(), StatusBadge::from_status(&row))
-                                })
+                                .map(|row| (row.path.clone(), StatusBadge::from_status(&row)))
                                 .collect()
                         })
                         .unwrap_or_default();
@@ -265,9 +263,7 @@ impl ProjectPanel {
             self.list.reset(rows.len());
         }
         self.rows = rows;
-        self.cursor = self
-            .cursor
-            .filter(|index| *index < self.rows.len());
+        self.cursor = self.cursor.filter(|index| *index < self.rows.len());
     }
 
     fn toggle_dir(&mut self, path: String, cx: &mut Context<Self>) {
@@ -377,7 +373,8 @@ impl ProjectPanel {
             }
             "left" => {
                 if let Some(index) = self.cursor {
-                    if self.rows.get(index).is_some_and(Row::is_dir) && self.rows[index].expanded() {
+                    if self.rows.get(index).is_some_and(Row::is_dir) && self.rows[index].expanded()
+                    {
                         let path = self.rows[index].path.clone();
                         self.toggle_dir(path, cx);
                     }
@@ -567,9 +564,9 @@ impl ProjectPanel {
             .flex_1()
             .min_h_0()
             .relative()
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                this.on_key_down(event, cx)
-            }))
+            .on_key_down(
+                cx.listener(|this, event: &KeyDownEvent, _, cx| this.on_key_down(event, cx)),
+            )
             .child(body)
             .into_any_element()
     }
@@ -610,7 +607,11 @@ impl ProjectPanel {
         // Dirs lead with a chevron + folder; files with a devicon. The file
         // indent offsets that difference so names align in one column.
         let indent = (if row.is_dir() { 7.0 } else { 23.0 }) + row.depth as f32 * 14.0;
-        let icon_color = if active { theme.active_fg } else { theme.text_3 };
+        let icon_color = if active {
+            theme.active_fg
+        } else {
+            theme.text_3
+        };
         let name_color = if active {
             theme.active_fg
         } else {
@@ -634,7 +635,9 @@ impl ProjectPanel {
             // quieter wash; pointer hover is the lightest step.
             .when(active, |el| el.bg(theme.active))
             .when(!active && cursor, |el| el.bg(theme.overlay))
-            .when(!active && !cursor, |el| el.hover(|el| el.bg(theme.bg_hover)))
+            .when(!active && !cursor, |el| {
+                el.hover(|el| el.bg(theme.bg_hover))
+            })
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 window.focus(&this.focus);
                 this.cursor = Some(index);
@@ -676,29 +679,22 @@ impl ProjectPanel {
                         .child(row.name.clone()),
                 );
             if row.dirty {
-                content = content.child(
-                    div()
-                        .size(px(5.))
-                        .flex_none()
-                        .rounded_full()
-                        .bg(theme.warn),
-                );
+                content =
+                    content.child(div().size(px(5.)).flex_none().rounded_full().bg(theme.warn));
             }
         } else {
             let fallback = file_badge(&row.path, theme);
             let glyph = file_glyph(&row.path, dark, nerd.as_ref(), 13., fallback);
-            content = content
-                .child(glyph)
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex_1()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_size(theme.ui_px(12.5))
-                        .text_color(name_color)
-                        .child(row.name.clone()),
-                );
+            content = content.child(glyph).child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_size(theme.ui_px(12.5))
+                    .text_color(name_color)
+                    .child(row.name.clone()),
+            );
             if let Some(badge) = row.badge {
                 let color = badge_color(badge, &theme);
                 content = content.child(
@@ -1017,9 +1013,7 @@ impl Render for ProjectPanel {
                     .w(px(6.))
                     .cursor(CursorStyle::ResizeLeftRight)
                     .hover(|style| style.bg(theme.accent.opacity(0.4)))
-                    .on_drag(ExplorerResize, |_, _, _, cx| {
-                        cx.new(|_| ExplorerDragGhost)
-                    }),
+                    .on_drag(ExplorerResize, |_, _, _, cx| cx.new(|_| ExplorerDragGhost)),
             )
             .child(self.header(theme, cx))
             .child(self.filter_row(theme, cx))

@@ -79,7 +79,11 @@ impl CustomFrame {
             return None;
         }
         let id = value.get("id").and_then(Value::as_str)?.to_string();
-        match value.get("phase").and_then(Value::as_str).unwrap_or("render") {
+        match value
+            .get("phase")
+            .and_then(Value::as_str)
+            .unwrap_or("render")
+        {
             phase @ ("open" | "render") => {
                 let surface = CustomSurface {
                     id,
@@ -88,7 +92,10 @@ impl CustomFrame {
                         .and_then(Value::as_str)
                         .map(str::to_owned),
                     lines: parse_lines(value.get("lines")),
-                    width: value.get("width").and_then(Value::as_u64).map(|n| n as usize),
+                    width: value
+                        .get("width")
+                        .and_then(Value::as_u64)
+                        .map(|n| n as usize),
                     height: value
                         .get("height")
                         .and_then(Value::as_u64)
@@ -190,7 +197,12 @@ impl CustomUi {
     /// Escape is bound to this action (so it does not reach the global
     /// `AbortRun`) and forwarded as `ESC` — components cancel themselves via
     /// `SelectList.onCancel`/`onKey`, exactly as in the TUI.
-    fn on_escape(&mut self, _: &crate::CustomUiEscape, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_escape(
+        &mut self,
+        _: &crate::CustomUiEscape,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         (self.on_input)("\x1b".to_string(), window, cx);
     }
 
@@ -507,7 +519,10 @@ mod tests {
     #[test]
     fn other_methods_and_unknown_phases_are_rejected() {
         assert!(CustomFrame::from_event(&json!({"id": "x", "method": "select"})).is_none());
-        assert!(CustomFrame::from_event(&json!({"id": "x", "method": "custom", "phase": "zzz"})).is_none());
+        assert!(
+            CustomFrame::from_event(&json!({"id": "x", "method": "custom", "phase": "zzz"}))
+                .is_none()
+        );
     }
 
     fn stroke(key: &str, modifiers: gpui::Modifiers) -> gpui::Keystroke {
@@ -591,27 +606,36 @@ mod render_tests {
         });
         let harness = cx.update(|_, cx| cx.new(|_| Harness { ui }));
 
-        let _ = cx.draw(
-            point(px(0.), px(0.)),
-            size(px(900.), px(700.)),
-            |_, _| harness.clone(),
-        );
+        let _ = cx.draw(point(px(0.), px(0.)), size(px(900.), px(700.)), |_, _| {
+            harness.clone()
+        });
 
         let card = cx.debug_bounds("custom-ui-card").expect("card painted");
         let header = cx.debug_bounds("custom-ui-header").expect("header painted");
         let close = cx.debug_bounds("custom-ui-close").expect("close painted");
-        let body = cx.debug_bounds("custom-ui-body").expect("grid body painted");
+        let body = cx
+            .debug_bounds("custom-ui-body")
+            .expect("grid body painted");
         let footer = cx.debug_bounds("custom-ui-footer").expect("footer painted");
 
         assert!(card.size.width > px(280.), "card is a usable width");
-        assert!(card.size.height > px(140.), "card has header + body + footer");
+        assert!(
+            card.size.height > px(140.),
+            "card has header + body + footer"
+        );
 
         // Centered in the 900×700 window.
         let center = f32::from(card.origin.x) + f32::from(card.size.width) / 2.;
-        assert!((center - 450.).abs() < 1., "card is horizontally centered: {center}");
+        assert!(
+            (center - 450.).abs() < 1.,
+            "card is horizontally centered: {center}"
+        );
 
         // Chrome hugs the card's top and bottom; the grid sits inset between.
-        assert!(header.origin.y <= card.origin.y + px(1.), "header is at the top");
+        assert!(
+            header.origin.y <= card.origin.y + px(1.),
+            "header is at the top"
+        );
         assert!(
             footer.origin.y + footer.size.height >= card.origin.y + card.size.height - px(1.),
             "footer is at the bottom"

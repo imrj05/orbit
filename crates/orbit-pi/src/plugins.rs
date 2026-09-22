@@ -152,13 +152,24 @@ fn read_packages(
     let raw = match fs::read_to_string(path) {
         Ok(raw) => raw,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(err) => return Err(tr!("errors.could_not_read", path = path.display().to_string(), error = err)),
+        Err(err) => {
+            return Err(tr!(
+                "errors.could_not_read",
+                path = path.display().to_string(),
+                error = err
+            ))
+        }
     };
     if raw.trim().is_empty() {
         return Ok(Vec::new());
     }
-    let root: Value = serde_json::from_str(&raw)
-        .map_err(|err| tr!("errors.not_valid_json", path = path.display().to_string(), error = err))?;
+    let root: Value = serde_json::from_str(&raw).map_err(|err| {
+        tr!(
+            "errors.not_valid_json",
+            path = path.display().to_string(),
+            error = err
+        )
+    })?;
     Ok(package_sources(&root)
         .into_iter()
         .map(|source| resolve(&source, scope, workspace))
@@ -351,8 +362,14 @@ fn run_pi(args: &[String], workspace: &Path) -> Result<String, String> {
     let mut child = command
         .spawn()
         .map_err(|err| tr!("errors.failed_to_run", bin = bin, error = err))?;
-    let stdout = child.stdout.take().ok_or_else(|| tr!("plugins.stdout_unavailable"))?;
-    let stderr = child.stderr.take().ok_or_else(|| tr!("plugins.stderr_unavailable"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| tr!("plugins.stdout_unavailable"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| tr!("plugins.stderr_unavailable"))?;
     let out_handle = std::thread::spawn(move || read_to_end(stdout));
     let err_handle = std::thread::spawn(move || read_to_end(stderr));
 

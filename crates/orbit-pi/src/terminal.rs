@@ -406,7 +406,12 @@ impl TerminalSession {
             *window_size.lock().unwrap_or_else(|e| e.into_inner()),
             0,
         )
-        .with_context(|| tr!("terminal.spawn_shell_in", dir = working_directory.display().to_string()))?;
+        .with_context(|| {
+            tr!(
+                "terminal.spawn_shell_in",
+                dir = working_directory.display().to_string()
+            )
+        })?;
         let event_loop = EventLoop::new(term.clone(), proxy, pty, false, false)
             .context("create terminal event loop")?;
         let sender = event_loop.channel();

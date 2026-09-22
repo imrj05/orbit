@@ -417,7 +417,9 @@ impl Render for WorkspacePicker {
                         div()
                             .text_size(theme.ui_px(13.))
                             .text_color(theme.text_3)
-                            .child(tr!("workspace_picker.try_another_name_or_choose_a_folder_below")),
+                            .child(tr!(
+                                "workspace_picker.try_another_name_or_choose_a_folder_below"
+                            )),
                     )
                     .into_any_element()
             } else {

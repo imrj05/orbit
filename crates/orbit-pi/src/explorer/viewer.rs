@@ -16,8 +16,8 @@ use std::time::Duration;
 use gpui::{
     div, img, prelude::*, px, Animation, AnimationExt, AnyElement, App, ClickEvent, Context,
     FocusHandle, Font, FontFeatures, FontStyle, FontWeight, Hsla, Image, ImageFormat, ImageSource,
-    ListAlignment, ListState, ObjectFit, Render, StyledText, TextAlign, TextRun, Transformation,
-    Window,
+    ListAlignment, ListState, ObjectFit, Render, ScrollHandle, StyledText, TextAlign, TextRun,
+    Transformation, Window,
 };
 
 use crate::app::{file_badge, file_glyph, icon, nerd_font_family};
@@ -163,10 +163,7 @@ pub fn load(path: &Path, display: impl Into<String>) -> FileContent {
     let (mode, tokens) = if is_markdown(name) {
         (Mode::Markdown, None)
     } else if let Some(lang) = crate::review::language_for_path(name) {
-        (
-            Mode::Code { lang },
-            Some(highlight::tokenize(lang, &text)),
-        )
+        (Mode::Code { lang }, Some(highlight::tokenize(lang, &text)))
     } else {
         (Mode::Text, None)
     };
@@ -250,6 +247,17 @@ pub struct FileViewer {
     list: ListState,
     /// Decoded image for the active file, when it is an image.
     image: Option<Arc<Image>>,
+    /// Leading inset the tab strip gives its first tab. The surface spans the
+    /// window when the sessions sidebar is collapsed, so this clears the macOS
+    /// traffic lights and the sidebar/history controls overlaid in the
+    /// titlebar (mirrors the Git/Usage page headers).
+    chrome_leading: f32,
+    /// Reserve the top-right caption-controls inset (Windows only, and only
+    /// while this surface is the window's rightmost column).
+    reserve_controls: bool,
+    /// Horizontal scroll of the tab strip, so a long run of open files stays
+    /// reachable instead of being clipped off the right edge.
+    tab_scroll: ScrollHandle,
     /// Carries the `Files` key context so `cmd-w` closes the surface.
     focus: FocusHandle,
     /// Focus the surface on the next paint (`show` has no window).
@@ -269,9 +277,32 @@ impl FileViewer {
             generation: 0,
             list: ListState::new(0, ListAlignment::Top, px(400.)),
             image: None,
+            chrome_leading: 12.,
+            reserve_controls: false,
+            tab_scroll: ScrollHandle::new(),
             focus: cx.focus_handle(),
             focus_pending: false,
             on_close,
+        }
+    }
+
+    /// The app syncs this each render with the page leading: with the sidebar
+    /// open the surface starts after it and only needs the normal page padding;
+    /// collapsed, it owns the window's left edge and must clear the overlaid
+    /// titlebar controls.
+    pub fn set_chrome_leading(&mut self, leading: f32, cx: &mut Context<Self>) {
+        if (self.chrome_leading - leading).abs() > 0.5 {
+            self.chrome_leading = leading;
+            cx.notify();
+        }
+    }
+
+    /// Reserve the window-control inset in the tab strip (Windows only, and
+    /// only while this surface is the window's rightmost column).
+    pub fn set_reserve_controls(&mut self, reserve: bool, cx: &mut Context<Self>) {
+        if reserve != self.reserve_controls {
+            self.reserve_controls = reserve;
+            cx.notify();
         }
     }
 
@@ -303,6 +334,8 @@ impl FileViewer {
         };
         self.active = index;
         self.read(path, display, cx);
+        // Reveal the tab the user just opened if the strip has scrolled.
+        self.tab_scroll.scroll_to_item(self.active);
         cx.notify();
     }
 
@@ -325,6 +358,7 @@ impl FileViewer {
             self.active = self.active.min(self.tabs.len() - 1);
             let (path, display) = self.tab_target(cx);
             self.read(path, display, cx);
+            self.tab_scroll.scroll_to_item(self.active);
         }
         cx.notify();
     }
@@ -364,9 +398,8 @@ impl FileViewer {
                 }
                 this.image = if content.mode == Mode::Image {
                     content.image_bytes.as_deref().and_then(|bytes| {
-                        image_format(&content.path).map(|format| {
-                            Arc::new(Image::from_bytes(format, bytes.to_vec()))
-                        })
+                        image_format(&content.path)
+                            .map(|format| Arc::new(Image::from_bytes(format, bytes.to_vec())))
                     })
                 } else {
                     None
@@ -386,15 +419,17 @@ impl FileViewer {
     // ── rendering ──────────────────────────────────────────────────────
 
     fn tab_strip(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
-        let mut strip = div()
-            .h(px(40.))
-            .flex_none()
+        // The tabs live in their own horizontally scrollable row: a long run of
+        // open files stays reachable (trackpad / shift-wheel) instead of
+        // clipping off the right edge. The close button stays pinned outside it.
+        let mut tabs = div()
+            .id("viewer-tabs")
+            .h_full()
             .flex()
             .items_center()
             .gap(theme.space(6.))
-            .px(theme.space(16.))
-            .border_b_1()
-            .border_color(theme.border);
+            .overflow_x_scroll()
+            .track_scroll(&self.tab_scroll);
         for (index, tab) in self.tabs.iter().enumerate() {
             let active = index == self.active;
             let name = tab
@@ -407,11 +442,14 @@ impl FileViewer {
             let dark = theme.mode == ThemeMode::Dark;
             let fallback = file_badge(&tab.display, theme);
             let glyph = file_glyph(&tab.display, dark, nerd.as_ref(), 12., fallback);
-            strip = strip.child(
+            tabs = tabs.child(
                 div()
                     .id(gpui::ElementId::Name(format!("viewer-tab-{index}").into()))
                     .h(px(28.))
                     .max_w(px(220.))
+                    // Never shrink below a readable width: past the strip's
+                    // edge the row scrolls instead of crushing every tab.
+                    .flex_none()
                     .px(px(10.))
                     .flex()
                     .items_center()
@@ -428,6 +466,7 @@ impl FileViewer {
                         this.active = index;
                         let (path, display) = this.tab_target(cx);
                         this.read(path, display, cx);
+                        this.tab_scroll.scroll_to_item(index);
                         cx.notify();
                     }))
                     .child(glyph)
@@ -440,7 +479,11 @@ impl FileViewer {
                             } else {
                                 FontWeight::NORMAL
                             })
-                            .text_color(if active { theme.active_fg } else { theme.text_3 })
+                            .text_color(if active {
+                                theme.active_fg
+                            } else {
+                                theme.text_3
+                            })
                             .child(name),
                     )
                     .child(
@@ -467,34 +510,56 @@ impl FileViewer {
                             .child(icon(
                                 "icons/x.svg",
                                 10.,
-                                if active { theme.active_fg } else { theme.text_3 },
+                                if active {
+                                    theme.active_fg
+                                } else {
+                                    theme.text_3
+                                },
                             )),
                     ),
             );
         }
-        strip = strip.child(div().flex_1());
-        strip = strip.child(
-            div()
-                .id("viewer-close")
-                .size(px(24.))
-                .flex_none()
-                .rounded(px(6.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .cursor_pointer()
-                .hover(|el| el.bg(theme.bg_hover))
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    // Close here — this listener already holds the viewer's
-                    // lease, so the app callback must not re-enter `update`
-                    // on this entity (that would double-lease and abort).
-                    let on_close = this.on_close.clone();
-                    this.hide(cx);
-                    on_close(cx);
-                }))
-                .child(icon("icons/x.svg", 13., theme.text_3)),
-        );
-        strip.into_any_element()
+        div()
+            .h(px(40.))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(theme.space(6.))
+            // The surface spans the window when the sidebar is collapsed, so
+            // the leading inset keeps the first tab clear of the macOS traffic
+            // lights and the overlaid titlebar controls; the trailing inset
+            // clears the app's own caption buttons where it draws them.
+            .pl(px(self.chrome_leading))
+            .pr(px(if self.reserve_controls {
+                crate::platform::WINDOW_CONTROLS_W
+            } else {
+                f32::from(theme.space(16.))
+            }))
+            .border_b_1()
+            .border_color(theme.border)
+            .child(tabs.flex_1().min_w_0())
+            .child(
+                div()
+                    .id("viewer-close")
+                    .size(px(24.))
+                    .flex_none()
+                    .rounded(px(6.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .hover(|el| el.bg(theme.bg_hover))
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        // Close here — this listener already holds the viewer's
+                        // lease, so the app callback must not re-enter `update`
+                        // on this entity (that would double-lease and abort).
+                        let on_close = this.on_close.clone();
+                        this.hide(cx);
+                        on_close(cx);
+                    }))
+                    .child(icon("icons/x.svg", 13., theme.text_3)),
+            )
+            .into_any_element()
     }
 
     fn toolbar(&self, theme: Theme, _cx: &mut Context<Self>) -> AnyElement {
@@ -584,7 +649,9 @@ impl FileViewer {
                             .max_w(px(760.))
                             .mx_auto()
                             .p(theme.space(20.))
-                            .child(crate::transcript_view::render_markdown_document(&text, theme)),
+                            .child(crate::transcript_view::render_markdown_document(
+                                &text, theme,
+                            )),
                     )
                     .into_any_element()
             }
@@ -610,10 +677,7 @@ impl FileViewer {
                 centered_message(&theme, tr!("explorer.binary"), Some(detail.as_str()))
             }
             Mode::TooLarge => {
-                let detail = tr!(
-                    "explorer.too_large",
-                    size = format_bytes(content.bytes)
-                );
+                let detail = tr!("explorer.too_large", size = format_bytes(content.bytes));
                 centered_message(
                     &theme,
                     tr!("explorer.too_large_title"),
@@ -932,5 +996,34 @@ mod tests {
         assert!(is_image("dir/B.JPEG"));
         assert!(!is_image("a.rs"));
         assert!(is_markdown("README.MD"));
+    }
+
+    /// A long run of open files must scroll horizontally instead of clipping
+    /// off the right edge (the reported overflow). The strip keeps the last
+    /// tabs reachable by giving the row a positive horizontal scroll range.
+    #[gpui::test]
+    fn tab_strip_scrolls_when_tabs_overflow(cx: &mut gpui::TestAppContext) {
+        use gpui::{point, size};
+
+        let cx = cx.add_empty_window();
+        cx.update(|_, app| crate::theme::init(app));
+        let viewer = cx.new(|cx| FileViewer::new(Rc::new(|_| {}), cx));
+        viewer.update(cx, |viewer, cx| {
+            for index in 0..12 {
+                viewer.show(
+                    PathBuf::from(format!("/tmp/orbit-viewer-tab-{index}.rs")),
+                    format!("file-{index}.rs"),
+                    cx,
+                );
+            }
+        });
+        let _ = cx.draw(point(px(0.), px(0.)), size(px(420.), px(600.)), |_, _| {
+            viewer.clone()
+        });
+        let max = cx.update(|_, app| viewer.read(app).tab_scroll.max_offset().width);
+        assert!(
+            max > px(0.),
+            "the strip must scroll when 12 tabs overflow a 420px window, max offset {max:?}"
+        );
     }
 }

@@ -1,7 +1,7 @@
 use super::helpers::*;
 use super::*;
 
-use gpui::point;
+use gpui::{point, Pixels};
 
 use crate::sessions::cap_chars;
 use crate::shimmer::ShimmerText;
@@ -38,18 +38,18 @@ pub(crate) fn toggle_workspace_group(
     }
 }
 
-/// Sessions visible under one workspace group when it is not expanded.
+/// Sessions visible under one workspace group: at most `limit` rows, with
+/// the open session swapped into the last slot when it falls outside.
 pub(crate) fn visible_sessions_in_group(
     ixs: &[usize],
     sessions: &[SessionInfo],
-    expanded: bool,
+    limit: usize,
     active_path: &Option<PathBuf>,
 ) -> Vec<usize> {
-    if expanded || ixs.len() <= SIDEBAR_GROUP_SESSIONS_VISIBLE {
+    if ixs.len() <= limit {
         return ixs.to_vec();
     }
 
-    let limit = SIDEBAR_GROUP_SESSIONS_VISIBLE;
     let mut indices: Vec<usize> = ixs.iter().take(limit).copied().collect();
     if let Some(active) = active_path {
         if let Some(active_ix) = sessions.iter().position(|s| &s.path == active) {
@@ -128,7 +128,9 @@ pub(crate) fn sessions_with_placeholder(
 /// workspace appears because the user added it, not because pi happens to
 /// have sessions there; sessions in unlisted folders are omitted entirely
 /// (they stay on disk). Each group shows at most
-/// [`SIDEBAR_GROUP_SESSIONS_VISIBLE`] sessions until expanded.
+/// [`SIDEBAR_GROUP_SESSIONS_VISIBLE`] sessions plus one step of
+/// [`SIDEBAR_GROUP_SESSIONS_VISIBLE`] per "Show more" click, so a long
+/// history never lands in one go.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_sidebar_rows(
     sessions: &[SessionInfo],
@@ -136,9 +138,13 @@ pub(crate) fn build_sidebar_rows(
     working_label: &str,
     collapsed_workspaces: &HashSet<String>,
     expanded_workspace_groups: &HashSet<String>,
-    expanded_session_groups: &HashSet<String>,
+    expanded_session_groups: &HashMap<String, usize>,
     pinned: &HashSet<PathBuf>,
     active_path: &Option<PathBuf>,
+    // Sessions with a live pi process that is currently mid-run. A running
+    // session stays visible under a collapsed group header, like the open
+    // session, so active work is never lost behind a collapse.
+    running_paths: &HashSet<PathBuf>,
 ) -> Vec<SideRow> {
     let mut side_rows: Vec<SideRow> = Vec::new();
     // One group per listed project, in the order the user added them — an
@@ -183,40 +189,111 @@ pub(crate) fn build_sidebar_rows(
             cwd,
         });
         if collapsed {
-            // A collapsed group hides its sessions — except the open one and
-            // any pinned ones, which stay under the header so the live session
-            // and a deliberate mark are always reachable. `ixs` is already
-            // pinned-first, so the pinned rows keep their place at the top.
+            // A collapsed group hides its sessions — except the open one,
+            // any running (busy background) ones, and pinned ones. The live
+            // session and a deliberate mark stay reachable under the header.
+            // `ixs` is already pinned-first, so the pinned rows keep their
+            // place at the top.
             for &ix in &ixs {
                 let open = active_path.as_deref() == Some(sessions[ix].path.as_path());
-                if open || pinned.contains(&sessions[ix].path) {
+                let running = running_paths.contains(&sessions[ix].path);
+                if open || running || pinned.contains(&sessions[ix].path) {
                     side_rows.push(SideRow::Session(ix));
                 }
             }
             continue;
         }
 
-        let sessions_expanded = expanded_session_groups.contains(&label);
-        let visible = visible_sessions_in_group(&ixs, sessions, sessions_expanded, active_path);
+        // Sessions start at the base cap and grow one step per "Show more"
+        // click, so a group with a long history reveals ten rows at a time.
+        let extra = expanded_session_groups.get(&label).copied().unwrap_or(0);
+        let limit = SIDEBAR_GROUP_SESSIONS_VISIBLE.saturating_add(extra);
+        let visible = visible_sessions_in_group(&ixs, sessions, limit, active_path);
         for ix in &visible {
             side_rows.push(SideRow::Session(*ix));
         }
 
-        if sessions_expanded {
-            if ixs.len() > SIDEBAR_GROUP_SESSIONS_VISIBLE {
-                side_rows.push(SideRow::ShowLess { label });
-            }
-        } else if ixs.len() > SIDEBAR_GROUP_SESSIONS_VISIBLE {
-            let hidden_count = ixs.len().saturating_sub(visible.len());
-            if hidden_count > 0 {
-                side_rows.push(SideRow::ShowMore {
-                    label,
-                    count: hidden_count,
-                });
-            }
+        let hidden_count = ixs.len().saturating_sub(visible.len());
+        if hidden_count > 0 {
+            side_rows.push(SideRow::ShowMore {
+                label: label.clone(),
+                count: hidden_count.min(SIDEBAR_GROUP_SESSIONS_VISIBLE),
+                // Past the base cap the same row carries the collapse
+                // affordance on its right edge, so the group never needs a
+                // second toggle row.
+                can_collapse: extra > 0,
+            });
+        } else if extra > 0 {
+            // Everything is shown — keep one quiet row to collapse the group
+            // back to the base cap.
+            side_rows.push(SideRow::ShowLess { label });
         }
     }
     side_rows
+}
+
+/// The active workspace's header pinned over the session list, plus how far
+/// the next group's header has pushed it up.
+pub(crate) struct StickyHeader {
+    /// Row index of the pinned [`SideRow::Workspace`] header.
+    pub ix: usize,
+    /// Pixels to shift the pinned row up (0 while it sits at the list top).
+    pub top_offset: Pixels,
+}
+
+/// Resolve the sticky header for the session list. Only the active
+/// workspace's group pins — and only while it is expanded — so the open
+/// session's project stays named while its own sessions scroll. The header
+/// scrolls away with its section once the next group's header takes over
+/// (same behaviour as the side pane's sticky file header).
+pub(crate) fn sticky_sidebar_header(
+    list: &ListState,
+    rows: &[SideRow],
+    active_label: &str,
+) -> Option<StickyHeader> {
+    let header_ix = rows.iter().position(|row| {
+        matches!(
+            row,
+            SideRow::Workspace {
+                label,
+                collapsed: false,
+                ..
+            } if label == active_label
+        )
+    })?;
+    let scroll_top = list.logical_scroll_top();
+    if scroll_top.item_ix < header_ix {
+        // The real header has not reached the top of the viewport yet.
+        return None;
+    }
+    // The section ends at the next workspace header (or the list end).
+    let next_header_ix = rows[header_ix + 1..]
+        .iter()
+        .position(|row| matches!(row, SideRow::Workspace { .. }))
+        .map(|offset| header_ix + 1 + offset);
+    if next_header_ix.is_some_and(|next| scroll_top.item_ix >= next) {
+        // The section scrolled fully past; its header belongs above the view.
+        return None;
+    }
+    if scroll_top.item_ix == header_ix && scroll_top.offset_in_item <= px(0.) {
+        // The real header is exactly at the top — nothing to pin over it.
+        return None;
+    }
+    // Push the pinned header up as the next group's header arrives. Item
+    // bounds are in window coordinates, so compare against the list's
+    // viewport; unmeasured items are too far away to need a push.
+    let top_offset = next_header_ix
+        .and_then(|next| {
+            let bounds = list.bounds_for_item(next)?;
+            let viewport = list.viewport_bounds();
+            let y_in_viewport = bounds.origin.y - viewport.origin.y;
+            (y_in_viewport < bounds.size.height).then_some(y_in_viewport - bounds.size.height)
+        })
+        .unwrap_or(px(0.));
+    Some(StickyHeader {
+        ix: header_ix,
+        top_offset,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -358,24 +435,36 @@ pub(crate) fn render_side_row(
                 )
                 .into_any_element()
         }
-        SideRow::ShowMore { label, count } => {
+        SideRow::ShowMore {
+            label,
+            count,
+            can_collapse,
+        } => {
             let this = this.clone();
             let label_for_click = label.clone();
-            div()
-                .w_full()
-                .h(px(26.))
-                .pl(px(22.))
-                .pr_2()
+            // One click reveals exactly one step (or the tail remainder), so
+            // the group can never overshoot its session count.
+            let step = *count;
+            let can_collapse = *can_collapse;
+            let this_for_collapse = this.clone();
+            let label_for_collapse = label.clone();
+            // Left side is the whole "show more" target; the collapse
+            // chevron on the right is its own quiet button.
+            let more = div()
+                .flex_1()
+                .h_full()
+                .min_w_0()
                 .flex()
                 .items_center()
                 .gap(px(6.))
-                .rounded_md()
                 .cursor_pointer()
-                .hover(|s| s.bg(theme.bg_hover))
                 .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                     let label = label_for_click.clone();
                     this.update(cx, |app, cx| {
-                        app.expanded_session_groups.insert(label);
+                        app.expanded_session_groups
+                            .entry(label)
+                            .and_modify(|extra| *extra += step)
+                            .or_insert(step);
                         cx.notify();
                     });
                 })
@@ -385,8 +474,40 @@ pub(crate) fn render_side_row(
                         .text_size(theme.ui_px(11.))
                         .text_color(theme.text_3)
                         .child(tr!("sidebar.show_count_more", count = count)),
-                )
-                .into_any_element()
+                );
+            let mut row = div()
+                .w_full()
+                .h(px(26.))
+                .pl(px(22.))
+                .pr(px(4.))
+                .flex()
+                .items_center()
+                .rounded_md()
+                .hover(|s| s.bg(theme.bg_hover))
+                .child(more);
+            if can_collapse {
+                row = row.child(
+                    div()
+                        .flex_none()
+                        .size(px(18.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(4.))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme.overlay))
+                        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                            cx.stop_propagation();
+                            let label = label_for_collapse.clone();
+                            this_for_collapse.update(cx, |app, cx| {
+                                app.expanded_session_groups.remove(&label);
+                                cx.notify();
+                            });
+                        })
+                        .child(icon("icons/chevron-up.svg", 11., theme.text_3)),
+                );
+            }
+            row.into_any_element()
         }
         SideRow::ShowLess { label } => {
             let this = this.clone();

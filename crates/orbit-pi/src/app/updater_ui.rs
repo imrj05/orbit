@@ -388,9 +388,11 @@ impl OrbitApp {
                         let reveal = from_reveal + (target_reveal - from_reveal) * delta;
                         width_cell.set(width);
                         reveal_cell.set(reveal);
-                        button
-                            .w(px(width))
-                            .child(updater_pill_content(theme, label.clone(), reveal))
+                        button.w(px(width)).child(updater_pill_content(
+                            theme,
+                            label.clone(),
+                            reveal,
+                        ))
                     },
                 )
                 .into_any_element()
@@ -416,14 +418,18 @@ impl OrbitApp {
                 self.setting_row(
                     theme,
                     &tr!("updater_ui.automatic_updates"),
-                    Some(&tr!("updater_ui.check_for_a_newer_signed_release_once_at_launch_")),
+                    Some(&tr!(
+                        "updater_ui.check_for_a_newer_signed_release_once_at_launch_"
+                    )),
                     None,
                     Some(self.automatic_updates_toggle(theme, this.clone())),
                 ),
                 self.setting_row(
                     theme,
                     &tr!("updater_ui.check_for_updates"),
-                    Some(&tr!("updater_ui.verify_a_new_release_now_a_staged_update_downloa")),
+                    Some(&tr!(
+                        "updater_ui.verify_a_new_release_now_a_staged_update_downloa"
+                    )),
                     None,
                     Some(self.update_action_button(theme, this)),
                 ),
@@ -445,10 +451,9 @@ impl OrbitApp {
             return None;
         }
         let desc = match (self.updater_status, self.updater_version.as_deref()) {
-            (UpdateStatus::Available, Some(version)) => tr!(
-                "updater_ui.ready_with_version",
-                version = version
-            ),
+            (UpdateStatus::Available, Some(version)) => {
+                tr!("updater_ui.ready_with_version", version = version)
+            }
             (UpdateStatus::Available, None) => tr!("updater_ui.ready"),
             (UpdateStatus::Updating, _) => tr!("updater_ui.installing"),
             (UpdateStatus::Idle, _) => tr!("updater_ui.check_hint"),
@@ -740,7 +745,10 @@ impl OrbitApp {
             .gap(px(8.));
         if !self.updater_history_open
             && !self.updater_history.is_empty()
-            && matches!(dialog, UpdateDialog::Available { .. } | UpdateDialog::UpToDate)
+            && matches!(
+                dialog,
+                UpdateDialog::Available { .. } | UpdateDialog::UpToDate
+            )
         {
             footer = footer.child(dialog_button(
                 "update-dialog-history",
@@ -927,17 +935,13 @@ fn version_history_view(
 ) -> AnyElement {
     let mut entries = div().flex().flex_col().gap(px(14.));
     for release in history {
-        let mut heading = div()
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .child(
-                div()
-                    .text_size(theme.ui_px(13.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme.text)
-                    .child(format!("v{}", release.version)),
-            );
+        let mut heading = div().flex().items_center().gap(px(8.)).child(
+            div()
+                .text_size(theme.ui_px(13.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.text)
+                .child(format!("v{}", release.version)),
+        );
         if release.version == current {
             heading = heading.child(
                 div()

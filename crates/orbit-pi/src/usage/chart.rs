@@ -412,8 +412,14 @@ fn readout(
     match metric {
         ChartMetric::Tokens | ChartMetric::Input | ChartMetric::Output | ChartMetric::Cache => {
             rows.push((tr!("usage.metric_requests"), format::exact(totals.requests)));
-            rows.push((tr!("usage.slice_input"), format::compact(totals.tokens.input)));
-            rows.push((tr!("usage.slice_output"), format::compact(totals.tokens.output)));
+            rows.push((
+                tr!("usage.slice_input"),
+                format::compact(totals.tokens.input),
+            ));
+            rows.push((
+                tr!("usage.slice_output"),
+                format::compact(totals.tokens.output),
+            ));
             rows.push((
                 tr!("usage.slice_cache_read"),
                 format::compact(totals.tokens.cache_read),
@@ -426,7 +432,10 @@ fn readout(
         ChartMetric::Requests => {
             rows.push((tr!("usage.metric_requests"), format::exact(totals.requests)));
             rows.push((tr!("usage.metric_errors"), format::exact(totals.errors)));
-            rows.push((tr!("usage.metric_tokens"), format::compact(totals.tokens.total)));
+            rows.push((
+                tr!("usage.metric_tokens"),
+                format::compact(totals.tokens.total),
+            ));
         }
         ChartMetric::Cost => {
             rows.push((tr!("usage.stat_cost"), format::cost(totals.cost_usd)));

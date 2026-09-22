@@ -710,7 +710,9 @@ impl Render for CommandPalette {
                         div()
                             .text_size(theme.ui_px(12.))
                             .text_color(theme.text_3)
-                            .child(tr!("command_palette.try_a_session_title_a_command_or_a_setting")),
+                            .child(tr!(
+                                "command_palette.try_a_session_title_a_command_or_a_setting"
+                            )),
                     ),
             );
         } else {

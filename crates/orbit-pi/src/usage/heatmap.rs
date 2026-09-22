@@ -420,7 +420,10 @@ fn day_readout(
         rows.push((tr!("usage.metric_requests"), format::exact(totals.requests)));
     }
     if metric != ChartMetric::Tokens {
-        rows.push((tr!("usage.metric_tokens"), format::compact(totals.tokens.total)));
+        rows.push((
+            tr!("usage.metric_tokens"),
+            format::compact(totals.tokens.total),
+        ));
     }
     if totals.errors > 0 && metric != ChartMetric::Errors {
         rows.push((tr!("usage.metric_errors"), format::exact(totals.errors)));

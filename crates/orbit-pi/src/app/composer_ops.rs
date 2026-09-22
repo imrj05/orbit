@@ -455,7 +455,10 @@ impl OrbitApp {
                 match Attachment::from_path(&path) {
                     Some(attachment) => {
                         if app.attachments.len() >= MAX_ATTACHMENTS {
-                            app.set_status(tr!("composer_ops.max_attachments", count = MAX_ATTACHMENTS));
+                            app.set_status(tr!(
+                                "composer_ops.max_attachments",
+                                count = MAX_ATTACHMENTS
+                            ));
                         } else {
                             app.attachments.push(attachment);
                         }
@@ -485,7 +488,10 @@ impl OrbitApp {
             let _ = this.update_in(cx, |app, window, cx| {
                 if let Some(attachment) = Attachment::from_path(&path) {
                     if app.attachments.len() >= MAX_ATTACHMENTS {
-                        app.set_status(tr!("composer_ops.max_attachments", count = MAX_ATTACHMENTS));
+                        app.set_status(tr!(
+                            "composer_ops.max_attachments",
+                            count = MAX_ATTACHMENTS
+                        ));
                     } else {
                         app.attachments.push(attachment);
                     }
@@ -771,10 +777,7 @@ impl OrbitApp {
         self.access_mode = mode;
         mode.persist();
         if self.extensions.guard().is_none() {
-            self.toast_warning(tr!(
-                "access.mode_set_unavailable",
-                mode = mode.label()
-            ));
+            self.toast_warning(tr!("access.mode_set_unavailable", mode = mode.label()));
         } else {
             self.set_status(tr!("access.mode_set", mode = mode.label()));
         }

@@ -496,10 +496,7 @@ pub struct FailureRow {
 
 /// The failure-kind label and its register: provider errors are critical, tool
 /// failures a warning.
-pub(super) fn failure_kind_register(
-    kind: super::model::ErrorKind,
-    theme: Theme,
-) -> (String, Hsla) {
+pub(super) fn failure_kind_register(kind: super::model::ErrorKind, theme: Theme) -> (String, Hsla) {
     match kind {
         super::model::ErrorKind::Provider => (kind.label(), theme.crit),
         super::model::ErrorKind::Tool => (kind.label(), theme.warn),

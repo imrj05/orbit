@@ -110,7 +110,10 @@ pub fn host_facts(host: &crate::platform::Host) -> Vec<HostFact> {
     };
     vec![
         platform,
-        path_fact(tr!("onboarding.pi_sessions"), crate::sessions::sessions_dir()),
+        path_fact(
+            tr!("onboarding.pi_sessions"),
+            crate::sessions::sessions_dir(),
+        ),
         path_fact(
             tr!("onboarding.orbit_config"),
             crate::platform::home_dir().join(".orbit-pi"),

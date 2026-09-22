@@ -1250,10 +1250,7 @@ impl UsagePage {
             .is_some_and(|id| index.try_session(id).is_none())
         {
             filter.session = None;
-            self.status = Some((
-                tr!("usage.session_scope_cleared"),
-                Instant::now(),
-            ));
+            self.status = Some((tr!("usage.session_scope_cleared"), Instant::now()));
         }
         filter
             .workspaces

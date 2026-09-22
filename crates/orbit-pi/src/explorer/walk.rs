@@ -180,7 +180,10 @@ mod tests {
     #[test]
     fn absolute_rebuilds_a_relative_path() {
         let root = Path::new("/tmp/ws");
-        assert_eq!(absolute(root, "src/main.rs"), Path::new("/tmp/ws/src/main.rs"));
+        assert_eq!(
+            absolute(root, "src/main.rs"),
+            Path::new("/tmp/ws/src/main.rs")
+        );
         assert_eq!(absolute(root, ""), Path::new("/tmp/ws"));
     }
 }

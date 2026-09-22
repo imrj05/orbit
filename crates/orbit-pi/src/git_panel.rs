@@ -945,7 +945,11 @@ impl GitPanel {
 
     fn tab_bar(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
         let tabs = [
-            (GitTab::Changes, "icons/git-compare.svg", "git_panel.tab_changes"),
+            (
+                GitTab::Changes,
+                "icons/git-compare.svg",
+                "git_panel.tab_changes",
+            ),
             (GitTab::History, "icons/clock.svg", "git_panel.tab_history"),
             (GitTab::Graph, "icons/git-fork.svg", "git_panel.tab_graph"),
         ];
@@ -1390,10 +1394,7 @@ impl GitPanel {
                                 div()
                                     .text_size(theme.ui_px(11.5))
                                     .text_color(theme.text_3)
-                                    .child(tr!(
-                                        "git_panel.diverged_behind",
-                                        count = behind
-                                    )),
+                                    .child(tr!("git_panel.diverged_behind", count = behind)),
                             )
                             .child(action_button(
                                 "git-merge",
@@ -1735,7 +1736,12 @@ impl GitPanel {
             );
         }
         if self.history.is_empty() && self.history_loading {
-            return empty_note(theme, "icons/clock.svg", &tr!("git_panel.reading_history"), None);
+            return empty_note(
+                theme,
+                "icons/clock.svg",
+                &tr!("git_panel.reading_history"),
+                None,
+            );
         }
         if self.history.is_empty() {
             return empty_note(
@@ -1781,7 +1787,12 @@ impl GitPanel {
             );
         }
         if self.graph.is_empty() && self.graph_loading {
-            return empty_note(theme, "icons/git-fork.svg", &tr!("git_panel.reading_history"), None);
+            return empty_note(
+                theme,
+                "icons/git-fork.svg",
+                &tr!("git_panel.reading_history"),
+                None,
+            );
         }
         if self.graph.is_empty() {
             return empty_note(

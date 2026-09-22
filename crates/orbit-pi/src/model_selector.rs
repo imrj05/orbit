@@ -289,7 +289,9 @@ impl ModelSelector {
 
         if kind == PickerKind::Thinking {
             for level in levels.iter().filter(|level| {
-                matches(level) || matches(&thinking_display(level)) || matches(&thinking_hint(level))
+                matches(level)
+                    || matches(&thinking_display(level))
+                    || matches(&thinking_hint(level))
             }) {
                 rows.push(Row::Level {
                     level: level.clone(),
@@ -432,8 +434,11 @@ impl ModelSelector {
     fn scope_row(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let this = cx.weak_entity();
         let favorites = crate::favorites::all();
-        let mut entries: Vec<(String, Scope, &'static str)> =
-            vec![(tr!("model_selector.all"), Scope::All, "icons/extensions.svg")];
+        let mut entries: Vec<(String, Scope, &'static str)> = vec![(
+            tr!("model_selector.all"),
+            Scope::All,
+            "icons/extensions.svg",
+        )];
         if !favorites.is_empty() {
             entries.push((
                 tr!("model_selector.favorites"),
@@ -1347,7 +1352,10 @@ fn render_row(
             // the provider name as a last resort.
             let (secondary, mono) = match model.context_window {
                 Some(tokens) => (
-                    tr!("model_selector.context_window", count = format_tokens(tokens)),
+                    tr!(
+                        "model_selector.context_window",
+                        count = format_tokens(tokens)
+                    ),
                     false,
                 ),
                 None => {

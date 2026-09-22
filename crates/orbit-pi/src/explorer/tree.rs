@@ -342,7 +342,12 @@ mod tests {
     #[test]
     fn build_orders_dirs_first_then_case_insensitively() {
         let index = index();
-        let names: Vec<&str> = index.root.children.iter().map(|n| n.name.as_str()).collect();
+        let names: Vec<&str> = index
+            .root
+            .children
+            .iter()
+            .map(|n| n.name.as_str())
+            .collect();
         assert_eq!(names, vec!["empty", "src", "README.md"]);
     }
 
@@ -377,7 +382,10 @@ mod tests {
         let index = index();
         let rows = visible_rows(&index, &HashSet::new(), "view");
         assert_eq!(paths(&rows), vec!["src", "src/app", "src/app/view.rs"]);
-        assert!(rows[0].expanded(), "ancestor directories are force-expanded");
+        assert!(
+            rows[0].expanded(),
+            "ancestor directories are force-expanded"
+        );
         assert!(rows[2].badge.is_none());
     }
 

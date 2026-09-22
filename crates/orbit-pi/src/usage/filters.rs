@@ -414,9 +414,14 @@ pub fn multi_menu(
         }
     });
     let entity = cx.entity();
-    let clear = footer_row("usage-menu-clear", &tr!("usage.clear"), theme, move |_, _, cx| {
-        entity.update(cx, |page, cx| page.clear_dimension(kind, cx));
-    });
+    let clear = footer_row(
+        "usage-menu-clear",
+        &tr!("usage.clear"),
+        theme,
+        move |_, _, cx| {
+            entity.update(cx, |page, cx| page.clear_dimension(kind, cx));
+        },
+    );
     children.push(menu_footer(theme, select_all, clear));
     let page = cx.entity();
     panel("usage-filter-menu", 268., theme, children, page)
@@ -532,9 +537,14 @@ pub fn columns_menu(
         ));
     }
     let entity = cx.entity();
-    let show_all = footer_row("usage-columns-all", &tr!("usage.show_all"), theme, move |_, _, cx| {
-        entity.update(cx, |page, cx| page.show_all_columns(cx));
-    });
+    let show_all = footer_row(
+        "usage-columns-all",
+        &tr!("usage.show_all"),
+        theme,
+        move |_, _, cx| {
+            entity.update(cx, |page, cx| page.show_all_columns(cx));
+        },
+    );
     children.push(menu_footer(theme, show_all, div().into_any_element()));
     let page = cx.entity();
     panel("usage-columns-menu", 220., theme, children, page)

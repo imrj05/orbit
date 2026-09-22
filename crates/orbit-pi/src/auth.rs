@@ -573,10 +573,7 @@ impl AuthManager {
             session.phase = LoginPhase::Error;
             session.deadline = None;
             session.finished_at = Some(now);
-            session.error = Some((
-                AuthErrorCode::Timeout,
-                tr!("auth.sign_in_timed_out").into(),
-            ));
+            session.error = Some((AuthErrorCode::Timeout, tr!("auth.sign_in_timed_out").into()));
             effects.push(AuthEffect::CancelLogin(session.id.clone()));
         }
         effects

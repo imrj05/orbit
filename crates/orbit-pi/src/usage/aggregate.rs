@@ -1385,7 +1385,8 @@ fn derive_insights(snapshot: &UsageSnapshot, index: &UsageIndex) -> Vec<Insight>
                             "usage.insight_latency",
                             before = super::format::duration_ms(before),
                             now = super::format::duration_ms(now),
-                            requests = super::format::count(snapshot.summary.totals.duration_samples)
+                            requests =
+                                super::format::count(snapshot.summary.totals.duration_samples)
                         ),
                         tone: Tone::Neutral,
                     });

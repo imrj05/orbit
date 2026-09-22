@@ -259,7 +259,8 @@ pub fn open_terminal_command(command: &str) -> Result<(), String> {
     // non-default terminal is installed.
     let path = std::env::temp_dir().join(format!("orbit-{}.command", std::process::id()));
     let script = format!("#!/bin/zsh\n{command}\n");
-    std::fs::write(&path, script).map_err(|err| tr!("platform.login_script_failed", error = err))?;
+    std::fs::write(&path, script)
+        .map_err(|err| tr!("platform.login_script_failed", error = err))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
