@@ -1,6 +1,7 @@
 //! macOS helpers for detecting installed folder-capable apps and opening a
 //! workspace path in one of them (editors, terminals, Finder, etc.).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -9,7 +10,7 @@ use gpui::{Image, SharedString, TitlebarOptions, Window};
 // position, so they stay behind the same gate as that titlebar.
 #[cfg(target_os = "macos")]
 use gpui::{point, px};
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
 
 /// A folder-capable application the header's "open in" control can target,
 /// resolved against what is installed on this machine.
@@ -42,6 +43,11 @@ const OPEN_IN_CATALOG: &[(&str, &str, &[&str])] = &[
     ("ghostty", "Ghostty", &["com.mitchellh.ghostty"]),
     ("warp", "Warp", &["dev.warp.Warp-Stable", "dev.warp.Warp"]),
     ("xcode", "Xcode", &["com.apple.dt.Xcode"]),
+    (
+        "rider",
+        "Rider",
+        &["com.jetbrains.rider", "com.jetbrains.rider-EAP"],
+    ),
     (
         "android-studio",
         "Android Studio",
@@ -258,27 +264,72 @@ fn open_in_prefs_path() -> PathBuf {
     home_dir().join(".orbit-pi").join("open-in.json")
 }
 
-/// Load the persisted preferred open-in app id, if any.
-pub fn load_preferred_open_in_app() -> Option<String> {
-    let raw = std::fs::read_to_string(open_in_prefs_path()).ok()?;
-    let value: Value = serde_json::from_str(&raw).ok()?;
-    value
-        .get("open_in_app")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-        .map(str::to_owned)
+/// Workspace-specific app choices, with the old global choice as a fallback.
+/// Keys are workspace paths, not session ids, so sessions in a project share
+/// the same choice without writing anything into the project itself.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct OpenInPrefs {
+    open_in_app: Option<String>,
+    workspaces: BTreeMap<PathBuf, String>,
 }
 
-/// Remember the user's preferred open-in app id.
-pub fn persist_preferred_open_in_app(app_id: &str) {
-    let path = open_in_prefs_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+impl OpenInPrefs {
+    pub fn load() -> Self {
+        match Self::load_from(&open_in_prefs_path()) {
+            Ok(prefs) => prefs,
+            Err(error) => {
+                eprintln!("Could not load open-in preferences: {error}");
+                Self::default()
+            }
+        }
     }
-    let _ = std::fs::write(
-        path,
-        serde_json::json!({ "open_in_app": app_id }).to_string(),
-    );
+
+    fn load_from(path: &Path) -> std::io::Result<Self> {
+        match std::fs::read(path) {
+            Ok(raw) => serde_json::from_slice(&raw).map_err(std::io::Error::other),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Resolve against installed apps without discarding an unavailable saved
+    /// choice. Reinstalling that app restores it as the preferred target.
+    pub fn preferred_app<'a>(
+        &self,
+        workspace: Option<&Path>,
+        apps: &'a [ExternalApp],
+    ) -> Option<&'a ExternalApp> {
+        let workspace_app = workspace.and_then(|path| self.workspaces.get(path));
+        [workspace_app, self.open_in_app.as_ref()]
+            .into_iter()
+            .flatten()
+            .find_map(|id| apps.iter().find(|app| app.id == id))
+            .or_else(|| apps.iter().find(|app| app.id == "finder"))
+            .or_else(|| apps.first())
+    }
+
+    pub fn remember(&mut self, workspace: &Path, app_id: &str) {
+        self.workspaces
+            .insert(workspace.to_path_buf(), app_id.to_owned());
+    }
+
+    /// Persist off-thread. The caller serializes saves so the latest choice
+    /// wins even when the user changes it again before a write completes.
+    pub fn persist(&self) -> std::io::Result<()> {
+        self.persist_to(&open_in_prefs_path())
+    }
+
+    fn persist_to(&self, path: &Path) -> std::io::Result<()> {
+        let raw = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        // Keep an interrupted write from truncating the saved preferences.
+        let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
+        std::fs::write(&temporary, raw)?;
+        std::fs::rename(temporary, path)
+    }
 }
 
 /// Run an interactive shell command in the user's terminal. Used for
@@ -839,6 +890,128 @@ pub fn titlebar_options() -> TitlebarOptions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn open_in_test_apps() -> Vec<ExternalApp> {
+        ["vscode", "rider", "finder"]
+            .into_iter()
+            .map(|id| ExternalApp {
+                id,
+                label: id,
+                bundle_id: id,
+                icon: Arc::new(Image::from_bytes(gpui::ImageFormat::Png, Vec::new())),
+            })
+            .collect()
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn open_in_catalog_includes_rider_stable_and_eap() {
+        let rider = OPEN_IN_CATALOG
+            .iter()
+            .find(|entry| entry.0 == "rider")
+            .unwrap();
+        assert_eq!(rider.1, "Rider");
+        assert_eq!(rider.2, &["com.jetbrains.rider", "com.jetbrains.rider-EAP"]);
+    }
+
+    #[test]
+    fn open_in_legacy_global_choice_is_preserved_as_fallback() {
+        let prefs: OpenInPrefs = serde_json::from_str(r#"{"open_in_app":"vscode"}"#).unwrap();
+        let apps = open_in_test_apps();
+        assert_eq!(
+            prefs
+                .preferred_app(Some(Path::new("/new-project")), &apps)
+                .unwrap()
+                .id,
+            "vscode"
+        );
+        assert_eq!(prefs.preferred_app(None, &apps).unwrap().id, "vscode");
+    }
+
+    #[test]
+    fn open_in_workspace_choices_are_independent_and_survive_reload() {
+        let mut prefs: OpenInPrefs = serde_json::from_str(r#"{"open_in_app":"vscode"}"#).unwrap();
+        let project_a = Path::new("/projects/Game with spaces");
+        let project_b = Path::new("/projects/游戏");
+        prefs.remember(project_a, "rider");
+        prefs.remember(project_b, "finder");
+        let raw = serde_json::to_string(&prefs).unwrap();
+        let mut prefs: OpenInPrefs = serde_json::from_str(&raw).unwrap();
+        let apps = open_in_test_apps();
+        for (path, expected) in [
+            (project_a, "rider"),
+            (project_b, "finder"),
+            (project_a, "rider"),
+        ] {
+            assert_eq!(prefs.preferred_app(Some(path), &apps).unwrap().id, expected);
+        }
+        prefs.remember(project_a, "vscode");
+        assert_eq!(
+            prefs.preferred_app(Some(project_a), &apps).unwrap().id,
+            "vscode"
+        );
+        assert_eq!(
+            prefs.preferred_app(Some(project_b), &apps).unwrap().id,
+            "finder"
+        );
+        assert_eq!(prefs.preferred_app(None, &apps).unwrap().id, "vscode");
+    }
+
+    #[test]
+    fn open_in_unavailable_workspace_app_falls_back_without_forgetting_choice() {
+        let mut prefs: OpenInPrefs = serde_json::from_str(r#"{"open_in_app":"vscode"}"#).unwrap();
+        let workspace = Path::new("/project");
+        prefs.remember(workspace, "rider");
+        let apps = open_in_test_apps();
+        let without_rider: Vec<_> = apps
+            .iter()
+            .filter(|app| app.id != "rider")
+            .cloned()
+            .collect();
+        assert_eq!(
+            prefs.preferred_app(Some(workspace), &without_rider).unwrap().id,
+            "vscode"
+        );
+        assert_eq!(prefs.preferred_app(Some(workspace), &apps).unwrap().id, "rider");
+    }
+
+    #[test]
+    fn open_in_defaults_to_finder_then_first_installed_app() {
+        let prefs: OpenInPrefs = serde_json::from_str(r#"{"open_in_app":"uninstalled"}"#).unwrap();
+        let apps = open_in_test_apps();
+        assert_eq!(prefs.preferred_app(None, &apps).unwrap().id, "finder");
+        assert_eq!(prefs.preferred_app(None, &apps[..1]).unwrap().id, "vscode");
+        assert!(prefs.preferred_app(None, &[]).is_none());
+        assert!(OpenInPrefs::default().preferred_app(None, &[]).is_none());
+    }
+
+    #[test]
+    fn open_in_persistence_creates_and_replaces_preferences() {
+        let dir = std::env::temp_dir().join(format!(
+            "orbit-open-in-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = dir.join("open-in.json");
+        let mut prefs = OpenInPrefs::load_from(&path).unwrap();
+        assert!(prefs.workspaces.is_empty());
+        prefs.remember(Path::new("/project"), "rider");
+        prefs.persist_to(&path).unwrap();
+        prefs.remember(Path::new("/project"), "vscode");
+        prefs.persist_to(&path).unwrap();
+        let reloaded = OpenInPrefs::load_from(&path).unwrap();
+        assert_eq!(
+            reloaded.workspaces.get(Path::new("/project")).unwrap(),
+            "vscode"
+        );
+        std::fs::write(&path, "not JSON").unwrap();
+        assert!(OpenInPrefs::load_from(&path).is_err());
+        assert!(prefs.persist_to(&path.join("invalid-child")).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn only_http_urls_are_opened() {

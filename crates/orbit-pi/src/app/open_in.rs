@@ -21,11 +21,8 @@ impl OrbitApp {
     }
 
     pub(super) fn preferred_open_in_app<'a>(&'a self, _: &App) -> Option<&'a ExternalApp> {
-        self.preferred_open_in_app
-            .as_deref()
-            .and_then(|id| self.open_in_apps.iter().find(|app| app.id == id))
-            .or_else(|| self.open_in_apps.iter().find(|app| app.id == "finder"))
-            .or_else(|| self.open_in_apps.first())
+        self.open_in_prefs
+            .preferred_app(self.current_workspace.as_deref(), &self.open_in_apps)
     }
 
     pub(super) fn open_workspace_in_app(
@@ -43,10 +40,24 @@ impl OrbitApp {
             return;
         };
         platform::open_path_in_app(path, bundle_id);
-        if self.preferred_open_in_app.as_deref() != Some(app_id) {
-            self.preferred_open_in_app = Some(app_id.to_owned());
-            platform::persist_preferred_open_in_app(app_id);
-        }
+        self.open_in_prefs.remember(path, app_id);
+        let prefs = self.open_in_prefs.clone();
+        let previous_save = self.open_in_save_task.take();
+        self.open_in_save_task = Some(cx.spawn(async move |this, cx| {
+            if let Some(previous_save) = previous_save {
+                previous_save.await;
+            }
+            let result = cx
+                .background_executor()
+                .spawn(async move { prefs.persist() })
+                .await;
+            if let Err(error) = result {
+                let _ = this.update(cx, |this, cx| {
+                    this.toast_error(tr!("open_in.save_failed", error = error));
+                    cx.notify();
+                });
+            }
+        }));
         self.open_in_menu_open = false;
         cx.notify();
     }
@@ -63,8 +74,11 @@ impl OrbitApp {
         let Some(app) = self.preferred_open_in_app(cx) else {
             return;
         };
-        let app_id = app.id;
-        self.open_workspace_in_app(&path, app_id, cx);
+        // Opening a fallback must not replace a saved app that is temporarily
+        // unavailable. Only an explicit menu selection changes the preference.
+        platform::open_path_in_app(&path, app.bundle_id);
+        self.open_in_menu_open = false;
+        cx.notify();
     }
 
     pub(super) fn on_open_in_caret(

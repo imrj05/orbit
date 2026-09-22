@@ -2,6 +2,7 @@
 
 GLOSSARY = {
     "zh-CN": {
+        "Could not save the workspace app preference: %{error}": "无法保存工作区应用偏好：%{error}",
         "Pick a workspace, then describe your task below.": "选择一个工作区，然后在下方描述你的任务。",
         "%{count} required piece(s) missing": "缺少 %{count} 个必需组件",
         "Ready": "就绪",
@@ -33,6 +34,7 @@ GLOSSARY = {
         "Session has a live process — switch away and wait, then delete": "会话有正在运行的进程 — 请切换离开并等待后再删除",
     },
     "ja": {
+        "Could not save the workspace app preference: %{error}": "ワークスペースのアプリ設定を保存できませんでした: %{error}",
         "Pick a workspace, then describe your task below.": "ワークスペースを選び、下にタスクを入力してください。",
         "%{count} required piece(s) missing": "必須コンポーネントが %{count} 個不足しています",
         "Ready": "準備完了",
@@ -64,6 +66,7 @@ GLOSSARY = {
         "Session has a live process — switch away and wait, then delete": "セッションに実行中のプロセスがあります — 別の場所に切り替えて待ってから削除してください",
     },
     "ko": {
+        "Could not save the workspace app preference: %{error}": "작업 공간 앱 환경설정을 저장할 수 없습니다: %{error}",
         "Pick a workspace, then describe your task below.": "작업 공간을 선택한 뒤 아래에 작업을 설명하세요.",
         "%{count} required piece(s) missing": "필수 구성 요소 %{count}개 누락",
         "Ready": "준비됨",
@@ -95,6 +98,7 @@ GLOSSARY = {
         "Session has a live process — switch away and wait, then delete": "세션에 실행 중인 프로세스가 있습니다 — 다른 곳으로 이동해 기다린 후 삭제하세요",
     },
     "es": {
+        "Could not save the workspace app preference: %{error}": "No se pudo guardar la preferencia de aplicación del espacio de trabajo: %{error}",
         "Pick a workspace, then describe your task below.": "Elige un espacio de trabajo y describe tu tarea abajo.",
         "%{count} required piece(s) missing": "Faltan %{count} componente(s) requerido(s)",
         "Ready": "Listo",
@@ -126,6 +130,7 @@ GLOSSARY = {
         "Session has a live process — switch away and wait, then delete": "La sesión tiene un proceso activo — cambia de vista y espera, luego elimina",
     },
     "fr": {
+        "Could not save the workspace app preference: %{error}": "Impossible d’enregistrer l’application préférée de l’espace de travail : %{error}",
         "Pick a workspace, then describe your task below.": "Choisissez un espace de travail, puis décrivez votre tâche ci-dessous.",
         "%{count} required piece(s) missing": "%{count} composant(s) requis manquant(s)",
         "Ready": "Prêt",
@@ -157,6 +162,7 @@ GLOSSARY = {
         "Session has a live process — switch away and wait, then delete": "La session a un processus actif — changez de vue et attendez, puis supprimez",
     },
     "de": {
+        "Could not save the workspace app preference: %{error}": "Die bevorzugte Anwendung für den Arbeitsbereich konnte nicht gespeichert werden: %{error}",
         "Pick a workspace, then describe your task below.": "Wähle einen Arbeitsbereich und beschreibe unten deine Aufgabe.",
         "%{count} required piece(s) missing": "%{count} erforderliche(s) Element fehlt",
         "Ready": "Bereit",
@@ -188,6 +194,7 @@ GLOSSARY = {
         "Session has a live process — switch away and wait, then delete": "Die Sitzung hat einen laufenden Prozess — wechsle weg und warte, dann löschen",
     },
     "pt-BR": {
+        "Could not save the workspace app preference: %{error}": "Não foi possível salvar a preferência de aplicativo do espaço de trabalho: %{error}",
         "Pick a workspace, then describe your task below.": "Escolha um espaço de trabalho e descreva sua tarefa abaixo.",
         "%{count} required piece(s) missing": "Faltam %{count} componente(s) obrigatório(s)",
         "Ready": "Pronto",
@@ -219,6 +226,7 @@ GLOSSARY = {
         "Session has a live process — switch away and wait, then delete": "A sessão tem um processo ativo — mude de tela e aguarde, depois exclua",
     },
     "ru": {
+        "Could not save the workspace app preference: %{error}": "Не удалось сохранить предпочитаемое приложение для рабочей области: %{error}",
         "Pick a workspace, then describe your task below.": "Выберите рабочую область и опишите задачу ниже.",
         "%{count} required piece(s) missing": "не хватает обязательных компонентов: %{count}",
         "Ready": "Готово",
@@ -250,6 +258,7 @@ GLOSSARY = {
         "Session has a live process — switch away and wait, then delete": "В сеансе есть активный процесс — переключитесь и подождите, затем удалите",
     },
     "it": {
+        "Could not save the workspace app preference: %{error}": "Impossibile salvare l’applicazione preferita per l’area di lavoro: %{error}",
         "Pick a workspace, then describe your task below.": "Scegli un'area di lavoro, poi descrivi l'attività qui sotto.",
         "%{count} required piece(s) missing": "%{count} componente/i obbligatorio/i mancante/i",
         "Ready": "Pronto",
