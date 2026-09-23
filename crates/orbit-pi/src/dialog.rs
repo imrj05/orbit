@@ -17,6 +17,7 @@ use gpui::{
     ScrollHandle, SharedString, Window,
 };
 
+use crate::app::PopoverSurface;
 use crate::composer::ComposerInput;
 use crate::theme::{self, Theme};
 
@@ -326,10 +327,7 @@ impl Render for Dialog {
             .w_full()
             .max_w(px(CARD_W))
             .rounded(px(14.))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.popover_shadow())
+            .popover_surface(theme)
             .flex()
             .flex_col()
             .overflow_hidden()

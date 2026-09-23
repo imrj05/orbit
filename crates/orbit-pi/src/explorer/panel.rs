@@ -22,7 +22,7 @@ use gpui::{
 use super::ops;
 use super::tree::{self, Row, StatusBadge, TreeIndex};
 use super::walk;
-use crate::app::{file_badge, file_glyph, icon, nerd_font_family, press, BUTTON_GROUP};
+use crate::app::{file_badge, file_glyph, icon, nerd_font_family, press, PopoverSurface, BUTTON_GROUP};
 use crate::composer::ComposerInput;
 use crate::git;
 use crate::platform;
@@ -1192,10 +1192,7 @@ impl ProjectPanel {
             .w(px(220.))
             .py(px(4.))
             .rounded(px(10.))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.popover_shadow())
+            .popover_surface(theme)
             .flex()
             .flex_col()
             .occlude()

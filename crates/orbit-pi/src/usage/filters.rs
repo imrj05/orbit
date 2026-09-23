@@ -9,7 +9,7 @@
 //! Every control writes through `UsagePage`'s filter setters, so one state
 //! object drives every panel on the page (§10).
 
-use crate::app::{press, BUTTON_GROUP};
+use crate::app::{press, PopoverSurface, BUTTON_GROUP};
 use chrono::Datelike;
 use gpui::{
     anchored, deferred, div, point, prelude::*, px, AnyElement, App, Corner, ElementId, Entity,
@@ -152,10 +152,7 @@ fn panel(
         .id(ElementId::Name(SharedString::from(id)))
         .w(px(width))
         .rounded(px(9.))
-        .border_1()
-        .border_color(theme.border_strong)
-        .bg(theme.menu_bg)
-        .shadow(theme.popover_shadow())
+        .popover_surface(theme)
         .flex()
         .flex_col()
         .overflow_hidden()

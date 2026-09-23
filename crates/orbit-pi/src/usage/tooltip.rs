@@ -6,6 +6,7 @@
 
 use gpui::{div, prelude::*, px, Context, IntoElement, Render, SharedString, Window};
 
+use crate::app::PopoverSurface;
 use crate::theme;
 
 /// A single-line tooltip.
@@ -27,10 +28,7 @@ impl Render for Tooltip {
             .px(px(8.))
             .py(px(5.))
             .rounded(px(6.))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.popover_shadow())
+            .popover_surface(theme)
             .text_size(theme.ui_px(11.5))
             .text_color(theme.text)
             .whitespace_nowrap()

@@ -132,6 +132,22 @@ pub(crate) fn spinner(
     .into_any_element()
 }
 
+/// The chrome every floating surface shares — anchored menus, dropdowns,
+/// popovers, tooltips, and modals: the raised menu fill, a strong 1px
+/// hairline, and the layered popover shadow. Callers keep their own radius,
+/// size, padding, and occlusion, so a menu, a tooltip, and a modal can't
+/// drift apart.
+pub(crate) trait PopoverSurface: Styled {
+    fn popover_surface(self, theme: Theme) -> Self {
+        self.border_1()
+            .border_color(theme.border_strong)
+            .bg(theme.menu_bg)
+            .shadow(theme.popover_shadow())
+    }
+}
+
+impl<T: Styled> PopoverSurface for T {}
+
 // ── top-bar chip primitives ──
 
 /// Shared height of every top-bar control — the quota pill, the "open in"

@@ -26,7 +26,7 @@ use gpui::{
 };
 use std::time::{Duration, Instant};
 
-use crate::app::{icon, icon_dyn, ModelEntry};
+use crate::app::{icon, icon_dyn, ModelEntry, PopoverSurface};
 use crate::composer::ComposerInput;
 use crate::context_meter::format_tokens;
 use crate::favorites::Favorites;
@@ -813,10 +813,7 @@ impl Render for ModelSelector {
             .w(px(width))
             .font_family(theme::ui_font_family())
             .rounded(px(SHELL_RADIUS))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.popover_shadow())
+            .popover_surface(theme)
             .flex()
             .flex_col()
             .overflow_hidden()

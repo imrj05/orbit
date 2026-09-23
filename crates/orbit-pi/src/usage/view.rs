@@ -60,7 +60,7 @@ use super::table::{
     TableKind, HEADER_H, ROW_H,
 };
 use super::tooltip::Tooltip;
-use crate::app::{icon, press, BUTTON_GROUP};
+use crate::app::{icon, press, PopoverSurface, BUTTON_GROUP};
 use crate::composer::ComposerInput;
 use crate::theme::{self, Theme};
 
@@ -4347,10 +4347,7 @@ fn context_menu_shell(theme: Theme, page: Entity<UsagePage>, items: Vec<AnyEleme
         .id("usage-row-menu")
         .min_w(px(220.))
         .rounded(px(9.))
-        .border_1()
-        .border_color(theme.border_strong)
-        .bg(theme.menu_bg)
-        .shadow(theme.popover_shadow())
+        .popover_surface(theme)
         .flex()
         .flex_col()
         .overflow_hidden()

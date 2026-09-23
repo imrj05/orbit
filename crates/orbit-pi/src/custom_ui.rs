@@ -21,7 +21,7 @@ use gpui::{
 };
 use serde_json::Value;
 
-use crate::app::icon;
+use crate::app::{icon, PopoverSurface};
 use crate::terminal::encode_key;
 use crate::theme;
 use crate::widgets;
@@ -410,10 +410,7 @@ impl Render for CustomUi {
             .debug_selector(|| "custom-ui-card".to_string())
             .w(card_w)
             .rounded(px(14.))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.popover_shadow())
+            .popover_surface(theme)
             .flex()
             .flex_col()
             .overflow_hidden()

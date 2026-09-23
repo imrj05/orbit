@@ -41,7 +41,7 @@ use serde_json::Value;
 
 use orbit_rpc::MessageUsage;
 
-use crate::app::BUTTON_GROUP;
+use crate::app::{PopoverSurface, BUTTON_GROUP};
 use crate::context_meter::{format_tokens, hit_percent_label};
 use crate::highlight::{self, Token};
 use crate::message_scroller::{self, MessageScrollerState};
@@ -876,10 +876,7 @@ fn text_selection_menu(menu: &TextMenu, state: TextSelectionState, theme: Theme)
                 .id("transcript-text-menu")
                 .min_w(px(190.))
                 .rounded(px(9.))
-                .border_1()
-                .border_color(theme.border_strong)
-                .bg(theme.menu_bg)
-                .shadow(theme.popover_shadow())
+                .popover_surface(theme)
                 .flex()
                 .flex_col()
                 .overflow_hidden()

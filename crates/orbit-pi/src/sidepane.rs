@@ -23,7 +23,7 @@ use gpui::{
     TextAlign, TextRun, Window,
 };
 
-use crate::app::{file_glyph, icon, nerd_font_family, BUTTON_GROUP, PRESS_DIM};
+use crate::app::{file_glyph, icon, nerd_font_family, PopoverSurface, BUTTON_GROUP, PRESS_DIM};
 use crate::composer::ComposerInput;
 use crate::git;
 use crate::review::{self, ExpansionDirection, GapPosition, LineKind, Snapshot, Source};
@@ -1254,10 +1254,7 @@ impl SidePane {
             .w(px(200.))
             .py(px(4.))
             .rounded(px(10.))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.popover_shadow())
+            .popover_surface(theme)
             .flex()
             .flex_col()
             .occlude()

@@ -35,7 +35,7 @@ use gpui::{
     ScrollHandle, SharedString, Styled, Window,
 };
 
-use crate::app::{icon, SettingsSection};
+use crate::app::{icon, PopoverSurface, SettingsSection};
 use crate::composer::ComposerInput;
 use crate::sessions::SessionInfo;
 use crate::theme::{self, Theme};
@@ -767,10 +767,7 @@ impl Render for CommandPalette {
             .max_w(px(CARD_W))
             .flex_none()
             .rounded(px(14.))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.popover_shadow())
+            .popover_surface(theme)
             .flex()
             .flex_col()
             .overflow_hidden()

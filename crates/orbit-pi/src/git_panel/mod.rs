@@ -23,7 +23,7 @@ use gpui::{
     PathBuilder, Pixels, Render, Window,
 };
 
-use crate::app::{icon, nerd_font_family, press, spinner, BUTTON_GROUP};
+use crate::app::{icon, nerd_font_family, press, spinner, PopoverSurface, BUTTON_GROUP};
 use crate::commit_message;
 use crate::gh;
 use crate::git::{self, CommitEntry, StatusRow};
@@ -3457,10 +3457,7 @@ impl GitPanel {
             .w(px(220.))
             .py(px(4.))
             .rounded(px(10.))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.popover_shadow())
+            .popover_surface(theme)
             .flex()
             .flex_col()
             .occlude()
@@ -4195,10 +4192,7 @@ impl GitPanel {
             .overflow_y_scroll()
             .py(px(4.))
             .rounded(px(10.))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.popover_shadow())
+            .popover_surface(theme)
             .flex()
             .flex_col()
             .occlude()
@@ -5036,10 +5030,7 @@ impl GitPanel {
             .overflow_y_scroll()
             .py(px(4.))
             .rounded(px(10.))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.popover_shadow())
+            .popover_surface(theme)
             .flex()
             .flex_col()
             .occlude()
@@ -5181,10 +5172,7 @@ impl GitPanel {
             .overflow_y_scroll()
             .py(px(4.))
             .rounded(px(10.))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.popover_shadow())
+            .popover_surface(theme)
             .flex()
             .flex_col()
             .occlude()

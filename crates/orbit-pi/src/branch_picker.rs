@@ -8,7 +8,7 @@ use gpui::{
     FontWeight, IntoElement, MouseDownEvent, ParentElement, Render, ScrollHandle, Styled, Window,
 };
 
-use crate::app::icon;
+use crate::app::{icon, PopoverSurface};
 use crate::composer::ComposerInput;
 use crate::theme;
 
@@ -204,10 +204,7 @@ impl Render for BranchPicker {
                 .pt(px(6.))
                 .pb(px(6.))
                 .rounded(px(10.))
-                .border_1()
-                .border_color(theme.border_strong)
-                .bg(theme.menu_bg)
-                .shadow(theme.popover_shadow())
+                .popover_surface(theme)
                 .flex()
                 .flex_col()
                 .overflow_hidden()
@@ -358,10 +355,7 @@ impl Render for BranchPicker {
             .pt(px(6.))
             .pb(px(4.))
             .rounded(px(10.))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.popover_shadow())
+            .popover_surface(theme)
             .flex()
             .flex_col()
             .overflow_hidden()

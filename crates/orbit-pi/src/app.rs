@@ -1840,7 +1840,7 @@ mod titlebar_layout_tests;
 // `icon` and friends are part of the crate-wide UI kit; keep their original
 // `crate::app::…` paths stable for the other modules that import them.
 pub(crate) use helpers::{
-    file_badge, file_glyph, icon, icon_dyn, nerd_font_family, press, spinner, BUTTON_GROUP,
-    PRESS_DIM,
+    file_badge, file_glyph, icon, icon_dyn, nerd_font_family, press, spinner, PopoverSurface,
+    BUTTON_GROUP, PRESS_DIM,
 };
 use sidebar::sessions_with_placeholder;
