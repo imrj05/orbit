@@ -9,9 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.0.14] - 2026-09-23
 
+### Changed
+
+- Auto-apply pi RPC patches and harden custom UI surfaces
+
 ## [0.0.13] - 2026-09-22
 
+### Changed
+
+- Feat/GitHub page features (#21)
+- Feat/main updates (#20)
+- Feat/GitHub page features (#19)
+- Remember Open in preferences per workspace and add Rider support (#17)
+- Update GitHub Sponsors username in FUNDING.yml (#18)
+- Update GitHub Sponsors username in FUNDING.yml (#16)
+
 ## [0.0.12] - 2026-09-22
+
+### Added
+
+- Add ten new light palettes and toggle_knob role
+
+### Fixed
+
+- Keep the update modal's footer inside the card
 
 ## [0.0.11] - 2026-09-22
 

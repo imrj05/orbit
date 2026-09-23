@@ -16,7 +16,9 @@
 # and drafts a GitHub Release on it from CHANGELOG.md.
 #
 # Env:
-#   NO_PUSH=1   commit locally, but don't push
+#   NO_PUSH=1                 commit locally, but don't push
+#   ALLOW_EMPTY_CHANGELOG=1   release even when [Unreleased] is empty
+#                             (notes then come from the git release log)
 #
 set -euo pipefail
 
@@ -69,7 +71,7 @@ cargo update -p orbit-pi -p orbit-rpc >/dev/null
 
 # 3 — roll the changelog.
 python3 - "$VERSION" "$REPO_URL" <<'PY'
-import datetime, re, sys
+import datetime, os, re, sys
 v, repo = sys.argv[1], sys.argv[2]
 date = datetime.date.today().isoformat()
 path = "CHANGELOG.md"
@@ -88,6 +90,25 @@ end = next(
 )
 
 body = "\n".join(lines[start + 1 : end]).strip()
+# The credit bot writes a `### Contributors`-only section; that is not a change
+# list, so it does not count as changelog content for this guard.
+meaningful = re.sub(r"(?m)^#+\s+Contributors\s*$", "", body).strip()
+if not meaningful:
+    if os.environ.get("ALLOW_EMPTY_CHANGELOG"):
+        print(
+            f"warning: '[Unreleased]' has no changes; releasing anyway "
+            "(ALLOW_EMPTY_CHANGELOG set) — notes will be generated from git "
+            "(scripts/release-notes.py --from-git)",
+            file=sys.stderr,
+        )
+    else:
+        sys.exit(
+            f"error: '## [Unreleased]' in CHANGELOG.md has no changes, so the "
+            f"notes for {v} would be empty.\n"
+            "Add a Keep-a-Changelog entry (Added / Changed / Fixed) first, or "
+            "re-run with ALLOW_EMPTY_CHANGELOG=1 to fall back to the "
+            "git-generated release log."
+        )
 block = ["## [Unreleased]", ""]
 if body:
     block += [f"## [{v}] - {date}", "", body]

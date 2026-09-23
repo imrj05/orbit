@@ -116,8 +116,11 @@ impl OrbitApp {
                         div().h(px(super::view::TOP_BAR_H)).w_full(),
                     ))
                     // Back — same 28px row language as the section list.
+                    // The list below sits in an 8px container with 10px row
+                    // insets, so the icon column lands at 18px here, on the
+                    // eyebrow, and in the footer: one left edge, read once.
                     .child(
-                        div().px_2().pt_1().pb_2().child(
+                        div().px_2().pt_1().pb_3().child(
                             div()
                                 .id("settings-back")
                                 .w_full()
@@ -139,38 +142,31 @@ impl OrbitApp {
                                 ),
                         ),
                     )
-                    // Eyebrow: a small tracked caps label gives the flat
-                    // list a heading to read under, the way a sidebar in a
-                    // crafted app does. One accent-tinted dot echoes the
-                    // selection treatment below.
+                    // Eyebrow: a small caps label gives the flat list a
+                    // heading to read under, the way a sidebar in a
+                    // crafted app does. No accent marker — the accent is
+                    // reserved for data emphasis, not chrome. Inset matches
+                    // the rows' icon column (8px container + 10px row pad).
                     .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .pl(px(13.))
-                            .pb(px(6.))
-                            .child(
-                                div()
-                                    .size(px(5.))
-                                    .rounded_full()
-                                    .bg(theme.accent.opacity(0.65)),
-                            )
-                            .child(
-                                div()
-                                    .text_size(theme.ui_px(10.5))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(theme.text_3)
-                                    .child(tr!("settings.settings")),
-                            ),
+                        div().pl(px(18.)).pb(px(6.)).child(
+                            div()
+                                .text_size(theme.ui_px(10.5))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme.text_3)
+                                .child(tr!("settings.settings")),
+                        ),
                     )
-                    // Section rows — 30px pills grouped by what they belong
-                    // to (app / pi resources / personalisation), separated
-                    // by hairlines. Selection is a quiet accent wash with a
-                    // leading bar and semibold label, not a hard fill: the
-                    // row stays readable as part of the list rather than a
-                    // button that took over.
-                    .child(div().px_2().flex().flex_col().gap(px(3.)).children(
+                    // Section rows — 28px pills with a 2px rhythm (the
+                    // density Linear uses for flat nav lists), grouped by
+                    // what they belong to (app / pi resources /
+                    // personalisation). Groups are set off by a hairline
+                    // with 8px of air on each side — 16px of separation
+                    // total, so the groups read as set-off but related.
+                    // Selection is a single low-opacity accent wash — no
+                    // bar, no weight change — with the icon and ink
+                    // stepping toward the accent so the row reads as one
+                    // quiet highlight, never a button that took over.
+                    .child(div().px_2().flex().flex_col().gap(px(2.)).children(
                         sections.iter().map(|&(section, section_icon, ref label)| {
                             let this = this.clone();
                             let selected = self.settings_section == section;
@@ -183,11 +179,9 @@ impl OrbitApp {
                             );
                             let row = div()
                                 .id(ElementId::Name(format!("settings-nav-{label}").into()))
-                                .relative()
                                 .w_full()
-                                .h(px(30.))
-                                .pl(px(12.))
-                                .pr(px(10.))
+                                .h(px(28.))
+                                .px(px(10.))
                                 .rounded_md()
                                 .text_size(theme.ui_px(13.))
                                 .flex()
@@ -196,25 +190,13 @@ impl OrbitApp {
                                 .cursor_pointer()
                                 .when(selected, |row| {
                                     row.bg(theme.accent.opacity(0.10))
-                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .hover(|s| s.bg(theme.accent.opacity(0.14)))
                                 })
                                 .when(!selected, |row| row.hover(|s| s.bg(theme.bg_hover)))
                                 .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                                     this.update(cx, |app, cx| {
                                         app.set_settings_section(section, cx);
                                     });
-                                })
-                                .when(selected, |row| {
-                                    row.child(
-                                        div()
-                                            .absolute()
-                                            .left_0()
-                                            .top(px(8.))
-                                            .w(px(2.))
-                                            .h(px(14.))
-                                            .rounded_full()
-                                            .bg(theme.accent),
-                                    )
                                 })
                                 .child(icon(
                                     section_icon,
@@ -234,9 +216,9 @@ impl OrbitApp {
                                 div()
                                     .flex()
                                     .flex_col()
-                                    .gap(px(3.))
-                                    .pt(px(7.))
-                                    .mt(px(4.))
+                                    .gap(px(2.))
+                                    .pt(px(8.))
+                                    .mt(px(6.))
                                     .border_t_1()
                                     .border_color(theme.border)
                                     .child(row)
@@ -248,13 +230,17 @@ impl OrbitApp {
                     ))
                     // Footer: the build identity, pinned bottom-left in the
                     // same tertiary register the About page uses — a quiet
-                    // closer for the column.
+                    // closer for the column. A hairline caps the scrollable
+                    // area above it, and the left inset keeps the icon
+                    // column's 18px edge.
                     .child(
                         div()
                             .mt_auto()
                             .w_full()
-                            .px(px(13.))
-                            .py(px(10.))
+                            .px(px(18.))
+                            .py(px(12.))
+                            .border_t_1()
+                            .border_color(theme.border)
                             .flex()
                             .items_center()
                             .gap(px(6.))

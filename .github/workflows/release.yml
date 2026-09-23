@@ -302,7 +302,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Full history + tags: the release-notes fallback walks the commits
+      # between this version's tag and the previous one.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # Best-effort: a platform that failed simply contributes nothing.
       - name: Download artifacts
@@ -355,14 +359,20 @@ jobs:
       # and the same notes ship as an asset so they can be linked directly.
       # Written first so the appcasts below can embed them as each item's
       # <description>, which the in-app update modal renders as the changelog.
+      # When the section is missing or empty (a bump that never filled
+      # `[Unreleased]`), `--from-git` synthesizes notes from conventional
+      # commits since the previous tag instead of shipping a placeholder.
       - name: Write release notes from CHANGELOG.md
         env:
           VERSION: ${{ needs.version.outputs.version }}
+          # Lets the `--from-git` fallback resolve contributor credits via the
+          # compare API; harmless when unset (credits are simply omitted).
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           mkdir -p artifacts
-          if python3 scripts/release-notes.py CHANGELOG.md "$VERSION" > release-notes.md 2>/dev/null; then
-            echo "Notes for $VERSION taken from CHANGELOG.md"
+          if python3 scripts/release-notes.py CHANGELOG.md "$VERSION" --from-git > release-notes.md 2>/dev/null; then
+            echo "Wrote release notes for $VERSION"
           else
             echo "See CHANGELOG.md for details." > release-notes.md
           fi

@@ -120,7 +120,20 @@ truth. Changing it on `main` is all it takes: CI tags the version and builds
 the release. Notes come from `CHANGELOG.md`.
 
 1. Add what changed under `## [Unreleased]` in `CHANGELOG.md` (Keep a Changelog
-   sections: Added / Changed / Fixed).
+   sections: Added / Changed / Fixed). `scripts/bump-version.sh` **refuses to
+   bump when `[Unreleased]` has no changes**; only override it when you intend
+   the generated log:
+
+   ```bash
+   ALLOW_EMPTY_CHANGELOG=1 ./scripts/bump-version.sh 0.0.2
+   ```
+
+   With the override (or any release whose `[Unreleased]` stayed empty), the
+   notes are synthesized in the Next.js release-log style — `### Core Changes` /
+   `### Documentation Changes` / `### Misc Changes`, bullets ending `: #<PR>`,
+   and a `### Credits` line — from the commits since the previous tag
+   (`scripts/release-notes.py --from-git`). A real `[Unreleased]` entry is still
+   preferred.
 2. Bump and push:
 
    ```bash
@@ -151,8 +164,9 @@ the release. Notes come from `CHANGELOG.md`.
    - **Windows** — builds `orbit-pi.exe` and ships it both bare and in a `.zip`
      (`scripts/bundle-windows.ps1`);
    - **drafts** a GitHub Release on tag `v0.0.2` whose notes are the `[0.0.2]`
-     section of `CHANGELOG.md` (`scripts/release-notes.py`). The same notes
-     ship as an `Orbit-Pi-0.0.2.md` release asset.
+     section of `CHANGELOG.md` (`scripts/release-notes.py`; an empty section
+     falls back to the Next.js-style release log built from commits since the
+     previous tag). The same notes ship as an `Orbit-Pi-0.0.2.md` release asset.
 
    Review the draft and publish it. macOS signing needs the Apple secrets listed
    at the top of the workflow file; without them the macOS job builds an
