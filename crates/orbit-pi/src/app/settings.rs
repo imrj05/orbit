@@ -4851,7 +4851,8 @@ impl OrbitApp {
                         theme,
                         &tr!("settings.show_sidebar"),
                         Some(&tr!(
-                            "settings.show_the_sessions_sidebar_also_toggleable_from_t"
+                            "settings.show_the_sessions_sidebar_also_toggleable_from_t",
+                            shortcut = crate::platform::shortcuts::SIDEBAR
                         )),
                         None,
                         Some(self.sidebar_toggle(theme, this.clone())),
@@ -5366,9 +5367,9 @@ impl OrbitApp {
             .cursor_pointer()
             .when(on, |t| t.bg(theme.accent).justify_end())
             .when(!on, |t| t.bg(theme.bg_raised).justify_start())
-            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+            .on_mouse_up(MouseButton::Left, move |_, window, cx| {
                 this.update(cx, |app, cx| {
-                    app.toggle_sidebar();
+                    app.toggle_sidebar(window, cx);
                     cx.notify();
                 });
             })

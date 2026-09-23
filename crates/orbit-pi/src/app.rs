@@ -36,7 +36,7 @@ use gpui::{
     AnyElement, App, ClipboardItem, Context, Corner, CursorStyle, DragMoveEvent, ElementId, Entity,
     ExternalPaths, FocusHandle, Focusable, FontWeight, Hsla, Image, ImageSource, IntoElement,
     ListAlignment, ListState, MouseButton, MouseDownEvent, MouseUpEvent, ObjectFit,
-    PathPromptOptions, Pixels, Render, Resource, ScrollStrategy, SharedString,
+    PathPromptOptions, Pixels, Point, Render, Resource, ScrollStrategy, SharedString,
     StatefulInteractiveElement, Subscription, TextAlign, Transformation, UniformListScrollHandle,
     Window,
 };
@@ -209,6 +209,13 @@ pub struct OrbitApp {
     /// would let the repeat skip) while the first frame — generation 0 — draws
     /// the settled state with no launch animation.
     sidebar_slide_gen: u64,
+    /// Keyboard cursor for the sessions sidebar: an index into the current
+    /// sidebar rows. `None` until the sidebar takes keyboard focus (⌘⇧B);
+    /// the row it names paints the focused surface in `render_side_row`.
+    sidebar_cursor: Option<usize>,
+    /// Focus handle carrying the `Sidebar` key context while the sidebar is
+    /// being keyboard-navigated (↑/↓/⏎/Esc).
+    sidebar_focus: FocusHandle,
     pub(crate) input: Entity<ComposerInput>,
     model_label: String,
     /// Pi model id of the active model (stable match key for the picker).
@@ -933,7 +940,9 @@ impl OrbitApp {
             client,
             runtime,
             rpc_patches,
-            sidebar_width: px(SIDEBAR_DEFAULT_W),
+            sidebar_width: px(crate::layout::sidebar_width()
+                .unwrap_or(SIDEBAR_DEFAULT_W)
+                .max(SIDEBAR_MIN_W)),
             lives: HashMap::new(),
             transcript: Transcript::new(),
             sessions: sessions::load_sessions(),
@@ -943,6 +952,8 @@ impl OrbitApp {
             sidebar_list: ListState::new(0, ListAlignment::Top, px(44.)),
             sidebar_visible: true,
             sidebar_slide_gen: 0,
+            sidebar_cursor: None,
+            sidebar_focus: cx.focus_handle(),
             input,
             model_label: "…".into(),
             model_id: String::new(),
@@ -1478,6 +1489,10 @@ struct SessionMenu {
     deletable: bool,
     /// The popup is showing the delete confirmation instead of the menu.
     confirm_delete: bool,
+    /// Right-click origin in window coordinates: the popup floats at the
+    /// pointer, context-menu style. `None` anchors it below the row's `…`
+    /// button (the pointer-triggered path).
+    at: Option<Point<Pixels>>,
 }
 
 /// State of the row-actions popup on a workspace group header: which
@@ -1486,6 +1501,8 @@ struct SessionMenu {
 struct WorkspaceMenu {
     label: String,
     cwd: PathBuf,
+    /// Right-click origin in window coordinates (see [`SessionMenu::at`]).
+    at: Option<Point<Pixels>>,
 }
 
 /// Sections of the settings surface.

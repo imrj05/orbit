@@ -792,10 +792,7 @@ impl OrbitApp {
         card = card.child(footer);
 
         // ── scrim: dimmed backdrop; a click outside dismisses the modal ──
-        let scrim = match theme.mode {
-            theme::ThemeMode::Dark => gpui::hsla(0., 0., 0., 0.32),
-            theme::ThemeMode::Light => gpui::hsla(0., 0., 0., 0.18),
-        };
+        let scrim = theme.scrim_modal();
         Some(
             div()
                 .id("update-dialog-layer")

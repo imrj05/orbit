@@ -371,8 +371,11 @@ impl OrbitApp {
             PaletteCommand::FocusComposer => {
                 self.input.read(cx).focus(window);
             }
+            PaletteCommand::FocusSessions => {
+                self.on_focus_sessions(&crate::FocusSessions, window, cx);
+            }
             PaletteCommand::ToggleSidebar => {
-                self.toggle_sidebar();
+                self.toggle_sidebar(window, cx);
                 cx.notify();
             }
             PaletteCommand::ToggleSidePanel => {

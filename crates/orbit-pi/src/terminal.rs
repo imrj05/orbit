@@ -1521,7 +1521,9 @@ impl TerminalPanel {
     pub fn new(_cx: &mut Context<Self>) -> Self {
         Self {
             open: false,
-            height: px(PANEL_DEFAULT_H),
+            height: px(crate::layout::terminal_height()
+                .unwrap_or(PANEL_DEFAULT_H)
+                .max(PANEL_MIN_H)),
             workspace: None,
             terminal: None,
             restart_spin_until: None,
@@ -1536,6 +1538,7 @@ impl TerminalPanel {
         let height = height.clamp(px(PANEL_MIN_H), px(f32::MAX / 2.));
         if height != self.height {
             self.height = height;
+            crate::layout::set_terminal_height(f32::from(height));
             cx.notify();
         }
     }

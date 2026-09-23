@@ -118,7 +118,9 @@ impl SidePane {
         });
         Self {
             open: false,
-            width: px(PANE_DEFAULT_W),
+            width: px(crate::layout::sidepane_width()
+                .unwrap_or(PANE_DEFAULT_W)
+                .max(PANE_MIN_W)),
             workspace: None,
             session: None,
             latest_turn: None,
@@ -187,6 +189,7 @@ impl SidePane {
         let clamped = width.max(px(PANE_MIN_W));
         if clamped != self.width {
             self.width = clamped;
+            crate::layout::set_sidepane_width(f32::from(clamped));
             cx.notify();
         }
     }

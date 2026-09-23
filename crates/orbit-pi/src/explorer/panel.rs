@@ -171,7 +171,9 @@ impl ProjectPanel {
         });
         Self {
             open: false,
-            width: px(PANEL_DEFAULT_W),
+            width: px(crate::layout::explorer_width()
+                .unwrap_or(PANEL_DEFAULT_W)
+                .clamp(PANEL_MIN_W, PANEL_MAX_W)),
             reserve_controls: false,
             workspace: None,
             index: TreeIndex::default(),
@@ -213,6 +215,7 @@ impl ProjectPanel {
         let width = width.clamp(px(PANEL_MIN_W), px(PANEL_MAX_W));
         if width != self.width {
             self.width = width;
+            crate::layout::set_explorer_width(f32::from(width));
             cx.notify();
         }
     }

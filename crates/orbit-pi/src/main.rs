@@ -62,6 +62,7 @@ mod git_panel;
 mod highlight;
 mod http;
 mod i18n;
+mod layout;
 mod mentions;
 mod message_scroller;
 mod model_selector;
@@ -158,6 +159,8 @@ actions!(
         SearchClose,
         ToggleTerminal,
         ToggleProjectPanel,
+        ToggleSidebar,
+        FocusSessions,
         CloseFiles,
         CloseFileTab,
         SaveFile,
@@ -236,6 +239,22 @@ actions!(update_dialog_keys, [UpdateDialogClose]);
 // Composer bindings so Enter confirms the name instead of submitting the
 // composer and Escape cancels instead of aborting the run.
 actions!(explorer_entry_keys, [ExplorerEntryConfirm, ExplorerEntryCancel]);
+
+// Sessions-sidebar keyboard navigation (bound to the `Sidebar` context, which
+// rides the sidebar's focus handle while it is keyboard-focused). Arrow keys
+// move the cursor, Enter activates the row, Escape hands focus back to the
+// composer.
+actions!(
+    sidebar_keys,
+    [
+        SidebarPrev,
+        SidebarNext,
+        SidebarHome,
+        SidebarEnd,
+        SidebarConfirm,
+        SidebarClose
+    ]
+);
 
 fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -326,6 +345,9 @@ fn bind_keys(cx: &mut App) {
         // convention for the panel toggle (and stays live while the shell has
         // focus, since app actions are not scoped to a key context).
         KeyBinding::new("secondary-j", ToggleTerminal, None),
+        // Sessions sidebar: the primary modifier + B is the workbench
+        // convention for the left panel toggle.
+        KeyBinding::new("secondary-b", ToggleSidebar, None),
         // Left project panel (Explorer): cmd-shift-e is the convention.
         KeyBinding::new("cmd-shift-e", ToggleProjectPanel, None),
         // On the Files surface, cmd-w closes the active file tab (the whole
@@ -333,6 +355,9 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-w", CloseFileTab, Some("Files")),
         KeyBinding::new("cmd-shift-w", CloseFiles, Some("Files")),
         KeyBinding::new("secondary-p", ToggleCommandPalette, None),
+        // The palette does quick-open work as well (sessions are its top
+        // hits), so the Raycast convention opens the same surface.
+        KeyBinding::new("secondary-k", ToggleCommandPalette, None),
         KeyBinding::new("secondary-period", AbortRun, None),
         // Transcript accelerators (work regardless of focus):
         // copy the newest response; jump between user turns like the rail.
@@ -418,6 +443,19 @@ fn bind_keys(cx: &mut App) {
         // same-depth tie against `Submit`/`AbortRun` (registered later).
         KeyBinding::new("enter", ExplorerEntryConfirm, Some("ExplorerEntry")),
         KeyBinding::new("escape", ExplorerEntryCancel, Some("ExplorerEntry")),
+        // Sessions sidebar: focus it with the primary modifier + Shift + B,
+        // then navigate the row list with the arrows (Zed/VS Code convention).
+        // The `Sidebar` context rides the sidebar's own focus handle, so these
+        // only win while it is focused and never collide with the composer's
+        // caret keys. Escape is registered here (after the global abort) so it
+        // returns focus to the composer instead of aborting the run.
+        KeyBinding::new("secondary-shift-b", FocusSessions, None),
+        KeyBinding::new("up", SidebarPrev, Some("Sidebar")),
+        KeyBinding::new("down", SidebarNext, Some("Sidebar")),
+        KeyBinding::new("home", SidebarHome, Some("Sidebar")),
+        KeyBinding::new("end", SidebarEnd, Some("Sidebar")),
+        KeyBinding::new("enter", SidebarConfirm, Some("Sidebar")),
+        KeyBinding::new("escape", SidebarClose, Some("Sidebar")),
     ]);
 }
 
@@ -473,6 +511,7 @@ pub(crate) fn app_menus() -> Vec<Menu> {
                 MenuItem::action(tr!("menu.command_palette"), ToggleCommandPalette),
                 MenuItem::action(tr!("menu.find_in_transcript"), ToggleSearch),
                 MenuItem::separator(),
+                MenuItem::action(tr!("menu.toggle_sidebar"), ToggleSidebar),
                 MenuItem::action(tr!("menu.toggle_terminal"), ToggleTerminal),
                 MenuItem::action(tr!("explorer.toggle"), ToggleProjectPanel),
                 MenuItem::separator(),

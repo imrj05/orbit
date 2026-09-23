@@ -680,6 +680,9 @@ pub mod shortcuts {
     pub const NEW_SESSION: &str = "⌘N";
     pub const REFRESH: &str = "⌘R";
     pub const TERMINAL: &str = "⌘J";
+    pub const SIDEBAR: &str = "⌘B";
+    pub const FOCUS_SESSIONS: &str = "⌘⇧B";
+    pub const PROJECT_PANEL: &str = "⌘⇧E";
     pub const SETTINGS: &str = "⌘,";
     pub const PALETTE: &str = "⌘P";
 }
@@ -689,6 +692,9 @@ pub mod shortcuts {
     pub const NEW_SESSION: &str = "Ctrl+N";
     pub const REFRESH: &str = "Ctrl+R";
     pub const TERMINAL: &str = "Ctrl+J";
+    pub const SIDEBAR: &str = "Ctrl+B";
+    pub const FOCUS_SESSIONS: &str = "Ctrl+Shift+B";
+    pub const PROJECT_PANEL: &str = "Ctrl+Shift+E";
     pub const SETTINGS: &str = "Ctrl+,";
     pub const PALETTE: &str = "Ctrl+P";
 }

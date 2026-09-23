@@ -4,6 +4,7 @@ use super::*;
 
 use gpui::StyledText;
 
+use crate::usage::tooltip::Tooltip;
 use crate::widgets as ext_widgets;
 
 /// Height of a page's top bar (DESIGN.md: 44px header rows). The new-task
@@ -145,6 +146,7 @@ impl Render for OrbitApp {
         let active_path = Rc::new(self.current_session_path.clone());
         let session_menu = Rc::new(self.session_menu.clone());
         let workspace_menu = Rc::new(self.workspace_menu.clone());
+        let sidebar_cursor = self.sidebar_cursor;
         let this = cx.entity();
         // The open session's agent activity drives the sidebar's running
         // loader (parked runs come in via `running_paths` above).
@@ -178,6 +180,7 @@ impl Render for OrbitApp {
                     &live_paths,
                     session_menu.as_ref().as_ref(),
                     workspace_menu.as_ref().as_ref(),
+                    sidebar_cursor == Some(sticky.ix),
                     theme,
                 ))
                 .into_any_element()
@@ -517,6 +520,11 @@ impl Render for OrbitApp {
                             .h_full()
                             .flex()
                             .flex_col()
+                            // Keyboard navigation: while this column holds
+                            // focus (⌘⇧B) the `Sidebar` context routes the
+                            // arrows/Enter/Escape to the row cursor.
+                            .track_focus(&self.sidebar_focus)
+                            .key_context("Sidebar")
                             // traffic-light strip (drag region); the window's
                             // left controls float above it in the titlebar
                             // overlay — right-aligned against this column's
@@ -635,6 +643,7 @@ impl Render for OrbitApp {
                                                                     &live_paths,
                                                                     session_menu.as_ref().as_ref(),
                                                                     row_workspace_menu,
+                                                                    sidebar_cursor == Some(ix),
                                                                     *theme::get(cx),
                                                                 )
                                                                 .into_any_element()
@@ -1142,6 +1151,7 @@ impl Render for OrbitApp {
                         .clamp(px(SIDEBAR_MIN_W), max.max(px(SIDEBAR_MIN_W)));
                     if width != app.sidebar_width {
                         app.sidebar_width = width;
+                        crate::layout::set_sidebar_width(f32::from(width));
                         cx.notify();
                     }
                 },
@@ -1212,6 +1222,14 @@ impl Render for OrbitApp {
             .on_action(cx.listener(Self::on_toggle_project_panel))
             .on_action(cx.listener(Self::on_close_files))
             .on_action(cx.listener(Self::on_toggle_terminal))
+            .on_action(cx.listener(Self::on_toggle_sidebar_action))
+            .on_action(cx.listener(Self::on_focus_sessions))
+            .on_action(cx.listener(Self::on_sidebar_prev))
+            .on_action(cx.listener(Self::on_sidebar_next))
+            .on_action(cx.listener(Self::on_sidebar_home))
+            .on_action(cx.listener(Self::on_sidebar_end))
+            .on_action(cx.listener(Self::on_sidebar_confirm))
+            .on_action(cx.listener(Self::on_sidebar_close))
             .on_action(cx.listener(Self::on_toggle_command_palette))
             .on_action(cx.listener(Self::on_check_for_updates))
             .on_action(cx.listener(Self::on_toggle_search))
@@ -2782,6 +2800,14 @@ impl OrbitApp {
                     icon("icons/layout-left.svg", 16., theme.text_2),
                 )
                 .block_mouse_except_scroll()
+                .tooltip({
+                    let label = format!(
+                        "{} ({})",
+                        tr!("menu.toggle_sidebar"),
+                        platform::shortcuts::SIDEBAR
+                    );
+                    move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
+                })
                 .on_mouse_up(MouseButton::Left, cx.listener(Self::on_toggle_sidebar)),
             )
             .child(
@@ -2797,6 +2823,10 @@ impl OrbitApp {
                         b.cursor_pointer()
                             .hover(|s| s.bg(theme.bg_hover))
                             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_history_back))
+                    })
+                    .tooltip({
+                        let label = tr!("view.back");
+                        move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
                     })
                     .child(icon(
                         "icons/arrow-left.svg",
@@ -2821,6 +2851,10 @@ impl OrbitApp {
                         b.cursor_pointer()
                             .hover(|s| s.bg(theme.bg_hover))
                             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_history_forward))
+                    })
+                    .tooltip({
+                        let label = tr!("view.forward");
+                        move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
                     })
                     .child(icon(
                         "icons/arrow-right.svg",
@@ -3840,10 +3874,7 @@ impl OrbitApp {
         cx: &Context<Self>,
     ) -> AnyElement {
         let theme = *theme::get(cx);
-        let scrim = match theme.mode {
-            theme::ThemeMode::Dark => gpui::hsla(0., 0., 0., 0.72),
-            theme::ThemeMode::Light => gpui::hsla(0., 0., 0., 0.6),
-        };
+        let scrim = theme.scrim_media();
         div()
             .id("image-lightbox")
             .debug_selector(|| "image-lightbox".to_string())

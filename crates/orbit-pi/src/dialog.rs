@@ -12,7 +12,7 @@
 //! the entity — the same entity-with-callbacks shape as `CommandPalette`.
 
 use gpui::{
-    deferred, div, hsla, point, prelude::*, px, AnyElement, App, Context, ElementId, Entity,
+    deferred, div, point, prelude::*, px, AnyElement, App, Context, ElementId, Entity,
     FocusHandle, Focusable, FontWeight, IntoElement, MouseButton, MouseDownEvent, Render,
     ScrollHandle, SharedString, Window,
 };
@@ -427,10 +427,7 @@ impl Render for Dialog {
         );
 
         // ── scrim: dimmed backdrop; a click outside cancels the dialog ──
-        let scrim = match theme.mode {
-            theme::ThemeMode::Dark => hsla(0., 0., 0., 0.32),
-            theme::ThemeMode::Light => hsla(0., 0., 0., 0.18),
-        };
+        let scrim = theme.scrim_modal();
         div()
             .id("dialog-layer")
             .debug_selector(|| "dialog-layer".to_string())

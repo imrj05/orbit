@@ -15,7 +15,7 @@
 
 use alacritty_terminal::term::TermMode;
 use gpui::{
-    deferred, div, hsla, prelude::*, px, App, ClickEvent, Context, Entity, FocusHandle, Focusable,
+    deferred, div, prelude::*, px, App, ClickEvent, Context, Entity, FocusHandle, Focusable,
     Font, FontWeight, KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Render, ScrollHandle,
     SharedString, StyledText, Window,
 };
@@ -431,10 +431,7 @@ impl Render for CustomUi {
             .child(body)
             .child(footer);
 
-        let scrim = match theme.mode {
-            theme::ThemeMode::Dark => hsla(0., 0., 0., 0.32),
-            theme::ThemeMode::Light => hsla(0., 0., 0., 0.18),
-        };
+        let scrim = theme.scrim_modal();
         div()
             .id("custom-ui-layer")
             .debug_selector(|| "custom-ui-layer".to_string())
