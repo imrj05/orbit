@@ -2127,6 +2127,22 @@ fn render_activity_group(
 ) -> impl IntoElement {
     let steps = &all_steps[range.clone()];
     let title = activity_title(steps, live);
+    // Leading glyph cluster: one icon per distinct work kind (fixed
+    // canonical order, the reasoning bulb last) so a folded group reads as
+    // "what ran", not another line of prose.
+    let icons = activity_group_icons(steps);
+    let any_failed = steps
+        .iter()
+        .any(|step| step.tools.iter().any(|tool| tool.failed));
+    // State color only, per the One Accent Rule: danger when anything
+    // failed, ember while the group is still streaming, muted ink otherwise.
+    let icon_color = if any_failed {
+        theme.del_red
+    } else if live {
+        theme.accent
+    } else {
+        theme.text_3
+    };
     let tool_base = all_steps[..range.start]
         .iter()
         .map(|step| step.tools.len())
@@ -2146,22 +2162,50 @@ fn render_activity_group(
         .flex()
         .flex_col()
         .gap(px(4.))
+        // Let the summary chip hug its content so it reads as a control
+        // instead of a full-width band across the answer column.
+        .items_start()
         .child(
             div()
                 .id(ElementId::NamedInteger(
                     "activity-toggle".into(),
                     ((ix as u64) << 20) | range.start as u64,
                 ))
-                .w_full()
                 .min_w_0()
+                .max_w_full()
                 .h(px(26.))
                 .flex()
                 .items_center()
                 .gap(px(6.))
+                // Raised fill + hairline = DESIGN.md's chip treatment: the
+                // open state steps the border up for emphasis.
+                .pl(px(8.))
+                .pr(px(10.))
+                .bg(theme.bg_raised)
+                .border_1()
+                .border_color(if open {
+                    theme.border_strong
+                } else {
+                    theme.border
+                })
+                .rounded(px(8.))
                 .cursor_pointer()
                 .text_size(theme.ui_px(12.5))
                 .line_height(theme.ui_px(16.))
-                .hover(|style| style.text_color(theme.text))
+                .hover(|style| style.bg(theme.bg_hover).text_color(theme.text))
+                .child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .children(
+                            icons
+                                .iter()
+                                .copied()
+                                .map(|icon| glyph(icon, 11., icon_color)),
+                        ),
+                )
                 .child(
                     div()
                         .min_w_0()
@@ -6329,6 +6373,45 @@ pub(crate) fn activity_icon(name: &str) -> &'static str {
     }
 }
 
+/// One glyph per distinct work kind in a group, deduped and ordered
+/// canonically (run → read → edit → web → other), the reasoning bulb last
+/// when any step thought. The cluster is an index of what ran; the counts
+/// in the title stay the truth.
+fn activity_group_icons(steps: &[Step]) -> Vec<&'static str> {
+    let mut icons: Vec<&'static str> = Vec::new();
+    for step in steps {
+        for tool in &step.tools {
+            let icon = activity_icon(&tool.name);
+            if !icons.contains(&icon) {
+                icons.push(icon);
+            }
+        }
+    }
+    icons.sort_unstable_by_key(|icon| activity_icon_rank(icon));
+    if steps.iter().any(|step| !step.thinking.is_empty()) {
+        icons.push("icons/tools/thinking.svg");
+    }
+    // Six glyphs is all a compact summary chip can afford before the cluster
+    // starts competing with the title.
+    icons.truncate(6);
+    icons
+}
+
+/// Canonical cluster order: run, then explore, then mutate, then web, then
+/// everything else (task/skill/ask/mcp/wrench).
+fn activity_icon_rank(icon: &'static str) -> usize {
+    match icon {
+        "icons/tools/bash.svg" => 0,
+        "icons/tools/read.svg"
+        | "icons/tools/search.svg"
+        | "icons/tools/find.svg"
+        | "icons/tools/list.svg" => 1,
+        "icons/tools/edit.svg" | "icons/tools/write.svg" => 2,
+        "icons/tools/web.svg" | "icons/tools/fetch.svg" => 3,
+        _ => 4,
+    }
+}
+
 /// Human label for a tool card header. Known pi tools get a short, scannable
 /// verb ("Run", "Read", "Find files"); anything else falls back to the
 /// capitalized tool name so an unknown tool never renders blank.
@@ -6529,6 +6612,53 @@ mod tests {
             "Ran 1 command · Ran 1 file read · Ran 1 file edit · Thinking"
         );
         assert_eq!(activity_title(&[], false), "Worked");
+    }
+
+    #[test]
+    fn activity_group_icons_dedupe_order_and_cap() {
+        let step = |thinking: &str, tools: &[&str]| Step {
+            thinking: thinking.into(),
+            tools: tools
+                .iter()
+                .map(|name| ToolCall {
+                    name: name.to_string(),
+                    summary: String::new(),
+                    path: None,
+                    added: 0,
+                    removed: 0,
+                    id: None,
+                    args: None,
+                    output: None,
+                    failed: false,
+                    facts: Default::default(),
+                })
+                .collect(),
+            ..Step::default()
+        };
+        // Canonical order regardless of arrival order, deduped, bulb last.
+        let icons = activity_group_icons(&[
+            step("", &["read", "bash", "edit", "read", "bash"]),
+            step("hmm", &["bash"]),
+        ]);
+        assert_eq!(
+            icons,
+            vec![
+                "icons/tools/bash.svg",
+                "icons/tools/read.svg",
+                "icons/tools/edit.svg",
+                "icons/tools/thinking.svg",
+            ]
+        );
+        // A thought-only group carries just the bulb; a tools-only group
+        // carries none.
+        assert_eq!(
+            activity_group_icons(&[step("hmm", &[])]),
+            vec!["icons/tools/thinking.svg"]
+        );
+        assert_eq!(
+            activity_group_icons(&[step("", &["bash", "shell"])]),
+            vec!["icons/tools/bash.svg"]
+        );
     }
 
     #[test]
