@@ -2,6 +2,7 @@
 
 GLOSSARY = {
     "zh-CN": {
+        "truncated": "已截断",
         "Thinking": "正在思考",
         "Thought": "已思考",
         "Working": "正在工作",
@@ -19,6 +20,7 @@ GLOSSARY = {
         "Showing first %{count} — copy for the whole diff": "仅显示前 %{count} 行 — 复制以查看完整差异",
     },
     "ja": {
+        "truncated": "切り詰め",
         "Thinking": "思考中",
         "Thought": "思考",
         "Working": "作業中",
@@ -36,6 +38,7 @@ GLOSSARY = {
         "Showing first %{count} — copy for the whole diff": "先頭 %{count} 行のみ表示 — 全体はコピーで確認",
     },
     "ko": {
+        "truncated": "잘림",
         "Thinking": "생각 중",
         "Thought": "생각함",
         "Working": "작업 중",
@@ -53,6 +56,7 @@ GLOSSARY = {
         "Showing first %{count} — copy for the whole diff": "처음 %{count}개 줄만 표시 — 전체 diff는 복사하세요",
     },
     "es": {
+        "truncated": "truncado",
         "Thinking": "Pensando",
         "Thought": "Pensó",
         "Working": "Trabajando",
@@ -70,6 +74,7 @@ GLOSSARY = {
         "Showing first %{count} — copy for the whole diff": "Mostrando las primeras %{count} — copia para ver el diff completo",
     },
     "fr": {
+        "truncated": "tronqué",
         "Thinking": "Réflexion",
         "Thought": "A réfléchi",
         "Working": "En cours",
@@ -87,6 +92,7 @@ GLOSSARY = {
         "Showing first %{count} — copy for the whole diff": "Premières %{count} lignes — copiez pour le diff complet",
     },
     "de": {
+        "truncated": "gekürzt",
         "Thinking": "Denkt nach",
         "Thought": "Nachgedacht",
         "Working": "Arbeitet",
@@ -104,6 +110,7 @@ GLOSSARY = {
         "Showing first %{count} — copy for the whole diff": "Erste %{count} werden angezeigt — für den vollständigen Diff kopieren",
     },
     "pt-BR": {
+        "truncated": "truncado",
         "Thinking": "Pensando",
         "Thought": "Pensou",
         "Working": "Trabalhando",
@@ -121,6 +128,7 @@ GLOSSARY = {
         "Showing first %{count} — copy for the whole diff": "Mostrando as primeiras %{count} — copie para o diff completo",
     },
     "ru": {
+        "truncated": "обрезано",
         "Thinking": "Думает",
         "Thought": "Подумал",
         "Working": "Работает",
@@ -138,6 +146,7 @@ GLOSSARY = {
         "Showing first %{count} — copy for the whole diff": "Показаны первые %{count} — скопируйте для полного diff",
     },
     "it": {
+        "truncated": "troncato",
         "Thinking": "Sta pensando",
         "Thought": "Ha pensato",
         "Working": "In corso",

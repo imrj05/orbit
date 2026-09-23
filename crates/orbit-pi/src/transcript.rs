@@ -109,6 +109,49 @@ pub struct TurnSummary {
     pub aborted: bool,
 }
 
+/// Structured facts pi attaches to a tool result under `details`, reduced to
+/// the few the transcript shows at a glance. Data pi did not send stays
+/// absent — the UI never invents a count or a status.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ToolFacts {
+    /// The result was capped (read/bash `truncation`, grep match limit, ls
+    /// entry limit): the agent saw only part of the data.
+    pub truncated: bool,
+    /// Lines the agent actually received, when pi reported them.
+    pub output_lines: Option<u64>,
+    /// Lines the full result held, when pi reported them.
+    pub total_lines: Option<u64>,
+}
+
+impl ToolFacts {
+    /// Read facts from a raw tool-result envelope. Accepts the
+    /// `{"content":[…],"details":…}` shape pi sends; a bare payload with no
+    /// `details` yields empty facts.
+    fn from_result(value: &Value) -> Self {
+        let mut facts = Self::default();
+        let Some(details) = value.get("details").filter(|details| !details.is_null()) else {
+            return facts;
+        };
+        // read/bash attach a `truncation` object only when the output was cut;
+        // it carries the line budget the agent actually saw.
+        if let Some(truncation) = details.get("truncation").filter(|t| !t.is_null()) {
+            facts.truncated = truncation
+                .get("truncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            facts.output_lines = truncation.get("outputLines").and_then(Value::as_u64);
+            facts.total_lines = truncation.get("totalLines").and_then(Value::as_u64);
+        }
+        // grep / ls cap the result without a truncation object.
+        for key in ["matchLimitReached", "linesTruncated", "entryLimitReached"] {
+            if details.get(key).and_then(Value::as_bool) == Some(true) {
+                facts.truncated = true;
+            }
+        }
+        facts
+    }
+}
+
 /// One tool call row: name, args summary, and the file path it operates on
 /// (when the tool is file-oriented — drives the devicons glyph).
 #[derive(Clone)]
@@ -128,6 +171,9 @@ pub struct ToolCall {
     pub output: Option<Value>,
     /// The tool execution reported `isError`.
     pub failed: bool,
+    /// Structured result facts (`details`) — surfaced at a glance on the
+    /// card header instead of hiding inside the expanded output.
+    pub facts: ToolFacts,
 }
 
 impl ToolCall {
@@ -149,6 +195,7 @@ impl ToolCall {
             },
             output: None,
             failed: false,
+            facts: ToolFacts::default(),
         }
     }
 }
@@ -228,11 +275,12 @@ impl ChatMessage {
                                 .and_then(Value::as_str)
                                 .map(str::to_string);
                             // Some finalized entries carry the result inline.
-                            tool.output = block
+                            let result = block
                                 .get("result")
                                 .or_else(|| block.get("output"))
-                                .filter(|result| !result.is_null())
-                                .cloned();
+                                .filter(|result| !result.is_null());
+                            tool.facts = result.map(ToolFacts::from_result).unwrap_or_default();
+                            tool.output = result.cloned();
                             tool.failed = block
                                 .get("isError")
                                 .and_then(Value::as_bool)
@@ -338,10 +386,11 @@ fn image_from_block(block: &Value) -> Option<Arc<Image>> {
     Some(Arc::new(Image::from_bytes(format, bytes)))
 }
 
-/// Extract a tool result message: `(toolCallId, output, isError)`. pi sends
-/// `role: "toolResult"` messages — not chat rows; their output belongs on
-/// the matching tool call (rendered inside the activity detail).
-fn tool_result_parts(value: &Value) -> Option<(String, Option<Value>, bool)> {
+/// Extract a tool result message: `(toolCallId, output, isError, facts)`.
+/// pi sends `role: "toolResult"` messages — not chat rows; their output and
+/// structured `details` belong on the matching tool call (rendered on the
+/// activity card and inside its detail).
+fn tool_result_parts(value: &Value) -> Option<(String, Option<Value>, bool, ToolFacts)> {
     let value = value.get("message").unwrap_or(value);
     if value.get("role").and_then(Value::as_str) != Some("toolResult") {
         return None;
@@ -352,7 +401,8 @@ fn tool_result_parts(value: &Value) -> Option<(String, Option<Value>, bool)> {
         .get("isError")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    Some((id, output, failed))
+    let facts = ToolFacts::from_result(value);
+    Some((id, output, failed, facts))
 }
 
 /// Normalize a `tool_execution_*` result payload for display. pi wraps
@@ -403,7 +453,13 @@ fn tool_result_output(value: &Value) -> Option<Value> {
 
 /// Attach a tool result to the newest tool call carrying `id` (snapshot
 /// path — the live path routes through `attach_tool_result` positions).
-fn attach_tool_output(messages: &mut [ChatMessage], id: &str, output: Option<Value>, failed: bool) {
+fn attach_tool_output(
+    messages: &mut [ChatMessage],
+    id: &str,
+    output: Option<Value>,
+    failed: bool,
+    facts: ToolFacts,
+) {
     for message in messages.iter_mut().rev() {
         let Some(tool) = message
             .steps
@@ -418,6 +474,7 @@ fn attach_tool_output(messages: &mut [ChatMessage], id: &str, output: Option<Val
             tool.output = output;
         }
         tool.failed = failed;
+        tool.facts = facts;
         return;
     }
 }
@@ -807,8 +864,8 @@ impl Transcript {
             for message in messages {
                 // Tool results are not chat rows — attach the output to the
                 // matching tool call (by id) and keep the transcript clean.
-                if let Some((id, output, failed)) = tool_result_parts(message) {
-                    attach_tool_output(&mut parsed, &id, output, failed);
+                if let Some((id, output, failed, facts)) = tool_result_parts(message) {
+                    attach_tool_output(&mut parsed, &id, output, failed, facts);
                     continue;
                 }
                 if let Some(parsed_message) = ChatMessage::from_value(message) {
@@ -1113,6 +1170,7 @@ impl Transcript {
                             rebuilt.id = tool.id.clone();
                             rebuilt.output = tool.output.take();
                             rebuilt.failed = tool.failed;
+                            rebuilt.facts = std::mem::take(&mut tool.facts);
                             *tool = rebuilt;
                         }),
                         None => (false, false),
@@ -1158,12 +1216,14 @@ impl Transcript {
                         Some(ix) => {
                             tool.output = step.tools[ix].output.take();
                             tool.failed = step.tools[ix].failed;
+                            tool.facts = std::mem::take(&mut step.tools[ix].facts);
                             step.tools[ix] = tool;
                         }
                         None => {
                             if let Some(last) = step.tools.last_mut() {
                                 tool.output = last.output.take();
                                 tool.failed = last.failed;
+                                tool.facts = std::mem::take(&mut last.facts);
                                 *last = tool;
                             } else {
                                 step.tools.push(tool);
@@ -1284,14 +1344,14 @@ impl Transcript {
                     thinking: 0,
                     tools: 0,
                 });
-                let live_results: Vec<(Option<String>, Option<Value>, bool)> = slot
+                let live_results: Vec<(Option<String>, Option<Value>, bool, ToolFacts)> = slot
                     .steps
                     .get(mark.step)
                     .map(|step| {
                         step.tools
                             .iter()
                             .skip(mark.tools)
-                            .map(|t| (t.id.clone(), t.output.clone(), t.failed))
+                            .map(|t| (t.id.clone(), t.output.clone(), t.failed, t.facts.clone()))
                             .collect()
                     })
                     .unwrap_or_default();
@@ -1317,13 +1377,14 @@ impl Transcript {
                         continue;
                     }
                     let Some(id) = &tool.id else { continue };
-                    if let Some((_, output, failed)) = live_results
+                    if let Some((_, output, failed, facts)) = live_results
                         .iter()
                         .rev()
-                        .find(|(live_id, _, _)| live_id.as_deref() == Some(id))
+                        .find(|(live_id, _, _, _)| live_id.as_deref() == Some(id))
                     {
                         tool.output = output.clone();
                         tool.failed = *failed;
+                        tool.facts = facts.clone();
                     }
                 }
                 match slot.steps.get_mut(mark.step) {
@@ -1372,7 +1433,7 @@ impl Transcript {
     /// `tool_execution_start`; otherwise scan backwards through the loaded
     /// messages.
     fn attach_tool_result(&mut self, value: &Value) -> bool {
-        let Some((id, output, failed)) = tool_result_parts(value) else {
+        let Some((id, output, failed, facts)) = tool_result_parts(value) else {
             return false;
         };
         let position = self.tool_positions.borrow().get(&id).copied();
@@ -1385,12 +1446,13 @@ impl Transcript {
                     .and_then(|step| step.tools.get_mut(tool_ix))
                 {
                     Some(tool) => {
-                        let before = (tool.output.clone(), tool.failed);
+                        let before = (tool.output.clone(), tool.failed, tool.facts.clone());
                         if tool.output.is_none() {
                             tool.output = output;
                         }
                         tool.failed = failed;
-                        before != (tool.output.clone(), tool.failed)
+                        tool.facts = facts;
+                        before != (tool.output.clone(), tool.failed, tool.facts.clone())
                     }
                     None => false,
                 }
@@ -1411,12 +1473,13 @@ impl Transcript {
             else {
                 continue;
             };
-            let before = (tool.output.clone(), tool.failed);
+            let before = (tool.output.clone(), tool.failed, tool.facts.clone());
             if tool.output.is_none() {
                 tool.output = output;
             }
             tool.failed = failed;
-            return before != (tool.output.clone(), tool.failed);
+            tool.facts = facts;
+            return before != (tool.output.clone(), tool.failed, tool.facts.clone());
         }
         false
     }
@@ -1444,16 +1507,17 @@ impl Transcript {
                 else {
                     return false;
                 };
-                let before = (tool.output.clone(), tool.failed);
-                tool.output = value
+                let result = value
                     .get("result")
-                    .or_else(|| value.get("partialResult"))
-                    .map(normalize_tool_result);
+                    .or_else(|| value.get("partialResult"));
+                let before = (tool.output.clone(), tool.failed, tool.facts.clone());
+                tool.facts = result.map(ToolFacts::from_result).unwrap_or_default();
+                tool.output = result.map(normalize_tool_result);
                 tool.failed = value
                     .get("isError")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
-                before != (tool.output.clone(), tool.failed)
+                before != (tool.output.clone(), tool.failed, tool.facts.clone())
             };
             if changed {
                 self.remeasure_row(mix);
@@ -1554,6 +1618,7 @@ impl Transcript {
             return false;
         };
         let output = normalize_tool_result(partial);
+        let facts = ToolFacts::from_result(partial);
         let mut messages = self.messages.borrow_mut();
         let Some(message) = messages.get_mut(mix) else {
             return false;
@@ -1574,10 +1639,11 @@ impl Transcript {
         else {
             return false;
         };
-        if tool.output.as_ref() == Some(&output) {
+        if tool.output.as_ref() == Some(&output) && tool.facts == facts {
             return false;
         }
         tool.output = Some(output);
+        tool.facts = facts;
         let detail_open = self.expanded_tools.borrow().contains(&(mix, flat_ix));
         drop(messages);
         if detail_open {
@@ -3213,6 +3279,70 @@ mod tests {
             tool.output.as_ref().and_then(Value::as_str),
             Some("a.rs\nb.rs")
         );
+    }
+
+    #[test]
+    fn tool_facts_read_pi_details() {
+        // read/bash attach a `truncation` object only when the output was cut.
+        let facts = ToolFacts::from_result(&json!({
+            "content": [{"type": "text", "text": "x"}],
+            "details": {"truncation": {"truncated": true, "outputLines": 200, "totalLines": 1303}}
+        }));
+        assert!(facts.truncated);
+        assert_eq!(facts.output_lines, Some(200));
+        assert_eq!(facts.total_lines, Some(1303));
+        // grep / ls cap the result without a truncation object.
+        assert!(ToolFacts::from_result(&json!({"details": {"matchLimitReached": true}})).truncated);
+        assert!(ToolFacts::from_result(&json!({"details": {"entryLimitReached": true}})).truncated);
+        // No details is no facts — never invented.
+        assert_eq!(ToolFacts::from_result(&json!("plain")), ToolFacts::default());
+        assert_eq!(
+            ToolFacts::from_result(&json!({"content": [], "details": {}})),
+            ToolFacts::default()
+        );
+    }
+
+    #[test]
+    fn live_tool_result_captures_truncation_facts() {
+        let mut transcript = Transcript::new();
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": ""}),
+        });
+        transcript.apply_event(&Event::ToolExecutionStart {
+            value: json!({"toolCallId": "r1", "toolName": "read", "args": {"path": "big.rs"}}),
+        });
+        transcript.apply_event(&Event::ToolExecutionEnd {
+            value: json!({
+                "toolCallId": "r1",
+                "result": {
+                    "content": [{"type": "text", "text": "…"}],
+                    "details": {"truncation": {"truncated": true, "outputLines": 200, "totalLines": 5000}}
+                },
+                "isError": false
+            }),
+        });
+        let messages = transcript.messages.borrow();
+        let tool = messages[0].tools().next().unwrap();
+        assert!(tool.facts.truncated);
+        assert_eq!(tool.facts.output_lines, Some(200));
+        assert_eq!(tool.facts.total_lines, Some(5000));
+    }
+
+    #[test]
+    fn loaded_tool_results_keep_truncation_facts() {
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({"messages": [
+            {"role": "assistant", "content": [
+                {"type": "toolCall", "id": "g1", "name": "grep", "arguments": {"pattern": "foo"}}
+            ]},
+            {"role": "toolResult", "toolCallId": "g1", "toolName": "grep",
+             "content": [{"type": "text", "text": "many lines"}],
+             "details": {"matchLimitReached": true}, "isError": false}
+        ]}));
+        let messages = transcript.messages.borrow();
+        let tool = messages[0].tools().next().unwrap();
+        assert!(tool.facts.truncated);
+        assert_eq!(tool.facts.output_lines, None);
     }
 
     /// Ground-truth capture from pi 0.85.1 (`pi --mode rpc`, docs:

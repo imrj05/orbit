@@ -46,7 +46,7 @@ use crate::highlight::{self, Token};
 use crate::message_scroller::{self, MessageScrollerState};
 use crate::shimmer::ShimmerText;
 use crate::theme::{self, Theme, ThemeMode};
-use crate::transcript::{ChatMessage, Step, ToolCall};
+use crate::transcript::{ChatMessage, Step, ToolCall, ToolFacts};
 
 /// Opens the changed-files Review in the side pane (see `sidepane.rs`) —
 /// handed down from the app so the transcript's Review buttons can point
@@ -2906,6 +2906,9 @@ fn render_activity_card(
                         )
                     }
                 })
+                .when_some(truncation_chip(&tool.facts, theme), |row, chip| {
+                    row.child(chip)
+                })
                 .when(has_diff, |row| {
                     row.child(render_line_delta(added, removed, theme, 12.5))
                 })
@@ -3004,6 +3007,41 @@ fn render_activity_card(
         ));
     }
     card.into_any_element()
+}
+
+/// The header label for a capped result: "truncated" alone, or
+/// "truncated · 1,172/1,303" when pi reported the line budget. `None` for an
+/// uncapped tool.
+fn truncation_label(facts: &ToolFacts) -> Option<String> {
+    if !facts.truncated {
+        return None;
+    }
+    Some(match (facts.output_lines, facts.total_lines) {
+        (Some(shown), Some(total)) if total > shown => {
+            format!("{} · {shown}/{total}", tr!("transcript.truncated"))
+        }
+        _ => tr!("transcript.truncated"),
+    })
+}
+
+/// A compact header chip for a tool whose result pi capped. Warn-colored —
+/// the agent saw only part of the data — so the reader learns it without
+/// expanding the output.
+fn truncation_chip(facts: &ToolFacts, theme: Theme) -> Option<AnyElement> {
+    let label = truncation_label(facts)?;
+    Some(
+        div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(3.))
+            .text_size(theme.ui_px(11.))
+            .line_height(theme.ui_px(15.))
+            .text_color(theme.warn)
+            .child(glyph("icons/tools/truncated.svg", 11., theme.warn))
+            .child(label)
+            .into_any_element(),
+    )
 }
 
 /// First human-readable error line from a failed tool's captured output.
@@ -6457,6 +6495,7 @@ mod tests {
             args: None,
             output: None,
             failed: false,
+            facts: Default::default(),
         };
         // Two steps' worth of work lands on one summary line — counts span
         // every step instead of one "Ran …" row per step.
@@ -6618,6 +6657,31 @@ mod tests {
     }
 
     #[test]
+    fn truncation_label_reports_the_line_budget() {
+        // A capped read: the agent saw 1,172 of 1,303 lines.
+        assert_eq!(
+            truncation_label(&ToolFacts {
+                truncated: true,
+                output_lines: Some(1172),
+                total_lines: Some(1303),
+            })
+            .as_deref(),
+            Some("truncated · 1172/1303")
+        );
+        // A cap with no reported budget still reads as truncated.
+        assert_eq!(
+            truncation_label(&ToolFacts {
+                truncated: true,
+                ..ToolFacts::default()
+            })
+            .as_deref(),
+            Some("truncated")
+        );
+        // A complete result never shows the chip.
+        assert_eq!(truncation_label(&ToolFacts::default()), None);
+    }
+
+    #[test]
     fn command_tools_surface_the_shell_command_not_json() {
         let bash = ToolCall {
             name: "bash".into(),
@@ -6629,6 +6693,7 @@ mod tests {
             args: Some(serde_json::json!({ "command": "ls -la" })),
             output: None,
             failed: false,
+            facts: Default::default(),
         };
         assert_eq!(tool_command(&bash).as_deref(), Some("ls -la"));
         // The header preview shows the command, not the raw JSON summary.
@@ -6654,6 +6719,7 @@ mod tests {
             args: Some(serde_json::json!({ "command": command })),
             output: None,
             failed: false,
+            facts: Default::default(),
         };
         assert_eq!(
             activity_preview(&tool),
@@ -6701,6 +6767,7 @@ mod tests {
             })),
             output: None,
             failed: false,
+            facts: Default::default(),
         };
         let rows = build_edit_diff(&tool).expect("diff");
         assert_eq!(rows.len(), 2);
@@ -6727,6 +6794,7 @@ mod tests {
             args: Some(serde_json::json!({ "path": "src/new.rs", "content": "a\nb\n" })),
             output: None,
             failed: false,
+            facts: Default::default(),
         };
         let rows = build_edit_diff(&tool).expect("diff");
         assert_eq!(rows.len(), 2);
@@ -7105,6 +7173,7 @@ mod tests {
             args: Some(serde_json::json!({ "command": "cargo test" })),
             output: None,
             failed: false,
+            facts: Default::default(),
         };
         let step = Step {
             tools: vec![bash],
@@ -7125,6 +7194,7 @@ mod tests {
             args: Some(serde_json::json!({ "path": "src/auth.rs" })),
             output: None,
             failed: false,
+            facts: Default::default(),
         };
         let step = Step {
             tools: vec![read],
@@ -7788,6 +7858,7 @@ mod tests {
             args: Some(serde_json::json!({"url": "https://example.com"})),
             output: None,
             failed: false,
+            facts: Default::default(),
         };
         messages.borrow_mut()[0].steps = vec![
             Step { text: prose.clone(), thinking: "First thought\nChecking references".into(), tools: vec![tool.clone()], ..Step::default() },
@@ -7915,6 +7986,7 @@ mod tests {
                     args: None,
                     output: None,
                     failed: false,
+                    facts: Default::default(),
                 }],
                 ..Step::default()
             });
