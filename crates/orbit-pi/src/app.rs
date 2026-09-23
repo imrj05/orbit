@@ -271,6 +271,9 @@ pub struct OrbitApp {
     status_at: Option<Instant>,
     current_title: Option<String>,
     current_workspace: Option<PathBuf>,
+    /// Logo found at a conventional path in the current workspace, shown in
+    /// the new-task page's folder field; `None` keeps the folder glyph.
+    workspace_logo: Option<Arc<Image>>,
     /// Status-bar branch chip: the checked-out branch and its divergence from
     /// upstream, fetched off-thread so render never shells out to git.
     branch: Option<BranchStatus>,
@@ -502,7 +505,7 @@ pub struct OrbitApp {
     latest_turn: Option<usize>,
     /// Right side pane — Review (git diff).
     sidepane: Entity<SidePane>,
-    /// Right dock — the workspace file tree (cmd-shift-e).
+    /// Right dock — the workspace file tree (⌘⇧E / Ctrl+Shift+E).
     project_panel: Entity<crate::explorer::ProjectPanel>,
     /// Full-page read-only file viewer (the Files surface).
     file_viewer: Entity<crate::explorer::FileViewer>,
@@ -603,6 +606,9 @@ pub struct OrbitApp {
     plugin_install_project: bool,
     /// Description of the plugin operation in flight, if any.
     plugin_action: Option<String>,
+    /// Manual-refresh feedback: the toolbar button turns until this instant,
+    /// so an instant reload still acknowledges the click.
+    plugin_refresh_spin_until: Option<Instant>,
     /// Plugin source awaiting inline remove confirmation.
     plugin_remove_confirm: Option<String>,
     /// Re-render the toolbar as the install field is typed.
@@ -817,9 +823,14 @@ impl OrbitApp {
                 .with_max_lines(1)
         });
 
-        // Spawn pi rooted at the repo; sessions live in the real
-        // ~/.pi/agent/sessions so they are shared with the CLI.
-        let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        // Spawn pi rooted at the folder the user last worked in. Launched
+        // from Finder the process cwd is `/`, so the store is the real
+        // default; a deleted folder falls back to cwd. Sessions live in the
+        // real ~/.pi/agent/sessions so they are shared with the CLI.
+        let workspace = load_last_workspace()
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let workspace_logo = crate::workspace_logo::load(&workspace);
         let extensions = BundledExtensions::install();
         // Teach the installed pi's RPC mode the capabilities Orbit uses
         // (custom UI, quota, auth) before spawning it. Best-effort and cached
@@ -977,7 +988,8 @@ impl OrbitApp {
             status: connect_error.clone(),
             status_at: (!connect_error.is_empty()).then(Instant::now),
             current_title: None,
-            current_workspace: None,
+            current_workspace: Some(workspace),
+            workspace_logo,
             branch: None,
             branch_fetch: 0,
             added: 0,
@@ -1109,6 +1121,7 @@ impl OrbitApp {
             plugin_source_input: plugin_source_input.clone(),
             plugin_install_project: false,
             plugin_action: None,
+            plugin_refresh_spin_until: None,
             plugin_remove_confirm: None,
             _plugin_source_sub: plugin_source_sub,
             plugins_filter: plugins_filter.clone(),
@@ -1316,6 +1329,15 @@ impl OrbitApp {
             })
     }
 
+    /// Point the app at `cwd` and remember it for the next launch, so the
+    /// new-task page opens on the last folder instead of the process cwd
+    /// (which is `/` when the app is launched from Finder).
+    pub(super) fn set_current_workspace(&mut self, cwd: PathBuf) {
+        persist_last_workspace(&cwd);
+        self.workspace_logo = crate::workspace_logo::load(&cwd);
+        self.current_workspace = Some(cwd);
+    }
+
     /// Add `cwd` to Orbit's project list if it isn't already there. Called
     /// whenever the user picks a folder to work in — starting a task there,
     /// browsing for one, or opening one of its sessions. Never writes to pi.
@@ -1464,6 +1486,35 @@ fn persist_workspaces(workspaces: &[PathBuf]) {
     let _ = fs::write(path, payload.to_string());
 }
 
+/// `~/.orbit-pi/last-workspace.json` — the folder the last task ran in. The
+/// process cwd is `/` when the app is launched from Finder/Dock, so the
+/// new-task page restores this instead of showing `/`. Orbit-owned, like the
+/// workspaces list.
+fn last_workspace_path() -> PathBuf {
+    crate::platform::home_dir()
+        .join(".orbit-pi")
+        .join("last-workspace.json")
+}
+
+/// The remembered folder, if the store is readable and the folder still
+/// exists on disk.
+fn load_last_workspace() -> Option<PathBuf> {
+    let raw = fs::read_to_string(last_workspace_path()).ok()?;
+    let value = serde_json::from_str::<Value>(&raw).ok()?;
+    let path = normalize_workspace_path(value.get("path")?.as_str()?);
+    path.is_dir().then_some(path)
+}
+
+fn persist_last_workspace(path: &Path) {
+    let file = last_workspace_path();
+    if let Some(parent) = file.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let path = normalize_workspace_path(&path.to_string_lossy());
+    let payload = serde_json::json!({ "path": path.to_string_lossy() });
+    let _ = fs::write(file, payload.to_string());
+}
+
 /// A workspace path without a trailing separator, so it compares equal to
 /// pi's `cwd` values (which never carry one). An empty remainder (`/`) is
 /// kept as-is.
@@ -1516,6 +1567,7 @@ pub(crate) enum SettingsSection {
     Models,
     Appearance,
     Providers,
+    Shortcuts,
     About,
 }
 
@@ -1840,7 +1892,7 @@ mod titlebar_layout_tests;
 // `icon` and friends are part of the crate-wide UI kit; keep their original
 // `crate::app::…` paths stable for the other modules that import them.
 pub(crate) use helpers::{
-    empty_state, file_badge, file_glyph, icon, icon_dyn, nerd_font_family, press, spinner,
-    EmptyFill, PopoverSurface, BUTTON_GROUP, PRESS_DIM,
+    empty_state, file_badge, file_glyph, icon, icon_dyn, nerd_font_family, press,
+    refresh_glyph, spinner, EmptyFill, PopoverSurface, BUTTON_GROUP, PRESS_DIM,
 };
 use sidebar::sessions_with_placeholder;

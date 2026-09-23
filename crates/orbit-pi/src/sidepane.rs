@@ -23,7 +23,7 @@ use gpui::{
     TextRun, Window,
 };
 
-use crate::app::{empty_state, file_glyph, icon, nerd_font_family, EmptyFill, PopoverSurface, BUTTON_GROUP, PRESS_DIM};
+use crate::app::{empty_state, file_glyph, icon, nerd_font_family, refresh_glyph, EmptyFill, PopoverSurface, BUTTON_GROUP, PRESS_DIM};
 use crate::composer::ComposerInput;
 use crate::git;
 use crate::review::{self, ExpansionDirection, GapPosition, LineKind, Snapshot, Source};
@@ -701,13 +701,13 @@ impl SidePane {
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.refresh_from_button(cx);
                     }))
-                    .child(
-                        if self.review_loading || self.refresh_spin_until.is_some() {
-                            crate::app::spinner("review-spinner", 13., theme.text_3, theme)
-                        } else {
-                            icon("icons/refresh.svg", 13., theme.text_3).into_any_element()
-                        },
-                    ),
+                    .child(refresh_glyph(
+                        "review-spinner",
+                        13.,
+                        self.review_loading || self.refresh_spin_until.is_some(),
+                        theme.text_3,
+                        theme,
+                    )),
             )
             .child(
                 div()

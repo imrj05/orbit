@@ -53,7 +53,7 @@ use gpui::{
     UnderlineStyle, Window,
 };
 
-use crate::app::{icon, nerd_font_family, BUTTON_GROUP};
+use crate::app::{icon, nerd_font_family, refresh_glyph, BUTTON_GROUP};
 use crate::theme::{self, Theme};
 
 /// Emulator grid bounds, clamped so a collapsing panel never asks the PTY for
@@ -1705,27 +1705,18 @@ impl TerminalPanel {
                     .rounded_sm()
                     .cursor_pointer()
                     .hover(|style| style.bg(theme.bg_hover))
+                    .active(|style| style.bg(theme.active))
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| this.restart(cx)),
                     )
-                    .child(
-                        if self.restart_spin_until.is_some() {
-                            crate::app::spinner(
-                                "terminal-restart-spin",
-                                14.,
-                                if exited { theme.accent } else { theme.text_2 },
-                                theme,
-                            )
-                        } else {
-                            icon(
-                                "icons/refresh.svg",
-                                14.,
-                                if exited { theme.accent } else { theme.text_2 },
-                            )
-                            .into_any_element()
-                        },
-                    ),
+                    .child(refresh_glyph(
+                        "terminal-restart-spin",
+                        14.,
+                        self.restart_spin_until.is_some(),
+                        if exited { theme.accent } else { theme.text_2 },
+                        theme,
+                    )),
             )
             .child(
                 div()

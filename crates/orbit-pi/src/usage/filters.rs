@@ -9,7 +9,7 @@
 //! Every control writes through `UsagePage`'s filter setters, so one state
 //! object drives every panel on the page (§10).
 
-use crate::app::{press, PopoverSurface, BUTTON_GROUP};
+use crate::app::{press, refresh_glyph, PopoverSurface, BUTTON_GROUP};
 use chrono::Datelike;
 use gpui::{
     anchored, deferred, div, point, prelude::*, px, AnyElement, App, Corner, ElementId, Entity,
@@ -1149,6 +1149,7 @@ pub fn text_button(
     id: &'static str,
     label: &str,
     icon_path: Option<&'static str>,
+    icon_active: bool,
     enabled: bool,
     theme: Theme,
     on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
@@ -1171,7 +1172,21 @@ pub fn text_button(
                 .hover(|style| style.bg(theme.bg_hover).text_color(theme.text))
                 .on_mouse_down(MouseButton::Left, on_click)
         })
-        .children(icon_path.map(|path| icon(path, 12., color)))
+        .children(icon_path.map(|path| {
+            if icon_active {
+                // The leading glyph is the refresh affordance: turn it in
+                // place instead of swapping in a loader, matching the popover.
+                refresh_glyph(
+                    ElementId::Name(SharedString::from(format!("{id}-spin"))),
+                    12.,
+                    true,
+                    color,
+                    theme,
+                )
+            } else {
+                icon(path, 12., color).into_any_element()
+            }
+        }))
         .child(label.to_string())
         .into_any_element()
 }

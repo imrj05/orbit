@@ -23,7 +23,9 @@ use gpui::{
     PathBuilder, Pixels, Render, Window,
 };
 
-use crate::app::{icon, nerd_font_family, press, spinner, PopoverSurface, BUTTON_GROUP};
+use crate::app::{
+    icon, nerd_font_family, press, refresh_glyph, spinner, PopoverSurface, BUTTON_GROUP,
+};
 use crate::commit_message;
 use crate::gh;
 use crate::git::{self, CommitEntry, StatusRow};
@@ -2072,10 +2074,12 @@ impl GitPanel {
             .child(
                 div()
                     .id("git-refresh")
+                    .group(BUTTON_GROUP)
                     .p_1()
                     .rounded_sm()
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.bg_hover))
+                    .active(|s| s.bg(theme.active))
                     .tooltip({
                         let label = tr!("common.refresh");
                         move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
@@ -2083,15 +2087,13 @@ impl GitPanel {
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.refresh_from_button(cx);
                     }))
-                    .child(
-                        if (self.refresh_spin_until.is_some() || self.tab_loading())
-                            && !theme.ui.reduce_motion
-                        {
-                            spinner("git-refresh-spinner", 13., theme.accent, theme)
-                        } else {
-                            icon("icons/refresh.svg", 13., theme.text_3).into_any_element()
-                        },
-                    ),
+                    .child(refresh_glyph(
+                        "git-refresh-spinner",
+                        13.,
+                        self.refresh_spin_until.is_some() || self.tab_loading(),
+                        theme.text_3,
+                        theme,
+                    )),
             )
             .into_any_element()
     }

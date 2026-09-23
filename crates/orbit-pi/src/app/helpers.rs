@@ -132,6 +132,44 @@ pub(crate) fn spinner(
     .into_any_element()
 }
 
+/// The app's one refresh affordance: the refresh glyph itself turning in
+/// place while `active`, rather than swapping to a different loader, so the
+/// control keeps its shape through the click. Active, it wears the accent —
+/// the same read as the provider-usage popover's control; idle, it wears
+/// `idle_color` and lifts its ink while a [`BUTTON_GROUP`] ancestor is
+/// hovered. Reduce-motion keeps the glyph and the accent but drops the spin.
+///
+/// `id` must be unique per instance — GPUI tracks the animation by it.
+pub(crate) fn refresh_glyph(
+    id: impl Into<ElementId>,
+    size: f32,
+    active: bool,
+    idle_color: Hsla,
+    theme: Theme,
+) -> AnyElement {
+    if !active {
+        return icon("icons/refresh.svg", size, idle_color).into_any_element();
+    }
+    let svg = gpui::svg()
+        .path("icons/refresh.svg")
+        .flex_none()
+        .size(px(size))
+        .text_color(theme.accent);
+    if theme.ui.reduce_motion {
+        return svg.into_any_element();
+    }
+    svg.with_animation(
+        id,
+        Animation::new(Duration::from_millis(700)).repeat(),
+        |svg, delta| {
+            svg.with_transformation(Transformation::rotate(radians(
+                delta * std::f32::consts::TAU,
+            )))
+        },
+    )
+    .into_any_element()
+}
+
 /// The chrome every floating surface shares — anchored menus, dropdowns,
 /// popovers, tooltips, and modals: the raised menu fill, a strong 1px
 /// hairline, and the layered popover shadow. Callers keep their own radius,

@@ -90,6 +90,7 @@ mod updater;
 mod usage;
 mod watch;
 mod widgets;
+mod workspace_logo;
 mod workspace_picker;
 
 use std::time::Duration;
@@ -348,8 +349,10 @@ fn bind_keys(cx: &mut App) {
         // Sessions sidebar: the primary modifier + B is the workbench
         // convention for the left panel toggle.
         KeyBinding::new("secondary-b", ToggleSidebar, None),
-        // Left project panel (Explorer): cmd-shift-e is the convention.
-        KeyBinding::new("cmd-shift-e", ToggleProjectPanel, None),
+        // Left project panel (Explorer): the primary modifier + Shift + E,
+        // the workbench convention (secondary resolves to Cmd on macOS and
+        // Ctrl elsewhere, matching the label the UI shows).
+        KeyBinding::new("secondary-shift-e", ToggleProjectPanel, None),
         // On the Files surface, cmd-w closes the active file tab (the whole
         // surface when it was the last tab); cmd-shift-w closes the surface.
         KeyBinding::new("cmd-w", CloseFileTab, Some("Files")),

@@ -135,7 +135,7 @@ impl OrbitApp {
         self.busy = false;
         // Picking a folder to work in adds it to Orbit's own sidebar list.
         self.add_workspace(folder.clone());
-        self.current_workspace = Some(folder);
+        self.set_current_workspace(folder);
         self.current_session_path = None;
         self.added = 0;
         self.removed = 0;

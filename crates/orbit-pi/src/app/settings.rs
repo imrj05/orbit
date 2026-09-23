@@ -23,6 +23,10 @@ pub(super) enum PluginButtonSize {
     Toolbar,
 }
 
+/// How long the Plugins Refresh button turns after a click, so a synchronous
+/// reload still reads as a deliberate action.
+const PLUGIN_REFRESH_FEEDBACK: Duration = Duration::from_millis(650);
+
 /// The operation a background plugin task runs.
 #[derive(Clone, Copy)]
 enum PluginOp {
@@ -41,7 +45,7 @@ impl OrbitApp {
     pub(super) fn render_settings(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
         let this = cx.entity();
         let theme = *theme::get(cx);
-        let sections: [(SettingsSection, &'static str, String); 9] = [
+        let sections: [(SettingsSection, &'static str, String); 10] = [
             (
                 SettingsSection::General,
                 "icons/settings.svg",
@@ -81,6 +85,11 @@ impl OrbitApp {
                 SettingsSection::Providers,
                 "icons/cloud.svg",
                 tr!("settings.providers"),
+            ),
+            (
+                SettingsSection::Shortcuts,
+                "icons/keyboard.svg",
+                tr!("settings.shortcuts"),
             ),
             (
                 SettingsSection::About,
@@ -365,6 +374,10 @@ impl OrbitApp {
                 tr!("settings.providers"),
                 tr!("settings.providers_description"),
             ),
+            SettingsSection::Shortcuts => (
+                tr!("settings.shortcuts"),
+                tr!("settings.shortcuts_description"),
+            ),
             SettingsSection::About => (tr!("settings.about"), tr!("settings.about_description")),
         };
         div()
@@ -451,6 +464,7 @@ impl OrbitApp {
             SettingsSection::Models => self.model_rows(theme, this.clone(), cx),
             SettingsSection::Appearance => self.appearance_rows(theme, this.clone(), cx),
             SettingsSection::Providers => self.provider_rows(theme, this.clone(), cx),
+            SettingsSection::Shortcuts => self.shortcut_rows(theme),
             SettingsSection::About => {
                 let mut about = vec![self.setting_row(
                     theme,
@@ -1079,6 +1093,7 @@ impl OrbitApp {
                     false,
                     PluginButtonSize::Compact,
                     Some("icons/trash.svg"),
+                    false,
                     theme,
                     this.clone(),
                     PluginAction::ConfirmRemove {
@@ -1092,6 +1107,7 @@ impl OrbitApp {
                     false,
                     PluginButtonSize::Compact,
                     None,
+                    false,
                     theme,
                     this,
                     PluginAction::CancelRemove,
@@ -1106,6 +1122,7 @@ impl OrbitApp {
                     false,
                     PluginButtonSize::Compact,
                     Some("icons/refresh.svg"),
+                    false,
                     theme,
                     this.clone(),
                     PluginAction::Update {
@@ -1119,6 +1136,7 @@ impl OrbitApp {
                 false,
                 PluginButtonSize::Compact,
                 Some("icons/trash.svg"),
+                false,
                 theme,
                 this,
                 PluginAction::Remove {
@@ -1243,6 +1261,7 @@ impl OrbitApp {
             true,
             PluginButtonSize::Toolbar,
             Some("icons/plus.svg"),
+            false,
             theme,
             this.clone(),
             PluginAction::Install,
@@ -1254,6 +1273,7 @@ impl OrbitApp {
             false,
             PluginButtonSize::Toolbar,
             Some("icons/refresh.svg"),
+            self.plugin_refresh_spin_until.is_some(),
             theme,
             this,
             PluginAction::Refresh,
@@ -1375,6 +1395,7 @@ impl OrbitApp {
         primary: bool,
         size: PluginButtonSize,
         icon_path: Option<&'static str>,
+        spinning: bool,
         theme: Theme,
         this: Entity<OrbitApp>,
         action: PluginAction,
@@ -1383,6 +1404,7 @@ impl OrbitApp {
             PluginButtonSize::Compact => (px(28.), px(10.), theme.ui_px(11.5), 12.),
             PluginButtonSize::Toolbar => (px(30.), px(12.), theme.ui_px(12.), 13.),
         };
+        let spin_id = ElementId::Name(format!("{id}-spin").into());
         let base = div()
             .id(ElementId::Name(id.into()))
             .group(BUTTON_GROUP)
@@ -1414,8 +1436,14 @@ impl OrbitApp {
             )
         };
         press(button)
-            .when_some(icon_path, |button, path| {
-                button.child(icon(path, icon_size, icon_color))
+            .when_some(icon_path, move |button, path| {
+                if spinning {
+                    // Refresh turns its own glyph in place; the synchronous
+                    // reload still reads as a deliberate action.
+                    button.child(refresh_glyph(spin_id, icon_size, true, icon_color, theme))
+                } else {
+                    button.child(icon(path, icon_size, icon_color))
+                }
             })
             .child(div().child(label.to_string()))
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
@@ -1491,13 +1519,16 @@ impl OrbitApp {
             .child(icon("icons/search.svg", 14., theme.text_3))
             .child(self.provider_filter.clone());
 
-        let refresh_icon: AnyElement = if self.providers_refreshing {
-            crate::app::spinner("providers-refresh-spin", 13., theme.text_2, theme)
-        } else {
-            icon("icons/refresh.svg", 13., theme.text_2).into_any_element()
-        };
+        let refresh_icon = refresh_glyph(
+            "providers-refresh-spin",
+            13.,
+            self.providers_refreshing,
+            theme.text_2,
+            theme,
+        );
         let refresh_button = div()
             .id("providers-refresh")
+            .group(BUTTON_GROUP)
             .h(px(30.))
             .px(px(12.))
             .rounded_lg()
@@ -1510,6 +1541,7 @@ impl OrbitApp {
             .cursor_pointer()
             .when(self.providers_refreshing, |button| button.opacity(0.6))
             .hover(|style| style.bg(theme.bg_hover))
+            .active(|style| style.bg(theme.active))
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, _, cx| {
@@ -3817,6 +3849,86 @@ impl OrbitApp {
                 cx.open_url(env!("CARGO_PKG_REPOSITORY"));
             })
             .into_any_element()
+    }
+
+    // ── Settings → Shortcuts ─────────────────────────────────────
+
+    /// The Shortcuts reference: every workbench-level chord, grouped by the
+    /// surface it acts on. Read-only, so each row pairs its label with the
+    /// same keycap chip the command palette paints — one right-aligned axis
+    /// down each board, like every other settings page.
+    pub(super) fn shortcut_rows(&self, theme: Theme) -> Vec<AnyElement> {
+        use crate::platform::shortcuts as keys;
+        vec![
+            self.settings_section(
+                theme,
+                &tr!("shortcut.group_workbench"),
+                vec![
+                    self.shortcut_row(theme, &tr!("menu.new_task"), &[keys::NEW_SESSION]),
+                    self.shortcut_row(theme, &tr!("menu.refresh_sessions"), &[keys::REFRESH]),
+                    self.shortcut_row(theme, &tr!("menu.command_palette"), &[keys::PALETTE]),
+                    self.shortcut_row(theme, &tr!("menu.toggle_sidebar"), &[keys::SIDEBAR]),
+                    self.shortcut_row(
+                        theme,
+                        &tr!("command_palette.focus_sessions"),
+                        &[keys::FOCUS_SESSIONS],
+                    ),
+                    self.shortcut_row(theme, &tr!("menu.toggle_terminal"), &[keys::TERMINAL]),
+                    self.shortcut_row(theme, &tr!("explorer.toggle"), &[keys::PROJECT_PANEL]),
+                    self.shortcut_row(theme, &tr!("menu.usage"), &[keys::USAGE]),
+                ],
+            ),
+            self.settings_section(
+                theme,
+                &tr!("shortcut.group_composer"),
+                vec![
+                    self.shortcut_row(theme, &tr!("shortcut.send"), &[keys::SEND]),
+                    self.shortcut_row(theme, &tr!("shortcut.steer"), &[keys::STEER]),
+                    self.shortcut_row(theme, &tr!("shortcut.newline"), &[keys::NEWLINE]),
+                    self.shortcut_row(theme, &tr!("shortcut.accept"), &[keys::ACCEPT]),
+                    self.shortcut_row(theme, &tr!("shortcut.stop"), &[keys::STOP]),
+                ],
+            ),
+            self.settings_section(
+                theme,
+                &tr!("shortcut.group_transcript"),
+                vec![
+                    self.shortcut_row(theme, &tr!("menu.find_in_transcript"), &[keys::FIND]),
+                    self.shortcut_row(theme, &tr!("shortcut.prev_turn"), &[keys::PREV_TURN]),
+                    self.shortcut_row(theme, &tr!("shortcut.next_turn"), &[keys::NEXT_TURN]),
+                    self.shortcut_row(theme, &tr!("shortcut.copy_last"), &[keys::COPY_LAST_RESPONSE]),
+                ],
+            ),
+            self.settings_section(
+                theme,
+                &tr!("shortcut.group_application"),
+                vec![
+                    self.shortcut_row(theme, &tr!("menu.settings"), &[keys::SETTINGS]),
+                    self.shortcut_row(theme, &tr!("menu.check_for_updates"), &[keys::CHECK_UPDATES]),
+                    self.shortcut_row(theme, &tr!("menu.quit", app = tr!("app.name")), &[keys::QUIT]),
+                ],
+            ),
+        ]
+    }
+
+    /// One shortcut reference row: the command label on the left, its chord as
+    /// a keycap chip on the shared right axis. `setting_row` owns the layout so
+    /// the page reads like every other settings board.
+    fn shortcut_row(&self, theme: Theme, title: &str, keys: &[&str]) -> AnyElement {
+        self.setting_row(
+            theme,
+            title,
+            None,
+            None,
+            Some(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .children(keys.iter().map(|key| keycap(key, theme)))
+                    .into_any_element(),
+            ),
+        )
     }
 
     // ── Settings → General: notifications ──────────────────────────────
@@ -6141,6 +6253,17 @@ impl OrbitApp {
             PluginAction::Refresh => {
                 self.refresh_plugins(cx);
                 self.toast_info(tr!("settings.reloaded_installed_plugins"));
+                self.plugin_refresh_spin_until = Some(Instant::now() + PLUGIN_REFRESH_FEEDBACK);
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor()
+                        .timer(PLUGIN_REFRESH_FEEDBACK)
+                        .await;
+                    let _ = this.update(cx, |app, cx| {
+                        app.plugin_refresh_spin_until = None;
+                        cx.notify();
+                    });
+                })
+                .detach();
                 cx.notify();
             }
         }
@@ -6683,6 +6806,25 @@ impl OrbitApp {
         }
         cx.notify();
     }
+}
+
+/// A keyboard chord painted as a keycap chip: the same 22px pill the command
+/// palette uses, so a shortcut reads identically wherever Orbit shows one.
+fn keycap(label: &str, theme: Theme) -> AnyElement {
+    div()
+        .h(px(22.))
+        .min_w(px(28.))
+        .px(px(7.))
+        .rounded(px(7.))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(theme.overlay_strong)
+        .text_size(theme.ui_px(11.5))
+        .text_color(theme.text_3)
+        .child(label.to_string())
+        .into_any_element()
 }
 
 /// Whether a catalog model survives the Models page's search + favorites

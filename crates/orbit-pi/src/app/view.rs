@@ -1991,6 +1991,17 @@ impl OrbitApp {
         let folder_name = sessions::workspace_label(&cwd);
         let path_label = cwd.to_string_lossy().into_owned();
         let picker_open = self.workspace_picker.is_some();
+        // A conventional project logo takes the folder glyph's seat; no logo
+        // found → folder, as before.
+        let workspace_icon: AnyElement = match &self.workspace_logo {
+            Some(logo) => img(ImageSource::Image(logo.clone()))
+                .size(px(18.))
+                .flex_none()
+                .rounded(px(5.))
+                .object_fit(ObjectFit::Contain)
+                .into_any_element(),
+            None => icon("icons/folder.svg", 14., theme.text_2).into_any_element(),
+        };
 
         // The backdrop belongs to the caller (`new_task_backdrop`, painted by
         // the chat column in `render`): one layer spans this state, the
@@ -2123,11 +2134,7 @@ impl OrbitApp {
                                                             .flex()
                                                             .items_center()
                                                             .justify_center()
-                                                            .child(icon(
-                                                                "icons/folder.svg",
-                                                                14.,
-                                                                theme.text_2,
-                                                            )),
+                                                            .child(workspace_icon),
                                                     )
                                                     .child(
                                                         div()
@@ -2339,6 +2346,7 @@ impl OrbitApp {
                                     .child(
                                         div()
                                             .id("refresh-setup")
+                                            .group(BUTTON_GROUP)
                                             .px(px(12.))
                                             .py(px(6.))
                                             .rounded_lg()
@@ -2347,7 +2355,9 @@ impl OrbitApp {
                                             .gap(px(6.))
                                             .when(self.refreshing, |b| b.opacity(0.55))
                                             .when(!self.refreshing, |b| {
-                                                b.cursor_pointer().hover(|s| s.bg(theme.bg_hover))
+                                                b.cursor_pointer()
+                                                    .hover(|s| s.bg(theme.bg_hover))
+                                                    .active(|s| s.bg(theme.active))
                                             })
                                             .on_click({
                                                 let this = cx.entity();
@@ -2357,17 +2367,13 @@ impl OrbitApp {
                                                     });
                                                 }
                                             })
-                                            .child(if self.refreshing {
-                                                crate::app::spinner(
-                                                    "refresh-spin",
-                                                    13.,
-                                                    theme.text_2,
-                                                    theme,
-                                                )
-                                            } else {
-                                                icon("icons/refresh.svg", 13., theme.text_2)
-                                                    .into_any_element()
-                                            })
+                                            .child(refresh_glyph(
+                                                "refresh-spin",
+                                                13.,
+                                                self.refreshing,
+                                                theme.text_2,
+                                                theme,
+                                            ))
                                             .child(
                                                 div()
                                                     .text_size(theme.ui_px(12.))

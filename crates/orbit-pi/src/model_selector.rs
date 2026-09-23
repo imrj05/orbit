@@ -888,6 +888,7 @@ pub(crate) fn provider_icon(provider: &str) -> SharedString {
         "azure-openai-responses",
         "baseten",
         "cerebras",
+        "clinepass",
         "cloudflare-ai-gateway",
         "cloudflare-workers-ai",
         "deepseek",
@@ -1638,7 +1639,7 @@ mod tests {
     #[test]
     fn custom_provider_marks_resolve_to_embedded_assets() {
         use gpui::AssetSource as _;
-        for id in ["manifest", "llama.cpp"] {
+        for id in ["manifest", "llama.cpp", "clinepass"] {
             let path = provider_icon(id);
             assert_eq!(path.as_ref(), format!("icons/providers/{id}.svg"));
             assert!(

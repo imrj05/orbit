@@ -685,6 +685,18 @@ pub mod shortcuts {
     pub const PROJECT_PANEL: &str = "⌘⇧E";
     pub const SETTINGS: &str = "⌘,";
     pub const PALETTE: &str = "⌘P";
+    pub const FIND: &str = "⌘F";
+    pub const USAGE: &str = "⌘U";
+    pub const PREV_TURN: &str = "⌘↑";
+    pub const NEXT_TURN: &str = "⌘↓";
+    pub const COPY_LAST_RESPONSE: &str = "⌘⇧C";
+    pub const CHECK_UPDATES: &str = "⌘⇧U";
+    pub const QUIT: &str = "⌘Q";
+    pub const SEND: &str = "↵";
+    pub const STEER: &str = "⌘⇧↵";
+    pub const NEWLINE: &str = "⇧↵";
+    pub const ACCEPT: &str = "Tab";
+    pub const STOP: &str = "Esc";
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -697,6 +709,18 @@ pub mod shortcuts {
     pub const PROJECT_PANEL: &str = "Ctrl+Shift+E";
     pub const SETTINGS: &str = "Ctrl+,";
     pub const PALETTE: &str = "Ctrl+P";
+    pub const FIND: &str = "Ctrl+F";
+    pub const USAGE: &str = "Ctrl+U";
+    pub const PREV_TURN: &str = "Ctrl+↑";
+    pub const NEXT_TURN: &str = "Ctrl+↓";
+    pub const COPY_LAST_RESPONSE: &str = "Ctrl+Shift+C";
+    pub const CHECK_UPDATES: &str = "Ctrl+Shift+U";
+    pub const QUIT: &str = "Ctrl+Q";
+    pub const SEND: &str = "Enter";
+    pub const STEER: &str = "Ctrl+Shift+Enter";
+    pub const NEWLINE: &str = "Shift+Enter";
+    pub const ACCEPT: &str = "Tab";
+    pub const STOP: &str = "Esc";
 }
 
 /// The catalog id of the platform's own file manager, preferred when the user

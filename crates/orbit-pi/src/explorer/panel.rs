@@ -22,7 +22,10 @@ use gpui::{
 use super::ops;
 use super::tree::{self, Row, StatusBadge, TreeIndex};
 use super::walk;
-use crate::app::{empty_state, file_badge, file_glyph, icon, nerd_font_family, press, EmptyFill, PopoverSurface, BUTTON_GROUP};
+use crate::app::{
+    empty_state, file_badge, file_glyph, icon, nerd_font_family, press, refresh_glyph, EmptyFill,
+    PopoverSurface, BUTTON_GROUP,
+};
 use crate::composer::ComposerInput;
 use crate::git;
 use crate::platform;
@@ -811,15 +814,30 @@ impl ProjectPanel {
                     this.start_new_folder(window, cx);
                 }),
             ))
-            .child(ghost_icon(
-                &theme,
-                "explorer-refresh",
-                "icons/refresh.svg",
-                theme.text_3,
-                cx.listener(|this, _: &ClickEvent, _, cx| {
+            .child(
+                press(
+                    div()
+                        .id("explorer-refresh")
+                        .group(BUTTON_GROUP)
+                        .size(px(24.))
+                        .rounded(px(6.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .hover(|el| el.bg(theme.bg_hover)),
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.mark_stale(cx);
-                }),
-            ))
+                }))
+                .child(refresh_glyph(
+                    "explorer-refresh-spin",
+                    13.,
+                    self.loading,
+                    theme.text_3,
+                    theme,
+                )),
+            )
             .child(ghost_icon(
                 &theme,
                 "explorer-collapse",

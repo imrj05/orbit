@@ -236,7 +236,7 @@ pub fn is_image(path: &str) -> bool {
 /// The GPUI decoder for an image path, if any. `.ico`/`.avif` are recognized
 /// by consumers but not decodable by gpui, so they fall through to the binary
 /// notice rather than failing a decode.
-fn image_format(path: &Path) -> Option<ImageFormat> {
+pub(crate) fn image_format(path: &Path) -> Option<ImageFormat> {
     let name = path
         .file_name()
         .and_then(|name| name.to_str())

@@ -227,6 +227,7 @@ impl UsagePage {
                     &refresh_idle_label
                 },
                 Some("icons/refresh.svg"),
+                self.is_refreshing(),
                 true,
                 theme,
                 {
@@ -246,6 +247,7 @@ impl UsagePage {
             "usage-export",
             &tr!("usage.export"),
             Some("icons/upload.svg"),
+            false,
             enabled,
             theme,
             move |_, window, cx| {
@@ -556,6 +558,7 @@ impl UsagePage {
             "usage-chips-clear",
             &tr!("usage.clear_all"),
             None,
+            false,
             true,
             theme,
             move |_, _, cx| {
