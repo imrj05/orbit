@@ -148,6 +148,57 @@ pub(crate) trait PopoverSurface: Styled {
 
 impl<T: Styled> PopoverSurface for T {}
 
+/// How an empty/error state fills its parent: `Full` when the parent is a plain
+/// sized box (a panel body), `Grow` when the parent is a flex column.
+#[derive(Clone, Copy)]
+pub(crate) enum EmptyFill {
+    Full,
+    Grow,
+}
+
+/// A centered empty/error state: a medium title over an optional tertiary
+/// detail line. Shared by the Explorer panel, the file viewer, and the Review
+/// pane so their empty/error copy sits identically; the Git page's iconed
+/// variant is `git_panel::widgets::empty_note`.
+pub(crate) fn empty_state(
+    theme: Theme,
+    title: &str,
+    detail: Option<&str>,
+    fill: EmptyFill,
+) -> AnyElement {
+    let column = match fill {
+        EmptyFill::Full => div().size_full(),
+        EmptyFill::Grow => div().flex_1().min_h_0().min_w_0(),
+    };
+    let mut column = column
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .px(px(16.))
+        .pb(px(24.))
+        .child(
+            div()
+                .text_size(theme.ui_px(13.))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text)
+                .child(title.to_string()),
+        );
+    if let Some(detail) = detail {
+        column = column.child(
+            div()
+                .mt(px(6.))
+                .max_w(px(320.))
+                .text_align(TextAlign::Center)
+                .text_size(theme.ui_px(12.))
+                .line_height(theme.ui_px(17.))
+                .text_color(theme.text_3)
+                .child(detail.to_string()),
+        );
+    }
+    column.into_any_element()
+}
+
 // ── top-bar chip primitives ──
 
 /// Shared height of every top-bar control — the quota pill, the "open in"

@@ -49,7 +49,7 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/app/view.rs       top-level chrome: sidebar, transcript, composer, status bar, onboarding, image lightbox
   src/app/open_in.rs    installed-editor/terminal detection and the "open in" menu
   src/app/pi_update_ui.rs launch-time pi self-update: background check, install, toasts
-  src/app/helpers.rs    shared UI primitives (icon/file glyphs, the loading spinner, the floating-surface chrome) + small formatting helpers
+  src/app/helpers.rs    shared UI primitives (icon/file glyphs, the loading spinner, the floating-surface chrome, the empty/error state) + small formatting helpers
   src/auth.rs           non-sensitive provider-auth state machine for the auth.* RPC namespace (login/cancel/timeout/restart recovery)
   src/transcript.rs     virtualized messages (snapshot + stream)
   src/transcript_view.rs Waku-style transcript paint (rail, activity cards, copy); plain-GPUI message rows (no component library)

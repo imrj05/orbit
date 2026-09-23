@@ -20,10 +20,10 @@ use gpui::{
     div, prelude::*, px, AnyElement, ClickEvent, Context,
     CursorStyle, Entity, Font, FontFeatures, FontStyle, FontWeight, Hsla, KeyDownEvent,
     ListAlignment, ListOffset, ListState, MouseDownEvent, Pixels, Render, SharedString, StyledText,
-    TextAlign, TextRun, Window,
+    TextRun, Window,
 };
 
-use crate::app::{file_glyph, icon, nerd_font_family, PopoverSurface, BUTTON_GROUP, PRESS_DIM};
+use crate::app::{empty_state, file_glyph, icon, nerd_font_family, EmptyFill, PopoverSurface, BUTTON_GROUP, PRESS_DIM};
 use crate::composer::ComposerInput;
 use crate::git;
 use crate::review::{self, ExpansionDirection, GapPosition, LineKind, Snapshot, Source};
@@ -807,20 +807,18 @@ impl SidePane {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let diff = if self.review_loading && self.review.is_none() {
-            centered_message(theme, &tr!("sidepane.loading_changes"), None).into_any_element()
+            empty_state(theme, &tr!("sidepane.loading_changes"), None, EmptyFill::Grow)
         } else if let Some(error) = self.review_error.as_deref() {
-            centered_message(theme, &tr!("sidepane.changes_unavailable"), Some(error))
-                .into_any_element()
+            empty_state(theme, &tr!("sidepane.changes_unavailable"), Some(error), EmptyFill::Grow)
         } else if let Some(snapshot) = self.review.clone() {
             if snapshot.files.is_empty() {
                 let empty = self.source.empty_description();
-                centered_message(theme, &tr!("sidepane.no_changes"), Some(&empty))
-                    .into_any_element()
+                empty_state(theme, &tr!("sidepane.no_changes"), Some(&empty), EmptyFill::Grow)
             } else {
                 self.render_diff(snapshot, theme, cx)
             }
         } else {
-            centered_message(theme, &tr!("sidepane.no_changes"), None).into_any_element()
+            empty_state(theme, &tr!("sidepane.no_changes"), None, EmptyFill::Grow)
         };
 
         let mut content = div()
@@ -1624,39 +1622,6 @@ fn gap_icon(direction: ExpansionDirection) -> &'static str {
 }
 
 // ── shared helpers ─────────────────────────────────────────────────────────
-
-fn centered_message(theme: Theme, title: &str, detail: Option<&str>) -> AnyElement {
-    let mut column = div()
-        .flex_1()
-        .min_h_0()
-        .min_w_0()
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .px(px(16.))
-        .pb(px(32.))
-        .child(
-            div()
-                .text_size(theme.ui_px(13.))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text)
-                .child(title.to_string()),
-        );
-    if let Some(detail) = detail {
-        column = column.child(
-            div()
-                .mt(px(6.))
-                .max_w(px(300.))
-                .text_align(TextAlign::Center)
-                .text_size(theme.ui_px(12.))
-                .line_height(theme.ui_px(17.))
-                .text_color(theme.text_3)
-                .child(detail.to_string()),
-        );
-    }
-    column.into_any_element()
-}
 
 impl Source {
     /// Reader-facing empty-state copy for each source.

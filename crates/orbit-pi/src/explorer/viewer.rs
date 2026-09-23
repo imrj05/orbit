@@ -20,10 +20,10 @@ use gpui::{
     div, img, prelude::*, px, AnyElement, App, ClickEvent, Context,
     Entity, FocusHandle, Focusable, Font, FontFeatures, FontStyle, FontWeight, Hsla, Image,
     ImageFormat, ImageSource, ListAlignment, ListState, ObjectFit, Render, ScrollHandle,
-    StyledText, Subscription, TextAlign, TextRun, Timer, Window,
+    StyledText, Subscription, TextRun, Timer, Window,
 };
 
-use crate::app::{file_badge, file_glyph, icon, nerd_font_family};
+use crate::app::{empty_state, file_badge, file_glyph, icon, nerd_font_family, EmptyFill};
 use crate::composer::ComposerInput;
 use crate::highlight::{self, Lang, Token};
 use crate::theme::{self, Theme, ThemeMode};
@@ -1050,14 +1050,14 @@ impl FileViewer {
         }
         let Some(tab) = self.tabs.get(self.active) else {
             let detail = tr!("explorer.select_file_detail");
-            return centered_message(&theme, tr!("explorer.select_file"), Some(detail.as_str()));
+            return empty_state(theme, &tr!("explorer.select_file"), Some(detail.as_str()), EmptyFill::Grow);
         };
         let Some(content) = tab.content.as_ref() else {
             let detail = tr!("explorer.select_file_detail");
-            return centered_message(&theme, tr!("explorer.select_file"), Some(detail.as_str()));
+            return empty_state(theme, &tr!("explorer.select_file"), Some(detail.as_str()), EmptyFill::Grow);
         };
         if let Some(error) = &content.error {
-            return centered_message(&theme, tr!("explorer.read_error"), Some(error.as_str()));
+            return empty_state(theme, &tr!("explorer.read_error"), Some(error.as_str()), EmptyFill::Grow);
         }
         match content.mode {
             // Editable: the buffer is the body (empty files included, so the
@@ -1107,18 +1107,19 @@ impl FileViewer {
                             .object_fit(ObjectFit::Contain),
                     )
                     .into_any_element(),
-                None => centered_message(&theme, tr!("explorer.binary"), None),
+                None => empty_state(theme, &tr!("explorer.binary"), None, EmptyFill::Grow),
             },
             Mode::Binary => {
                 let detail = tr!("explorer.binary_detail");
-                centered_message(&theme, tr!("explorer.binary"), Some(detail.as_str()))
+                empty_state(theme, &tr!("explorer.binary"), Some(detail.as_str()), EmptyFill::Grow)
             }
             Mode::TooLarge => {
                 let detail = tr!("explorer.too_large", size = format_bytes(content.bytes));
-                centered_message(
-                    &theme,
-                    tr!("explorer.too_large_title"),
+                empty_state(
+                    theme,
+                    &tr!("explorer.too_large_title"),
                     Some(detail.as_str()),
+                    EmptyFill::Grow,
                 )
             }
         }
@@ -1247,38 +1248,6 @@ fn loading_state(theme: &Theme) -> AnyElement {
                 .child(tr!("explorer.loading")),
         )
         .into_any_element()
-}
-
-fn centered_message(theme: &Theme, title: String, detail: Option<&str>) -> AnyElement {
-    let mut column = div()
-        .flex_1()
-        .min_h_0()
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .px(px(24.))
-        .pb(px(24.))
-        .child(
-            div()
-                .text_size(theme.ui_px(13.))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text)
-                .child(title),
-        );
-    if let Some(detail) = detail {
-        column = column.child(
-            div()
-                .mt(px(6.))
-                .max_w(px(320.))
-                .text_align(TextAlign::Center)
-                .text_size(theme.ui_px(12.))
-                .line_height(theme.ui_px(17.))
-                .text_color(theme.text_3)
-                .child(detail.to_string()),
-        );
-    }
-    column.into_any_element()
 }
 
 fn mono_font() -> Font {
