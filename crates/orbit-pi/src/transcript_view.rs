@@ -2039,8 +2039,9 @@ fn activity_title(steps: &[Step], live: bool) -> String {
     for step in steps {
         for tool in &step.tools {
             match tool.name.as_str() {
-                "bash" | "shell" => commands += 1,
-                "read" | "grep" | "find" | "glob" | "search" => reads += 1,
+                "bash" | "shell" | "terminal" | "exec" | "run" => commands += 1,
+                "read" | "view" | "grep" | "find" | "glob" | "search" | "list" | "ls"
+                | "tree" => reads += 1,
                 "edit" | "write" => edits += 1,
                 _ => other += 1,
             }
@@ -2350,6 +2351,26 @@ fn render_thinking_body(
         handle.scroll_to_bottom();
     }
     let id = (key.0 as u64) << 16 | key.1 as u64;
+    // The reasoning glyph: brand accent while the card streams (with a slow
+    // opacity pulse, reduce-motion aware), muted once it settles.
+    let thought_icon: AnyElement = if live && !theme.ui.reduce_motion {
+        div()
+            .flex_none()
+            .child(glyph("icons/tools/thinking.svg", 13., theme.accent))
+            .with_animation(
+                ElementId::NamedInteger("thought-icon".into(), id),
+                Animation::new(Duration::from_millis(1600)).repeat(),
+                |el, delta| el.opacity(0.4 + 0.6 * (delta * std::f32::consts::TAU).sin().abs()),
+            )
+            .into_any_element()
+    } else {
+        glyph(
+            "icons/tools/thinking.svg",
+            13.,
+            if live { theme.accent } else { theme.text_3 },
+        )
+        .into_any_element()
+    };
     let mut card = div()
         .debug_selector(move || format!("thought-card-{}-{}", key.0, key.1))
         .rounded(px(9.))
@@ -2373,7 +2394,7 @@ fn render_thinking_body(
                 .text_size(theme.ui_px(13.))
                 .line_height(theme.ui_px(17.))
                 .hover(|style| style.text_color(theme.text))
-                .child(glyph("icons/spark.svg", 13., theme.text_3))
+                .child(thought_icon)
                 .child(
                     div()
                         .flex_1()
@@ -2834,12 +2855,16 @@ fn render_activity_card(
                 .line_height(theme.ui_px(17.))
                 .when(has_detail, |row| row.cursor_pointer())
                 .hover(|style| style.bg(theme.overlay_strong))
-                .child(glyph(activity_icon(&tool.name), 13., theme.text_3))
+                .child(glyph(
+                    activity_icon(&tool.name),
+                    14.,
+                    activity_tint(&tool.name, theme),
+                ))
                 .child(
                     div()
                         .flex_none()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme.accent)
+                        .text_color(theme.text)
                         .child(action),
                 )
                 .when(!detail.is_empty(), |row| {
@@ -4214,7 +4239,7 @@ fn working_activity_label(step: &Step) -> Option<String> {
             "bash" | "shell" | "terminal" | "exec" | "run" => {
                 tr!("transcript_view.verb_running")
             }
-            "read" => tr!("transcript_view.verb_reading"),
+            "read" | "view" => tr!("transcript_view.verb_reading"),
             "grep" | "find" | "glob" | "search" => tr!("transcript_view.verb_searching"),
             "edit" | "write" => tr!("transcript_view.verb_editing"),
             other => {
@@ -6218,16 +6243,72 @@ fn toggle_index(set: &Rc<RefCell<HashSet<usize>>>, ix: usize) {
     }
 }
 
+/// The leading glyph for a tool card — a HugeIcons stroke-rounded SVG from
+/// `assets/icons/tools/`. Tools are grouped by the kind of work so a turn
+/// scans by shape: explore (read/search/find/list), mutate (edit/write),
+/// execute (bash), delegate (task/skill/mcp/web), and a wrench fallback so
+/// an unknown tool still renders a real mark.
 pub(crate) fn activity_icon(name: &str) -> &'static str {
     match name {
-        "edit" | "write" => "icons/file-diff.svg",
-        "read" | "grep" | "find" | "glob" | "search" => "icons/search.svg",
-        "bash" | "shell" => "icons/spark.svg",
-        _ => "icons/task.svg",
+        "edit" => "icons/tools/edit.svg",
+        "write" => "icons/tools/write.svg",
+        "read" | "view" => "icons/tools/read.svg",
+        "grep" | "search" => "icons/tools/search.svg",
+        "find" | "glob" => "icons/tools/find.svg",
+        "list" | "ls" | "tree" => "icons/tools/list.svg",
+        "bash" | "shell" | "terminal" | "exec" | "run" => "icons/tools/bash.svg",
+        "task" | "agent" | "subagent" => "icons/tools/task.svg",
+        "web_search" | "websearch" | "search_web" | "browse" => "icons/tools/web.svg",
+        "web_fetch" | "webfetch" | "fetch" | "open_url" => "icons/tools/fetch.svg",
+        "skill" => "icons/tools/skill.svg",
+        "ask" | "ask_user" | "question" | "elicit" => "icons/tools/ask.svg",
+        "todo" | "todo_write" | "plan" | "update_plan" => "icons/tools/todo.svg",
+        "notebook" | "eval" | "execute_code" => "icons/tools/code.svg",
+        name if name.starts_with("mcp") => "icons/tools/mcp.svg",
+        _ => "icons/tools/tool.svg",
     }
 }
 
+/// Leading-icon tint for a tool card. The shape names the tool; the color
+/// groups it: mutating and delegating work takes the brand accent, shell
+/// commands take the warning amber, and read-only exploration stays neutral
+/// so a long turn scans by category at a glance.
+fn activity_tint(name: &str, theme: Theme) -> Hsla {
+    match name {
+        "edit" | "write" | "task" | "agent" | "subagent" | "skill" | "todo"
+        | "todo_write" | "plan" | "update_plan" => theme.accent,
+        "bash" | "shell" | "terminal" | "exec" | "run" => theme.warn,
+        _ => theme.text_2,
+    }
+}
+
+/// Human label for a tool card header. Known pi tools get a short, scannable
+/// verb ("Run", "Read", "Find files"); anything else falls back to the
+/// capitalized tool name so an unknown tool never renders blank.
 fn activity_action_label(name: &str) -> String {
+    let known = match name {
+        "bash" | "shell" | "terminal" | "exec" | "run" => Some("Run"),
+        "read" | "view" => Some("Read"),
+        "edit" => Some("Edit"),
+        "write" => Some("Write"),
+        "grep" | "search" => Some("Search"),
+        "find" | "glob" => Some("Find files"),
+        "list" | "ls" | "tree" => Some("List"),
+        "task" | "agent" | "subagent" => Some("Task"),
+        "web_search" | "websearch" | "search_web" | "browse" => Some("Web search"),
+        "web_fetch" | "webfetch" | "fetch" | "open_url" => Some("Fetch"),
+        "skill" => Some("Skill"),
+        "ask" | "ask_user" | "question" | "elicit" => Some("Ask"),
+        "todo" | "todo_write" | "plan" | "update_plan" => Some("Plan"),
+        "notebook" | "eval" | "execute_code" => Some("Run code"),
+        _ => None,
+    };
+    if let Some(label) = known {
+        return label.to_string();
+    }
+    if name.starts_with("mcp") {
+        return "MCP".to_string();
+    }
     let mut chars = name.chars();
     match chars.next() {
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
@@ -6513,10 +6594,27 @@ mod tests {
 
     #[test]
     fn activity_icon_maps_pi_tools() {
-        assert_eq!(activity_icon("edit"), "icons/file-diff.svg");
-        assert_eq!(activity_icon("bash"), "icons/spark.svg");
-        assert_eq!(activity_icon("grep"), "icons/search.svg");
-        assert_eq!(activity_icon("mcp"), "icons/task.svg");
+        assert_eq!(activity_icon("edit"), "icons/tools/edit.svg");
+        assert_eq!(activity_icon("write"), "icons/tools/write.svg");
+        assert_eq!(activity_icon("read"), "icons/tools/read.svg");
+        assert_eq!(activity_icon("bash"), "icons/tools/bash.svg");
+        assert_eq!(activity_icon("grep"), "icons/tools/search.svg");
+        assert_eq!(activity_icon("glob"), "icons/tools/find.svg");
+        assert_eq!(activity_icon("mcp"), "icons/tools/mcp.svg");
+        assert_eq!(activity_icon("mcp__filesystem"), "icons/tools/mcp.svg");
+        // An unknown tool keeps a real mark instead of a blank slot.
+        assert_eq!(activity_icon("frobnicate"), "icons/tools/tool.svg");
+    }
+
+    #[test]
+    fn activity_action_label_reads_as_a_verb() {
+        assert_eq!(activity_action_label("bash"), "Run");
+        assert_eq!(activity_action_label("read"), "Read");
+        assert_eq!(activity_action_label("glob"), "Find files");
+        assert_eq!(activity_action_label("mcp__github"), "MCP");
+        // Unknown tools still get a readable, never-blank label.
+        assert_eq!(activity_action_label("frobnicate"), "Frobnicate");
+        assert_eq!(activity_action_label(""), "Tool");
     }
 
     #[test]
