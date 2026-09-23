@@ -2134,15 +2134,6 @@ fn render_activity_group(
     let any_failed = steps
         .iter()
         .any(|step| step.tools.iter().any(|tool| tool.failed));
-    // State color only, per the One Accent Rule: danger when anything
-    // failed, ember while the group is still streaming, muted ink otherwise.
-    let icon_color = if any_failed {
-        theme.del_red
-    } else if live {
-        theme.accent
-    } else {
-        theme.text_3
-    };
     let tool_base = all_steps[..range.start]
         .iter()
         .map(|step| step.tools.len())
@@ -2155,6 +2146,16 @@ fn render_activity_group(
         .sum::<usize>()
         .saturating_sub(1);
     let key = (ix, range.start);
+    // State color for the glyph cluster: danger when anything failed, ember
+    // while the group streams. Settled clusters tint per work kind instead
+    // (see `work_tint`).
+    let cluster_state = if any_failed {
+        Some(theme.del_red)
+    } else if live {
+        Some(theme.accent)
+    } else {
+        None
+    };
     let mut group = div()
         .debug_selector(move || format!("activity-group-{ix}-{}", key.1))
         .w_full()
@@ -2199,12 +2200,13 @@ fn render_activity_group(
                         .flex()
                         .items_center()
                         .gap(px(4.))
-                        .children(
-                            icons
-                                .iter()
-                                .copied()
-                                .map(|icon| glyph(icon, 11., icon_color)),
-                        ),
+                        .children(icons.iter().copied().map(|icon| {
+                            glyph(
+                                icon,
+                                11.,
+                                cluster_state.unwrap_or_else(|| work_tint(icon, theme)),
+                            )
+                        })),
                 )
                 .child(
                     div()
@@ -2857,6 +2859,16 @@ fn render_activity_card(
     }
     let action = activity_action_label(&tool.name);
     let detail = activity_preview(tool);
+    let icon = activity_icon(&tool.name);
+    // The glyph tone: strong state color while the call runs or once it
+    // failed; otherwise the work kind's soft tint (see `work_tint`).
+    let tone = if tool.failed {
+        theme.del_red
+    } else if pulse {
+        theme.accent
+    } else {
+        work_tint(icon, theme)
+    };
     let is_command = tool_command(tool).is_some();
     let has_diff = tool.added > 0 || tool.removed > 0;
     let added = tool.added;
@@ -2893,20 +2905,7 @@ fn render_activity_card(
                 .line_height(theme.ui_px(17.))
                 .when(has_detail, |row| row.cursor_pointer())
                 .hover(|style| style.bg(theme.overlay_strong))
-                .child(glyph(
-                    activity_icon(&tool.name),
-                    14.,
-                    // Monochrome by default (the One Accent Rule); color is
-                    // reserved for state — ember while the call runs, danger
-                    // once it fails.
-                    if tool.failed {
-                        theme.del_red
-                    } else if pulse {
-                        theme.accent
-                    } else {
-                        theme.text_2
-                    },
-                ))
+                .child(activity_badge(icon, tone, theme))
                 .child(
                     div()
                         .flex_none()
@@ -6412,6 +6411,67 @@ fn activity_icon_rank(icon: &'static str) -> usize {
     }
 }
 
+/// Rotate the accent's hue by `offset` turns while keeping the palette's
+/// tuned chroma and lightness — the same mechanism `Theme::mention_file`
+/// uses for the `@file` complement. Chroma-less palettes (Ashwood, Mono;
+/// `accent.s < 0.15`) return `None` so the caller falls back to ink and
+/// separates kinds by tone instead of hue.
+fn accent_shifted(accent: Hsla, offset: f32) -> Option<Hsla> {
+    if accent.s < 0.15 {
+        return None;
+    }
+    let mut color = accent;
+    color.h = (color.h + offset).fract();
+    color.s = color.s.max(0.5);
+    Some(color)
+}
+
+/// The soft category tint for a work kind, keyed by its glyph path. These
+/// tints are content, not chrome — they describe what the agent did, the
+/// same exemption the composer's `/command` / `@file` tokens already take —
+/// so they sit outside the One Accent budget. State (run/fail) still wins:
+/// callers override with `theme.accent` / `theme.del_red` when it applies.
+///
+/// With the ember accent (h ≈ 0.04): run reads amber, explore reads the
+/// complement (cool), mutate reads green, web reads violet; the reasoning
+/// bulb keeps the accent itself. Unknown kinds and chroma-less palettes
+/// stay neutral ink.
+fn work_tint(icon: &'static str, theme: Theme) -> Hsla {
+    let shifted = |offset: f32| accent_shifted(theme.accent, offset).unwrap_or(theme.text_2);
+    match icon {
+        "icons/tools/bash.svg" => shifted(0.07),
+        "icons/tools/read.svg"
+        | "icons/tools/search.svg"
+        | "icons/tools/find.svg"
+        | "icons/tools/list.svg" => shifted(0.50),
+        "icons/tools/edit.svg" | "icons/tools/write.svg" => shifted(0.32),
+        "icons/tools/web.svg" | "icons/tools/fetch.svg" => shifted(0.62),
+        "icons/tools/thinking.svg" => theme.accent,
+        _ => theme.text_2,
+    }
+}
+
+/// A tool glyph in its category badge: a 22px rounded square washed at a low
+/// alpha of the tone, the glyph at full strength. The wash lifts the icon out
+/// of the prose column so a tool row reads as a control at a glance, in every
+/// palette. `tone` is the state color while the call runs/fails, the work
+/// kind's tint once it settles (see `work_tint`).
+fn activity_badge(icon: &'static str, tone: Hsla, theme: Theme) -> impl IntoElement {
+    let wash = match theme.mode {
+        ThemeMode::Dark => 0.16,
+        ThemeMode::Light => 0.12,
+    };
+    div()
+        .flex_none()
+        .size(px(22.))
+        .rounded(px(6.))
+        .bg(tone.opacity(wash))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(glyph(icon, 13., tone))
+}
+
 /// Human label for a tool card header. Known pi tools get a short, scannable
 /// verb ("Run", "Read", "Find files"); anything else falls back to the
 /// capitalized tool name so an unknown tool never renders blank.
@@ -6659,6 +6719,32 @@ mod tests {
             activity_group_icons(&[step("", &["bash", "shell"])]),
             vec!["icons/tools/bash.svg"]
         );
+    }
+
+    #[test]
+    fn accent_shifted_rotates_hue_and_keeps_the_palettes_chroma() {
+        let ember = gpui::hsla(0.04, 0.45, 0.62, 1.0);
+        let shifted = accent_shifted(ember, 0.5).unwrap();
+        assert!((shifted.h - 0.54).abs() < 1e-6);
+        assert!((shifted.s - 0.5).abs() < 1e-6);
+        assert!((shifted.l - 0.62).abs() < 1e-6);
+        // Chroma-less palettes (Ashwood, Mono) drop the hue so kinds
+        // separate by tone instead — callers paint ink.
+        assert_eq!(accent_shifted(gpui::hsla(0.0, 0.0, 0.5, 1.0), 0.5), None);
+        // Wrapping past 1.0 is modulo, not clamping.
+        assert!((accent_shifted(gpui::hsla(0.9, 0.6, 0.5, 1.0), 0.3).unwrap().h - 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn work_tint_uses_ink_for_unknown_kinds_and_low_chroma_palettes() {
+        // Chroma-less palette (accent.s < 0.15): every kind falls back to ink.
+        let theme = Theme {
+            accent: gpui::hsla(0.0, 0.0, 0.5, 1.0),
+            ..Theme::default()
+        };
+        assert_eq!(work_tint("icons/tools/bash.svg", theme), theme.text_2);
+        assert_eq!(work_tint("icons/tools/edit.svg", theme), theme.text_2);
+        assert_eq!(work_tint("icons/tools/tool.svg", theme), theme.text_2);
     }
 
     #[test]
