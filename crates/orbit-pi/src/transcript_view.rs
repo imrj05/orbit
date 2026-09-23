@@ -25,12 +25,12 @@ use std::{
 
 use gpui::{
     anchored, canvas, deferred, div, img, linear_color_stop, linear_gradient, list, point,
-    prelude::*, px, svg, Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem,
+    prelude::*, px, radians, svg, Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem,
     CursorStyle, DispatchPhase, Element, ElementId, Font, FontFeatures, FontStyle, FontWeight,
     GlobalElementId, Hitbox, HitboxBehavior, Hsla, Image, ImageSource, InspectorElementId,
     InteractiveText, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     ObjectFit, Pixels, ScrollHandle, ScrollWheelEvent, SharedString, StrikethroughStyle,
-    StyledText, TextAlign, TextLayout, TextRun, UnderlineStyle, Window,
+    StyledText, TextAlign, TextLayout, TextRun, Transformation, UnderlineStyle, Window,
 };
 
 use std::ops::Range;
@@ -1792,7 +1792,6 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
         .steps
         .iter()
         .position(|step| !step.thinking.is_empty() || !step.tools.is_empty());
-    let live_elapsed = paint.live_elapsed.unwrap_or(Duration::ZERO);
     // First step index whose post-answer work is NOT yet absorbed into a
     // rendered activity group (see the in-sequence group block below).
     let mut covered_until = 0usize;
@@ -1831,7 +1830,6 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
                         &message.steps,
                         open,
                         group_live,
-                        live_elapsed,
                         theme,
                         paint.expanded_activities.clone(),
                         paint.expanded_tools.clone(),
@@ -1900,7 +1898,6 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
                 &message.steps,
                 open,
                 group_live,
-                live_elapsed,
                 theme,
                 paint.expanded_activities.clone(),
                 paint.expanded_tools.clone(),
@@ -2103,7 +2100,7 @@ fn activity_title(steps: &[Step], live: bool) -> String {
             tr!("transcript.worked")
         };
     }
-    parts.join(" \u{b} ")
+    parts.join(" · ")
 }
 
 /// A turn's activity group: a single collapsed summary line ("Ran 2
@@ -2118,7 +2115,6 @@ fn render_activity_group(
     all_steps: &[Step],
     open: bool,
     live: bool,
-    elapsed: Duration,
     theme: Theme,
     expanded_activities: ExpandedActivities,
     expanded_tools: ExpandedTools,
@@ -2247,7 +2243,6 @@ fn render_activity_group(
                     tool,
                     pulse,
                     !pulse,
-                    elapsed,
                     theme,
                     (ix, flat),
                     expanded_tools.borrow().contains(&(ix, flat)),
@@ -2801,7 +2796,6 @@ fn render_activity_card(
     tool: &ToolCall,
     pulse: bool,
     complete: bool,
-    elapsed: Duration,
     theme: Theme,
     key: (usize, usize),
     tool_open: bool,
@@ -2858,7 +2852,16 @@ fn render_activity_card(
                 .child(glyph(
                     activity_icon(&tool.name),
                     14.,
-                    activity_tint(&tool.name, theme),
+                    // Monochrome by default (the One Accent Rule); color is
+                    // reserved for state — ember while the call runs, danger
+                    // once it fails.
+                    if tool.failed {
+                        theme.del_red
+                    } else if pulse {
+                        theme.accent
+                    } else {
+                        theme.text_2
+                    },
                 ))
                 .child(
                     div()
@@ -2913,7 +2916,10 @@ fn render_activity_card(
                     row.child(render_line_delta(added, removed, theme, 12.5))
                 })
                 .when(pulse, |row| {
-                    row.child(pulse_dot(theme, elapsed.as_millis()))
+                    row.child(activity_spinner(
+                        theme,
+                        (key.0 as u64) << 16 | key.1 as u64,
+                    ))
                 })
                 .when(tool.failed, |row| {
                     row.child(glyph("icons/stop.svg", 12., theme.del_red))
@@ -4139,13 +4145,29 @@ fn glyph(path: &'static str, size: f32, color: Hsla) -> impl IntoElement {
         .text_color(color)
 }
 
-fn pulse_dot(theme: Theme, elapsed_ms: u128) -> impl IntoElement {
-    let on = elapsed_ms.is_multiple_of(400);
-    div().size(px(5.)).rounded_full().bg(if on {
-        theme.accent
-    } else {
-        theme.accent.opacity(0.35)
-    })
+/// The in-flight spinner on a tool card. Reuses the sidebar's rotating
+/// `loader.svg` so "working" reads the same everywhere; reduce-motion keeps
+/// the glyph but drops the spin.
+fn activity_spinner(theme: Theme, id: u64) -> AnyElement {
+    let loader = svg()
+        .path("icons/loader.svg")
+        .flex_none()
+        .size(px(12.))
+        .text_color(theme.accent);
+    if theme.ui.reduce_motion {
+        return loader.into_any_element();
+    }
+    loader
+        .with_animation(
+            ElementId::NamedInteger("activity-spin".into(), id),
+            Animation::new(Duration::from_millis(900)).repeat(),
+            |el, delta| {
+                el.with_transformation(Transformation::rotate(radians(
+                    delta * std::f32::consts::TAU,
+                )))
+            },
+        )
+        .into_any_element()
 }
 
 fn fold_label(elapsed: Option<Duration>) -> String {
@@ -6307,19 +6329,6 @@ pub(crate) fn activity_icon(name: &str) -> &'static str {
     }
 }
 
-/// Leading-icon tint for a tool card. The shape names the tool; the color
-/// groups it: mutating and delegating work takes the brand accent, shell
-/// commands take the warning amber, and read-only exploration stays neutral
-/// so a long turn scans by category at a glance.
-fn activity_tint(name: &str, theme: Theme) -> Hsla {
-    match name {
-        "edit" | "write" | "task" | "agent" | "subagent" | "skill" | "todo"
-        | "todo_write" | "plan" | "update_plan" => theme.accent,
-        "bash" | "shell" | "terminal" | "exec" | "run" => theme.warn,
-        _ => theme.text_2,
-    }
-}
-
 /// Human label for a tool card header. Known pi tools get a short, scannable
 /// verb ("Run", "Read", "Find files"); anything else falls back to the
 /// capitalized tool name so an unknown tool never renders blank.
@@ -6513,11 +6522,11 @@ mod tests {
         ];
         assert_eq!(
             activity_title(&steps, false),
-            "Ran 1 command \u{b} Ran 1 file read \u{b} Ran 1 file edit \u{b} 2 thoughts"
+            "Ran 1 command · Ran 1 file read · Ran 1 file edit · 2 thoughts"
         );
         assert_eq!(
             activity_title(&steps, true),
-            "Ran 1 command \u{b} Ran 1 file read \u{b} Ran 1 file edit \u{b} Thinking"
+            "Ran 1 command · Ran 1 file read · Ran 1 file edit · Thinking"
         );
         assert_eq!(activity_title(&[], false), "Worked");
     }
