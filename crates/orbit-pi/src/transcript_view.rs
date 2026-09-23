@@ -25,12 +25,12 @@ use std::{
 
 use gpui::{
     anchored, canvas, deferred, div, img, linear_color_stop, linear_gradient, list, point,
-    prelude::*, px, radians, svg, Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem,
+    prelude::*, px, Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem,
     CursorStyle, DispatchPhase, Element, ElementId, Font, FontFeatures, FontStyle, FontWeight,
     GlobalElementId, Hitbox, HitboxBehavior, Hsla, Image, ImageSource, InspectorElementId,
     InteractiveText, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     ObjectFit, Pixels, ScrollHandle, ScrollWheelEvent, SharedString, StrikethroughStyle,
-    StyledText, TextAlign, TextLayout, TextRun, Transformation, UnderlineStyle, Window,
+    StyledText, TextAlign, TextLayout, TextRun, UnderlineStyle, Window,
 };
 
 use std::ops::Range;
@@ -2961,9 +2961,14 @@ fn render_activity_card(
                     row.child(render_line_delta(added, removed, theme, 12.5))
                 })
                 .when(pulse, |row| {
-                    row.child(activity_spinner(
+                    row.child(crate::app::spinner(
+                        ElementId::NamedInteger(
+                            "activity-spin".into(),
+                            (key.0 as u64) << 16 | key.1 as u64,
+                        ),
+                        12.,
+                        theme.accent,
                         theme,
-                        (key.0 as u64) << 16 | key.1 as u64,
                     ))
                 })
                 .when(tool.failed, |row| {
@@ -4186,31 +4191,6 @@ fn glyph(path: &'static str, size: f32, color: Hsla) -> impl IntoElement {
     // The shared icon carries the button hover ink-lift, so every control in
     // the transcript that opts into `BUTTON_GROUP` brightens its glyph.
     crate::app::icon(path, size, color)
-}
-
-/// The in-flight spinner on a tool card. Reuses the sidebar's rotating
-/// `loader.svg` so "working" reads the same everywhere; reduce-motion keeps
-/// the glyph but drops the spin.
-fn activity_spinner(theme: Theme, id: u64) -> AnyElement {
-    let loader = svg()
-        .path("icons/loader.svg")
-        .flex_none()
-        .size(px(12.))
-        .text_color(theme.accent);
-    if theme.ui.reduce_motion {
-        return loader.into_any_element();
-    }
-    loader
-        .with_animation(
-            ElementId::NamedInteger("activity-spin".into(), id),
-            Animation::new(Duration::from_millis(900)).repeat(),
-            |el, delta| {
-                el.with_transformation(Transformation::rotate(radians(
-                    delta * std::f32::consts::TAU,
-                )))
-            },
-        )
-        .into_any_element()
 }
 
 fn fold_label(elapsed: Option<Duration>) -> String {

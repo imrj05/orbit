@@ -45,12 +45,12 @@ use alacritty_terminal::vte::ansi::{Color as AnsiColor, CursorShape, NamedColor,
 use anyhow::{Context as _, Result};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use gpui::{
-    canvas, div, fill, point, prelude::*, px, radians, size, Animation, AnimationExt, AnyElement,
+    canvas, div, fill, point, prelude::*, px, size, AnyElement,
     App, Background, Bounds, ClipboardItem, Context, CursorStyle, Entity, FocusHandle, Focusable,
     Font, FontFallbacks, FontFeatures, FontStyle, FontWeight, Hsla, IntoElement, Keystroke,
     MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, Render, Rgba,
     ScrollDelta, ScrollWheelEvent, SharedString, StrikethroughStyle, Styled, Task, TextRun,
-    Transformation, UnderlineStyle, Window,
+    UnderlineStyle, Window,
 };
 
 use crate::app::{icon, nerd_font_family, BUTTON_GROUP};
@@ -1710,22 +1710,13 @@ impl TerminalPanel {
                         cx.listener(|this, _, _, cx| this.restart(cx)),
                     )
                     .child(
-                        if self.restart_spin_until.is_some() && !theme.ui.reduce_motion {
-                            gpui::svg()
-                                .path("icons/loader.svg")
-                                .flex_none()
-                                .size(px(14.))
-                                .text_color(if exited { theme.accent } else { theme.text_2 })
-                                .with_animation(
-                                    "terminal-restart-spin",
-                                    Animation::new(Duration::from_millis(900)).repeat(),
-                                    |svg, delta| {
-                                        svg.with_transformation(Transformation::rotate(radians(
-                                            delta * std::f32::consts::TAU,
-                                        )))
-                                    },
-                                )
-                                .into_any_element()
+                        if self.restart_spin_until.is_some() {
+                            crate::app::spinner(
+                                "terminal-restart-spin",
+                                14.,
+                                if exited { theme.accent } else { theme.text_2 },
+                                theme,
+                            )
                         } else {
                             icon(
                                 "icons/refresh.svg",

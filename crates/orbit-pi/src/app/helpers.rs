@@ -100,6 +100,38 @@ pub(crate) fn icon_dyn(path: SharedString, size: f32, color: Hsla) -> gpui::Svg 
         .group_hover(BUTTON_GROUP, move |style| style.text_color(hover))
 }
 
+/// The app's one loading spinner: `loader.svg` rotating once per 900 ms, and
+/// rendered static under reduce-motion so the perpetual loop can be turned
+/// off. `id` must be unique per instance — GPUI tracks the animation by it.
+///
+/// Every in-flight affordance (buttons, panels, session rows, tool cards)
+/// shares this so "working" reads identically everywhere.
+pub(crate) fn spinner(
+    id: impl Into<ElementId>,
+    size: f32,
+    color: Hsla,
+    theme: Theme,
+) -> AnyElement {
+    let svg = gpui::svg()
+        .path("icons/loader.svg")
+        .flex_none()
+        .size(px(size))
+        .text_color(color);
+    if theme.ui.reduce_motion {
+        return svg.into_any_element();
+    }
+    svg.with_animation(
+        id,
+        Animation::new(Duration::from_millis(900)).repeat(),
+        |svg, delta| {
+            svg.with_transformation(Transformation::rotate(radians(
+                delta * std::f32::consts::TAU,
+            )))
+        },
+    )
+    .into_any_element()
+}
+
 // ── top-bar chip primitives ──
 
 /// Shared height of every top-bar control — the quota pill, the "open in"

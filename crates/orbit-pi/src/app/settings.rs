@@ -1259,25 +1259,8 @@ impl OrbitApp {
             PluginAction::Refresh,
         );
 
-        let plugin_spinner: AnyElement = if theme.ui.reduce_motion {
-            icon("icons/loader.svg", 13., theme.text_2).into_any_element()
-        } else {
-            gpui::svg()
-                .path("icons/loader.svg")
-                .flex_none()
-                .size(px(13.))
-                .text_color(theme.text_2)
-                .with_animation(
-                    "plugin-action-spin",
-                    Animation::new(Duration::from_millis(900)).repeat(),
-                    |svg, delta| {
-                        svg.with_transformation(Transformation::rotate(radians(
-                            delta * std::f32::consts::TAU,
-                        )))
-                    },
-                )
-                .into_any_element()
-        };
+        let plugin_spinner: AnyElement =
+            crate::app::spinner("plugin-action-spin", 13., theme.text_2, theme);
         let status: AnyElement = match &self.plugin_action {
             Some(action) => div()
                 .flex_1()
@@ -1508,22 +1491,8 @@ impl OrbitApp {
             .child(icon("icons/search.svg", 14., theme.text_3))
             .child(self.provider_filter.clone());
 
-        let refresh_icon: AnyElement = if self.providers_refreshing && !theme.ui.reduce_motion {
-            gpui::svg()
-                .path("icons/loader.svg")
-                .flex_none()
-                .size(px(13.))
-                .text_color(theme.text_2)
-                .with_animation(
-                    "providers-refresh-spin",
-                    Animation::new(Duration::from_millis(900)).repeat(),
-                    |svg, delta| {
-                        svg.with_transformation(Transformation::rotate(radians(
-                            delta * std::f32::consts::TAU,
-                        )))
-                    },
-                )
-                .into_any_element()
+        let refresh_icon: AnyElement = if self.providers_refreshing {
+            crate::app::spinner("providers-refresh-spin", 13., theme.text_2, theme)
         } else {
             icon("icons/refresh.svg", 13., theme.text_2).into_any_element()
         };

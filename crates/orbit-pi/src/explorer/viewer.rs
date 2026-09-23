@@ -17,10 +17,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    div, img, prelude::*, px, Animation, AnimationExt, AnyElement, App, ClickEvent, Context,
+    div, img, prelude::*, px, AnyElement, App, ClickEvent, Context,
     Entity, FocusHandle, Focusable, Font, FontFeatures, FontStyle, FontWeight, Hsla, Image,
     ImageFormat, ImageSource, ListAlignment, ListState, ObjectFit, Render, ScrollHandle,
-    StyledText, Subscription, TextAlign, TextRun, Timer, Transformation, Window,
+    StyledText, Subscription, TextAlign, TextRun, Timer, Window,
 };
 
 use crate::app::{file_badge, file_glyph, icon, nerd_font_family};
@@ -1231,28 +1231,6 @@ impl FileViewer {
     }
 }
 
-/// A page-level spinner; static under reduce-motion.
-fn spinner(id: &'static str, theme: &Theme) -> AnyElement {
-    let svg = gpui::svg()
-        .path("icons/loader.svg")
-        .flex_none()
-        .size(px(14.))
-        .text_color(theme.text_3);
-    if theme.ui.reduce_motion {
-        return svg.into_any_element();
-    }
-    svg.with_animation(
-        id,
-        Animation::new(Duration::from_millis(900)).repeat(),
-        |svg, delta| {
-            svg.with_transformation(Transformation::rotate(gpui::radians(
-                delta * std::f32::consts::TAU,
-            )))
-        },
-    )
-    .into_any_element()
-}
-
 fn loading_state(theme: &Theme) -> AnyElement {
     div()
         .flex_1()
@@ -1261,7 +1239,7 @@ fn loading_state(theme: &Theme) -> AnyElement {
         .items_center()
         .justify_center()
         .gap(px(8.))
-        .child(spinner("viewer-loading", theme))
+        .child(crate::app::spinner("viewer-loading", 14., theme.text_3, *theme))
         .child(
             div()
                 .text_size(theme.ui_px(12.5))

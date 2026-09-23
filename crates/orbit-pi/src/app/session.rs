@@ -889,21 +889,7 @@ impl OrbitApp {
         Some(
             button
                 .child(if generating {
-                    gpui::svg()
-                        .path("icons/loader.svg")
-                        .flex_none()
-                        .size(px(12.))
-                        .text_color(theme.accent)
-                        .with_animation(
-                            "sess-generate-title-spinner",
-                            Animation::new(Duration::from_millis(900)).repeat(),
-                            |svg, delta| {
-                                svg.with_transformation(Transformation::rotate(radians(
-                                    delta * std::f32::consts::TAU,
-                                )))
-                            },
-                        )
-                        .into_any_element()
+                    crate::app::spinner("sess-generate-title-spinner", 12., theme.accent, theme)
                 } else {
                     icon("icons/magic-wand.svg", 12., theme.text_2).into_any_element()
                 })

@@ -14,9 +14,9 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    div, prelude::*, px, Animation, AnimationExt, AnyElement, App, ClickEvent, Context,
+    div, prelude::*, px, AnyElement, App, ClickEvent, Context,
     CursorStyle, Entity, FocusHandle, FontWeight, Hsla, KeyDownEvent, ListAlignment, ListState,
-    MouseButton, MouseDownEvent, Pixels, Render, Subscription, TextAlign, Transformation, Window,
+    MouseButton, MouseDownEvent, Pixels, Render, Subscription, TextAlign, Window,
 };
 
 use super::ops;
@@ -1580,27 +1580,6 @@ fn menu_row(
 }
 
 /// A page-level spinner; static under reduce-motion.
-fn spinner(id: &'static str, theme: &Theme) -> AnyElement {
-    let svg = gpui::svg()
-        .path("icons/loader.svg")
-        .flex_none()
-        .size(px(13.))
-        .text_color(theme.text_3);
-    if theme.ui.reduce_motion {
-        return svg.into_any_element();
-    }
-    svg.with_animation(
-        id,
-        Animation::new(Duration::from_millis(900)).repeat(),
-        |svg, delta| {
-            svg.with_transformation(Transformation::rotate(gpui::radians(
-                delta * std::f32::consts::TAU,
-            )))
-        },
-    )
-    .into_any_element()
-}
-
 fn loading_state(theme: &Theme) -> AnyElement {
     div()
         .size_full()
@@ -1608,7 +1587,7 @@ fn loading_state(theme: &Theme) -> AnyElement {
         .items_center()
         .justify_center()
         .gap(px(8.))
-        .child(spinner("explorer-loading", theme))
+        .child(crate::app::spinner("explorer-loading", 13., theme.text_3, *theme))
         .child(
             div()
                 .text_size(theme.ui_px(12.5))

@@ -23,7 +23,7 @@ use gpui::{
     PathBuilder, Pixels, Render, Window,
 };
 
-use crate::app::{icon, nerd_font_family, press, BUTTON_GROUP};
+use crate::app::{icon, nerd_font_family, press, spinner, BUTTON_GROUP};
 use crate::commit_message;
 use crate::gh;
 use crate::git::{self, CommitEntry, StatusRow};
@@ -36,7 +36,7 @@ mod widgets;
 
 use failure::{ActionError, RecoveryAction};
 use widgets::{
-    action_button, check_box, empty_note, load_more, ref_badge, row_button, spinner, status_color,
+    action_button, check_box, empty_note, load_more, ref_badge, row_button, status_color,
 };
 
 /// Callback the app installs so a changed-file row can open its diff in the
@@ -2087,7 +2087,7 @@ impl GitPanel {
                         if (self.refresh_spin_until.is_some() || self.tab_loading())
                             && !theme.ui.reduce_motion
                         {
-                            spinner("git-refresh-spinner", 13., theme)
+                            spinner("git-refresh-spinner", 13., theme.accent, theme)
                         } else {
                             icon("icons/refresh.svg", 13., theme.text_3).into_any_element()
                         },
@@ -2369,7 +2369,7 @@ impl GitPanel {
                 "git-op-continue",
                 &tr!("git_panel.op_continue"),
                 Some(if self.operation_busy {
-                    spinner("git-op-spinner", 12., theme)
+                    spinner("git-op-spinner", 12., theme.accent, theme)
                 } else {
                     icon("icons/check.svg", 12., theme.send_fg).into_any_element()
                 }),
@@ -2610,7 +2610,7 @@ impl GitPanel {
                                     )
                             })
                             .child(if self.generating {
-                                spinner("git-generate-spinner", 12., theme)
+                                spinner("git-generate-spinner", 12., theme.accent, theme)
                             } else {
                                 icon("icons/magic-wand.svg", 12., theme.text_2).into_any_element()
                             })
@@ -2643,7 +2643,7 @@ impl GitPanel {
                                 "git-commit",
                                 &commit_label,
                                 Some(if self.generating {
-                                    spinner("git-commit-spinner", 13., theme)
+                                    spinner("git-commit-spinner", 13., theme.accent, theme)
                                 } else {
                                     icon(
                                         "icons/git-commit.svg",

@@ -670,7 +670,14 @@ pub(crate) fn render_side_row(
                             .flex()
                             .items_center()
                             .gap(px(6.))
-                            .when(running, |line| line.child(running_loader(theme, *ix)))
+                            .when(running, |line| {
+                                line.child(crate::app::spinner(
+                                    ElementId::NamedInteger("side-spin".into(), *ix as u64),
+                                    11.,
+                                    theme.accent,
+                                    theme,
+                                ))
+                            })
                             .when(pinned, |line| {
                                 line.child(icon("icons/pin.svg", 16., theme.text_3))
                             })
@@ -794,25 +801,6 @@ pub(crate) fn session_menu_button(
                 .size(px(0.))
                 .child(session_menu_popup(menu, this_for_popup.clone(), theme))
         }))
-}
-
-/// A small spinner at the start of a running session row — the shadcn
-/// Marker + Spinner pattern. `with_animation` rotates it; no app tick.
-fn running_loader(theme: Theme, id: usize) -> impl IntoElement + use<> {
-    gpui::svg()
-        .path("icons/loader.svg")
-        .flex_none()
-        .size(px(11.))
-        .text_color(theme.accent)
-        .with_animation(
-            ElementId::NamedInteger("side-spin".into(), id as u64),
-            Animation::new(Duration::from_millis(900)).repeat(),
-            |svg, delta| {
-                svg.with_transformation(Transformation::rotate(radians(
-                    delta * std::f32::consts::TAU,
-                )))
-            },
-        )
 }
 
 /// A session row's title. Quiet rows render as one truncated line; a running

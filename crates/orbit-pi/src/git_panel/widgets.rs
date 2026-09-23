@@ -5,11 +5,8 @@
 //! deliberately page-agnostic so a History row, a Graph row, an Issues row, or
 //! a future Pulls row can reuse them without caring which tab paints them.
 
-use std::time::Duration;
-
 use gpui::{
-    div, prelude::*, px, radians, Animation, AnimationExt, AnyElement, ClickEvent, FontWeight,
-    Hsla, Transformation, Window,
+    div, prelude::*, px, AnyElement, ClickEvent, FontWeight, Hsla, Window,
 };
 
 use crate::app::{icon, press, BUTTON_GROUP};
@@ -50,29 +47,6 @@ pub fn check_box(checked: bool, theme: Theme) -> gpui::Div {
         .when(checked, |box_| {
             box_.child(icon("icons/check.svg", 10., theme.send_fg))
         })
-}
-
-/// A rotating loader for in-flight buttons (matches the Review pane spinner).
-/// With Reduce motion on it renders statically instead of spinning.
-pub fn spinner(id: &'static str, size: f32, theme: Theme) -> AnyElement {
-    let svg = gpui::svg()
-        .path("icons/loader.svg")
-        .flex_none()
-        .size(px(size))
-        .text_color(theme.accent);
-    if theme.ui.reduce_motion {
-        return svg.into_any_element();
-    }
-    svg.with_animation(
-        id,
-        Animation::new(Duration::from_millis(900)).repeat(),
-        |svg, delta| {
-            svg.with_transformation(Transformation::rotate(radians(
-                delta * std::f32::consts::TAU,
-            )))
-        },
-    )
-    .into_any_element()
 }
 
 /// A 28px action button with an optional leading glyph. `primary` paints it in

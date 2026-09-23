@@ -2364,24 +2364,12 @@ impl OrbitApp {
                                                 }
                                             })
                                             .child(if self.refreshing {
-                                                gpui::svg()
-                                                    .path("icons/loader.svg")
-                                                    .flex_none()
-                                                    .size(px(13.))
-                                                    .text_color(theme.text_2)
-                                                    .with_animation(
-                                                        "refresh-spin",
-                                                        Animation::new(Duration::from_millis(800))
-                                                            .repeat(),
-                                                        |svg, delta| {
-                                                            svg.with_transformation(
-                                                                Transformation::rotate(radians(
-                                                                    delta * std::f32::consts::TAU,
-                                                                )),
-                                                            )
-                                                        },
-                                                    )
-                                                    .into_any_element()
+                                                crate::app::spinner(
+                                                    "refresh-spin",
+                                                    13.,
+                                                    theme.text_2,
+                                                    theme,
+                                                )
                                             } else {
                                                 icon("icons/refresh.svg", 13., theme.text_2)
                                                     .into_any_element()

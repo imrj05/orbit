@@ -331,7 +331,12 @@ impl OrbitApp {
                 .bg(theme.accent)
                 .cursor_default()
                 .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into())
-                .child(update_spinner(theme.bg_main));
+                .child(crate::app::spinner(
+                    ElementId::NamedInteger("update-spin".into(), 0),
+                    14.,
+                    theme.bg_main,
+                    theme,
+                ));
             return Some(button.into_any_element());
         }
 
@@ -1138,25 +1143,6 @@ fn update_progress_bar(theme: Theme) -> impl IntoElement {
                         bar.left(gpui::relative(-SEGMENT + (1.0 + SEGMENT) * delta))
                     },
                 ),
-        )
-}
-
-/// A small spinner, for the sidebar pill's install state. `with_animation`
-/// rotates it; no app tick.
-fn update_spinner(color: Hsla) -> impl IntoElement {
-    gpui::svg()
-        .path("icons/loader.svg")
-        .flex_none()
-        .size(px(14.))
-        .text_color(color)
-        .with_animation(
-            ElementId::NamedInteger("update-spin".into(), 0),
-            Animation::new(Duration::from_millis(900)).repeat(),
-            |svg, delta| {
-                svg.with_transformation(Transformation::rotate(radians(
-                    delta * std::f32::consts::TAU,
-                )))
-            },
         )
 }
 

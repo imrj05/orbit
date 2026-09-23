@@ -17,10 +17,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    div, prelude::*, px, radians, Animation, AnimationExt, AnyElement, ClickEvent, Context,
+    div, prelude::*, px, AnyElement, ClickEvent, Context,
     CursorStyle, Entity, Font, FontFeatures, FontStyle, FontWeight, Hsla, KeyDownEvent,
     ListAlignment, ListOffset, ListState, MouseDownEvent, Pixels, Render, SharedString, StyledText,
-    TextAlign, TextRun, Transformation, Window,
+    TextAlign, TextRun, Window,
 };
 
 use crate::app::{file_glyph, icon, nerd_font_family, BUTTON_GROUP, PRESS_DIM};
@@ -703,7 +703,7 @@ impl SidePane {
                     }))
                     .child(
                         if self.review_loading || self.refresh_spin_until.is_some() {
-                            spinner("review-spinner", theme)
+                            crate::app::spinner("review-spinner", 13., theme.text_3, theme)
                         } else {
                             icon("icons/refresh.svg", 13., theme.text_3).into_any_element()
                         },
@@ -1627,24 +1627,6 @@ fn gap_icon(direction: ExpansionDirection) -> &'static str {
 }
 
 // ── shared helpers ─────────────────────────────────────────────────────────
-
-fn spinner(id: &'static str, theme: Theme) -> AnyElement {
-    gpui::svg()
-        .path("icons/loader.svg")
-        .flex_none()
-        .size(px(13.))
-        .text_color(theme.text_3)
-        .with_animation(
-            id,
-            Animation::new(Duration::from_millis(900)).repeat(),
-            |svg, delta| {
-                svg.with_transformation(Transformation::rotate(radians(
-                    delta * std::f32::consts::TAU,
-                )))
-            },
-        )
-        .into_any_element()
-}
 
 fn centered_message(theme: Theme, title: &str, detail: Option<&str>) -> AnyElement {
     let mut column = div()
