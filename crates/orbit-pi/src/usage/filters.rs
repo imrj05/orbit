@@ -103,7 +103,7 @@ pub fn chip(
         .id(ElementId::Name(SharedString::from(id)))
         .h(px(28.))
         .px(px(9.))
-        .rounded(px(7.))
+        .rounded(px(8.))
         .border_1()
         .border_color(if active {
             theme.border_strong
@@ -1118,7 +1118,7 @@ pub fn toggle_chip(
         .h(px(28.))
         .pl(px(9.))
         .pr(px(6.))
-        .rounded(px(7.))
+        .rounded(px(8.))
         .border_1()
         .border_color(theme.border_strong)
         .bg(theme.active)
@@ -1159,7 +1159,7 @@ pub fn text_button(
         .group(BUTTON_GROUP)
         .h(px(28.))
         .px(px(8.))
-        .rounded(px(7.))
+        .rounded(px(8.))
         .flex()
         .items_center()
         .gap(px(6.))

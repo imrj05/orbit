@@ -63,7 +63,7 @@ components:
   nav-row:
     backgroundColor: "{colors.canvas}"
     textColor: "{colors.ink-secondary}"
-    rounded: "{rounded.md}"
+    rounded: "{rounded.sm}"
     height: "28px"
     padding: "0 10px"
   nav-row-hover:
@@ -239,9 +239,11 @@ hairline or a shadow. Never both, or it reads as a ghost card.
 
 ## Shapes
 
-Corners are soft but restrained: 6px for small controls, 8px for chips/rows/buttons,
-12px for grouped surfaces and boards, 16px for the composer, `full` only for status
-dots, avatar monograms, and the send button. Nothing is a pill except those circles.
+Corners are soft but restrained: 6px for navigation and session rows and
+compact controls (≤24px icon buttons, toggles), 8px for chips, action buttons,
+inline inputs, and data-list rows, 12px for grouped surfaces and boards, 16px for
+the composer, `full` only for status dots, avatar monograms, and the send
+button. Nothing is a pill except those circles.
 
 Borders are 1px at `theme.border`; `border_strong` (ink at ~14% alpha) is reserved for
 focus and hover emphasis. Charts and graphs draw with 1.5px strokes; grid lines are 1px
@@ -288,7 +290,7 @@ fade on the new-task page.
   shift-click extends — matching native text fields.
 
 ### Navigation
-- Sidebar rows: 28px tall, 8px radius, 13px icon in a fixed 20px slot, label in
+- Sidebar rows: 28px tall, 6px radius, 13px icon in a fixed 20px slot, label in
   `text_2`/`text_3`; hover fills `bg_hover`; the active destination is marked by
   `active` fill with `active_fg`, never by accent color alone.
 - A running session row leads with an 11px spinner in the accent and its title carries a

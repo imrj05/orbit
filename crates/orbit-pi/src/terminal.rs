@@ -1785,7 +1785,7 @@ impl TerminalPanel {
                                 .gap(px(6.))
                                 .px(theme.space(10.))
                                 .py(px(5.))
-                                .rounded_md()
+                                .rounded_lg()
                                 .bg(theme.accent)
                                 .cursor_pointer()
                                 .text_size(theme.ui_px(12.))

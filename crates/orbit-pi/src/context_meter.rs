@@ -426,7 +426,7 @@ fn compact_action(is_compacting: bool, on_compact: Rc<ActionClick>, theme: Theme
         .id("context-compact-now")
         .w_full()
         .h(px(28.))
-        .rounded_md()
+        .rounded_lg()
         .border_1()
         .border_color(theme.border)
         .bg(theme.bg_raised)
