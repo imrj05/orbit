@@ -16,6 +16,7 @@ use gpui::{
     ListOffset, ListScrollEvent, ListState, Pixels,
 };
 
+use crate::app::BUTTON_GROUP;
 use crate::theme::Theme;
 
 const LIST_OVERDRAW: f32 = 400.0;
@@ -327,6 +328,7 @@ fn render_jump_button(state: MessageScrollerState, theme: Theme) -> impl IntoEle
             // Floating round scroll-to-bottom affordance.
             div()
                 .id(ElementId::Name("message-scroller-jump".into()))
+                .group(BUTTON_GROUP)
                 .h(px(32.))
                 .when(unread, |button| button.px(px(12.)))
                 .when(!unread, |button| button.w(px(32.)))

@@ -12,7 +12,7 @@ use gpui::{
     Hsla, Transformation, Window,
 };
 
-use crate::app::icon;
+use crate::app::{icon, press, BUTTON_GROUP};
 use crate::git::RefKind;
 use crate::theme::Theme;
 use crate::usage::tooltip::Tooltip;
@@ -104,7 +104,8 @@ pub fn action_button(
             .bg(theme.overlay)
             .text_color(theme.text_3);
     } else if primary {
-        button = button
+        button = press(button)
+            .group(BUTTON_GROUP)
             .border_color(gpui::transparent_black())
             .bg(theme.send_bg)
             .text_color(theme.send_fg)
@@ -112,7 +113,8 @@ pub fn action_button(
             .hover(|s| s.bg(theme.send_bg_hover))
             .on_click(listener);
     } else {
-        button = button
+        button = press(button)
+            .group(BUTTON_GROUP)
             .border_color(theme.border)
             .bg(theme.bg_raised)
             .text_color(theme.text)
@@ -137,22 +139,25 @@ pub fn row_button(
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
     let label = tr!(tip_key);
-    div()
-        .id(gpui::ElementId::Name(id.into()))
-        .size(px(24.))
-        .rounded(px(6.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
-        .hover(|s| s.bg(theme.overlay))
-        .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into())
-        .on_click(move |event, window, cx| {
-            cx.stop_propagation();
-            listener(event, window, cx);
-        })
-        .child(icon(icon_path, 12., theme.text_3))
-        .into_any_element()
+    press(
+        div()
+            .id(gpui::ElementId::Name(id.into()))
+            .group(BUTTON_GROUP)
+            .size(px(24.))
+            .rounded(px(6.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .hover(|s| s.bg(theme.overlay)),
+    )
+    .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into())
+    .on_click(move |event, window, cx| {
+        cx.stop_propagation();
+        listener(event, window, cx);
+    })
+    .child(icon(icon_path, 12., theme.text_3))
+    .into_any_element()
 }
 
 /// A small ref chip (`main`, `origin/main`, `v1.2.0`), colored by kind.
@@ -184,29 +189,32 @@ pub fn load_more(
     loading: bool,
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
-    div()
-        .id("git-load-more")
-        .mx(px(12.))
-        .mt(px(6.))
-        .h(px(32.))
-        .rounded_md()
-        .border_1()
-        .border_color(theme.border)
-        .flex()
-        .items_center()
-        .justify_center()
-        .gap(px(6.))
-        .cursor_pointer()
-        .text_size(theme.ui_px(12.))
-        .text_color(theme.text_2)
-        .hover(|s| s.bg(theme.bg_hover))
-        .on_click(listener)
-        .child(if loading {
-            tr!("git_panel.loading")
-        } else {
-            tr!("git_panel.load_more")
-        })
-        .into_any_element()
+    press(
+        div()
+            .id("git-load-more")
+            .group(BUTTON_GROUP)
+            .mx(px(12.))
+            .mt(px(6.))
+            .h(px(32.))
+            .rounded_md()
+            .border_1()
+            .border_color(theme.border)
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap(px(6.))
+            .cursor_pointer()
+            .text_size(theme.ui_px(12.))
+            .text_color(theme.text_2)
+            .hover(|s| s.bg(theme.bg_hover)),
+    )
+    .on_click(listener)
+    .child(if loading {
+        tr!("git_panel.loading")
+    } else {
+        tr!("git_panel.load_more")
+    })
+    .into_any_element()
 }
 
 /// A centered empty/error state: an icon tile, a title, and optional detail.

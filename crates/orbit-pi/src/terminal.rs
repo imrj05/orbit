@@ -53,7 +53,7 @@ use gpui::{
     Transformation, UnderlineStyle, Window,
 };
 
-use crate::app::{icon, nerd_font_family};
+use crate::app::{icon, nerd_font_family, BUTTON_GROUP};
 use crate::theme::{self, Theme};
 
 /// Emulator grid bounds, clamped so a collapsing panel never asks the PTY for
@@ -1697,6 +1697,7 @@ impl TerminalPanel {
             .child(
                 div()
                     .id("terminal-restart")
+                    .group(BUTTON_GROUP)
                     .p_1()
                     .rounded_sm()
                     .cursor_pointer()
@@ -1735,6 +1736,7 @@ impl TerminalPanel {
             .child(
                 div()
                     .id("terminal-close")
+                    .group(BUTTON_GROUP)
                     .p_1()
                     .rounded_sm()
                     .cursor_pointer()

@@ -120,8 +120,9 @@ impl OrbitApp {
 
         let primary = div()
             .id("header-open-in")
+            .group(BUTTON_GROUP)
             .h_full()
-            .px(px(7.))
+            .px(px(2.))
             .rounded_tl(px(HEADER_CTRL_R))
             .rounded_bl(px(HEADER_CTRL_R))
             .flex_none()
@@ -132,13 +133,14 @@ impl OrbitApp {
             .active(|s| s.bg(theme.active).text_color(theme.active_fg))
             .child(
                 img(ImageSource::Image(preferred_icon))
-                    .size(px(16.))
+                    .size(px(20.))
                     .flex_none(),
             )
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_open_in_primary));
 
         let caret = div()
             .id("header-open-in-caret")
+            .group(BUTTON_GROUP)
             .relative()
             .h_full()
             .w(px(19.))

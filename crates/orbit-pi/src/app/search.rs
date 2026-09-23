@@ -5,6 +5,7 @@
 //! document-wide render pass.
 
 use super::*;
+use crate::app::{press, BUTTON_GROUP};
 
 /// State for the open find bar. Dropping this closes the surface.
 pub(super) struct TranscriptSearch {
@@ -257,6 +258,7 @@ fn search_nav_button(
 ) -> AnyElement {
     div()
         .id(id)
+        .group(BUTTON_GROUP)
         .size(px(20.))
         .flex_none()
         .rounded_md()
@@ -264,7 +266,7 @@ fn search_nav_button(
         .items_center()
         .justify_center()
         .when(!disabled, |button| {
-            button
+            press(button)
                 .cursor_pointer()
                 .hover(|s| s.bg(theme.overlay))
                 .on_mouse_up(MouseButton::Left, listener)

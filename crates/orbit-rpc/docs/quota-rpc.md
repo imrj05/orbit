@@ -136,7 +136,7 @@ approximated.
 | `fireworks` | spend | `/v1/accounts/{id}/billing/summary` |
 | `baseten` | spend | `/v1/billing/usage_summary` |
 | `google`, `google-vertex` | unsupported | no account quota API (AI Studio only) |
-| `ollama`, `ollama-cloud` | subscription | `/api/usage` (monthly credits) or authenticated `/settings` (legacy session/weekly) |
+| `ollama`, `ollama-cloud` | subscription | `/api/usage` (usage-credit or legacy windows) merged with authenticated `/settings` (reset times) |
 | everything else | unsupported | — |
 
 `google`/`google-vertex` are registered explicitly so a connected account gets a
@@ -147,15 +147,28 @@ exhaustion), so there is no account-quota endpoint to call.
 ### Ollama Cloud
 
 Ollama Cloud has two billing generations. The **current** model is a monthly
-usage-credit pool; `GET https://ollama.com/api/usage` with a real cloud API key
-returns a `limits.monthly` object whose `usage` is a 0..1 fraction. The monthly
-reset is the subscription anniversary, absent from the payload, so the server
-omits a countdown rather than guessing. The **legacy** model exposes 5-hour
-session and weekly GPU-time windows only on the authenticated
-`https://ollama.com/settings` page; the server fetches that page with a
-user-supplied session cookie and parses it behind an isolated
-`OllamaCloudParser` (an unstable integration that returns a structured `error`
-instead of throwing when the markup changes).
+usage-credit pool; `GET https://ollama.com/api/usage` returns a `limits` object
+whose buckets are a 0..1 `usage` fraction plus per-model request counts. The
+buckets have flip-flopped: `session` + `weekly` through 2026-09-02, a single
+`monthly` bucket around 2026-09-03, and `session` + `weekly` again since
+2026-09-07, so all three are optional and whichever are present are rendered.
+The monthly reset is the subscription anniversary, absent from the payload, so
+the server omits a countdown rather than guessing.
+
+The **legacy** model exposes a 5-hour session window, a weekly window, and reset
+timestamps only on the authenticated `https://ollama.com/settings` page; the
+server fetches that page with a user-supplied session cookie and parses it
+behind an isolated `OllamaCloudParser` (an unstable integration that returns a
+structured `error` instead of throwing when the markup changes).
+
+`/api/usage` never exposes reset timestamps. When an account stores **both** a
+cloud key and a session cookie, the server queries both and merges: percentages
+come from the API (authoritative for the current account), and each matching
+window's `resetsAt` is copied from the settings page by window id. If either
+fetch fails, the usable report is returned unchanged rather than guessing. A
+key-only account therefore has no countdown; its report carries a `note`
+explaining that a session cookie is required, which the client renders beneath
+the meters when no window exposes a reset.
 
 The credential is explicit and comes from `auth.json` (never a browser cookie).
 The session lives under its own key so it can never shadow the `ollama` provider

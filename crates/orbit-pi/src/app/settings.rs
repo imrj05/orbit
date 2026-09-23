@@ -1,5 +1,6 @@
 use super::helpers::*;
 use super::*;
+use crate::quota::note_should_render;
 
 /// A Plugins-page button action, dispatched through one entry point.
 #[derive(Clone)]
@@ -1415,6 +1416,7 @@ impl OrbitApp {
         };
         let base = div()
             .id(ElementId::Name(id.into()))
+            .group(BUTTON_GROUP)
             .h(height)
             .px(pad_x)
             .rounded_md()
@@ -1442,7 +1444,7 @@ impl OrbitApp {
                 theme.text_2,
             )
         };
-        button
+        press(button)
             .when_some(icon_path, |button, path| {
                 button.child(icon(path, icon_size, icon_color))
             })
@@ -2340,7 +2342,7 @@ impl OrbitApp {
                     .text_color(theme.crit)
                     .child(error.to_string()),
             );
-        } else if !report.has_data() {
+        } else if note_should_render(report) {
             if let Some(note) = &report.note {
                 body = body.child(
                     div()
@@ -2845,6 +2847,7 @@ impl OrbitApp {
         let icon_path = Self::provider_action_icon(&action);
         let mut button = div()
             .id(ElementId::Name(id.into()))
+            .group(BUTTON_GROUP)
             .h(px(28.))
             .px(px(10.))
             .rounded_md()
@@ -2882,7 +2885,7 @@ impl OrbitApp {
             ProviderButtonStyle::Danger => theme.crit,
             ProviderButtonStyle::Ghost => theme.text_2,
         };
-        button
+        press(button)
             .when_some(icon_path, |button, path| {
                 button.child(icon(path, 12., icon_color))
             })
@@ -3847,6 +3850,7 @@ impl OrbitApp {
     pub(super) fn about_github_button(&self, theme: Theme) -> AnyElement {
         div()
             .id("about-github")
+            .group(BUTTON_GROUP)
             .h(px(26.))
             .px(px(12.))
             .rounded_md()
@@ -4670,6 +4674,7 @@ impl OrbitApp {
     ) -> AnyElement {
         let mut button = div()
             .id(id)
+            .group(BUTTON_GROUP)
             .h(px(28.))
             .px(px(12.))
             .rounded_md()
@@ -4693,7 +4698,7 @@ impl OrbitApp {
                 .text_color(theme.text_2)
                 .hover(|s| s.bg(theme.bg_hover));
         }
-        button
+        press(button)
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                 this.update(cx, action);
             })

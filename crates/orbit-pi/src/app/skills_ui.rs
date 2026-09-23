@@ -622,6 +622,7 @@ impl OrbitApp {
     ) -> AnyElement {
         let base = div()
             .id(ElementId::Name(id.into()))
+            .group(BUTTON_GROUP)
             .h(px(28.))
             .px(px(10.))
             .rounded_md()
@@ -655,7 +656,7 @@ impl OrbitApp {
                 theme.text_2,
             )
         };
-        button
+        press(button)
             .when_some(icon_path, |button, path| {
                 button.child(icon(path, 12., icon_color))
             })

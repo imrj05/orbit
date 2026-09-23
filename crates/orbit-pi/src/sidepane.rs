@@ -23,7 +23,7 @@ use gpui::{
     TextAlign, TextRun, Transformation, Window,
 };
 
-use crate::app::{file_glyph, icon, nerd_font_family};
+use crate::app::{file_glyph, icon, nerd_font_family, BUTTON_GROUP, PRESS_DIM};
 use crate::composer::ComposerInput;
 use crate::git;
 use crate::review::{self, ExpansionDirection, GapPosition, LineKind, Snapshot, Source};
@@ -669,10 +669,12 @@ impl SidePane {
             .children(tree_available.then(|| {
                 div()
                     .id("review-tree-toggle")
+                    .group(BUTTON_GROUP)
                     .p_1()
                     .rounded_sm()
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.bg_hover))
+                    .active(|s| s.opacity(PRESS_DIM))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_tree(cx)))
                     .child(icon(
                         "icons/folder.svg",
@@ -687,10 +689,12 @@ impl SidePane {
             .child(
                 div()
                     .id("review-refresh")
+                    .group(BUTTON_GROUP)
                     .p_1()
                     .rounded_sm()
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.bg_hover))
+                    .active(|s| s.opacity(PRESS_DIM))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.refresh_from_button(cx);
                     }))
@@ -705,10 +709,12 @@ impl SidePane {
             .child(
                 div()
                     .id("pane-close")
+                    .group(BUTTON_GROUP)
                     .p_1()
                     .rounded_sm()
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.bg_hover))
+                    .active(|s| s.opacity(PRESS_DIM))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close(cx)))
                     .child(icon("icons/x.svg", 14., theme.text_3)),
             );
@@ -725,6 +731,7 @@ impl SidePane {
             .child(
                 div()
                     .id("review-source")
+                    .group(BUTTON_GROUP)
                     .h(px(28.))
                     .px(px(8.))
                     .rounded(px(6.))
@@ -740,6 +747,7 @@ impl SidePane {
                     .gap(px(6.))
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.bg_hover))
+                    .active(|s| s.opacity(PRESS_DIM))
                     .on_click(
                         cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_source_menu(cx)),
                     )

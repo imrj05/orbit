@@ -693,6 +693,7 @@ pub(crate) fn session_menu_button(
     let this_for_popup = this.clone();
     div()
         .id(ElementId::NamedInteger("side-more".into(), ix as u64))
+        .group(BUTTON_GROUP)
         .relative()
         .flex_none()
         .size(px(18.))
@@ -706,6 +707,7 @@ pub(crate) fn session_menu_button(
         // square reads as a patch covering the row's right edge.
         .opacity(if menu_open { 1.0 } else { 0.0 })
         .group_hover("srow", |s| s.opacity(1.))
+        .active(|s| s.opacity(PRESS_DIM))
         .on_mouse_up(MouseButton::Left, move |_, window, cx| {
             // Keep the click from also opening the session via the row.
             cx.stop_propagation();
@@ -1041,6 +1043,7 @@ pub(crate) fn workspace_menu_button(
     let cwd_for_click = cwd.clone();
     div()
         .id(ElementId::Name(format!("workspace-more-{label}").into()))
+        .group(BUTTON_GROUP)
         .relative()
         .flex_none()
         .size(px(18.))
@@ -1052,6 +1055,7 @@ pub(crate) fn workspace_menu_button(
         // Revealed on row hover, or while this header's menu is open.
         .opacity(if menu_open { 1.0 } else { 0.0 })
         .group_hover("workspace-row", |s| s.opacity(1.))
+        .active(|s| s.opacity(PRESS_DIM))
         .on_mouse_up(MouseButton::Left, move |_, window, cx| {
             cx.stop_propagation();
             let menu = WorkspaceMenu {

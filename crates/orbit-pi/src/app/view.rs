@@ -1571,10 +1571,12 @@ impl OrbitApp {
         Some(
             div()
                 .id("steer-btn")
+                .group(BUTTON_GROUP)
                 .size(px(28.))
                 .rounded_full()
                 .bg(theme.overlay)
                 .hover(|s| s.bg(theme.overlay_strong))
+                .active(|s| s.opacity(PRESS_DIM))
                 .cursor_pointer()
                 .flex()
                 .items_center()
@@ -1601,6 +1603,7 @@ impl OrbitApp {
             .child(
                 div()
                     .id("attach-chip")
+                    .group(BUTTON_GROUP)
                     .size(px(24.))
                     .rounded_md()
                     .flex()
@@ -1608,6 +1611,7 @@ impl OrbitApp {
                     .justify_center()
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.overlay))
+                    .active(|s| s.opacity(PRESS_DIM))
                     .when(self.add_menu_open, |b| {
                         b.bg(theme.active).text_color(theme.active_fg)
                     })
@@ -2841,6 +2845,7 @@ impl OrbitApp {
     ) -> impl IntoElement + use<> {
         div()
             .id("sidebar-new-session")
+            .group(BUTTON_GROUP)
             .w_full()
             .h(px(34.))
             .px(px(10.))
@@ -2853,6 +2858,7 @@ impl OrbitApp {
             .gap(px(8.))
             .cursor_pointer()
             .hover(|s| s.bg(theme.bg_hover).border_color(theme.border_strong))
+            .active(|s| s.opacity(PRESS_DIM))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseUpEvent, w, cx| {

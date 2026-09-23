@@ -9,6 +9,7 @@
 //! Every control writes through `UsagePage`'s filter setters, so one state
 //! object drives every panel on the page (§10).
 
+use crate::app::{press, BUTTON_GROUP};
 use chrono::Datelike;
 use gpui::{
     anchored, deferred, div, point, prelude::*, px, AnyElement, App, Corner, ElementId, Entity,
@@ -1158,6 +1159,7 @@ pub fn text_button(
     let color = if enabled { theme.text_2 } else { theme.text_3 };
     div()
         .id(ElementId::Name(SharedString::from(id)))
+        .group(BUTTON_GROUP)
         .h(px(28.))
         .px(px(8.))
         .rounded(px(7.))
@@ -1167,7 +1169,7 @@ pub fn text_button(
         .text_size(theme.ui_px(12.))
         .text_color(color)
         .when(enabled, |button| {
-            button
+            press(button)
                 .cursor_pointer()
                 .hover(|style| style.bg(theme.bg_hover).text_color(theme.text))
                 .on_mouse_down(MouseButton::Left, on_click)
@@ -1187,6 +1189,7 @@ pub fn outline_button(
 ) -> AnyElement {
     div()
         .id(ElementId::Name(SharedString::from(id)))
+        .group(BUTTON_GROUP)
         .h(px(28.))
         .px(px(12.))
         .rounded(px(8.))
@@ -1202,7 +1205,7 @@ pub fn outline_button(
         .text_size(theme.ui_px(12.))
         .text_color(if enabled { theme.text } else { theme.text_3 })
         .when(enabled, |button| {
-            button
+            press(button)
                 .cursor_pointer()
                 .hover(|style| style.bg(theme.bg_hover).border_color(theme.border_strong))
                 .on_mouse_down(MouseButton::Left, on_click)

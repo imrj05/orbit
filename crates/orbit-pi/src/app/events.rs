@@ -458,6 +458,9 @@ impl OrbitApp {
         // secrets, so it merges straight into the cache.
         if command == "quota.list" {
             self.quota.on_response(success, data, error);
+            // Stop the manual refresh's spin, held for its minimum duration so
+            // an immediate reply still reads as a deliberate refresh.
+            self.finish_quota_refresh(cx);
             cx.notify();
             return;
         }

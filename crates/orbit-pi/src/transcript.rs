@@ -1322,6 +1322,14 @@ impl Transcript {
         }
         let mut messages = self.messages.borrow_mut();
         if final_message.user {
+            // pi restates a loaded skill as its own user message. Its compact
+            // form can differ from the typed prompt (`/skill:a  do x` →
+            // `/skill:a do x`), so the text comparison below misses it — drop
+            // the restatement when it lands on the prompt's row, mirroring
+            // `on_message_boundary`.
+            if injected_skill_message(value) && messages.last().map(|m| m.user).unwrap_or(false) {
+                return false;
+            }
             // A finalized user message replaces any optimistic copy.
             if let Some(last) = messages.last_mut() {
                 if last.user && last.text() == final_message.text() {
@@ -2409,6 +2417,47 @@ mod tests {
             messages[0].text(),
             "/skill:impeccable polish the retail page"
         );
+    }
+
+    /// pi emits both `message_start` and `message_end` for the injected skill
+    /// document. The compacted form can differ from the typed prompt by
+    /// whitespace (`/skill:a  do x` → `/skill:a do x`), which the text
+    /// comparison in `on_message_end` misses — it still must not stack a
+    /// second bubble.
+    #[test]
+    fn injected_skill_end_does_not_duplicate_when_compact_differs() {
+        let mut t = Transcript::new();
+        assert!(t.append_user_message("/skill:impeccable  polish the retail page", Vec::new()));
+        let inner = json!({"role": "user", "content": [{"type": "text", "text":
+            "<skill name=\"impeccable\" location=\"/x/SKILL.md\">body</skill>\n\n polish the retail page"}]});
+        t.apply_event(&Event::MessageStart {
+            value: json!({"type": "message_start", "message": inner.clone()}),
+        });
+        t.apply_event(&Event::MessageEnd {
+            value: json!({"type": "message_end", "message": inner.clone()}),
+        });
+        let messages = t.messages.borrow();
+        assert_eq!(messages.len(), 1, "the skill echo must render once");
+        assert_eq!(
+            messages[0].text(),
+            "/skill:impeccable  polish the retail page"
+        );
+    }
+
+    /// A `message_end` with no preceding `message_start` (a missed boundary)
+    /// must dedupe the skill echo on its own.
+    #[test]
+    fn injected_skill_end_alone_dedupes_the_optimistic_prompt() {
+        let mut t = Transcript::new();
+        assert!(t.append_user_message("/skill:impeccable polish the retail page", Vec::new()));
+        t.apply_event(&Event::MessageEnd {
+            value: json!({"type": "message_end", "message": {
+                "role": "user",
+                "content": [{"type": "text", "text":
+                    "<skill name=\"impeccable\" location=\"/x/SKILL.md\">body</skill>\n\npolish the retail page thoroughly"}]
+            }}),
+        });
+        assert_eq!(t.messages.borrow().len(), 1);
     }
 
     #[test]

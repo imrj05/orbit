@@ -52,23 +52,52 @@ pub(crate) fn queue_chip(kind: &str, text: &str, follow: bool, theme: Theme) -> 
 /// Render an embedded HugeIcons SVG tinted with the given color.
 ///
 /// `flex_none` is load-bearing: an SVG defaults to `flex-shrink: 1`, so in a
+/// Hover group every action button opts into with `.group(BUTTON_GROUP)`.
+/// Any [`icon`] descendant then lifts its ink while that button is hovered —
+/// the one hook that gives the whole app's buttons a consistent hover cue
+/// without threading a theme or a unique group name through each one.
+pub(crate) const BUTTON_GROUP: &str = "orbit-button";
+
+/// How far an icon lightens toward white when its button is hovered. Small
+/// enough that semantic icons (accent, danger) stay on-brand; enough that a
+/// muted `text_2`/`text_3` glyph visibly brightens.
+const ICON_HOVER_LIGHTEN: f32 = 0.12;
+
+/// The hover ink for an icon: the same hue, lightened toward white.
+fn icon_hover_ink(color: Hsla) -> Hsla {
+    Hsla {
+        l: (color.l + ICON_HOVER_LIGHTEN).min(1.0),
+        ..color
+    }
+}
+
 /// flex row beside wide text it collapses to zero width (the "icons render
 /// tiny" bug). Icons must always keep their declared size.
-pub(crate) fn icon(path: &'static str, size: f32, color: Hsla) -> impl IntoElement + use<> {
+///
+/// Every icon also lifts its ink toward white while an ancestor wearing
+/// [`BUTTON_GROUP`] is hovered. GPUI resolves a hover group through a balanced
+/// push/pop stack, so one shared group name is safe across siblings and nested
+/// buttons — the nearest opt-in button wins. An icon outside any such button
+/// sees no group and stays inert, so decorative glyphs never react.
+pub(crate) fn icon(path: &'static str, size: f32, color: Hsla) -> gpui::Svg {
+    let hover = icon_hover_ink(color);
     gpui::svg()
         .path(path)
         .flex_none()
         .size(px(size))
         .text_color(color)
+        .group_hover(BUTTON_GROUP, move |style| style.text_color(hover))
 }
 
 /// Same as [`icon`] but for runtime-computed paths (per-provider marks).
-pub(crate) fn icon_dyn(path: SharedString, size: f32, color: Hsla) -> impl IntoElement + use<> {
+pub(crate) fn icon_dyn(path: SharedString, size: f32, color: Hsla) -> gpui::Svg {
+    let hover = icon_hover_ink(color);
     gpui::svg()
         .path(path)
         .flex_none()
         .size(px(size))
         .text_color(color)
+        .group_hover(BUTTON_GROUP, move |style| style.text_color(hover))
 }
 
 // ── top-bar chip primitives ──
@@ -129,6 +158,24 @@ pub(crate) fn header_lift<S: Styled>(el: S, theme: &Theme) -> S {
     el
 }
 
+/// Opacity of an action button while the pointer is down.
+///
+/// GPUI 0.2.2 has no element transform (`Transformation` is SVG-only) and no
+/// CSS-style transitions, so the usual `scale(0.96)` press cannot be expressed
+/// on a `div`. This dim is its tactile stand-in — one value keeps filled,
+/// ghost, and danger buttons feeling identical under the finger.
+pub(crate) const PRESS_DIM: f32 = 0.85;
+
+/// Give an action button its shared press (`:active`) feedback. Call it around
+/// the finished, stateful element:
+///
+/// ```ignore
+/// press(div().id("save").cursor_pointer().hover(...)).child(label)
+/// ```
+pub(crate) fn press<T: gpui::StatefulInteractiveElement>(element: T) -> T {
+    element.active(|style| style.opacity(PRESS_DIM))
+}
+
 /// Dress a top-bar chip: the [`header_fill`] glass in a hairline box, lifting
 /// on hover. The caller owns the size and the rounding — the quota pill stays
 /// `rounded_full` while the rest of the row takes [`HEADER_CTRL_R`], and a
@@ -152,9 +199,10 @@ pub(crate) fn header_icon_button(
     active: bool,
     child: impl IntoElement,
 ) -> gpui::Stateful<gpui::Div> {
-    let chip = header_chip(
+    let chip = press(header_chip(
         div()
             .id(id)
+            .group(BUTTON_GROUP)
             .size(px(HEADER_CTRL_H))
             .rounded(px(HEADER_CTRL_R))
             .flex()
@@ -162,7 +210,7 @@ pub(crate) fn header_icon_button(
             .justify_center()
             .cursor_pointer(),
         theme,
-    )
+    ))
     .child(child);
     if active {
         header_lift(chip, theme)
@@ -179,16 +227,19 @@ pub(crate) fn header_ghost_button(
     theme: &Theme,
     child: impl IntoElement,
 ) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .size(px(HEADER_CTRL_H))
-        .rounded(px(HEADER_CTRL_R))
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
-        .hover(|s| s.bg(theme.bg_hover))
-        .child(child)
+    press(
+        div()
+            .id(id)
+            .group(BUTTON_GROUP)
+            .size(px(HEADER_CTRL_H))
+            .rounded(px(HEADER_CTRL_R))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .hover(|s| s.bg(theme.bg_hover)),
+    )
+    .child(child)
 }
 
 /// Width of one caption button, matching the metric Windows uses for its own
@@ -249,28 +300,28 @@ fn caption_button(
     } else {
         theme.bg_hover
     };
-    let mut icon = gpui::svg()
-        .path(glyph)
-        .flex_none()
-        .size(px(14.))
-        .text_color(theme.text_2);
+    let mut glyph_el = icon(glyph, 14., theme.text_2);
     if close {
-        icon = icon.group_hover(id, move |style| style.text_color(theme.text));
+        // The close glyph rides the caption's red hover; the shared button ink
+        // lift already brightens it.
+        glyph_el = glyph_el.text_color(theme.text_2);
     }
-    div()
-        .id(id)
-        .group(id)
-        .w(px(CAPTION_BUTTON_W))
-        .h_full()
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
-        .hover(move |style| style.bg(fill))
-        .on_mouse_up(MouseButton::Left, move |_, window, _| {
-            crate::platform::window_command(window, command)
-        })
-        .child(icon)
+    press(
+        div()
+            .id(id)
+            .group(BUTTON_GROUP)
+            .w(px(CAPTION_BUTTON_W))
+            .h_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .hover(move |style| style.bg(fill)),
+    )
+    .on_mouse_up(MouseButton::Left, move |_, window, _| {
+        crate::platform::window_command(window, command)
+    })
+    .child(glyph_el)
 }
 
 /// Turn a header strip into a window drag region.

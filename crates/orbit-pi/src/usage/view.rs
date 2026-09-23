@@ -60,7 +60,7 @@ use super::table::{
     TableKind, HEADER_H, ROW_H,
 };
 use super::tooltip::Tooltip;
-use crate::app::icon;
+use crate::app::{icon, press, BUTTON_GROUP};
 use crate::composer::ComposerInput;
 use crate::theme::{self, Theme};
 
@@ -819,25 +819,28 @@ impl UsagePage {
         }
         let entity = cx.entity();
         Some(
-            div()
-                .id("usage-state-clear")
-                .mt(px(2.))
-                .h(px(28.))
-                .px(px(10.))
-                .rounded(px(7.))
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.bg_raised)
-                .flex()
-                .items_center()
-                .cursor_pointer()
-                .text_size(theme.ui_px(12.))
-                .hover(|style| style.bg(theme.bg_hover))
-                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                    entity.update(cx, |page, cx| page.clear_filters(cx));
-                })
-                .child(tr!("view.clear_filters"))
-                .into_any_element(),
+            press(
+                div()
+                    .id("usage-state-clear")
+                    .group(BUTTON_GROUP)
+                    .mt(px(2.))
+                    .h(px(28.))
+                    .px(px(10.))
+                    .rounded(px(7.))
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.bg_raised)
+                    .flex()
+                    .items_center()
+                    .cursor_pointer()
+                    .text_size(theme.ui_px(12.))
+                    .hover(|style| style.bg(theme.bg_hover)),
+            )
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                entity.update(cx, |page, cx| page.clear_filters(cx));
+            })
+            .child(tr!("view.clear_filters"))
+            .into_any_element(),
         )
     }
 

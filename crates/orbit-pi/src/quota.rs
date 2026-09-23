@@ -225,6 +225,22 @@ fn is_unsupported_error(message: &str) -> bool {
     lower.contains("unknown command") || lower.contains("unsupported")
 }
 
+/// Whether a report's `note` should render. A note normally accompanies a
+/// report with nothing else to show (an unsupported provider, a balance-only
+/// account). It also renders beneath metered windows when none of them carries
+/// a reset time, so a provider whose usage API omits resets (Ollama Cloud's
+/// `/api/usage`) still explains how to see the countdown instead of showing a
+/// bare meter. Errored reports render their error, never the note.
+pub fn note_should_render(report: &QuotaReport) -> bool {
+    report.error.is_none()
+        && report.note.is_some()
+        && (!report.has_data()
+            || report
+                .windows
+                .iter()
+                .all(|window| window.resets_at.is_none()))
+}
+
 /// Whether a report carries anything the UI can render.
 fn has_something(report: &QuotaReport) -> bool {
     report.has_data() || report.error.is_some() || report.note.is_some()
@@ -327,6 +343,59 @@ mod tests {
         quota.on_disconnect();
         assert_eq!(quota.support(), QuotaSupport::Unknown);
         assert!(quota.report("anthropic").is_some());
+    }
+
+    #[test]
+    fn note_renders_under_windows_that_expose_no_reset() {
+        // A metered report with no reset time still surfaces its note, so an
+        // API-only Ollama account is told how to see the countdown.
+        let mut quota = QuotaManager::new();
+        quota.on_response(
+            true,
+            Some(
+                &json!({"providers":[{"provider":"ollama","kind":"subscription",
+                "windows":[{"id":"session","label":"5-hour session","usedPercent":1.0},
+                           {"id":"weekly","label":"Weekly","usedPercent":38.1}],
+                "note":"add a session cookie"}]}),
+            ),
+            None,
+        );
+        assert!(note_should_render(quota.report("ollama").unwrap()));
+
+        // Once a window carries a reset, the note steps aside for the meter.
+        let mut dated = QuotaManager::new();
+        dated.on_response(
+            true,
+            Some(&json!({"providers":[{"provider":"ollama","kind":"subscription",
+                "windows":[{"id":"session","label":"5-hour session","usedPercent":1.0,"resetsAt":1}],
+                "note":"add a session cookie"}]})),
+            None,
+        );
+        assert!(!note_should_render(dated.report("ollama").unwrap()));
+
+        // An error owns the row; the note never renders beside it.
+        let mut errored = QuotaManager::new();
+        errored.on_response(
+            true,
+            Some(
+                &json!({"providers":[{"provider":"ollama","kind":"subscription",
+                "windows":[],"note":"add a session cookie","error":"429"}]}),
+            ),
+            None,
+        );
+        assert!(!note_should_render(errored.report("ollama").unwrap()));
+
+        // The classic note case: nothing else to show.
+        let mut empty = QuotaManager::new();
+        empty.on_response(
+            true,
+            Some(
+                &json!({"providers":[{"provider":"groq","kind":"unsupported",
+                "windows":[],"balances":[],"note":"Groq exposes no usage API."}]}),
+            ),
+            None,
+        );
+        assert!(note_should_render(empty.report("groq").unwrap()));
     }
 
     #[test]

@@ -12,7 +12,9 @@
 //! All Git I/O runs on the background executor; the page paints cached state
 //! and is owned by [`crate::app::OrbitApp`].
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -21,7 +23,7 @@ use gpui::{
     PathBuilder, Pixels, Render, Window,
 };
 
-use crate::app::{icon, nerd_font_family};
+use crate::app::{icon, nerd_font_family, press, BUTTON_GROUP};
 use crate::commit_message;
 use crate::gh;
 use crate::git::{self, CommitEntry, StatusRow};
@@ -1460,6 +1462,35 @@ impl GitPanel {
         self.stage_prompt.is_some()
             || self.pending_confirm.is_some()
             || self.branch_prompt.is_some()
+    }
+
+    /// Whether a detail/new surface is showing inside a tab (an issue or PR
+    /// detail, or a new-issue/new-PR form). Escape steps back to the list
+    /// from here before it leaves the Git page. Not gated on the loading
+    /// flags: while a detail loads the list is still on screen, so Escape
+    /// keeps its page-level meaning.
+    pub fn has_transient_view(&self) -> bool {
+        self.issue_detail.is_some()
+            || self.issue_new_open
+            || self.pr_detail.is_some()
+            || self.pr_new_open
+    }
+
+    /// Close the topmost detail/new surface inside a tab, returning to its
+    /// list. Returns whether anything was showing.
+    pub fn close_transient_view(&mut self, cx: &mut Context<Self>) -> bool {
+        let had = self.has_transient_view();
+        if had {
+            self.issue_detail = None;
+            self.issue_detail_loading = false;
+            self.issue_new_open = false;
+            self.pr_detail = None;
+            self.pr_detail_loading = false;
+            self.pr_new_open = false;
+            self.label_menu_open = false;
+            cx.notify();
+        }
+        had
     }
 
     fn generate_then(&mut self, action: Option<GitAction>, cx: &mut Context<Self>) {
@@ -3688,17 +3719,8 @@ impl GitPanel {
             )
             .child(
                 div()
-                    .w(px(180.))
                     .ml(theme.space(4.))
-                    .px(theme.space(8.))
-                    .h(px(26.))
-                    .rounded(px(6.))
-                    .border_1()
-                    .border_color(theme.border)
-                    .bg(theme.bg_composer)
-                    .flex()
-                    .items_center()
-                    .child(div().flex_1().min_w_0().child(self.issue_search.clone())),
+                    .child(search_field(theme, self.issue_search.clone())),
             )
             .child(action_button(
                 "git-issue-search",
@@ -3817,119 +3839,127 @@ impl GitPanel {
         } else {
             "icons/circle-check.svg"
         };
-        let mut content = div()
+
+        // One meta line under the title — who opened it, when, and how many
+        // comments — instead of a wrap-prone row that collided with the labels.
+        let opened_by = tr!(
+            "git_panel.issue_opened_by",
+            author = issue.author.login.clone(),
+            time = gh::relative_time(&issue.created_at)
+        );
+        let comments = if issue.comments.len() == 1 {
+            tr!("git_panel.issue_comment_one")
+        } else {
+            tr!("git_panel.issue_comments", count = issue.comments.len())
+        };
+        let meta_text = format!("{opened_by} \u{b7} {comments}");
+        let title_row = div()
             .flex()
-            .flex_col()
-            .gap(theme.space(12.))
-            .px(theme.space(20.))
-            .py(theme.space(16.))
-            .max_w(px(780.));
-        content = content.child(
-            div()
-                .flex()
-                .items_start()
-                .gap(theme.space(8.))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(6.))
-                        .child(
-                            div()
-                                .text_size(theme.ui_px(16.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme.text)
-                                .whitespace_normal()
-                                .child(issue.title.clone()),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .flex_wrap()
-                                .gap(px(6.))
-                                .child(state_chip(
-                                    &state_label,
-                                    state_color,
-                                    Some(state_glyph),
-                                    theme,
-                                ))
-                                .child(
-                                    div()
-                                        .text_size(theme.ui_px(11.5))
-                                        .text_color(theme.text_3)
-                                        .child(format!(
-                                            "#{} \u{b7} {} \u{b7} {}",
-                                            issue.number,
-                                            issue.author.login,
-                                            gh::relative_time(&issue.created_at)
-                                        )),
-                                ),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .children((!issue.url.is_empty()).then(|| {
-                            let url = issue.url.clone();
-                            action_button(
-                                "git-issue-web",
-                                &tr!("git_panel.open_on_github"),
-                                Some(
-                                    icon("icons/arrow-up-right.svg", 12., theme.text_2)
-                                        .into_any_element(),
-                                ),
-                                false,
-                                false,
+            .items_start()
+            .gap(theme.space(8.))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .text_size(theme.ui_px(15.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.text)
+                            .whitespace_normal()
+                            .child(issue.title.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .flex_wrap()
+                            .gap(px(8.))
+                            .child(state_chip(
+                                &state_label,
+                                state_color,
+                                Some(state_glyph),
                                 theme,
-                                cx.listener(move |_, _: &ClickEvent, _, cx| cx.open_url(&url)),
-                            )
-                        }))
-                        .child(action_button(
-                            "git-issue-back",
-                            &tr!("git_panel.back"),
+                            ))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .text_size(theme.ui_px(12.))
+                                    .text_color(theme.text_3)
+                                    .child(meta_text),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .children((!issue.url.is_empty()).then(|| {
+                        let url = issue.url.clone();
+                        action_button(
+                            "git-issue-web",
+                            &tr!("git_panel.open_on_github"),
                             Some(
-                                icon("icons/arrow-left.svg", 12., theme.text_2).into_any_element(),
+                                icon("icons/arrow-up-right.svg", 12., theme.text_2)
+                                    .into_any_element(),
                             ),
                             false,
                             false,
                             theme,
-                            cx.listener(|this, _: &ClickEvent, _, cx| this.close_issue_detail(cx)),
-                        )),
-                ),
-        );
-        content = content.child(
-            div()
-                .flex()
-                .items_center()
-                .flex_wrap()
-                .gap(px(6.))
-                .children(
-                    issue
-                        .labels
-                        .iter()
-                        .map(|label| issue_label_chip(label, theme)),
-                )
-                .child(action_button(
-                    "git-issue-labels",
-                    &tr!("git_panel.edit_labels"),
-                    Some(icon("icons/tag-01.svg", 12., theme.text_2).into_any_element()),
-                    false,
-                    self.issue_busy,
-                    theme,
-                    cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.label_menu_open = !this.label_menu_open;
-                        cx.notify();
-                    }),
-                )),
-        );
+                            cx.listener(move |_, _: &ClickEvent, _, cx| cx.open_url(&url)),
+                        )
+                    }))
+                    // The window's own Back leaves the Git page; this one only
+                    // steps back to the issue list, so it reads "All issues" to
+                    // keep the two affordances distinct.
+                    .child(action_button(
+                        "git-issue-back",
+                        &tr!("git_panel.all_issues"),
+                        Some(icon("icons/tools/list.svg", 12., theme.text_2).into_any_element()),
+                        false,
+                        false,
+                        theme,
+                        cx.listener(|this, _: &ClickEvent, _, cx| this.close_issue_detail(cx)),
+                    )),
+            );
+        // Labels sit under the title on their own row with real air, so the
+        // state pill and the meta line never collide with them.
+        let mut header = div()
+            .flex()
+            .flex_col()
+            .gap(theme.space(12.))
+            .child(title_row);
+        if !issue.labels.is_empty() {
+            header = header.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .flex_wrap()
+                    .gap(px(6.))
+                    .children(
+                        issue
+                            .labels
+                            .iter()
+                            .map(|label| issue_label_chip(label, theme)),
+                    ),
+            );
+        }
+
+        // ── reading column ──
+        let mut main = div()
+            .flex_1()
+            .min_w(px(520.))
+            .flex()
+            .flex_col()
+            .gap(theme.space(16.))
+            .child(header);
         if !issue.body.trim().is_empty() {
-            content = content.child(
+            main = main.child(
                 div()
                     .p(theme.space(12.))
                     .rounded(px(8.))
@@ -3943,12 +3973,12 @@ impl GitPanel {
             );
         }
         for comment in &issue.comments {
-            content = content.child(issue_comment_card(comment, theme));
+            main = main.child(issue_comment_card(comment, theme));
         }
-        content = content.child(composer_field(theme, self.issue_comment.clone()));
+        main = main.child(composer_field(theme, self.issue_comment.clone(), px(88.)));
         // State toggle and submit share the footer row — close/reopen on the
         // left, comment on the right, the way GitHub groups them.
-        content = content.child(
+        main = main.child(
             div()
                 .flex()
                 .items_center()
@@ -3988,12 +4018,109 @@ impl GitPanel {
                     cx.listener(|this, _: &ClickEvent, _, cx| this.comment_issue(cx)),
                 )),
         );
+
+        // ── metadata rail (assignees, labels, timeline) ──
+        let mut assignees = div().flex().flex_col().gap(px(6.));
+        if issue.assignees.is_empty() {
+            assignees = assignees.child(
+                div()
+                    .text_size(theme.ui_px(12.))
+                    .text_color(theme.text_3)
+                    .child(tr!("git_panel.no_assignees")),
+            );
+        } else {
+            assignees = assignees.children(issue.assignees.iter().map(|user| {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(author_avatar(&user.login, "", theme))
+                    .child(
+                        div()
+                            .text_size(theme.ui_px(12.))
+                            .text_color(theme.text_2)
+                            .child(user.login.clone()),
+                    )
+                    .into_any_element()
+            }));
+        }
+        // The chips live in the header; the rail keeps the manage action so
+        // the two surfaces never repeat the same labels. With none set, the
+        // header row is hidden and this button is the whole section.
+        let labels = div().flex().flex_col().gap(px(8.)).child(action_button(
+            "git-issue-labels",
+            &tr!("git_panel.edit_labels"),
+            Some(icon("icons/tag-01.svg", 12., theme.text_2).into_any_element()),
+            false,
+            self.issue_busy,
+            theme,
+            cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.label_menu_open = !this.label_menu_open;
+                cx.notify();
+            }),
+        ));
+        let timeline = div()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .child(meta_time_row(
+                &tr!("git_panel.opened"),
+                &gh::relative_time(&issue.created_at),
+                theme,
+            ))
+            .child(meta_time_row(
+                &tr!("git_panel.updated"),
+                &gh::relative_time(&issue.updated_at),
+                theme,
+            ));
+        let rail = div()
+            .flex_none()
+            .w(px(240.))
+            .flex()
+            .flex_col()
+            .gap(theme.space(16.))
+            .child(meta_section(
+                &tr!("git_panel.assignees"),
+                assignees.into_any_element(),
+                theme,
+            ))
+            .child(meta_section(
+                &tr!("git_panel.labels"),
+                labels.into_any_element(),
+                theme,
+            ))
+            .child(meta_section(
+                &tr!("git_panel.timeline"),
+                timeline.into_any_element(),
+                theme,
+            ));
+
         div()
             .id("git-issue-detail-scroll")
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
-            .child(content)
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .justify_center()
+                    .px(theme.space(20.))
+                    .py(theme.space(16.))
+                    .child(
+                        // The rail wraps under the reading column when the pane
+                        // is too narrow to hold both (min column + rail + gap).
+                        div()
+                            .w_full()
+                            .max_w(px(1040.))
+                            .flex()
+                            .flex_wrap()
+                            .items_start()
+                            .gap(theme.space(20.))
+                            .child(main)
+                            .child(rail),
+                    ),
+            )
             .into_any_element()
     }
 
@@ -4012,8 +4139,8 @@ impl GitPanel {
                     .text_color(theme.text)
                     .child(tr!("git_panel.new_issue_title")),
             )
-            .child(composer_field(theme, self.issue_new_title.clone()))
-            .child(composer_field(theme, self.issue_new_body.clone()))
+            .child(composer_field(theme, self.issue_new_title.clone(), px(0.)))
+            .child(composer_field(theme, self.issue_new_body.clone(), px(160.)))
             .child(
                 div()
                     .flex()
@@ -4188,17 +4315,8 @@ impl GitPanel {
             )
             .child(
                 div()
-                    .w(px(180.))
                     .ml(theme.space(4.))
-                    .px(theme.space(8.))
-                    .h(px(26.))
-                    .rounded(px(6.))
-                    .border_1()
-                    .border_color(theme.border)
-                    .bg(theme.bg_composer)
-                    .flex()
-                    .items_center()
-                    .child(div().flex_1().min_w_0().child(self.pr_search.clone())),
+                    .child(search_field(theme, self.pr_search.clone())),
             )
             .child(action_button(
                 "git-pr-search",
@@ -4379,8 +4497,10 @@ impl GitPanel {
                 )
                 .child(action_button(
                     "git-pr-back",
-                    &tr!("git_panel.back"),
-                    Some(icon("icons/arrow-left.svg", 12., theme.text_2).into_any_element()),
+                    // Distinct from the window's own Back, which leaves the
+                    // Git page; this returns to the pull-request list.
+                    &tr!("git_panel.all_pulls"),
+                    Some(icon("icons/tools/list.svg", 12., theme.text_2).into_any_element()),
                     false,
                     false,
                     theme,
@@ -4728,7 +4848,7 @@ impl GitPanel {
 
         // The composer stays last on the page: timeline, then the merge box,
         // then the field the reader writes in.
-        content = content.child(composer_field(theme, self.pr_comment.clone()));
+        content = content.child(composer_field(theme, self.pr_comment.clone(), px(88.)));
         content = content.child(
             div()
                 .flex()
@@ -4795,8 +4915,8 @@ impl GitPanel {
                     .text_color(theme.text)
                     .child(tr!("git_panel.new_pull_title")),
             )
-            .child(composer_field(theme, self.pr_new_title.clone()))
-            .child(composer_field(theme, self.pr_new_body.clone()))
+            .child(composer_field(theme, self.pr_new_title.clone(), px(0.)))
+            .child(composer_field(theme, self.pr_new_body.clone(), px(160.)))
             .child(
                 div()
                     .flex()
@@ -5625,23 +5745,26 @@ fn menu_row(
     theme: Theme,
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
-    div()
-        .id(id)
-        .h(px(28.))
-        .mx(px(4.))
-        .px(px(8.))
-        .rounded(px(6.))
-        .flex()
-        .items_center()
-        .gap(px(6.))
-        .cursor_pointer()
-        .text_size(theme.ui_px(12.))
-        .text_color(theme.text_2)
-        .hover(|s| s.bg(theme.overlay).text_color(theme.text))
-        .on_click(listener)
-        .child(icon(icon_path, 11., theme.text_3))
-        .child(label.to_string())
-        .into_any_element()
+    press(
+        div()
+            .id(id)
+            .group(BUTTON_GROUP)
+            .h(px(28.))
+            .mx(px(4.))
+            .px(px(8.))
+            .rounded(px(6.))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .cursor_pointer()
+            .text_size(theme.ui_px(12.))
+            .text_color(theme.text_2)
+            .hover(|s| s.bg(theme.overlay).text_color(theme.text)),
+    )
+    .on_click(listener)
+    .child(icon(icon_path, 11., theme.text_3))
+    .child(label.to_string())
+    .into_any_element()
 }
 
 /// A hairline between menu groups.
@@ -6006,8 +6129,15 @@ fn state_chip(label: &str, color: Hsla, glyph: Option<&'static str>, theme: Them
 }
 
 /// A bordered field wrapper for a `ComposerInput` (issue title/body/comment).
-fn composer_field(theme: Theme, input: Entity<crate::composer::ComposerInput>) -> AnyElement {
+fn composer_field(
+    theme: Theme,
+    input: Entity<crate::composer::ComposerInput>,
+    min_h: Pixels,
+) -> AnyElement {
     div()
+        .w_full()
+        .min_w_0()
+        .min_h(min_h)
         .px(theme.space(10.))
         .py(theme.space(8.))
         .rounded(px(8.))
@@ -6015,6 +6145,27 @@ fn composer_field(theme: Theme, input: Entity<crate::composer::ComposerInput>) -
         .border_color(theme.border)
         .bg(theme.bg_composer)
         .flex()
+        // The column wrapper lets the input grow to the field's min height, so
+        // the whole text area is clickable, not just the first line.
+        .child(div().flex_1().min_w_0().flex().flex_col().child(input))
+        .into_any_element()
+}
+
+/// A filter-bar search field: a 28px hairline box (matching the chips beside
+/// it) with a leading glyph and the filter input filling the rest.
+fn search_field(theme: Theme, input: Entity<crate::composer::ComposerInput>) -> AnyElement {
+    div()
+        .w(px(200.))
+        .h(px(28.))
+        .px(theme.space(8.))
+        .rounded(px(6.))
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.bg_composer)
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .child(icon("icons/search.svg", 12., theme.text_3))
         .child(div().flex_1().min_w_0().child(input))
         .into_any_element()
 }
@@ -6709,18 +6860,65 @@ fn avatar_image(url: Option<String>, name: &str, email: &str, theme: Theme) -> A
     }
 }
 
-/// The GitHub avatar URL for a commit author. The login encoded in a GitHub
-/// noreply email (`123+login@users.noreply.github.com`) is authoritative, so
-/// it wins over the display name; only when no email login is available does a
+/// The GitHub avatar URL for a commit author. A user-supplied email→login
+/// override wins first (see [`avatar_login_overrides`]); then the login encoded
+/// in a GitHub noreply email (`123+login@users.noreply.github.com`) is
+/// authoritative over the display name; only when neither is available does a
 /// name that already looks like a handle get used. This keeps display names
 /// ("Ada Lovelace") from 404-ing and avoids showing the photo of an unrelated
 /// account whose handle happens to equal the display name.
+///
+/// Resolves against GitHub's public profile image endpoint,
+/// `https://github.com/<login>.png`, rather than the CDN host directly: it is
+/// the documented, stable form and redirects to the same avatar, so every git
+/// page (Changes, Commit, Issues, pull requests) shows a live photo.
 fn github_avatar_url(name: &str, email: &str) -> Option<String> {
-    let handle = github_handle_from_email(email)
-        .or_else(|| is_github_handle(name).then(|| name.trim().to_string()))?;
-    Some(format!(
-        "https://avatars.githubusercontent.com/{handle}?size=48"
-    ))
+    let handle = resolve_github_login(name, email, avatar_login_overrides())?;
+    Some(format!("https://github.com/{handle}.png?size=48"))
+}
+
+/// Resolve the GitHub login for an author, consulting the override map first.
+/// Split from [`github_avatar_url`] so the map lookup is testable without
+/// touching the user's home directory.
+fn resolve_github_login(
+    name: &str,
+    email: &str,
+    overrides: &HashMap<String, String>,
+) -> Option<String> {
+    if let Some(login) = overrides.get(&email.trim().to_ascii_lowercase()) {
+        return Some(login.clone());
+    }
+    github_handle_from_email(email)
+        .or_else(|| is_github_handle(name).then(|| name.trim().to_string()))
+}
+
+/// Email→login overrides from `~/.orbit-pi/git-avatars.json`, a flat
+/// `{ "you@example.com": "github-login" }` map. Commits authored with a
+/// personal (non-noreply) address carry no login, so this lets their rows show
+/// the real photo instead of the monogram. Read once; a missing or malformed
+/// file is simply ignored, and invalid login shapes are dropped.
+fn avatar_login_overrides() -> &'static HashMap<String, String> {
+    static OVERRIDES: OnceLock<HashMap<String, String>> = OnceLock::new();
+    OVERRIDES.get_or_init(|| {
+        let Some(home) = crate::platform::home_dir_opt() else {
+            return HashMap::new();
+        };
+        let Ok(raw) = std::fs::read_to_string(home.join(".orbit-pi").join("git-avatars.json"))
+        else {
+            return HashMap::new();
+        };
+        let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(&raw)
+        else {
+            return HashMap::new();
+        };
+        map.into_iter()
+            .filter_map(|(email, login)| {
+                let login = login.as_str()?;
+                is_github_handle(login)
+                    .then(|| (email.trim().to_ascii_lowercase(), login.to_string()))
+            })
+            .collect()
+    })
 }
 
 /// The GitHub login from a noreply email, if the address is one. Modern
@@ -6835,6 +7033,48 @@ fn section_title(label: &str, count: usize, theme: Theme) -> AnyElement {
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text_2)
                 .child(count.to_string()),
+        )
+        .into_any_element()
+}
+
+/// One section of the issue/PR metadata rail: an 11px uppercase label over the
+/// section body. The rail is a quiet summary, so the label carries the
+/// hierarchy and the body stays at reading weight.
+fn meta_section(label: &str, body: AnyElement, theme: Theme) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(theme.space(8.))
+        .child(
+            div()
+                .text_size(theme.ui_px(11.))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text_3)
+                .child(label.to_uppercase()),
+        )
+        .child(body)
+        .into_any_element()
+}
+
+/// One "Opened / Updated" row in the rail's Timeline section: a quiet label on
+/// the left, the relative time on the right.
+fn meta_time_row(label: &str, value: &str, theme: Theme) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(theme.space(8.))
+        .child(
+            div()
+                .text_size(theme.ui_px(12.))
+                .text_color(theme.text_3)
+                .child(label.to_string()),
+        )
+        .child(
+            div()
+                .text_size(theme.ui_px(12.))
+                .text_color(theme.text_2)
+                .child(value.to_string()),
         )
         .into_any_element()
 }
@@ -6958,7 +7198,7 @@ mod tests {
         // The noreply login wins even when the display name is a valid handle.
         assert_eq!(
             github_avatar_url("someone", "12345+real-login@users.noreply.github.com"),
-            Some("https://avatars.githubusercontent.com/real-login?size=48".into())
+            Some("https://github.com/real-login.png?size=48".into())
         );
         // A display name with spaces no longer hides the login in the email.
         assert_eq!(
@@ -6966,12 +7206,12 @@ mod tests {
                 "Rajeshwar Kashyap",
                 "76556671+imrj05@users.noreply.github.com"
             ),
-            Some("https://avatars.githubusercontent.com/imrj05?size=48".into())
+            Some("https://github.com/imrj05.png?size=48".into())
         );
         // Legacy noreply addresses carry the login as the whole local part.
         assert_eq!(
             github_avatar_url("Ada Lovelace", "adal@users.noreply.github.com"),
-            Some("https://avatars.githubusercontent.com/adal?size=48".into())
+            Some("https://github.com/adal.png?size=48".into())
         );
     }
 
@@ -6980,12 +7220,44 @@ mod tests {
         // No usable email → a handle-shaped name is still a candidate.
         assert_eq!(
             github_avatar_url("work-rjkashyap", "work@example.com"),
-            Some("https://avatars.githubusercontent.com/work-rjkashyap?size=48".into())
+            Some("https://github.com/work-rjkashyap.png?size=48".into())
         );
         // A real name and a non-noreply address resolve to no photo.
         assert_eq!(github_avatar_url("Ada Lovelace", "ada@example.com"), None);
         // Invalid handle shapes are rejected rather than 404-ing on the forge.
         assert_eq!(github_avatar_url("-bad-", ""), None);
         assert_eq!(github_avatar_url("a--b", ""), None);
+    }
+
+    #[test]
+    fn avatar_url_uses_email_login_override() {
+        // A personal (non-noreply) address resolves through the override map,
+        // so historical commits show the real photo instead of the monogram.
+        let overrides = HashMap::from([(
+            "work.rjkashyap05@gmail.com".to_string(),
+            "imrj05".to_string(),
+        )]);
+        assert_eq!(
+            resolve_github_login(
+                "Rajeshwar Kashyap",
+                "work.rjkashyap05@gmail.com",
+                &overrides
+            ),
+            Some("imrj05".into())
+        );
+        // The map is consulted case-insensitively and wins over the heuristic.
+        assert_eq!(
+            resolve_github_login(
+                "Rajeshwar Kashyap",
+                " Work.RJKashyap05@Gmail.com ",
+                &overrides
+            ),
+            Some("imrj05".into())
+        );
+        // Without an entry, the heuristic decides as before.
+        assert_eq!(
+            resolve_github_login("Ada Lovelace", "ada@example.com", &overrides),
+            None
+        );
     }
 }

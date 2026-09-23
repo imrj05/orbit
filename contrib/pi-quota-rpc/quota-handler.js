@@ -716,9 +716,17 @@ function orbitOllamaCloudKey(entry) {
  * Recognized shapes (observed across generations):
  *   - plan badge text near "Cloud Usage" (Free / Pro / Max)
  *   - two usage meters labelled "Session" and "Weekly", each with an
- *     aria-label or visible "<n>% used" value
- *   - a `data-time` ISO attribute on "Resets in …" elements (reset timestamps)
+ *     aria-label or a visible "<n>% used" value in a sibling element
+ *   - a `data-time` (or `datetime`) ISO attribute on the "Resets in …"
+ *     element that follows each meter
  *   - optional premium-interaction / extra-usage figures
+ *
+ * The page has rendered both an accessible shape (`aria-label="Session usage
+ * 42.5% used"` wrapping the reset) and a plain one
+ * (`<span>Session usage</span><span>5.6% used</span> … <span data-time="…">`).
+ * Both are handled: each read first tries the aria-label block, then falls back
+ * to scanning from the visible label to the next meter, so a value or reset is
+ * never borrowed from the neighbouring window.
  */
 const OllamaCloudParser = {
   /** Plan tier, if the header exposes one. */
@@ -752,8 +760,10 @@ const OllamaCloudParser = {
 
   /**
    * Percent-used for a labelled meter. Prefers an explicit
-   * `aria-label="Session usage 42.5%…"` (the accessible value), then a visible
-   * "<n>% used" near the label. Returns a number or undefined.
+   * `aria-label="Session usage 42.5%…"` (the accessible value), then the visible
+   * markup, where the label and its value are sibling elements
+   * (`<span>Session usage</span><span>5.6% used</span>`). Returns a number or
+   * undefined.
    *
    * The label word is anchored at the START of the aria-label value, because
    * the word also appears inside the value itself and an unanchored search
@@ -766,30 +776,60 @@ const OllamaCloudParser = {
       "i",
     ).exec(html);
     if (aria) return Number(aria[1]);
-    // Visible fallback: "<label> … <n>% used" within one meter block.
-    const visible = new RegExp(
-      `>\\s*(?:${label})[^<]{0,80}?(\\d+(?:\\.\\d+)?)\\s*%`,
-      "i",
-    ).exec(html);
-    if (visible) return Number(visible[1]);
-    return undefined;
+    const block = this.meterSlice(html, labelPattern);
+    if (block == null) return undefined;
+    // Prefer "<n>% used" over a usage-track segment width (`style="width: 3.4%"`).
+    const used = /(\d+(?:\.\d+)?)\s*%\s*used/i.exec(block);
+    if (used) return Number(used[1]);
+    const any = /(\d+(?:\.\d+)?)\s*%/.exec(block);
+    return any ? Number(any[1]) : undefined;
   },
 
   /**
-   * Reset time for a labelled meter, read from a `data-time="<ISO>"` attribute
-   * in the same meter block. The label is anchored at the start of an
-   * `aria-label` value (as in `percentFor`), then the search stops at the next
-   * `aria-label` so a neighbouring meter's reset is never borrowed. Returns
-   * epoch millis or undefined; never invents a time.
+   * Reset time for a labelled meter. Reads a `data-time="<ISO>"` (or
+   * `datetime="<ISO>"`) attribute from the meter block — the element carrying
+   * the "Resets in …" text. Returns epoch millis or undefined; never invents a
+   * time.
    */
   resetFor(html, labelPattern) {
     const label = labelPattern.source;
-    const block = new RegExp(
+    const aria = new RegExp(
       `aria-label="(?:${label})[^"]*"([\\s\\S]*?)(?=aria-label="|$)`,
       "i",
     ).exec(html);
-    if (!block) return undefined;
-    const match = /data-time="([^"]+)"/.exec(block[1]);
+    if (aria) {
+      const parsed = this.resetIn(aria[1]);
+      if (parsed != null) return parsed;
+    }
+    const block = this.meterSlice(html, labelPattern);
+    return block == null ? undefined : this.resetIn(block);
+  },
+
+  /**
+   * The HTML belonging to one labelled meter: everything after the visible
+   * label up to the next meter label (session/weekly), or a bounded tail when
+   * the meter is the last one. Never spans two meters, so a value or reset is
+   * never borrowed from a neighbour.
+   */
+  meterSlice(html, labelPattern) {
+    const label = labelPattern.source;
+    const start = new RegExp(`>\\s*(?:${label})[^<]*<`, "i").exec(html);
+    if (!start) return null;
+    const rest = html.slice(start.index + start[0].length);
+    // Stop at the next *visible* meter label (`>Weekly usage<`). The same
+    // meter's accessible value also spells the label
+    // (`aria-label="Session usage 3.9% used"`) and the meter's tooltip sits
+    // between the label and its "Resets in …" element, so the boundary must be
+    // a `>`-anchored label or the slice would end before the `data-time` and
+    // lose the reset. The tail cap covers the final meter, where a large
+    // model-breakdown tooltip (≈3 KB) still precedes the reset element.
+    const next = />\s*(?:session|weekly)\s+usage\s*</i.exec(rest);
+    return next ? rest.slice(0, next.index) : rest.slice(0, 8000);
+  },
+
+  /** First `data-time`/`datetime` ISO value in a block, as epoch millis. */
+  resetIn(block) {
+    const match = /(?:data-time|datetime)="([^"]+)"/.exec(block);
     if (!match) return undefined;
     const parsed = Date.parse(match[1]);
     return isFinite(parsed) ? parsed : undefined;
@@ -859,7 +899,39 @@ async function orbitOllamaCloudApi(key) {
     windows,
     balances,
     note:
-      "Monthly usage credits reset on your plan's anniversary, which the API does not expose.",
+      windows.some((w) => w.id === "monthly")
+        ? "Monthly usage credits reset on your plan's anniversary, which the API does not expose."
+        : "The API does not expose reset times; add a session cookie in Settings → Providers → Ollama to see when the 5-hour and weekly windows reset.",
+  };
+}
+
+/**
+ * Merge an API report with a settings-page report. The API carries the
+ * authoritative percentages for the current account; the settings page carries
+ * the only reset timestamps (Ollama's `/api/usage` omits them). Reset times are
+ * copied onto the matching API windows by id, and any window only the page
+ * knows about is appended. When either side failed, the usable one is returned
+ * unchanged rather than guessing.
+ */
+function orbitOllamaMergeReports(api, page) {
+  const apiOk = api && Array.isArray(api.windows) && api.error == null;
+  const pageOk = page && Array.isArray(page.windows) && page.error == null;
+  if (!apiOk) return pageOk ? page : api;
+  if (!pageOk || page.windows.length === 0) return api;
+
+  const pageById = new Map(page.windows.map((w) => [w.id, w]));
+  const merged = api.windows.map((w) => {
+    if (w.resetsAt != null) return w;
+    const match = pageById.get(w.id);
+    return match && match.resetsAt != null ? { ...w, resetsAt: match.resetsAt } : w;
+  });
+  for (const w of page.windows) {
+    if (!merged.some((m) => m.id === w.id)) merged.push(w);
+  }
+  return {
+    ...api,
+    plan: api.plan || page.plan,
+    windows: merged,
   };
 }
 
@@ -899,9 +971,11 @@ async function orbitOllamaCloudSettings(session) {
 }
 
 /**
- * Ollama Cloud adapter. Prefers the authoritative JSON API with a real cloud
- * key (current monthly-credit model); falls back to the authenticated settings
- * page for legacy session/weekly accounts or when only a session is stored.
+ * Ollama Cloud adapter. The API with a real cloud key is authoritative for the
+ * percentages; the authenticated settings page is the only source of reset
+ * timestamps. When the account has both a key and a session, both are queried
+ * and merged, so a stored key never hides the countdown. With only one
+ * credential, that source is used alone.
  */
 async function orbitQuotaOllama(id) {
   const { stored } = await orbitQuotaResolved(id);
@@ -911,6 +985,20 @@ async function orbitQuotaOllama(id) {
   const session =
     orbitOllamaSession(auth[OLLAMA_SESSION_KEY]) || orbitOllamaSession(stored);
 
+  if (cloudKey && session) {
+    const [api, page] = await Promise.all([
+      orbitOllamaCloudApi(cloudKey),
+      orbitOllamaCloudSettings(session),
+    ]);
+    const merged = orbitOllamaMergeReports(api, page);
+    // A configured-but-unreadable settings page must not be ignored silently:
+    // without it there are no resets, so carry the reason (expired cookie,
+    // layout change) so the popover shows why the countdown is missing.
+    if (merged && merged.error == null && page && page.error) {
+      return { ...merged, error: page.error };
+    }
+    return merged;
+  }
   if (cloudKey) return orbitOllamaCloudApi(cloudKey);
   if (session) return orbitOllamaCloudSettings(session);
 

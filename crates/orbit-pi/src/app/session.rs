@@ -1,7 +1,7 @@
 use super::helpers::*;
 use super::*;
 use crate::context_meter::context_ring;
-use crate::quota::{is_five_hour_window, QuotaHeadline};
+use crate::quota::{is_five_hour_window, note_should_render, QuotaHeadline};
 use crate::usage::tooltip::Tooltip;
 
 /// How a composer message is delivered while the agent is running. Both fall
@@ -22,6 +22,15 @@ fn relative_display(root: &std::path::Path, path: &std::path::Path) -> String {
         .map(|relative| relative.to_string_lossy().replace('\\', "/"))
         .unwrap_or_else(|_| path.to_string_lossy().to_string())
 }
+
+/// Minimum time a manual quota refresh keeps its spinner turning, so a reply
+/// that lands in a few milliseconds still reads as a deliberate refresh rather
+/// than a one-frame flicker.
+const QUOTA_REFRESH_MIN_SPIN: Duration = Duration::from_millis(450);
+
+/// Ceiling for a `quota.list` reply. Past it the spinner self-clears, so a
+/// bridge-only pi (no `quota.list`) can never leave the button stuck spinning.
+const QUOTA_REFRESH_TIMEOUT: Duration = Duration::from_millis(4000);
 
 impl OrbitApp {
     /// True while a run is in flight (busy flag or a streaming transcript).
@@ -404,6 +413,14 @@ impl OrbitApp {
         if self.git_open && self.git_panel.read(cx).has_modal() {
             self.git_panel
                 .update(cx, |panel, cx| panel.dismiss_modal(cx));
+            return;
+        }
+        // An issue/PR detail or new-form is a page inside the Git page: Escape
+        // steps back to its list instead of leaving the whole page (and never
+        // reaches the run-abort below).
+        if self.git_open && self.git_panel.read(cx).has_transient_view() {
+            self.git_panel
+                .update(cx, |panel, cx| panel.close_transient_view(cx));
             return;
         }
         if self.git_open {
@@ -841,6 +858,7 @@ impl OrbitApp {
         let generating = self.title_generating;
         let mut button = div()
             .id("sess-generate-title")
+            .group(BUTTON_GROUP)
             .flex_none()
             .h(px(28.))
             .w(px(28.))
@@ -859,6 +877,7 @@ impl OrbitApp {
             button = button
                 .cursor_pointer()
                 .hover(|s| s.bg(theme.bg_hover).border_color(theme.border_strong))
+                .active(|s| s.opacity(PRESS_DIM))
                 .tooltip({
                     let label = tr!("session.generate_title");
                     move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
@@ -1324,9 +1343,10 @@ impl OrbitApp {
         // border) instead of the chip appearing from nothing. It shares the
         // top bar's chip glass, so the meter sits in the same row as the
         // buttons without looking like one.
-        let mut pill = header_chip(
+        let mut pill = press(header_chip(
             div()
                 .id("top-quota")
+                .group(BUTTON_GROUP)
                 .relative()
                 .h(px(HEADER_CTRL_H))
                 .pl(px(10.))
@@ -1337,7 +1357,7 @@ impl OrbitApp {
                 .gap(px(6.))
                 .cursor_pointer(),
             &theme,
-        )
+        ))
         .when(self.quota_popup_open, |s| header_lift(s, &theme))
         .on_mouse_up(MouseButton::Left, cx.listener(Self::on_quota_click))
         .children(self.render_quota_popup(cx));
@@ -1450,6 +1470,60 @@ impl OrbitApp {
 
         let reports = self.quota.reports();
         let count = reports.len();
+        // One glyph that becomes its own spinner: the click starts a rotation
+        // instead of swapping in a loader, so there is no abrupt icon change.
+        // Hover lifts the ink — the button is a hover group, so the whole hit
+        // area triggers it — and press deepens the fill. Reduce Motion keeps
+        // the spin off, but the accent still marks the active state.
+        let refresh_icon: AnyElement = if self.quota_refreshing {
+            let spinning = gpui::svg()
+                .path("icons/refresh.svg")
+                .flex_none()
+                .size(px(13.))
+                .text_color(theme.accent);
+            if theme.ui.reduce_motion {
+                spinning.into_any_element()
+            } else {
+                spinning
+                    .with_animation(
+                        "quota-refresh-spin",
+                        Animation::new(Duration::from_millis(700)).repeat(),
+                        |svg, delta| {
+                            svg.with_transformation(Transformation::rotate(radians(
+                                delta * std::f32::consts::TAU,
+                            )))
+                        },
+                    )
+                    .into_any_element()
+            }
+        } else {
+            gpui::svg()
+                .path("icons/refresh.svg")
+                .flex_none()
+                .size(px(13.))
+                .text_color(theme.text_2)
+                .group_hover("quota-refresh", |style| style.text_color(theme.text))
+                .into_any_element()
+        };
+        let refresh_button = div()
+            .id("quota-refresh")
+            .group("quota-refresh")
+            .flex_none()
+            .size(px(26.))
+            .rounded_md()
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .hover(|style| style.bg(theme.bg_hover))
+            .active(|style| style.bg(theme.active))
+            .tooltip({
+                let label = tr!("common.refresh");
+                move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
+            })
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_quota_refresh))
+            .child(refresh_icon);
+
         let header = div()
             .flex_none()
             .px(px(12.))
@@ -1458,6 +1532,7 @@ impl OrbitApp {
             .border_color(theme.border)
             .flex()
             .items_center()
+            .gap(px(8.))
             .child(
                 div()
                     .flex_1()
@@ -1471,7 +1546,8 @@ impl OrbitApp {
                     .text_size(theme.ui_px(11.))
                     .text_color(theme.text_2)
                     .child(tr!("session.provider_count", count = count)),
-            );
+            )
+            .child(refresh_button);
 
         // One card per provider, 8 px apart: the boundary between accounts
         // is what tells a glance which numbers belong together.
@@ -1505,6 +1581,10 @@ impl OrbitApp {
             .flex_col()
             .overflow_hidden()
             .occlude()
+            // Clicks inside the card (the refresh button) must not bubble to
+            // the pill that toggles this popover.
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down_out({
                 let this = this.clone();
                 move |_: &MouseDownEvent, _, cx: &mut App| {
@@ -1538,6 +1618,75 @@ impl OrbitApp {
                 )
                 .into_any_element(),
         )
+    }
+
+    /// Re-fetch account quota on demand from the popover's refresh button.
+    /// Sends `quota.list` (the patched-pi path) and drains any bridge snapshot
+    /// that has already landed, so the bridge path is not gated on the slow
+    /// entry poll. The spinner turns until the reply lands — held for at least
+    /// [`QUOTA_REFRESH_MIN_SPIN`] — or [`QUOTA_REFRESH_TIMEOUT`] lapses.
+    pub(super) fn quota_refresh(&mut self, cx: &mut Context<Self>) {
+        if self.quota_refreshing {
+            return;
+        }
+        self.quota_refreshing = true;
+        self.quota_refresh_started = Some(Instant::now());
+        self.refresh_quota();
+        self.quota_entries_next_poll = Instant::now();
+        self.poll_quota_entries();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(QUOTA_REFRESH_TIMEOUT).await;
+            let _ = this.update(cx, |app, cx| {
+                if app.quota_refreshing {
+                    app.quota_refreshing = false;
+                    app.quota_refresh_started = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// End a manual refresh once its spin has been visible for
+    /// [`QUOTA_REFRESH_MIN_SPIN`]. A reply that beats that floor schedules the
+    /// remainder instead of snapping the spinner away.
+    pub(super) fn finish_quota_refresh(&mut self, cx: &mut Context<Self>) {
+        if !self.quota_refreshing {
+            return;
+        }
+        let elapsed = self
+            .quota_refresh_started
+            .map(|started| started.elapsed())
+            .unwrap_or(QUOTA_REFRESH_MIN_SPIN);
+        if elapsed >= QUOTA_REFRESH_MIN_SPIN {
+            self.quota_refreshing = false;
+            self.quota_refresh_started = None;
+            cx.notify();
+            return;
+        }
+        let wait = QUOTA_REFRESH_MIN_SPIN - elapsed;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            let _ = this.update(cx, |app, cx| {
+                if app.quota_refreshing {
+                    app.quota_refreshing = false;
+                    app.quota_refresh_started = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Click handler for the popover's refresh button.
+    pub(super) fn on_quota_refresh(
+        &mut self,
+        _: &MouseUpEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.quota_refresh(cx);
     }
 
     /// Toggle the top-bar quota popover.
@@ -2234,7 +2383,7 @@ fn quota_provider_card(app: &OrbitApp, report: &QuotaReport, theme: Theme) -> An
                 .text_color(theme.crit)
                 .child(error.clone()),
         );
-    } else if !report.has_data() {
+    } else if note_should_render(report) {
         if let Some(note) = &report.note {
             block = block.child(
                 div()

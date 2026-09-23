@@ -471,6 +471,12 @@ pub struct OrbitApp {
     title_generating: bool,
     /// Whether the top-bar provider-quota popover is open.
     quota_popup_open: bool,
+    /// A manual quota refresh is in flight: the popover's refresh button spins
+    /// until the `quota.list` reply lands, or a short timeout clears it.
+    quota_refreshing: bool,
+    /// When the in-flight manual refresh started, so its spin is kept visible
+    /// for a minimum duration even if the reply is immediate.
+    quota_refresh_started: Option<Instant>,
     /// The `sessionId` pi reports for the active session (its task id).
     session_id: Option<String>,
     /// Current agent turn number for this session (0 = none yet).
@@ -1034,6 +1040,8 @@ impl OrbitApp {
             session_details_open: false,
             title_generating: false,
             quota_popup_open: false,
+            quota_refreshing: false,
+            quota_refresh_started: None,
             session_id: None,
             turn_count: 0,
             turn_open: false,
@@ -1805,5 +1813,7 @@ mod titlebar_layout_tests;
 
 // `icon` and friends are part of the crate-wide UI kit; keep their original
 // `crate::app::…` paths stable for the other modules that import them.
-pub(crate) use helpers::{file_badge, file_glyph, icon, icon_dyn, nerd_font_family};
+pub(crate) use helpers::{
+    file_badge, file_glyph, icon, icon_dyn, nerd_font_family, press, BUTTON_GROUP, PRESS_DIM,
+};
 use sidebar::sessions_with_placeholder;

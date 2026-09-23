@@ -508,6 +508,7 @@ impl OrbitApp {
                 let label = tr!("updater_ui.update");
                 div()
                     .id("settings-update-action")
+                    .group(BUTTON_GROUP)
                     .size(px(26.))
                     .flex_none()
                     .rounded_md()
@@ -1023,6 +1024,7 @@ fn dialog_button(
 ) -> AnyElement {
     let button = div()
         .id(id)
+        .group(BUTTON_GROUP)
         .h(px(32.))
         .px(px(14.))
         .rounded(px(8.))
@@ -1046,7 +1048,7 @@ fn dialog_button(
             .text_color(theme.text_2)
             .hover(|s| s.bg(theme.bg_hover))
     };
-    button.child(label).into_any_element()
+    press(button).child(label).into_any_element()
 }
 
 /// The sidebar pill's two layers: the download icon and the "Update" label,

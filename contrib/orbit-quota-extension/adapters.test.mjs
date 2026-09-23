@@ -297,6 +297,113 @@ test("ollama real cloud key wins when a session is also stored", async () => {
   );
 });
 
+// The real settings page renders the label and its value as sibling elements
+// and puts the reset on a `data-time` span afterwards — no aria-label. The
+// label text is then repeated in an `aria-label` on the value, and a large
+// model-breakdown tooltip sits between the value and the "Resets in …" line.
+const TOOLTIP = `<div class="tooltip">${'padding '.repeat(400)}</div>`;
+const REAL_SETTINGS_HTML = `
+  <h2><span>Cloud usage</span><span>max</span></h2>
+  <div>
+    <span class="text-sm">Session usage</span>
+    <span class="text-sm" aria-label="Session usage 5.6% used"> 5.6% used </span>
+    ${TOOLTIP}
+    <div class="text-xs local-time" data-time="2026-07-23T03:00:00Z">Resets in 2 hours.</div>
+  </div>
+  <div>
+    <span class="text-sm">Weekly usage</span>
+    <span class="text-sm" aria-label="Weekly usage 14.2% used">14.2% used</span>
+    ${TOOLTIP}
+    <div class="text-xs local-time" data-time="2026-07-29T00:00:00Z">Resets in 6 days.</div>
+  </div>
+`;
+
+test("OllamaCloudParser reads the live markup: duplicate labels, tooltip, data-time", () => {
+  assert.equal(OllamaCloudParser.plan(REAL_SETTINGS_HTML), "max");
+  const windows = OllamaCloudParser.windows(REAL_SETTINGS_HTML);
+  assert.equal(windows.length, 2);
+  assert.equal(windows[0].id, "session");
+  assert.equal(windows[0].usedPercent, 5.6, "reads '<n>% used', not a segment width");
+  // The reset sits after the tooltip, past the aria-label that repeats the
+  // label text — the slice must not stop at that repeat.
+  assert.equal(windows[0].resetsAt, Date.parse("2026-07-23T03:00:00Z"));
+  assert.equal(windows[1].id, "weekly");
+  assert.equal(windows[1].usedPercent, 14.2);
+  assert.equal(windows[1].resetsAt, Date.parse("2026-07-29T00:00:00Z"));
+});
+
+test("ollama merges settings-page resets into the API report", async () => {
+  await withAuth(
+    {
+      "ollama-cloud": { type: "api_key", key: "real-cloud-key" },
+      "ollama-cloud-session": {
+        type: "ollama_cloud_session",
+        session: "__Secure-session=abc123",
+      },
+    },
+    async () => {
+      globalThis.fetch = async (url) => {
+        const body = String(url).includes("/api/usage")
+          ? JSON.stringify({
+              limits: {
+                session: { usage: 0.1, models: [] },
+                weekly: { usage: 0.4, models: [] },
+              },
+            })
+          : REAL_SETTINGS_HTML;
+        return { ok: true, status: 200, url, text: async () => body };
+      };
+      const report = await quotaReport("ollama-cloud");
+      assert.equal(report.kind, "subscription");
+      assert.equal(report.plan, "max");
+      const session = report.windows.find((w) => w.id === "session");
+      const weekly = report.windows.find((w) => w.id === "weekly");
+      // Percentages come from the API, resets from the settings page.
+      assert.equal(session.usedPercent, 10);
+      assert.equal(session.resetsAt, Date.parse("2026-07-23T03:00:00Z"));
+      assert.equal(weekly.usedPercent, 40);
+      assert.equal(weekly.resetsAt, Date.parse("2026-07-29T00:00:00Z"));
+    },
+  );
+});
+
+test("ollama keeps the API report when the session page is expired", async () => {
+  await withAuth(
+    {
+      "ollama-cloud": { type: "api_key", key: "real-cloud-key" },
+      "ollama-cloud-session": {
+        type: "ollama_cloud_session",
+        session: "__Secure-session=expired",
+      },
+    },
+    async () => {
+      globalThis.fetch = async (url) => {
+        if (String(url).includes("/api/usage")) {
+          return {
+            ok: true,
+            status: 200,
+            url,
+            text: async () => JSON.stringify({ limits: { session: { usage: 0.2 } } }),
+          };
+        }
+        // A redirect to sign-in: the session is dead, but the key still works.
+        return {
+          ok: true,
+          status: 200,
+          url: "https://ollama.com/signin",
+          text: async () => "",
+        };
+      };
+      const report = await quotaReport("ollama-cloud");
+      // The API meters still render, and the dead cookie is surfaced rather
+      // than silently dropping the reset countdown.
+      assert.match(report.error, /expired/i);
+      assert.equal(report.windows.find((w) => w.id === "session").usedPercent, 20);
+      assert.equal(report.windows.find((w) => w.id === "session").resetsAt, undefined);
+    },
+  );
+});
+
 test("the local placeholder key is never sent to ollama.com", async () => {
   // The fetch sentinel throws if a request is attempted, so reaching the
   // network fails the test.

@@ -22,7 +22,7 @@ use gpui::{
 use super::ops;
 use super::tree::{self, Row, StatusBadge, TreeIndex};
 use super::walk;
-use crate::app::{file_badge, file_glyph, icon, nerd_font_family};
+use crate::app::{file_badge, file_glyph, icon, nerd_font_family, press, BUTTON_GROUP};
 use crate::composer::ComposerInput;
 use crate::git;
 use crate::platform;
@@ -1476,26 +1476,29 @@ fn prompt_button(
     } else {
         (theme.bg_raised, theme.text)
     };
-    div()
-        .id(id)
-        .h(px(28.))
-        .px(px(12.))
-        .rounded(px(8.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
-        .bg(bg)
-        .hover(|el| el.opacity(0.9))
-        .on_click(listener)
-        .child(
-            div()
-                .text_size(theme.ui_px(12.))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(fg)
-                .child(label),
-        )
-        .into_any_element()
+    press(
+        div()
+            .id(id)
+            .group(BUTTON_GROUP)
+            .h(px(28.))
+            .px(px(12.))
+            .rounded(px(8.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .bg(bg)
+            .hover(|el| el.opacity(0.9)),
+    )
+    .on_click(listener)
+    .child(
+        div()
+            .text_size(theme.ui_px(12.))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(fg)
+            .child(label),
+    )
+    .into_any_element()
 }
 
 /// A header/toolbar ghost icon control: 24px hit area, hover fill only.
@@ -1506,18 +1509,21 @@ fn ghost_icon(
     color: Hsla,
     listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    div()
-        .id(id)
-        .size(px(24.))
-        .rounded(px(6.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
-        .hover(|el| el.bg(theme.bg_hover))
-        .on_click(listener)
-        .child(icon(path, 13., color))
-        .into_any_element()
+    press(
+        div()
+            .id(id)
+            .group(BUTTON_GROUP)
+            .size(px(24.))
+            .rounded(px(6.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .hover(|el| el.bg(theme.bg_hover)),
+    )
+    .on_click(listener)
+    .child(icon(path, 13., color))
+    .into_any_element()
 }
 
 fn separator(theme: Theme) -> AnyElement {

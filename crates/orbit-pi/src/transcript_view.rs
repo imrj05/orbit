@@ -41,6 +41,7 @@ use serde_json::Value;
 
 use orbit_rpc::MessageUsage;
 
+use crate::app::BUTTON_GROUP;
 use crate::context_meter::{format_tokens, hit_percent_label};
 use crate::highlight::{self, Token};
 use crate::message_scroller::{self, MessageScrollerState};
@@ -2426,6 +2427,7 @@ fn render_thinking_body(
         .child(
             div()
                 .id(ElementId::NamedInteger("thought-toggle".into(), id))
+                .group(BUTTON_GROUP)
                 .w_full()
                 .min_w_0()
                 .flex()
@@ -4181,11 +4183,9 @@ fn format_time(millis: i64) -> Option<String> {
 }
 
 fn glyph(path: &'static str, size: f32, color: Hsla) -> impl IntoElement {
-    svg()
-        .path(path)
-        .flex_none()
-        .size(px(size))
-        .text_color(color)
+    // The shared icon carries the button hover ink-lift, so every control in
+    // the transcript that opts into `BUTTON_GROUP` brightens its glyph.
+    crate::app::icon(path, size, color)
 }
 
 /// The in-flight spinner on a tool card. Reuses the sidebar's rotating
@@ -4286,6 +4286,7 @@ fn render_turn_fold(
         .child(
             div()
                 .id(ElementId::NamedInteger("turn-fold".into(), ix as u64))
+                .group(BUTTON_GROUP)
                 .h(px(24.))
                 .px(px(2.))
                 .flex_none()
@@ -4820,6 +4821,13 @@ enum Block {
         rows: Vec<Vec<String>>,
         aligns: Vec<TableAlign>,
     },
+    /// A standalone image: a Markdown `![alt](url)` line or an HTML
+    /// `<img src="…">` tag. GitHub issue screenshots usually land on their
+    /// own line, so the block model is enough to render them inline.
+    Image {
+        alt: String,
+        url: String,
+    },
 }
 
 /// GFM column alignment parsed from a table's delimiter row.
@@ -4921,6 +4929,55 @@ fn is_rule(trimmed: &str) -> bool {
         }
         _ => false,
     }
+}
+
+/// Parse a line that is solely an image into `(alt, url)`.
+///
+/// Handles Markdown `![alt](url "title")` (with optional `<…>` wrapping) and
+/// the HTML `<img src="…">` form GitHub sometimes stores. Returns `None` for
+/// a line that merely contains an image among other text, so prose is never
+/// split mid-sentence.
+fn image_line(trimmed: &str) -> Option<(String, String)> {
+    let t = trimmed.trim();
+    if let Some(rest) = t.strip_prefix("![") {
+        let close = rest.find("](")?;
+        let alt = rest[..close].to_string();
+        let after = &rest[close + 2..];
+        let end = after.find(')')?;
+        // A title follows the URL after whitespace; the URL itself may be
+        // wrapped in angle brackets (Markdown's escape for spaces).
+        let raw = after[..end].trim();
+        let url = raw
+            .strip_prefix('<')
+            .and_then(|rest| rest.split('>').next())
+            .unwrap_or_else(|| raw.split_whitespace().next().unwrap_or(""));
+        if !url.is_empty() {
+            return Some((alt, url.to_string()));
+        }
+        return None;
+    }
+    if t.starts_with("<img") {
+        let src = html_attr(t, "src")?;
+        if !src.is_empty() {
+            return Some((html_attr(t, "alt").unwrap_or_default(), src));
+        }
+    }
+    None
+}
+
+/// Read `name="value"` (single or double quoted) from a tag's source text.
+fn html_attr(tag: &str, name: &str) -> Option<String> {
+    let lower = tag.to_ascii_lowercase();
+    let key = format!("{name}=");
+    let start = lower.find(&key)? + key.len();
+    let rest = &tag[start..];
+    let quote = rest.chars().next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    let rest = &rest[1..];
+    let end = rest.find(quote)?;
+    Some(rest[..end].to_string())
 }
 
 fn list_item_line(line: &str) -> Option<(usize, bool, u64, Option<bool>, String)> {
@@ -5067,6 +5124,16 @@ fn parse_blocks(text: &str) -> Vec<Block> {
         if is_rule(trimmed) {
             flush_paragraph(&mut paragraph, &mut blocks);
             blocks.push(Block::Rule);
+            i += 1;
+            continue;
+        }
+
+        // A line that is only an image becomes its own block, so a screenshot
+        // pasted under a heading actually paints instead of rendering as a
+        // stray `!` and a link.
+        if let Some((alt, url)) = image_line(trimmed) {
+            flush_paragraph(&mut paragraph, &mut blocks);
+            blocks.push(Block::Image { alt, url });
             i += 1;
             continue;
         }
@@ -5329,7 +5396,7 @@ pub(crate) fn render_markdown_document(text: &str, theme: Theme) -> impl IntoEle
 /// heading than below it, tight joins for lists and their introducer, and a
 /// clear break around code and tables (the brief's rhythm table).
 fn block_gap(prev: &Block, next: &Block) -> f32 {
-    use Block::{Alert, Code, Heading, List, Paragraph, Quote, Rule, Table};
+    use Block::{Alert, Code, Heading, Image, List, Paragraph, Quote, Rule, Table};
     match (prev, next) {
         (_, Heading(..)) => 20.0,
         (Heading(..), _) => 8.0,
@@ -5342,6 +5409,7 @@ fn block_gap(prev: &Block, next: &Block) -> f32 {
         (_, Alert(..)) | (Alert(..), _) => 12.0,
         (_, Table { .. }) | (Table { .. }, _) => 14.0,
         (Rule, _) => 14.0,
+        (_, Image { .. }) | (Image { .. }, _) => 14.0,
         _ => 10.0,
     }
 }
@@ -5448,7 +5516,69 @@ fn render_block(
             rows,
             aligns,
         } => render_table(header, rows, aligns, ix, salt, block_ix, theme).into_any_element(),
+        Block::Image { alt, url } => {
+            render_markdown_image(alt, url, ix, salt, block_ix, theme).into_any_element()
+        }
     }
+}
+
+/// A block-level image. Remote sources (the GitHub issue screenshots) load
+/// through gpui's image cache; a load failure falls back to the alt text or a
+/// quiet "image unavailable" note instead of leaving a hole. Clicking opens
+/// the source in the browser so a private/expired URL is still reachable.
+fn render_markdown_image(
+    alt: &str,
+    url: &str,
+    ix: usize,
+    salt: u64,
+    block_ix: usize,
+    theme: Theme,
+) -> impl IntoElement {
+    let url = url.to_string();
+    let open = url.clone();
+    let fallback_alt = alt.to_string();
+    div().w_full().min_w_0().flex().child(
+        img(url)
+            .id(md_id(ix, salt, block_ix, 0))
+            // `min_w_0` is load-bearing: a replaced element's automatic minimum
+            // width is its intrinsic width, so without it `max_w_full` loses
+            // and a large screenshot overflows the column and the rail.
+            .min_w_0()
+            .max_w_full()
+            // Height 0 lets taffy derive the box from the image's aspect ratio
+            // once it decodes, so the image scales to the column instead of
+            // keeping its intrinsic height and leaving a tall empty band (gpui
+            // seeds `size.height` with the intrinsic value otherwise).
+            .h(px(0.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(theme.border)
+            .object_fit(ObjectFit::Contain)
+            .cursor_pointer()
+            .with_fallback(move || markdown_image_fallback(&fallback_alt, theme))
+            .on_click(move |_, _, cx| cx.open_url(&open)),
+    )
+}
+
+/// The fallback shown when a markdown image cannot load: the alt text when it
+/// says something, otherwise a muted "image unavailable" note.
+fn markdown_image_fallback(alt: &str, theme: Theme) -> AnyElement {
+    let label = if alt.trim().is_empty() {
+        tr!("markdown.image_unavailable")
+    } else {
+        alt.to_string()
+    };
+    div()
+        .px(theme.space(10.))
+        .py(theme.space(8.))
+        .rounded(px(8.))
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.overlay)
+        .text_size(theme.ui_px(12.))
+        .text_color(theme.text_3)
+        .child(label)
+        .into_any_element()
 }
 
 /// A GitHub-style callout: a tinted, rounded container with a semantic
@@ -7264,6 +7394,31 @@ mod tests {
         };
         assert_eq!(header, &["a", "b"]);
         assert_eq!(rows, &[vec!["1".to_string(), "2".to_string()]]);
+    }
+
+    #[test]
+    fn parse_blocks_turns_standalone_images_into_image_blocks() {
+        // Markdown image on its own line, with a title and an angle-wrapped
+        // URL (GitHub's escape for spaces).
+        let blocks = parse_blocks(
+            "Screenshots or recordings\n\n![shot](<https://example.com/a b.png> \"title\")\n\n<img src=\"https://example.com/c.png\" alt=\"html\" />",
+        );
+        assert!(
+            matches!(&blocks[0], Block::Paragraph(lines) if lines == &["Screenshots or recordings".to_string()])
+        );
+        assert!(matches!(&blocks[1], Block::Image { alt, url }
+                if alt == "shot" && url == "https://example.com/a b.png"));
+        assert!(matches!(&blocks[2], Block::Image { alt, url }
+                if alt == "html" && url == "https://example.com/c.png"));
+    }
+
+    #[test]
+    fn image_markdown_inside_prose_is_not_split() {
+        // A line that only *contains* an image stays prose; only a standalone
+        // image line becomes a block, so sentences are never cut in half.
+        let blocks = parse_blocks("see ![inline](https://example.com/x.png) here");
+        assert!(matches!(&blocks[0], Block::Paragraph(lines)
+                if lines.join(" ") == "see ![inline](https://example.com/x.png) here"));
     }
 
     #[test]
