@@ -9,7 +9,6 @@
 //! Every control writes through `UsagePage`'s filter setters, so one state
 //! object drives every panel on the page (§10).
 
-use crate::app::{press, BUTTON_GROUP};
 use crate::app::{press, refresh_glyph, PopoverSurface, BUTTON_GROUP};
 use chrono::Datelike;
 use gpui::{

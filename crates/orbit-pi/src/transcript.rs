@@ -152,49 +152,6 @@ impl ToolFacts {
     }
 }
 
-/// Structured facts pi attaches to a tool result under `details`, reduced to
-/// the few the transcript shows at a glance. Data pi did not send stays
-/// absent — the UI never invents a count or a status.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct ToolFacts {
-    /// The result was capped (read/bash `truncation`, grep match limit, ls
-    /// entry limit): the agent saw only part of the data.
-    pub truncated: bool,
-    /// Lines the agent actually received, when pi reported them.
-    pub output_lines: Option<u64>,
-    /// Lines the full result held, when pi reported them.
-    pub total_lines: Option<u64>,
-}
-
-impl ToolFacts {
-    /// Read facts from a raw tool-result envelope. Accepts the
-    /// `{"content":[…],"details":…}` shape pi sends; a bare payload with no
-    /// `details` yields empty facts.
-    fn from_result(value: &Value) -> Self {
-        let mut facts = Self::default();
-        let Some(details) = value.get("details").filter(|details| !details.is_null()) else {
-            return facts;
-        };
-        // read/bash attach a `truncation` object only when the output was cut;
-        // it carries the line budget the agent actually saw.
-        if let Some(truncation) = details.get("truncation").filter(|t| !t.is_null()) {
-            facts.truncated = truncation
-                .get("truncated")
-                .and_then(Value::as_bool)
-                .unwrap_or(true);
-            facts.output_lines = truncation.get("outputLines").and_then(Value::as_u64);
-            facts.total_lines = truncation.get("totalLines").and_then(Value::as_u64);
-        }
-        // grep / ls cap the result without a truncation object.
-        for key in ["matchLimitReached", "linesTruncated", "entryLimitReached"] {
-            if details.get(key).and_then(Value::as_bool) == Some(true) {
-                facts.truncated = true;
-            }
-        }
-        facts
-    }
-}
-
 /// One tool call row: name, args summary, and the file path it operates on
 /// (when the tool is file-oriented — drives the devicons glyph).
 #[derive(Clone)]
@@ -354,6 +311,34 @@ impl ChatMessage {
         message.steps[0].timestamp = timestamp;
         Some(message)
     }
+}
+
+/// pi appends image hints to a user prompt when an attachment was resized or
+/// converted — `[Image: original …]`, `[Image converted from … to ….]`,
+/// `[Image omitted: …]`. The model needs them for coordinate mapping, but they
+/// are not the user's words. Drop the trailing hint paragraph(s) so a live echo
+/// dedupes against the optimistic row and a reload shows only the prompt.
+fn strip_image_hints(text: &str) -> &str {
+    let trimmed = text.trim_end();
+    let mut end = trimmed.len();
+    while let Some(sep) = trimmed[..end].rfind("\n\n") {
+        let tail = trimmed[sep + 2..end].trim();
+        if tail.lines().all(is_image_hint_line) {
+            end = sep;
+        } else {
+            break;
+        }
+    }
+    trimmed[..end].trim_end()
+}
+
+/// One line of pi's image-hint block (`[Image: …]`, `[Image converted …]`,
+/// `[Image omitted: …]`).
+fn is_image_hint_line(line: &str) -> bool {
+    let line = line.trim();
+    line.starts_with("[Image:")
+        || line.starts_with("[Image converted")
+        || line.starts_with("[Image omitted")
 }
 
 /// Remove the workflow extension's `[DONE:n]` completion markers from an

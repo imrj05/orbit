@@ -25,7 +25,7 @@ use gpui::{
 };
 
 use crate::ai_review::{Finding, Report, ReviewKind, ReviewStatus, Severity};
-use crate::app::{empty_state, file_glyph, icon, nerd_font_family, BUTTON_GROUP, PRESS_DIM, refresh_glyph, EmptyFill, PopoverSurface, BUTTON_GROUP, PRESS_DIM};
+use crate::app::{empty_state, file_glyph, icon, nerd_font_family, BUTTON_GROUP, PRESS_DIM, refresh_glyph, EmptyFill, PopoverSurface, spinner};
 use crate::composer::ComposerInput;
 use crate::git;
 use crate::review::{self, ExpansionDirection, GapPosition, LineKind, Snapshot, Source};
@@ -1444,7 +1444,7 @@ impl SidePane {
                     .child(kind.label()),
             );
         if running {
-            header = header.child(spinner("ai-review-spinner", theme)).child(
+            header = header.child(spinner("ai-review-spinner", 12., theme.accent, theme)).child(
                 div()
                     .id("review-ai-stop")
                     .h(px(22.))

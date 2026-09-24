@@ -60,7 +60,7 @@ use super::table::{
     TableKind, HEADER_H, ROW_H,
 };
 use super::tooltip::Tooltip;
-use crate::app::{{icon, press, BUTTON_GROUP}, press, PopoverSurface, BUTTON_GROUP};
+use crate::app::{icon, press, BUTTON_GROUP, PopoverSurface};
 use crate::composer::ComposerInput;
 use crate::theme::{self, Theme};
 

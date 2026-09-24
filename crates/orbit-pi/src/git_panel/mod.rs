@@ -24,7 +24,7 @@ use gpui::{
 };
 
 use crate::app::{
-    icon, nerd_font_family, press, BUTTON_GROUP, press, refresh_glyph, spinner, PopoverSurface, BUTTON_GROUP,
+    icon, nerd_font_family, press, refresh_glyph, spinner, PopoverSurface, BUTTON_GROUP,
 };
 use crate::commit_message;
 use crate::gh;

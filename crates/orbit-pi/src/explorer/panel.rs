@@ -23,8 +23,8 @@ use super::ops;
 use super::tree::{self, Row, StatusBadge, TreeIndex};
 use super::walk;
 use crate::app::{
-    empty_state, file_badge, file_glyph, icon, nerd_font_family, press, BUTTON_GROUP, press, refresh_glyph, EmptyFill,
-    PopoverSurface, BUTTON_GROUP,
+    empty_state, file_badge, file_glyph, icon, nerd_font_family, press, BUTTON_GROUP, refresh_glyph, EmptyFill,
+    PopoverSurface,
 };
 use crate::composer::ComposerInput;
 use crate::git;

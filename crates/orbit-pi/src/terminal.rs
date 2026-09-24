@@ -53,7 +53,7 @@ use gpui::{
     UnderlineStyle, Window,
 };
 
-use crate::app::{icon, nerd_font_family, BUTTON_GROUP, refresh_glyph, BUTTON_GROUP};
+use crate::app::{icon, nerd_font_family, BUTTON_GROUP, refresh_glyph};
 use crate::theme::{self, Theme};
 
 /// Emulator grid bounds, clamped so a collapsing panel never asks the PTY for

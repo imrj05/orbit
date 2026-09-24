@@ -1435,7 +1435,7 @@ impl OrbitApp {
                 theme.text_2,
             )
         };
-        press(press(button))
+        press(button)
             .when_some(icon_path, move |button, path| {
                 if spinning {
                     // Refresh turns its own glyph in place; the synchronous

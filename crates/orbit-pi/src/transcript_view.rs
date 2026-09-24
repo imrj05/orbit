@@ -25,12 +25,12 @@ use std::{
 
 use gpui::{
     anchored, canvas, deferred, div, img, linear_color_stop, linear_gradient, list, point,
-    prelude::*, px, radians, Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem,
+    prelude::*, px, Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem,
     CursorStyle, DispatchPhase, Element, ElementId, Font, FontFeatures, FontStyle, FontWeight,
     GlobalElementId, Hitbox, HitboxBehavior, Hsla, Image, ImageSource, InspectorElementId,
     InteractiveText, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     ObjectFit, Pixels, ScrollHandle, ScrollWheelEvent, SharedString, StrikethroughStyle,
-    StyledText, TextAlign, TextLayout, TextRun, Transformation, UnderlineStyle, Window,
+    StyledText, TextAlign, TextLayout, TextRun, UnderlineStyle, Window,
 };
 
 use std::ops::Range;
@@ -41,7 +41,6 @@ use serde_json::Value;
 
 use orbit_rpc::MessageUsage;
 
-use crate::app::BUTTON_GROUP;
 use crate::app::{PopoverSurface, BUTTON_GROUP};
 use crate::context_meter::{format_tokens, hit_percent_label};
 use crate::highlight::{self, Token};
@@ -4196,31 +4195,6 @@ fn glyph(path: &'static str, size: f32, color: Hsla) -> impl IntoElement {
     // The shared icon carries the button hover ink-lift, so every control in
     // the transcript that opts into `BUTTON_GROUP` brightens its glyph.
     crate::app::icon(path, size, color)
-}
-
-/// The in-flight spinner on a tool card. Reuses the sidebar's rotating
-/// `loader.svg` so "working" reads the same everywhere; reduce-motion keeps
-/// the glyph but drops the spin.
-fn activity_spinner(theme: Theme, id: u64) -> AnyElement {
-    let loader = svg()
-        .path("icons/loader.svg")
-        .flex_none()
-        .size(px(12.))
-        .text_color(theme.accent);
-    if theme.ui.reduce_motion {
-        return loader.into_any_element();
-    }
-    loader
-        .with_animation(
-            ElementId::NamedInteger("activity-spin".into(), id),
-            Animation::new(Duration::from_millis(900)).repeat(),
-            |el, delta| {
-                el.with_transformation(Transformation::rotate(radians(
-                    delta * std::f32::consts::TAU,
-                )))
-            },
-        )
-        .into_any_element()
 }
 
 fn fold_label(elapsed: Option<Duration>) -> String {

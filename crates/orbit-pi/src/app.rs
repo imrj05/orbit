@@ -497,12 +497,6 @@ pub struct OrbitApp {
     /// When the in-flight manual refresh started, so its spin is kept visible
     /// for a minimum duration even if the reply is immediate.
     quota_refresh_started: Option<Instant>,
-    /// A manual quota refresh is in flight: the popover's refresh button spins
-    /// until the `quota.list` reply lands, or a short timeout clears it.
-    quota_refreshing: bool,
-    /// When the in-flight manual refresh started, so its spin is kept visible
-    /// for a minimum duration even if the reply is immediate.
-    quota_refresh_started: Option<Instant>,
     /// The `sessionId` pi reports for the active session (its task id).
     session_id: Option<String>,
     /// Current agent turn number for this session (0 = none yet).
@@ -1943,9 +1937,7 @@ mod titlebar_layout_tests;
 // `icon` and friends are part of the crate-wide UI kit; keep their original
 // `crate::app::…` paths stable for the other modules that import them.
 pub(crate) use helpers::{
-    
-    empty_state, file_badge, file_glyph, icon, icon_dyn, nerd_font_family, press, BUTTON_GROUP, PRESS_DIM,
-, press,
+    empty_state, file_badge, file_glyph, icon, icon_dyn, nerd_font_family, press,
     refresh_glyph, spinner, EmptyFill, PopoverSurface, BUTTON_GROUP, PRESS_DIM,
 };
 use sidebar::sessions_with_placeholder;
