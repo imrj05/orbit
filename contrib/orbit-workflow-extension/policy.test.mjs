@@ -12,11 +12,8 @@ import {
   DEFAULT_MODE,
   allowedTools,
   blockReason,
-  cleanStepText,
-  extractPlanSteps,
   guidance,
   isSafeCommand,
-  markCompletedSteps,
   normalizeMode,
 } from "./policy.js";
 
@@ -65,49 +62,8 @@ test("non-bash tools are not gated", () => {
   assert.equal(blockReason("plan", "read", { path: "x" }), undefined);
 });
 
-test("cleanStepText strips emphasis, verbs, and trailing punctuation", () => {
-  assert.equal(cleanStepText("**Add** the `reducer`."), "reducer");
-  assert.equal(cleanStepText("Run the tests"), "tests");
-  assert.equal(cleanStepText("  Implement   the widget  "), "widget");
-});
-
-test("extractPlanSteps reads numbered steps under a Plan header", () => {
-  const text = `Here is my plan.\n\nPlan:\n1. Read the code\n2. **Add** the reducer\n3. Run tests\n`;
-  const steps = extractPlanSteps(text);
-  assert.deepEqual(steps, [
-    { step: 1, text: "code", done: false },
-    { step: 2, text: "reducer", done: false },
-    { step: 3, text: "tests", done: false },
-  ]);
-  // No header → no plan.
-  assert.deepEqual(extractPlanSteps("1. one\n2. two"), []);
-  // Bold header works.
-  assert.equal(extractPlanSteps("**Plan:**\n1. x").length, 1);
-});
-
-test("markCompletedSteps applies [DONE:n] and reports changes", () => {
-  const todos = [
-    { step: 1, text: "one", done: false },
-    { step: 2, text: "two", done: false },
-  ];
-  assert.equal(markCompletedSteps("did it [DONE:1]", todos), 1);
-  assert.equal(todos[0].done, true);
-  assert.equal(todos[1].done, false);
-  // Idempotent.
-  assert.equal(markCompletedSteps("[DONE:1]", todos), 0);
-  assert.equal(markCompletedSteps("[done:2]", todos), 1);
-  assert.equal(todos[1].done, true);
-});
-
-test("guidance differs per mode and lists remaining build steps", () => {
+test("guidance differs per mode", () => {
   assert.match(guidance("plan"), /PLAN MODE/);
   assert.match(guidance("ask"), /ASK MODE/);
-  assert.equal(guidance("build", []), "");
-  const build = guidance("build", [
-    { step: 1, text: "one", done: true },
-    { step: 2, text: "two", done: false },
-  ]);
-  assert.match(build, /EXECUTING PLAN/);
-  assert.match(build, /2\. two/);
-  assert.doesNotMatch(build, /1\. one/);
+  assert.equal(guidance("build"), "");
 });

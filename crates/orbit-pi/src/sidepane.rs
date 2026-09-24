@@ -761,13 +761,9 @@ impl SidePane {
             .items_center()
             .gap_1()
             .pl(px(12.))
-            // The pane owns the window's right edge, so where the app paints
-            // the caption its buttons land here and the header stops short.
-            .pr(px(if crate::platform::draws_window_controls() {
-                crate::platform::WINDOW_CONTROLS_W
-            } else {
-                6.
-            }))
+            // The top bar above owns the caption buttons; the dock below it
+            // never shares their row.
+            .pr(px(6.))
             .border_b_1()
             .border_color(theme.border)
             .child(
@@ -2080,9 +2076,7 @@ impl Render for SidePane {
             .flex_none()
             .w(self.width)
             .h_full()
-            .bg(theme.bg_main)
-            .border_l_1()
-            .border_color(theme.border)
+            .pl(px(12.))
             .flex()
             .flex_col()
             .min_h_0()
@@ -2092,13 +2086,32 @@ impl Render for SidePane {
                     .absolute()
                     .top_0()
                     .bottom_0()
-                    .left(px(-3.))
+                    // Sit on the card's left border (the 12px gutter, minus
+                    // half the handle width), not the panel's outer edge, so
+                    // the edge users see is the edge they can grab.
+                    .left(px(9.))
                     .w(px(6.))
                     .cursor(CursorStyle::ResizeLeftRight)
                     .hover(|style| style.bg(theme.accent.opacity(0.4)))
                     .on_drag(SidePaneResize, |_, _, _, cx| cx.new(|_| DragGhost)),
             )
-            .child(self.body(theme, cx))
+            // The dock reads as a rounded card, like the Git/Usage cards in
+            // the main column. The menus stay outside this clipped shell so
+            // they are not cut off at its corners.
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .bg(theme.bg_main)
+                    .border_1()
+                    .border_color(theme.border)
+                    .rounded_lg()
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .child(self.body(theme, cx)),
+            )
             .children(self.source_menu(theme, cx))
             .children(self.render_ai_menu(theme, cx))
             .on_action(cx.listener(Self::on_filter_cancel))

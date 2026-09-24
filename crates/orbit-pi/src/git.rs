@@ -6,6 +6,7 @@
 //! state, and per-turn checkpoints are represented exactly.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -84,6 +85,50 @@ pub fn checkout_branch(cwd: &Path, branch: &str) -> Result<(), String> {
         return Ok(());
     }
     run_git(cwd, &["checkout", branch]).map(|_| ())
+}
+
+/// Branches most recently checked out, newest first. Derived from the HEAD
+/// reflog (so it survives restarts); only names that still exist are returned.
+pub fn recent_branches(cwd: &Path) -> Vec<String> {
+    let out = run_git(cwd, &["reflog", "--format=%gs", "-n", "200"]).unwrap_or_default();
+    let known: HashSet<String> = list_branches(cwd)
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    let mut seen = HashSet::new();
+    let mut recent = Vec::new();
+    for line in out.lines() {
+        let Some(rest) = line.strip_prefix("checkout: moving from ") else {
+            continue;
+        };
+        let Some((_, to)) = rest.rsplit_once(" to ") else {
+            continue;
+        };
+        let to = to.trim();
+        if to.is_empty() || !known.contains(to) {
+            continue;
+        }
+        if seen.insert(to.to_string()) {
+            recent.push(to.to_string());
+        }
+    }
+    recent
+}
+
+/// Switch to the local branch that tracks `remote_ref` (e.g. `origin/feat/x`),
+/// creating it if it does not exist yet. A lone name falls back to a plain
+/// checkout.
+pub fn checkout_remote_branch(cwd: &Path, remote_ref: &str) -> Result<(), String> {
+    let Some((_, short)) = remote_ref.split_once('/') else {
+        return checkout_branch(cwd, remote_ref);
+    };
+    if list_branches(cwd)?.iter().any(|b| b == short) {
+        return checkout_branch(cwd, short);
+    }
+    if run_git(cwd, &["switch", "--track", "-c", short, remote_ref]).is_ok() {
+        return Ok(());
+    }
+    run_git(cwd, &["checkout", "-b", short, "--track", remote_ref]).map(|_| ())
 }
 
 /// Create a branch from HEAD and check it out, carrying uncommitted changes.
@@ -188,6 +233,28 @@ pub fn rebase_upstream(cwd: &Path) -> Result<String, String> {
 pub fn fetch(cwd: &Path) -> Result<(), String> {
     run_git(cwd, &["fetch", "--quiet"])?;
     Ok(())
+}
+
+/// Bring the current branch level with its upstream in one step: fetch, then
+/// fast-forward (or merge, when diverged) if behind, then push if ahead. The
+/// branch row's Sync button.
+pub fn sync(cwd: &Path) -> Result<String, String> {
+    run_git(cwd, &["fetch", "--quiet"])?;
+    let Some((ahead, behind)) = ahead_behind(cwd) else {
+        // No upstream yet: fetching is all there is to do.
+        return Ok(tr!("git.fetched"));
+    };
+    if behind > 0 {
+        if ahead > 0 {
+            merge_upstream(cwd)?;
+        } else {
+            pull(cwd)?;
+        }
+    }
+    if ahead_behind(cwd).is_some_and(|(ahead, _)| ahead > 0) {
+        push(cwd)?;
+    }
+    Ok(tr!("git.synced"))
 }
 
 fn read_head_branch(cwd: &Path) -> Option<String> {
@@ -578,6 +645,16 @@ pub fn discard_paths(cwd: &Path, paths: &[String]) -> Result<(), String> {
     clean.extend(paths.iter().map(String::as_str));
     let _ = run_git(cwd, &clean);
     Ok(())
+}
+
+/// Discard every change in the working tree: staged and unstaged edits to
+/// tracked files are reset to `HEAD`, and untracked files are removed. The UI
+/// confirms before calling this.
+pub fn discard_all(cwd: &Path) -> Result<(), String> {
+    // An unborn branch has no `HEAD` to reset to; only its untracked files
+    // need removing, so the failed reset is not an error here.
+    let _ = run_git(cwd, &["reset", "-q", "--hard", "HEAD"]);
+    run_git(cwd, &["clean", "-fdq"]).map(|_| ())
 }
 
 /// The staged patch text (for commit-message generation).

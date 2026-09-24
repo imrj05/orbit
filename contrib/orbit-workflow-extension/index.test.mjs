@@ -6,7 +6,7 @@
  *
  * Drives the extension the way pi does — `activate(pi)`, then lifecycle hooks
  * — with a fake `pi` and a fake `ctx`, asserting tool scoping, guidance
- * injection, plan tracking, and the session entries Orbit reads.
+ * injection.
  */
 
 import assert from "node:assert/strict";
@@ -15,7 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import test, { beforeEach } from "node:test";
 
-import activate, { lastCustom, reconstructTodos, resolveMode } from "./index.js";
+import activate, { resolveMode } from "./index.js";
 
 let home;
 
@@ -64,10 +64,6 @@ function fakeCtx(sessionId = "s1", branch = [], entries = branch) {
       getEntries: () => entries,
     },
   };
-}
-
-function assistant(text) {
-  return { role: "assistant", content: [{ type: "text", text }] };
 }
 
 test("plan mode disables write tools on session start", async () => {
@@ -128,98 +124,6 @@ test("tool_call blocks writes in read-only modes and passes in build", async () 
   assert.equal(await pi.fire("tool_call", { toolName: "edit", input: {} }, fakeCtx()), undefined);
 });
 
-test("a Plan section becomes todos and [DONE:n] marks progress", async () => {
-  writeStore({ s1: "build" });
-  const pi = fakePi();
-  activate(pi);
-  await pi.fire("session_start", {}, fakeCtx());
-
-  await pi.fire("turn_end", { message: assistant("Plan:\n1. Read the code\n2. Add tests") }, fakeCtx());
-  let todoEntry = lastCustom(pi.state.entries, "orbit:workflow-todos");
-  assert.deepEqual(
-    todoEntry.todos.map((t) => t.done),
-    [false, false],
-  );
-
-  await pi.fire("turn_end", { message: assistant("Done. [DONE:1]") }, fakeCtx());
-  todoEntry = lastCustom(pi.state.entries, "orbit:workflow-todos");
-  assert.deepEqual(
-    todoEntry.todos.map((t) => t.done),
-    [true, false],
-  );
-
-  // An unchanged message appends nothing further.
-  const count = pi.state.entries.length;
-  await pi.fire("turn_end", { message: assistant("Still here") }, fakeCtx());
-  assert.equal(pi.state.entries.length, count);
-});
-
-test("[DONE:n] advances the plan even in Plan mode", async () => {
-  writeStore({ s1: "plan" });
-  const pi = fakePi();
-  activate(pi);
-  await pi.fire("session_start", {}, fakeCtx());
-  await pi.fire("turn_end", { message: assistant("Plan:\n1. One\n2. Two") }, fakeCtx());
-  await pi.fire("turn_end", { message: assistant("Marking [DONE:1] [DONE:2]") }, fakeCtx());
-  const todoEntry = lastCustom(pi.state.entries, "orbit:workflow-todos");
-  assert.deepEqual(
-    todoEntry.todos.map((t) => t.done),
-    [true, true],
-  );
-});
-
-test("a resumed process rebuilds todos before marking", async () => {
-  // session_start sees no branch (fresh process), but the session file still
-  // holds the plan entry — the DONE message must rebuild it first.
-  const planEntry = {
-    type: "custom",
-    customType: "orbit:workflow-todos",
-    data: {
-      todos: [
-        { step: 1, text: "One", done: false },
-        { step: 2, text: "Two", done: false },
-      ],
-    },
-  };
-  writeStore({ s1: "build" });
-  const pi = fakePi();
-  activate(pi);
-  const ctx = fakeCtx("s1", [], [planEntry]);
-  await pi.fire("session_start", {}, ctx);
-  await pi.fire("turn_end", { message: assistant("[DONE:1]") }, ctx);
-  const todoEntry = lastCustom(pi.state.entries, "orbit:workflow-todos");
-  assert.deepEqual(
-    todoEntry.todos.map((t) => t.done),
-    [true, false],
-  );
-});
-
-test("session_start replays past [DONE:n] and persists the correction", async () => {
-  const planEntry = {
-    type: "custom",
-    customType: "orbit:workflow-todos",
-    data: {
-      todos: [
-        { step: 1, text: "One", done: false },
-        { step: 2, text: "Two", done: false },
-      ],
-    },
-  };
-  const branch = [
-    planEntry,
-    { type: "message", message: assistant("did [DONE:1] [DONE:2]") },
-  ];
-  writeStore({ s1: "build" });
-  const pi = fakePi();
-  activate(pi);
-  await pi.fire("session_start", {}, fakeCtx("s1", branch));
-  const todoEntry = lastCustom(pi.state.entries, "orbit:workflow-todos");
-  assert.deepEqual(
-    todoEntry.todos.map((t) => t.done),
-    [true, true],
-  );
-});
-
 test("the store for the session id wins over the env fallback", () => {
   writeStore({ s1: "ask" });
   process.env.ORBIT_WORKFLOW_MODE = "plan";
@@ -233,39 +137,6 @@ test("the store for the session id wins over the env fallback", () => {
   const branch = [{ type: "custom", customType: "orbit:workflow", data: { mode: "ask" } }];
   assert.equal(resolveMode(fakeCtx("missing"), branch), "ask");
   assert.equal(resolveMode(fakeCtx("missing"), []), "build");
-});
-
-test("session reconstruction restores the newest todo snapshot", () => {
-  const branch = [
-    { type: "custom", customType: "orbit:workflow-todos", data: { todos: [{ step: 1, text: "old", done: false }] } },
-    { type: "message" },
-    { type: "custom", customType: "orbit:workflow-todos", data: { todos: [{ step: 1, text: "new", done: true }] } },
-  ];
-  assert.deepEqual(reconstructTodos(branch), [{ step: 1, text: "new", done: true }]);
-  assert.deepEqual(reconstructTodos([]), []);
-});
-
-test("reconstruction replays [DONE:n] tagged after the plan entry", () => {
-  const entries = [
-    {
-      type: "custom",
-      customType: "orbit:workflow-todos",
-      data: {
-        todos: [
-          { step: 1, text: "One", done: false },
-          { step: 2, text: "Two", done: false },
-        ],
-      },
-    },
-    {
-      type: "message",
-      message: { role: "assistant", content: [{ type: "text", text: "did [DONE:1]" }] },
-    },
-  ];
-  assert.deepEqual(
-    reconstructTodos(entries).map((t) => t.done),
-    [true, false],
-  );
 });
 
 test("context drops stale guidance only when the mode adds none", async () => {
@@ -282,7 +153,7 @@ test("context drops stale guidance only when the mode adds none", async () => {
   assert.equal(await pi.fire("context", { messages: [{ role: "user" }] }, fakeCtx()), undefined);
 });
 
-test("context keeps active guidance (Plan/Ask, or Build with steps)", async () => {
+test("context keeps active guidance in Plan/Ask", async () => {
   writeStore({ s1: "plan" });
   const pi = fakePi();
   activate(pi);

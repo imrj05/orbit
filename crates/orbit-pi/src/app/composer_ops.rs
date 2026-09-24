@@ -915,13 +915,6 @@ impl OrbitApp {
         cx.notify();
     }
 
-    /// The bottom todo bar toggles between its collapsed row and the full
-    /// checklist.
-    pub(super) fn toggle_workflow_todos(&mut self, cx: &mut Context<Self>) {
-        self.workflow_todos_expanded = !self.workflow_todos_expanded;
-        cx.notify();
-    }
-
     /// Drop workflow-store entries for sessions that no longer exist, keeping
     /// the active session (which may be an unlisted draft). Called whenever
     /// the session list reloads, so the store cannot grow without bound.

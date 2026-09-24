@@ -53,27 +53,6 @@ fn open_controls_hug_the_sidebar_edge() {
     }
 }
 
-/// Full-window pages (Git, Usage, Files) own the window's left edge when the
-/// sidebar is collapsed, so their headers must inset past the overlaid
-/// titlebar controls. The FileViewer's tab strip uses this same rule — before
-/// it did not, which slid the first tab under the traffic lights and the
-/// sidebar/history chips (the overflow reported with the explorer open).
-#[test]
-fn collapsed_pages_clear_the_overlaid_controls() {
-    let leading = view::page_header_leading(false);
-    assert_eq!(leading, view::TITLEBAR_LEADING);
-    let chips_end = view::titlebar_controls_left(false, 0.) + view::TITLEBAR_CONTROLS_W;
-    assert!(
-        leading >= chips_end,
-        "a collapsed page header must start past the overlaid controls"
-    );
-    assert_eq!(
-        view::page_header_leading(true),
-        12.,
-        "with the sidebar open the page starts after it and needs only page padding"
-    );
-}
-
 /// Windows paints its own caption buttons on the window's *right*, so the
 /// titlebar row is empty at the left and the cluster left-aligns there —
 /// open or collapsed, and never moving with the sidebar's width (there is no

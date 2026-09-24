@@ -575,7 +575,6 @@ impl OrbitApp {
         self.session_id = None;
         self.workflow_pending = None;
         self.workflow_mode = WorkflowMode::default();
-        self.workflow_todos.reset_for(None);
         self.add_workspace(cwd.clone());
         self.set_current_workspace(cwd.clone());
 
@@ -937,25 +936,31 @@ impl OrbitApp {
         cx.notify();
     }
 
-    /// Open the full-page Git panel (Changes / History / Graph) and load it.
+    /// Open the Git card (Changes / History / Graph) and load it.
     pub(super) fn open_git(&mut self, cx: &mut Context<Self>) {
         self.git_open = true;
-        // One main-area page at a time.
+        // One main-area feature at a time.
         self.usage_open = false;
         self.session_details_open = false;
+        // Files is another main-area feature; leave it for the Git card.
+        self.close_files(cx);
         self.git_panel.update(cx, |panel, cx| panel.show(cx));
         cx.notify();
     }
 
-    /// Top-bar GitHub affordance: same destination as the session-details
-    /// **Commit or push** row.
+    /// Top-bar GitHub affordance: opens the Git card below the top bar, and
+    /// closes it again when it is already open (accordion).
     pub(super) fn on_open_git_click(
         &mut self,
         _: &MouseUpEvent,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_git(cx);
+        if self.git_open {
+            self.close_git(cx);
+        } else {
+            self.open_git(cx);
+        }
     }
 
     /// Close the Git page and return to the chat.
@@ -965,11 +970,13 @@ impl OrbitApp {
         cx.notify();
     }
 
-    /// Open the Usage page and let it load (or refresh) the session store.
+    /// Open the Usage card and let it load (or refresh) the session store.
     pub(super) fn open_usage(&mut self, cx: &mut Context<Self>) {
         self.usage_open = true;
         self.git_open = false;
         self.session_details_open = false;
+        // Files is another main-area feature; leave it for the Usage card.
+        self.close_files(cx);
         self.usage.update(cx, |page, cx| page.open(cx));
         cx.notify();
     }

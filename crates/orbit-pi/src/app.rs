@@ -79,7 +79,7 @@ use crate::transcript::{self, Transcript};
 use crate::usage::page::UsagePage;
 use crate::watch;
 use crate::widgets::{ExtensionWidget, WidgetPlacement};
-use crate::workflow::{WorkflowMode, WorkflowTodos};
+use crate::workflow::WorkflowMode;
 use crate::workspace_picker::{WorkspaceEntry, WorkspacePicker};
 
 const SIDEBAR_DEFAULT_W: f32 = 248.;
@@ -578,11 +578,6 @@ pub struct OrbitApp {
     workflow_menu_highlight: usize,
     /// Focus handle that carries the `WorkflowMenu` key context while open.
     workflow_menu_focus: FocusHandle,
-    /// The active session's plan progress, reduced from the workflow
-    /// extension's `orbit:workflow-todos` session entries.
-    workflow_todos: WorkflowTodos,
-    /// Whether the bottom todo bar shows the full checklist.
-    workflow_todos_expanded: bool,
     /// `get_entries` cursor for the bridge's quota snapshots. Entry ids are
     /// per-session, so this resets when the active session changes.
     quota_entries_cursor: Option<String>,
@@ -1139,8 +1134,6 @@ impl OrbitApp {
             workflow_menu_open: false,
             workflow_menu_highlight: 0,
             workflow_menu_focus: cx.focus_handle(),
-            workflow_todos: WorkflowTodos::default(),
-            workflow_todos_expanded: false,
             quota_entries_cursor: None,
             quota_entries_inflight: false,
             quota_entries_bootstrap: QUOTA_ENTRY_BOOTSTRAP_POLLS,
@@ -1219,17 +1212,24 @@ impl OrbitApp {
                 .unwrap_or(false),
         };
 
-        // A changed-file row on the Git page opens its diff in Review.
+        let app_weak = cx.entity().downgrade();
+        // A changed-file row on the Git page opens its diff in Review. The
+        // Review pane replaces the Git page, so the diff gets the column and
+        // the change list is not left behind.
         let review_sidepane = app.sidepane.clone();
+        let review_app = app_weak.clone();
         app.git_panel.update(cx, |panel, _| {
             panel.set_open_file(Rc::new(move |path, _window, cx| {
                 review_sidepane.update(cx, |pane, cx| pane.show_file(path, cx));
+                let _ = review_app.update(cx, |app, cx| {
+                    app.git_open = false;
+                    cx.notify();
+                });
             }));
         });
         // A conflicted (or history) file on the Git page opens in the Files
         // editor. `open_file_in_viewer` leaves the Git page, which is the
         // intended "resolve it, then continue the merge" flow.
-        let app_weak = cx.entity().downgrade();
         app.git_panel.update(cx, |panel, _| {
             panel.set_open_path(Rc::new(move |path, display, _window, cx| {
                 let _ = app_weak.update(cx, |app, cx| {

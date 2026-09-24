@@ -75,6 +75,12 @@ components:
     rounded: "{rounded.md}"
     height: "34px"
     padding: "0 10px"
+  accent-button:
+    backgroundColor: "{colors.ember}"
+    textColor: "{colors.canvas}"
+    rounded: "{rounded.md}"
+    height: "34px"
+    padding: "0 10px"
   chip:
     backgroundColor: "{colors.raised}"
     textColor: "{colors.ink}"
@@ -317,6 +323,527 @@ fade on the new-task page.
 **The Bridge Rule.** A table or chart reads every color from `theme::get(cx)`. If
 it renders in a color this file does not list, the element is wrong — fix the
 element, not the palette.
+
+## Interaction System
+
+Orbit is a native workbench. Visual hierarchy and interaction hierarchy must reinforce
+the same model: navigation is quiet, the workspace is primary, and contextual tools
+appear only when relevant.
+
+### Interaction Hierarchy
+
+Every interactive element belongs to one of five levels:
+
+1. **Primary** — the main action for the current surface.
+2. **Secondary** — supporting actions that remain visible when useful.
+3. **Tertiary** — low-emphasis actions exposed through ghost controls or menus.
+4. **Contextual** — actions revealed by selection, hover, right-click, or focused content.
+5. **Destructive** — actions that can remove or irreversibly change user data.
+
+Do not give two competing actions the same visual weight.
+
+### Focus
+
+Focus is a first-class state, not a stronger hover state.
+
+- Pointer hover uses `bg_hover`.
+- Keyboard focus uses `border_strong` or an equivalent non-color-only focus signal.
+- Selection uses `active`.
+- Focused selection must remain distinguishable from an unfocused selection.
+- Focus must never depend on ember alone.
+- After dismissing a popover or modal, restore focus to the control that opened it.
+- Opening a contextual panel must not unexpectedly steal focus from the active editor or composer.
+
+### Selection
+
+Selection means "the object currently being operated on"; focus means "the object currently
+receiving keyboard input." They must remain visually distinct.
+
+Selected rows use `active`. Hover uses `bg_hover`. A focused selected row adds the focus
+treatment without changing its semantic color.
+
+### Command System
+
+The command palette is a first-class navigation surface.
+
+- Default shortcut: `Cmd+K` on macOS, `Ctrl+K` elsewhere.
+- Search commands, pages, sessions, files, and supported actions from one surface.
+- Results are keyboard navigable.
+- Commands expose shortcuts when one exists.
+- Escape closes the palette and restores the previous focus target.
+- Destructive commands require explicit confirmation.
+- Commands must operate on the same underlying action handlers as buttons and menus;
+  keyboard and pointer interactions must not create separate behavior paths.
+
+### Context Menus
+
+Context menus expose actions that are useful for the currently focused object.
+
+- Prefer contextual actions over permanent icon rails.
+- Menu order follows action importance, not implementation order.
+- Destructive actions are visually separated.
+- Menus use `menu_bg` / raised surface and `popover_shadow`.
+- Right-click and keyboard context-menu invocation must expose the same actions.
+
+## Workbench Layout
+
+### Shell
+
+The canonical Orbit shell is:
+
+**Navigation → Workspace → Context**
+
+- **Navigation**: sidebar, project/session navigation, global destinations.
+- **Workspace**: the primary editor, transcript, table, diff, or task surface.
+- **Context**: optional right or bottom pane for details, review, activity, metadata, or
+  secondary controls.
+
+The workspace owns the visual hierarchy. Navigation and context should not compete with it.
+
+### Sidebar
+
+The sidebar is quiet infrastructure.
+
+- Default width: 248px.
+- Supported range: 200–320px.
+- Collapse/hide the sidebar before forcing the workspace to become cramped.
+- Sidebar sections use whitespace and labels rather than excessive containers.
+- Active navigation uses `active`, not ember alone.
+- Session state may use semantic indicators, but decorative animation is forbidden except
+  for the currently running session treatment already defined above.
+- Sidebar width and collapsed state should persist per workspace/window when practical.
+
+### Context Panes
+
+Context panes are contextual, not permanent dashboard columns.
+
+- Open when the current task benefits from additional information.
+- Preserve the workspace's primary reading/editing width.
+- Allow resizing.
+- Remember size during the current workspace lifecycle.
+- Close with Escape where appropriate.
+- Do not duplicate information already visible in the workspace.
+
+### Resizable Splits
+
+Resizable panels use a small, low-contrast hit target around a 1px divider.
+
+- Divider is visually quiet at rest.
+- Hover increases contrast.
+- Active drag uses the focus/interaction treatment.
+- Do not animate layout during manual resizing.
+- Persist useful split positions where doing so does not create surprising layouts.
+
+## Desktop Interaction Model
+
+Orbit should behave like a native desktop application rather than a responsive website.
+
+### Keyboard-first Behavior
+
+Every primary workflow must be possible without a mouse.
+
+Minimum expectations:
+
+- Command palette.
+- Session navigation.
+- Project/file navigation.
+- Search.
+- Focus movement between major panes.
+- Open/close contextual panels.
+- Submit/abort/steer agent runs.
+- File operations.
+- Diff navigation.
+- Menu dismissal with Escape.
+- Standard text editing shortcuts.
+
+Do not invent custom shortcuts where standard macOS or Windows behavior already exists.
+
+### Pointer Behavior
+
+Pointer interaction should reveal information progressively.
+
+- Hover reveals secondary actions.
+- Selected objects retain their state after the pointer leaves.
+- Tooltips explain unfamiliar icon-only actions.
+- Never require hover to discover a destructive action.
+- Avoid permanent action rails when row-level actions can remain contextual.
+
+### Native Text Behavior
+
+Text fields and editors should follow platform expectations:
+
+- Standard selection behavior.
+- Standard copy/paste/cut.
+- Shift-based range extension.
+- Double-click word selection.
+- Triple-click line selection where supported.
+- Platform-standard modifier keys.
+- Correct focus and caret behavior.
+
+## Motion System
+
+Motion communicates state; it does not decorate the interface.
+
+### Timing
+
+- **Instant:** 0–80ms — focus, simple visual feedback.
+- **Interaction:** 120–160ms — hover, selection, menu appearance.
+- **Layout:** 160–220ms — panel open/close, disclosure, contextual transitions.
+- **Streaming:** content updates are driven by incoming state and must not introduce
+  unnecessary layout animation.
+
+### Motion Rules
+
+- No decorative looping animation.
+- No parallax.
+- No spring-heavy marketing motion.
+- Do not animate large areas when a small state transition is sufficient.
+- Do not animate text position during streaming.
+- Respect reduced-motion preferences.
+- Loading animation must communicate actual work.
+- A transition should be interruptible by the user's next action.
+
+## Agent Interaction States
+
+Agent activity is a core product state and must be visually legible without relying on color.
+
+### State Model
+
+The UI should distinguish:
+
+- **Idle** — no active run.
+- **Thinking** — model is processing.
+- **Streaming** — response content is arriving.
+- **Tool running** — a tool call is executing.
+- **Awaiting approval** — user action is required.
+- **Awaiting input** — the agent has asked a question.
+- **Completed** — run finished successfully.
+- **Interrupted** — user stopped the run.
+- **Failed** — run ended with an error.
+
+Each state must have at least one non-color signal such as iconography, text, motion,
+layout, or control availability.
+
+### Streaming
+
+Streaming should feel continuous without causing the interface to jump.
+
+- Coalesce frequent updates.
+- Preserve scroll position unless the user is already following the bottom.
+- Never steal scroll position from a user who has manually scrolled upward.
+- Keep the composer stable while output streams.
+- Tool activity should update in place rather than repeatedly creating new cards.
+
+### Tool Activity
+
+Tool calls are operational information, not decorative chat bubbles.
+
+- Group related activity when appropriate.
+- Show tool name, meaningful status, and relevant output.
+- Collapse verbose output by default.
+- Make failure states immediately discoverable.
+- Allow expansion without leaving the current session.
+- Preserve a compact representation in long transcripts.
+
+### Approval
+
+Approval requests are high-priority contextual states.
+
+- Clearly state what requires approval.
+- Provide the available actions explicitly.
+- Do not hide the approval action inside a generic menu.
+- Keep the underlying session context visible.
+- Restore focus to the session after the decision.
+
+## Transcript and Conversation UX
+
+The transcript is one workspace surface, not the definition of the application.
+
+### Message Hierarchy
+
+Separate:
+
+- User intent.
+- Agent response.
+- Tool activity.
+- System/session state.
+- Approval/input requests.
+
+Avoid making every item look like a chat card.
+
+### Long Sessions
+
+Long transcripts must remain scanable.
+
+- Virtualize long lists.
+- Preserve stable message anchors.
+- Use compact metadata.
+- Collapse verbose tool output.
+- Provide in-transcript find.
+- Do not repeatedly repaint unaffected content.
+- Keep timestamps and secondary metadata visually subordinate.
+
+### Composer
+
+The composer is a primary work surface.
+
+- Use the existing 16px radius and composer surface.
+- Keep the input visually distinct from the transcript without making it look like a
+  floating SaaS widget.
+- Commands and file mentions remain content tokens.
+- Primary submit/stop controls remain discoverable.
+- Model, thinking effort, access mode, and workflow mode should be available without
+  turning the composer into a control dashboard.
+- Advanced controls belong behind contextual disclosure when they are not needed.
+
+## Explorer and File UX
+
+### Explorer
+
+The file tree is a navigation instrument.
+
+- Prefer indentation and whitespace over nested cards.
+- Selected files use `active`.
+- Git status uses semantic indicators plus text/icon where necessary.
+- Hidden files remain controlled by an explicit setting.
+- Directory expansion should be keyboard accessible.
+- Quick-open should complement, not replace, the tree.
+
+### File Editor
+
+The editor is a primary workspace.
+
+- Code uses the mono token family or user-selected code font.
+- Tabs remain compact.
+- Dirty state is visible without overpowering the filename.
+- Save/conflict states are explicit.
+- Binary, oversized, and non-UTF-8 states must be honest and actionable.
+- Editor chrome should remain quieter than the code itself.
+
+### Diff
+
+Diffs prioritize comprehension.
+
+- Added/removed content is differentiated by semantic treatment and non-color cues.
+- File-level metadata remains compact.
+- Actions are contextual.
+- Line numbers and code remain the strongest visual anchors.
+- Do not wrap every hunk in a card.
+
+## Git and Review UX
+
+Git surfaces should feel like workbench tools rather than dashboards.
+
+- Branch, status, changed-file count, and review state use compact metadata.
+- Changed files form a navigable list.
+- Review findings are severity-labeled and non-color-coded.
+- AI review findings must identify the affected file/line and remain actionable.
+- Never imply a review passed when the reviewer did not run or produced unavailable data.
+
+## Data Visualization
+
+Charts are information surfaces, not decoration.
+
+- Use one accent ramp for a single series.
+- Multiple series use neutral differentiation or semantic colors only when the data
+  requires categorical distinction.
+- Never introduce arbitrary colors merely to make a chart visually richer.
+- Grid lines remain subordinate.
+- Tooltips provide exact values.
+- Axes and units must be explicit.
+- Missing data is represented as missing, never zero-filled without a documented reason.
+- Hovering a point may reveal detail but must not permanently alter layout.
+
+## Empty, Loading, and Error States
+
+### Empty
+
+An empty state explains:
+
+1. What is empty.
+2. Why it may be empty.
+3. What the user can do next.
+
+Avoid decorative illustrations in core workbench surfaces.
+
+### Loading
+
+Loading states represent actual asynchronous work.
+
+- Prefer skeletons only where the final structure is known.
+- Prefer progress/status text for agent and process work.
+- Do not show indefinite spinners for operations whose state can be described.
+
+### Error
+
+Errors must be actionable.
+
+- State what failed.
+- Preserve relevant context.
+- Explain the next available action.
+- Avoid generic "Something went wrong" as the only message.
+- Never fabricate recovery state.
+- Distinguish connection/process errors from user-action errors.
+
+## Accessibility
+
+Accessibility is part of the component contract.
+
+- Every interactive element must have an accessible name.
+- Focus must remain visible.
+- Do not encode meaning with color alone.
+- Maintain sufficient contrast for text and controls.
+- Hit targets must remain usable at compact density.
+- Keyboard navigation must reach all primary functionality.
+- Tooltips cannot be the only way to access essential information.
+- Respect reduced motion.
+- Dynamic agent state changes should be announced appropriately without flooding the
+  accessibility tree.
+
+## Component Contracts
+
+Every reusable GPUI component should define:
+
+```text
+Component
+├── anatomy
+├── variants
+├── states
+├── keyboard behavior
+├── pointer behavior
+├── focus behavior
+├── accessibility semantics
+├── motion
+└── data contract
+```
+
+A component is not considered complete when it only has a visual default.
+
+### State Matrix
+
+At minimum, interactive components should account for:
+
+- default
+- hover
+- focus
+- active/pressed
+- selected
+- disabled
+- loading
+- error
+- destructive
+- keyboard navigation
+
+Only states that make semantic sense for a component should be implemented.
+
+## Card Budget
+
+Cards are reserved for conceptually singular or elevated objects.
+
+Use cards for:
+
+- composer
+- metric board
+- important grouped information
+- floating/contextual surfaces
+
+Prefer hairlines, whitespace, indentation, and hover states for:
+
+- navigation
+- transcripts
+- tool activity
+- file trees
+- dense tables
+- lists
+- settings rows
+
+Never build:
+
+```text
+card → card → row → card → button
+```
+
+If hierarchy can be communicated through spacing and typography, do not add another container.
+
+## Design Tokens and Theme Architecture
+
+All visual values must flow through the theme system.
+
+- Never hardcode colors in components.
+- Never hardcode semantic state colors where a theme role exists.
+- Add a semantic role when a new visual meaning is required.
+- Keep palette-specific values inside `Palette` / `Theme`.
+- Components consume semantic roles rather than palette implementation details.
+- User-selected fonts remain part of the supported theme/configuration system.
+- New components must work across dark and light palettes before being considered complete.
+
+### Token Naming
+
+Prefer semantic names:
+
+```text
+canvas
+sidebar
+raised
+hover
+active
+text
+text_2
+text_3
+border
+border_strong
+accent
+ok_green
+add_green
+stop_red
+crit
+menu_bg
+bg_composer
+```
+
+Avoid component-specific color names such as:
+
+```text
+blue_button
+dark_card
+orange_row
+```
+
+Semantic tokens allow the same component grammar to survive palette changes.
+
+## Quality Bar
+
+A new Orbit surface is ready when:
+
+- Its hierarchy is understandable within a few seconds.
+- The primary action is obvious without being visually loud.
+- Hover, focus, selection, disabled, loading, and error states are defined.
+- Keyboard interaction is supported.
+- The surface works in both dark and light themes.
+- No unnecessary cards, borders, gradients, or shadows were introduced.
+- Content remains readable at Orbit's compact density.
+- Long-running or streaming states do not cause layout instability.
+- Color is not the sole carrier of meaning.
+- All colors and dimensions come from the design system.
+- The surface feels native to the existing workbench rather than like a separate mini-product.
+
+## Design Non-Goals
+
+Orbit should not become:
+
+- a web dashboard translated into GPUI;
+- a ChatGPT clone;
+- a glassmorphism interface;
+- a neon AI interface;
+- a card-heavy SaaS admin panel;
+- a permanently animated interface;
+- an IDE clone with unnecessary chrome;
+- a collection of disconnected page-specific design systems.
+
+The goal is not maximum visual novelty.
+
+The goal is a coherent native workbench whose interaction quality, information density,
+performance, and visual restraint make long agent sessions feel natural.
 
 ## Do's and Don'ts
 

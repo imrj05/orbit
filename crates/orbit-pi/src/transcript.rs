@@ -293,9 +293,6 @@ impl ChatMessage {
             }
             _ => {}
         }
-        if !user {
-            step.text = strip_completion_markers(&step.text).into_owned();
-        }
         if user {
             // pi appends image hints (resize/conversion notes) to the prompt
             // text it echoes and persists. They are protocol metadata for the
@@ -339,49 +336,6 @@ fn is_image_hint_line(line: &str) -> bool {
     line.starts_with("[Image:")
         || line.starts_with("[Image converted")
         || line.starts_with("[Image omitted")
-}
-
-/// Remove the workflow extension's `[DONE:n]` completion markers from an
-/// assistant message. The tag is protocol — the extension reads it to advance
-/// the plan panel — never presentation, so it must not reach the transcript.
-/// Only lines that carried a tag are normalized, so prose and code indentation
-/// elsewhere are untouched; a line that held nothing but tags disappears.
-pub(crate) fn strip_completion_markers(text: &str) -> std::borrow::Cow<'_, str> {
-    if !text.contains("[DONE:") {
-        return std::borrow::Cow::Borrowed(text);
-    }
-    let mut out: Vec<String> = Vec::with_capacity(text.lines().count());
-    for line in text.split('\n') {
-        if !line.contains("[DONE:") {
-            out.push(line.to_string());
-            continue;
-        }
-        let mut cleaned = String::with_capacity(line.len());
-        let mut rest = line;
-        while let Some(start) = rest.find("[DONE:") {
-            cleaned.push_str(&rest[..start]);
-            let after = &rest[start + "[DONE:".len()..];
-            match after.find(']') {
-                Some(end)
-                    if !after[..end].is_empty()
-                        && after[..end].bytes().all(|b| b.is_ascii_digit()) =>
-                {
-                    rest = &after[end + 1..];
-                }
-                _ => {
-                    // Not a marker; keep the literal text.
-                    cleaned.push_str("[DONE:");
-                    rest = after;
-                }
-            }
-        }
-        cleaned.push_str(rest);
-        let normalized = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
-        if !normalized.is_empty() {
-            out.push(normalized);
-        }
-    }
-    std::borrow::Cow::Owned(out.join("\n"))
 }
 
 /// pi records a loaded skill as an ordinary user message: a
@@ -3897,36 +3851,4 @@ mod debug_tests {
         );
     }
 
-    #[test]
-    fn completion_markers_are_stripped_from_prose() {
-        assert_eq!(strip_completion_markers("Done. [DONE:1]"), "Done.");
-        // A tag-only line disappears; real lines keep their spacing.
-        assert_eq!(
-            strip_completion_markers("Plan done.\n[DONE:1] [DONE:2]\nAll set."),
-            "Plan done.\nAll set."
-        );
-        assert_eq!(
-            strip_completion_markers("Step one [DONE:1] done"),
-            "Step one done"
-        );
-        // No marker: untouched, including code indentation.
-        let code = "    let x = 1;\n";
-        assert_eq!(strip_completion_markers(code), code);
-        // A lookalike that is not a marker survives.
-        assert_eq!(strip_completion_markers("[DONE:x]"), "[DONE:x]");
-    }
-
-    #[test]
-    fn assistant_messages_never_render_completion_markers() {
-        let value = serde_json::json!({
-            "role": "assistant",
-            "content": [{
-                "type": "text",
-                "text": "Plan done.\n[DONE:1] [DONE:2]\nAll set."
-            }]
-        });
-        let message = ChatMessage::from_value(&value).expect("assistant row");
-        assert_eq!(message.text(), "Plan done.\nAll set.");
-        assert!(!message.text().contains("[DONE:"));
-    }
 }

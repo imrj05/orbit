@@ -14,8 +14,7 @@
 //!   `pi.setSessionName` (see [`crate::auto_title`]).
 //! - **workflow** (`contrib/orbit-workflow-extension/`) — scopes the session
 //!   to Plan/Build/Ask: disables write tools in read-only modes, gates bash to
-//!   a read-only allowlist, injects mode guidance, and appends plan progress
-//!   as `orbit:workflow-todos` entries (see [`crate::workflow`]).
+//!   a read-only allowlist, and injects mode guidance (see [`crate::workflow`]).
 //!
 //!
 //! Nothing is installed and no settings file is touched: each extension is

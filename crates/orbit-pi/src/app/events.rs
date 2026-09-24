@@ -860,11 +860,6 @@ impl OrbitApp {
             self.quota_entries_bootstrap = 0;
             cx.notify();
         }
-        // The workflow extension rides the same entry stream: its plan
-        // progress advances the bottom todo bar.
-        if self.workflow_todos.on_entries(entries) {
-            cx.notify();
-        }
     }
 
     /// Move images the composer collected (clipboard paste) into the

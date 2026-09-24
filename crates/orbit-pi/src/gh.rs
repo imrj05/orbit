@@ -80,6 +80,13 @@ pub fn status(cwd: &Path) -> GhStatus {
     }
 }
 
+/// The signed-in `gh` user (login, name, avatar) for the Git branch row's
+/// account chip. Only called once [`status`] has reported authentication.
+pub fn current_user(cwd: &Path) -> Result<GhUser, String> {
+    let raw = run(cwd, &["api", "user"])?;
+    serde_json::from_str(&raw).map_err(|err| err.to_string())
+}
+
 /// The resolved `gh` executable path. Falls back to the same Homebrew,
 /// system, and shim dirs as `pi`/`node`, since a bundled `.app` launches
 /// with a minimal PATH that omits a user's install.
@@ -157,6 +164,9 @@ pub struct GhUser {
     pub login: String,
     #[serde(default)]
     pub name: Option<String>,
+    /// The user's avatar URL, for the Git branch row's account chip.
+    #[serde(default)]
+    pub avatar_url: Option<String>,
 }
 
 /// A repository label.

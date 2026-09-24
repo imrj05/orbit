@@ -1628,10 +1628,7 @@ impl Render for ProjectPanel {
             .flex_none()
             .w(self.width)
             .h_full()
-            .bg(theme.bg_sidebar)
-            .border_l_1()
-            .border_r_1()
-            .border_color(theme.border)
+            .pl(px(12.))
             .flex()
             .flex_col()
             .min_h_0()
@@ -1641,16 +1638,35 @@ impl Render for ProjectPanel {
                     .absolute()
                     .top_0()
                     .bottom_0()
-                    .left_0()
+                    // Sit on the card's left border (the 12px gutter, minus
+                    // half the handle width), not the panel's outer edge, so
+                    // the edge users see is the edge they can grab.
+                    .left(px(9.))
                     .w(px(6.))
                     .cursor(CursorStyle::ResizeLeftRight)
                     .hover(|style| style.bg(theme.accent.opacity(0.4)))
                     .on_drag(ExplorerResize, |_, _, _, cx| cx.new(|_| ExplorerDragGhost)),
             )
-            .child(self.header(theme, cx))
-            .child(self.filter_row(theme, cx))
-            .child(self.tree(theme, cx))
-            .child(self.footer(theme, cx))
+            // The dock reads as a rounded card, like the Git/Usage cards in
+            // the main column. The popups stay outside this clipped shell so
+            // they are not cut off at its corners.
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .bg(theme.bg_sidebar)
+                    .border_1()
+                    .border_color(theme.border)
+                    .rounded_lg()
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .child(self.header(theme, cx))
+                    .child(self.filter_row(theme, cx))
+                    .child(self.tree(theme, cx))
+                    .child(self.footer(theme, cx)),
+            )
             .children(self.context_menu(theme, cx))
             .children(self.delete_prompt(theme, cx))
             .into_any_element()

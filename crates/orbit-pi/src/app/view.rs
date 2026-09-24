@@ -75,16 +75,29 @@ pub(super) fn titlebar_controls_left(sidebar_visible: bool, sidebar_width: f32) 
     }
 }
 
-/// Leading inset the full-window pages (Git, Usage, Files) give their headers.
-/// With the sidebar open they start after it and only need the normal page
-/// padding; collapsed, they own the window's left edge and must clear the
-/// macOS traffic lights and the overlaid titlebar controls.
-pub(super) fn page_header_leading(sidebar_visible: bool) -> f32 {
-    if sidebar_visible {
-        12.
-    } else {
-        TITLEBAR_LEADING
-    }
+/// Wrap a feature page (Files / Git / Usage) in the card the main column shows
+/// below the shared top bar: a gap from the sidebar on the left, rounded
+/// corners, a hairline, and a clipped body. Keeps the top bar and the session
+/// context in place instead of swapping the whole column for an edge-to-edge
+/// page.
+fn feature_card(theme: Theme, body: AnyElement) -> AnyElement {
+    div()
+        .flex_1()
+        .min_h_0()
+        .w_full()
+        .pl(px(12.))
+        .child(
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .overflow_hidden()
+                .rounded_lg()
+                .border_1()
+                .border_color(theme.border)
+                .child(body),
+        )
+        .into_any_element()
 }
 
 /// Duration of the sidebar collapse/expand slide.
@@ -243,23 +256,20 @@ impl Render for OrbitApp {
         let git_provider = self.model_provider.clone();
         let git_model = self.model_id.clone();
         // Leading inset the full-window pages (Git/Usage/Files) give their
-        // headers while the sidebar is collapsed.
-        let page_leading = view::page_header_leading(self.sidebar_visible);
+        // headers while the sidebar is collapsed. They now sit in a card below
+        // the top bar, so they only need the normal page padding.
+        let page_leading = 12.;
         self.git_panel.update(cx, |panel, cx| {
             panel.set_context(git_workspace, git_provider, git_model, cx);
             panel.set_chrome_leading(page_leading, cx);
         });
         // ── file viewer (Files surface) ── spans the main column, so it gives
-        // its tab strip the same leading inset as the Git/Usage page headers;
-        // it carries the caption-control clearance only while it owns the
-        // window's right edge (no project panel, Review pane, or Settings).
-        let viewer_reserve_controls = platform::draws_window_controls()
-            && !self.settings_open
-            && !self.project_panel.read(cx).is_open()
-            && !pane_visible;
+        // its tab strip the same leading inset as the Git/Usage page headers.
         self.file_viewer.update(cx, |viewer, cx| {
             viewer.set_chrome_leading(page_leading, cx);
-            viewer.set_reserve_controls(viewer_reserve_controls, cx);
+            // The top bar above owns the caption buttons; the card below it
+            // never shares their row.
+            viewer.set_reserve_controls(false, cx);
         });
         // ── project panel (right dock) ── hidden while Settings owns the
         // window, like the sessions sidebar. Sync the workspace each render;
@@ -279,14 +289,11 @@ impl Render for OrbitApp {
             .clone()
             .or_else(|| std::env::current_dir().ok());
         let explorer_active = self.file_viewer.read(cx).active_display();
-        // On Windows the caption is painted into the top-right corner. The dock
-        // owns that corner whenever the Review pane is not open, so it carries
-        // the control clearance itself (the pane does when it is open).
-        let explorer_reserve_controls = platform::draws_window_controls() && !pane_visible;
         self.project_panel.update(cx, |panel, cx| {
             panel.set_workspace(explorer_workspace, cx);
             panel.set_active(explorer_active, cx);
-            panel.set_reserve_controls(explorer_reserve_controls, cx);
+            // The top bar above owns the caption buttons.
+            panel.set_reserve_controls(false, cx);
             // Review is open, so the Explorer must not be: close it here to
             // catch every path that opens the pane (diff chip, transcript
             // cards, Git page file rows), not just the top-bar toggle.
@@ -319,14 +326,22 @@ impl Render for OrbitApp {
         // When Review owns the right edge, or the chat column is tight, the
         // title and the chips collide. Compact the quota label and drop the
         // +/− chip (Review already shows the same stats).
-        let compact_chrome = pane_visible || f32::from(main_width) < 720.;
+        // The top bar spans the whole main area, so the docks do not squeeze
+        // it — compact only when the main area itself is tight.
+        let compact_chrome = f32::from(main_width + explorer_width + pane_width) < 720.;
+        // While the Git card is open, its title moves up into the shared top
+        // bar (see `GitPanel::top_bar_leading`); the branch selector stays on
+        // the card's tab row, next to the view it scopes.
+        let git_leading = self
+            .git_open
+            .then(|| self.git_panel.update(cx, |panel, cx| panel.top_bar_leading(theme, cx)));
         let mut top_controls = div().flex_none().flex().items_center().gap_2();
         // Provider quota — a compact, provider-independent headroom meter.
         // Hidden entirely on a pi without `quota.*` (or when no provider
         // reports anything), so the bar never shows a fabricated value.
         top_controls = top_controls.children(self.render_quota_pill(compact_chrome, cx));
         top_controls = top_controls.children(self.render_open_in_control(cx));
-        if (self.added > 0 || self.removed > 0) && !pane_visible {
+        if (self.added > 0 || self.removed > 0) && !pane_visible && !self.git_open {
             top_controls = top_controls.child(
                 header_chip(
                     div()
@@ -508,8 +523,8 @@ impl Render for OrbitApp {
             // settings is a full-window surface with its own nav, like the
             // reference UI). The panel stays mounted and slides: an animated
             // outer width clips a fixed-width inner column, so the content
-            // never reflows mid-slide. The titlebar controls live in a fixed
-            // overlay (below), so they hold their place while it moves.
+            // never reflows mid-slide. The titlebar row above is outside the
+            // panel, so the controls hold their place while it moves.
             .children((!self.settings_open).then(|| {
                 let open = self.sidebar_visible;
                 let panel_w = f32::from(self.sidebar_width);
@@ -761,15 +776,8 @@ impl Render for OrbitApp {
             }))
             // ── main ──
             .child(if self.settings_open {
+                // Settings owns the whole column — it has its own nav.
                 self.render_settings(cx).into_any_element()
-            } else if self.file_viewer.read(cx).is_open() {
-                self.file_viewer.clone().into_any_element()
-            } else if self.git_open {
-                self.git_panel.clone().into_any_element()
-            } else if self.usage_open {
-                // Usage reads pi's store from disk, so it stays available even
-                // when the runtime itself is missing.
-                self.usage.clone().into_any_element()
             } else if !self.dependencies_ready() {
                 // Missing runtime pieces (pi / node): show the setup page
                 // with install commands instead of the empty composer.
@@ -778,60 +786,44 @@ impl Render for OrbitApp {
                 // The same page on request, from Settings → About.
                 self.render_onboarding(cx).into_any_element()
             } else {
+                // The shared top bar is always the column's first row. A
+                // feature page (Files / Git / Usage) opens as a card below it;
+                // the chat fills the column itself.
                 let empty = self.transcript.is_empty();
-                div()
-                    .flex_1()
-                    .h_full()
-                    .flex()
-                    .flex_col()
-                    // `min_w_0` lets the center shrink below its content's
-                    // min-content width, so opening the side pane (or widening
-                    // the sidebar) reflows the transcript instead of holding
-                    // the column at a fixed width.
-                    .min_w_0()
-                    .min_h_0()
-                    .relative()
-                    // The new-task backdrop belongs to the whole column, not
-                    // just the empty-state slot, so the floating composer and
-                    // the status bar below it paint over the picture instead
-                    // of sitting on a flat slab.
-                    .children(Self::new_task_backdrop(theme, empty))
-                    // top bar — the window's left controls are a fixed overlay
-                    // (see below), so the title only has to clear them when the
-                    // sidebar is collapsed. Its leading inset eases in step with
-                    // the sidebar slide. The drag spacer between it and the
-                    // right cluster drags the window.
-                    .child({
-                        let bar = div()
-                            .h(px(TOP_BAR_H))
-                            .w_full()
-                            .flex()
-                            .items_center()
-                            // Caption buttons are drawn above the bar, so its
-                            // right cluster stops short of them — unless the
-                            // side pane owns the window's right edge, and
-                            // carries the clearance itself.
-                            .pr(px(
-                                if platform::draws_window_controls()
-                                    && !pane_visible
-                                    && !explorer_visible
-                                {
-                                    platform::WINDOW_CONTROLS_W
-                                } else {
-                                    12.
-                                },
-                            ))
-                            .child(
-                                window_drag_region(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .overflow_hidden()
-                                        .h_full()
-                                        .flex()
-                                        .items_center(),
-                                )
-                                .child(
+                let viewer_open = self.file_viewer.read(cx).is_open();
+                let feature_open = viewer_open || self.git_open || self.usage_open;
+                // top bar — the window's left controls float over it in the
+                // titlebar overlay, so its leading clears them when the sidebar
+                // is collapsed. The drag spacer between the title and the right
+                // cluster drags the window.
+                let main_top_bar = {
+                    let bar = div()
+                        .h(px(TOP_BAR_H))
+                        .flex_none()
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        // The bar spans the main area to the window's right
+                        // edge, so it owns the caption buttons.
+                        .pr(px(if platform::draws_window_controls() {
+                            platform::WINDOW_CONTROLS_W
+                        } else {
+                            12.
+                        }))
+                        .child({
+                            let left = window_drag_region(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .h_full()
+                                    .flex()
+                                    .items_center(),
+                            );
+                            if let Some(leading) = git_leading {
+                                left.child(leading)
+                            } else {
+                                left.child(
                                     div()
                                         .flex_1()
                                         .min_w_0()
@@ -843,35 +835,51 @@ impl Render for OrbitApp {
                                             self.session_name.as_deref(),
                                             self.current_title.as_deref(),
                                         )),
-                                ),
-                            )
-                            .child(top_controls);
-                        let gen = self.sidebar_slide_gen;
-                        if gen == 0 || theme::reduce_motion(cx) {
-                            bar.pl(px(if self.sidebar_visible {
-                                20.
-                            } else {
-                                TITLEBAR_LEADING
-                            }))
-                            .into_any_element()
+                                )
+                            }
+                        })
+                        .child(top_controls);
+                    let gen = self.sidebar_slide_gen;
+                    if gen == 0 || theme::reduce_motion(cx) {
+                        bar.pl(px(if self.sidebar_visible {
+                            20.
                         } else {
-                            let expanding = self.sidebar_visible;
-                            bar.with_animation(
-                                ElementId::Name(format!("topbar-lead-{gen}").into()),
-                                Animation::new(Duration::from_millis(SIDEBAR_SLIDE_MS))
-                                    .with_easing(|d| 1.0 - (1.0 - d).powi(3)),
-                                move |el, d| {
-                                    let (from, to) = if expanding {
-                                        (TITLEBAR_LEADING, 20.)
-                                    } else {
-                                        (20., TITLEBAR_LEADING)
-                                    };
-                                    el.pl(px(from + (to - from) * d))
-                                },
-                            )
-                            .into_any_element()
-                        }
-                    })
+                            TITLEBAR_LEADING
+                        }))
+                        .into_any_element()
+                    } else {
+                        let expanding = self.sidebar_visible;
+                        bar.with_animation(
+                            ElementId::Name(format!("topbar-lead-{gen}").into()),
+                            Animation::new(Duration::from_millis(SIDEBAR_SLIDE_MS))
+                                .with_easing(|d| 1.0 - (1.0 - d).powi(3)),
+                            move |el, d| {
+                                let (from, to) = if expanding {
+                                    (TITLEBAR_LEADING, 20.)
+                                } else {
+                                    (20., TITLEBAR_LEADING)
+                                };
+                                el.pl(px(from + (to - from) * d))
+                            },
+                        )
+                        .into_any_element()
+                    }
+                };
+                let body: AnyElement = if viewer_open {
+                    self.file_viewer.clone().into_any_element()
+                } else if self.git_open {
+                    self.git_panel.clone().into_any_element()
+                } else if self.usage_open {
+                    self.usage.clone().into_any_element()
+                } else {
+                    // chat body — transcript/empty, composer, terminal
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .relative()
                     // transcript (centered column) or empty state
                     .child(if empty {
                         self.render_empty_state(main_width, cx).into_any_element()
@@ -940,9 +948,6 @@ impl Render for OrbitApp {
                                     // Extension `setWidget` blocks placed
                                     // above the editor.
                                     .children(self.extension_widgets_above(cx))
-                                    // Plan progress (Plan/Build only) — a slim
-                                    // strip hugging the composer, above it.
-                                    .children(self.workflow_progress(cx))
                                     // composer box — the picker popups are
                                     // anchored above their own chips
                                     .child(
@@ -1034,12 +1039,47 @@ impl Render for OrbitApp {
                         terminal_visible.then(|| self.terminal_panel.clone().into_any_element()),
                     )
                     .into_any_element()
+                };
+                // The top bar stays put; a feature page opens as a card below
+                // it, the chat fills the column itself.
+                div()
+                    .flex_1()
+                    .h_full()
+                    .flex()
+                    .flex_col()
+                    .min_w_0()
+                    .min_h_0()
+                    .relative()
+                    .children(if feature_open {
+                        None
+                    } else {
+                        Self::new_task_backdrop(theme, empty)
+                    })
+                    .child(main_top_bar)
+                    // The top bar spans the whole main area; the docks and
+                    // the chat/feature sit side by side below it.
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .w_full()
+                            .flex()
+                            .relative()
+                            .child(if feature_open {
+                                feature_card(theme, body)
+                            } else {
+                                body
+                            })
+                            .children(
+                                explorer_visible
+                                    .then(|| self.project_panel.clone().into_any_element()),
+                            )
+                            .children(
+                                pane_visible.then(|| self.sidepane.clone().into_any_element()),
+                            ),
+                    )
+                    .into_any_element()
             })
-            // ── project panel ── the Explorer's right dock, between the main
-            // column and the Review pane so the pane keeps the window edge.
-            .children(explorer_visible.then(|| self.project_panel.clone().into_any_element()))
-            // ── right side pane (Review) ──
-            .children(pane_visible.then(|| self.sidepane.clone().into_any_element()))
             // ── titlebar controls ── a fixed overlay pinned just past the
             // macOS traffic lights, above both the sidebar and the main column.
             // Shown on every surface except Settings, which owns its own nav
@@ -3347,186 +3387,6 @@ impl OrbitApp {
     /// provider error (with the attempt counter and a real Cancel that sends
     /// `abort_retry`) or compacting the conversation context. Unlike the
     /// status bar's transient messages, this stays up for the whole state.
-    /// The plan-progress panel above the composer (Plan and Build only).
-    ///
-    /// Collapsed it is one comfortable row — the current step, a meter, and the
-    /// count; expanded it reveals the checklist. Sized like the app's other
-    /// panels (14px gutters, 12–13px type) so it reads as a real section rather
-    /// than a cramped status line. Hidden in Ask mode and when there is no plan.
-    pub(super) fn workflow_progress(&self, cx: &Context<Self>) -> Option<AnyElement> {
-        let theme = *theme::get(cx);
-        if !self.workflow_mode.tracks_todos() || self.workflow_todos.is_empty() {
-            return None;
-        }
-        let (done, total) = self.workflow_todos.progress();
-        let fraction = if total == 0 {
-            0.0
-        } else {
-            (done as f32 / total as f32).clamp(0.0, 1.0)
-        };
-        let all_done = self.workflow_todos.all_done();
-        let expanded = self.workflow_todos_expanded;
-        let current_step = self.workflow_todos.current().map(|todo| todo.step);
-        let fill = if all_done { theme.ok_green } else { theme.accent };
-
-        // A fixed-width meter reads as a status glyph beside the count; the
-        // visible track keeps 0-of-N legible.
-        let meter = div()
-            .flex_none()
-            .w(px(72.))
-            .h(px(6.))
-            .rounded_full()
-            .overflow_hidden()
-            .bg(theme.overlay_strong)
-            .child(div().h_full().w(relative(fraction)).rounded_full().bg(fill));
-
-        let next_step = if all_done {
-            tr!("workflow.todos_done")
-        } else {
-            self.workflow_todos
-                .current()
-                .map(|todo| todo.text.clone())
-                .unwrap_or_default()
-        };
-
-        // The whole row is one click target. Identity (icon + current step) on
-        // the left, progress (meter + count + chevron) on the right.
-        let header = div()
-            .id("workflow-progress-toggle")
-            .w_full()
-            .h(px(30.))
-            .group(BUTTON_GROUP)
-            .flex()
-            .items_center()
-            .gap(px(12.))
-            .px(px(6.))
-            .rounded_md()
-            .cursor_pointer()
-            .hover(|s| s.bg(theme.bg_hover))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.toggle_workflow_todos(cx)),
-            )
-            .child(
-                icon(
-                    if all_done {
-                        "icons/circle-check.svg"
-                    } else {
-                        self.workflow_mode.icon()
-                    },
-                    14.,
-                    if all_done { theme.ok_green } else { theme.text_2 },
-                )
-                .flex_none(),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(theme.ui_px(12.5))
-                    .text_color(if all_done { theme.ok_green } else { theme.text_2 })
-                    .child(next_step),
-            )
-            .child(meter)
-            .child(
-                div()
-                    .flex_none()
-                    .text_size(theme.ui_px(12.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(if all_done { theme.ok_green } else { theme.text_3 })
-                    .child(tr!("workflow.todos_progress", done = done, total = total)),
-            )
-            .child(
-                icon(
-                    if expanded {
-                        "icons/chevron-down.svg"
-                    } else {
-                        "icons/chevron-right.svg"
-                    },
-                    14.,
-                    theme.text_3,
-                )
-                .flex_none(),
-            );
-
-        let mut panel = div()
-            .id("workflow-progress")
-            .w_full()
-            .mb(px(8.))
-            .px(px(14.))
-            .py(px(6.))
-            .rounded_lg()
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.bg_raised)
-            .flex()
-            .flex_col()
-            .child(header);
-
-        if expanded {
-            let mut list = div()
-                .id("workflow-todos-list")
-                .mt(px(8.))
-                .pt(px(10.))
-                .border_t_1()
-                .border_color(theme.border)
-                .flex()
-                .flex_col()
-                .gap(px(2.))
-                .max_h(px(260.))
-                .overflow_y_scroll();
-            for todo in self.workflow_todos.todos() {
-                // Hierarchy: the current step leads, pending steps sit a shade
-                // back, completed ones recede behind a strike. Two-line clamp
-                // keeps long plan steps on a regular rhythm.
-                let is_current = !todo.done && Some(todo.step) == current_step;
-                let text_color = if todo.done {
-                    theme.text_3
-                } else if is_current {
-                    theme.text
-                } else {
-                    theme.text_2
-                };
-                list = list.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(12.))
-                        .px(px(6.))
-                        .py(px(4.))
-                        .rounded_md()
-                        .when(is_current, |row| row.bg(theme.accent.opacity(0.08)))
-                        .child(
-                            icon(
-                                if todo.done {
-                                    "icons/circle-check.svg"
-                                } else {
-                                    "icons/circle-dot.svg"
-                                },
-                                14.,
-                                if todo.done { theme.ok_green } else { theme.text_3 },
-                            )
-                            .flex_none(),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .line_clamp(2)
-                                .text_size(theme.ui_px(12.5))
-                                .text_color(text_color)
-                                .when(todo.done, |line| line.line_through())
-                                .child(todo.text.clone()),
-                        ),
-                );
-            }
-            panel = panel.child(list);
-        }
-
-        Some(panel.into_any_element())
-    }
-
     pub(super) fn run_status_strip(&self, cx: &Context<Self>) -> Option<AnyElement> {
         let theme = *theme::get(cx);
         if let Some(retry) = &self.retry_detail {

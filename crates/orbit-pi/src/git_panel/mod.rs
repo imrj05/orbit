@@ -18,9 +18,9 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    canvas, div, fill, hsla, img, point, prelude::*, px, size, AnyElement, Background, Bounds,
-    ClickEvent, Context, Entity, Focusable, FontWeight, Hsla, MouseDownEvent, ObjectFit,
-    PathBuilder, Pixels, Render, Window,
+    anchored, canvas, deferred, div, fill, hsla, img, point, prelude::*, px, size, AnyElement,
+    AnchoredPositionMode, Background, Bounds, ClickEvent, Context, Corner, Entity, Focusable,
+    FontWeight, Hsla, MouseDownEvent, ObjectFit, PathBuilder, Pixels, Render, Subscription, Window,
 };
 
 use crate::app::{
@@ -79,6 +79,7 @@ enum GitAction {
     CommitAndPush,
     Push,
     Pull,
+    Sync,
     Merge,
     Rebase,
     ForcePush,
@@ -99,6 +100,8 @@ enum PendingConfirm {
         method: gh::MergeMethod,
         delete_branch: bool,
     },
+    /// Discard every staged and unstaged change in the working tree.
+    RevertAll,
 }
 
 /// Which ref picker is open.
@@ -211,6 +214,14 @@ pub struct GitPanel {
     gh_authenticated: bool,
     /// Auth error or version line, shown in the Issues/Pulls setup state.
     gh_detail: String,
+    /// The signed-in account (login + avatar), for the branch row's chip.
+    gh_user: Option<gh::GhUser>,
+    /// Whether the branch row's Sync dropdown is open.
+    sync_menu_open: bool,
+    /// When the outside-click dismiss last fired. The chevron's click lands
+    /// right after it on the same press; without this the click would toggle
+    /// the just-dismissed menu back open, so it can never close.
+    sync_menu_dismissed_at: Option<Instant>,
     /// Whether the `gh` probe has run for this workspace. The probe is two
     /// subprocesses, so it is not repeated on every tab switch — only on the
     /// first load, on a workspace change, and on the manual refresh.
@@ -263,10 +274,22 @@ pub struct GitPanel {
     /// Whether HEAD resolves (drives "Publish branch" on a fresh branch).
     has_commits: bool,
     branches: Vec<String>,
+    /// Branches most recently checked out (from the HEAD reflog), newest
+    /// first: the picker's "Recent branches" section.
+    recent_branches: Vec<String>,
     branch_menu_open: bool,
+    /// The branch picker's search field.
+    branch_filter: Entity<crate::composer::ComposerInput>,
+    /// Keeps the picker re-rendering as the search field changes.
+    _branch_filter_sub: Subscription,
     /// Set when the branch menu is dismissed by an outside mouse-down so the
     /// chip's following mouse-up does not toggle it straight back open.
     menu_dismissed_at: Option<Instant>,
+    /// Whether the branch-actions ("…") dropdown beside Sync is open.
+    branch_more_open: bool,
+    /// Outside-click dismiss timestamp for the "…" menu (its own gesture
+    /// guard, so it never collides with the branch chip's).
+    branch_more_dismissed_at: Option<Instant>,
     branch_operation: bool,
     /// Manual-refresh feedback: the header button spins until this instant
     /// (and while the active tab's data is in flight), so a click is always
@@ -353,6 +376,13 @@ impl GitPanel {
                 .with_key_context("Composer Picker")
                 .with_max_lines(10)
         });
+        let branch_filter = cx.new(|cx| {
+            crate::composer::ComposerInput::new(cx)
+                .with_placeholder_key("git_panel.search_branches")
+                .with_key_context("Composer Picker")
+                .with_max_lines(1)
+        });
+        let branch_filter_sub = cx.observe(&branch_filter, |_, _, cx| cx.notify());
         Self {
             open: false,
             tab: GitTab::Changes,
@@ -397,6 +427,9 @@ impl GitPanel {
             gh_installed: false,
             gh_authenticated: false,
             gh_detail: String::new(),
+            gh_user: None,
+            sync_menu_open: false,
+            sync_menu_dismissed_at: None,
             gh_probed: false,
             issues: Vec::new(),
             issues_loading: false,
@@ -432,8 +465,13 @@ impl GitPanel {
             ahead_behind: None,
             has_commits: false,
             branches: Vec::new(),
+            recent_branches: Vec::new(),
             branch_menu_open: false,
+            branch_filter,
+            _branch_filter_sub: branch_filter_sub,
             menu_dismissed_at: None,
+            branch_more_open: false,
+            branch_more_dismissed_at: None,
             branch_operation: false,
             refresh_spin_until: None,
             status: None,
@@ -454,6 +492,7 @@ impl GitPanel {
     pub fn hide(&mut self, cx: &mut Context<Self>) {
         self.open = false;
         self.branch_menu_open = false;
+        self.branch_more_open = false;
         cx.notify();
     }
 
@@ -470,6 +509,7 @@ impl GitPanel {
         if self.tab != tab {
             self.tab = tab;
             self.branch_menu_open = false;
+            self.branch_more_open = false;
             self.ref_menu = None;
             self.refresh_all(cx);
         }
@@ -660,6 +700,7 @@ impl GitPanel {
                     git::current_branch(&cwd),
                     git::ahead_behind(&cwd),
                     git::list_branches(&cwd).unwrap_or_default(),
+                    git::recent_branches(&cwd),
                     git::has_commits(&cwd),
                     git::remote_web(&cwd),
                     git_ops::list_refs(&cwd),
@@ -671,6 +712,7 @@ impl GitPanel {
                     branch,
                     ahead_behind,
                     branches,
+                    recent_branches,
                     has_commits,
                     remote_web,
                     refs,
@@ -680,6 +722,7 @@ impl GitPanel {
                     panel.branch = branch;
                     panel.ahead_behind = ahead_behind;
                     panel.branches = branches;
+                    panel.recent_branches = recent_branches;
                     panel.has_commits = has_commits;
                     panel.remote_web = remote_web;
                     panel.refs = refs;
@@ -702,12 +745,22 @@ impl GitPanel {
         };
         self.spawn_data(
             cx,
-            move || Ok(gh::status(&cwd)),
+            move || {
+                let status = gh::status(&cwd);
+                // The account chip needs the login + avatar; only ask `gh api`
+                // once auth status says there is a signed-in host.
+                let user = status
+                    .authenticated
+                    .then(|| gh::current_user(&cwd).ok())
+                    .flatten();
+                Ok((status, user))
+            },
             |panel, result, cx| {
-                if let Ok(status) = result {
+                if let Ok((status, user)) = result {
                     panel.gh_installed = status.installed;
                     panel.gh_authenticated = status.authenticated;
                     panel.gh_detail = status.detail;
+                    panel.gh_user = user;
                 }
                 panel.gh_probed = true;
                 cx.notify();
@@ -1341,6 +1394,20 @@ impl GitPanel {
         );
     }
 
+    /// Discard every staged and unstaged change in the working tree.
+    fn revert_all(&mut self, cx: &mut Context<Self>) {
+        if self.pending.is_some() || self.operation_busy {
+            return;
+        }
+        let Some(cwd) = self.cwd() else { return };
+        self.pending_discard = None;
+        self.spawn_data(
+            cx,
+            move || git::discard_all(&cwd),
+            |panel, result, cx| panel.after_git(result, &tr!("git_panel.reverted_all"), cx),
+        );
+    }
+
     fn after_git(&mut self, result: Result<(), String>, success: &str, cx: &mut Context<Self>) {
         // Staging/discard failures are not commit-bar actions, so a stale
         // Retry from an earlier push/pull must not linger.
@@ -1576,6 +1643,7 @@ impl GitPanel {
                             .and_then(|_| git::push(&cwd)),
                         GitAction::Push => git::push(&cwd),
                         GitAction::Pull => git::pull(&cwd),
+                        GitAction::Sync => git::sync(&cwd),
                         GitAction::Merge => git::merge_upstream(&cwd),
                         GitAction::Rebase => git::rebase_upstream(&cwd),
                         GitAction::ForcePush => git::push_force_with_lease(&cwd),
@@ -1754,6 +1822,7 @@ impl GitPanel {
                     cx,
                 );
             }
+            PendingConfirm::RevertAll => self.revert_all(cx),
         }
     }
 
@@ -1782,6 +1851,7 @@ impl GitPanel {
     fn close_ref_picker(&mut self, cx: &mut Context<Self>) {
         self.ref_menu = None;
         self.branch_menu_open = false;
+        self.branch_more_open = false;
         self.menu_dismissed_at = Some(Instant::now());
         cx.notify();
     }
@@ -1802,6 +1872,7 @@ impl GitPanel {
             .update(cx, |input, cx| input.replace_range(0..len, &text, cx));
         self.branch_prompt = Some(prompt);
         self.branch_menu_open = false;
+        self.branch_more_open = false;
         self.menu_dismissed_at = Some(Instant::now());
         let focus = self.branch_input.read(cx).focus_handle(cx);
         window.focus(&focus);
@@ -1837,6 +1908,7 @@ impl GitPanel {
     /// asks for confirmation before the forced `-D`.
     fn delete_branch(&mut self, name: String, cx: &mut Context<Self>) {
         self.branch_menu_open = false;
+        self.branch_more_open = false;
         self.menu_dismissed_at = Some(Instant::now());
         let Some(cwd) = self.cwd() else { return };
         let for_work = name.clone();
@@ -1879,7 +1951,7 @@ impl GitPanel {
         self.run_operation(move |cwd| git_ops::stash_drop(cwd, index), cx);
     }
 
-    fn toggle_branch_menu(&mut self, cx: &mut Context<Self>) {
+    fn toggle_branch_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // mouse-down-out closes the menu; the chip's mouse-up would otherwise
         // toggle it open again on the same click (see AGENT.md popovers).
         const GESTURE: Duration = Duration::from_millis(200);
@@ -1890,7 +1962,15 @@ impl GitPanel {
         }
         // A click on the chip closes the ref picker and toggles the branch menu.
         self.ref_menu = None;
-        self.branch_menu_open = !self.branch_menu_open;
+        self.branch_more_open = false;
+        let opening = !self.branch_menu_open;
+        if opening {
+            self.clear_branch_filter(cx);
+        }
+        self.branch_menu_open = opening;
+        if opening {
+            window.focus(&self.branch_filter.read(cx).focus_handle(cx));
+        }
         cx.notify();
     }
 
@@ -1902,15 +1982,51 @@ impl GitPanel {
         }
     }
 
-    fn checkout_branch(&mut self, branch: String, cx: &mut Context<Self>) {
+    /// Toggle the branch-actions ("…") menu beside Sync.
+    fn toggle_branch_more(&mut self, cx: &mut Context<Self>) {
+        const GESTURE: Duration = Duration::from_millis(200);
+        if let Some(dismissed) = self.branch_more_dismissed_at.take() {
+            if dismissed.elapsed() < GESTURE {
+                return;
+            }
+        }
+        self.branch_menu_open = false;
+        self.branch_more_open = !self.branch_more_open;
+        cx.notify();
+    }
+
+    fn dismiss_branch_more(&mut self, cx: &mut Context<Self>) {
+        if self.branch_more_open {
+            self.branch_more_open = false;
+            self.branch_more_dismissed_at = Some(Instant::now());
+            cx.notify();
+        }
+    }
+
+    /// Reset the branch picker's search field (on open, and after a switch).
+    fn clear_branch_filter(&mut self, cx: &mut Context<Self>) {
+        self.branch_filter.update(cx, |input, cx| input.clear(cx));
+    }
+
+    /// Check out a local branch, or a remote branch by creating its local
+    /// tracking branch first.
+    fn checkout_branch_ref(&mut self, branch: String, remote: bool, cx: &mut Context<Self>) {
         let Some(cwd) = self.cwd() else { return };
         self.branch_menu_open = false;
+        self.branch_more_open = false;
         self.menu_dismissed_at = Some(Instant::now());
         self.branch_operation = true;
+        self.clear_branch_filter(cx);
         cx.notify();
         self.spawn_data(
             cx,
-            move || git::checkout_branch(&cwd, &branch),
+            move || {
+                if remote {
+                    git::checkout_remote_branch(&cwd, &branch)
+                } else {
+                    git::checkout_branch(&cwd, &branch)
+                }
+            },
             |panel, result, cx| {
                 panel.branch_operation = false;
                 match result {
@@ -1932,30 +2048,15 @@ impl GitPanel {
 
     // ── rendering ──────────────────────────────────────────────────────
 
-    fn header(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
-        let branch = self
-            .branch
-            .clone()
-            .unwrap_or_else(|| tr!("git_panel.detached"));
-        let (additions, deletions) = self.stats();
+    /// The Git card's title controls, hosted by the shell's top bar: the Back
+    /// button and the "Git" title, replacing the session title while Git is
+    /// open. Keeping them in the shared top bar means the card itself starts
+    /// at its tab bar.
+    pub fn top_bar_leading(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
         div()
-            .h(px(44.))
-            .flex_none()
-            // The page spans the window when the sessions sidebar is collapsed,
-            // so the leading inset clears the macOS traffic lights and the
-            // sidebar/history controls overlaid in the titlebar.
-            .pl(px(self.chrome_leading))
-            .pr(px(12.))
-            // The Git page spans the window, so its header's right end (branch
-            // chip, ±stats, search) clears the app's caption buttons.
-            .when(crate::platform::draws_window_controls(), |row| {
-                row.pr(px(crate::platform::WINDOW_CONTROLS_W))
-            })
             .flex()
             .items_center()
             .gap(theme.space(8.))
-            .border_b_1()
-            .border_color(theme.border)
             .child(
                 div()
                     .id("git-back")
@@ -1999,48 +2100,67 @@ impl GitPanel {
                             .child(tr!("git_panel.title")),
                     ),
             )
-            .child(div().flex_1())
+            .into_any_element()
+    }
+
+    /// The branch chip, ahead/behind, working-tree stats, and refresh. It
+    /// lives on the branch bar under the tabs so the branch sits with the view
+    /// it scopes without crowding the tab strip.
+    fn branch_controls(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let branch = self
+            .branch
+            .clone()
+            .unwrap_or_else(|| tr!("git_panel.detached"));
+        let (additions, deletions) = self.stats();
+        div()
+            .flex()
+            .items_center()
+            .gap(theme.space(8.))
             .child(
                 div()
-                    .id("git-branch-chip")
-                    .h(px(28.))
-                    .px(px(8.))
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(theme.border)
-                    .bg(if self.branch_menu_open {
-                        theme.active
-                    } else {
-                        theme.bg_raised
-                    })
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme.bg_hover))
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.toggle_branch_menu(cx);
-                    }))
-                    .child(icon(
-                        "icons/branch.svg",
-                        12.,
-                        if self.branch_menu_open {
-                            theme.active_fg
-                        } else {
-                            theme.text_2
-                        },
-                    ))
+                    .relative()
                     .child(
                         div()
-                            .max_w(px(180.))
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_size(theme.ui_px(12.))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text)
-                            .child(branch),
-                    )
-                    .child(icon("icons/chevron-down.svg", 10., theme.text_3)),
+                            .id("git-branch-chip")
+                            .h(px(28.))
+                            .px(px(8.))
+                            .rounded_lg()
+                            .border_1()
+                            .border_color(theme.border)
+                            .bg(if self.branch_menu_open {
+                                theme.active
+                            } else {
+                                theme.bg_raised
+                            })
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme.bg_hover))
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                this.toggle_branch_menu(window, cx);
+                            }))
+                            .child(icon(
+                                "icons/branch.svg",
+                                12.,
+                                if self.branch_menu_open {
+                                    theme.active_fg
+                                } else {
+                                    theme.text_2
+                                },
+                            ))
+                            .child(
+                                div()
+                                    .max_w(px(180.))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_size(theme.ui_px(12.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme.text)
+                                    .child(branch),
+                            )
+                            .child(icon("icons/chevron-down.svg", 10., theme.text_3)),
+                    ),
             )
             .children(self.ahead_behind.and_then(|(ahead, behind)| {
                 (ahead > 0 || behind > 0).then(|| {
@@ -2177,6 +2297,7 @@ impl GitPanel {
                             this.tab = tab;
                         }
                         this.branch_menu_open = false;
+                        this.branch_more_open = false;
                         this.refresh_all(cx);
                         cx.notify();
                     }))
@@ -2191,7 +2312,24 @@ impl GitPanel {
                     ))
                     .child(label.to_string())
             }))
-            // right-aligned status text
+            .child(div().flex_1())
+            .into_any_element()
+    }
+
+    /// The branch / sync row, on its own line under the tabs so the branch
+    /// context and the tab strip never crowd each other. The transient status
+    /// message rides the right end of this row.
+    fn branch_bar(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .h(px(40.))
+            .flex_none()
+            .px(theme.space(16.))
+            .flex()
+            .items_center()
+            .gap(theme.space(8.))
+            .border_b_1()
+            .border_color(theme.border)
+            .child(self.branch_controls(theme, cx))
             .child(div().flex_1())
             .children(self.status.as_ref().map(|(message, _)| {
                 div()
@@ -2202,7 +2340,303 @@ impl GitPanel {
                     .text_color(theme.text_3)
                     .child(message.clone())
             }))
+            .children(self.github_account_chip(theme))
+            .child(self.branch_more_controls(theme, cx))
+            .child(self.sync_controls(theme, cx))
             .into_any_element()
+    }
+
+    /// The signed-in GitHub account at the right of the branch row: a quiet
+    /// avatar pill (the reference's account mark), with the login on hover.
+    fn github_account_chip(&self, theme: Theme) -> Option<AnyElement> {
+        let user = self.gh_user.as_ref()?;
+        let login = user.login.clone();
+        Some(
+            div()
+                .id("git-account")
+                .flex_none()
+                .size(px(24.))
+                .rounded_full()
+                .bg(theme.bg_raised)
+                .border_1()
+                .border_color(theme.border)
+                .flex()
+                .items_center()
+                .justify_center()
+                .tooltip(move |_, cx| cx.new(|_| Tooltip::new(login.clone())).into())
+                .child(avatar_image(user.avatar_url.clone(), &user.login, "", theme))
+                .into_any_element(),
+        )
+    }
+
+    /// The Sync split button: the left half runs a full fetch/pull/push, the
+    /// chevron opens the individual steps.
+    fn sync_controls(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let busy = self.pending.is_some();
+        div()
+            .relative()
+            .flex_none()
+            .h(px(28.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.bg_raised)
+            .flex()
+            .items_center()
+            .overflow_hidden()
+            .child(
+                div()
+                    .id("git-sync")
+                    .h_full()
+                    .px(px(9.))
+                    .flex()
+                    .items_center()
+                    .gap(px(5.))
+                    .text_size(theme.ui_px(12.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(if busy { theme.text_3 } else { theme.text })
+                    .when(!busy, |button| {
+                        button
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme.bg_hover))
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.sync_menu_open = false;
+                                this.sync_menu_dismissed_at = None;
+                                this.run_git_action(GitAction::Sync, None, cx);
+                            }))
+                    })
+                    .child(if busy {
+                        spinner("git-sync-spinner", 12., theme.accent, theme)
+                    } else {
+                        icon("icons/refresh.svg", 12., theme.text_2).into_any_element()
+                    })
+                    .child(tr!("git_panel.sync")),
+            )
+            .child(div().w(px(1.)).h(px(18.)).bg(theme.border))
+            .child(
+                div()
+                    .id("git-sync-more")
+                    .h_full()
+                    .px(px(6.))
+                    .flex()
+                    .items_center()
+                    .cursor_pointer()
+                    .when(self.sync_menu_open, |b| b.bg(theme.active))
+                    .hover(|s| s.bg(theme.bg_hover))
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        // The outside-click dismiss runs on mouse-down for the
+                        // same press, so a click within its wake-up window is
+                        // the close, not a reopen.
+                        let just_dismissed = this
+                            .sync_menu_dismissed_at
+                            .take()
+                            .is_some_and(|at| at.elapsed() < Duration::from_millis(200));
+                        if !just_dismissed {
+                            this.sync_menu_open = !this.sync_menu_open;
+                        }
+                        cx.notify();
+                    }))
+                    .child(icon("icons/chevron-down.svg", 11., theme.text_3)),
+            )
+            .children(self.sync_menu(theme, cx))
+            .into_any_element()
+    }
+
+    /// The Sync dropdown: the steps the full Sync runs, exposed individually.
+    fn sync_menu(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.sync_menu_open {
+            return None;
+        }
+        let menu = div()
+            .id("git-sync-popup")
+            .w(px(200.))
+            .py(px(4.))
+            .rounded(px(10.))
+            .popover_surface(theme)
+            .flex()
+            .flex_col()
+            .occlude()
+            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                this.sync_menu_open = false;
+                this.sync_menu_dismissed_at = Some(Instant::now());
+                cx.notify();
+            }))
+            .child(menu_row(
+                "git-sync-fetch",
+                "icons/cloud.svg",
+                &tr!("git_panel.fetch"),
+                theme,
+                cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.sync_menu_open = false;
+                    this.fetch_remote(cx);
+                    cx.notify();
+                }),
+            ))
+            .child(menu_row(
+                "git-sync-pull",
+                "icons/arrow-down.svg",
+                &tr!("git_panel.pull"),
+                theme,
+                cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.sync_menu_open = false;
+                    this.run_git_action(GitAction::Pull, None, cx);
+                }),
+            ))
+            .child(menu_row(
+                "git-sync-push",
+                "icons/upload.svg",
+                &tr!("git_panel.push"),
+                theme,
+                cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.sync_menu_open = false;
+                    this.run_git_action(GitAction::Push, None, cx);
+                }),
+            ))
+            .child(menu_separator(theme))
+            .child(menu_row(
+                "git-sync-merge",
+                "icons/git-merge.svg",
+                &tr!("git_panel.merge"),
+                theme,
+                cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.sync_menu_open = false;
+                    this.run_git_action(GitAction::Merge, None, cx);
+                }),
+            ))
+            .child(menu_row(
+                "git-sync-rebase",
+                "icons/git-compare.svg",
+                &tr!("git_panel.rebase_onto"),
+                theme,
+                cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.sync_menu_open = false;
+                    this.run_git_action(GitAction::Rebase, None, cx);
+                }),
+            ));
+        Some(
+            div()
+                .absolute()
+                .bottom_0()
+                .right_0()
+                .size(px(0.))
+                .child(
+                    anchored()
+                        .position_mode(AnchoredPositionMode::Local)
+                        .anchor(Corner::TopRight)
+                        .offset(point(px(0.), px(6.)))
+                        .snap_to_window()
+                        .child(deferred(menu)),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The "…" branch-actions button beside Sync. Merge-onto / rebase-onto
+    /// and rename live here so the branch picker stays a pure switcher.
+    fn branch_more_controls(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .relative()
+            .flex_none()
+            .child(
+                div()
+                    .id("git-branch-more")
+                    .group(BUTTON_GROUP)
+                    .size(px(28.))
+                    .rounded(px(8.))
+                    .when(self.branch_more_open, |b| b.bg(theme.active))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme.bg_hover))
+                    .tooltip({
+                        let label = tr!("git_panel.tip_more");
+                        move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
+                    })
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.toggle_branch_more(cx);
+                    }))
+                    .child(icon(
+                        "icons/more.svg",
+                        14.,
+                        if self.branch_more_open {
+                            theme.active_fg
+                        } else {
+                            theme.text_2
+                        },
+                    )),
+            )
+            .children(self.branch_more_menu(theme, cx))
+            .into_any_element()
+    }
+
+    /// The branch-actions ("…") dropdown: merge/rebase onto a ref, rename.
+    fn branch_more_menu(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.branch_more_open {
+            return None;
+        }
+        let mut menu = div()
+            .id("git-branch-more-popup")
+            .w(px(220.))
+            .py(px(4.))
+            .rounded(px(10.))
+            .popover_surface(theme)
+            .flex()
+            .flex_col()
+            .occlude()
+            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                this.dismiss_branch_more(cx);
+            }))
+            .child(menu_row(
+                "git-more-merge",
+                "icons/git-merge.svg",
+                &tr!("git_panel.merge_branch"),
+                theme,
+                cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.branch_more_open = false;
+                    this.ref_menu = Some(RefTarget::Merge);
+                    cx.notify();
+                }),
+            ))
+            .child(menu_row(
+                "git-more-rebase",
+                "icons/git-compare.svg",
+                &tr!("git_panel.rebase_onto"),
+                theme,
+                cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.branch_more_open = false;
+                    this.ref_menu = Some(RefTarget::Rebase);
+                    cx.notify();
+                }),
+            ));
+        if let Some(current) = self.branch.clone() {
+            menu = menu.child(menu_separator(theme)).child(menu_row(
+                "git-more-rename",
+                "icons/pencil.svg",
+                &tr!("git_panel.rename_branch"),
+                theme,
+                cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    this.branch_more_open = false;
+                    this.open_branch_prompt(BranchPrompt::Rename(current.clone()), window, cx)
+                }),
+            ));
+        }
+        Some(
+            div()
+                .absolute()
+                .bottom_0()
+                .right_0()
+                .size(px(0.))
+                .child(
+                    anchored()
+                        .position_mode(AnchoredPositionMode::Local)
+                        .anchor(Corner::TopRight)
+                        .offset(point(px(0.), px(6.)))
+                        .snap_to_window()
+                        .child(deferred(menu)),
+                )
+                .into_any_element(),
+        )
     }
 
     /// The persistent failure banner: a friendly title plus the raw command
@@ -2453,7 +2887,8 @@ impl GitPanel {
             .min_h_0()
             .flex()
             .flex_col()
-            .child(self.commit_bar(theme, window, cx))
+            // The list comes first and the composer sits at the bottom, next
+            // to the changes it commits (the reference's arrangement).
             .child(
                 div()
                     .id("git-changes-scroll")
@@ -2462,9 +2897,10 @@ impl GitPanel {
                     .overflow_y_scroll()
                     .flex()
                     .flex_col()
-                    .pb(theme.space(20.))
+                    .pb(theme.space(8.))
                     .children(self.changes_body(theme, cx)),
             )
+            .child(self.commit_bar(theme, window, cx))
             .into_any_element()
     }
 
@@ -2494,9 +2930,9 @@ impl GitPanel {
         div()
             .flex_none()
             .px(theme.space(20.))
-            .pt(theme.space(16.))
-            .pb(theme.space(16.))
-            .border_b_1()
+            .pt(theme.space(12.))
+            .pb(theme.space(14.))
+            .border_t_1()
             .border_color(theme.border)
             .flex()
             .flex_col()
@@ -2826,6 +3262,38 @@ impl GitPanel {
             );
             out.push(self.change_rows(self.unstaged.clone(), false, theme, cx));
         }
+        if has_changes {
+            out.push(
+                div()
+                    .px(theme.space(20.))
+                    .pt(theme.space(6.))
+                    .pb(theme.space(2.))
+                    .flex()
+                    .justify_end()
+                    .child(
+                        div()
+                            .id("git-revert-all")
+                            .h(px(26.))
+                            .px(px(8.))
+                            .rounded(px(6.))
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .cursor_pointer()
+                            .text_size(theme.ui_px(12.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.crit)
+                            .hover(|s| s.bg(theme.crit.opacity(0.1)))
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.pending_confirm = Some(PendingConfirm::RevertAll);
+                                cx.notify();
+                            }))
+                            .child(icon("icons/rotate-ccw.svg", 12., theme.crit))
+                            .child(tr!("git_panel.revert_all")),
+                    )
+                    .into_any_element(),
+            );
+        }
         out
     }
 
@@ -2944,8 +3412,8 @@ impl GitPanel {
     ) -> AnyElement {
         let mut row = div()
             .px(theme.space(20.))
-            .pt(theme.space(20.))
-            .pb(theme.space(8.))
+            .pt(theme.space(14.))
+            .pb(theme.space(6.))
             .border_b_1()
             .border_color(theme.border)
             .flex()
@@ -3131,6 +3599,8 @@ impl GitPanel {
             .hover(|s| s.bg(theme.bg_hover))
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 if let Some(on_open) = this.on_open_file.clone() {
+                    // Leave the Git page — the Review pane takes over.
+                    this.open = false;
                     on_open(path.clone(), window, cx);
                 }
             }))
@@ -4229,7 +4699,7 @@ impl GitPanel {
             menu = menu.child(
                 div()
                     .id(gpui::ElementId::Name(format!("git-label-{name}").into()))
-                    .h(px(26.))
+                    .h(px(28.))
                     .mx(px(4.))
                     .px(px(8.))
                     .rounded(px(6.))
@@ -5022,138 +5492,263 @@ impl GitPanel {
         if !self.branch_menu_open {
             return None;
         }
-        let mut menu = div()
-            .id("git-branch-menu")
-            .absolute()
-            .top(px(42.))
-            .right(px(12.))
-            .w(px(260.))
-            .max_h(px(360.))
+        let needle = self.branch_filter.read(cx).text().trim().to_lowercase();
+        let matches = |name: &str| needle.is_empty() || name.to_lowercase().contains(&needle);
+        let current = self.branch.clone();
+
+        // The scroll container clips vertically; the surface around it clips
+        // horizontally so a long branch name can never spill past the card.
+        let mut list = div()
+            .id("git-branch-scroll")
+            .w_full()
+            .max_h(px(460.))
             .overflow_y_scroll()
-            .py(px(4.))
+            .py(theme.space(4.))
+            .flex()
+            .flex_col();
+
+        list = list.child(
+            div()
+                .mx(theme.space(4.))
+                .mb(theme.space(4.))
+                .px(theme.space(8.))
+                .py(theme.space(6.))
+                .rounded(px(6.))
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.bg_composer)
+                .flex()
+                .items_center()
+                .gap(theme.space(8.))
+                .child(icon("icons/search.svg", 13., theme.text_3))
+                .child(div().flex_1().min_w_0().child(self.branch_filter.clone())),
+        );
+
+        // A dirty worktree can block a switch, so say so before the list.
+        if !self.staged.is_empty() || !self.unstaged.is_empty() {
+            list = list.child(
+                div()
+                    .mx(theme.space(4.))
+                    .mb(theme.space(4.))
+                    .px(theme.space(8.))
+                    .py(theme.space(6.))
+                    .rounded(px(6.))
+                    .bg(theme.warn.opacity(0.1))
+                    .flex()
+                    .items_start()
+                    .gap(theme.space(8.))
+                    .child(icon("icons/info.svg", 13., theme.warn))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(theme.ui_px(12.))
+                            .line_height(theme.ui_px(17.))
+                            .text_color(theme.text_2)
+                            .whitespace_normal()
+                            .child(tr!("git_panel.dirty_switch_warning")),
+                    ),
+            );
+        }
+
+        list = list.child(
+            press(
+                div()
+                    .id("git-menu-new-branch")
+                    .group(BUTTON_GROUP)
+                    .mx(theme.space(4.))
+                    .px(theme.space(8.))
+                    .py(theme.space(6.))
+                    .rounded(px(6.))
+                    .flex()
+                    .items_center()
+                    .gap(theme.space(8.))
+                    .cursor_pointer()
+                    .text_size(theme.ui_px(12.))
+                    .text_color(theme.text)
+                    .hover(|s| s.bg(theme.bg_hover)),
+            )
+            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                this.open_branch_prompt(BranchPrompt::New, window, cx)
+            }))
+            .child(icon("icons/plus.svg", 13., theme.text_3))
+            .child(tr!("git_panel.create_new_branch")),
+        );
+
+        let mut locals: Vec<String> = self
+            .branches
+            .iter()
+            .filter(|b| matches(b.as_str()))
+            .cloned()
+            .collect();
+        locals.sort_by_key(|b| b.to_lowercase());
+
+        let remotes: Vec<String> = self
+            .refs
+            .iter()
+            .filter(|r| r.kind == git::RefKind::Remote && matches(r.name.as_str()))
+            .map(|r| r.name.clone())
+            .collect();
+
+        // "Recent" is only meaningful before a search narrows the list.
+        let recent: Vec<String> = if needle.is_empty() {
+            self.recent_branches.iter().take(5).cloned().collect()
+        } else {
+            Vec::new()
+        };
+
+        if !recent.is_empty() {
+            list = list.child(branch_section_label(&tr!("git_panel.recent_branches"), theme));
+            for branch in &recent {
+                list = list.child(self.branch_row(branch, current.as_deref(), false, theme, cx));
+            }
+        }
+        if !locals.is_empty() {
+            list = list.child(branch_section_label(&tr!("git_panel.local_branches"), theme));
+            for branch in &locals {
+                list = list.child(self.branch_row(branch, current.as_deref(), false, theme, cx));
+            }
+        }
+        if !remotes.is_empty() {
+            list = list.child(branch_section_label(&tr!("git_panel.remote_branches"), theme));
+            for branch in &remotes {
+                list = list.child(self.branch_row(branch, current.as_deref(), true, theme, cx));
+            }
+        }
+        if locals.is_empty() && remotes.is_empty() && recent.is_empty() {
+            list = list.child(
+                div()
+                    .mx(theme.space(4.))
+                    .px(theme.space(8.))
+                    .py(theme.space(6.))
+                    .text_size(theme.ui_px(12.))
+                    .text_color(theme.text_3)
+                    .child(tr!("git_panel.no_matching_branches")),
+            );
+        }
+
+        let menu = div()
+            .id("git-branch-menu")
+            .w(px(320.))
             .rounded(px(10.))
             .popover_surface(theme)
             .flex()
             .flex_col()
+            .overflow_hidden()
             .occlude()
             .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                 this.dismiss_branch_menu(cx);
-            }));
+            }))
+            .child(list);
 
-        // Merge/rebase onto any ref (local, remote, or tag).
-        menu = menu.child(menu_row(
-            "git-menu-merge",
-            "icons/git-merge.svg",
-            &tr!("git_panel.merge_branch"),
-            theme,
-            cx.listener(|this, _: &ClickEvent, _, cx| {
-                this.branch_menu_open = false;
-                this.ref_menu = Some(RefTarget::Merge);
-                cx.notify();
-            }),
-        ));
-        menu = menu.child(menu_row(
-            "git-menu-rebase",
-            "icons/git-compare.svg",
-            &tr!("git_panel.rebase_onto"),
-            theme,
-            cx.listener(|this, _: &ClickEvent, _, cx| {
-                this.branch_menu_open = false;
-                this.ref_menu = Some(RefTarget::Rebase);
-                cx.notify();
-            }),
-        ));
-        menu = menu.child(menu_separator(theme));
+        Some(
+            div()
+                .absolute()
+                // Below the branch bar (tabs 40 + bar 40); the row's 4px
+                // inline margin lands its edge under the branch chip.
+                .top(px(78.))
+                .left(theme.space(12.))
+                .child(deferred(menu))
+                .into_any_element(),
+        )
+    }
 
-        for branch in &self.branches {
-            let selected = self.branch.as_deref() == Some(branch.as_str());
-            let mut row = div()
-                .id(gpui::ElementId::Name(format!("git-branch-{branch}").into()))
-                .h(px(28.))
-                .mx(px(4.))
-                .px(px(8.))
-                .rounded(px(6.))
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .cursor_pointer()
-                .text_size(theme.ui_px(12.))
-                .when(selected, |row| row.bg(theme.active))
-                .when(!selected, |row| row.hover(|s| s.bg(theme.overlay)))
-                .on_click(cx.listener({
-                    let branch = branch.clone();
-                    move |this, _: &ClickEvent, _, cx| this.checkout_branch(branch.clone(), cx)
-                }))
-                .child(icon("icons/branch.svg", 11., theme.text_3))
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex_1()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_color(if selected {
-                            theme.active_fg
-                        } else {
-                            theme.text_2
-                        })
-                        .child(branch.clone()),
-                );
-            if selected {
-                row = row.child(icon("icons/check.svg", 11., theme.accent));
-            } else {
-                // Delete a non-current branch. The safe `-d` is tried first; an
-                // unmerged branch then asks before the forced `-D`.
-                row = row.child(
-                    div()
-                        .id(gpui::ElementId::Name(
-                            format!("git-branch-delete-{branch}").into(),
-                        ))
-                        .size(px(18.))
-                        .rounded(px(4.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .cursor_pointer()
-                        .hover(|s| s.bg(theme.overlay))
-                        .tooltip({
-                            let label = tr!("git_panel.tip_delete_branch");
-                            move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
-                        })
-                        .on_click(cx.listener({
-                            let branch = branch.clone();
-                            move |this, _: &ClickEvent, _, cx| {
-                                cx.stop_propagation();
-                                this.delete_branch(branch.clone(), cx);
-                            }
-                        }))
-                        .child(icon("icons/trash.svg", 11., theme.text_3)),
-                );
-            }
-            menu = menu.child(row);
+    /// One row in the branch picker: the name, a `Current` marker for HEAD,
+    /// and a hover-revealed delete for a non-current local branch.
+    fn branch_row(
+        &self,
+        name: &str,
+        current: Option<&str>,
+        remote: bool,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let selected = !remote && current == Some(name);
+        let branch = name.to_string();
+        let branch_delete = name.to_string();
+        let mut row = div()
+            .id(gpui::ElementId::Name(format!("git-branch-{name}").into()))
+            .group("git-branch-row")
+            .mx(theme.space(4.))
+            .px(theme.space(8.))
+            .py(theme.space(6.))
+            .rounded(px(6.))
+            .flex()
+            .items_center()
+            .gap(theme.space(8.))
+            .cursor_pointer()
+            .text_size(theme.ui_px(12.))
+            .when(selected, |row| {
+                row.bg(theme.active).text_color(theme.active_fg)
+            })
+            .when(!selected, |row| {
+                row.text_color(theme.text).hover(|s| s.bg(theme.bg_hover))
+            })
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                if selected {
+                    this.dismiss_branch_menu(cx);
+                } else {
+                    this.checkout_branch_ref(branch.clone(), remote, cx);
+                }
+            }))
+            .child(icon(
+                if remote {
+                    "icons/cloud.svg"
+                } else {
+                    "icons/branch.svg"
+                },
+                13.,
+                if selected {
+                    theme.active_fg
+                } else {
+                    theme.text_3
+                },
+            ))
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .child(name.to_string()),
+            );
+        if selected {
+            row = row.child(
+                div()
+                    .flex_none()
+                    .text_size(theme.ui_px(12.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.accent)
+                    .child(tr!("git_panel.current")),
+            );
+        } else if !remote {
+            // Delete a non-current local branch. The safe `-d` is tried first;
+            // an unmerged branch then asks before the forced `-D`.
+            row = row.child(
+                div()
+                    .id(gpui::ElementId::Name(
+                        format!("git-branch-delete-{name}").into(),
+                    ))
+                    .size(px(18.))
+                    .rounded(px(6.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .opacity(0.)
+                    .group_hover("git-branch-row", |s| s.opacity(1.))
+                    .hover(|s| s.bg(theme.overlay))
+                    .tooltip({
+                        let label = tr!("git_panel.tip_delete_branch");
+                        move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
+                    })
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.delete_branch(branch_delete.clone(), cx);
+                    }))
+                    .child(icon("icons/trash.svg", 12., theme.text_3)),
+            );
         }
-
-        menu = menu.child(menu_separator(theme));
-        menu = menu.child(menu_row(
-            "git-menu-new-branch",
-            "icons/plus.svg",
-            &tr!("git_panel.new_branch"),
-            theme,
-            cx.listener(|this, _: &ClickEvent, window, cx| {
-                this.open_branch_prompt(BranchPrompt::New, window, cx)
-            }),
-        ));
-        if let Some(current) = self.branch.clone() {
-            menu = menu.child(menu_row(
-                "git-menu-rename-branch",
-                "icons/pencil.svg",
-                &tr!("git_panel.rename_branch"),
-                theme,
-                cx.listener(move |this, _: &ClickEvent, window, cx| {
-                    this.open_branch_prompt(BranchPrompt::Rename(current.clone()), window, cx)
-                }),
-            ));
-        }
-        Some(menu.into_any_element())
+        row.into_any_element()
     }
 
     /// The ref picker opened by "Merge branch…" / "Rebase onto…".
@@ -5206,13 +5801,13 @@ impl GitPanel {
                             .id(gpui::ElementId::Name(
                                 format!("git-merge-mode-{key}").into(),
                             ))
-                            .h(px(22.))
-                            .px(px(8.))
-                            .rounded(px(6.))
+                            .h(px(28.))
+                            .px(px(10.))
+                            .rounded(px(8.))
                             .flex()
                             .items_center()
                             .cursor_pointer()
-                            .text_size(theme.ui_px(11.))
+                            .text_size(theme.ui_px(12.))
                             .when(selected, |s| s.bg(theme.active).text_color(theme.active_fg))
                             .when(!selected, |s| {
                                 s.text_color(theme.text_3)
@@ -5524,6 +6119,11 @@ impl GitPanel {
                     tr!("git_panel.merge_pull"),
                 )
             }
+            PendingConfirm::RevertAll => (
+                tr!("git_panel.confirm_revert_title"),
+                tr!("git_panel.confirm_revert_body"),
+                tr!("git_panel.revert_all"),
+            ),
         };
         let card = div()
             .w_full()
@@ -5634,8 +6234,10 @@ impl Render for GitPanel {
             .font_family(theme::ui_font_family())
             .flex()
             .flex_col()
-            .child(self.header(theme, cx))
             .child(self.tab_bar(theme, cx))
+            // The branch / sync row sits under the tabs: the reference keeps
+            // the branch context off the tab row so neither crowds the other.
+            .child(self.branch_bar(theme, cx))
             // Failures stay pinned under the tabs (never inside the scrolling
             // body) so push/pull/merge errors are readable on every tab.
             .children(self.failure_banner(theme, cx))
@@ -5644,8 +6246,8 @@ impl Render for GitPanel {
             // signal regardless of tab.
             .children(self.operation_bar(theme, cx))
             .child(content)
-            .children(self.branch_menu(theme, cx))
             .children(self.ref_picker_popup(theme, cx))
+            .children(self.branch_menu(theme, cx))
             .children(self.file_actions_menu(theme, cx))
             .children(self.label_picker_popup(theme, cx))
             .children(self.stage_prompt_popup(theme, cx))
@@ -5767,6 +6369,19 @@ fn menu_separator(theme: Theme) -> AnyElement {
         .into_any_element()
 }
 
+/// A quiet section header in the branch picker ("Recent branches", …).
+fn branch_section_label(label: &str, theme: Theme) -> AnyElement {
+    div()
+        .px(theme.space(12.))
+        .pt(theme.space(10.))
+        .pb(theme.space(4.))
+        .text_size(theme.ui_px(10.5))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(theme.text_3)
+        .child(label.to_string())
+        .into_any_element()
+}
+
 /// The glyph for a ref kind in the picker.
 fn ref_icon(kind: git::RefKind) -> &'static str {
     match kind {
@@ -5847,9 +6462,9 @@ fn filter_chip(
 ) -> AnyElement {
     div()
         .id(id)
-        .h(px(22.))
-        .px(px(8.))
-        .rounded(px(6.))
+        .h(px(28.))
+        .px(px(10.))
+        .rounded(px(8.))
         .border_1()
         .border_color(theme.border)
         .bg(theme.bg_raised)
@@ -5857,12 +6472,12 @@ fn filter_chip(
         .items_center()
         .gap(px(5.))
         .cursor_pointer()
-        .text_size(theme.ui_px(11.))
+        .text_size(theme.ui_px(12.))
         .text_color(theme.text_2)
         .hover(|s| s.bg(theme.bg_hover).text_color(theme.text))
         .on_click(listener)
         .child(label.to_string())
-        .child(icon(trailing, 9., theme.text_3))
+        .child(icon(trailing, 11., theme.text_3))
         .into_any_element()
 }
 
@@ -5879,9 +6494,9 @@ fn filter_toggle_chip(
 ) -> AnyElement {
     div()
         .id(id)
-        .h(px(22.))
-        .px(px(8.))
-        .rounded(px(6.))
+        .h(px(28.))
+        .px(px(10.))
+        .rounded(px(8.))
         .border_1()
         .border_color(if active { theme.accent } else { theme.border })
         .when(active, |chip| {
@@ -5895,10 +6510,10 @@ fn filter_toggle_chip(
         .items_center()
         .gap(px(5.))
         .cursor_pointer()
-        .text_size(theme.ui_px(11.))
+        .text_size(theme.ui_px(12.))
         .on_click(listener)
         .children(
-            glyph.map(|path| icon(path, 10., if active { theme.send_fg } else { theme.text_3 })),
+            glyph.map(|path| icon(path, 11., if active { theme.send_fg } else { theme.text_3 })),
         )
         .child(label.to_string())
         .into_any_element()
@@ -6994,9 +7609,9 @@ fn avatar_hue(email: &str, name: &str) -> f32 {
     HUES[(hash % HUES.len() as u64) as usize] / 360.
 }
 
-/// The Changes-tab section heading: an uppercase label paired with a rounded
-/// count chip, so the number reads as quiet metadata instead of trailing
-/// punctuation in the label itself.
+/// The Changes-tab section heading: a sentence-case label with the count set
+/// inline as quiet metadata (no count pill), the quieter head the reference
+/// uses.
 fn section_title(label: &str, count: usize, theme: Theme) -> AnyElement {
     div()
         .flex()
@@ -7004,24 +7619,15 @@ fn section_title(label: &str, count: usize, theme: Theme) -> AnyElement {
         .gap(px(6.))
         .child(
             div()
-                .text_size(theme.ui_px(11.))
+                .text_size(theme.ui_px(12.))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_3)
-                .child(label.to_uppercase()),
+                .text_color(theme.text)
+                .child(label.to_string()),
         )
         .child(
             div()
-                .h(px(17.))
-                .min_w(px(17.))
-                .px(px(5.))
-                .rounded_full()
-                .bg(theme.overlay)
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_size(theme.ui_px(10.5))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_2)
+                .text_size(theme.ui_px(11.5))
+                .text_color(theme.text_3)
                 .child(count.to_string()),
         )
         .into_any_element()

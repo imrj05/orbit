@@ -108,7 +108,11 @@ list into the release section, so the credit ships with the release notes.
 2. Keep the change focused; unrelated cleanup belongs in its own PR.
 3. Fill in the pull-request template checklist.
 4. Make sure build, tests, and clippy pass locally.
-5. Push and open the PR. Link the issue it addresses.
+5. Update the docs in the same PR: `INTENT.md` → *Implementation status* (and a `D#`
+   decision if the architecture changed), the `README.md` features/roadmap, and an
+   `[Unreleased]` `CHANGELOG.md` entry. A shipped feature is not done until the docs
+   describe it.
+6. Push and open the PR. Link the issue it addresses.
 
 A maintainer will review. Expect comments on architecture fit, performance, and
 the invariants above.

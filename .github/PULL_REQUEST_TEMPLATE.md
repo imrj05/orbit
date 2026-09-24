@@ -25,7 +25,9 @@
 - [ ] `pi` remains the only agent runtime (JSONL RPC over stdio)
 - [ ] No new dependency without a stated reason
 - [ ] No `unsafe` without a comment
-- [ ] Docs updated if behavior, architecture, or a decision changed
+- [ ] `INTENT.md` → *Implementation status* updated (and a `D#` decision added or revised if the architecture changed)
+- [ ] `README.md` features/roadmap and `CHANGELOG.md` `[Unreleased]` updated
+- [ ] Other docs updated if behavior or a convention changed
 
 ## Screenshots / recordings
 

@@ -157,17 +157,10 @@ impl UsagePage {
         div()
             .h(px(44.))
             .flex_none()
-            // The page spans the window when the sessions sidebar is collapsed,
-            // so the leading inset clears the macOS traffic lights and the
-            // sidebar/history controls overlaid in the titlebar. The right end
-            // clears the app's own caption buttons on the platforms that draw
-            // them (see `platform::draws_window_controls`).
+            // The page now sits in a card below the top bar, which owns the
+            // caption buttons; the header only needs the normal page inset.
             .pl(px(self.header_leading()))
-            .pr(px(if crate::platform::draws_window_controls() {
-                crate::platform::WINDOW_CONTROLS_W
-            } else {
-                12.
-            }))
+            .pr(px(12.))
             .flex()
             .items_center()
             .gap_2()

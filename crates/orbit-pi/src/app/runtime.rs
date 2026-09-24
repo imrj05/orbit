@@ -147,15 +147,14 @@ impl OrbitApp {
 
     /// Forget the bridge cursor and schedule an immediate poll. Called when
     /// the active session (and therefore the entry-id space) changes. The
-    /// workflow mode and plan progress are per session, so they resolve here
-    /// too: a pending New Task choice is committed to the new id, otherwise
-    /// the stored mode is loaded.
+    /// workflow mode is per session, so it resolves here too: a pending New
+    /// Task choice is committed to the new id, otherwise the stored mode is
+    /// loaded.
     pub(super) fn reset_quota_entries(&mut self) {
         self.quota_entries_cursor = None;
         self.quota_entries_inflight = false;
         self.quota_entries_bootstrap = QUOTA_ENTRY_BOOTSTRAP_POLLS;
         self.quota_entries_next_poll = Instant::now();
-        self.workflow_todos.reset_for(self.session_id.as_deref());
         if let Some(id) = self.session_id.clone() {
             match self.workflow_pending.take() {
                 Some(mode) => {

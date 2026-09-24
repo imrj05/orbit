@@ -35,7 +35,7 @@ Usage — requests, tokens, cost, and cache, read from your own sessions:
 **Chat and transcript**
 
 - Chat-style agent sessions — composer with model selection, thinking effort, follow-up queueing, mid-run steering, cancel, and streaming replies
-- **Workflow modes** — scope a session to **Plan**, **Build**, or **Ask**: Plan and Ask are read-only (write tools disabled, bash gated), and a plan becomes a live progress strip above the composer that advances as steps complete
+- **Workflow modes** — scope a session to **Plan**, **Build**, or **Ask**: Plan and Ask are read-only (write tools disabled, bash gated), so you can explore and plan before switching to Build
 - GPU-rendered transcript — virtualized so cost is independent of message count, with stick-to-latest streaming and coalesced commits
 - GFM markdown and syntax-highlighted code; highlighting is paint-only so streaming code blocks never reflow, and Mermaid fences stay copyable code blocks
 - In-transcript find (⌘F) and a full-window image lightbox
@@ -120,7 +120,7 @@ issue before starting.
 
 | Feature | Area | Description | Status | Tracking |
 | --- | --- | --- | --- | --- |
-| Workflow modes | Composer | Start a session scoped to **Plan Mode**, **Build Mode**, or **Ask Mode** instead of one undifferentiated chat, with a progress strip above the composer. | Shipped | — |
+| Workflow modes | Composer | Start a session scoped to **Plan Mode**, **Build Mode**, or **Ask Mode** instead of one undifferentiated chat. | Shipped | — |
 | Follow-up on settle | Transcript | Show a queued follow-up inline once a run ends, not only in the compose queue. | Planned | — |
 | Suggested follow-ups | Transcript | Propose 2–3 context-grounded next prompts as composer inserts after a run settles. | Proposed | [#10](https://github.com/imrj05/orbit/issues/10) |
 | AI review agent | Review | Run a read-only reviewer over current changes or the whole project; findings render in the Review pane. | Shipped | [#6](https://github.com/imrj05/orbit/issues/6) |

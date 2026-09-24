@@ -8,54 +8,124 @@ adaptive
 
 A native desktop surface (macOS first, Windows/Linux later) drawn with GPUI — Zed's GPU-composited, keyboard-first workbench language. No webview, no DOM. The `adaptive` value marks it as one cross-platform native codebase rather than a web app.
 
+Orbit is a native application first. Its interaction model, layout behavior, keyboard navigation, focus management, scrolling, panels, menus, and window behavior should feel like a professional desktop application rather than a web application running inside a desktop shell.
+
+---
+
 ## Users
 
-Pi coding agent users — developers who already run the pi CLI and want a fast desktop GUI for their agent sessions. They arrive with existing agent knowledge (models, thinking effort, sessions, tool access); the UI can use pi's own terminology without teaching it. Released publicly, not a personal-only tool, so it cannot assume access to the author's machine, providers, or habits.
+Pi coding agent users — developers who already run the pi CLI and want a fast desktop GUI for their agent sessions.
+
+They arrive with existing agent knowledge (models, thinking effort, sessions, tool access); the UI can use pi's own terminology without teaching it.
+
+Released publicly, not a personal-only tool, so it cannot assume access to the author's machine, providers, models, paths, credentials, or habits.
+
+The primary user is a developer who may spend hours inside Orbit during long-running coding sessions. The interface therefore prioritizes scanability, information density, keyboard interaction, stable spatial layout, performance, and clear agent state over decorative visual expression.
+
+---
 
 ## Product Purpose
 
-Orbit is a native desktop GUI client for the pi coding agent — a chat-style workbench rendered entirely in Rust by GPUI, the same GPU-accelerated UI framework Zed is built on. Every pixel (transcript, markdown, diffs, charts, chrome) is drawn by the GPU: no browser, no webview, no Node daemon. The app speaks the pi CLI's native RPC protocol directly over stdio, so the agent runtime is the same `pi` binary users already know. Success: pi users reach for Orbit instead of (or alongside) the terminal — and feel the difference, from sub-frame scroll on 10k-message transcripts to zero web overhead.
+Orbit is a native desktop workbench for the pi coding agent — a chat and development workspace rendered entirely in Rust by GPUI, the same GPU-accelerated UI framework Zed is built on.
 
-## Positioning
+Every pixel (transcript, markdown, diffs, charts, chrome) is drawn by the GPU: no browser, no webview, no Node daemon.
 
-A native, Waku-style workbench for pi — all-Rust, GPU-first, pi's own data underneath. Sessions created in Orbit and in the CLI are the same sessions (`~/.pi/agent/sessions/`); the model catalog, thinking levels, and persistence are pi's own, presented through a pure-Rust client instead of the SDK daemon. Not a generic chat frontend wrapping an API; not an embedded browser.
+The app speaks the pi CLI's native RPC protocol directly over stdio, so the agent runtime is the same `pi` binary users already know.
 
-## Operating Context
+Orbit is not a generic AI chat frontend. The transcript is one surface of a broader development workbench that connects:
 
-Local-first, long-running desktop sessions. The app spawns the pi CLI as a child process and speaks its newline-delimited JSON RPC over stdio — one process per open session — with full local tool access (file edits, commands). Long streaming tasks are the norm: the rendering path is built for them (virtualized transcript, coalesced stream commits, paint-only streaming highlights).
+- Agent sessions
+- Projects
+- Files
+- Git
+- Models
+- Thinking effort
+- Tools
+- Agent activity
+- Reviews
+- Usage
+- Extensions
+- Future terminals and parallel agents
 
-## Capabilities and Constraints
-
-**Current:** one active session per view with up to six parked background sessions running concurrently; prompt / steer / follow-up / abort with streaming; **workflow modes** — a session is scoped **Plan**, **Build**, or **Ask** (per session, from the New Task page or the composer chip), with Plan/Ask enforced read-only by a bundled pi extension that drops the write tools and gates bash to a read-only allowlist, and a plan-progress strip above the composer that advances as steps complete; session list grouped by an Orbit-owned project list (add a folder by working in it, remove it from the sidebar without touching pi's sessions), with reopen and clone; **in-transcript find** and an **image lightbox**; an **Explorer** — a left project panel showing the workspace as a gitignore-aware file tree (expand/collapse, filter, hidden-files toggle, git status badges, keyboard nav) and a full-page **Files** editor (editable, syntax-highlighted code and text with debounced autosave and dirty/conflict status, rendered Markdown, images, honest binary/oversized/non-UTF-8 states, tabs, open-in-editor/reveal, and file operations — New File / New Folder / Rename / Delete-to-Trash with names validated before disk) model selection from the pi runtime's catalog (`get_available_models`) with favorites shared across the picker and a dedicated **Models** page; thinking-effort selection from the model's supported levels (`get_available_thinking_levels`); tool, bash, and question activity rendered per-tool; **access modes** (Supervised / Auto-accept edits / Full access) enforced by a bundled pi extension that confirms mutating tool calls through pi's `extension_ui_request` dialog — a confirmation guard, not a sandbox (pi ships none), and no "Auto" AI-reviewer mode until pi exposes a reviewer API to extensions; an **AI review agent** runs a read-only reviewer over the selected change set or the whole project on its own Ask-mode pi process (launched with `ORBIT_REVIEW=1` so the guard never blocks its read-only `git diff`), rendering severity-chipped findings in the Review pane and never touching the chat session.
-
-**Roadmap (confirmed direction):** the all-Rust migration is complete — pi CLI RPC over stdio, shell/theme, session data, chat/markdown/tools, the workbench pages, and packaging all ship — and workflow modes land with this release. From here the direction deepens the workbench rather than the single-session chat:
-
-- **Follow-up visibility** — a queued follow-up message is shown inline as the run settles, not only in the compose queue.
-- **AI agent review** — an "Auto" reviewer for access modes, once pi exposes a reviewer API to extensions. Access modes ship today as a confirmation guard, not a sandbox.
-- **GitHub client** — a full in-app page to browse and manage repositories, issues, pull requests, and reviews; the issues and PRs tabs ship today.
-- **Community pi extensions** — install and run third-party extensions other pi users publish, from inside Orbit.
-- **Voice dictation** — speak prompts into the composer.
-- **Workbench depth** — diff review, an integrated terminal, and multiple agents/sessions running in parallel.
-- **Explorer gaps** — quick-open, sticky scroll, and directory folding.
-- **Conversation fork/rewind** — clone ships today; rewind needs entry ids from pi.
+Success: pi users reach for Orbit instead of (or alongside) the terminal and feel the difference in daily work — from sub-frame scroll on 10k-message transcripts to responsive keyboard navigation, contextual actions, fast file interaction, and zero web overhead.
 
 The single-session chat is a waypoint, not the destination.
 
-**Constraints:** the pi CLI must be installed and authenticated — it is the only agent runtime (the Node daemon and SSE surface are removed). GPUI is pre-1.0: pin the crates.io release and expect deliberate, scheduled API upgrades rather than always-latest. Mermaid diagram rendering is not native to GPUI; until a renderer lands (fallback code block; graphviz or snapshot-based options under evaluation) diagrams are not presented natively. Session truth lives in pi's session files; released publicly, so nothing may hardcode the author's providers, models, or machine paths.
+---
 
-**Terminology:** model, thinking effort, full access, session, project — as used in pi.
+## Positioning
 
-## Brand Commitments
+Orbit is a native desktop workbench for the pi coding agent.
 
-Name: **Orbit** (final). Sidebar lockup reads "Orbit Pi".
+It brings pi's existing agent runtime, sessions, models, tools, and project context into a fast GPU-rendered desktop environment.
 
-## Evidence on Hand
+Orbit is not a replacement agent runtime and not a generic AI chat client.
 
-None in-repo beyond the product's own UI copy. The sidebar still carries Intent UI template placeholder assets (stock avatar image, intentui.com logo URL) — these are **not** brand assets and are marked for replacement. No testimonials, screenshots, or launch material exist yet; future work must not fabricate any.
+The pi CLI remains the source of truth for agent execution, sessions, models, and persistence. Orbit provides a native interface and workbench around that runtime.
 
-## Product Principles
+Orbit differentiates through:
 
-1. **Trust the agent's truth.** Every control and indicator reflects the real pi process/session state (RPC events, on-disk session files); nothing decorative that pretends to be functional.
-2. **Speak pi's language.** Users already know models, thinking levels, and sessions — no re-explaining, no renamed concepts.
-3. **Respect the operator.** This is a work tool for long sessions: scanability, density, and native expectations outrank expression. Rendering performance is a product requirement, not a follow-up.
-4. **Grow toward the workbench.** Decisions should leave room for parallel sessions, diff review, file tree, and terminal rather than baking in a single-chat assumption.
+- Native Rust + GPUI rendering
+- Direct pi CLI RPC over stdio
+- Local-first operation
+- Long-session performance
+- Keyboard-first workflows
+- Integrated project and file context
+- Agent activity visibility
+- Git and development workflows
+- Native desktop interaction
+- Extensible workbench architecture
+
+Sessions created in Orbit and in the CLI are the same sessions (`~/.pi/agent/sessions/`).
+
+The model catalog, thinking levels, and persistence are pi's own, presented through a pure-Rust client rather than an SDK daemon.
+
+---
+
+## UX Philosophy
+
+Orbit should feel like a native professional developer tool rather than a web-based AI chat application.
+
+The UX prioritizes:
+
+1. **Workspace over chat** — the primary experience is a persistent development workspace containing sessions, agent activity, files, Git, and contextual tools.
+2. **Keyboard-first interaction** — frequent actions should have keyboard paths and be discoverable through the command palette.
+3. **Contextual complexity** — secondary actions should appear when relevant instead of permanently occupying the interface.
+4. **High information density** — show useful information without creating visual clutter.
+5. **Progressive disclosure** — detailed tool output, diffs, metadata, and activity should be expandable rather than permanently visible.
+6. **Stable spatial memory** — navigation, panels, and frequently used controls should remain predictable between sessions.
+7. **Native behavior** — focus, selection, scrolling, resizing, shortcuts, menus, and window behavior should feel native to a desktop application.
+8. **Quiet chrome** — application chrome should support the task rather than compete with the active workspace.
+9. **Performance as UX** — responsiveness during long-running agent tasks is part of the product experience.
+10. **Truth over decoration** — visual indicators must represent real application or pi state.
+
+Orbit should feel dense and capable without feeling cramped.
+
+---
+
+## Information Architecture
+
+Orbit should be structured around a persistent workbench rather than a collection of independent pages.
+
+The primary information model is:
+
+```text
+Workspace
+├── Projects
+│   ├── Sessions
+│   ├── Files
+│   └── Git
+│
+├── Agent
+│   ├── Sessions
+│   ├── Models
+│   ├── Thinking effort
+│   ├── Tools
+│   └── Activity
+│
+├── Insights
+│   └── Usage
+│
+└── System
+    ├── Extensions
+    └── Settings

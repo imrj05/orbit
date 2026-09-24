@@ -3,7 +3,7 @@
  *
  * A session runs in one of three workflow modes. This module answers, for a
  * given mode, which tools stay active, whether a tool call must be blocked,
- * what prompt guidance to inject, and how a plan becomes a todo list.
+ * and what prompt guidance to inject.
  *
  *   plan   read-only exploration; produce a numbered plan under a `Plan:` header
  *   build  normal agent work (default)
@@ -22,9 +22,6 @@ export const DEFAULT_MODE = "build";
 
 /** Every mode the app can write. Kept in sync with `crate::workflow`. */
 export const MODES = ["plan", "build", "ask"];
-
-/** Custom session-entry type the extension appends for todo progress. */
-export const TODO_ENTRY_TYPE = "orbit:workflow-todos";
 
 /** Custom session-entry type recording the mode (survives resume). */
 export const WORKFLOW_ENTRY_TYPE = "orbit:workflow";
@@ -155,68 +152,11 @@ export function blockReason(mode, toolName, input) {
   return undefined;
 }
 
-/** Strip markdown emphasis/backticks and a leading verb from a step. */
-export function cleanStepText(text) {
-  let cleaned = String(text ?? "")
-    .replace(/\*{1,2}([^*]+)\*{1,2}/g, "$1")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(
-      /^(Use|Run|Execute|Create|Write|Read|Check|Verify|Update|Modify|Add|Remove|Delete|Install|Implement|Refactor|Fix)\s+(the\s+)?/i,
-      "",
-    )
-    .replace(/[.;:]+$/, "")
-    .trim();
-  if (cleaned.length > 160) cleaned = `${cleaned.slice(0, 159)}…`;
-  return cleaned;
-}
-
-/**
- * Extract numbered steps from the last `Plan:` section of an assistant
- * message. Returns `[]` when there is no header, so a stray numbered list is
- * never mistaken for a plan.
- */
-export function extractPlanSteps(text) {
-  const src = String(text ?? "");
-  const header = /^[ \t]*(?:\*\*)?[ \t]*plan\b[^\n]*:[ \t]*(?:\*\*)?[ \t]*$/im.exec(src);
-  if (!header) return [];
-  const body = src.slice(header.index + header[0].length);
-  const steps = [];
-  for (const line of body.split("\n")) {
-    const match = /^\s*(\d+)[.)]\s+(.+?)\s*$/.exec(line);
-    if (match) {
-      steps.push({ step: Number(match[1]), text: cleanStepText(match[2]), done: false });
-    }
-  }
-  return steps;
-}
-
-/**
- * Apply `[DONE:n]` markers found in `text` to `todos`, in place. Returns how
- * many steps changed — the caller persists only on a change.
- */
-export function markCompletedSteps(text, todos) {
-  const src = String(text ?? "");
-  const done = new Set();
-  const re = /\[DONE:(\d+)\]/gi;
-  let match;
-  while ((match = re.exec(src)) !== null) done.add(Number(match[1]));
-  let changed = 0;
-  for (const todo of todos) {
-    if (!todo.done && done.has(todo.step)) {
-      todo.done = true;
-      changed += 1;
-    }
-  }
-  return changed;
-}
-
 /**
  * The system-prompt addendum for a mode, or `""` when there is nothing to add
- * (Build with no plan keeps pi's own prompt untouched).
+ * (Build keeps pi's own prompt untouched).
  */
-export function guidance(mode, todos = []) {
+export function guidance(mode) {
   const resolved = normalizeMode(mode);
   if (resolved === "plan") {
     return [
@@ -236,13 +176,5 @@ export function guidance(mode, todos = []) {
       "Do not produce an implementation plan unless the user asks for one.",
     ].join("\n");
   }
-  const remaining = todos.filter((todo) => !todo.done);
-  if (remaining.length === 0) return "";
-  const list = remaining.map((todo) => `${todo.step}. ${todo.text}`).join("\n");
-  return [
-    "[WORKFLOW: BUILD MODE — EXECUTING PLAN]",
-    "Execute the remaining plan steps in order. After finishing a step, include a `[DONE:n]` tag for its number in your reply.",
-    "Remaining steps:",
-    list,
-  ].join("\n");
+  return "";
 }

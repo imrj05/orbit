@@ -1844,13 +1844,10 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
 
         if !step.text.is_empty() {
             // Live rows never collapse code blocks — a growing block's tail
-            // edge must stay visible while it streams. The workflow
-            // extension's `[DONE:n]` markers are stripped here too, so they
-            // never flash mid-stream before the settled message replaces the
-            // live step.
-            let prose = crate::transcript::strip_completion_markers(&step.text);
+            // edge must stay visible while it streams.
+            let prose = step.text.as_str();
             content = content.child(div().w_full().min_w_0().pt(px(4.)).child(render_prose(
-                &prose,
+                prose,
                 ix,
                 (step_ix as u64 + 1) * 4096,
                 theme,

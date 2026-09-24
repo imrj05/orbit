@@ -16,21 +16,9 @@
 //! The bundled workflow extension (`contrib/orbit-workflow-extension/`) reads
 //! that file fresh on every agent hook, so changing the mode re-arms a live
 //! session with no restart — the same contract the access guard relies on.
-//!
-//! Plan progress rides a second channel, mirroring the quota bridge: the
-//! extension parses the plan and `[DONE:n]` markers, appends an
-//! `orbit:workflow-todos` custom session entry whenever the snapshot changes,
-//! and [`WorkflowTodos`] reduces those entries into UI state. Orbit parses no
-//! plan text itself — the extension owns that truth.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-
-use serde_json::Value;
-
-/// Custom session-entry type the workflow extension appends. The payload is
-/// `{"todos": [{"step": u32, "text": str, "done": bool}, …]}`.
-pub const TODO_ENTRY_TYPE: &str = "orbit:workflow-todos";
 
 /// The workflow a session is scoped to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -101,12 +89,6 @@ impl WorkflowMode {
     pub fn is_read_only(self) -> bool {
         matches!(self, Self::Plan | Self::Ask)
     }
-
-    /// Whether the bottom todo bar applies to this mode. Ask answers questions
-    /// and has no plan to track.
-    pub fn tracks_todos(self) -> bool {
-        matches!(self, Self::Plan | Self::Build)
-    }
 }
 
 // ── per-session store ───────────────────────────────────────────────────────
@@ -172,104 +154,9 @@ pub fn prune(known_session_ids: &[String]) {
     }
 }
 
-// ── plan progress ───────────────────────────────────────────────────────────
-
-/// One step of a session's plan.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkflowTodo {
-    /// The step number the model tags with `[DONE:n]` (1-based).
-    pub step: u32,
-    /// The step text, already cleaned by the extension.
-    pub text: String,
-    /// Whether the extension has seen a completing marker for this step.
-    pub done: bool,
-}
-
-/// Reducer over the extension's `orbit:workflow-todos` session entries.
-///
-/// Like [`crate::quota::QuotaManager`], this performs no I/O: the GPUI layer
-/// polls `get_entries` and hands the slice here. The newest matching entry
-/// wins, because the extension appends one entry per changed snapshot.
-#[derive(Default)]
-pub struct WorkflowTodos {
-    todos: Vec<WorkflowTodo>,
-    session: Option<String>,
-}
-
-impl WorkflowTodos {
-    /// Point the reducer at a session, clearing state when it actually
-    /// changes so one session's plan never paints on another.
-    pub fn reset_for(&mut self, session: Option<&str>) {
-        if self.session.as_deref() != session {
-            self.session = session.map(str::to_string);
-            self.todos.clear();
-        }
-    }
-
-    /// Merge the newest bridge snapshot from a `get_entries` response. Returns
-    /// `true` when the list changed and the caller should repaint.
-    pub fn on_entries(&mut self, entries: &[Value]) -> bool {
-        let snapshot = entries.iter().rev().find(|entry| {
-            entry.get("type").and_then(Value::as_str) == Some("custom")
-                && entry.get("customType").and_then(Value::as_str) == Some(TODO_ENTRY_TYPE)
-        });
-        let Some(data) = snapshot.and_then(|entry| entry.get("data")) else {
-            return false;
-        };
-        let todos = parse_todos(data);
-        if todos == self.todos {
-            return false;
-        }
-        self.todos = todos;
-        true
-    }
-
-    pub fn todos(&self) -> &[WorkflowTodo] {
-        &self.todos
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.todos.is_empty()
-    }
-
-    /// `(done, total)` — the numbers behind the progress bar.
-    pub fn progress(&self) -> (usize, usize) {
-        let done = self.todos.iter().filter(|todo| todo.done).count();
-        (done, self.todos.len())
-    }
-
-    /// The first not-done step — what the collapsed bar names as "Next".
-    pub fn current(&self) -> Option<&WorkflowTodo> {
-        self.todos.iter().find(|todo| !todo.done)
-    }
-
-    /// Whether every step is complete (and there is at least one).
-    pub fn all_done(&self) -> bool {
-        !self.todos.is_empty() && self.todos.iter().all(|todo| todo.done)
-    }
-}
-
-fn parse_todos(data: &Value) -> Vec<WorkflowTodo> {
-    data.get("todos")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| {
-                    let text = item.get("text")?.as_str()?.to_string();
-                    let step = item.get("step").and_then(Value::as_u64).unwrap_or(0) as u32;
-                    let done = item.get("done").and_then(Value::as_bool).unwrap_or(false);
-                    Some(WorkflowTodo { step, text, done })
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     fn temp_path(tag: &str) -> PathBuf {
         let unique = format!(
@@ -310,13 +197,10 @@ mod tests {
     }
 
     #[test]
-    fn read_only_and_todo_flags() {
+    fn read_only_flags() {
         assert!(WorkflowMode::Plan.is_read_only());
         assert!(WorkflowMode::Ask.is_read_only());
         assert!(!WorkflowMode::Build.is_read_only());
-        assert!(WorkflowMode::Plan.tracks_todos());
-        assert!(WorkflowMode::Build.tracks_todos());
-        assert!(!WorkflowMode::Ask.tracks_todos());
     }
 
     #[test]
@@ -332,76 +216,5 @@ mod tests {
         assert_eq!(read.get("s2").map(String::as_str), Some("build"));
         assert_eq!(WorkflowMode::from_wire(read.get("s1").unwrap()), WorkflowMode::Plan);
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
-    }
-
-    #[test]
-    fn parse_todos_reads_the_snapshot() {
-        let data = json!({
-            "todos": [
-                {"step": 1, "text": "First", "done": true},
-                {"step": 2, "text": "Second", "done": false},
-            ]
-        });
-        let todos = parse_todos(&data);
-        assert_eq!(todos.len(), 2);
-        assert_eq!(todos[0], WorkflowTodo { step: 1, text: "First".into(), done: true });
-        // A malformed item is skipped, not fatal.
-        assert!(parse_todos(&json!({"todos": [{"text": "no step"}]})).len() == 1);
-        assert!(parse_todos(&json!({"todos": "nope"})).is_empty());
-    }
-
-    fn entry(todos: Value) -> Value {
-        json!({"type": "custom", "customType": TODO_ENTRY_TYPE, "data": {"todos": todos}})
-    }
-
-    #[test]
-    fn on_entries_takes_the_newest_and_reports_change() {
-        let mut reducer = WorkflowTodos::default();
-        assert!(reducer.on_entries(&[entry(json!([
-            {"step": 1, "text": "One", "done": false}
-        ]))]));
-        assert_eq!(reducer.progress(), (0, 1));
-        assert_eq!(reducer.current().map(|t| t.text.as_str()), Some("One"));
-
-        // The newest matching entry wins.
-        assert!(reducer.on_entries(&[
-            entry(json!([{"step": 1, "text": "One", "done": false}])),
-            entry(json!([
-                {"step": 1, "text": "One", "done": true},
-                {"step": 2, "text": "Two", "done": false}
-            ])),
-        ]));
-        assert_eq!(reducer.progress(), (1, 2));
-        assert!(!reducer.all_done());
-
-        // An identical snapshot is not a change.
-        assert!(!reducer.on_entries(&[entry(json!([
-            {"step": 1, "text": "One", "done": true},
-            {"step": 2, "text": "Two", "done": false}
-        ]))]));
-
-        // No matching entry leaves the state alone.
-        assert!(!reducer.on_entries(&[json!({"type": "message"})]));
-    }
-
-    #[test]
-    fn reset_for_clears_on_session_change() {
-        let mut reducer = WorkflowTodos::default();
-        reducer.reset_for(Some("s1"));
-        reducer.on_entries(&[entry(json!([{"step": 1, "text": "One", "done": false}]))]);
-        assert!(!reducer.is_empty());
-        // Same session keeps it; a new session clears it.
-        reducer.reset_for(Some("s1"));
-        assert!(!reducer.is_empty());
-        reducer.reset_for(Some("s2"));
-        assert!(reducer.is_empty());
-    }
-
-    #[test]
-    fn all_done_requires_a_nonempty_list() {
-        let mut reducer = WorkflowTodos::default();
-        assert!(!reducer.all_done());
-        reducer.on_entries(&[entry(json!([{"step": 1, "text": "One", "done": true}]))]);
-        assert!(reducer.all_done());
     }
 }

@@ -1,12 +1,17 @@
 # INTENT.md — Decisions, rationale, and plan
 
-This file captures **why** Orbit is being rebuilt and the decisions that shape the plan.
+This file captures **why** Orbit was rebuilt as a native app and the decisions that shape it.
 It is the source of truth for architecture choices; when AGENT.md or README.md conflict with
 a decision recorded here, this file wins. Update it when a decision changes (and say why).
 
+**Maintenance contract:** every shipped feature updates the *Implementation status* below — and
+adds or revises a `D#` decision when the architecture changed. A feature is not done until this
+file describes it. `CHANGELOG.md` records what shipped; this file records why, and the
+architecture that follows from it.
+
 ## Vision
 
-Orbit becomes a **100% Rust, GPU-rendered desktop workbench for the pi coding agent** —
+Orbit is a **100% Rust, GPU-rendered desktop workbench for the pi coding agent** —
 the same architecture as Waku, scoped to pi only — with **every current feature preserved**:
 
 - no browser, no webview, no Node.js daemon anywhere in the app
@@ -48,7 +53,7 @@ present a diagram that isn't rendered — render a copyable code block instead.
 
 ### D3 — Rollout: full commit to GPUI (supersedes the original staged plan)
 **Choice (revised):** the web stack (React/Vite/Tauri/Node daemon) was **removed from the repo** and the GPUI app is the only app. The original plan kept both apps alive until chat parity; that was superseded when the web stack was deleted at the user's direction.
-**Consequence:** until P3/P4 land there is no fallback UI — the GPUI app is the product, and the parity contract below becomes the build-forward backlog rather than a switch-over checklist. The deleted web app remains recoverable from git history if a reference implementation is ever needed.
+**Consequence:** with no fallback UI, the GPUI app is the product, and the parity contract below was the build-forward backlog rather than a switch-over checklist. P3/P4 have since landed (see Implementation status); the deleted web app remains recoverable from git history if a reference implementation is ever needed.
 
 ### D4 — GPUI pinned to crates.io, not tracking main
 **Choice:** `gpui = { version = "0.2.2", features = ["runtime_shaders"] }` — upgrades are
@@ -58,10 +63,18 @@ deliberate and scheduled, never `git main`.
 machine lacks the Xcode MetalToolchain (`metal` CLI). For release builds, consider installing
 the Metal toolchain and precompiling shaders (drop the feature) to shave startup time.
 
-### D5 — Platform: macOS first
-**Choice:** macOS is the shipping target for P0–P6; Windows/Linux GPUI support exists but is
-out of scope until the macOS app ships.
-**Reason:** the dev machine is macOS; GPUI's macOS backend (Metal + font-kit) is its most mature.
+### D5 — Platform: macOS first-class, Windows/Linux shipped best-effort
+**Choice (revised):** macOS is the first-class target — signed + notarized `.app`/DMG, native
+window chrome and menu bar, desktop notifications. Windows (`scripts/bundle-windows.ps1` → Inno
+Setup installer / bare `.exe`) and Linux (`scripts/bundle-linux.sh` → `.deb` / `.tar.gz`) build
+from the same codebase and ship via `.github/workflows/release.yml`; they are best-effort
+(`continue-on-error`) until those platforms are validated.
+**Reason:** the app was written cross-platform from the start (`secondary` modifiers, its own
+window chrome on Windows, no macOS-only assumptions in shared code), so once the macOS app
+shipped the earlier "out of scope" framing no longer held. The dev machine is macOS, which is
+why its backend (Metal + font-kit) got first attention.
+**Open platform gaps:** notifications and the alert sound are macOS-only stubs; Windows/Linux
+native polish and signing remain.
 
 ### D6 — Reference, don't vendor
 Waku's gpui is a fork (`waku-webview` branch) — **their code is pattern reference, not
@@ -96,20 +109,45 @@ mode per pi session id in `~/.orbit-pi/workflow.json` (a map), and the bundled
 `contrib/orbit-workflow-extension/` reads it fresh on every hook. Plan and Ask drop
 the write tools with `pi.setActiveTools`, gate `bash` to a read-only allowlist on
 `tool_call`, and inject hidden guidance on `before_agent_start`; Build is the neutral
-default. Plan steps are parsed from the assistant's `Plan:` section and `[DONE:n]`
-markers and appended as `orbit:workflow-todos` custom session entries; Orbit reuses
-the quota bridge's `get_entries` poll to reduce them into a slim progress strip above the composer.
+default. The mode is also written into the session as an `orbit:workflow` entry so
+it survives resume and branch.
 
-**Rationale:** pi exposes no RPC command for active tools, system prompt, or plan
-state, and no native todo tool, so extension hooks are the only honest mechanism —
-the same call D1 made for access modes. Per-session (not global like `access.json`)
-because scope is a property of the task, and up to six parked sessions run at once.
-Reading the store fresh on every hook re-arms a live session with no restart. The
-session entry keeps the mode and plan authoritative across resume and branch.
+**Rationale:** pi exposes no RPC command for active tools or the system prompt, so
+extension hooks are the only honest mechanism — the same call D1 made for access
+modes. Per-session (not global like `access.json`) because scope is a property of
+the task, and up to six parked sessions run at once. Reading the store fresh on every
+hook re-arms a live session with no restart.
 
-**Residual:** this is a guard, not a sandbox (pi ships none). Progress depends on the
-model tagging `[DONE:n]`, which the injected guidance states plainly; an
-extension-registered `todo` tool is the fallback if compliance proves unreliable.
+**Residual:** this is a guard, not a sandbox (pi ships none).
+
+### D9 — Localization: `en.yml` is the only hand-edited locale
+**Choice:** all user-facing copy goes through the crate-root `tr!` / `tr_cow!` macros
+(`crates/orbit-pi/src/i18n.rs`). `locales/en.yml` is the source of truth; the other nine locale
+files are generated from the `scripts/i18n_glossary*.py` tables by `scripts/gen_locales.py`, and
+`cargo test -p orbit-pi i18n` guards completeness. Ships English, 简体中文, 日本語, 한국어,
+Español, Français, Deutsch, Português do Brasil, Русский, Italiano — plus `System`, which walks
+the OS preferred-language list and picks the first shipped language.
+**Rationale:** ten hand-maintained locale files drift; generated files with an English fallback
+and a completeness test keep them honest without blocking releases. Long-lived fields resolve
+placeholders from keys at paint time, so a language change is live (including the native menu
+bar) without rebuilding them. **Consequence:** new copy adds an `en.yml` key and a glossary
+entry — hard-coded English in a render path is a bug.
+
+### D10 — Provider quota: a bundled extension bridge over pi's own credentials
+**Choice:** account usage (quota / balance / spend) is read by the bundled
+`contrib/orbit-quota-extension/`, loaded with `pi --extension` like the access/workflow guards.
+It fetches through pi's own authenticated `ctx.modelRegistry`, appends normalized `orbit:quota`
+custom session entries **only when the snapshot changes** (never in LLM context), and the app
+polls `get_entries` with a per-session `since` cursor; `crates/orbit-pi/src/quota.rs` reduces
+them to non-secret UI state, and `crates/orbit-rpc/docs/quota-rpc.md` is the optional
+`quota.list` server contract for a patched pi. Only normalized percentages / counts / resets /
+amounts cross the boundary — never a token, key, or account id.
+**Rationale:** the same reasoning as D7 — credential storage and refresh already live in pi, so
+a Rust re-implementation would fork the source of truth and risk leaking secrets into GPUI
+state. The extension path needs no pi patch and degrades to `unsupported` per provider (Gemini,
+for example, has no account-quota API). **Residual:** coverage is per-provider and rate-limited;
+a report is cached 60 s, and a provider without a verified adapter reports `unsupported` rather
+than an invented number.
 
 ## The feature parity contract
 
@@ -121,51 +159,58 @@ legacy app today:
 3. Model catalog from pi's own list; thinking levels per model
 4. Tool activity (bash, edit, todo, plan, search, mcp, thinking, question) + approval dialogs
 5. Git diff panel + file-change blocks
-6. Workbench pages — usage (charts), skills, plugins, models, providers (CRUD), settings
+6. Workbench pages — usage (charts + activity heatmap), skills, plugins, models, providers
+   (CRUD + OAuth/quota), settings; Explorer + Files editor, integrated terminal, Git/GitHub,
+   and the in-app updater with Version History
 7. Markdown — GFM, syntax-highlighted code, copy-able code blocks, image lightbox
 8. Theming — dark/light palettes, accent, font, density, reduce-motion. Persisted to **Orbit's own store** (`~/.orbit-pi/{theme,ui.json,fonts.json}`), not pi's settings: theme/UI state is Orbit's, and writing it into pi's config would fork pi's own source of truth. (Revised from "persisted to pi's settings".)
 9. Attachments — files read to base64 images for prompts
-10. macOS native expectations — traffic lights, native dialogs, keyboard operability. Menu-bar menus are **not** implemented; Orbit's actions are keyboard/mouse surfaces (⌘P palette, shortcuts), not an `NSMenu`.
+10. macOS native expectations — traffic lights, a native menu bar (Orbit/File/Edit/View, rebuilt
+    on language change), native dialogs, keyboard operability. Orbit's actions are also exposed
+    as keyboard/mouse surfaces (⌘P palette, shortcuts), not only through menus.
 
 ### Implementation status (living)
 
-Done: streaming transcript + virtualization; markdown + highlighting; composer with steering, follow-ups, cancel, autocomplete, attachments; extension dialogs; diff/Review + Git page; sessions (list/switch/new/delete/clone/cross-workspace) over an Orbit-owned project list (only folders the user added; removing one never touches pi) with a **warm process pool** so re-opening a recent session is a resume, not a Node spawn; usage, skills, plugins, models, providers, settings pages; transcript find; image lightbox; theming + reduce-motion; signed/notarizable packaging; CI; AI review agent (a read-only reviewer over the selected change set or the whole project that renders findings in the Review pane, on its own Ask-mode process).
+Done: streaming transcript + virtualization; markdown + highlighting; composer with steering, follow-ups, cancel, autocomplete, attachments; extension dialogs; diff/Review + Git page + GitHub issues/PRs (where `gh` is available); sessions (list/switch/new/delete/clone/cross-workspace) over an Orbit-owned project list (only folders the user added; removing one never touches pi) with a **warm process pool** so re-opening a recent session is a resume, not a Node spawn; Explorer project panel + editable Files surface; integrated terminal (⌘J); usage, skills, plugins, models, providers, settings pages; transcript find; image lightbox; theming (dark/light/system, 42 palettes) + reduce-motion; localization (ten locales + System, D9); in-app signed updater + Version History; notifications; open-in-editor; signed/notarizable macOS packaging + best-effort Windows/Linux bundles (D5); CI; AI review agent (a read-only reviewer over the selected change set or the whole project that renders findings in the Review pane, on its own Ask-mode process); access modes (a guard, not a sandbox), workflow modes (Plan/Build/Ask per D8), and the auto-title / quota extension bridges (D10).
 
-Open: conversation **fork/rewind** (clone exists; rewind needs entry ids); on-device scroll-perf measurement. Access modes ship as a real `tool_call` confirmation guard (not a sandbox); an "Auto" AI reviewer awaits a pi reviewer API. Workflow modes (Plan / Build / Ask) ship per D8, including the plan-progress strip above the composer.
+Open: conversation **fork/rewind** (clone exists; rewind needs entry ids); on-device scroll-perf measurement; stream veil + an explicit ≤8.3 Hz streaming commit pipeline; focus rings / screen-reader labeling; richer per-tool renderers (bash/thinking are dedicated, the rest generic). An "Auto" AI reviewer awaits a pi reviewer API.
 
 ## Non-goals (explicitly out of scope)
 
 - Any web technology in the UI — no webview surfaces as UI, no React, no HTML/CSS
 - Multi-provider support à la Waku (pi only; Oh My Pi *may* come later as a second RPC flavor)
-- Always-latest GPUI; auto-updater; Windows/Linux in the first release
+- Always-latest GPUI (the app is pinned, D4)
 - Fabricating permission modes, diagrams, or perf claims the protocol/renderer can't deliver
 
-## Phases, estimates, and gates
+## Phases — outcome (the original plan, kept for the record)
 
-Solo experienced dev, full-time. Ranges are honest uncertainty; P3 (core chat) dominates.
+The staged plan below is history: P0–P4 shipped and P5/P6 are partial. The GPUI app is the only
+app (D3), so this is a status board rather than a forward schedule. `cargo run -p orbit-pi` is
+the product; the per-item detail lives in AGENT.md.
 
-| Phase | Deliverable | Est. | Exit gate |
-|---|---|---|---|
-| P0 | Transport probe + workspace + process spawner + RPC client skeleton + first live round-trip | 3–5 d | D1 certified or `--approve` fallback decided; round-trip renders in window |
-| P1 | Shell, theme, fonts, sidebar sessions | 5–8 d | App opens, themed, sessions listed per project |
-| P2 | Data layer: serde models, sessions/catalog/workbench clients | 8–12 d | All 34 legacy endpoints have a Rust equivalent behavior |
-| P3 | Core chat: transcript, streaming, markdown, composer, tools, diff | 25–40 d | Chat parity vs legacy app (D3 gate) |
-| P4 | Workbench pages + settings persistence | 12–20 d | All workbench pages natively functional |
-| P5 | Mermaid fallback + a11y | 5–18 d | Keyboard-operable; reduce-motion honored; diagrams never faked |
-| P6 | Tests, perf harness, packaging/notarization, CI | 8–13 d | Ship; legacy tracks deleted |
-| **Total** | | **~66–116 d (14–22 wk solo; 9–14 wk with two devs)** | |
+| Phase | Deliverable | Status |
+|---|---|---|
+| P0 | Transport + workspace + process spawner + RPC client + first live round-trip | ✅ Shipped |
+| P1 | Shell, theme, fonts, sidebar sessions | ✅ Shipped |
+| P2 | Data layer: serde models, sessions/catalog/workbench clients | ✅ Shipped |
+| P3 | Core chat: transcript, streaming, markdown, composer, tools, diff | ✅ Shipped (stream veil + explicit ≤8.3 Hz pipeline open) |
+| P4 | Workbench pages + settings persistence | ✅ Shipped (plus Explorer/Files, terminal, Git/GitHub, localization, updater) |
+| P5 | Mermaid fallback + a11y | ◐ Mermaid code-block fallback + reduce-motion shipped; focus rings / screen-reader labeling open |
+| P6 | Tests, perf harness, packaging/notarization, CI | ◐ Unit/live tests, 10k perf test, signed `.app`/DMG, CI shipped; on-device scroll benchmark + streaming edge coverage open |
 
-Parallel with a second Rust dev (workbench + chat split): P3 and P4 run concurrently, cutting
-wall-clock roughly in half.
+Open backlog (detail in AGENT.md): conversation fork/rewind, on-device scroll-perf measurement,
+stream veil, explicit streaming commit pipeline, focus rings / screen-reader labeling, richer
+per-tool renderers, Windows/Linux native polish.
 
 ## Top risks (with mitigations)
 
-1. **P3 scope** — 25–40 days. Mitigate: Waku pattern map (AGENT.md), one-StyledText-per-block
-   markdown from day one, tool renderers by spec from `agent-elements/`.
+1. **P3 scope** — *resolved:* was the dominant estimate (25–40 days); it shipped by keeping the
+   Waku pattern map (AGENT.md), one-StyledText-per-block markdown from day one, and tool
+   renderers by spec.
 2. **Tool approval protocol gap (D1 residual)** — resolved: pi exposes no native per-tool permission in RPC mode, so Orbit enforces access modes through a bundled `tool_call` extension that prompts via `ctx.ui.select` (Allow once / Always allow this tool / Deny), rendered natively as an inline bar. An "Auto" AI reviewer stays open until pi exposes a reviewer API to extensions.
-3. **Composer editor** — a good multi-line markdown-aware input is the hardest single control in
-   GPUI 0.2.2 (could blow P3's composer sub-item to 10–12 d). Mitigate: single-line field first,
-   multi-line as a deliberate follow-up; never ship a broken input.
+3. **Composer editor** — *resolved:* the multi-line `ComposerInput` (`EntityInputHandler`) has
+   shipped, wrapping, auto-growing, and scrolling. Reuse it for new text controls rather than
+   introducing another editor abstraction.
 4. **Mermaid regression** — accepted; D2 path chosen, fallback never fakes.
 5. **GPUI churn** — pinned 0.2.2 (D4); upgrade = its own task with the registry source as docs.
 6. **Velocity** — Rust UI iteration is 3–5× slower than React hot-reload; the estimates assume
