@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="Orbit">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a3b3f" />
+      <stop offset="1" stop-color="#1b1c1f" />
+    </linearGradient>
+    <linearGradient id="ink" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" />
+      <stop offset="1" stop-color="#cfd1d5" />
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#tile)" />
+  <path
+    fill="url(#ink)"
+    fill-rule="evenodd"
+    d="M13 23h16v19H13V23Zm5 6h6v8h-6v-8Z"
+  />
+  <path
+    fill="url(#ink)"
+    fill-rule="evenodd"
+    d="M34 23h17v14H41v5h-7V23Zm5 5h6v4h-6v-4Z"
+  />
+</svg>

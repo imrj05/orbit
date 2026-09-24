@@ -23,14 +23,16 @@ function assetUrl(assets: GithubAsset[], pattern: RegExp) {
 }
 
 /**
- * Latest published (non-prerelease) GitHub release, cached for an hour.
+ * Latest published (non-prerelease) GitHub release, cached for a day. This
+ * fetch gates the marketing pages' ISR window, so a longer TTL keeps the
+ * homepage strongly cacheable at the CDN edge.
  * Returns `null` when the API is unavailable so callers can fall back to the
  * releases page instead of shipping a stale hard-coded version.
  */
 export async function getLatestRelease(): Promise<Release | null> {
   try {
     const res = await fetch(LATEST_RELEASE_API, {
-      next: { revalidate: 3600 },
+      next: { revalidate: 86400 },
       headers: { Accept: "application/vnd.github+json" },
     });
     if (!res.ok) return null;
@@ -71,13 +73,14 @@ export async function getLatestRelease(): Promise<Release | null> {
 }
 
 /**
- * Stargazer count for the repository, cached for an hour. Returns `null` when
- * the API is unavailable so the header can fall back to a plain link.
+ * Stargazer count for the repository, cached for a day (same window as the
+ * release fetch, so it does not widen the page's ISR window). Returns `null`
+ * when the API is unavailable so the header can fall back to a plain link.
  */
 export async function getRepoStars(): Promise<number | null> {
   try {
     const res = await fetch(REPO_API, {
-      next: { revalidate: 3600 },
+      next: { revalidate: 86400 },
       headers: { Accept: "application/vnd.github+json" },
     });
     if (!res.ok) return null;

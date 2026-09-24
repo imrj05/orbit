@@ -25,7 +25,7 @@ use std::{
 
 use gpui::{
     anchored, canvas, deferred, div, img, linear_color_stop, linear_gradient, list, point,
-    prelude::*, px, radians, svg, Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem,
+    prelude::*, px, radians, Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem,
     CursorStyle, DispatchPhase, Element, ElementId, Font, FontFeatures, FontStyle, FontWeight,
     GlobalElementId, Hitbox, HitboxBehavior, Hsla, Image, ImageSource, InspectorElementId,
     InteractiveText, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
@@ -42,6 +42,7 @@ use serde_json::Value;
 use orbit_rpc::MessageUsage;
 
 use crate::app::BUTTON_GROUP;
+use crate::app::{PopoverSurface, BUTTON_GROUP};
 use crate::context_meter::{format_tokens, hit_percent_label};
 use crate::highlight::{self, Token};
 use crate::message_scroller::{self, MessageScrollerState};
@@ -876,10 +877,7 @@ fn text_selection_menu(menu: &TextMenu, state: TextSelectionState, theme: Theme)
                 .id("transcript-text-menu")
                 .min_w(px(190.))
                 .rounded(px(9.))
-                .border_1()
-                .border_color(theme.border_strong)
-                .bg(theme.menu_bg)
-                .shadow(theme.popover_shadow())
+                .popover_surface(theme)
                 .flex()
                 .flex_col()
                 .overflow_hidden()
@@ -2961,13 +2959,21 @@ fn render_activity_card(
                 .when_some(truncation_chip(&tool.facts, theme), |row, chip| {
                     row.child(chip)
                 })
+                .when_some(truncation_chip(&tool.facts, theme), |row, chip| {
+                    row.child(chip)
+                })
                 .when(has_diff, |row| {
                     row.child(render_line_delta(added, removed, theme, 12.5))
                 })
                 .when(pulse, |row| {
-                    row.child(activity_spinner(
+                    row.child(crate::app::spinner(
+                        ElementId::NamedInteger(
+                            "activity-spin".into(),
+                            (key.0 as u64) << 16 | key.1 as u64,
+                        ),
+                        12.,
+                        theme.accent,
                         theme,
-                        (key.0 as u64) << 16 | key.1 as u64,
                     ))
                 })
                 .when(tool.failed, |row| {

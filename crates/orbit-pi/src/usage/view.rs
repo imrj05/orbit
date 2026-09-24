@@ -60,7 +60,7 @@ use super::table::{
     TableKind, HEADER_H, ROW_H,
 };
 use super::tooltip::Tooltip;
-use crate::app::{icon, press, BUTTON_GROUP};
+use crate::app::{{icon, press, BUTTON_GROUP}, press, PopoverSurface, BUTTON_GROUP};
 use crate::composer::ComposerInput;
 use crate::theme::{self, Theme};
 
@@ -178,7 +178,7 @@ impl UsagePage {
                     .id("usage-back")
                     .px(px(8.))
                     .h(px(28.))
-                    .rounded(px(7.))
+                    .rounded(px(8.))
                     .flex()
                     .items_center()
                     .gap(px(6.))
@@ -227,6 +227,7 @@ impl UsagePage {
                     &refresh_idle_label
                 },
                 Some("icons/refresh.svg"),
+                self.is_refreshing(),
                 true,
                 theme,
                 {
@@ -246,6 +247,7 @@ impl UsagePage {
             "usage-export",
             &tr!("usage.export"),
             Some("icons/upload.svg"),
+            false,
             enabled,
             theme,
             move |_, window, cx| {
@@ -556,6 +558,7 @@ impl UsagePage {
             "usage-chips-clear",
             &tr!("usage.clear_all"),
             None,
+            false,
             true,
             theme,
             move |_, _, cx| {
@@ -609,7 +612,7 @@ impl UsagePage {
                     .mt(px(2.))
                     .h(px(28.))
                     .px(px(10.))
-                    .rounded(px(7.))
+                    .rounded(px(8.))
                     .border_1()
                     .border_color(theme.border)
                     .bg(theme.bg_raised)
@@ -4347,10 +4350,7 @@ fn context_menu_shell(theme: Theme, page: Entity<UsagePage>, items: Vec<AnyEleme
         .id("usage-row-menu")
         .min_w(px(220.))
         .rounded(px(9.))
-        .border_1()
-        .border_color(theme.border_strong)
-        .bg(theme.menu_bg)
-        .shadow(theme.popover_shadow())
+        .popover_surface(theme)
         .flex()
         .flex_col()
         .overflow_hidden()

@@ -121,8 +121,11 @@ the release. Notes come from `CHANGELOG.md`.
 
 1. Add what changed under `## [Unreleased]` in `CHANGELOG.md` (Keep a Changelog
    sections: Added / Changed / Fixed). `scripts/bump-version.sh` **refuses to
-   bump when `[Unreleased]` has no changes**; only override it when you intend
-   the generated log:
+   bump when `[Unreleased]` has no changes**. For a first draft from the commits
+   since the last tag, run `scripts/changelog-build.py --write`, then edit the
+   bullets into prose; `--force` replaces notes that are already there. When
+   `[Unreleased]` is intentionally left empty, override the guard to fall back
+   to the generated log:
 
    ```bash
    ALLOW_EMPTY_CHANGELOG=1 ./scripts/bump-version.sh 0.0.2

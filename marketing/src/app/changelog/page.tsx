@@ -8,17 +8,20 @@ import { LinuxIcon } from "@/components/brand-icons";
 
 import { ChangelogFeed } from "@/components/changelog/feed";
 import { ChangelogSkeleton } from "@/components/changelog/skeleton";
+import { JsonLd } from "@/components/json-ld";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteNav } from "@/components/site-nav";
 import { Band, ButtonLink, SectionLabel, Shell } from "@/components/ui";
-import { formatDate } from "@/lib/changelog";
+import { formatDate, getChangelog } from "@/lib/changelog";
 import { getLatestRelease, LATEST_RELEASE_URL } from "@/lib/releases";
 import { SITE } from "@/lib/site";
 
+const DESCRIPTION =
+  "Every Orbit Pi release, newest first — features, fixes, and downloads, pulled live from the repository.";
+
 export const metadata: Metadata = {
   title: "Changelog",
-  description:
-    "Every Orbit Pi release, newest first — features, fixes, and downloads, pulled live from the repository.",
+  description: DESCRIPTION,
   keywords: [
     "Orbit changelog",
     "Orbit Pi releases",
@@ -45,6 +48,45 @@ export const metadata: Metadata = {
 
 export default async function ChangelogPage() {
   const release = await getLatestRelease();
+  const entries = await getChangelog();
+
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "BreadcrumbList",
+        "@id": `${SITE.url}/changelog/#breadcrumb`,
+        itemListElement: [
+          { "@type": "ListItem", position: 1, name: "Home", item: SITE.url },
+          {
+            "@type": "ListItem",
+            position: 2,
+            name: "Changelog",
+            item: `${SITE.url}/changelog`,
+          },
+        ],
+      },
+      {
+        "@type": "CollectionPage",
+        "@id": `${SITE.url}/changelog/#webpage`,
+        url: `${SITE.url}/changelog`,
+        name: "Changelog · Orbit",
+        description: DESCRIPTION,
+        isPartOf: { "@id": `${SITE.url}/#website` },
+        breadcrumb: { "@id": `${SITE.url}/changelog/#breadcrumb` },
+        mainEntity: {
+          "@type": "ItemList",
+          itemListElement: entries.map((entry, index) => ({
+            "@type": "ListItem",
+            position: index + 1,
+            url: `${SITE.url}/changelog/${entry.tag}`,
+            name: `Orbit Pi ${entry.tag}`,
+          })),
+        },
+      },
+    ],
+  };
+
   const downloadHref = release?.macos ?? LATEST_RELEASE_URL;
   const platforms = [
     {
@@ -69,6 +111,7 @@ export default async function ChangelogPage() {
 
   return (
     <>
+      <JsonLd data={jsonLd} />
       <SiteNav />
       <main className="flex-1">
         <Shell>

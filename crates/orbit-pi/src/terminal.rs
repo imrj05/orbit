@@ -45,15 +45,15 @@ use alacritty_terminal::vte::ansi::{Color as AnsiColor, CursorShape, NamedColor,
 use anyhow::{Context as _, Result};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use gpui::{
-    canvas, div, fill, point, prelude::*, px, radians, size, Animation, AnimationExt, AnyElement,
+    canvas, div, fill, point, prelude::*, px, size, AnyElement,
     App, Background, Bounds, ClipboardItem, Context, CursorStyle, Entity, FocusHandle, Focusable,
     Font, FontFallbacks, FontFeatures, FontStyle, FontWeight, Hsla, IntoElement, Keystroke,
     MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, Render, Rgba,
     ScrollDelta, ScrollWheelEvent, SharedString, StrikethroughStyle, Styled, Task, TextRun,
-    Transformation, UnderlineStyle, Window,
+    UnderlineStyle, Window,
 };
 
-use crate::app::{icon, nerd_font_family, BUTTON_GROUP};
+use crate::app::{icon, nerd_font_family, BUTTON_GROUP, refresh_glyph, BUTTON_GROUP};
 use crate::theme::{self, Theme};
 
 /// Emulator grid bounds, clamped so a collapsing panel never asks the PTY for
@@ -1521,7 +1521,9 @@ impl TerminalPanel {
     pub fn new(_cx: &mut Context<Self>) -> Self {
         Self {
             open: false,
-            height: px(PANEL_DEFAULT_H),
+            height: px(crate::layout::terminal_height()
+                .unwrap_or(PANEL_DEFAULT_H)
+                .max(PANEL_MIN_H)),
             workspace: None,
             terminal: None,
             restart_spin_until: None,
@@ -1536,6 +1538,7 @@ impl TerminalPanel {
         let height = height.clamp(px(PANEL_MIN_H), px(f32::MAX / 2.));
         if height != self.height {
             self.height = height;
+            crate::layout::set_terminal_height(f32::from(height));
             cx.notify();
         }
     }
@@ -1702,36 +1705,18 @@ impl TerminalPanel {
                     .rounded_sm()
                     .cursor_pointer()
                     .hover(|style| style.bg(theme.bg_hover))
+                    .active(|style| style.bg(theme.active))
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| this.restart(cx)),
                     )
-                    .child(
-                        if self.restart_spin_until.is_some() && !theme.ui.reduce_motion {
-                            gpui::svg()
-                                .path("icons/loader.svg")
-                                .flex_none()
-                                .size(px(14.))
-                                .text_color(if exited { theme.accent } else { theme.text_2 })
-                                .with_animation(
-                                    "terminal-restart-spin",
-                                    Animation::new(Duration::from_millis(900)).repeat(),
-                                    |svg, delta| {
-                                        svg.with_transformation(Transformation::rotate(radians(
-                                            delta * std::f32::consts::TAU,
-                                        )))
-                                    },
-                                )
-                                .into_any_element()
-                        } else {
-                            icon(
-                                "icons/refresh.svg",
-                                14.,
-                                if exited { theme.accent } else { theme.text_2 },
-                            )
-                            .into_any_element()
-                        },
-                    ),
+                    .child(refresh_glyph(
+                        "terminal-restart-spin",
+                        14.,
+                        self.restart_spin_until.is_some(),
+                        if exited { theme.accent } else { theme.text_2 },
+                        theme,
+                    )),
             )
             .child(
                 div()
@@ -1791,7 +1776,7 @@ impl TerminalPanel {
                                 .gap(px(6.))
                                 .px(theme.space(10.))
                                 .py(px(5.))
-                                .rounded_md()
+                                .rounded_lg()
                                 .bg(theme.accent)
                                 .cursor_pointer()
                                 .text_size(theme.ui_px(12.))

@@ -149,7 +149,7 @@ function parseChangelog(markdown: string): RawEntry[] {
 async function fetchText(url: string): Promise<string> {
   try {
     const res = await fetch(url, {
-      next: { revalidate: 3600 },
+      next: { revalidate: 86400 },
       headers: { Accept: "text/plain" },
     });
     return res.ok ? await res.text() : "";
@@ -161,7 +161,7 @@ async function fetchText(url: string): Promise<string> {
 async function fetchReleases(): Promise<GithubRelease[]> {
   try {
     const res = await fetch(RELEASES_API, {
-      next: { revalidate: 3600 },
+      next: { revalidate: 86400 },
       headers: { Accept: "application/vnd.github+json" },
     });
     if (!res.ok) return [];
@@ -220,8 +220,8 @@ function compareVersions(a: string, b: string): number {
  *
  * `CHANGELOG.md` is the canonical source; the Releases API fills the gaps
  * (some releases ship a summary rather than a changelog section) and supplies
- * the GitHub URL, pre-release flag, and release-only versions. Cached for an
- * hour, and degrades to `[]` if GitHub is unreachable.
+ * the GitHub URL, pre-release flag, and release-only versions. Cached for a
+ * day, and degrades to `[]` if GitHub is unreachable.
  */
 export async function getChangelog(): Promise<ChangelogEntry[]> {
   const [markdown, releases] = await Promise.all([

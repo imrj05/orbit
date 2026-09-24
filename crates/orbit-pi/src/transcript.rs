@@ -152,6 +152,49 @@ impl ToolFacts {
     }
 }
 
+/// Structured facts pi attaches to a tool result under `details`, reduced to
+/// the few the transcript shows at a glance. Data pi did not send stays
+/// absent — the UI never invents a count or a status.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ToolFacts {
+    /// The result was capped (read/bash `truncation`, grep match limit, ls
+    /// entry limit): the agent saw only part of the data.
+    pub truncated: bool,
+    /// Lines the agent actually received, when pi reported them.
+    pub output_lines: Option<u64>,
+    /// Lines the full result held, when pi reported them.
+    pub total_lines: Option<u64>,
+}
+
+impl ToolFacts {
+    /// Read facts from a raw tool-result envelope. Accepts the
+    /// `{"content":[…],"details":…}` shape pi sends; a bare payload with no
+    /// `details` yields empty facts.
+    fn from_result(value: &Value) -> Self {
+        let mut facts = Self::default();
+        let Some(details) = value.get("details").filter(|details| !details.is_null()) else {
+            return facts;
+        };
+        // read/bash attach a `truncation` object only when the output was cut;
+        // it carries the line budget the agent actually saw.
+        if let Some(truncation) = details.get("truncation").filter(|t| !t.is_null()) {
+            facts.truncated = truncation
+                .get("truncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            facts.output_lines = truncation.get("outputLines").and_then(Value::as_u64);
+            facts.total_lines = truncation.get("totalLines").and_then(Value::as_u64);
+        }
+        // grep / ls cap the result without a truncation object.
+        for key in ["matchLimitReached", "linesTruncated", "entryLimitReached"] {
+            if details.get(key).and_then(Value::as_bool) == Some(true) {
+                facts.truncated = true;
+            }
+        }
+        facts
+    }
+}
+
 /// One tool call row: name, args summary, and the file path it operates on
 /// (when the tool is file-oriented — drives the devicons glyph).
 #[derive(Clone)]
@@ -297,6 +340,11 @@ impl ChatMessage {
             step.text = strip_completion_markers(&step.text).into_owned();
         }
         if user {
+            // pi appends image hints (resize/conversion notes) to the prompt
+            // text it echoes and persists. They are protocol metadata for the
+            // model, not what the user typed — strip them so the echo matches
+            // the optimistic row and reloads don't render the note.
+            message.steps[0].text = strip_image_hints(&message.steps[0].text).to_string();
             if let Some((name, trailing)) = injected_skill(&message.steps[0].text) {
                 message.steps[0].text = compact_skill_prompt(&name, &trailing);
             }
@@ -2363,6 +2411,48 @@ mod tests {
         let messages = t.messages.borrow();
         assert_eq!(messages.len(), 1);
         assert!(messages[0].user);
+    }
+
+    /// An attached image that pi resized gets a dimension note appended to
+    /// the echoed prompt text. The optimistic row carries the typed text only,
+    /// so the echo must still dedupe instead of stacking a second bubble.
+    #[test]
+    fn image_hint_in_user_echo_does_not_duplicate_the_prompt() {
+        let mut t = Transcript::new();
+        let prompt = "can you check the attached og image";
+        assert!(t.append_user_message(prompt, Vec::new()));
+        let echo = format!(
+            "{prompt}\n\n[Image: original 2400x1260, displayed at 2000x1050. \
+             Multiply coordinates by 1.20 to map to original image.]"
+        );
+        t.apply_event(&Event::MessageStart {
+            value: json!({"type": "message_start", "message": {
+                "role": "user", "content": [{"type": "text", "text": echo}]
+            }}),
+        });
+        t.apply_event(&Event::MessageEnd {
+            value: json!({"type": "message_end", "message": {
+                "role": "user", "content": [{"type": "text", "text": echo}]
+            }}),
+        });
+        let messages = t.messages.borrow();
+        assert_eq!(messages.len(), 1, "the prompt must render once");
+        assert_eq!(messages[0].text(), prompt);
+    }
+
+    /// Reloading from disk parses the persisted prompt with its image hint;
+    /// the note must not render as user copy.
+    #[test]
+    fn reloaded_user_prompt_strips_image_hint() {
+        let mut t = Transcript::new();
+        t.load_from(&json!({"messages": [
+            {"role": "user", "content": [{"type": "text", "text":
+                "see this\n\n[Image converted from image/heic to image/png.]\n[Image: original 800x600, displayed at 400x300. Multiply coordinates by 2.00 to map to original image.]"}]
+            },
+        ]}));
+        let messages = t.messages.borrow();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].text(), "see this");
     }
 
     /// pi emits a context-only `system` loadout/tool-change update right

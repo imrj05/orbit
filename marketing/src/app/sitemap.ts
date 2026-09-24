@@ -3,8 +3,13 @@ import { getChangelog } from "@/lib/changelog";
 import { SITE } from "@/lib/site";
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
-  const lastModified = new Date();
   const releases = await getChangelog();
+  // The newest release is the last time the marketing pages actually changed;
+  // using `new Date()` here would claim every URL changed on every regeneration.
+  const latestDate = releases.find((entry) => entry.date)?.date;
+  const lastModified = latestDate
+    ? new Date(`${latestDate}T00:00:00Z`)
+    : new Date();
 
   return [
     {

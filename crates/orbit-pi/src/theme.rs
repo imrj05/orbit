@@ -2828,6 +2828,35 @@ impl Theme {
         }]
     }
 
+    /// Backdrop dim under a floating search surface (command palette):
+    /// present enough to separate the card from the page, light enough that
+    /// the workspace still reads through.
+    pub fn scrim(self) -> Hsla {
+        match self.mode {
+            ThemeMode::Dark => hsla(0., 0., 0., 0.26),
+            ThemeMode::Light => hsla(0., 0., 0., 0.14),
+        }
+    }
+
+    /// Backdrop dim under a blocking modal (extension dialogs, custom-UI
+    /// surfaces, the update prompt): a step stronger than [`Self::scrim`]
+    /// because a modal *must* read as the only live layer.
+    pub fn scrim_modal(self) -> Hsla {
+        match self.mode {
+            ThemeMode::Dark => hsla(0., 0., 0., 0.32),
+            ThemeMode::Light => hsla(0., 0., 0., 0.18),
+        }
+    }
+
+    /// Backdrop dim under the image lightbox: near-opaque, so a viewed
+    /// attachment is what the eye lands on, not the transcript behind it.
+    pub fn scrim_media(self) -> Hsla {
+        match self.mode {
+            ThemeMode::Dark => hsla(0., 0., 0., 0.72),
+            ThemeMode::Light => hsla(0., 0., 0., 0.6),
+        }
+    }
+
     /// Compact hover-card shadow (slightly tighter than the picker).
     pub fn card_shadow(self) -> Vec<BoxShadow> {
         vec![

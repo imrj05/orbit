@@ -1,14 +1,13 @@
 import Script from "next/script";
 
+import { Agent } from "@/components/sections/agent";
 import { Closer } from "@/components/sections/closer";
-import { Features } from "@/components/sections/features";
-import { Gallery } from "@/components/sections/gallery";
-import { Guard } from "@/components/sections/guard";
+import { Git } from "@/components/sections/git";
 import { Hero } from "@/components/sections/hero";
-import { Review } from "@/components/sections/review";
-import { Stage } from "@/components/sections/stage";
-import { Steps } from "@/components/sections/steps";
-import { Workbench } from "@/components/sections/workbench";
+import { Models } from "@/components/sections/models";
+import { Native } from "@/components/sections/native";
+import { Sessions } from "@/components/sections/sessions";
+import { Usage } from "@/components/sections/usage";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteNav } from "@/components/site-nav";
 
@@ -18,13 +17,12 @@ export default function Home() {
       <SiteNav />
       <main className="flex-1">
         <Hero />
-        <Stage />
-        <Steps />
-        <Workbench />
-        <Features />
-        <Guard />
-        <Review />
-        <Gallery />
+        <Agent />
+        <Sessions />
+        <Models />
+        <Git />
+        <Usage />
+        <Native />
         <Closer />
       </main>
       <SiteFooter />

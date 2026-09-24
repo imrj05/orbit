@@ -13,12 +13,11 @@ import {
 } from "@/lib/releases";
 
 const links = [
-  { label: "Features", href: "/#features" },
-  { label: "Workbench", href: "/#workbench" },
-  { label: "Safeguards", href: "/#guard" },
-  { label: "Gallery", href: "/#gallery" },
+  { label: "Agent", href: "/#agent" },
+  { label: "Sessions", href: "/#sessions" },
+  { label: "Git", href: "/#git" },
+  { label: "Usage", href: "/#usage" },
   { label: "Changelog", href: "/changelog" },
-  { label: "Get started", href: "/#install" },
 ];
 
 /** 13 → "13", 1234 → "1.2k", 123456 → "123k". */
@@ -54,7 +53,7 @@ export async function SiteNav() {
               <OrbitWordmark className="h-[30px] w-auto" alt="" priority />
             </Link>
 
-            <div className="hidden items-center gap-[26px] text-[13.5px] md:flex">
+            <div className="hidden items-center gap-[24px] text-[13px] md:flex">
               {links.map((l) => (
                 <a
                   key={l.href}
@@ -72,7 +71,7 @@ export async function SiteNav() {
                 aria-label={
                   stars != null ? `GitHub — ${stars} stars` : "GitHub"
                 }
-                className="group inline-flex items-center gap-2 rounded-full border border-hair bg-tint-04 py-[5px] pl-2.5 pr-3 text-[12.5px] text-ink-2 no-underline transition-colors duration-[120ms] hover:border-tint-26 hover:bg-tint-07 hover:text-ink"
+                className="group inline-flex items-center gap-2 rounded-[10px] border border-edge-subtle bg-surface-1 py-[5px] pl-2.5 pr-3 text-[12.5px] text-ink-2 no-underline transition-colors duration-[120ms] hover:border-edge-strong hover:bg-surface-2 hover:text-ink"
               >
                 <HugeiconsIcon icon={GithubIcon} className="size-4" />
                 {stars != null ? (

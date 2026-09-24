@@ -92,6 +92,8 @@ pub(crate) fn icon(path: &'static str, size: f32, color: Hsla) -> gpui::Svg {
 /// Same as [`icon`] but for runtime-computed paths (per-provider marks).
 pub(crate) fn icon_dyn(path: SharedString, size: f32, color: Hsla) -> gpui::Svg {
     let hover = icon_hover_ink(color);
+pub(crate) fn icon_dyn(path: SharedString, size: f32, color: Hsla) -> gpui::Svg {
+    let hover = icon_hover_ink(color);
     gpui::svg()
         .path(path)
         .flex_none()

@@ -18,14 +18,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    div, prelude::*, px, radians, Animation, AnimationExt, AnyElement, App, ClickEvent, Context,
+    div, prelude::*, px, AnyElement, App, ClickEvent, Context,
     CursorStyle, Entity, Font, FontFeatures, FontStyle, FontWeight, Hsla, KeyDownEvent,
     ListAlignment, ListOffset, ListState, MouseDownEvent, Pixels, Render, SharedString, StyledText,
-    TextAlign, TextRun, Transformation, Window,
+    TextRun, Window,
 };
 
 use crate::ai_review::{Finding, Report, ReviewKind, ReviewStatus, Severity};
-use crate::app::{file_glyph, icon, nerd_font_family, BUTTON_GROUP, PRESS_DIM};
+use crate::app::{empty_state, file_glyph, icon, nerd_font_family, BUTTON_GROUP, PRESS_DIM, refresh_glyph, EmptyFill, PopoverSurface, BUTTON_GROUP, PRESS_DIM};
 use crate::composer::ComposerInput;
 use crate::git;
 use crate::review::{self, ExpansionDirection, GapPosition, LineKind, Snapshot, Source};
@@ -154,7 +154,9 @@ impl SidePane {
         });
         Self {
             open: false,
-            width: px(PANE_DEFAULT_W),
+            width: px(crate::layout::sidepane_width()
+                .unwrap_or(PANE_DEFAULT_W)
+                .max(PANE_MIN_W)),
             workspace: None,
             session: None,
             latest_turn: None,
@@ -227,6 +229,7 @@ impl SidePane {
         let clamped = width.max(px(PANE_MIN_W));
         if clamped != self.width {
             self.width = clamped;
+            crate::layout::set_sidepane_width(f32::from(clamped));
             cx.notify();
         }
     }
@@ -830,13 +833,13 @@ impl SidePane {
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.refresh_from_button(cx);
                     }))
-                    .child(
-                        if self.review_loading || self.refresh_spin_until.is_some() {
-                            spinner("review-spinner", theme)
-                        } else {
-                            icon("icons/refresh.svg", 13., theme.text_3).into_any_element()
-                        },
-                    ),
+                    .child(refresh_glyph(
+                        "review-spinner",
+                        13.,
+                        self.review_loading || self.refresh_spin_until.is_some(),
+                        theme.text_3,
+                        theme,
+                    )),
             )
             .child(
                 div()
@@ -937,20 +940,18 @@ impl SidePane {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let diff = if self.review_loading && self.review.is_none() {
-            centered_message(theme, &tr!("sidepane.loading_changes"), None).into_any_element()
+            empty_state(theme, &tr!("sidepane.loading_changes"), None, EmptyFill::Grow)
         } else if let Some(error) = self.review_error.as_deref() {
-            centered_message(theme, &tr!("sidepane.changes_unavailable"), Some(error))
-                .into_any_element()
+            empty_state(theme, &tr!("sidepane.changes_unavailable"), Some(error), EmptyFill::Grow)
         } else if let Some(snapshot) = self.review.clone() {
             if snapshot.files.is_empty() {
                 let empty = self.source.empty_description();
-                centered_message(theme, &tr!("sidepane.no_changes"), Some(&empty))
-                    .into_any_element()
+                empty_state(theme, &tr!("sidepane.no_changes"), Some(&empty), EmptyFill::Grow)
             } else {
                 self.render_diff(snapshot, theme, cx)
             }
         } else {
-            centered_message(theme, &tr!("sidepane.no_changes"), None).into_any_element()
+            empty_state(theme, &tr!("sidepane.no_changes"), None, EmptyFill::Grow)
         };
 
         let mut content = div()
@@ -1576,10 +1577,7 @@ impl SidePane {
             .w(px(200.))
             .py(px(4.))
             .rounded(px(10.))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.popover_shadow())
+            .popover_surface(theme)
             .flex()
             .flex_col()
             .occlude()
@@ -2055,57 +2053,6 @@ fn gap_icon(direction: ExpansionDirection) -> &'static str {
 }
 
 // ── shared helpers ─────────────────────────────────────────────────────────
-
-fn spinner(id: &'static str, theme: Theme) -> AnyElement {
-    gpui::svg()
-        .path("icons/loader.svg")
-        .flex_none()
-        .size(px(13.))
-        .text_color(theme.text_3)
-        .with_animation(
-            id,
-            Animation::new(Duration::from_millis(900)).repeat(),
-            |svg, delta| {
-                svg.with_transformation(Transformation::rotate(radians(
-                    delta * std::f32::consts::TAU,
-                )))
-            },
-        )
-        .into_any_element()
-}
-
-fn centered_message(theme: Theme, title: &str, detail: Option<&str>) -> AnyElement {
-    let mut column = div()
-        .flex_1()
-        .min_h_0()
-        .min_w_0()
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .px(px(16.))
-        .pb(px(32.))
-        .child(
-            div()
-                .text_size(theme.ui_px(13.))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text)
-                .child(title.to_string()),
-        );
-    if let Some(detail) = detail {
-        column = column.child(
-            div()
-                .mt(px(6.))
-                .max_w(px(300.))
-                .text_align(TextAlign::Center)
-                .text_size(theme.ui_px(12.))
-                .line_height(theme.ui_px(17.))
-                .text_color(theme.text_3)
-                .child(detail.to_string()),
-        );
-    }
-    column.into_any_element()
-}
 
 impl Source {
     /// Reader-facing empty-state copy for each source.

@@ -12,11 +12,12 @@
 //! the entity — the same entity-with-callbacks shape as `CommandPalette`.
 
 use gpui::{
-    deferred, div, hsla, point, prelude::*, px, AnyElement, App, Context, ElementId, Entity,
+    deferred, div, point, prelude::*, px, AnyElement, App, Context, ElementId, Entity,
     FocusHandle, Focusable, FontWeight, IntoElement, MouseButton, MouseDownEvent, Render,
     ScrollHandle, SharedString, Window,
 };
 
+use crate::app::PopoverSurface;
 use crate::composer::ComposerInput;
 use crate::theme::{self, Theme};
 
@@ -326,10 +327,7 @@ impl Render for Dialog {
             .w_full()
             .max_w(px(CARD_W))
             .rounded(px(14.))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.popover_shadow())
+            .popover_surface(theme)
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -427,10 +425,7 @@ impl Render for Dialog {
         );
 
         // ── scrim: dimmed backdrop; a click outside cancels the dialog ──
-        let scrim = match theme.mode {
-            theme::ThemeMode::Dark => hsla(0., 0., 0., 0.32),
-            theme::ThemeMode::Light => hsla(0., 0., 0., 0.18),
-        };
+        let scrim = theme.scrim_modal();
         div()
             .id("dialog-layer")
             .debug_selector(|| "dialog-layer".to_string())

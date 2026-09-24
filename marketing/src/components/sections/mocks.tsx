@@ -146,38 +146,6 @@ export function ComposerMock() {
   );
 }
 
-export function FindMock() {
-  return (
-    <div className="flex flex-col gap-2.5 text-[11.5px] leading-[1.55]">
-      <div className="flex items-center gap-2 rounded-md bg-tint-0a px-2.5 py-1.5 font-mono text-[10.5px] text-ink-2 shadow-[inset_0_0_0_1px_var(--tint-0f)]">
-        <HugeiconsIcon
-          icon={Search01Icon}
-          className="size-3.5 text-ink-3"
-        />
-        <span className="text-ink">review</span>
-        <span className="ml-auto text-ink-3">3 / 12</span>
-        <span className="flex items-center gap-1 text-ink-3">
-          <HugeiconsIcon icon={ArrowUp01Icon} className="size-3" />
-          <HugeiconsIcon icon={ArrowDown01Icon} className="size-3" />
-        </span>
-      </div>
-      <p className="text-ink-2">
-        The{" "}
-        <span className="rounded-[3px] bg-brand/25 px-0.5 text-ink">
-          review
-        </span>{" "}
-        panel refreshes
-        <br />
-        when the run settles.
-      </p>
-      <div className="flex items-center gap-2 text-ink-3">
-        <HugeiconsIcon icon={SparklesIcon} className="size-3.5" />
-        <span className="font-mono text-[10.5px]">image · click to expand</span>
-      </div>
-    </div>
-  );
-}
-
 export function ApprovalMock() {
   return (
     <div className="flex flex-col gap-3 text-[11.5px]">
@@ -219,52 +187,6 @@ export function ApprovalMock() {
         <span className="rounded-md bg-tint-0a px-2 py-0.5 font-mono text-ink-2 shadow-[inset_0_0_0_1px_var(--tint-0f)]">
           Supervised
         </span>
-      </div>
-    </div>
-  );
-}
-
-export function WorkbenchMock() {
-  const bars = [34, 52, 41, 66, 58, 74, 61, 88];
-  const pages = [
-    "Usage",
-    "Skills",
-    "Models",
-    "Plugins",
-    "Providers",
-    "Settings",
-  ];
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="flex items-center gap-2 text-[11px] text-ink-2">
-        <HugeiconsIcon icon={ChartBarLineIcon} className="size-3.5 text-ink-3" />
-        <span className="font-mono text-[10.5px] text-ink-3">
-          usage · last 30 days
-        </span>
-        <span className="ml-auto font-mono text-[10.5px] text-ink-3">
-          $0.13 / run
-        </span>
-      </div>
-      <div className="flex h-[68px] items-end gap-1.5">
-        {bars.map((h, i) => (
-          <span
-            key={i}
-            className={`flex-1 rounded-[3px] ${
-              i === bars.length - 1 ? "bg-brand/70" : "bg-tint-1a"
-            }`}
-            style={{ height: `${h}%` }}
-          />
-        ))}
-      </div>
-      <div className="grid grid-cols-3 gap-1.5 font-mono text-[10px] text-ink-2">
-        {pages.map((p) => (
-          <span
-            key={p}
-            className="rounded-md bg-tint-0a px-2 py-1 text-center shadow-[inset_0_0_0_1px_var(--tint-0f)]"
-          >
-            {p}
-          </span>
-        ))}
       </div>
     </div>
   );

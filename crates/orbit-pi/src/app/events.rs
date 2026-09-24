@@ -25,6 +25,8 @@ impl OrbitApp {
         // The reviewer is its own process with its own event stream; drain it
         // regardless of the active session's state.
         self.tick_ai_review(cx);
+        // Persist a settled panel layout (a drag writes once it stops).
+        crate::layout::flush_if_settled();
         // Bound the warm-session pool: reap idle parked processes past the TTL.
         self.reap_idle_parked();
         // A banner click routes back to the session it announced.

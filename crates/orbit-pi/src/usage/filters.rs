@@ -10,6 +10,7 @@
 //! object drives every panel on the page (§10).
 
 use crate::app::{press, BUTTON_GROUP};
+use crate::app::{press, refresh_glyph, PopoverSurface, BUTTON_GROUP};
 use chrono::Datelike;
 use gpui::{
     anchored, deferred, div, point, prelude::*, px, AnyElement, App, Corner, ElementId, Entity,
@@ -103,7 +104,7 @@ pub fn chip(
         .id(ElementId::Name(SharedString::from(id)))
         .h(px(28.))
         .px(px(9.))
-        .rounded(px(7.))
+        .rounded(px(8.))
         .border_1()
         .border_color(if active {
             theme.border_strong
@@ -152,10 +153,7 @@ fn panel(
         .id(ElementId::Name(SharedString::from(id)))
         .w(px(width))
         .rounded(px(9.))
-        .border_1()
-        .border_color(theme.border_strong)
-        .bg(theme.menu_bg)
-        .shadow(theme.popover_shadow())
+        .popover_surface(theme)
         .flex()
         .flex_col()
         .overflow_hidden()
@@ -1121,7 +1119,7 @@ pub fn toggle_chip(
         .h(px(28.))
         .pl(px(9.))
         .pr(px(6.))
-        .rounded(px(7.))
+        .rounded(px(8.))
         .border_1()
         .border_color(theme.border_strong)
         .bg(theme.active)
@@ -1152,6 +1150,7 @@ pub fn text_button(
     id: &'static str,
     label: &str,
     icon_path: Option<&'static str>,
+    icon_active: bool,
     enabled: bool,
     theme: Theme,
     on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
@@ -1162,7 +1161,7 @@ pub fn text_button(
         .group(BUTTON_GROUP)
         .h(px(28.))
         .px(px(8.))
-        .rounded(px(7.))
+        .rounded(px(8.))
         .flex()
         .items_center()
         .gap(px(6.))
@@ -1174,7 +1173,21 @@ pub fn text_button(
                 .hover(|style| style.bg(theme.bg_hover).text_color(theme.text))
                 .on_mouse_down(MouseButton::Left, on_click)
         })
-        .children(icon_path.map(|path| icon(path, 12., color)))
+        .children(icon_path.map(|path| {
+            if icon_active {
+                // The leading glyph is the refresh affordance: turn it in
+                // place instead of swapping in a loader, matching the popover.
+                refresh_glyph(
+                    ElementId::Name(SharedString::from(format!("{id}-spin"))),
+                    12.,
+                    true,
+                    color,
+                    theme,
+                )
+            } else {
+                icon(path, 12., color).into_any_element()
+            }
+        }))
         .child(label.to_string())
         .into_any_element()
 }

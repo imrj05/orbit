@@ -312,6 +312,9 @@ pub(crate) fn render_side_row(
     live_paths: &Rc<HashSet<PathBuf>>,
     session_menu: Option<&SessionMenu>,
     workspace_menu: Option<&WorkspaceMenu>,
+    // Whether this row is the keyboard cursor (see `OrbitApp::sidebar_cursor`).
+    // Painted with a focused surface, distinct from hover and selection.
+    cursor: bool,
     theme: Theme,
 ) -> impl IntoElement {
     match &rows[ix] {
@@ -327,7 +330,7 @@ pub(crate) fn render_side_row(
             let this_toggle = this.clone();
             let this_new = this.clone();
             let this_menu = this.clone();
-            let menu_open = workspace_menu.is_some_and(|m| m.label == label);
+            let menu = workspace_menu.filter(|m| m.label == label);
             // Outer shell: inter-group spacing only — horizontal inset comes
             // from the list's `px_2`, so the hover pill lines up with the
             // session rows' (inside the same container) and the chevron lands
@@ -353,6 +356,7 @@ pub(crate) fn render_side_row(
                         .items_center()
                         .gap(px(6.))
                         .cursor_pointer()
+                        .when(cursor, |s| s.bg(theme.overlay))
                         .hover(|s| s.bg(theme.bg_hover))
                         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                             let label = label_for_click.clone();
@@ -366,6 +370,24 @@ pub(crate) fn render_side_row(
                                 );
                                 cx.notify();
                             });
+                        })
+                        // Right-click anywhere on the header opens its
+                        // actions menu at the pointer, context-menu style.
+                        .on_mouse_down(MouseButton::Right, {
+                            let label = label.clone();
+                            let cwd = cwd.clone();
+                            let this = this.clone();
+                            move |event: &MouseDownEvent, window, cx| {
+                                cx.stop_propagation();
+                                let menu = WorkspaceMenu {
+                                    label: label.clone(),
+                                    cwd: cwd.clone(),
+                                    at: Some(event.position),
+                                };
+                                this.update(cx, |app, cx| {
+                                    app.open_workspace_menu_at(menu, window, cx);
+                                });
+                            }
                         })
                         .child(icon(
                             if *collapsed {
@@ -392,7 +414,7 @@ pub(crate) fn render_side_row(
                         .child(workspace_menu_button(
                             label.clone(),
                             cwd.clone(),
-                            menu_open,
+                            menu,
                             this_menu.clone(),
                             theme,
                         ))
@@ -482,6 +504,7 @@ pub(crate) fn render_side_row(
                 .flex()
                 .items_center()
                 .rounded_md()
+                .when(cursor, |s| s.bg(theme.overlay))
                 .hover(|s| s.bg(theme.bg_hover))
                 .child(more);
             if can_collapse {
@@ -521,6 +544,7 @@ pub(crate) fn render_side_row(
                 .gap(px(6.))
                 .rounded_md()
                 .cursor_pointer()
+                .when(cursor, |s| s.bg(theme.overlay))
                 .hover(|s| s.bg(theme.bg_hover))
                 .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                     let label = label_for_click.clone();
@@ -572,10 +596,38 @@ pub(crate) fn render_side_row(
                 .w_full()
                 .py(px(1.))
                 .cursor_pointer()
-                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                // Right-click anywhere on the row opens its actions menu at
+                // the pointer, context-menu style (context menus are the
+                // secondary-action surface; the `…` button stays for
+                // discoverability).
+                .on_mouse_down(MouseButton::Right, {
+                    let session = session.clone();
+                    let this = this.clone();
+                    move |event: &MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        this.update(cx, |app, cx| {
+                            app.open_session_menu_at(
+                                SessionMenu {
+                                    path: session.path.clone(),
+                                    title: session.title.clone(),
+                                    deletable,
+                                    confirm_delete: false,
+                                    at: Some(event.position),
+                                },
+                                window,
+                                cx,
+                            );
+                        });
+                    }
+                })
+                .on_mouse_up(MouseButton::Left, move |_, window, cx| {
                     let session = session_for_click.clone();
                     this_for_row.update(cx, |app, cx| {
+                        // A click is a mouse hand-off: leave keyboard nav and
+                        // hand focus back to the composer so typing resumes.
+                        app.sidebar_cursor = None;
                         app.on_open_session(session, cx);
+                        app.input.read(cx).focus(window);
                     });
                 });
             let mut card = div()
@@ -589,7 +641,8 @@ pub(crate) fn render_side_row(
                 .items_center()
                 .gap(px(6.))
                 .when(active, |card| card.bg(theme.active))
-                .when(!active, |card| card.hover(|s| s.bg(theme.bg_hover)));
+                .when(cursor && !active, |card| card.bg(theme.overlay))
+                .when(!active && !cursor, |card| card.hover(|s| s.bg(theme.bg_hover)));
             // Text column: title + actions, then the first-message preview
             // with the age. Every row with a message keeps the same two-line
             // shape — even when the title repeats it — so the list scans
@@ -617,7 +670,14 @@ pub(crate) fn render_side_row(
                             .flex()
                             .items_center()
                             .gap(px(6.))
-                            .when(running, |line| line.child(running_loader(theme, *ix)))
+                            .when(running, |line| {
+                                line.child(crate::app::spinner(
+                                    ElementId::NamedInteger("side-spin".into(), *ix as u64),
+                                    11.,
+                                    theme.accent,
+                                    theme,
+                                ))
+                            })
                             .when(pinned, |line| {
                                 line.child(icon("icons/pin.svg", 16., theme.text_3))
                             })
@@ -719,6 +779,7 @@ pub(crate) fn session_menu_button(
                         title,
                         deletable,
                         confirm_delete: false,
+                        at: None,
                     },
                     window,
                     cx,
@@ -740,25 +801,6 @@ pub(crate) fn session_menu_button(
                 .size(px(0.))
                 .child(session_menu_popup(menu, this_for_popup.clone(), theme))
         }))
-}
-
-/// A small spinner at the start of a running session row — the shadcn
-/// Marker + Spinner pattern. `with_animation` rotates it; no app tick.
-fn running_loader(theme: Theme, id: usize) -> impl IntoElement + use<> {
-    gpui::svg()
-        .path("icons/loader.svg")
-        .flex_none()
-        .size(px(11.))
-        .text_color(theme.accent)
-        .with_animation(
-            ElementId::NamedInteger("side-spin".into(), id as u64),
-            Animation::new(Duration::from_millis(900)).repeat(),
-            |svg, delta| {
-                svg.with_transformation(Transformation::rotate(radians(
-                    delta * std::f32::consts::TAU,
-                )))
-            },
-        )
 }
 
 /// A session row's title. Quiet rows render as one truncated line; a running
@@ -986,10 +1028,7 @@ pub(crate) fn session_menu_popup(
         .p(px(4.))
         .when(confirm, |pop| pop.w(px(210.)).p(px(10.)))
         .rounded(px(10.))
-        .border_1()
-        .border_color(theme.border_strong)
-        .bg(theme.menu_bg)
-        .shadow(theme.popover_shadow())
+        .popover_surface(theme)
         .flex()
         .flex_col()
         .overflow_hidden()
@@ -1011,18 +1050,22 @@ pub(crate) fn session_menu_popup(
         .child(body);
 
     // Float the popup: `anchored` takes it out of the layout (no other row
-    // moves) and pins its top-left corner just below the '…' button (the
-    // button is 18px, so +20px drops the top edge 2px under it, left-aligned
-    // to the trigger — the standard app dropdown position). The wrapping
-    // zero-size anchor in `session_menu_button` guarantees the static origin
-    // is the button's top-left regardless of the button's own centering.
-    // `deferred` paints it above the rest of the list — same convention as
-    // the composer chip pickers. `snap_to_window` keeps it inside the window
-    // near the edges.
-    anchored()
-        .position_mode(AnchoredPositionMode::Local)
-        .anchor(Corner::TopLeft)
-        .offset(point(px(0.), px(20.)))
+    // moves). A right-clicked menu lands at the pointer in window
+    // coordinates; the '…' button's menu pins its top-left corner just
+    // below the trigger (the button is 18px, so +20px drops the top edge
+    // 2px under it, left-aligned to the trigger — the standard app dropdown
+    // position). `deferred` paints it above the rest of the list — same
+    // convention as the composer chip pickers. `snap_to_window` keeps it
+    // inside the window near the edges.
+    let anchor = if let Some(at) = menu.at {
+        anchored().anchor(Corner::TopLeft).position(at)
+    } else {
+        anchored()
+            .position_mode(AnchoredPositionMode::Local)
+            .anchor(Corner::TopLeft)
+            .offset(point(px(0.), px(20.)))
+    };
+    anchor
         .snap_to_window()
         .child(deferred(popup))
         .into_any_element()
@@ -1034,7 +1077,7 @@ pub(crate) fn session_menu_popup(
 pub(crate) fn workspace_menu_button(
     label: String,
     cwd: PathBuf,
-    menu_open: bool,
+    menu: Option<&WorkspaceMenu>,
     this: Entity<OrbitApp>,
     theme: Theme,
 ) -> impl IntoElement + use<> {
@@ -1053,7 +1096,7 @@ pub(crate) fn workspace_menu_button(
         .justify_center()
         .cursor_pointer()
         // Revealed on row hover, or while this header's menu is open.
-        .opacity(if menu_open { 1.0 } else { 0.0 })
+        .opacity(if menu.is_some() { 1.0 } else { 0.0 })
         .group_hover("workspace-row", |s| s.opacity(1.))
         .active(|s| s.opacity(PRESS_DIM))
         .on_mouse_up(MouseButton::Left, move |_, window, cx| {
@@ -1061,32 +1104,34 @@ pub(crate) fn workspace_menu_button(
             let menu = WorkspaceMenu {
                 label: label_for_click.clone(),
                 cwd: cwd_for_click.clone(),
+                at: None,
             };
             this.update(cx, |app, cx| app.toggle_workspace_menu(menu, window, cx));
         })
         .child(icon("icons/more.svg", 14., theme.text_3))
-        .children(menu_open.then(|| {
+        .children(menu.map(|menu| {
             div()
                 .absolute()
                 .top_0()
                 .left_0()
                 .size(px(0.))
-                .child(workspace_menu_popup(this_for_popup.clone(), theme))
+                .child(workspace_menu_popup(menu, this_for_popup.clone(), theme))
         }))
 }
 
 /// The actions popup anchored to a workspace header: Copy path / Remove
 /// from sidebar. Painted with the same deferred + anchored convention as
 /// the session row menu, dismissed by any outside mouse-down.
-pub(crate) fn workspace_menu_popup(this: Entity<OrbitApp>, theme: Theme) -> AnyElement {
+pub(crate) fn workspace_menu_popup(
+    menu: &WorkspaceMenu,
+    this: Entity<OrbitApp>,
+    theme: Theme,
+) -> AnyElement {
     let popup = div()
         .w(px(200.))
         .p(px(4.))
         .rounded(px(10.))
-        .border_1()
-        .border_color(theme.border_strong)
-        .bg(theme.menu_bg)
-        .shadow(theme.popover_shadow())
+        .popover_surface(theme)
         .flex()
         .flex_col()
         .overflow_hidden()
@@ -1123,10 +1168,15 @@ pub(crate) fn workspace_menu_popup(this: Entity<OrbitApp>, theme: Theme) -> AnyE
             |app, cx| app.on_workspace_remove(cx),
         ));
 
-    anchored()
-        .position_mode(AnchoredPositionMode::Local)
-        .anchor(Corner::TopLeft)
-        .offset(point(px(0.), px(20.)))
+    let anchor = if let Some(at) = menu.at {
+        anchored().anchor(Corner::TopLeft).position(at)
+    } else {
+        anchored()
+            .position_mode(AnchoredPositionMode::Local)
+            .anchor(Corner::TopLeft)
+            .offset(point(px(0.), px(20.)))
+    };
+    anchor
         .snap_to_window()
         .child(deferred(popup))
         .into_any_element()
@@ -1250,6 +1300,34 @@ impl OrbitApp {
             cx.notify();
             return;
         }
+        self.dismiss_transient_popups(window, cx);
+        self.workspace_menu = None;
+        self.session_menu = Some(menu);
+        cx.notify();
+    }
+
+    /// Open the session row menu from a right-click, floating it at the
+    /// pointer ([`SessionMenu::at`]). Unlike the `…` button's toggle this
+    /// always (re)positions the menu — a right-click while another row's menu
+    /// is up moves it to the new row instead of dismissing — and skips the
+    /// gesture guard, which only exists for the left-click dismiss/reopen
+    /// race.
+    pub(super) fn open_session_menu_at(
+        &mut self,
+        menu: SessionMenu,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.dismiss_transient_popups(window, cx);
+        self.workspace_menu = None;
+        self.session_menu = Some(menu);
+        cx.notify();
+    }
+
+    /// Dismiss window-level overlays (palette, pickers, popup selectors) so a
+    /// row menu never opens underneath one — every open path above routes
+    /// through here.
+    fn dismiss_transient_popups(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.command_palette.take().is_some() {
             self.input.read(cx).focus(window);
         }
@@ -1262,9 +1340,6 @@ impl OrbitApp {
         if self.model_selector.is_some() {
             self.close_model_selector(window, cx);
         }
-        self.workspace_menu = None;
-        self.session_menu = Some(menu);
-        cx.notify();
     }
 
     pub(super) fn on_menu_copy_path(&mut self, cx: &mut Context<Self>) {
@@ -1365,19 +1440,23 @@ impl OrbitApp {
             cx.notify();
             return;
         }
-        if self.command_palette.take().is_some() {
-            self.input.read(cx).focus(window);
-        }
-        if self.branch_picker.take().is_some() {
-            self.input.read(cx).focus(window);
-        }
-        if self.workspace_picker.take().is_some() {
-            self.input.read(cx).focus(window);
-        }
+        self.dismiss_transient_popups(window, cx);
         self.session_menu = None;
-        if self.model_selector.is_some() {
-            self.close_model_selector(window, cx);
-        }
+        self.workspace_menu = Some(menu);
+        cx.notify();
+    }
+
+    /// Open the workspace header menu from a right-click, floating it at the
+    /// pointer ([`WorkspaceMenu::at`]). See [`Self::open_session_menu_at`] for
+    /// why this bypasses the toggle's gesture guard and equality check.
+    pub(super) fn open_workspace_menu_at(
+        &mut self,
+        menu: WorkspaceMenu,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.dismiss_transient_popups(window, cx);
+        self.session_menu = None;
         self.workspace_menu = Some(menu);
         cx.notify();
     }
@@ -1416,5 +1495,206 @@ impl OrbitApp {
                 cx.notify();
             }
         }
+    }
+
+    // ── keyboard navigation ───────────────────────────────────────────
+
+    /// The sidebar rows as currently laid out — the same grouping, ordering,
+    /// collapse state, and pinned/running marks the render path uses. Shared
+    /// so the keyboard cursor can never point at a row the user cannot see.
+    fn sidebar_rows_for_nav(&self) -> Vec<SideRow> {
+        let sessions = self.sidebar_sessions();
+        let working = self.workspace_label();
+        let pinned: HashSet<PathBuf> = crate::pins::all().paths();
+        let running: HashSet<PathBuf> = self
+            .lives
+            .iter()
+            .filter(|(_, parked)| parked.busy)
+            .map(|(path, _)| path.clone())
+            .collect();
+        build_sidebar_rows(
+            &sessions,
+            &self.workspaces,
+            &working,
+            &self.collapsed_workspaces,
+            &self.expanded_workspace_groups,
+            &self.expanded_session_groups,
+            &pinned,
+            &self.current_session_path,
+            &running,
+        )
+    }
+
+    /// Row index of the open session in `rows`, when it is visible.
+    fn active_session_row(&self, rows: &[SideRow]) -> Option<usize> {
+        let sessions = self.sidebar_sessions();
+        let active = self.current_session_path.as_ref()?;
+        let session_ix = sessions.iter().position(|session| &session.path == active)?;
+        rows.iter()
+            .position(|row| matches!(row, SideRow::Session(ix) if *ix == session_ix))
+    }
+
+    /// ⌘⇧B: reveal the sidebar if hidden, then focus it and place the cursor
+    /// on the open session (or the first row).
+    pub(super) fn on_focus_sessions(
+        &mut self,
+        _: &crate::FocusSessions,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Settings is a full-window surface with its own nav; the sidebar is
+        // not mounted, so there is nothing to focus.
+        if self.settings_open {
+            return;
+        }
+        if !self.sidebar_visible {
+            self.sidebar_visible = true;
+            self.sidebar_slide_gen = self.sidebar_slide_gen.wrapping_add(1);
+        }
+        let rows = self.sidebar_rows_for_nav();
+        self.sidebar_cursor = (!rows.is_empty()).then(|| self.active_session_row(&rows).unwrap_or(0));
+        window.focus(&self.sidebar_focus);
+        cx.notify();
+    }
+
+    pub(super) fn on_sidebar_prev(
+        &mut self,
+        _: &crate::SidebarPrev,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_sidebar_cursor(|ix| ix.saturating_sub(1), cx);
+    }
+
+    pub(super) fn on_sidebar_next(
+        &mut self,
+        _: &crate::SidebarNext,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_sidebar_cursor(|ix| ix.saturating_add(1), cx);
+    }
+
+    pub(super) fn on_sidebar_home(
+        &mut self,
+        _: &crate::SidebarHome,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_sidebar_cursor(|_| 0, cx);
+    }
+
+    pub(super) fn on_sidebar_end(
+        &mut self,
+        _: &crate::SidebarEnd,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_sidebar_cursor(|_| usize::MAX, cx);
+    }
+
+    /// Move the cursor by `step`, clamped to the visible rows, and scroll it
+    /// into view.
+    fn move_sidebar_cursor(&mut self, step: impl Fn(usize) -> usize, cx: &mut Context<Self>) {
+        let count = self.sidebar_rows_for_nav().len();
+        self.sidebar_cursor = clamp_cursor(step(self.sidebar_cursor.unwrap_or(0)), count);
+        if let Some(next) = self.sidebar_cursor {
+            self.sidebar_list.scroll_to_reveal_item(next);
+        }
+        cx.notify();
+    }
+
+    /// Enter on the cursor row: open a session (returning focus to the
+    /// composer), toggle a workspace group, or reveal/collapse a group's
+    /// overflow — the same actions the row's click affordances perform.
+    pub(super) fn on_sidebar_confirm(
+        &mut self,
+        _: &crate::SidebarConfirm,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.sidebar_cursor else {
+            return;
+        };
+        let rows = self.sidebar_rows_for_nav();
+        let Some(row) = rows.get(index) else {
+            return;
+        };
+        match row {
+            SideRow::Session(ix) => {
+                let sessions = self.sidebar_sessions();
+                if let Some(session) = sessions.get(*ix).cloned() {
+                    self.on_open_session(session, cx);
+                }
+                // The row is a destination: hand focus back to the composer
+                // so typing resumes immediately.
+                self.sidebar_cursor = None;
+                self.input.read(cx).focus(window);
+            }
+            SideRow::Workspace { label, .. } => {
+                let working = self.workspace_label();
+                toggle_workspace_group(
+                    label.clone(),
+                    &working,
+                    &mut self.collapsed_workspaces,
+                    &mut self.expanded_workspace_groups,
+                );
+                self.clamp_sidebar_cursor(cx);
+            }
+            SideRow::ShowMore { label, count, .. } => {
+                self.expanded_session_groups
+                    .entry(label.clone())
+                    .and_modify(|extra| *extra += count)
+                    .or_insert(*count);
+                self.clamp_sidebar_cursor(cx);
+            }
+            SideRow::ShowLess { label } => {
+                self.expanded_session_groups.remove(label);
+                self.clamp_sidebar_cursor(cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Esc: dismiss an open row menu first, otherwise leave keyboard
+    /// navigation and hand focus back to the composer.
+    pub(super) fn on_sidebar_close(
+        &mut self,
+        _: &crate::SidebarClose,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session_menu.take().is_some() || self.workspace_menu.take().is_some() {
+            cx.notify();
+            return;
+        }
+        self.sidebar_cursor = None;
+        self.input.read(cx).focus(window);
+        cx.notify();
+    }
+
+    /// Keep the cursor inside the rows after one collapses the list under it.
+    fn clamp_sidebar_cursor(&mut self, cx: &mut Context<Self>) {
+        let count = self.sidebar_rows_for_nav().len();
+        self.sidebar_cursor = self.sidebar_cursor.and_then(|ix| clamp_cursor(ix, count));
+        cx.notify();
+    }
+}
+
+/// Clamp a cursor position into `count` rows: `None` when there are none, the
+/// nearest valid index otherwise.
+fn clamp_cursor(index: usize, count: usize) -> Option<usize> {
+    (count > 0).then(|| index.min(count - 1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cursor_clamps_to_the_visible_rows() {
+        assert_eq!(clamp_cursor(0, 0), None);
+        assert_eq!(clamp_cursor(3, 2), Some(1));
+        assert_eq!(clamp_cursor(1, 5), Some(1));
     }
 }

@@ -28,6 +28,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   block into severity-chipped rows that scroll the diff to the offending file;
   the answer's prose is kept when no findings parse.
 
+## [0.0.16] - 2026-09-24
+
+### Added
+
+- Add structured data, harden headers, and extend cache windows
+- Rebuild landing around story sections and refresh OG
+
+### Changed
+
+- Feat/UI refinement (#23)
+
+## [0.0.15] - 2026-09-23
+
+### Added
+
+- Per-tool glyph badges in the transcript, tinted by work kind, with a
+  chip-style folded activity group
+- Surface pi's capped-result facts on tool cards as a `truncated` chip
+- Success check on the session-details Update button after a rename commits
+
+### Changed
+
+- Refactor the transcript UI: readable tool labels, a real shared spinner,
+  shared button hover/press feedback, and redesigned git issue/PR details
+
 ## [0.0.14] - 2026-09-23
 
 ### Changed
@@ -292,7 +317,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - In-transcript find (⌘F) and a full-window image lightbox.
 - Native macOS app bundle, Developer-ID signed and notarizable.
 
-[Unreleased]: https://github.com/imrj05/orbit/compare/v0.0.14...HEAD
+[Unreleased]: https://github.com/imrj05/orbit/compare/v0.0.16...HEAD
 [0.0.1]: https://github.com/imrj05/orbit/releases/tag/v0.0.1
 [0.0.2]: https://github.com/imrj05/orbit/releases/tag/v0.0.2
 [0.0.3]: https://github.com/imrj05/orbit/releases/tag/v0.0.3
@@ -307,3 +332,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.0.12]: https://github.com/imrj05/orbit/releases/tag/v0.0.12
 [0.0.13]: https://github.com/imrj05/orbit/releases/tag/v0.0.13
 [0.0.14]: https://github.com/imrj05/orbit/releases/tag/v0.0.14
+[0.0.15]: https://github.com/imrj05/orbit/releases/tag/v0.0.15
+[0.0.16]: https://github.com/imrj05/orbit/releases/tag/v0.0.16

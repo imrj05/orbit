@@ -6,9 +6,10 @@
 @custom-variant light (&:is(.light *));
 
 /*
- * Palette and layout scale mirror the warm.run reference landing. The literal
- * colours live in `:root` (dark, the default) and `.light` below, so every
- * `@theme inline` mapping flips with the active theme.
+ * Orbit visual language: dark elevated minimalism.
+ * Hierarchy comes from surface elevation, spacing, and contrast — not from
+ * decoration. The literal colours live in `:root` (dark, the default) and
+ * `.light` below, so every `@theme inline` mapping flips with the theme.
  */
 @theme {
   --font-sans: var(--font-sora), ui-sans-serif, system-ui, sans-serif;
@@ -39,6 +40,16 @@
   --color-side: var(--side);
   --color-gold: var(--gold);
 
+  /* Surface elevation */
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+
+  /* Border hierarchy */
+  --color-edge-subtle: var(--edge-subtle);
+  --color-edge-default: var(--edge-default);
+  --color-edge-strong: var(--edge-strong);
+
   /* Translucent overlays that invert with the theme. */
   --color-tint-02: var(--tint-02);
   --color-tint-03: var(--tint-03);
@@ -55,9 +66,12 @@
   --color-tint-26: var(--tint-26);
   --color-tint-29: var(--tint-29);
 
-  /* Elevation */
-  --shadow-window: var(--elev-window);
-  --shadow-pop: var(--elev-pop);
+  /* Elevation — shadows are deliberately restrained. Only the main product
+   * preview (`--shadow-product`) is allowed deep elevation. */
+  --shadow-card: var(--elev-card);
+  --shadow-window: var(--elev-card);
+  --shadow-pop: var(--elev-card);
+  --shadow-product: var(--elev-product);
 
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -101,28 +115,40 @@
 }
 
 :root {
-  --radius: 0.375rem;
+  /* Radius ladder: 10px buttons, 14px cards, 16px product surfaces. */
+  --radius: 0.625rem;
 
-  /* Orbit palette — dark (default) */
-  --page: #141518;
-  --well: #0f1012;
-  --missions: #0b0c0f;
-  --slab: #242529;
-  --ink: #f4f4f5;
-  --ink-2: #a2a5ab;
-  --ink-3: #6f7278;
-  --hair: #ffffff14;
-  --dash: #ffffff1c;
+  /* Orbit palette — dark (default). One continuous near-black surface. */
+  --page: #09090b;
+  --well: #0c0c0e;
+  --missions: #09090b;
+  --slab: #1b1c20;
+  --ink: rgba(255, 255, 255, 0.94);
+  --ink-2: rgba(255, 255, 255, 0.62);
+  --ink-3: rgba(255, 255, 255, 0.42);
+  --hair: rgba(255, 255, 255, 0.08);
+  --dash: rgba(255, 255, 255, 0.1);
   --brand: #5b9dff;
-  --window: #17181b;
-  --winbar: #1d1e22;
-  --side: #131417;
+  --window: #0e0e11;
+  --winbar: #121215;
+  --side: #0a0a0c;
   --gold: #f5b544;
   --overlay: #ffffff;
   --winbar-line: #00000066;
 
-  --elev-window: 0 0 0 1px #ffffff17, 0 24px 60px #0000008c;
-  --elev-pop: 0 0 0 1px #ffffff14, 0 12px 30px #00000073;
+  /* Surface + border hierarchy. Small contrast steps, inverted for light. */
+  --surface-1: color-mix(in oklab, var(--overlay) 2.5%, transparent);
+  --surface-2: color-mix(in oklab, var(--overlay) 4%, transparent);
+  --surface-3: color-mix(in oklab, var(--overlay) 6%, transparent);
+
+  --edge-subtle: color-mix(in oklab, var(--overlay) 5.5%, transparent);
+  --edge-default: color-mix(in oklab, var(--overlay) 8%, transparent);
+  --edge-strong: color-mix(in oklab, var(--overlay) 14%, transparent);
+
+  --elev-card: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --elev-product:
+    0 20px 60px rgba(0, 0, 0, 0.35),
+    0 1px 2px rgba(0, 0, 0, 0.25);
 
   /* Overlays derived from `--overlay`, so they invert in light mode. */
   --tint-02: color-mix(in oklab, var(--overlay) 0.8%, transparent);
@@ -141,56 +167,54 @@
   --tint-29: color-mix(in oklab, var(--overlay) 16%, transparent);
 
   /* shadcn/ui */
-  --background: #141518;
-  --foreground: #f4f4f5;
-  --card: #1c1d21;
-  --card-foreground: #f4f4f5;
-  --popover: #17181b;
-  --popover-foreground: #f4f4f5;
-  --primary: #f4f4f5;
-  --primary-foreground: #141518;
-  --secondary: #242529;
-  --secondary-foreground: #f4f4f5;
-  --muted: #242529;
-  --muted-foreground: #a2a5ab;
-  --accent: #242529;
-  --accent-foreground: #f4f4f5;
+  --background: #09090b;
+  --foreground: rgba(255, 255, 255, 0.94);
+  --card: rgba(255, 255, 255, 0.025);
+  --card-foreground: rgba(255, 255, 255, 0.94);
+  --popover: #101013;
+  --popover-foreground: rgba(255, 255, 255, 0.94);
+  --primary: #f5f5f5;
+  --primary-foreground: #09090b;
+  --secondary: rgba(255, 255, 255, 0.04);
+  --secondary-foreground: rgba(255, 255, 255, 0.9);
+  --muted: rgba(255, 255, 255, 0.05);
+  --muted-foreground: rgba(255, 255, 255, 0.62);
+  --accent: rgba(255, 255, 255, 0.06);
+  --accent-foreground: rgba(255, 255, 255, 0.94);
   --destructive: #e5484d;
-  --border: #ffffff14;
-  --input: #ffffff1f;
+  --border: rgba(255, 255, 255, 0.08);
+  --input: rgba(255, 255, 255, 0.1);
   --ring: #5b9dff;
 
   --chart-1: #5b9dff;
   --chart-2: #8fb6ff;
-  --chart-3: #a2a5ab;
-  --chart-4: #6f7278;
-  --chart-5: #3a3b40;
+  --chart-3: rgba(255, 255, 255, 0.62);
+  --chart-4: rgba(255, 255, 255, 0.42);
+  --chart-5: rgba(255, 255, 255, 0.2);
 
-  --sidebar: #131417;
-  --sidebar-foreground: #f4f4f5;
+  --sidebar: #0a0a0c;
+  --sidebar-foreground: rgba(255, 255, 255, 0.94);
   --sidebar-primary: #5b9dff;
-  --sidebar-primary-foreground: #141518;
-  --sidebar-accent: #242529;
-  --sidebar-accent-foreground: #f4f4f5;
-  --sidebar-border: #ffffff14;
+  --sidebar-primary-foreground: #09090b;
+  --sidebar-accent: rgba(255, 255, 255, 0.04);
+  --sidebar-accent-foreground: rgba(255, 255, 255, 0.94);
+  --sidebar-border: rgba(255, 255, 255, 0.08);
   --sidebar-ring: #5b9dff;
 
   color-scheme: dark;
 }
 
 .light {
-  --radius: 0.375rem;
-
   /* Orbit palette — light */
   --page: #f6f6f7;
   --well: #eeeef0;
-  --missions: #e9e9ec;
+  --missions: #f6f6f7;
   --slab: #e3e3e7;
-  --ink: #17171a;
-  --ink-2: #52525b;
-  --ink-3: #8a8a93;
-  --hair: #00000012;
-  --dash: #0000001c;
+  --ink: rgba(0, 0, 0, 0.9);
+  --ink-2: rgba(0, 0, 0, 0.62);
+  --ink-3: rgba(0, 0, 0, 0.44);
+  --hair: rgba(0, 0, 0, 0.09);
+  --dash: rgba(0, 0, 0, 0.12);
   --brand: #2f6fe0;
   --window: #ffffff;
   --winbar: #f4f4f5;
@@ -199,42 +223,44 @@
   --overlay: #000000;
   --winbar-line: #00000014;
 
-  --elev-window: 0 0 0 1px #0000000f, 0 24px 50px #0000001c;
-  --elev-pop: 0 0 0 1px #00000012, 0 12px 30px #00000017;
+  --elev-card: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --elev-product:
+    0 20px 60px rgba(0, 0, 0, 0.12),
+    0 1px 2px rgba(0, 0, 0, 0.06);
 
   /* shadcn/ui */
   --background: #f6f6f7;
-  --foreground: #17171a;
+  --foreground: rgba(0, 0, 0, 0.9);
   --card: #ffffff;
-  --card-foreground: #17171a;
+  --card-foreground: rgba(0, 0, 0, 0.9);
   --popover: #ffffff;
-  --popover-foreground: #17171a;
+  --popover-foreground: rgba(0, 0, 0, 0.9);
   --primary: #17171a;
   --primary-foreground: #fafafa;
-  --secondary: #e3e3e7;
-  --secondary-foreground: #17171a;
-  --muted: #e3e3e7;
-  --muted-foreground: #52525b;
-  --accent: #e3e3e7;
-  --accent-foreground: #17171a;
+  --secondary: rgba(0, 0, 0, 0.05);
+  --secondary-foreground: rgba(0, 0, 0, 0.9);
+  --muted: rgba(0, 0, 0, 0.05);
+  --muted-foreground: rgba(0, 0, 0, 0.62);
+  --accent: rgba(0, 0, 0, 0.06);
+  --accent-foreground: rgba(0, 0, 0, 0.9);
   --destructive: #dc2626;
-  --border: #00000014;
-  --input: #0000001f;
+  --border: rgba(0, 0, 0, 0.1);
+  --input: rgba(0, 0, 0, 0.12);
   --ring: #2f6fe0;
 
   --chart-1: #2f6fe0;
   --chart-2: #5b9dff;
-  --chart-3: #52525b;
-  --chart-4: #8a8a93;
-  --chart-5: #d4d4d8;
+  --chart-3: rgba(0, 0, 0, 0.62);
+  --chart-4: rgba(0, 0, 0, 0.44);
+  --chart-5: rgba(0, 0, 0, 0.16);
 
   --sidebar: #f1f1f3;
-  --sidebar-foreground: #17171a;
+  --sidebar-foreground: rgba(0, 0, 0, 0.9);
   --sidebar-primary: #2f6fe0;
   --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #e3e3e7;
-  --sidebar-accent-foreground: #17171a;
-  --sidebar-border: #00000014;
+  --sidebar-accent: rgba(0, 0, 0, 0.05);
+  --sidebar-accent-foreground: rgba(0, 0, 0, 0.9);
+  --sidebar-border: rgba(0, 0, 0, 0.1);
   --sidebar-ring: #2f6fe0;
 
   color-scheme: light;
@@ -279,7 +305,7 @@ body {
   top: 0;
   bottom: 0;
   width: 1px;
-  background: var(--hair);
+  background: var(--edge-subtle);
   z-index: 2;
 }
 
@@ -291,7 +317,7 @@ body {
   right: 0;
 }
 
-/* A band is a full-width row inside the shell with a dashed baseline. */
+/* A band is a full-width row inside the shell. */
 .band {
   position: relative;
   padding-inline: 20px;
@@ -303,6 +329,7 @@ body {
   }
 }
 
+/* Sections separate with a single faint rule — spacing does the rest. */
 .band-dashed::after {
   content: "";
   position: absolute;
@@ -310,23 +337,11 @@ body {
   right: 0;
   bottom: 0;
   height: 1px;
-  background: repeating-linear-gradient(
-    90deg,
-    var(--dash) 0 8px,
-    transparent 8px 16px
-  );
+  background: var(--edge-subtle);
   z-index: 2;
 }
 
-/* Watermark band used behind mocks (reference uses a faint geometric mark). */
-.watermark {
-  pointer-events: none;
-  position: absolute;
-  color: var(--tint-0a);
-  z-index: 0;
-}
-
-/* Entry animations, matching the reference's gentle blur-rise. */
+/* Entry animations: a gentle blur-rise, used on the hero only. */
 @keyframes rise-in {
   0% {
     opacity: 0;
@@ -401,7 +416,7 @@ body {
   animation: pulse-dot 0.72s cubic-bezier(0.32, 0.72, 0, 1) both;
 }
 
-/* Nav settles in with a quiet fade, matching the reference. */
+/* Nav settles in with a quiet fade. */
 @keyframes nav-settle {
   0% {
     opacity: 0;
@@ -413,132 +428,6 @@ body {
 
 .nav-in {
   animation: nav-settle 0.7s ease-out both;
-}
-
-/*
- * Announce pill: a seed dot pulses, motes burst off it, and the copy
- * wipes in behind a moving mask (reference launch-line treatment).
- */
-@keyframes announce-pulse {
-  0% {
-    opacity: 0;
-    transform: scale(0.4);
-  }
-  16% {
-    opacity: 1;
-    transform: scale(1.28);
-  }
-  30% {
-    opacity: 0.18;
-    transform: scale(0.82);
-  }
-  46% {
-    opacity: 1;
-    transform: scale(1.14);
-  }
-  60% {
-    opacity: 0.28;
-    transform: scale(0.9);
-  }
-  78% {
-    opacity: 1;
-    transform: scale(1.04);
-  }
-  100% {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-@keyframes announce-mote {
-  0% {
-    opacity: 0;
-    transform: translate(-50%, -50%) scale(0.3);
-  }
-  32% {
-    opacity: 0.95;
-    transform: translate(calc(-50% + var(--x)), calc(-50% + var(--y)))
-      scale(1);
-  }
-  100% {
-    opacity: 0;
-    transform: translate(calc(-50% + var(--x) * 1.7), calc(-50% + var(--y) * 1.7))
-      scale(0.2);
-  }
-}
-
-@keyframes announce-wipe {
-  to {
-    -webkit-mask-size: 165% 100%;
-    mask-size: 165% 100%;
-  }
-}
-
-@keyframes announce-focus {
-  0% {
-    opacity: 0.35;
-    filter: blur(7px);
-    transform: translateY(3px);
-  }
-  100% {
-    opacity: 1;
-    filter: none;
-    transform: none;
-  }
-}
-
-.announce-seed {
-  position: relative;
-  flex: none;
-  width: 5px;
-  height: 5px;
-}
-
-.announce-seed > i {
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-  background: var(--color-brand);
-  animation: announce-pulse 1.6s cubic-bezier(0.32, 0.72, 0, 1) both;
-}
-
-.announce-motes {
-  pointer-events: none;
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 0;
-  height: 0;
-}
-
-.announce-motes b {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 2px;
-  height: 2px;
-  border-radius: 50%;
-  background: var(--color-brand);
-  animation: announce-mote 0.8s cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-
-.announce-clip {
-  min-width: 0;
-  -webkit-mask-image: linear-gradient(90deg, #000 0% 68%, #0000);
-  mask-image: linear-gradient(90deg, #000 0% 68%, #0000);
-  -webkit-mask-size: 0% 100%;
-  mask-size: 0% 100%;
-  -webkit-mask-repeat: no-repeat;
-  mask-repeat: no-repeat;
-  animation: announce-wipe 0.92s cubic-bezier(0.16, 1, 0.3, 1) 0.22s forwards;
-}
-
-.announce-copy {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  white-space: nowrap;
-  animation: announce-focus 0.88s cubic-bezier(0.16, 1, 0.3, 1) 0.16s both;
 }
 
 /* Live-status shimmer: gradient swept through clipped text. */
@@ -596,19 +485,8 @@ body {
   .caret,
   .pulse-dot,
   .nav-in,
-  .announce-seed > i,
-  .announce-motes b,
-  .announce-clip,
-  .announce-copy,
   .shimmer-text {
     animation: none;
-  }
-  .announce-clip {
-    -webkit-mask-size: 165% 100%;
-    mask-size: 165% 100%;
-  }
-  .announce-motes {
-    display: none;
   }
   *,
   ::before,

@@ -331,7 +331,12 @@ impl OrbitApp {
                 .bg(theme.accent)
                 .cursor_default()
                 .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into())
-                .child(update_spinner(theme.bg_main));
+                .child(crate::app::spinner(
+                    ElementId::NamedInteger("update-spin".into(), 0),
+                    14.,
+                    theme.bg_main,
+                    theme,
+                ));
             return Some(button.into_any_element());
         }
 
@@ -511,7 +516,7 @@ impl OrbitApp {
                     .group(BUTTON_GROUP)
                     .size(px(26.))
                     .flex_none()
-                    .rounded_md()
+                    .rounded_lg()
                     .flex()
                     .items_center()
                     .justify_center()
@@ -529,7 +534,7 @@ impl OrbitApp {
                 .id("settings-update-action")
                 .h(px(26.))
                 .px(px(12.))
-                .rounded_md()
+                .rounded_lg()
                 .flex()
                 .items_center()
                 .gap_1p5()
@@ -546,7 +551,7 @@ impl OrbitApp {
                 .id("settings-update-action")
                 .h(px(26.))
                 .px(px(12.))
-                .rounded_md()
+                .rounded_lg()
                 .flex()
                 .items_center()
                 .gap_1p5()
@@ -594,10 +599,7 @@ impl OrbitApp {
             .w(card_width)
             .max_h(card_max_height)
             .rounded(px(14.))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.popover_shadow())
+            .popover_surface(theme)
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -792,10 +794,7 @@ impl OrbitApp {
         card = card.child(footer);
 
         // ── scrim: dimmed backdrop; a click outside dismisses the modal ──
-        let scrim = match theme.mode {
-            theme::ThemeMode::Dark => gpui::hsla(0., 0., 0., 0.32),
-            theme::ThemeMode::Light => gpui::hsla(0., 0., 0., 0.18),
-        };
+        let scrim = theme.scrim_modal();
         Some(
             div()
                 .id("update-dialog-layer")
@@ -1141,25 +1140,6 @@ fn update_progress_bar(theme: Theme) -> impl IntoElement {
                         bar.left(gpui::relative(-SEGMENT + (1.0 + SEGMENT) * delta))
                     },
                 ),
-        )
-}
-
-/// A small spinner, for the sidebar pill's install state. `with_animation`
-/// rotates it; no app tick.
-fn update_spinner(color: Hsla) -> impl IntoElement {
-    gpui::svg()
-        .path("icons/loader.svg")
-        .flex_none()
-        .size(px(14.))
-        .text_color(color)
-        .with_animation(
-            ElementId::NamedInteger("update-spin".into(), 0),
-            Animation::new(Duration::from_millis(900)).repeat(),
-            |svg, delta| {
-                svg.with_transformation(Transformation::rotate(radians(
-                    delta * std::f32::consts::TAU,
-                )))
-            },
         )
 }
 

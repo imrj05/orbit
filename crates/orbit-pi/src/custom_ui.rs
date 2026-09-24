@@ -15,13 +15,13 @@
 
 use alacritty_terminal::term::TermMode;
 use gpui::{
-    deferred, div, hsla, prelude::*, px, App, ClickEvent, Context, Entity, FocusHandle, Focusable,
+    deferred, div, prelude::*, px, App, ClickEvent, Context, Entity, FocusHandle, Focusable,
     Font, FontWeight, KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Render, ScrollHandle,
     SharedString, StyledText, Window,
 };
 use serde_json::Value;
 
-use crate::app::icon;
+use crate::app::{icon, PopoverSurface};
 use crate::terminal::encode_key;
 use crate::theme;
 use crate::widgets;
@@ -410,10 +410,7 @@ impl Render for CustomUi {
             .debug_selector(|| "custom-ui-card".to_string())
             .w(card_w)
             .rounded(px(14.))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.popover_shadow())
+            .popover_surface(theme)
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -431,10 +428,7 @@ impl Render for CustomUi {
             .child(body)
             .child(footer);
 
-        let scrim = match theme.mode {
-            theme::ThemeMode::Dark => hsla(0., 0., 0., 0.32),
-            theme::ThemeMode::Light => hsla(0., 0., 0., 0.18),
-        };
+        let scrim = theme.scrim_modal();
         div()
             .id("custom-ui-layer")
             .debug_selector(|| "custom-ui-layer".to_string())

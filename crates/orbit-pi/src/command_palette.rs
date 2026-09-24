@@ -30,12 +30,12 @@ use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
 use gpui::{
-    deferred, div, hsla, point, prelude::*, px, App, Context, ElementId, Entity, FocusHandle,
+    deferred, div, point, prelude::*, px, App, Context, ElementId, Entity, FocusHandle,
     Focusable, FontWeight, IntoElement, MouseButton, MouseDownEvent, ParentElement, Render,
     ScrollHandle, SharedString, Styled, Window,
 };
 
-use crate::app::{icon, SettingsSection};
+use crate::app::{icon, PopoverSurface, SettingsSection};
 use crate::composer::ComposerInput;
 use crate::sessions::SessionInfo;
 use crate::theme::{self, Theme};
@@ -66,6 +66,7 @@ pub enum PaletteCommand {
     NewSession,
     RefreshSessions,
     FocusComposer,
+    FocusSessions,
     ToggleSidebar,
     ToggleSidePanel,
     ToggleTerminal,
@@ -356,9 +357,17 @@ impl CommandPalette {
                     tr!("command_palette.show_sidebar")
                 },
                 "icons/layout-left.svg",
-                None,
+                Some(crate::platform::shortcuts::SIDEBAR),
                 PaletteCommand::ToggleSidebar,
                 "toggle show hide left sidebar sessions history",
+                next(),
+            ),
+            PaletteItem::command(
+                tr!("command_palette.focus_sessions"),
+                "icons/layout-left.svg",
+                Some(crate::platform::shortcuts::FOCUS_SESSIONS),
+                PaletteCommand::FocusSessions,
+                "focus navigate keyboard sessions sidebar arrow keys",
                 next(),
             ),
             PaletteItem::command(
@@ -392,7 +401,7 @@ impl CommandPalette {
                     tr!("explorer.show")
                 },
                 "icons/folder.svg",
-                Some("⌘⇧E"),
+                Some(crate::platform::shortcuts::PROJECT_PANEL),
                 PaletteCommand::ToggleProjectPanel,
                 "explorer files project panel tree folders workspace toggle show hide",
                 next(),
@@ -776,10 +785,7 @@ impl Render for CommandPalette {
             .max_w(px(CARD_W))
             .flex_none()
             .rounded(px(14.))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.popover_shadow())
+            .popover_surface(theme)
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -827,10 +833,7 @@ impl Render for CommandPalette {
             );
 
         // ── scrim layer ──
-        let scrim = match theme.mode {
-            theme::ThemeMode::Dark => hsla(0., 0., 0., 0.26),
-            theme::ThemeMode::Light => hsla(0., 0., 0., 0.14),
-        };
+        let scrim = theme.scrim();
         div()
             .id("command-palette-layer")
             .absolute()

@@ -4,6 +4,7 @@ use super::*;
 
 use gpui::StyledText;
 
+use crate::usage::tooltip::Tooltip;
 use crate::widgets as ext_widgets;
 
 /// Height of a page's top bar (DESIGN.md: 44px header rows). The new-task
@@ -145,6 +146,7 @@ impl Render for OrbitApp {
         let active_path = Rc::new(self.current_session_path.clone());
         let session_menu = Rc::new(self.session_menu.clone());
         let workspace_menu = Rc::new(self.workspace_menu.clone());
+        let sidebar_cursor = self.sidebar_cursor;
         let this = cx.entity();
         // The open session's agent activity drives the sidebar's running
         // loader (parked runs come in via `running_paths` above).
@@ -178,6 +180,7 @@ impl Render for OrbitApp {
                     &live_paths,
                     session_menu.as_ref().as_ref(),
                     workspace_menu.as_ref().as_ref(),
+                    sidebar_cursor == Some(sticky.ix),
                     theme,
                 ))
                 .into_any_element()
@@ -523,6 +526,11 @@ impl Render for OrbitApp {
                             .h_full()
                             .flex()
                             .flex_col()
+                            // Keyboard navigation: while this column holds
+                            // focus (⌘⇧B) the `Sidebar` context routes the
+                            // arrows/Enter/Escape to the row cursor.
+                            .track_focus(&self.sidebar_focus)
+                            .key_context("Sidebar")
                             // traffic-light strip (drag region); the window's
                             // left controls float above it in the titlebar
                             // overlay — right-aligned against this column's
@@ -641,6 +649,7 @@ impl Render for OrbitApp {
                                                                     &live_paths,
                                                                     session_menu.as_ref().as_ref(),
                                                                     row_workspace_menu,
+                                                                    sidebar_cursor == Some(ix),
                                                                     *theme::get(cx),
                                                                 )
                                                                 .into_any_element()
@@ -1151,6 +1160,7 @@ impl Render for OrbitApp {
                         .clamp(px(SIDEBAR_MIN_W), max.max(px(SIDEBAR_MIN_W)));
                     if width != app.sidebar_width {
                         app.sidebar_width = width;
+                        crate::layout::set_sidebar_width(f32::from(width));
                         cx.notify();
                     }
                 },
@@ -1221,6 +1231,14 @@ impl Render for OrbitApp {
             .on_action(cx.listener(Self::on_toggle_project_panel))
             .on_action(cx.listener(Self::on_close_files))
             .on_action(cx.listener(Self::on_toggle_terminal))
+            .on_action(cx.listener(Self::on_toggle_sidebar_action))
+            .on_action(cx.listener(Self::on_focus_sessions))
+            .on_action(cx.listener(Self::on_sidebar_prev))
+            .on_action(cx.listener(Self::on_sidebar_next))
+            .on_action(cx.listener(Self::on_sidebar_home))
+            .on_action(cx.listener(Self::on_sidebar_end))
+            .on_action(cx.listener(Self::on_sidebar_confirm))
+            .on_action(cx.listener(Self::on_sidebar_close))
             .on_action(cx.listener(Self::on_toggle_command_palette))
             .on_action(cx.listener(Self::on_check_for_updates))
             .on_action(cx.listener(Self::on_toggle_search))
@@ -1522,10 +1540,7 @@ impl OrbitApp {
             .w(px(300.))
             .font_family(theme::ui_font_family())
             .rounded(px(12.))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.popover_shadow())
+            .popover_surface(theme)
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -1899,10 +1914,7 @@ impl OrbitApp {
             .w(px(200.))
             .font_family(theme::ui_font_family())
             .rounded(px(8.))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.popover_shadow())
+            .popover_surface(theme)
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -2188,6 +2200,17 @@ impl OrbitApp {
         let folder_name = sessions::workspace_label(&cwd);
         let path_label = cwd.to_string_lossy().into_owned();
         let picker_open = self.workspace_picker.is_some();
+        // A conventional project logo takes the folder glyph's seat; no logo
+        // found → folder, as before.
+        let workspace_icon: AnyElement = match &self.workspace_logo {
+            Some(logo) => img(ImageSource::Image(logo.clone()))
+                .size(px(18.))
+                .flex_none()
+                .rounded(px(5.))
+                .object_fit(ObjectFit::Contain)
+                .into_any_element(),
+            None => icon("icons/folder.svg", 14., theme.text_2).into_any_element(),
+        };
 
         // The backdrop belongs to the caller (`new_task_backdrop`, painted by
         // the chat column in `render`): one layer spans this state, the
@@ -2400,11 +2423,7 @@ impl OrbitApp {
                                                             .flex()
                                                             .items_center()
                                                             .justify_center()
-                                                            .child(icon(
-                                                                "icons/folder.svg",
-                                                                14.,
-                                                                theme.text_2,
-                                                            )),
+                                                            .child(workspace_icon),
                                                     )
                                                     .child(
                                                         div()
@@ -2616,15 +2635,18 @@ impl OrbitApp {
                                     .child(
                                         div()
                                             .id("refresh-setup")
+                                            .group(BUTTON_GROUP)
                                             .px(px(12.))
                                             .py(px(6.))
-                                            .rounded_md()
+                                            .rounded_lg()
                                             .flex()
                                             .items_center()
                                             .gap(px(6.))
                                             .when(self.refreshing, |b| b.opacity(0.55))
                                             .when(!self.refreshing, |b| {
-                                                b.cursor_pointer().hover(|s| s.bg(theme.bg_hover))
+                                                b.cursor_pointer()
+                                                    .hover(|s| s.bg(theme.bg_hover))
+                                                    .active(|s| s.bg(theme.active))
                                             })
                                             .on_click({
                                                 let this = cx.entity();
@@ -2634,29 +2656,13 @@ impl OrbitApp {
                                                     });
                                                 }
                                             })
-                                            .child(if self.refreshing {
-                                                gpui::svg()
-                                                    .path("icons/loader.svg")
-                                                    .flex_none()
-                                                    .size(px(13.))
-                                                    .text_color(theme.text_2)
-                                                    .with_animation(
-                                                        "refresh-spin",
-                                                        Animation::new(Duration::from_millis(800))
-                                                            .repeat(),
-                                                        |svg, delta| {
-                                                            svg.with_transformation(
-                                                                Transformation::rotate(radians(
-                                                                    delta * std::f32::consts::TAU,
-                                                                )),
-                                                            )
-                                                        },
-                                                    )
-                                                    .into_any_element()
-                                            } else {
-                                                icon("icons/refresh.svg", 13., theme.text_2)
-                                                    .into_any_element()
-                                            })
+                                            .child(refresh_glyph(
+                                                "refresh-spin",
+                                                13.,
+                                                self.refreshing,
+                                                theme.text_2,
+                                                theme,
+                                            ))
                                             .child(
                                                 div()
                                                     .text_size(theme.ui_px(12.))
@@ -3071,6 +3077,14 @@ impl OrbitApp {
                     icon("icons/layout-left.svg", 16., theme.text_2),
                 )
                 .block_mouse_except_scroll()
+                .tooltip({
+                    let label = format!(
+                        "{} ({})",
+                        tr!("menu.toggle_sidebar"),
+                        platform::shortcuts::SIDEBAR
+                    );
+                    move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
+                })
                 .on_mouse_up(MouseButton::Left, cx.listener(Self::on_toggle_sidebar)),
             )
             .child(
@@ -3086,6 +3100,10 @@ impl OrbitApp {
                         b.cursor_pointer()
                             .hover(|s| s.bg(theme.bg_hover))
                             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_history_back))
+                    })
+                    .tooltip({
+                        let label = tr!("view.back");
+                        move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
                     })
                     .child(icon(
                         "icons/arrow-left.svg",
@@ -3110,6 +3128,10 @@ impl OrbitApp {
                         b.cursor_pointer()
                             .hover(|s| s.bg(theme.bg_hover))
                             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_history_forward))
+                    })
+                    .tooltip({
+                        let label = tr!("view.forward");
+                        move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
                     })
                     .child(icon(
                         "icons/arrow-right.svg",
@@ -3138,7 +3160,7 @@ impl OrbitApp {
             .w_full()
             .h(px(34.))
             .px(px(10.))
-            .rounded_md()
+            .rounded_lg()
             .bg(theme.bg_raised)
             .border_1()
             .border_color(theme.border)
@@ -4309,10 +4331,7 @@ impl OrbitApp {
         cx: &Context<Self>,
     ) -> AnyElement {
         let theme = *theme::get(cx);
-        let scrim = match theme.mode {
-            theme::ThemeMode::Dark => gpui::hsla(0., 0., 0., 0.72),
-            theme::ThemeMode::Light => gpui::hsla(0., 0., 0., 0.6),
-        };
+        let scrim = theme.scrim_media();
         div()
             .id("image-lightbox")
             .debug_selector(|| "image-lightbox".to_string())

@@ -577,7 +577,7 @@ impl OrbitApp {
         self.workflow_mode = WorkflowMode::default();
         self.workflow_todos.reset_for(None);
         self.add_workspace(cwd.clone());
-        self.current_workspace = Some(cwd.clone());
+        self.set_current_workspace(cwd.clone());
 
         match self.extensions.spawn(&cwd) {
             Ok(client) => {
@@ -745,7 +745,7 @@ impl OrbitApp {
         self.seed_session_name_input(cx);
         // Opening a session keeps its folder in Orbit's own sidebar list.
         self.add_workspace(session.cwd.clone());
-        self.current_workspace = Some(session.cwd.clone());
+        self.set_current_workspace(session.cwd.clone());
         self.current_session_path = Some(session.path.clone());
         if push {
             self.session_history.truncate(self.history_index + 1);
@@ -900,21 +900,7 @@ impl OrbitApp {
         Some(
             button
                 .child(if generating {
-                    gpui::svg()
-                        .path("icons/loader.svg")
-                        .flex_none()
-                        .size(px(12.))
-                        .text_color(theme.accent)
-                        .with_animation(
-                            "sess-generate-title-spinner",
-                            Animation::new(Duration::from_millis(900)).repeat(),
-                            |svg, delta| {
-                                svg.with_transformation(Transformation::rotate(radians(
-                                    delta * std::f32::consts::TAU,
-                                )))
-                            },
-                        )
-                        .into_any_element()
+                    crate::app::spinner("sess-generate-title-spinner", 12., theme.accent, theme)
                 } else {
                     icon("icons/magic-wand.svg", 12., theme.text_2).into_any_element()
                 })
@@ -1078,6 +1064,29 @@ impl OrbitApp {
         }
     }
 
+    /// The Update button's success glyph: a green check that scales and fades
+    /// in when a rename commits. Reduce motion renders it statically.
+    fn rename_check(theme: Theme, cx: &App) -> AnyElement {
+        let svg = gpui::svg()
+            .path("icons/check.svg")
+            .flex_none()
+            .size(px(12.))
+            .text_color(theme.send_fg);
+        if theme::reduce_motion(cx) {
+            return svg.into_any_element();
+        }
+        svg.with_animation(
+            "sess-rename-check",
+            Animation::new(Duration::from_millis(200)).with_easing(|d| 1.0 - (1.0 - d).powi(3)),
+            |svg, d| {
+                let scale = 0.5 + 0.5 * d;
+                svg.opacity(d)
+                    .with_transformation(Transformation::scale(gpui::size(scale, scale)))
+            },
+        )
+        .into_any_element()
+    }
+
     /// The top-bar info popover: active session's environment + identifiers.
     pub(super) fn render_session_details_popup(&self, cx: &Context<Self>) -> Option<AnyElement> {
         if !self.session_details_open {
@@ -1102,6 +1111,9 @@ impl OrbitApp {
             });
         let model = self.model_label.clone();
         let thinking = self.thinking_label.clone();
+        // Set on a successful commit and cleared by its timer; drives the
+        // button's brief success check.
+        let rename_saved = self.rename_saved_at.is_some();
 
         // Header names the surface. The session's own title already lives in
         // the rename field below, so repeating it here only crowded the card;
@@ -1168,32 +1180,44 @@ impl OrbitApp {
                                 .child(self.session_name_input.clone()),
                         )
                         .children(self.generate_title_button(theme, this.clone()))
-                        .child(
-                            div()
+                        .child({
+                            let mut button = div()
                                 .id("sess-rename")
                                 .flex_none()
                                 .h(px(28.))
                                 .px(px(10.))
                                 .rounded(px(8.))
-                                .bg(theme.bg_raised)
                                 .border_1()
-                                .border_color(theme.border)
                                 .flex()
                                 .items_center()
                                 .justify_center()
                                 .cursor_pointer()
                                 .text_size(theme.ui_px(12.))
                                 .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme.text)
-                                .hover(|s| s.bg(theme.bg_hover))
                                 .on_mouse_up(MouseButton::Left, {
                                     let this = this.clone();
                                     move |_, _, cx| {
                                         this.update(cx, |app, cx| app.rename_session(cx));
                                     }
-                                })
-                                .child(tr!("session.update")),
-                        ),
+                                });
+                            if rename_saved {
+                                // Commit succeeded: the label becomes a check
+                                // that pops in, so the button confirms the
+                                // rename instead of silently doing nothing.
+                                button = button
+                                    .bg(theme.ok_green)
+                                    .border_color(theme.ok_green)
+                                    .child(Self::rename_check(theme, cx));
+                            } else {
+                                button = button
+                                    .bg(theme.bg_raised)
+                                    .border_color(theme.border)
+                                    .text_color(theme.text)
+                                    .hover(|s| s.bg(theme.bg_hover))
+                                    .child(tr!("session.update"));
+                            }
+                            button
+                        }),
                 )
         });
 
@@ -1213,10 +1237,7 @@ impl OrbitApp {
             .w(px(320.))
             .font_family(theme::ui_font_family())
             .rounded(px(12.))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.popover_shadow())
+            .popover_surface(theme)
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -1535,6 +1556,36 @@ impl OrbitApp {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_quota_refresh))
             .child(refresh_icon);
 
+        // One glyph that turns in place instead of swapping to a loader, so
+        // the click never changes the control's shape. Active, it wears the
+        // accent; idle, the shared hover group lifts its ink. Reduce Motion
+        // keeps the spin off, but the accent still marks the active state.
+        let refresh_icon = refresh_glyph(
+            "quota-refresh-spin",
+            13.,
+            self.quota_refreshing,
+            theme.text_2,
+            theme,
+        );
+        let refresh_button = div()
+            .id("quota-refresh")
+            .group(BUTTON_GROUP)
+            .flex_none()
+            .size(px(26.))
+            .rounded_md()
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .hover(|style| style.bg(theme.bg_hover))
+            .active(|style| style.bg(theme.active))
+            .tooltip({
+                let label = tr!("common.refresh");
+                move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
+            })
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_quota_refresh))
+            .child(refresh_icon);
+
         let header = div()
             .flex_none()
             .px(px(12.))
@@ -1584,10 +1635,7 @@ impl OrbitApp {
             .max_h(px(460.))
             .font_family(theme::ui_font_family())
             .rounded(px(12.))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.popover_shadow())
+            .popover_surface(theme)
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -1784,18 +1832,40 @@ impl OrbitApp {
     pub(super) fn on_toggle_sidebar(
         &mut self,
         _: &MouseUpEvent,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.toggle_sidebar();
+        self.toggle_sidebar(window, cx);
+        cx.notify();
+    }
+
+    /// The keyboard/menu route to the sidebar toggle (cmd/ctrl-b, View ▸
+    /// Toggle Sidebar). Shares [`Self::toggle_sidebar`] with the titlebar
+    /// button, so both animate the same slide generation.
+    pub(super) fn on_toggle_sidebar_action(
+        &mut self,
+        _: &crate::ToggleSidebar,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_sidebar(window, cx);
         cx.notify();
     }
 
     /// Flip the sessions sidebar and bump the slide generation, so the render
     /// animates the change (and every open→close→open cycle re-animates).
-    pub(super) fn toggle_sidebar(&mut self) {
+    /// Hiding the sidebar while it holds keyboard focus hands focus back to
+    /// the composer — a clipped column must never swallow typing.
+    pub(super) fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let had_focus = window.focused(cx) == Some(self.sidebar_focus.clone());
         self.sidebar_visible = !self.sidebar_visible;
         self.sidebar_slide_gen = self.sidebar_slide_gen.wrapping_add(1);
+        if !self.sidebar_visible {
+            self.sidebar_cursor = None;
+            if had_focus {
+                self.input.read(cx).focus(window);
+            }
+        }
     }
 
     pub(super) fn on_toggle_side_pane(
@@ -1832,7 +1902,7 @@ impl OrbitApp {
 
     // ── Explorer (project panel + Files surface) ───────────────────────
 
-    /// Flip the left project-panel dock (cmd-shift-e).
+    /// Flip the left project-panel dock (⌘⇧E / Ctrl+Shift+E).
     pub(super) fn on_toggle_project_panel(
         &mut self,
         _: &crate::ToggleProjectPanel,

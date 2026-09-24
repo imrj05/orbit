@@ -14,15 +14,18 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    div, prelude::*, px, Animation, AnimationExt, AnyElement, App, ClickEvent, Context,
+    div, prelude::*, px, AnyElement, App, ClickEvent, Context,
     CursorStyle, Entity, FocusHandle, FontWeight, Hsla, KeyDownEvent, ListAlignment, ListState,
-    MouseButton, MouseDownEvent, Pixels, Render, Subscription, TextAlign, Transformation, Window,
+    MouseButton, MouseDownEvent, Pixels, Render, Subscription, Window,
 };
 
 use super::ops;
 use super::tree::{self, Row, StatusBadge, TreeIndex};
 use super::walk;
-use crate::app::{file_badge, file_glyph, icon, nerd_font_family, press, BUTTON_GROUP};
+use crate::app::{
+    empty_state, file_badge, file_glyph, icon, nerd_font_family, press, BUTTON_GROUP, press, refresh_glyph, EmptyFill,
+    PopoverSurface, BUTTON_GROUP,
+};
 use crate::composer::ComposerInput;
 use crate::git;
 use crate::platform;
@@ -171,7 +174,9 @@ impl ProjectPanel {
         });
         Self {
             open: false,
-            width: px(PANEL_DEFAULT_W),
+            width: px(crate::layout::explorer_width()
+                .unwrap_or(PANEL_DEFAULT_W)
+                .clamp(PANEL_MIN_W, PANEL_MAX_W)),
             reserve_controls: false,
             workspace: None,
             index: TreeIndex::default(),
@@ -213,6 +218,7 @@ impl ProjectPanel {
         let width = width.clamp(px(PANEL_MIN_W), px(PANEL_MAX_W));
         if width != self.width {
             self.width = width;
+            crate::layout::set_explorer_width(f32::from(width));
             cx.notify();
         }
     }
@@ -808,15 +814,30 @@ impl ProjectPanel {
                     this.start_new_folder(window, cx);
                 }),
             ))
-            .child(ghost_icon(
-                &theme,
-                "explorer-refresh",
-                "icons/refresh.svg",
-                theme.text_3,
-                cx.listener(|this, _: &ClickEvent, _, cx| {
+            .child(
+                press(
+                    div()
+                        .id("explorer-refresh")
+                        .group(BUTTON_GROUP)
+                        .size(px(24.))
+                        .rounded(px(6.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .hover(|el| el.bg(theme.bg_hover)),
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.mark_stale(cx);
-                }),
-            ))
+                }))
+                .child(refresh_glyph(
+                    "explorer-refresh-spin",
+                    13.,
+                    self.loading,
+                    theme.text_3,
+                    theme,
+                )),
+            )
             .child(ghost_icon(
                 &theme,
                 "explorer-collapse",
@@ -904,12 +925,13 @@ impl ProjectPanel {
         let body: AnyElement = if self.loading && self.rows.is_empty() {
             loading_state(&theme)
         } else if let Some(error) = &self.error {
-            centered_message(&theme, tr!("explorer.load_error"), Some(error.as_str()))
+            empty_state(theme, &tr!("explorer.load_error"), Some(error.as_str()), EmptyFill::Full)
         } else if self.rows.is_empty() {
-            centered_message(
-                &theme,
-                tr!("explorer.no_files"),
+            empty_state(
+                theme,
+                &tr!("explorer.no_files"),
                 Some(no_files_detail.as_str()),
+                EmptyFill::Full,
             )
         } else {
             list.into_any_element()
@@ -1189,10 +1211,7 @@ impl ProjectPanel {
             .w(px(220.))
             .py(px(4.))
             .rounded(px(10.))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.popover_shadow())
+            .popover_surface(theme)
             .flex()
             .flex_col()
             .occlude()
@@ -1577,27 +1596,6 @@ fn menu_row(
 }
 
 /// A page-level spinner; static under reduce-motion.
-fn spinner(id: &'static str, theme: &Theme) -> AnyElement {
-    let svg = gpui::svg()
-        .path("icons/loader.svg")
-        .flex_none()
-        .size(px(13.))
-        .text_color(theme.text_3);
-    if theme.ui.reduce_motion {
-        return svg.into_any_element();
-    }
-    svg.with_animation(
-        id,
-        Animation::new(Duration::from_millis(900)).repeat(),
-        |svg, delta| {
-            svg.with_transformation(Transformation::rotate(gpui::radians(
-                delta * std::f32::consts::TAU,
-            )))
-        },
-    )
-    .into_any_element()
-}
-
 fn loading_state(theme: &Theme) -> AnyElement {
     div()
         .size_full()
@@ -1605,7 +1603,7 @@ fn loading_state(theme: &Theme) -> AnyElement {
         .items_center()
         .justify_center()
         .gap(px(8.))
-        .child(spinner("explorer-loading", theme))
+        .child(crate::app::spinner("explorer-loading", 13., theme.text_3, *theme))
         .child(
             div()
                 .text_size(theme.ui_px(12.5))
@@ -1613,37 +1611,6 @@ fn loading_state(theme: &Theme) -> AnyElement {
                 .child(tr!("explorer.loading")),
         )
         .into_any_element()
-}
-
-fn centered_message(theme: &Theme, title: String, detail: Option<&str>) -> AnyElement {
-    let mut column = div()
-        .size_full()
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .px(px(16.))
-        .pb(px(24.))
-        .child(
-            div()
-                .text_size(theme.ui_px(13.))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text)
-                .child(title),
-        );
-    if let Some(detail) = detail {
-        column = column.child(
-            div()
-                .mt(px(6.))
-                .max_w(px(260.))
-                .text_align(TextAlign::Center)
-                .text_size(theme.ui_px(12.))
-                .line_height(theme.ui_px(17.))
-                .text_color(theme.text_3)
-                .child(detail.to_string()),
-        );
-    }
-    column.into_any_element()
 }
 
 impl Render for ProjectPanel {

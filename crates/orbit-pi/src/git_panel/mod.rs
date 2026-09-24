@@ -23,7 +23,9 @@ use gpui::{
     PathBuilder, Pixels, Render, Window,
 };
 
-use crate::app::{icon, nerd_font_family, press, BUTTON_GROUP};
+use crate::app::{
+    icon, nerd_font_family, press, BUTTON_GROUP, press, refresh_glyph, spinner, PopoverSurface, BUTTON_GROUP,
+};
 use crate::commit_message;
 use crate::gh;
 use crate::git::{self, CommitEntry, StatusRow};
@@ -36,7 +38,7 @@ mod widgets;
 
 use failure::{ActionError, RecoveryAction};
 use widgets::{
-    action_button, check_box, empty_note, load_more, ref_badge, row_button, spinner, status_color,
+    action_button, check_box, empty_note, load_more, ref_badge, row_button, status_color,
 };
 
 /// Callback the app installs so a changed-file row can open its diff in the
@@ -1959,7 +1961,7 @@ impl GitPanel {
                     .id("git-back")
                     .px(px(8.))
                     .h(px(28.))
-                    .rounded_md()
+                    .rounded_lg()
                     .flex()
                     .items_center()
                     .gap(px(6.))
@@ -2003,7 +2005,7 @@ impl GitPanel {
                     .id("git-branch-chip")
                     .h(px(28.))
                     .px(px(8.))
-                    .rounded_md()
+                    .rounded_lg()
                     .border_1()
                     .border_color(theme.border)
                     .bg(if self.branch_menu_open {
@@ -2072,10 +2074,12 @@ impl GitPanel {
             .child(
                 div()
                     .id("git-refresh")
+                    .group(BUTTON_GROUP)
                     .p_1()
                     .rounded_sm()
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.bg_hover))
+                    .active(|s| s.bg(theme.active))
                     .tooltip({
                         let label = tr!("common.refresh");
                         move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
@@ -2083,15 +2087,13 @@ impl GitPanel {
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.refresh_from_button(cx);
                     }))
-                    .child(
-                        if (self.refresh_spin_until.is_some() || self.tab_loading())
-                            && !theme.ui.reduce_motion
-                        {
-                            spinner("git-refresh-spinner", 13., theme)
-                        } else {
-                            icon("icons/refresh.svg", 13., theme.text_3).into_any_element()
-                        },
-                    ),
+                    .child(refresh_glyph(
+                        "git-refresh-spinner",
+                        13.,
+                        self.refresh_spin_until.is_some() || self.tab_loading(),
+                        theme.text_3,
+                        theme,
+                    )),
             )
             .into_any_element()
     }
@@ -2369,7 +2371,7 @@ impl GitPanel {
                 "git-op-continue",
                 &tr!("git_panel.op_continue"),
                 Some(if self.operation_busy {
-                    spinner("git-op-spinner", 12., theme)
+                    spinner("git-op-spinner", 12., theme.accent, theme)
                 } else {
                     icon("icons/check.svg", 12., theme.send_fg).into_any_element()
                 }),
@@ -2610,7 +2612,7 @@ impl GitPanel {
                                     )
                             })
                             .child(if self.generating {
-                                spinner("git-generate-spinner", 12., theme)
+                                spinner("git-generate-spinner", 12., theme.accent, theme)
                             } else {
                                 icon("icons/magic-wand.svg", 12., theme.text_2).into_any_element()
                             })
@@ -2643,7 +2645,7 @@ impl GitPanel {
                                 "git-commit",
                                 &commit_label,
                                 Some(if self.generating {
-                                    spinner("git-commit-spinner", 13., theme)
+                                    spinner("git-commit-spinner", 13., theme.accent, theme)
                                 } else {
                                     icon(
                                         "icons/git-commit.svg",
@@ -3457,10 +3459,7 @@ impl GitPanel {
             .w(px(220.))
             .py(px(4.))
             .rounded(px(10.))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.popover_shadow())
+            .popover_surface(theme)
             .flex()
             .flex_col()
             .occlude()
@@ -4195,10 +4194,7 @@ impl GitPanel {
             .overflow_y_scroll()
             .py(px(4.))
             .rounded(px(10.))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.popover_shadow())
+            .popover_surface(theme)
             .flex()
             .flex_col()
             .occlude()
@@ -5036,10 +5032,7 @@ impl GitPanel {
             .overflow_y_scroll()
             .py(px(4.))
             .rounded(px(10.))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.popover_shadow())
+            .popover_surface(theme)
             .flex()
             .flex_col()
             .occlude()
@@ -5181,10 +5174,7 @@ impl GitPanel {
             .overflow_y_scroll()
             .py(px(4.))
             .rounded(px(10.))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.popover_shadow())
+            .popover_surface(theme)
             .flex()
             .flex_col()
             .occlude()
@@ -5959,7 +5949,7 @@ fn issue_row(issue: &gh::GhIssue, theme: Theme, cx: &Context<GitPanel>) -> AnyEl
         .mx(theme.space(12.))
         .px(theme.space(8.))
         .py(theme.space(8.))
-        .rounded_md()
+        .rounded_lg()
         .flex()
         .items_center()
         .gap(theme.space(10.))
@@ -6233,7 +6223,7 @@ fn pr_row(pull: &gh::GhPull, theme: Theme, cx: &Context<GitPanel>) -> AnyElement
         .mx(theme.space(12.))
         .px(theme.space(8.))
         .py(theme.space(8.))
-        .rounded_md()
+        .rounded_lg()
         .flex()
         .items_center()
         .gap(theme.space(10.))
@@ -6518,7 +6508,7 @@ fn graph_row(
         .mx(px(12.))
         .px(px(8.))
         .py(px(6.))
-        .rounded_md()
+        .rounded_lg()
         .flex()
         .items_center()
         .gap(px(10.))
@@ -6733,7 +6723,7 @@ fn commit_row(
         .mx(px(12.))
         .px(px(8.))
         .py(px(9.))
-        .rounded_md()
+        .rounded_lg()
         .flex()
         .items_center()
         .gap(px(10.))

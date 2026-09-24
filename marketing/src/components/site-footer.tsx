@@ -11,11 +11,12 @@ const COLUMNS = [
   {
     title: "Product",
     links: [
-      { label: "Features", href: "/#features", external: false },
-      { label: "Workbench", href: "/#workbench", external: false },
-      { label: "Safeguards", href: "/#guard", external: false },
-      { label: "Gallery", href: "/#gallery", external: false },
-      { label: "Get started", href: "/#install", external: false },
+      { label: "Agent", href: "/#agent", external: false },
+      { label: "Sessions", href: "/#sessions", external: false },
+      { label: "Models & providers", href: "/#providers", external: false },
+      { label: "Git", href: "/#git", external: false },
+      { label: "Usage", href: "/#usage", external: false },
+      { label: "Download", href: "/#install", external: false },
     ],
   },
   {
@@ -44,7 +45,7 @@ const COLUMNS = [
 ];
 
 const PILL =
-  "inline-flex items-center gap-2 rounded-full border border-hair bg-tint-04 px-3 py-1.5 text-[12px] text-ink-2 no-underline transition-colors duration-[120ms] hover:border-tint-26 hover:bg-tint-07 hover:text-ink";
+  "inline-flex items-center gap-2 rounded-[10px] border border-edge-subtle bg-surface-1 px-3 py-1.5 text-[12px] text-ink-2 no-underline transition-colors duration-[120ms] hover:border-edge-strong hover:bg-surface-2 hover:text-ink";
 
 export async function SiteFooter() {
   const release = await getLatestRelease();
@@ -54,11 +55,6 @@ export async function SiteFooter() {
     <footer>
       <Shell>
         <Band className="relative overflow-hidden pb-12 pt-14 sm:pt-16">
-          <span
-            aria-hidden
-            className="dither dither-br bottom-0 right-0 h-[200px] w-[300px]"
-          />
-
           <div className="relative z-[1] grid gap-12 md:grid-cols-[minmax(0,1.6fr)_repeat(3,minmax(0,1fr))] md:gap-8">
             <div className="md:pr-10">
               <Link
@@ -125,7 +121,7 @@ export async function SiteFooter() {
           </div>
         </Band>
 
-        <Band className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-t border-hair py-6 font-mono text-[11px] uppercase tracking-[0.1em] text-ink-3">
+        <Band className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-t border-edge-subtle py-6 font-mono text-[11px] uppercase tracking-[0.1em] text-ink-3">
           <p>© {year} Orbit · same sessions as the terminal</p>
           <p className="flex flex-wrap items-center gap-x-5 gap-y-2">
             {release ? (

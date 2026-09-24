@@ -13,7 +13,9 @@ function resolveSiteUrl(): string {
     process.env.VERCEL_PROJECT_PRODUCTION_URL ?? process.env.VERCEL_URL;
   if (vercel) return `https://${vercel.replace(/\/$/, "")}`;
 
-  return "http://localhost:3000";
+  // Never let localhost leak into a production build's canonical/OG tags.
+  if (process.env.NODE_ENV === "development") return "http://localhost:3000";
+  return "https://orbit.rajeshwarkashyap.in";
 }
 
 export const SITE_URL = resolveSiteUrl();
@@ -27,6 +29,8 @@ export const SITE = {
     "A native workbench for the pi coding agent — chat, review, and commit in one window.",
   url: SITE_URL,
   github: "https://github.com/imrj05/orbit",
+  // Change this if the X/Twitter handle differs from the GitHub handle.
+  twitter: "@imrj05",
   keywords: [
     "Orbit",
     "Orbit Pi",

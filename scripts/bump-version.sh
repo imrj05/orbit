@@ -9,6 +9,8 @@
 #   1. sets the version in both crates + the bundled pi extensions
 #   2. refreshes Cargo.lock
 #   3. moves CHANGELOG.md's [Unreleased] body under a new [<version>] heading
+#      (if [Unreleased] is empty, it is first auto-built from git history via
+#      scripts/changelog-build.py)
 #   4. commits and pushes to main
 #
 # The version change is what CI watches: .github/workflows/release.yml sees it,
@@ -71,28 +73,32 @@ cargo update -p orbit-pi -p orbit-rpc >/dev/null
 
 # 3 — roll the changelog.
 python3 - "$VERSION" "$REPO_URL" <<'PY'
-import datetime, os, re, sys
+import datetime, os, re, subprocess, sys
 v, repo = sys.argv[1], sys.argv[2]
 date = datetime.date.today().isoformat()
 path = "CHANGELOG.md"
 
+def unreleased(lines):
+    """Locate '## [Unreleased]' and return (start, end, body, meaningful)."""
+    start = next(
+        (i for i, l in enumerate(lines) if l.strip() == "## [Unreleased]"), None
+    )
+    if start is None:
+        sys.exit("CHANGELOG.md has no '## [Unreleased]' heading")
+    end = next(
+        (i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")),
+        len(lines),
+    )
+    body = "\n".join(lines[start + 1 : end]).strip()
+    # The credit bot writes a `### Contributors`-only section; that is not a
+    # change list, so it does not count as changelog content for this guard.
+    meaningful = re.sub(r"(?m)^#+\s+Contributors\s*$", "", body).strip()
+    return start, end, body, meaningful
+
 with open(path) as fh:
     lines = fh.read().split("\n")
+start, end, body, meaningful = unreleased(lines)
 
-start = next(
-    (i for i, l in enumerate(lines) if l.strip() == "## [Unreleased]"), None
-)
-if start is None:
-    sys.exit("CHANGELOG.md has no '## [Unreleased]' heading")
-end = next(
-    (i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")),
-    len(lines),
-)
-
-body = "\n".join(lines[start + 1 : end]).strip()
-# The credit bot writes a `### Contributors`-only section; that is not a change
-# list, so it does not count as changelog content for this guard.
-meaningful = re.sub(r"(?m)^#+\s+Contributors\s*$", "", body).strip()
 if not meaningful:
     if os.environ.get("ALLOW_EMPTY_CHANGELOG"):
         print(
@@ -102,13 +108,26 @@ if not meaningful:
             file=sys.stderr,
         )
     else:
-        sys.exit(
-            f"error: '## [Unreleased]' in CHANGELOG.md has no changes, so the "
-            f"notes for {v} would be empty.\n"
-            "Add a Keep-a-Changelog entry (Added / Changed / Fixed) first, or "
-            "re-run with ALLOW_EMPTY_CHANGELOG=1 to fall back to the "
-            "git-generated release log."
+        # Auto-build the notes from commit subjects since the last tag.
+        res = subprocess.run(
+            [sys.executable, "scripts/changelog-build.py", "--write", "--force"],
+            capture_output=True,
+            text=True,
         )
+        if res.returncode != 0:
+            sys.exit(
+                f"error: '## [Unreleased]' in CHANGELOG.md has no changes and "
+                "could not be auto-built from git history:\n"
+                + (res.stderr or res.stdout).strip()
+                + "\nAdd a Keep-a-Changelog entry (Added / Changed / Fixed) "
+                "first, or re-run with ALLOW_EMPTY_CHANGELOG=1 to fall back "
+                "to the git-generated release log."
+            )
+        print(f"auto-built [Unreleased] from git history ({v})")
+        with open(path) as fh:
+            lines = fh.read().split("\n")
+        start, end, body, meaningful = unreleased(lines)
+
 block = ["## [Unreleased]", ""]
 if body:
     block += [f"## [{v}] - {date}", "", body]

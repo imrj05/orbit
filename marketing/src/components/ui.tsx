@@ -62,10 +62,13 @@ export function ButtonLink({
           variant: buttonIntents[variant],
           size: variant === "nav" ? "sm" : "lg",
         }),
+        /* Primary: the highest-contrast element on the page. */
         variant === "primary" &&
-          "min-h-10 gap-[9px] px-[18px] text-[12px]",
-        variant === "secondary" && "min-h-10 gap-[9px] px-[18px] text-[12px]",
-        variant === "nav" && "rounded-full px-[15px] text-[13.5px]",
+          "min-h-11 gap-2.5 rounded-[10px] px-5 text-[13px] font-semibold shadow-[0_1px_2px_rgba(0,0,0,0.18)] dark:border-white/20 light:border-black/10",
+        variant === "secondary" &&
+          "min-h-11 gap-2.5 rounded-[10px] border-edge-default px-5 text-[13px]",
+        variant === "nav" &&
+          "h-9 min-h-9 rounded-[10px] px-4 text-[13px] font-semibold",
         variant === "text" &&
           "px-0 text-[13px] text-ink-2 hover:bg-transparent hover:text-ink",
         className,

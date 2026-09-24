@@ -10,6 +10,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 
 import { ReleaseNotes } from "@/components/changelog/release-notes";
 import { OsDownloadButton } from "@/components/download-button";
+import { JsonLd } from "@/components/json-ld";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteNav } from "@/components/site-nav";
 import { Badge } from "@/components/ui/badge";
@@ -19,6 +20,10 @@ import { SITE } from "@/lib/site";
 
 /** Every release page is known at build time; unknown versions 404. */
 export const dynamicParams = false;
+
+function releaseDescription(tag: string, date: string): string {
+  return `${tag} (${formatDate(date)}). Orbit Pi release notes — features, fixes, and downloads.`;
+}
 
 export async function generateStaticParams() {
   const entries = await getChangelog();
@@ -33,7 +38,7 @@ export async function generateMetadata({
   if (!entry) return {};
 
   const title = `Orbit Pi ${entry.tag}`;
-  const description = `${entry.tag} (${formatDate(entry.date)}). Orbit Pi release notes — features, fixes, and downloads.`;
+  const description = releaseDescription(entry.tag, entry.date);
 
   return {
     title,
@@ -67,8 +72,58 @@ export default async function ReleasePage({
   const newer = index > 0 ? entries[index - 1] : null;
   const older = index < entries.length - 1 ? entries[index + 1] : null;
 
+  const url = `${SITE.url}/changelog/${entry.tag}`;
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "BreadcrumbList",
+        "@id": `${url}/#breadcrumb`,
+        itemListElement: [
+          { "@type": "ListItem", position: 1, name: "Home", item: SITE.url },
+          {
+            "@type": "ListItem",
+            position: 2,
+            name: "Changelog",
+            item: `${SITE.url}/changelog`,
+          },
+          {
+            "@type": "ListItem",
+            position: 3,
+            name: `Orbit Pi ${entry.tag}`,
+            item: url,
+          },
+        ],
+      },
+      {
+        "@type": "TechArticle",
+        "@id": `${url}/#article`,
+        headline: `Orbit Pi ${entry.tag}`,
+        description: releaseDescription(entry.tag, entry.date),
+        ...(entry.date
+          ? { datePublished: entry.date, dateModified: entry.date }
+          : {}),
+        mainEntityOfPage: { "@id": `${url}/#webpage` },
+        author: { "@id": `${SITE.url}/#organization` },
+        publisher: { "@id": `${SITE.url}/#organization` },
+        about: { "@id": `${SITE.url}/#softwareapplication` },
+        isPartOf: { "@id": `${SITE.url}/#website` },
+        inLanguage: "en",
+      },
+      {
+        "@type": "WebPage",
+        "@id": `${url}/#webpage`,
+        url,
+        name: `Orbit Pi ${entry.tag} · Orbit`,
+        isPartOf: { "@id": `${SITE.url}/#website` },
+        breadcrumb: { "@id": `${url}/#breadcrumb` },
+      },
+    ],
+  };
+
   return (
     <>
+      <JsonLd data={jsonLd} />
       <SiteNav />
       <main className="flex-1">
         <Shell>
