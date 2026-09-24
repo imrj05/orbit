@@ -1295,6 +1295,7 @@ impl OrbitApp {
         match sessions::clone_session_file(&menu.path) {
             Ok(_) => {
                 self.sessions = sessions::load_sessions();
+                self.prune_workflow_store();
             }
             Err(err) => self.toast_error(tr!("sidebar.clone_failed", error = err)),
         }
@@ -1335,6 +1336,7 @@ impl OrbitApp {
                 crate::pins::remove(&menu.path);
             }
             self.sessions = sessions::load_sessions();
+            self.prune_workflow_store();
             cx.notify();
         }
     }

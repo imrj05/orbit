@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Workflow modes** — plan, build, or answer instead of one undifferentiated
+  chat. A session is scoped **Plan**, **Build**, or **Ask** from the New Task
+  page or the composer chip, per session. Plan and Ask are read-only: the
+  bundled `orbit-workflow-extension` disables the write tools, gates `bash` to
+  a read-only allowlist, and injects mode guidance, re-arming live sessions
+  from `~/.orbit-pi/workflow.json` with no restart. A plan becomes a live
+  checklist in a slim progress strip above the composer that advances as the agent tags
+  `[DONE:n]` steps, fed by `orbit:workflow-todos` session entries. The
+  `[DONE:n]` markers are protocol, never prose: they are stripped from the
+  rendered transcript (and its copy/search) and appear only as checkmarks in
+  the plan.
+- **AI review agent** — a read-only reviewer over the current change set or the
+  whole project, from the Review pane's sparkles menu or the command palette.
+  It runs on its own pi process scoped to Ask mode (so the chat session and
+  transcript are untouched), launched with `ORBIT_REVIEW=1` so the access guard
+  never blocks its read-only `git diff`. Findings parse from a fenced JSON
+  block into severity-chipped rows that scroll the diff to the offending file;
+  the answer's prose is kept when no findings parse.
+
 ## [0.0.14] - 2026-09-23
 
 ### Changed

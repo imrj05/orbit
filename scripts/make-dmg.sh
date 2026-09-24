@@ -32,6 +32,12 @@ ICON="assets/icons/icon.icns"
 # background at natural size from the top-left of the content area, so the
 # window frame has to be one title bar taller than the art to avoid trimming
 # its bottom edge.
+# The TIFF has two frosted label plates baked in behind "Orbit Pi.app" and
+# "Applications": Finder draws icon labels in black whenever a background
+# picture is set (it only adapts to Dark Mode for the default background), so
+# the art has to carry the light area the labels sit on. Regenerate it with
+# scripts/make-dmg-background.sh — the plate positions must track the icon
+# coordinates below.
 DMG_BG="assets/icons/background_660x400.tiff"
 DMG_BG_NAME="background.tiff"
 DMG_CONTENT_W=660

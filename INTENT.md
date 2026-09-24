@@ -90,6 +90,27 @@ injects them into an installed pi by wrapping `ModelRuntime.login`/`logout`/`lis
 (reusing pi's OAuth and `auth.json`). It writes a `.orbit-orig` backup and reverts with
 `--revert`; re-run it after `pi update`. Upstreaming the handlers is the durable fix.
 
+### D8 — Workflow modes: per-session scope via a `tool_call`/`before_agent_start` extension
+**Choice:** a session is scoped **Plan**, **Build**, or **Ask**. Orbit persists the
+mode per pi session id in `~/.orbit-pi/workflow.json` (a map), and the bundled
+`contrib/orbit-workflow-extension/` reads it fresh on every hook. Plan and Ask drop
+the write tools with `pi.setActiveTools`, gate `bash` to a read-only allowlist on
+`tool_call`, and inject hidden guidance on `before_agent_start`; Build is the neutral
+default. Plan steps are parsed from the assistant's `Plan:` section and `[DONE:n]`
+markers and appended as `orbit:workflow-todos` custom session entries; Orbit reuses
+the quota bridge's `get_entries` poll to reduce them into a slim progress strip above the composer.
+
+**Rationale:** pi exposes no RPC command for active tools, system prompt, or plan
+state, and no native todo tool, so extension hooks are the only honest mechanism —
+the same call D1 made for access modes. Per-session (not global like `access.json`)
+because scope is a property of the task, and up to six parked sessions run at once.
+Reading the store fresh on every hook re-arms a live session with no restart. The
+session entry keeps the mode and plan authoritative across resume and branch.
+
+**Residual:** this is a guard, not a sandbox (pi ships none). Progress depends on the
+model tagging `[DONE:n]`, which the injected guidance states plainly; an
+extension-registered `todo` tool is the fallback if compliance proves unreliable.
+
 ## The feature parity contract
 
 Everything below must behave identically in the GPUI app (against the pi CLI) as it does in the
@@ -108,9 +129,9 @@ legacy app today:
 
 ### Implementation status (living)
 
-Done: streaming transcript + virtualization; markdown + highlighting; composer with steering, follow-ups, cancel, autocomplete, attachments; extension dialogs; diff/Review + Git page; sessions (list/switch/new/delete/clone/cross-workspace) over an Orbit-owned project list (only folders the user added; removing one never touches pi) with a **warm process pool** so re-opening a recent session is a resume, not a Node spawn; usage, skills, plugins, models, providers, settings pages; transcript find; image lightbox; theming + reduce-motion; signed/notarizable packaging; CI.
+Done: streaming transcript + virtualization; markdown + highlighting; composer with steering, follow-ups, cancel, autocomplete, attachments; extension dialogs; diff/Review + Git page; sessions (list/switch/new/delete/clone/cross-workspace) over an Orbit-owned project list (only folders the user added; removing one never touches pi) with a **warm process pool** so re-opening a recent session is a resume, not a Node spawn; usage, skills, plugins, models, providers, settings pages; transcript find; image lightbox; theming + reduce-motion; signed/notarizable packaging; CI; AI review agent (a read-only reviewer over the selected change set or the whole project that renders findings in the Review pane, on its own Ask-mode process).
 
-Open: conversation **fork/rewind** (clone exists; rewind needs entry ids); on-device scroll-perf measurement. Access modes ship as a real `tool_call` confirmation guard (not a sandbox); an "Auto" AI reviewer awaits a pi reviewer API.
+Open: conversation **fork/rewind** (clone exists; rewind needs entry ids); on-device scroll-perf measurement. Access modes ship as a real `tool_call` confirmation guard (not a sandbox); an "Auto" AI reviewer awaits a pi reviewer API. Workflow modes (Plan / Build / Ask) ship per D8, including the plan-progress strip above the composer.
 
 ## Non-goals (explicitly out of scope)
 

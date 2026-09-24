@@ -49,6 +49,13 @@ function serializePrompt(run) {
 
 export default function activate(pi) {
   pi.on("tool_call", async (event, ctx) => {
+    // The AI reviewer runs on its own process with `ORBIT_REVIEW=1`. The
+    // workflow extension (also loaded there) is the read-only gate — it drops
+    // the write tools and gates bash to a read-only allowlist — so the guard
+    // must not raise a dialog nobody is routing. Process-scoped: it never
+    // touches `access.json` and cannot widen the active session.
+    if (process.env.ORBIT_REVIEW === "1") return;
+
     const mode = readMode();
     const tool = String(event.toolName ?? "");
     if (decide(mode, tool, readAllowlist(mode)) === "allow") return;

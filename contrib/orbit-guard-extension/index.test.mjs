@@ -28,6 +28,7 @@ beforeEach(() => {
   selectCalls = 0;
   selectResult = OPTION_ALLOW_ONCE;
   process.env.HOME = home;
+  delete process.env.ORBIT_REVIEW;
 });
 
 function setMode(mode) {
@@ -177,6 +178,21 @@ test("a missing mode file behaves as full-access", async () => {
   const result = await pi.fire("tool_call", { toolName: "bash", input: { command: "ls" } }, fakeCtx());
   assert.equal(result, undefined);
   assert.equal(selectCalls, 0);
+});
+
+test("the AI reviewer process never prompts, even in supervised mode", async () => {
+  setMode("supervised");
+  process.env.ORBIT_REVIEW = "1";
+  const pi = fakePi();
+  activate(pi);
+  const result = await pi.fire(
+    "tool_call",
+    { toolName: "bash", input: { command: "git diff" } },
+    fakeCtx(),
+  );
+  assert.equal(result, undefined);
+  assert.equal(selectCalls, 0, "the workflow extension is the read-only gate");
+  delete process.env.ORBIT_REVIEW;
 });
 
 test("parallel prompts are serialized, never stacked", async () => {

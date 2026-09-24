@@ -146,19 +146,32 @@ impl OrbitApp {
     }
 
     /// Forget the bridge cursor and schedule an immediate poll. Called when
-    /// the active session (and therefore the entry-id space) changes.
+    /// the active session (and therefore the entry-id space) changes. The
+    /// workflow mode and plan progress are per session, so they resolve here
+    /// too: a pending New Task choice is committed to the new id, otherwise
+    /// the stored mode is loaded.
     pub(super) fn reset_quota_entries(&mut self) {
         self.quota_entries_cursor = None;
         self.quota_entries_inflight = false;
         self.quota_entries_bootstrap = QUOTA_ENTRY_BOOTSTRAP_POLLS;
         self.quota_entries_next_poll = Instant::now();
+        self.workflow_todos.reset_for(self.session_id.as_deref());
+        if let Some(id) = self.session_id.clone() {
+            match self.workflow_pending.take() {
+                Some(mode) => {
+                    crate::workflow::persist_for(&id, mode);
+                    self.workflow_mode = mode;
+                }
+                None => self.workflow_mode = crate::workflow::load_for(&id),
+            }
+        }
     }
 
     /// Poll the active process for new quota-bridge session entries, at most
     /// once per [`QUOTA_ENTRY_POLL_INTERVAL`]. The bridge appends a snapshot
     /// only when the numbers change, so a quiet account returns no entries.
     pub(super) fn poll_quota_entries(&mut self) {
-        if self.extensions.quota().is_none() {
+        if self.extensions.quota().is_none() && self.extensions.workflow().is_none() {
             return;
         }
         if self.quota_entries_inflight || self.quota_entries_next_poll > Instant::now() {

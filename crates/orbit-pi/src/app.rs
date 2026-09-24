@@ -47,6 +47,7 @@ use orbit_rpc::{
 use serde_json::Value;
 
 use crate::access::AccessMode;
+use crate::ai_review::{Report, ReviewKind, ReviewStatus};
 use crate::ask::{AskPrompt, AskQuestion};
 use crate::auth::{AuthEffect, AuthManager, AuthSupport, LoginPhase, ProviderStatus};
 use crate::branch_picker::BranchPicker;
@@ -78,6 +79,7 @@ use crate::transcript::{self, Transcript};
 use crate::usage::page::UsagePage;
 use crate::watch;
 use crate::widgets::{ExtensionWidget, WidgetPlacement};
+use crate::workflow::{WorkflowMode, WorkflowTodos};
 use crate::workspace_picker::{WorkspaceEntry, WorkspacePicker};
 
 const SIDEBAR_DEFAULT_W: f32 = 248.;
@@ -487,6 +489,18 @@ pub struct OrbitApp {
     latest_turn: Option<usize>,
     /// Right side pane — Review (git diff).
     sidepane: Entity<SidePane>,
+    /// The dedicated AI reviewer process, when one is running. Kept out of
+    /// `lives` — it is not a user session and must never appear in the sidebar.
+    ai_review: Option<ai_review::ReviewAgent>,
+    /// What the running/last reviewer was asked to inspect.
+    ai_review_kind: Option<ReviewKind>,
+    /// The reviewer's lifecycle, mirrored into the Review pane each frame.
+    ai_review_status: ReviewStatus,
+    /// The parsed findings (and prose) of the last completed review.
+    ai_report: Option<Report>,
+    /// Monotonic id guarding against a superseded review's async diff
+    /// collection launching a process after the user started or cancelled one.
+    ai_review_generation: u64,
     /// Right dock — the workspace file tree (cmd-shift-e).
     project_panel: Entity<crate::explorer::ProjectPanel>,
     /// Full-page read-only file viewer (the Files surface).
@@ -533,6 +547,24 @@ pub struct OrbitApp {
     /// Focus handle that carries the `AccessMenu` key context while the picker
     /// is open (focus moves here so ↑/↓/Enter/Escape hit it).
     access_menu_focus: FocusHandle,
+    /// The active session's workflow mode (Plan / Build / Ask). Persisted per
+    /// session to `~/.orbit-pi/workflow.json`, which the workflow extension
+    /// reads fresh on every agent hook.
+    workflow_mode: WorkflowMode,
+    /// A mode chosen on the New Task page, before a session id exists to key
+    /// it to.
+    workflow_pending: Option<WorkflowMode>,
+    /// Whether the composer's workflow-mode picker popover is open.
+    workflow_menu_open: bool,
+    /// Highlighted row in the workflow-mode picker.
+    workflow_menu_highlight: usize,
+    /// Focus handle that carries the `WorkflowMenu` key context while open.
+    workflow_menu_focus: FocusHandle,
+    /// The active session's plan progress, reduced from the workflow
+    /// extension's `orbit:workflow-todos` session entries.
+    workflow_todos: WorkflowTodos,
+    /// Whether the bottom todo bar shows the full checklist.
+    workflow_todos_expanded: bool,
     /// `get_entries` cursor for the bridge's quota snapshots. Entry ids are
     /// per-session, so this resets when the active session changes.
     quota_entries_cursor: Option<String>,
@@ -1047,6 +1079,11 @@ impl OrbitApp {
             turn_open: false,
             latest_turn: None,
             sidepane,
+            ai_review: None,
+            ai_review_kind: None,
+            ai_review_status: ReviewStatus::default(),
+            ai_report: None,
+            ai_review_generation: 0,
             project_panel,
             file_viewer,
             terminal_panel,
@@ -1065,6 +1102,13 @@ impl OrbitApp {
             access_menu_open: false,
             access_menu_highlight: 0,
             access_menu_focus: cx.focus_handle(),
+            workflow_mode: WorkflowMode::default(),
+            workflow_pending: None,
+            workflow_menu_open: false,
+            workflow_menu_highlight: 0,
+            workflow_menu_focus: cx.focus_handle(),
+            workflow_todos: WorkflowTodos::default(),
+            workflow_todos_expanded: false,
             quota_entries_cursor: None,
             quota_entries_inflight: false,
             quota_entries_bootstrap: QUOTA_ENTRY_BOOTSTRAP_POLLS,
@@ -1778,6 +1822,7 @@ enum SettingsSelect {
 // `app.rs` keeps the `OrbitApp` model, the shared types, and the controller
 // wiring. Rendering and feature-specific logic live in child modules; they
 // are descendants of `app`, so they reach private fields/methods directly.
+mod ai_review;
 mod ask;
 mod composer_ops;
 mod dialogs;

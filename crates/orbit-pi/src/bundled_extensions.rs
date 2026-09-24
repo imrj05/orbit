@@ -12,6 +12,10 @@
 //! - **auto-title** (`contrib/orbit-title-extension/`) — after the first turn
 //!   settles, asks a model for a short session title and sets it through
 //!   `pi.setSessionName` (see [`crate::auto_title`]).
+//! - **workflow** (`contrib/orbit-workflow-extension/`) — scopes the session
+//!   to Plan/Build/Ask: disables write tools in read-only modes, gates bash to
+//!   a read-only allowlist, injects mode guidance, and appends plan progress
+//!   as `orbit:workflow-todos` entries (see [`crate::workflow`]).
 //!
 //!
 //! Nothing is installed and no settings file is touched: each extension is
@@ -30,6 +34,10 @@ const GUARD_INDEX_JS: &str = include_str!("../../../contrib/orbit-guard-extensio
 const GUARD_POLICY_JS: &str = include_str!("../../../contrib/orbit-guard-extension/policy.js");
 const TITLE_INDEX_JS: &str = include_str!("../../../contrib/orbit-title-extension/index.js");
 const TITLE_HELPERS_JS: &str = include_str!("../../../contrib/orbit-title-extension/title.js");
+const WORKFLOW_INDEX_JS: &str =
+    include_str!("../../../contrib/orbit-workflow-extension/index.js");
+const WORKFLOW_POLICY_JS: &str =
+    include_str!("../../../contrib/orbit-workflow-extension/policy.js");
 
 /// The bundled extensions materialized on disk, kept for the process lifetime.
 #[derive(Default)]
@@ -43,6 +51,9 @@ pub(crate) struct BundledExtensions {
     /// The auto-title extension's `index.js`; `None` when it could not be
     /// written (sessions then keep their first-message title).
     title: Option<PathBuf>,
+    /// The workflow extension's `index.js`; `None` when it could not be
+    /// written (sessions then run unscoped and the mode chip is honest).
+    workflow: Option<PathBuf>,
 }
 
 impl BundledExtensions {
@@ -53,6 +64,7 @@ impl BundledExtensions {
             quota: install_quota_bridge(),
             guard: install_guard(),
             title: install_title_extension(),
+            workflow: install_workflow_extension(),
         }
     }
 
@@ -66,6 +78,11 @@ impl BundledExtensions {
         self.guard.as_deref()
     }
 
+    /// The workflow extension's `index.js`; `None` when it could not be written.
+    pub(crate) fn workflow(&self) -> Option<&Path> {
+        self.workflow.as_deref()
+    }
+
     /// Spawn a pi session process with every available bundled extension
     /// loaded. Every session spawn in the app goes through here.
     pub(crate) fn spawn(&self, workspace: &Path) -> anyhow::Result<PiClient> {
@@ -74,15 +91,40 @@ impl BundledExtensions {
         // restart still gets custom UI, quota, and auth. The unchanged fast
         // path is a stat, so this costs nothing in the common case.
         crate::rpc_patches::apply_on_launch();
-        let extensions: Vec<PathBuf> = [&self.quota, &self.guard, &self.title]
-            .into_iter()
-            .flatten()
-            .cloned()
-            .collect();
+        let extensions = self.extension_paths();
         if extensions.is_empty() {
             return PiClient::spawn(workspace, None);
         }
         PiClient::spawn_with_extensions(workspace, None, &extensions)
+    }
+
+    /// Spawn the **AI reviewer** process. It loads the same bundled extensions
+    /// but is scoped read-only up front: `ORBIT_WORKFLOW_MODE=ask` makes the
+    /// workflow extension drop the write tools and gate bash from the first
+    /// hook (before the session id is known), and `ORBIT_REVIEW=1` tells the
+    /// access guard not to raise an approval dialog — the reviewer has no UI
+    /// surface to answer one, and the workflow extension is the stricter gate.
+    ///
+    /// Both variables are process-scoped, so they never touch
+    /// `~/.orbit-pi/access.json` and cannot widen the active session.
+    pub(crate) fn spawn_reviewer(&self, workspace: &Path) -> anyhow::Result<PiClient> {
+        crate::rpc_patches::apply_on_launch();
+        let extensions = self.extension_paths();
+        PiClient::spawn_with_extensions_and_env(
+            workspace,
+            None,
+            &extensions,
+            &[("ORBIT_WORKFLOW_MODE", "ask"), ("ORBIT_REVIEW", "1")],
+        )
+    }
+
+    /// The installed bundled extension entry points, in load order.
+    fn extension_paths(&self) -> Vec<PathBuf> {
+        [&self.quota, &self.guard, &self.title, &self.workflow]
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect()
     }
 }
 
@@ -125,6 +167,17 @@ fn install_title_extension() -> Option<PathBuf> {
         &home_dir()?,
         "title-extension",
         &[("index.js", TITLE_INDEX_JS), ("title.js", TITLE_HELPERS_JS)],
+    )
+}
+
+fn install_workflow_extension() -> Option<PathBuf> {
+    install_extension(
+        &home_dir()?,
+        "workflow-extension",
+        &[
+            ("index.js", WORKFLOW_INDEX_JS),
+            ("policy.js", WORKFLOW_POLICY_JS),
+        ],
     )
 }
 

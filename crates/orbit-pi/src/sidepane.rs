@@ -13,16 +13,18 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    div, prelude::*, px, radians, Animation, AnimationExt, AnyElement, ClickEvent, Context,
+    div, prelude::*, px, radians, Animation, AnimationExt, AnyElement, App, ClickEvent, Context,
     CursorStyle, Entity, Font, FontFeatures, FontStyle, FontWeight, Hsla, KeyDownEvent,
     ListAlignment, ListOffset, ListState, MouseDownEvent, Pixels, Render, SharedString, StyledText,
     TextAlign, TextRun, Transformation, Window,
 };
 
+use crate::ai_review::{Finding, Report, ReviewKind, ReviewStatus, Severity};
 use crate::app::{file_glyph, icon, nerd_font_family, BUTTON_GROUP, PRESS_DIM};
 use crate::composer::ComposerInput;
 use crate::git;
@@ -51,6 +53,29 @@ const REFRESH_FEEDBACK: Duration = Duration::from_millis(650);
 
 /// Drag marker for the side-pane resize handle (gpui typed drag state).
 pub struct SidePaneResize;
+
+/// One request the pane's AI controls send back to the app. The pane lives in
+/// the app and does not know how to spawn a pi process, so it hands the intent
+/// back through [`AiReviewAction`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AiReviewRequest {
+    Start(ReviewKind),
+    Cancel,
+}
+
+/// App-provided handler for [`AiReviewRequest`]s, rebuilt each frame like the
+/// transcript's `ReviewOpener`. Called with `&mut App`, so the pane entity is
+/// never leased while the app starts or stops its reviewer.
+pub type AiReviewAction = Rc<dyn Fn(AiReviewRequest, &mut Window, &mut App)>;
+
+/// A read-only snapshot of the app's reviewer state, mirrored into the pane
+/// each frame so the pane renders findings without owning the process.
+#[derive(Clone, Default, PartialEq)]
+pub struct AiReviewSnapshot {
+    pub kind: Option<ReviewKind>,
+    pub status: ReviewStatus,
+    pub report: Option<Report>,
+}
 
 pub struct SidePane {
     /// Whether the pane is shown at all (toggled from the top bar).
@@ -86,6 +111,17 @@ pub struct SidePane {
     menu_dismissed_at: Option<Instant>,
     /// Virtualized diff rows.
     diff_list: ListState,
+
+    // ── AI review ──
+    /// The app's reviewer state, mirrored each frame (the app owns the
+    /// process; this pane only renders it).
+    ai_review: AiReviewSnapshot,
+    /// The findings section is expanded.
+    ai_findings_open: bool,
+    /// The sparkles dropdown (Review changes / Review project) is open.
+    ai_menu_open: bool,
+    /// App callback for starting and cancelling a review.
+    ai_review_action: Option<AiReviewAction>,
 
     // ── Changed-files tree ──
     /// User toggle (still auto-hidden on narrow panes).
@@ -132,6 +168,10 @@ impl SidePane {
             source_menu_open: false,
             menu_dismissed_at: None,
             diff_list: ListState::new(0, ListAlignment::Top, px(400.)),
+            ai_review: AiReviewSnapshot::default(),
+            ai_findings_open: true,
+            ai_menu_open: false,
+            ai_review_action: None,
             tree_open: true,
             tree_filter,
             tree_list: ListState::new(0, ListAlignment::Top, px(200.)),
@@ -290,6 +330,75 @@ impl SidePane {
         self.open = true;
         if self.review_stale && !self.review_loading {
             self.load_review(cx);
+        }
+        cx.notify();
+    }
+
+    // ── AI review ──────────────────────────────────────────────────────
+
+    /// The current Review source and its label, for the changes prompt.
+    pub fn ai_review_source(&self) -> (Source, String) {
+        (self.source, self.source_label(self.source))
+    }
+
+    /// The current source's human label, for the changes prompt.
+    pub fn ai_review_source_label(&self) -> String {
+        self.source_label(self.source)
+    }
+
+    /// Mirror the app's reviewer state into the pane (no-op when unchanged).
+    pub fn set_ai_review(&mut self, snapshot: AiReviewSnapshot, cx: &mut Context<Self>) {
+        if self.ai_review == snapshot {
+            return;
+        }
+        // A fresh result opens the section so findings are visible.
+        if snapshot.report.is_some() && self.ai_review.report != snapshot.report {
+            self.ai_findings_open = true;
+        }
+        self.ai_review = snapshot;
+        cx.notify();
+    }
+
+    /// Install the app's start/cancel handler (rebuilt per frame; cheap).
+    pub fn set_ai_review_action(&mut self, action: AiReviewAction) {
+        self.ai_review_action = Some(action);
+    }
+
+    fn toggle_ai_menu(&mut self, cx: &mut Context<Self>) {
+        self.ai_menu_open = !self.ai_menu_open;
+        if self.ai_menu_open {
+            self.source_menu_open = false;
+        }
+        cx.notify();
+    }
+
+    fn toggle_ai_findings(&mut self, cx: &mut Context<Self>) {
+        self.ai_findings_open = !self.ai_findings_open;
+        cx.notify();
+    }
+
+    /// Scroll the diff to a finding's file (exact path, then suffix match).
+    fn reveal_finding(&mut self, path: &str, cx: &mut Context<Self>) {
+        let ix = self.review.as_ref().and_then(|snapshot| {
+            snapshot
+                .files
+                .iter()
+                .position(|file| file.path == path)
+                .or_else(|| snapshot.files.iter().position(|file| file.path.ends_with(path)))
+        });
+        if let Some(ix) = ix {
+            self.selected_file = Some(ix);
+            if let Some(line) = self
+                .review
+                .as_ref()
+                .and_then(|snapshot| snapshot.files.get(ix))
+                .and_then(|file| file.diff_line)
+            {
+                self.diff_list.scroll_to(ListOffset {
+                    item_ix: line,
+                    offset_in_item: px(0.),
+                });
+            }
         }
         cx.notify();
     }
@@ -455,6 +564,9 @@ impl SidePane {
             }
         }
         self.source_menu_open = !self.source_menu_open;
+        if self.source_menu_open {
+            self.ai_menu_open = false;
+        }
         cx.notify();
     }
 
@@ -666,6 +778,26 @@ impl SidePane {
                     .text_color(theme.text)
                     .child(tr!("sidepane.review")),
             )
+            .child(
+                div()
+                    .id("review-ai")
+                    .group(BUTTON_GROUP)
+                    .p_1()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme.bg_hover))
+                    .active(|s| s.opacity(PRESS_DIM))
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_ai_menu(cx)))
+                    .child(icon(
+                        "icons/spark.svg",
+                        14.,
+                        if self.ai_menu_open {
+                            theme.text
+                        } else {
+                            theme.text_3
+                        },
+                    )),
+            )
             .children(tree_available.then(|| {
                 div()
                     .id("review-tree-toggle")
@@ -793,6 +925,7 @@ impl SidePane {
             .flex_col()
             .child(head)
             .child(toolbar)
+            .children(self.render_ai_review(theme, cx))
             .child(content)
             .into_any_element()
     }
@@ -1238,6 +1371,198 @@ impl SidePane {
         }
     }
 
+    /// The sparkles dropdown: the two review scopes, painted over the pane.
+    fn render_ai_menu(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.ai_menu_open {
+            return None;
+        }
+        let action = self.ai_review_action.clone();
+        let pane = cx.weak_entity();
+        let mut menu = div()
+            .id("review-ai-menu")
+            .absolute()
+            .top(px(40.))
+            .left(px(10.))
+            .w(px(230.))
+            .py(px(4.))
+            .rounded(px(10.))
+            .border_1()
+            .border_color(theme.border_strong)
+            .bg(theme.menu_bg)
+            .shadow(theme.popover_shadow())
+            .flex()
+            .flex_col()
+            .occlude()
+            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                if this.ai_menu_open {
+                    this.ai_menu_open = false;
+                    cx.notify();
+                }
+            }));
+        for kind in [ReviewKind::Changes, ReviewKind::Project] {
+            let action = action.clone();
+            let pane = pane.clone();
+            menu = menu.child(ai_menu_row(kind, theme, move |window, cx| {
+                let _ = pane.update(cx, |this, cx| {
+                    this.ai_menu_open = false;
+                    this.ai_findings_open = true;
+                    cx.notify();
+                });
+                if let Some(action) = action.as_ref() {
+                    action(AiReviewRequest::Start(kind), window, cx);
+                }
+            }));
+        }
+        Some(menu.into_any_element())
+    }
+
+    /// The AI findings section, between the toolbar and the diff. `None` until
+    /// a review has run in this session.
+    fn render_ai_review(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let kind = self.ai_review.kind?;
+        let running = self.ai_review.status == ReviewStatus::Running;
+        let open = self.ai_findings_open;
+        let action = self.ai_review_action.clone();
+
+        let mut header = div()
+            .h(px(34.))
+            .px(px(10.))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .child(icon("icons/spark.svg", 13., theme.accent))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_size(theme.ui_px(12.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text)
+                    .child(kind.label()),
+            );
+        if running {
+            header = header.child(spinner("ai-review-spinner", theme)).child(
+                div()
+                    .id("review-ai-stop")
+                    .h(px(22.))
+                    .px(px(8.))
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(theme.border)
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .cursor_pointer()
+                    .text_size(theme.ui_px(11.))
+                    .text_color(theme.text_2)
+                    .hover(|s| s.bg(theme.bg_hover))
+                    .on_click(move |_: &ClickEvent, window, cx| {
+                        cx.stop_propagation();
+                        if let Some(action) = action.as_ref() {
+                            action(AiReviewRequest::Cancel, window, cx);
+                        }
+                    })
+                    .child(tr!("ai_review.stop")),
+            );
+        } else {
+            header = header.child(
+                div()
+                    .id("review-ai-toggle")
+                    .p_1()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme.bg_hover))
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_ai_findings(cx)))
+                    .child(icon(
+                        if open {
+                            "icons/chevron-up.svg"
+                        } else {
+                            "icons/chevron-down.svg"
+                        },
+                        11.,
+                        theme.text_3,
+                    )),
+            );
+        }
+
+        let mut body = div()
+            .id("review-ai-body")
+            .px(px(10.))
+            .pb(px(8.))
+            .flex()
+            .flex_col()
+            .gap(px(4.));
+        match &self.ai_review.status {
+            ReviewStatus::Running => {
+                body = body.child(
+                    div()
+                        .text_size(theme.ui_px(11.5))
+                        .text_color(theme.text_3)
+                        .child(tr!("ai_review.working")),
+                );
+                body = body.child(
+                    div()
+                        .text_size(theme.ui_px(11.))
+                        .text_color(theme.text_3)
+                        .child(kind.description()),
+                );
+            }
+            ReviewStatus::Failed(error) => {
+                body = body.child(
+                    div()
+                        .text_size(theme.ui_px(11.5))
+                        .text_color(theme.del_red)
+                        .whitespace_normal()
+                        .child(error.clone()),
+                );
+            }
+            ReviewStatus::Done => {
+                if let Some(report) = self.ai_review.report.as_ref() {
+                    if !report.summary.trim().is_empty() {
+                        body = body.child(
+                            div()
+                                .text_size(theme.ui_px(11.5))
+                                .text_color(theme.text_2)
+                                .whitespace_normal()
+                                .child(report.summary.clone()),
+                        );
+                    }
+                    if report.findings.is_empty() {
+                        body = body.child(
+                            div()
+                                .text_size(theme.ui_px(11.5))
+                                .text_color(theme.text_3)
+                                .child(tr!("ai_review.no_findings")),
+                        );
+                    } else {
+                        let pane = cx.weak_entity();
+                        for (index, finding) in report.findings.iter().enumerate() {
+                            body = body.child(render_finding(index, finding, theme, pane.clone()));
+                        }
+                    }
+                }
+            }
+            ReviewStatus::Idle => {}
+        }
+
+        Some(
+            div()
+                .flex_none()
+                .border_b_1()
+                .border_color(theme.border)
+                .bg(theme.bg_raised)
+                .flex()
+                .flex_col()
+                .child(header)
+                .when(open, |panel| {
+                    panel.child(body.max_h(px(220.)).overflow_y_scroll())
+                })
+                .into_any_element(),
+        )
+    }
+
     /// The source filter dropdown, painted over the pane body.
     fn source_menu(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.source_menu_open {
@@ -1357,6 +1682,112 @@ fn source_row(
             row.child(icon("icons/check.svg", 11., theme.accent))
         });
     row.into_any_element()
+}
+
+/// One row of the sparkles menu: a review scope.
+fn ai_menu_row(
+    kind: ReviewKind,
+    theme: Theme,
+    on_click: impl Fn(&mut Window, &mut App) + 'static,
+) -> AnyElement {
+    div()
+        .id(gpui::ElementId::Name(format!("review-ai-{kind:?}").into()))
+        .h(px(30.))
+        .mx(px(4.))
+        .px(px(8.))
+        .rounded(px(6.))
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .cursor_pointer()
+        .text_size(theme.ui_px(12.))
+        .text_color(theme.text)
+        .hover(|s| s.bg(theme.bg_hover))
+        .child(icon("icons/spark.svg", 13., theme.text_3))
+        .child(div().child(kind.label()))
+        .on_click(move |_, window, cx| on_click(window, cx))
+        .into_any_element()
+}
+
+/// One finding row: severity chip, title, location, and detail. Clicking a
+/// finding that names a file scrolls the diff to it.
+fn render_finding(
+    index: usize,
+    finding: &Finding,
+    theme: Theme,
+    pane: gpui::WeakEntity<SidePane>,
+) -> AnyElement {
+    let (tint, label) = match finding.severity {
+        Severity::Error => (theme.del_red, finding.severity.label()),
+        Severity::Warning => (theme.warn, finding.severity.label()),
+        Severity::Info => (theme.text_3, finding.severity.label()),
+    };
+    let path = finding.file.clone();
+    let clickable = path.is_some();
+    div()
+        .id(gpui::ElementId::Name(format!("ai-finding-{index}").into()))
+        .w_full()
+        .px(px(6.))
+        .py(px(5.))
+        .rounded(px(6.))
+        .flex()
+        .flex_col()
+        .gap(px(2.))
+        .when(clickable, |row| {
+            row.cursor_pointer().hover(|s| s.bg(theme.bg_hover))
+        })
+        .child(
+            div()
+                .flex()
+                .items_start()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .flex_none()
+                        .mt(px(1.))
+                        .px(px(5.))
+                        .rounded(px(4.))
+                        .text_size(theme.ui_px(10.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(tint)
+                        .bg(tint.opacity(0.14))
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .text_size(theme.ui_px(12.))
+                        .text_color(theme.text)
+                        .whitespace_normal()
+                        .child(finding.title.clone()),
+                ),
+        )
+        .when_some(finding.location(), |row, location| {
+            row.child(
+                div()
+                    .pl(px(2.))
+                    .text_size(theme.ui_px(10.5))
+                    .text_color(theme.text_3)
+                    .child(location),
+            )
+        })
+        .when(!finding.detail.is_empty(), |row| {
+            row.child(
+                div()
+                    .text_size(theme.ui_px(11.))
+                    .text_color(theme.text_2)
+                    .whitespace_normal()
+                    .child(finding.detail.clone()),
+            )
+        })
+        .when_some(path, move |row, path| {
+            row.on_click(move |_, _window, cx: &mut App| {
+                let path = path.clone();
+                let _ = pane.update(cx, |this, cx| this.reveal_finding(&path, cx));
+            })
+        })
+        .into_any_element()
 }
 
 fn separator(theme: Theme) -> AnyElement {
@@ -1722,6 +2153,7 @@ impl Render for SidePane {
             )
             .child(self.body(theme, cx))
             .children(self.source_menu(theme, cx))
+            .children(self.render_ai_menu(theme, cx))
             .on_action(cx.listener(Self::on_filter_cancel))
             .into_any_element()
     }

@@ -508,6 +508,7 @@ impl OrbitApp {
             return;
         }
         self.send(CommandBody::NewSession, "new_session");
+        self.discard_ai_review();
         self.input.read(cx).focus(window);
         cx.notify();
     }
@@ -535,6 +536,7 @@ impl OrbitApp {
             && !self.is_running()
         {
             self.send(CommandBody::NewSession, "new_session");
+            self.discard_ai_review();
             self.input.read(cx).focus(window);
             cx.notify();
             return;
@@ -555,6 +557,7 @@ impl OrbitApp {
         // parked run never waits on a modal tied to the previous session.
         self.cancel_open_dialog(cx);
         self.park_active_session();
+        self.discard_ai_review();
 
         self.busy = false;
         self.transcript.clear();
@@ -566,6 +569,13 @@ impl OrbitApp {
         self.context = None;
         self.reset_turns();
         self.reset_queue();
+        // A brand-new task starts unscoped (Build) and waits for its own id:
+        // clearing the id keeps a mode chosen on the New Task page pending
+        // instead of writing it to the session we just parked.
+        self.session_id = None;
+        self.workflow_pending = None;
+        self.workflow_mode = WorkflowMode::default();
+        self.workflow_todos.reset_for(None);
         self.add_workspace(cwd.clone());
         self.current_workspace = Some(cwd.clone());
 
@@ -669,6 +679,7 @@ impl OrbitApp {
         self.cancel_open_dialog(cx);
         // ── park the outgoing session (running or idle) ──
         self.park_active_session();
+        self.discard_ai_review();
         self.busy = false;
         self.added = 0;
         self.removed = 0;

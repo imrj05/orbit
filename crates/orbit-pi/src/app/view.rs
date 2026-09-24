@@ -230,6 +230,12 @@ impl Render for OrbitApp {
         self.sidepane.update(cx, |pane, cx| {
             pane.set_turn_context(pane_session, pane_latest_turn, cx)
         });
+        let ai_action = self.ai_review_opener(cx);
+        let ai_snapshot = self.ai_review_snapshot();
+        self.sidepane.update(cx, |pane, cx| {
+            pane.set_ai_review_action(ai_action);
+            pane.set_ai_review(ai_snapshot, cx);
+        });
         let git_workspace = self.current_workspace.clone();
         let git_provider = self.model_provider.clone();
         let git_model = self.model_id.clone();
@@ -925,6 +931,9 @@ impl Render for OrbitApp {
                                     // Extension `setWidget` blocks placed
                                     // above the editor.
                                     .children(self.extension_widgets_above(cx))
+                                    // Plan progress (Plan/Build only) — a slim
+                                    // strip hugging the composer, above it.
+                                    .children(self.workflow_progress(cx))
                                     // composer box — the picker popups are
                                     // anchored above their own chips
                                     .child(
@@ -1308,6 +1317,9 @@ impl OrbitApp {
             // the bundled extension enforces. First thing to yield when the
             // row gets narrow.
             .when(!compact, |row| row.child(self.access_chip(cx)))
+            // Workflow mode: the session's scope (Plan / Build / Ask), enforced
+            // by the workflow extension. Sits beside the access chip.
+            .when(!compact, |row| row.child(self.workflow_chip(cx)))
             .child(div().flex_1())
             .child(self.model_chip(compact, cx))
             .child(self.thinking_chip(cx))
@@ -1536,6 +1548,203 @@ impl OrbitApp {
             popup
                 .with_animation(
                     "access-menu-in",
+                    Animation::new(Duration::from_millis(130))
+                        .with_easing(|d| 1.0 - (1.0 - d).powi(3)),
+                    |el, d| el.opacity(d),
+                )
+                .into_any_element()
+        };
+
+        Some(
+            anchored()
+                .position_mode(AnchoredPositionMode::Local)
+                .anchor(Corner::BottomLeft)
+                .offset(point(px(0.), px(-4.)))
+                .snap_to_window()
+                .child(deferred(popup))
+                .into_any_element(),
+        )
+    }
+
+    /// The workflow-mode chip: the active session's scope, opening the
+    /// Plan / Build / Ask picker. Ghost style until hovered/open, matching the
+    /// access and model chips.
+    pub(super) fn workflow_chip(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
+        let theme = *theme::get(cx);
+        div()
+            .flex()
+            .flex_col()
+            .items_start()
+            .children(self.workflow_popup(cx))
+            .child(
+                div()
+                    .id("workflow-chip")
+                    .flex()
+                    .items_center()
+                    .gap_1p5()
+                    .px(px(7.))
+                    .h(px(24.))
+                    .rounded_md()
+                    .text_size(theme.ui_px(12.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme.overlay))
+                    .when(self.workflow_menu_open, |chip| {
+                        chip.bg(theme.active).text_color(theme.active_fg)
+                    })
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(Self::on_workflow_trigger_click),
+                    )
+                    .child(icon(self.workflow_mode.icon(), 12., theme.text_3))
+                    .child(
+                        div()
+                            .text_color(if self.workflow_menu_open {
+                                theme.active_fg
+                            } else {
+                                theme.text_2
+                            })
+                            .child(self.workflow_mode.label()),
+                    )
+                    // Read-only modes cannot edit; the lock says so at a glance,
+                    // matching the access chip's motif.
+                    .when(self.workflow_mode.is_read_only(), |chip| {
+                        chip.child(icon("icons/lock.svg", 10., theme.text_3))
+                    })
+                    .child(Self::chip_caret(
+                        self.workflow_menu_open,
+                        theme.active_fg,
+                        "workflow-caret-turn",
+                        cx,
+                    )),
+            )
+    }
+
+    /// The workflow-mode picker popup, while open. Same construction as the
+    /// access popup: an icon tile, the mode over its one-line hint, and an
+    /// accent check on the active mode.
+    pub(super) fn workflow_popup(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        if !self.workflow_menu_open {
+            return None;
+        }
+        let theme = *theme::get(cx);
+        let this = cx.weak_entity();
+        let mut list = div().w_full().p(px(5.)).flex().flex_col().gap(px(2.));
+        for (ix, mode) in WorkflowMode::ALL.iter().enumerate() {
+            let mode = *mode;
+            let highlighted = ix == self.workflow_menu_highlight;
+            let selected = mode == self.workflow_mode;
+            let this = this.clone();
+            list = list.child(
+                div()
+                    .id(ElementId::NamedInteger("workflow-row".into(), ix as u64))
+                    .w_full()
+                    .px(px(8.))
+                    .py(px(8.))
+                    .rounded(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .cursor_pointer()
+                    .when(highlighted, |row| row.bg(theme.overlay_strong))
+                    .when(selected && !highlighted, |row| {
+                        row.bg(theme.accent.opacity(0.1))
+                    })
+                    .hover(|style| style.bg(theme.overlay_strong))
+                    .on_hover(move |hovered, _, cx| {
+                        if *hovered {
+                            this.update(cx, |app, cx| {
+                                if app.workflow_menu_highlight != ix {
+                                    app.workflow_menu_highlight = ix;
+                                    cx.notify();
+                                }
+                            })
+                            .ok();
+                        }
+                    })
+                    .on_mouse_up(MouseButton::Left, {
+                        let this = cx.weak_entity();
+                        move |_, window, cx| {
+                            this.update(cx, |app, cx| app.run_workflow_menu_item(ix, window, cx))
+                                .ok();
+                        }
+                    })
+                    .child(
+                        div()
+                            .flex_none()
+                            .size(px(26.))
+                            .rounded(px(7.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .bg(if selected {
+                                theme.accent.opacity(0.16)
+                            } else {
+                                theme.overlay
+                            })
+                            .child(icon(
+                                mode.icon(),
+                                14.,
+                                if selected { theme.accent } else { theme.text_3 },
+                            )),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_size(theme.ui_px(12.5))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(if selected { theme.text } else { theme.text_2 })
+                                    .child(mode.label()),
+                            )
+                            .child(
+                                div()
+                                    .mt(px(2.))
+                                    .whitespace_normal()
+                                    .text_size(theme.ui_px(11.))
+                                    .text_color(theme.text_3)
+                                    .child(mode.description()),
+                            ),
+                    )
+                    .when(selected, |row| {
+                        row.child(icon("icons/check.svg", 13., theme.accent))
+                    }),
+            );
+        }
+
+        let popup = div()
+            .w(px(300.))
+            .font_family(theme::ui_font_family())
+            .rounded(px(12.))
+            .border_1()
+            .border_color(theme.border_strong)
+            .bg(theme.menu_bg)
+            .shadow(theme.popover_shadow())
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .occlude()
+            .key_context("WorkflowMenu")
+            .track_focus(&self.workflow_menu_focus)
+            .on_action(cx.listener(Self::on_workflow_menu_next))
+            .on_action(cx.listener(Self::on_workflow_menu_prev))
+            .on_action(cx.listener(Self::on_workflow_menu_confirm))
+            .on_action(cx.listener(Self::on_workflow_menu_close))
+            .on_mouse_down_out(cx.listener(|app, _, window, cx| {
+                app.menu_dismissed_at = Some(Instant::now());
+                app.close_workflow_menu(window, cx);
+            }))
+            .child(list);
+
+        let popup: AnyElement = if theme::reduce_motion(cx) {
+            popup.into_any_element()
+        } else {
+            popup
+                .with_animation(
+                    "workflow-menu-in",
                     Animation::new(Duration::from_millis(130))
                         .with_easing(|d| 1.0 - (1.0 - d).powi(3)),
                     |el, d| el.opacity(d),
@@ -2044,6 +2253,86 @@ impl OrbitApp {
                                             .text_color(theme.text_3)
                                             .text_align(TextAlign::Center)
                                             .child(tr!("workspace.pick_workspace_hint")),
+                                    ),
+                            )
+                            // Workflow mode — the task's scope before the
+                            // session exists: Plan / Build / Ask. Held pending
+                            // and committed to the new session id.
+                            .child(
+                                div()
+                                    .w(field_w)
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .px(px(2.))
+                                            .text_size(theme.ui_px(10.5))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(theme.text_3)
+                                            .child(tr!("view.mode")),
+                                    )
+                                    .child(
+                                        div().flex().gap(px(4.)).children(
+                                            WorkflowMode::ALL.iter().map(|mode| {
+                                                let mode = *mode;
+                                                let selected = self.workflow_mode == mode;
+                                                div()
+                                                    .id(ElementId::Name(
+                                                        format!("new-task-mode-{}", mode.as_wire())
+                                                            .into(),
+                                                    ))
+                                                    .flex_1()
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .gap(px(6.))
+                                                    .py(px(7.))
+                                                    .rounded(px(10.))
+                                                    .border_1()
+                                                    .border_color(if selected {
+                                                        theme.accent.opacity(0.55)
+                                                    } else {
+                                                        theme.border
+                                                    })
+                                                    .bg(if selected {
+                                                        theme.accent.opacity(0.12)
+                                                    } else {
+                                                        theme.bg_raised
+                                                    })
+                                                    .cursor_pointer()
+                                                    .hover(|s| {
+                                                        s.border_color(theme.border_strong)
+                                                            .bg(theme.overlay)
+                                                    })
+                                                    .on_mouse_up(
+                                                        MouseButton::Left,
+                                                        cx.listener(move |app, _, _, cx| {
+                                                            app.choose_workflow_mode(mode, cx);
+                                                        }),
+                                                    )
+                                                    .child(icon(
+                                                        mode.icon(),
+                                                        13.,
+                                                        if selected {
+                                                            theme.accent
+                                                        } else {
+                                                            theme.text_3
+                                                        },
+                                                    ))
+                                                    .child(
+                                                        div()
+                                                            .text_size(theme.ui_px(12.))
+                                                            .font_weight(FontWeight::MEDIUM)
+                                                            .text_color(if selected {
+                                                                theme.text
+                                                            } else {
+                                                                theme.text_2
+                                                            })
+                                                            .child(mode.label()),
+                                                    )
+                                            }),
+                                        ),
                                     ),
                             )
                             // Workspace — a labeled select field, not a ghost
@@ -3036,6 +3325,186 @@ impl OrbitApp {
     /// provider error (with the attempt counter and a real Cancel that sends
     /// `abort_retry`) or compacting the conversation context. Unlike the
     /// status bar's transient messages, this stays up for the whole state.
+    /// The plan-progress panel above the composer (Plan and Build only).
+    ///
+    /// Collapsed it is one comfortable row — the current step, a meter, and the
+    /// count; expanded it reveals the checklist. Sized like the app's other
+    /// panels (14px gutters, 12–13px type) so it reads as a real section rather
+    /// than a cramped status line. Hidden in Ask mode and when there is no plan.
+    pub(super) fn workflow_progress(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let theme = *theme::get(cx);
+        if !self.workflow_mode.tracks_todos() || self.workflow_todos.is_empty() {
+            return None;
+        }
+        let (done, total) = self.workflow_todos.progress();
+        let fraction = if total == 0 {
+            0.0
+        } else {
+            (done as f32 / total as f32).clamp(0.0, 1.0)
+        };
+        let all_done = self.workflow_todos.all_done();
+        let expanded = self.workflow_todos_expanded;
+        let current_step = self.workflow_todos.current().map(|todo| todo.step);
+        let fill = if all_done { theme.ok_green } else { theme.accent };
+
+        // A fixed-width meter reads as a status glyph beside the count; the
+        // visible track keeps 0-of-N legible.
+        let meter = div()
+            .flex_none()
+            .w(px(72.))
+            .h(px(6.))
+            .rounded_full()
+            .overflow_hidden()
+            .bg(theme.overlay_strong)
+            .child(div().h_full().w(relative(fraction)).rounded_full().bg(fill));
+
+        let next_step = if all_done {
+            tr!("workflow.todos_done")
+        } else {
+            self.workflow_todos
+                .current()
+                .map(|todo| todo.text.clone())
+                .unwrap_or_default()
+        };
+
+        // The whole row is one click target. Identity (icon + current step) on
+        // the left, progress (meter + count + chevron) on the right.
+        let header = div()
+            .id("workflow-progress-toggle")
+            .w_full()
+            .h(px(30.))
+            .group(BUTTON_GROUP)
+            .flex()
+            .items_center()
+            .gap(px(12.))
+            .px(px(6.))
+            .rounded_md()
+            .cursor_pointer()
+            .hover(|s| s.bg(theme.bg_hover))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.toggle_workflow_todos(cx)),
+            )
+            .child(
+                icon(
+                    if all_done {
+                        "icons/circle-check.svg"
+                    } else {
+                        self.workflow_mode.icon()
+                    },
+                    14.,
+                    if all_done { theme.ok_green } else { theme.text_2 },
+                )
+                .flex_none(),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(theme.ui_px(12.5))
+                    .text_color(if all_done { theme.ok_green } else { theme.text_2 })
+                    .child(next_step),
+            )
+            .child(meter)
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(theme.ui_px(12.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(if all_done { theme.ok_green } else { theme.text_3 })
+                    .child(tr!("workflow.todos_progress", done = done, total = total)),
+            )
+            .child(
+                icon(
+                    if expanded {
+                        "icons/chevron-down.svg"
+                    } else {
+                        "icons/chevron-right.svg"
+                    },
+                    14.,
+                    theme.text_3,
+                )
+                .flex_none(),
+            );
+
+        let mut panel = div()
+            .id("workflow-progress")
+            .w_full()
+            .mb(px(8.))
+            .px(px(14.))
+            .py(px(6.))
+            .rounded_lg()
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.bg_raised)
+            .flex()
+            .flex_col()
+            .child(header);
+
+        if expanded {
+            let mut list = div()
+                .id("workflow-todos-list")
+                .mt(px(8.))
+                .pt(px(10.))
+                .border_t_1()
+                .border_color(theme.border)
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .max_h(px(260.))
+                .overflow_y_scroll();
+            for todo in self.workflow_todos.todos() {
+                // Hierarchy: the current step leads, pending steps sit a shade
+                // back, completed ones recede behind a strike. Two-line clamp
+                // keeps long plan steps on a regular rhythm.
+                let is_current = !todo.done && Some(todo.step) == current_step;
+                let text_color = if todo.done {
+                    theme.text_3
+                } else if is_current {
+                    theme.text
+                } else {
+                    theme.text_2
+                };
+                list = list.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(12.))
+                        .px(px(6.))
+                        .py(px(4.))
+                        .rounded_md()
+                        .when(is_current, |row| row.bg(theme.accent.opacity(0.08)))
+                        .child(
+                            icon(
+                                if todo.done {
+                                    "icons/circle-check.svg"
+                                } else {
+                                    "icons/circle-dot.svg"
+                                },
+                                14.,
+                                if todo.done { theme.ok_green } else { theme.text_3 },
+                            )
+                            .flex_none(),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .line_clamp(2)
+                                .text_size(theme.ui_px(12.5))
+                                .text_color(text_color)
+                                .when(todo.done, |line| line.line_through())
+                                .child(todo.text.clone()),
+                        ),
+                );
+            }
+            panel = panel.child(list);
+        }
+
+        Some(panel.into_any_element())
+    }
+
     pub(super) fn run_status_strip(&self, cx: &Context<Self>) -> Option<AnyElement> {
         let theme = *theme::get(cx);
         if let Some(retry) = &self.retry_detail {

@@ -22,6 +22,9 @@ impl OrbitApp {
             cx.notify();
         }
         self.tick_background(cx);
+        // The reviewer is its own process with its own event stream; drain it
+        // regardless of the active session's state.
+        self.tick_ai_review(cx);
         // Bound the warm-session pool: reap idle parked processes past the TTL.
         self.reap_idle_parked();
         // A banner click routes back to the session it announced.
@@ -38,6 +41,7 @@ impl OrbitApp {
             .and_then(sessions::SessionWatcher::take_reload)
         {
             self.sessions = reloaded;
+            self.prune_workflow_store();
             self.sync_session_menu(cx);
             // The usage index is built from the same files; a write means the
             // analytics are stale (rate-limited inside the page).
@@ -333,6 +337,7 @@ impl OrbitApp {
         }
         if refresh_sessions {
             self.sessions = sessions::load_sessions();
+            self.prune_workflow_store();
             self.sync_session_menu(cx);
             cx.notify();
         }
@@ -851,6 +856,11 @@ impl OrbitApp {
         if self.quota.on_entries(entries) {
             // A snapshot landed: no need for fast bootstrap polls.
             self.quota_entries_bootstrap = 0;
+            cx.notify();
+        }
+        // The workflow extension rides the same entry stream: its plan
+        // progress advances the bottom todo bar.
+        if self.workflow_todos.on_entries(entries) {
             cx.notify();
         }
     }

@@ -388,6 +388,16 @@ impl OrbitApp {
             PaletteCommand::ReviewChanges => {
                 self.sidepane.update(cx, |pane, cx| pane.show_review(cx));
             }
+            PaletteCommand::AiReviewChanges => {
+                self.command_palette = None;
+                self.sidepane.update(cx, |pane, cx| pane.show_review(cx));
+                self.start_ai_review(crate::ai_review::ReviewKind::Changes, cx);
+            }
+            PaletteCommand::AiReviewProject => {
+                self.command_palette = None;
+                self.sidepane.update(cx, |pane, cx| pane.show_review(cx));
+                self.start_ai_review(crate::ai_review::ReviewKind::Project, cx);
+            }
             PaletteCommand::OpenGit => {
                 self.command_palette = None;
                 self.open_git(cx);

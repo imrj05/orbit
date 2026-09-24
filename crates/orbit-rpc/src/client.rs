@@ -118,6 +118,26 @@ impl PiClient {
         )
     }
 
+    /// Spawn with extra extension files **and** process-scoped environment
+    /// variables. Orbit uses this for the AI reviewer: `ORBIT_WORKFLOW_MODE=ask`
+    /// makes the workflow extension read-only from the first hook (before the
+    /// session id is known), and `ORBIT_REVIEW=1` tells the access guard not to
+    /// raise a dialog on a process nobody is routing.
+    pub fn spawn_with_extensions_and_env(
+        workspace_dir: &Path,
+        session_dir: Option<&Path>,
+        extensions: &[PathBuf],
+        env: &[(&str, &str)],
+    ) -> Result<Self> {
+        Self::spawn_inner(
+            &resolve_pi_bin(),
+            workspace_dir,
+            session_dir,
+            extensions,
+            env,
+        )
+    }
+
     /// [`spawn_with_extensions`](Self::spawn_with_extensions) against a
     /// specific executable — the seam the transport tests drive.
     pub fn spawn_with_bin_and_extensions(
@@ -126,7 +146,7 @@ impl PiClient {
         session_dir: Option<&Path>,
         extensions: &[PathBuf],
     ) -> Result<Self> {
-        Self::spawn_inner(bin, workspace_dir, session_dir, extensions)
+        Self::spawn_inner(bin, workspace_dir, session_dir, extensions, &[])
     }
 
     /// Spawn a specific executable as the RPC server. [`spawn`](Self::spawn)
@@ -137,7 +157,7 @@ impl PiClient {
         workspace_dir: &Path,
         session_dir: Option<&Path>,
     ) -> Result<Self> {
-        Self::spawn_inner(bin, workspace_dir, session_dir, &[])
+        Self::spawn_inner(bin, workspace_dir, session_dir, &[], &[])
     }
 
     fn spawn_inner(
@@ -145,6 +165,7 @@ impl PiClient {
         workspace_dir: &Path,
         session_dir: Option<&Path>,
         extensions: &[PathBuf],
+        env: &[(&str, &str)],
     ) -> Result<Self> {
         let mut command = std::process::Command::new(bin);
         // `--approve` grants *project trust* (load project-local settings,
@@ -170,6 +191,9 @@ impl PiClient {
         }
         for extension in extensions {
             command.arg("--extension").arg(extension);
+        }
+        for (key, value) in env {
+            command.env(key, value);
         }
         let mut child = command
             .spawn()

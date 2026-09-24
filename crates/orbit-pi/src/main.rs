@@ -37,6 +37,7 @@ macro_rules! tr_cow {
 }
 
 mod access;
+mod ai_review;
 mod app;
 mod app_icon;
 mod ask;
@@ -89,6 +90,7 @@ mod updater;
 mod usage;
 mod watch;
 mod widgets;
+mod workflow;
 mod workspace_picker;
 
 use std::time::Duration;
@@ -203,6 +205,18 @@ actions!(
         AccessMenuPrev,
         AccessMenuConfirm,
         AccessMenuClose
+    ]
+);
+
+// Workflow-mode picker actions (bound to the `WorkflowMenu` context, which
+// rides on the open popup's focus handle).
+actions!(
+    workflow_menu_keys,
+    [
+        WorkflowMenuNext,
+        WorkflowMenuPrev,
+        WorkflowMenuConfirm,
+        WorkflowMenuClose
     ]
 );
 
@@ -364,6 +378,11 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("enter", AccessMenuConfirm, Some("AccessMenu")),
         KeyBinding::new("up", AccessMenuPrev, Some("AccessMenu")),
         KeyBinding::new("down", AccessMenuNext, Some("AccessMenu")),
+        // Workflow-mode picker keys — same shape again.
+        KeyBinding::new("escape", WorkflowMenuClose, Some("WorkflowMenu")),
+        KeyBinding::new("enter", WorkflowMenuConfirm, Some("WorkflowMenu")),
+        KeyBinding::new("up", WorkflowMenuPrev, Some("WorkflowMenu")),
+        KeyBinding::new("down", WorkflowMenuNext, Some("WorkflowMenu")),
         // Inline approval bar keys. Registered after the composer bindings so
         // Enter confirms the highlighted action instead of submitting, and
         // Escape dismisses (denies) instead of aborting the run.

@@ -533,6 +533,7 @@ impl OrbitApp {
         self.model_selector = None;
         self.context_popup = ContextPopup::None;
         self.access_menu_open = false;
+        self.workflow_menu_open = false;
         self.autocomplete_dismissed = true;
         self.autocomplete.borrow_mut().open = false;
         self.add_menu_open = true;
@@ -699,6 +700,7 @@ impl OrbitApp {
         self.autocomplete_dismissed = true;
         self.autocomplete.borrow_mut().open = false;
         self.access_menu_open = true;
+        self.workflow_menu_open = false;
         self.access_menu_highlight = AccessMode::ALL
             .iter()
             .position(|mode| *mode == self.access_mode)
@@ -782,5 +784,160 @@ impl OrbitApp {
             self.set_status(tr!("access.mode_set", mode = mode.label()));
         }
         cx.notify();
+    }
+
+    // ── workflow mode (per session; the workflow extension's policy) ────
+
+    /// Mouse-up on the workflow chip. Swallows the toggle if the menu was
+    /// just dismissed by this click's mouse-down (outside-click dismissal).
+    pub(super) fn on_workflow_trigger_click(
+        &mut self,
+        _: &MouseUpEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        const GESTURE: Duration = Duration::from_millis(200);
+        if let Some(dismissed) = self.menu_dismissed_at.take() {
+            if dismissed.elapsed() < GESTURE {
+                return;
+            }
+        }
+        self.toggle_workflow_menu(window, cx);
+    }
+
+    pub(super) fn toggle_workflow_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.workflow_menu_open {
+            self.close_workflow_menu(window, cx);
+            return;
+        }
+        // Mutually exclusive with the other composer popovers.
+        self.model_selector = None;
+        self.context_popup = ContextPopup::None;
+        self.access_menu_open = false;
+        self.add_menu_open = false;
+        self.autocomplete_dismissed = true;
+        self.autocomplete.borrow_mut().open = false;
+        self.workflow_menu_open = true;
+        self.workflow_menu_highlight = WorkflowMode::ALL
+            .iter()
+            .position(|mode| *mode == self.workflow_mode)
+            .unwrap_or(0);
+        window.focus(&self.workflow_menu_focus);
+        cx.notify();
+    }
+
+    /// Close the workflow menu and hand focus back to the composer input.
+    pub(super) fn close_workflow_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.workflow_menu_open {
+            self.workflow_menu_open = false;
+            self.input.read(cx).focus(window);
+            cx.notify();
+        }
+    }
+
+    pub(super) fn on_workflow_menu_next(
+        &mut self,
+        _: &crate::WorkflowMenuNext,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.workflow_menu_highlight =
+            (self.workflow_menu_highlight + 1) % WorkflowMode::ALL.len();
+        cx.notify();
+    }
+
+    pub(super) fn on_workflow_menu_prev(
+        &mut self,
+        _: &crate::WorkflowMenuPrev,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.workflow_menu_highlight =
+            (self.workflow_menu_highlight + WorkflowMode::ALL.len() - 1) % WorkflowMode::ALL.len();
+        cx.notify();
+    }
+
+    pub(super) fn on_workflow_menu_confirm(
+        &mut self,
+        _: &crate::WorkflowMenuConfirm,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_workflow_menu_item(self.workflow_menu_highlight, window, cx);
+    }
+
+    pub(super) fn on_workflow_menu_close(
+        &mut self,
+        _: &crate::WorkflowMenuClose,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_workflow_menu(window, cx);
+    }
+
+    /// Select workflow mode `ix` (see [`WorkflowMode::ALL`]) and close the menu.
+    pub(super) fn run_workflow_menu_item(
+        &mut self,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(mode) = WorkflowMode::ALL.get(ix).copied() {
+            self.set_workflow_mode(mode, cx);
+        }
+        self.close_workflow_menu(window, cx);
+    }
+
+    /// Apply a workflow mode for the active session: persist it to the
+    /// per-session store (the extension reads it fresh on every hook, so this
+    /// re-arms a live session) and report it. Before a session exists the
+    /// choice is held as pending and applied when the id arrives.
+    pub(super) fn set_workflow_mode(&mut self, mode: WorkflowMode, cx: &mut Context<Self>) {
+        self.workflow_mode = mode;
+        match self.session_id.clone() {
+            Some(id) => crate::workflow::persist_for(&id, mode),
+            None => self.workflow_pending = Some(mode),
+        }
+        if self.extensions.workflow().is_none() {
+            self.toast_warning(tr!("workflow.mode_set_unavailable", mode = mode.label()));
+        } else {
+            self.set_status(tr!("workflow.mode_set", mode = mode.label()));
+        }
+        cx.notify();
+    }
+
+    /// The New Task page's Mode field. Quiet version of [`set_workflow_mode`]:
+    /// before a session exists the choice is pending, committed when the new
+    /// session id arrives. No status/toast — the field is its own feedback.
+    pub(super) fn choose_workflow_mode(&mut self, mode: WorkflowMode, cx: &mut Context<Self>) {
+        self.workflow_mode = mode;
+        match self.session_id.clone() {
+            Some(id) => crate::workflow::persist_for(&id, mode),
+            None => self.workflow_pending = Some(mode),
+        }
+        cx.notify();
+    }
+
+    /// The bottom todo bar toggles between its collapsed row and the full
+    /// checklist.
+    pub(super) fn toggle_workflow_todos(&mut self, cx: &mut Context<Self>) {
+        self.workflow_todos_expanded = !self.workflow_todos_expanded;
+        cx.notify();
+    }
+
+    /// Drop workflow-store entries for sessions that no longer exist, keeping
+    /// the active session (which may be an unlisted draft). Called whenever
+    /// the session list reloads, so the store cannot grow without bound.
+    pub(super) fn prune_workflow_store(&self) {
+        let mut known: Vec<String> = self.sessions.iter().map(|s| s.id.clone()).collect();
+        if let Some(id) = &self.session_id {
+            known.push(id.clone());
+        }
+        // Never prune from an empty set: a watcher firing before the session
+        // list loads (or a store read failure) must not wipe every entry.
+        if known.is_empty() {
+            return;
+        }
+        crate::workflow::prune(&known);
     }
 }
