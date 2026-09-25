@@ -5,7 +5,7 @@
 //! document-wide render pass.
 
 use super::*;
-use crate::app::{icon_button_frame, input_field_frame, press, BUTTON_GROUP};
+use crate::app::{icon_button_frame, picker_search_frame, press, BUTTON_GROUP};
 use crate::theme::tokens::{ButtonSize, IconSize, StyledExt, TextSize};
 
 /// State for the open find bar. Dropping this closes the surface.
@@ -46,6 +46,7 @@ impl OrbitApp {
                 .with_key_context("Composer Search")
                 .with_element_id("transcript-search-input")
                 .with_max_lines(1)
+                .with_wrap(false)
         });
         let handle = input.read(cx).focus_handle(cx);
         self.transcript_search = Some(TranscriptSearch {
@@ -179,10 +180,10 @@ impl OrbitApp {
         };
         let nav_enabled = count > 0;
         Some(
-            // A text field floating over the transcript: the field frame lays
-            // it out, and `elevation_2` after it takes over the fill, radius,
+            // A text field floating over the transcript, in the shared picker
+            // search row; `elevation_2` after it takes over the fill, radius,
             // and hairline.
-            input_field_frame(
+            picker_search_frame(
                 div()
                     .id("transcript-search")
                     .debug_selector(|| "transcript-search".to_string())

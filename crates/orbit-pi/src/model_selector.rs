@@ -206,6 +206,7 @@ impl ModelSelector {
                 .with_placeholder_key(placeholder_key)
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
+                .with_wrap(false)
         });
         let selected_catalog_ix = Self::resolve_selected_catalog_ix(
             kind,
@@ -629,6 +630,19 @@ impl ModelSelector {
         current_level: String,
         cx: &mut Context<Self>,
     ) {
+        // pi re-reports the catalog on every `get_state`, not only on a real
+        // change. Re-pinning the highlight on each one would snap an ↑/↓ back
+        // to the active model while the popup is open, so an unchanged sync
+        // must leave the highlight, scroll and hover-block untouched.
+        let unchanged = self.models == models
+            && self.levels == levels
+            && self.current_model == current_model
+            && self.current_model_id == current_model_id
+            && self.current_model_provider == current_model_provider
+            && self.current_level == current_level;
+        if unchanged {
+            return;
+        }
         self.models = models;
         self.levels = levels;
         self.current_model = current_model;
@@ -690,13 +704,18 @@ impl ModelSelector {
 
     // ── internals ─────────────────────────────────────────────────────────
 
-    fn defer_scroll(&self, ix: usize, rows: Vec<Row>, cx: &mut Context<Self>) {
+    /// Re-apply the scroll after the deferred popover has laid out (its
+    /// `max_offset` is unknown until then). Targets the **current** highlight,
+    /// not the row captured on open, so an ↑/↓ during the retry window isn't
+    /// scrolled back to the active model.
+    fn defer_scroll(&self, cx: &mut Context<Self>) {
         for delay in [16_u64, 50, 120, 250] {
             let this = cx.weak_entity();
-            let rows = rows.clone();
             cx.spawn(async move |_, cx| {
                 gpui::Timer::after(Duration::from_millis(delay)).await;
                 this.update(cx, |selector, cx| {
+                    let rows = selector.rows(&selector.last_filter);
+                    let ix = selector.highlighted;
                     selector.scroll_to_row(ix, &rows, cx);
                     cx.notify();
                 })
@@ -709,6 +728,12 @@ impl ModelSelector {
     fn scroll_to_row(&mut self, ix: usize, rows: &[Row], cx: &App) {
         let metrics = ListMetrics::new(theme::get(cx));
         Self::apply_scroll_to_row(&mut self.list_scroll, rows, ix, &metrics);
+    }
+
+    /// Test-only: the row index the keyboard cursor sits on.
+    #[cfg(test)]
+    pub(crate) fn highlighted_row(&self) -> usize {
+        self.highlighted
     }
 
     /// Move the highlight one option, skipping provider headers so the
@@ -730,6 +755,11 @@ impl ModelSelector {
             }
         }
         self.highlighted = next;
+        // A deliberate ↑/↓ owns the highlight. Cancel any still-armed open pin
+        // (the popup may not have rendered its first frame yet, or a scope /
+        // catalog change re-armed it), or the next render snaps the cursor back
+        // to the active model.
+        self.needs_scroll = false;
         self.scroll_to_row(next, &rows, cx);
         cx.notify();
     }
@@ -773,17 +803,17 @@ impl Render for ModelSelector {
             }
         }
 
-        // Pin the highlight to the active model on open and after async
-        // catalog refresh; a typed query owns the highlight instead, so it
-        // lands on the first match rather than snapping back to the choice.
-        let pin_to_selection =
-            self.needs_scroll || (self.hover_highlight_blocked() && needle.is_empty());
+        // Only a genuine open/refresh re-pins the highlight to the active
+        // model. The hover-block window must NOT: it stays armed for 400ms, so
+        // re-pinning on every render would undo an ↑/↓ pressed right after the
+        // popover opens (or after a scope change / catalog refresh).
+        let pin_to_selection = self.needs_scroll;
         if pin_to_selection {
             if let Some(ix) = Self::selected_row_index(&rows) {
                 self.highlighted = ix;
                 self.scroll_to_row(ix, &rows, cx);
                 if self.needs_scroll {
-                    self.defer_scroll(ix, rows.clone(), cx);
+                    self.defer_scroll(cx);
                 }
             } else if let Some(ix) = Self::first_selectable(&rows) {
                 self.highlighted = ix;
@@ -1151,7 +1181,7 @@ fn group_header(
                 .px(list::sub_header_inset_x(&theme))
                 .flex()
                 .items_center()
-                .gap(theme.rems(0.25))
+                .gap(DynamicSpacing::Base04.px(&theme))
                 .text_size(list::SUB_HEADER_TEXT.px(&theme))
                 .text_color(theme.text_3)
                 .children(glyph.map(|path| icon(path, IconSize::XSmall.px(&theme), theme.text_3)))
@@ -1179,6 +1209,10 @@ fn empty_state(kind: PickerKind, theme: Theme) -> impl IntoElement + use<> {
     // Zed's no-match state: one muted picker entry in the list's place.
     div().py(picker::list_padding_y(&theme)).child(
         picker_entry(div(), &theme)
+            // The empty state is a two-line entry, held to the same token
+            // height as a real row (and `flex_none` like the palette's).
+            .h(picker::two_line_entry_height(&theme))
+            .flex_none()
             .text_color(theme.text_3)
             .child(icon(
                 "icons/search.svg",
@@ -1319,24 +1353,28 @@ fn render_row(
             content.id(ElementId::NamedInteger("picker-row".into(), ix as u64)),
             &theme,
         )
+        .debug_selector(move || format!("picker-row-{ix}"))
         .group("picker-row")
-        // Fixed so every option row measures `ListMetrics::row_h`.
+        // Fixed so every option row measures `ListMetrics::row_h`, and
+        // `flex_none` so a capped list can't shrink it below that height.
         .h(picker::two_line_entry_height(&theme))
+        .flex_none()
         .cursor_pointer()
-        .on_hover({
+        // Moving the pointer over a row moves the keyboard highlight; a click
+        // activates it. `on_mouse_move` (not `on_hover`) so a scroll that
+        // slides rows under a stationary pointer can't hijack ↑/↓ navigation.
+        .on_mouse_move({
             let this = this.clone();
-            move |hovering, _, cx| {
-                if *hovering {
-                    this.update(cx, |selector, cx| {
-                        if selector.hover_highlight_blocked() {
-                            return;
-                        }
-                        if selector.highlighted != ix {
-                            selector.highlighted = ix;
-                            cx.notify();
-                        }
-                    });
-                }
+            move |_, _, cx| {
+                this.update(cx, |selector, cx| {
+                    if selector.hover_highlight_blocked() {
+                        return;
+                    }
+                    if selector.highlighted != ix {
+                        selector.highlighted = ix;
+                        cx.notify();
+                    }
+                });
             }
         })
         .on_click({
@@ -1718,5 +1756,313 @@ mod tests {
     #[test]
     fn unknown_providers_fall_back_to_the_cloud_glyph() {
         assert_eq!(provider_icon("my-gateway").as_ref(), "icons/cloud.svg");
+    }
+
+    /// A capped list must scroll, not squeeze its rows: without `flex_none`
+    /// the flex column shrinks each two-line row toward its content height,
+    /// so the 28px leading chip loses its vertical breathing room. Every row
+    /// keeps `picker::two_line_entry_height` instead.
+    #[gpui::test]
+    fn capped_list_keeps_rows_at_the_two_line_token_height(cx: &mut gpui::TestAppContext) {
+        use crate::theme::ThemeId;
+
+        cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let models: Vec<ModelEntry> = (0..12)
+            .map(|ix| {
+                entry(
+                    &format!("m{ix}"),
+                    &format!("Model {ix}"),
+                    "opencode-go",
+                    Some(1_000_000),
+                )
+            })
+            .collect();
+        let selector = cx.update(|window, cx| {
+            let selector = cx.new(|cx| {
+                ModelSelector::new(
+                    PickerKind::Model,
+                    models.clone(),
+                    Vec::new(),
+                    "Model 0".into(),
+                    "m0".into(),
+                    "opencode-go".into(),
+                    "low".into(),
+                    Box::new(|_, _, _, _| {}),
+                    Box::new(|_, _, _| {}),
+                    Box::new(|_, _, _| {}),
+                    cx,
+                )
+            });
+            window.focus(&selector.read(cx).focus_handle(cx));
+            selector
+        });
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(360.), px(700.)),
+            |_, _| selector.clone(),
+        );
+
+        let theme = Theme::for_id(ThemeId::Orbit);
+        let expected = picker::two_line_entry_height(&theme);
+        // Row 0 is the provider header; the first model row is row 1.
+        for (ix, selector) in ["picker-row-1", "picker-row-6", "picker-row-12"]
+            .into_iter()
+            .enumerate()
+        {
+            let row = cx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("row {ix} laid out"));
+            assert_eq!(row.size.height, expected, "row {ix} kept its token height");
+        }
+    }
+
+    /// Bind the picker arrows exactly as `main::bind_keys` does: the
+    /// `Composer` arrows first, the `Picker` arrows after. Both ride on the
+    /// same dispatch node, and gpui breaks the depth tie by registration
+    /// order, so the later `Picker` bindings must win.
+    fn bind_picker_arrows(cx: &mut gpui::TestAppContext) {
+        use crate::theme::ThemeId;
+        use crate::{Down, PickerSelectNext, PickerSelectPrev, Up};
+        use gpui::KeyBinding;
+
+        cx.update(|cx| {
+            cx.set_global(Theme::for_id(ThemeId::Orbit));
+            cx.bind_keys([
+                KeyBinding::new("up", Up, Some("Composer")),
+                KeyBinding::new("down", Down, Some("Composer")),
+                KeyBinding::new("up", PickerSelectPrev, Some("Picker")),
+                KeyBinding::new("down", PickerSelectNext, Some("Picker")),
+            ]);
+        });
+    }
+
+    /// Thirty models under one provider, so the list holds a header and a
+    /// scrollable run of option rows.
+    fn test_models() -> Vec<ModelEntry> {
+        (0..30)
+            .map(|ix| {
+                entry(
+                    &format!("m{ix}"),
+                    &format!("Model {ix}"),
+                    "opencode-go",
+                    Some(1_000_000),
+                )
+            })
+            .collect()
+    }
+
+    /// A 30-model selector with its filter focused, ready to draw.
+    fn open_test_selector(cx: &mut gpui::VisualTestContext) -> Entity<ModelSelector> {
+        let models = test_models();
+        cx.update(|window, cx| {
+            let selector = cx.new(|cx| {
+                ModelSelector::new(
+                    PickerKind::Model,
+                    models.clone(),
+                    Vec::new(),
+                    "Model 0".into(),
+                    "m0".into(),
+                    "opencode-go".into(),
+                    "low".into(),
+                    Box::new(|_, _, _, _| {}),
+                    Box::new(|_, _, _| {}),
+                    Box::new(|_, _, _| {}),
+                    cx,
+                )
+            });
+            window.focus(&selector.read(cx).focus_handle(cx));
+            selector
+        })
+    }
+
+    /// ↓/↑ pressed right after the picker opens must survive the open-time
+    /// "pin the highlight to the selected model". That pin used to re-run on
+    /// every render for the first 400ms (the hover-suppression window), so a
+    /// ↓ in that window was silently snapped back to the active model.
+    #[gpui::test]
+    fn arrow_keys_survive_the_open_pin(cx: &mut gpui::TestAppContext) {
+        bind_picker_arrows(cx);
+        let cx = cx.add_empty_window();
+        let selector = open_test_selector(cx);
+
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            let _ = cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(360.), px(700.)),
+                |_, _| selector.clone(),
+            );
+        };
+        draw(cx);
+        // Row 0 is the provider header, so the first selectable row is 1.
+        assert_eq!(cx.update(|_, cx| selector.read(cx).highlighted), 1);
+
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        assert_eq!(
+            cx.update(|_, cx| selector.read(cx).highlighted),
+            2,
+            "↓ sticks right after opening"
+        );
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        assert_eq!(
+            cx.update(|_, cx| selector.read(cx).highlighted),
+            3,
+            "↓ keeps moving"
+        );
+    }
+
+    /// The app re-syncs the catalog on every `get_state` response, not only on
+    /// a real change. An unchanged sync must not re-pin the highlight to the
+    /// active model — that would undo an ↑/↓ pressed while the popup is open.
+    #[gpui::test]
+    fn an_unchanged_catalog_sync_keeps_the_highlight(cx: &mut gpui::TestAppContext) {
+        bind_picker_arrows(cx);
+        let cx = cx.add_empty_window();
+        let selector = open_test_selector(cx);
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            let _ = cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(360.), px(700.)),
+                |_, _| selector.clone(),
+            );
+        };
+        draw(cx);
+
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        assert_eq!(cx.update(|_, cx| selector.read(cx).highlighted), 2);
+
+        // pi re-reports exactly the same catalog while the popup is open.
+        cx.update(|_, cx| {
+            selector.update(cx, |selector, cx| {
+                selector.set_catalog(
+                    test_models(),
+                    Vec::new(),
+                    "Model 0".into(),
+                    "m0".into(),
+                    "opencode-go".into(),
+                    "low".into(),
+                    cx,
+                );
+            });
+        });
+        draw(cx);
+        assert_eq!(
+            cx.update(|_, cx| selector.read(cx).highlighted),
+            2,
+            "an unchanged catalog sync must not snap the highlight back"
+        );
+    }
+
+    /// A ↑/↓ that lands while the open-pin is still armed (before the popup's
+    /// first frame, or right after a scope change / catalog refresh re-armed
+    /// it) must win over the pin — otherwise the next render snaps the cursor
+    /// back to the active model and the key looks dead.
+    #[gpui::test]
+    fn a_pending_open_pin_does_not_undo_a_press(cx: &mut gpui::TestAppContext) {
+        bind_picker_arrows(cx);
+        let cx = cx.add_empty_window();
+        let selector = open_test_selector(cx);
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            let _ = cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(360.), px(700.)),
+                |_, _| selector.clone(),
+            );
+        };
+        draw(cx);
+        assert_eq!(cx.update(|_, cx| selector.read(cx).highlighted), 1);
+
+        // Re-arm the pin the way a scope change or a catalog refresh does…
+        cx.update(|_, cx| selector.update(cx, |selector, _| selector.needs_scroll = true));
+        // …and press ↓ before that frame lands.
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        assert_eq!(
+            cx.update(|_, cx| selector.read(cx).highlighted),
+            2,
+            "the press wins over the still-armed pin"
+        );
+    }
+
+    /// The popup ships through `anchored` + `deferred` above the composer, not
+    /// as a bare entity. The arrows must resolve to the `Picker` bindings
+    /// there too, or ↑/↓ move the composer caret and the list never moves.
+    #[gpui::test]
+    fn arrow_keys_resolve_inside_the_anchored_popup(cx: &mut gpui::TestAppContext) {
+        use gpui::{anchored, deferred, AnchoredPositionMode, Corner};
+
+        struct Host(Entity<ModelSelector>);
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().relative().size_full().child(
+                    anchored()
+                        .position_mode(AnchoredPositionMode::Local)
+                        .anchor(Corner::BottomLeft)
+                        .offset(point(px(0.), -px(8.)))
+                        .snap_to_window_with_margin(px(8.))
+                        .child(deferred(self.0.clone())),
+                )
+            }
+        }
+
+        bind_picker_arrows(cx);
+        let cx = cx.add_empty_window();
+        let selector = open_test_selector(cx);
+        let host = cx.update(|_, cx| cx.new(|_| Host(selector.clone())));
+
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(700.)),
+            |_, _| host.clone(),
+        );
+        assert_eq!(cx.update(|_, cx| selector.read(cx).highlighted), 1);
+        cx.simulate_keystrokes("down");
+        assert_eq!(
+            cx.update(|_, cx| selector.read(cx).highlighted),
+            2,
+            "↓ resolves to the Picker binding inside the anchored popup"
+        );
+        cx.simulate_keystrokes("up");
+        assert_eq!(
+            cx.update(|_, cx| selector.read(cx).highlighted),
+            1,
+            "↑ resolves too"
+        );
+    }
+
+    /// The real keymap, not a hand-rolled subset. `bind_keys` registers
+    /// hundreds of bindings, and any later one that also matches the picker's
+    /// context stack would win over `PickerSelectNext`/`Prev`.
+    #[gpui::test]
+    fn arrow_keys_work_with_the_real_keymap(cx: &mut gpui::TestAppContext) {
+        use crate::theme::ThemeId;
+
+        cx.update(|cx| {
+            cx.set_global(Theme::for_id(ThemeId::Orbit));
+            crate::bind_keys(cx);
+        });
+        let cx = cx.add_empty_window();
+        let selector = open_test_selector(cx);
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(360.), px(700.)),
+            |_, _| selector.clone(),
+        );
+        assert_eq!(cx.update(|_, cx| selector.read(cx).highlighted), 1);
+        cx.simulate_keystrokes("down");
+        assert_eq!(
+            cx.update(|_, cx| selector.read(cx).highlighted),
+            2,
+            "↓ with the real keymap"
+        );
+        cx.simulate_keystrokes("up");
+        assert_eq!(
+            cx.update(|_, cx| selector.read(cx).highlighted),
+            1,
+            "↑ with the real keymap"
+        );
     }
 }

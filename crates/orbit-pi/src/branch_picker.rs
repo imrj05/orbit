@@ -9,7 +9,8 @@ use gpui::{
 };
 
 use crate::app::{
-    button_frame, icon, menu_header, picker_entry, picker_search_frame, picker_surface,
+    button_frame, icon, input_field_frame, menu_header, picker_entry, picker_search_frame,
+    picker_surface,
 };
 use crate::composer::ComposerInput;
 use crate::theme::tokens::{context_menu, picker, ButtonSize, DynamicSpacing, IconSize, TextSize};
@@ -84,6 +85,8 @@ impl BranchPicker {
             ComposerInput::new(cx)
                 .with_placeholder_key("branch_picker.new_branch_name")
                 .with_key_context("Composer Picker")
+                .with_max_lines(1)
+                .with_wrap(false)
         });
         Self {
             branches,
@@ -175,7 +178,8 @@ impl BranchPicker {
         let theme = theme::get(cx);
         let (row_h, row_gap) = (row_h(theme), row_gap(theme));
         let row_top = next as f32 * row_stride(theme);
-        let current: f32 = self.list_scroll.offset().y.into();
+        // `ScrollHandle`'s offset is negative once scrolled down.
+        let current = -f32::from(self.list_scroll.offset().y);
         let n = rows.len() as f32;
         let content_h = (n * row_h + (n - 1.).max(0.) * row_gap).max(0.);
         let viewport_h = content_h.min(list_max_h(theme));
@@ -187,7 +191,7 @@ impl BranchPicker {
         }
         let max_offset = (content_h - viewport_h).max(0.);
         self.list_scroll
-            .set_offset(point(px(0.), px(offset.clamp(0., max_offset))));
+            .set_offset(point(px(0.), px(-offset.clamp(0., max_offset))));
         cx.notify();
     }
 
@@ -254,7 +258,12 @@ impl Render for BranchPicker {
                                 .text_color(theme.text_3)
                                 .child(tr!("branch_picker.uncommitted_changes_come_with_you")),
                         )
-                        .child(self.create_input.clone()),
+                        .child(
+                            input_field_frame(div(), &theme)
+                                .w_full()
+                                .bg(theme.bg_main)
+                                .child(self.create_input.clone()),
+                        ),
                 )
                 .child(
                     button_frame(div(), &theme, ButtonSize::Medium)

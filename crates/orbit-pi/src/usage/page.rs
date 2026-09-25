@@ -1017,6 +1017,7 @@ impl UsagePage {
                 .with_placeholder_key("page.search_sessions")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
+                .with_wrap(false)
         });
         let menu_query = cx.new(|cx| {
             ComposerInput::new(cx)
@@ -1024,6 +1025,7 @@ impl UsagePage {
                 .with_placeholder_key("page.filter")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
+                .with_wrap(false)
         });
         let search_sub = cx.observe(&search, |page: &mut Self, _, cx| {
             // The search narrows the sessions table, so its rows are stale and
@@ -1038,6 +1040,7 @@ impl UsagePage {
                 .with_placeholder_key("page.search_breakdown")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
+                .with_wrap(false)
         });
         let breakdown_search_sub = cx.observe(&breakdown_search, |_, _, cx| cx.notify());
         let series_search = cx.new(|cx| {
@@ -1046,6 +1049,7 @@ impl UsagePage {
                 .with_placeholder_key("page.search_buckets")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
+                .with_wrap(false)
         });
         let series_search_sub = cx.observe(&series_search, |page: &mut Self, _, cx| {
             page.series_page = 1;
@@ -1057,6 +1061,7 @@ impl UsagePage {
                 .with_placeholder_key("page.search_buckets")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
+                .with_wrap(false)
         });
         let bucket_search_sub = cx.observe(&bucket_search, |page: &mut Self, _, cx| {
             page.bucket_page = 1;
@@ -1068,6 +1073,7 @@ impl UsagePage {
                 .with_placeholder_key("page.search_failures")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
+                .with_wrap(false)
         });
         let failure_search_sub = cx.observe(&failure_search, |page: &mut Self, _, cx| {
             page.failure_page = 1;

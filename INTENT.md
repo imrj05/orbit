@@ -172,16 +172,29 @@ dialog, and the custom-UI card) via `elevation_3` and the `modal` metrics; the l
 `popover_shadow` is gone. Sidebar session / workspace rows use Zed's list-item radius and the
 `TextSize` / `DynamicSpacing` scales, as do the transcript's message rows, user bubbles, tool /
 question card shells, error strips, the usage footer, and the settings section / group / row
-chrome and keycap chips. The ad-hoc `Theme::space` (density-only) helper is gone: every spacing
+chrome and keycap chips. The sidebar's New Task / Search / Usage controls share one
+`button_frame(ButtonSize::Large)`. The ad-hoc `Theme::space` (density-only) helper is gone: every spacing
 site now resolves through `DynamicSpacing`, so chrome tracks the UI font size as well as
 density. UI type is on the `TextSize` scale across every surface (471 of 517 `.text_size` sites);
 what remains is sub-10px badge glyphs, 17px+ display headings, and editor / code text. Corner
 radii are on the `Radius` scale: gpui's fixed `rounded_sm/md/lg/xl` helpers and every on-scale
 `rounded(px(N))` are gone (only 23 off-scale bespoke radii remain). One-shot transitions use
 `AnimationDuration`; the looping affordances (spinner, shimmer, streaming pulses) and feedback
-timers keep their own cadences, which the three-value scale does not cover. The settings page's
-toolbars, cards, and controls, and the transcript's inner content (activity bodies, thinking,
-edit diffs, detail sections) still carry bespoke layout px.
+timers keep their own cadences, which the three-value scale does not cover. The settings page is
+on the token scales throughout — its side nav, headers, sections, rows, toolbars, selects, cards,
+and modals read `DynamicSpacing` / `TextSize` / `Radius` / `ButtonSize`, and it has no `ui_px` or
+gpui spacing utility left; only bespoke geometry remains (avatar / dot / toggle sizes, fixed
+panel and modal widths). The Usage page and its `chart` / `heatmap` / `table` / `filters` /
+`tooltip` modules are likewise on the token scales for spacing, type, and radius; only their
+chart / table geometry is bespoke. Every single-line input box in the app routes through
+`input_field_frame` (or the `input::*` metrics directly, in the extension dialog) — the main
+composer, the file editor, and the inline tree rename are the deliberate exceptions, and each is
+its own component rather than an `InputField`. Every search box in the app shares one look — the
+picker search row (`picker_search_frame`): the command palette, all pickers, the Explorer /
+Sidepane filters, the settings / Git / Usage searches, and the transcript find bar. The Git
+panel's tab strip and branch row are on the tokens too (one shared `tab_bar` for Changes /
+History / Graph / Issues / Pulls). The transcript's inner content (activity bodies, thinking,
+edit diffs, detail sections) still carries bespoke layout px.
 
 ## The feature parity contract
 

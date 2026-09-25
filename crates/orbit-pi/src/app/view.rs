@@ -3125,10 +3125,9 @@ impl OrbitApp {
             )
     }
 
-    /// Sidebar nav row — fixed height,
-    /// icon in a 20px slot, secondary label, rounded hover surface.
-    /// The sidebar's primary action: a raised New Task button with the
-    /// ⌘N shortcut hint — the one emphasized control in the nav column.
+    /// The sidebar's primary action: a raised New Task button in the same
+    /// `ButtonSize::Large` frame as the Search and Usage rows, marked by its
+    /// accent icon and the ⌘N shortcut hint.
     pub(super) fn sidebar_new_task_button(
         &self,
         theme: Theme,
@@ -3177,17 +3176,12 @@ impl OrbitApp {
         theme: Theme,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
-        div()
-            .id("sidebar-search")
+        button_frame(div().id("sidebar-search"), &theme, ButtonSize::Large)
+            .group(BUTTON_GROUP)
             .w_full()
-            .h(px(28.))
-            .px(px(10.))
-            .rounded(Radius::Medium.px(&theme))
-            .flex()
-            .items_center()
-            .gap(px(8.))
             .cursor_pointer()
             .hover(|s| s.bg(theme.bg_hover))
+            .active(|s| s.opacity(PRESS_DIM))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseUpEvent, w, cx| this.toggle_command_palette(w, cx)),
@@ -3198,13 +3192,13 @@ impl OrbitApp {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.text_3)
+                    .text_color(theme.text_2)
                     .child(tr!("view.search")),
             )
             .child(
                 div()
                     .flex_none()
+                    .ml(button::keybinding_gap(&theme))
                     .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.text_3)
                     .child(crate::platform::shortcuts::PALETTE),
@@ -3225,27 +3219,22 @@ impl OrbitApp {
         }
     }
 
-    /// Sidebar nav row for the Usage page — a destination, not an action, so
-    /// it carries the same shape as Settings and marks the active state with
-    /// an `active` fill rather than accent color alone.
+    /// Sidebar nav row for the Usage page, in the same `ButtonSize::Large`
+    /// frame as the New Task and Search rows; the open page is marked with an
+    /// `active` fill rather than accent color alone.
     pub(super) fn sidebar_usage_row(
         &self,
         theme: Theme,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         let active = self.usage_open;
-        div()
-            .id("sidebar-usage")
+        button_frame(div().id("sidebar-usage"), &theme, ButtonSize::Large)
+            .group(BUTTON_GROUP)
             .w_full()
-            .h(px(28.))
-            .px(px(10.))
-            .rounded(Radius::Medium.px(&theme))
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .cursor_pointer()
             .when(active, |row| row.bg(theme.active))
+            .cursor_pointer()
             .hover(|s| s.bg(if active { theme.active } else { theme.bg_hover }))
+            .active(|s| s.opacity(PRESS_DIM))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_usage_nav_click))
             .child(icon(
                 "icons/usage-total.svg",
@@ -3261,7 +3250,6 @@ impl OrbitApp {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_size(TextSize::Small.px(&theme))
                     .text_color(if active {
                         theme.active_fg
                     } else {
@@ -3682,8 +3670,8 @@ impl OrbitApp {
         if prompt.custom_active() {
             card = card.child(
                 input_field_frame(div(), &theme)
-                    .mx(px(12.))
-                    .mb(px(10.))
+                    .mx(DynamicSpacing::Base12.px(&theme))
+                    .mb(DynamicSpacing::Base08.px(&theme))
                     .border_color(theme.border_strong)
                     .bg(theme.bg_composer)
                     .child(prompt.input.clone()),

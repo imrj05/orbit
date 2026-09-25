@@ -371,7 +371,7 @@ fn marker(ix: usize, count: usize, value: f64, max: f64, theme: Theme) -> AnyEle
                 .absolute()
                 .bottom(relative(value_fraction))
                 .left(px(-3.5))
-                .mt(px(3.5))
+                .mt(DynamicSpacing::Base04.px(&theme))
                 .size(px(7.))
                 .rounded_full()
                 .border_2()
@@ -489,7 +489,7 @@ fn readout(
     let mut body = div()
         .flex()
         .flex_col()
-        .gap(px(2.))
+        .gap(DynamicSpacing::Base02.px(&theme))
         .line_height(theme.ui_px(11.5) * 1.25)
         .child(
             div()
@@ -520,9 +520,9 @@ fn readout(
         .child(body)
         .occlude();
     if on_left_half {
-        card.ml(px(12.)).left(relative(fraction)).into_any_element()
+        card.ml(DynamicSpacing::Base12.px(&theme)).left(relative(fraction)).into_any_element()
     } else {
-        card.mr(px(12.))
+        card.mr(DynamicSpacing::Base12.px(&theme))
             .right(relative(1.0 - fraction))
             .into_any_element()
     }
@@ -547,7 +547,7 @@ fn readout_row(label: &str, value: &str, theme: Theme) -> AnyElement {
         .flex()
         .items_center()
         .justify_between()
-        .gap(px(12.))
+        .gap(DynamicSpacing::Base12.px(&theme))
         .whitespace_nowrap()
         .text_size(TextSize::Small.px(&theme))
         .child(

@@ -2,8 +2,8 @@ use super::helpers::*;
 use super::*;
 use crate::context_meter::context_ring;
 use crate::quota::{is_five_hour_window, note_should_render, QuotaHeadline};
-use crate::theme::tokens::{Radius, 
-    input, popover, ButtonSize, DynamicSpacing, IconSize, StyledExt, TextSize,
+use crate::theme::tokens::{
+    input, popover, ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize,
 };
 use crate::usage::tooltip::Tooltip;
 
@@ -872,7 +872,7 @@ impl OrbitApp {
         let mut button = icon_button_frame(
             div().id("sess-generate-title"),
             &theme,
-            ButtonSize::Medium,
+            ButtonSize::Large,
         )
         .group(BUTTON_GROUP)
         .border_1()
@@ -1131,13 +1131,13 @@ impl OrbitApp {
         // the rename field below, so repeating it here only crowded the card;
         // the only line worth keeping is the no-session hint.
         let header = div()
-            .px(px(12.))
-            .py(px(10.))
+            .px(DynamicSpacing::Base12.px(&theme))
+            .py(DynamicSpacing::Base08.px(&theme))
             .border_b_1()
             .border_color(theme.border)
             .flex()
             .flex_col()
-            .gap(px(2.))
+            .gap(DynamicSpacing::Base02.px(&theme))
             .child(
                 div()
                     .text_size(TextSize::Small.px(&theme))
@@ -1155,8 +1155,8 @@ impl OrbitApp {
         // pi owns the name; Enter or Update commits it (`set_session_name`).
         let name_block = (!session_id.is_empty()).then(|| {
             div()
-                .px(px(12.))
-                .py(px(10.))
+                .px(DynamicSpacing::Base12.px(&theme))
+                .py(DynamicSpacing::Base08.px(&theme))
                 .border_b_1()
                 .border_color(theme.border)
                 .flex()
@@ -1168,7 +1168,7 @@ impl OrbitApp {
                         .w_full()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
+                        .gap(DynamicSpacing::Base08.px(&theme))
                         .child(
                             input_field_frame(div(), &theme)
                                 .flex_1()
@@ -1182,7 +1182,7 @@ impl OrbitApp {
                             let mut button = button_frame(
                                 div().id("sess-rename"),
                                 &theme,
-                                ButtonSize::Medium,
+                                ButtonSize::Large,
                             )
                             .border_1()
                             .cursor_pointer()
@@ -1216,9 +1216,9 @@ impl OrbitApp {
 
         let section_label = |label: &str| {
             div()
-                .px(px(12.))
-                .pt(px(10.))
-                .pb(px(4.))
+                .px(DynamicSpacing::Base12.px(&theme))
+                .pt(DynamicSpacing::Base08.px(&theme))
+                .pb(DynamicSpacing::Base04.px(&theme))
                 .text_size(TextSize::Small.px(&theme))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text_3)
@@ -1259,11 +1259,11 @@ impl OrbitApp {
             .child(
                 div()
                     .id(ElementId::Name("sess-commit-push".into()))
-                    .px(px(12.))
-                    .py(px(8.))
+                    .px(DynamicSpacing::Base12.px(&theme))
+                    .py(DynamicSpacing::Base08.px(&theme))
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(DynamicSpacing::Base08.px(&theme))
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.bg_hover))
                     .on_click({
@@ -1291,11 +1291,11 @@ impl OrbitApp {
             .child(
                 div()
                     .id(ElementId::Name("sess-compare-branch".into()))
-                    .px(px(12.))
-                    .py(px(8.))
+                    .px(DynamicSpacing::Base12.px(&theme))
+                    .py(DynamicSpacing::Base08.px(&theme))
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(DynamicSpacing::Base08.px(&theme))
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.bg_hover))
                     .on_click({
@@ -1322,7 +1322,7 @@ impl OrbitApp {
             )
             .child(
                 div()
-                    .mt(px(4.))
+                    .mt(DynamicSpacing::Base04.px(&theme))
                     .border_t_1()
                     .border_color(theme.border)
                     .child(section_label(&tr!("session.details"))),

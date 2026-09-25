@@ -192,6 +192,7 @@ impl Dialog {
                     .with_element_id("dialog-input")
                     .with_placeholder(placeholder.clone())
                     .with_max_lines(1)
+                    .with_wrap(false)
                     .with_key_context("Composer DialogInput")
             })),
             DialogKind::Editor { prefill } => Some(cx.new(|cx| {
@@ -504,17 +505,17 @@ impl Dialog {
                         gpui::transparent_black()
                     })
                     .cursor_pointer()
-                    .on_hover({
+                    // Pointer movement moves the highlight; a scroll sliding a
+                    // row under a stationary pointer must not hijack ↑/↓ nav.
+                    .on_mouse_move({
                         let this = this.clone();
-                        move |hovering, _, cx| {
-                            if *hovering {
-                                this.update(cx, |dialog, cx| {
-                                    if dialog.highlighted != ix {
-                                        dialog.highlighted = ix;
-                                        cx.notify();
-                                    }
-                                });
-                            }
+                        move |_, _, cx| {
+                            this.update(cx, |dialog, cx| {
+                                if dialog.highlighted != ix {
+                                    dialog.highlighted = ix;
+                                    cx.notify();
+                                }
+                            });
                         }
                     })
                     .on_click({

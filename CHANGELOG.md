@@ -58,6 +58,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - One-shot transitions adopt `AnimationDuration` (`Fast`, 150ms). Looping affordances
   (spinner, shimmer, streaming) and feedback timers keep their own cadences, which
   the three-value token scale doesn't cover.
+- The settings page is fully on the token scales. Its side nav, headers, sections,
+  rows, toolbars, select popups, cards, and modals now read `DynamicSpacing` /
+  `TextSize` / `Radius` / `ButtonSize`; the last gpui spacing utilities and raw px
+  literals are gone, leaving only bespoke geometry (avatar / dot / toggle sizes,
+  fixed panel and modal widths).
+- The Usage page (and its chart / heatmap / table / filters / tooltip modules) is on
+  the same scales: all spacing, type, and on-scale radii resolve through the tokens;
+  only chart and table geometry keeps its own px.
+- Every input box follows the `InputField` tokens. The branch picker's create-branch
+  field (previously frameless) now uses `input_field_frame`, and the Ask panel's
+  custom-answer field uses `DynamicSpacing` offsets; all other single-line inputs
+  already routed through `input_field_frame` / `picker_search_frame`. The main
+  composer, file editor, and inline tree rename stay bespoke components.
+- Every search box is the picker search row (`picker_search_frame`), matching the
+  command palette: the settings / Git / Usage searches and the skills filter were
+  boxed `InputField`s and now share the palette's flat 36px row, so all searches
+  read identically. The Git panel's issue / pull-request search grows to fill its
+  filter bar and shrinks when tight (min 160px) instead of a fixed 200px, so the
+  Pulls tab no longer overflows with its extra state chip.
+- The session-details title (rename) input follows the `InputField` tokens: its
+  block uses `DynamicSpacing` / `input::gap` / `input_label` / `input_field_frame`,
+  and the Generate-title and Update buttons size to `ButtonSize::Large` (32px) so
+  the row lines up with the 32px field.
+- Picker ↑/↓ now scroll the focused row into view. The command palette,
+  workspace picker, and branch picker set a **positive** `ScrollHandle` offset,
+  but gpui stores it **negative** once scrolled down (the model selector already
+  negated it) — so the list never actually scrolled and the highlight walked
+  off-screen, looking like ↑/↓ did nothing. They negate it now, and the palette
+  also scrolls against its actual (window-capped) list height instead of the
+  uncapped `list_max_h`. Two command-palette tests cover the ↑/↓ move and its
+  scroll-into-view; the scroll test fails on the old sign.
+- The model picker had the same ↑/↓-doesn't-stick symptom for four reasons,
+  all now fixed. (1) Its open-time "pin the highlight to the active model"
+  re-ran on **every** render for the first 400 ms (the hover-suppression
+  window), so a ↓ pressed right after opening was silently snapped back; the
+  pin now runs only on a genuine open / catalog change. (2) Its deferred scroll
+  re-targeted the active model for up to 250 ms after open; it now follows the
+  current highlight. (3) pi re-reports the whole catalog on every `get_state`,
+  and `set_catalog` re-armed the pin and re-scrolled to the active model each
+  time — so any periodic sync undid an ↑/↓ while the popup was open. An
+  unchanged `set_catalog` is now a no-op. (4) The pin stayed armed until the
+  popup's *first* render, so a ↑/↓ arriving before that frame (or right after a
+  scope change / catalog refresh re-armed it) was undone by it; a deliberate
+  ↑/↓ now cancels the pin. Covered end to end as well: a test opens the real
+  `OrbitApp` with the real `bind_keys`, asserts the popup's filter actually
+  holds focus, and steps the highlight through several presses.
+- Picker rows no longer move the keyboard highlight on hover: the command
+  palette, workspace picker, and extension-dialog option rows used `on_hover` to
+  follow the pointer, and `on_hover` re-fires whenever hit-testing changes — so
+  scrolling a row under a stationary pointer hijacked the highlight. They use
+  `on_mouse_move` now, so only real pointer movement moves it.
+- Single-line inputs no longer wrap. Every `ComposerInput` capped at
+  `with_max_lines(1)` — the session-details name, the Git branch field, the
+  provider / model / plugin / skill filters, the usage searches, the extension
+  dialog, and the find bar — now also sets `with_wrap(false)`, so a long value is
+  clipped at the edge instead of wrapping into a second row and painting the
+  editor's vertical scrollbar. Non-wrapping text also scrolls horizontally to
+  follow the caret, so typing past the field's width still shows what you type
+  (clipped to the text area, so the code editor's gutter stays put).
+- The Git panel's tab strip is on the §5 button language: each tab is a
+  `button_frame(ButtonSize::Medium)` — the same 28px height, `Base08` padding,
+  `Base04` gap, `button::RADIUS` (4px), and Default label as the branch chip and
+  the panel's filter chips — so the tabs and the chips beside them read as one
+  system. The tab strip and branch row are `Base40` tall, and the whole panel's
+  spacing resolves through `DynamicSpacing` (one shared `tab_bar` for Changes /
+  History / Graph / Issues / Pulls).
+- The sidebar's New Task, Search, and Usage controls share one
+  `button_frame(ButtonSize::Large)`: the hand-rolled 28px Search / Usage rows
+  now match the New Task button's height, `Base08` padding, `button::RADIUS`
+  (4px), and Default label, while keeping their ghost treatment (no fill or
+  border, hover only) — one evenly sized stack.
+- The model selector's option rows keep the picker's two-line token height. A
+  capped list is a flex column, so without `flex_none` every row shrinks toward
+  the `picker_entry` minimum (31px) instead of `picker::two_line_entry_height`
+  (50px), leaving the 28px leading provider / thinking chip with almost no
+  vertical padding. The no-match empty row, its provider-header gap, and the
+  row's hover highlight are on the same tokens / `on_mouse_move` as the other
+  pickers.
 
 ## [0.0.17] - 2026-09-25
 

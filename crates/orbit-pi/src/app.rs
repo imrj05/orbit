@@ -763,7 +763,7 @@ impl Attachment {
 }
 
 /// A model choice from the pi runtime catalog.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ModelEntry {
     pub(crate) id: String,
     pub(crate) name: String,
@@ -797,6 +797,7 @@ impl OrbitApp {
                 .with_placeholder_key("app.search_providers")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
+                .with_wrap(false)
         });
         let provider_filter_sub = cx.observe(&provider_filter, |_, _, cx| cx.notify());
         let models_filter = cx.new(|cx| {
@@ -805,6 +806,7 @@ impl OrbitApp {
                 .with_placeholder_key("app.search_models")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
+                .with_wrap(false)
         });
         let models_filter_sub = cx.observe(&models_filter, |_, _, cx| cx.notify());
 
@@ -817,6 +819,7 @@ impl OrbitApp {
                 .with_placeholder_key("app.plugin_source_placeholder")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
+                .with_wrap(false)
         });
         let plugin_source_sub = cx.observe(&plugin_source_input, |_, _, cx| cx.notify());
         let plugins_filter = cx.new(|cx| {
@@ -825,6 +828,7 @@ impl OrbitApp {
                 .with_placeholder_key("app.search_installed_plugins")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
+                .with_wrap(false)
         });
         let plugins_filter_sub = cx.observe(&plugins_filter, |_, _, cx| cx.notify());
 
@@ -836,6 +840,7 @@ impl OrbitApp {
                 .with_placeholder_key("app.search_skills")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
+                .with_wrap(false)
         });
         let skills_filter_sub = cx.observe(&skills_filter, |_, _, cx| cx.notify());
 
@@ -848,6 +853,7 @@ impl OrbitApp {
                 .with_element_id("session-name-input")
                 .with_placeholder_key("app.session_name")
                 .with_max_lines(1)
+                .with_wrap(false)
         });
 
         // Spawn pi rooted at the folder the user last worked in. Launched

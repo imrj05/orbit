@@ -400,3 +400,158 @@ fn modal_card_uses_zeds_header_and_footer_metrics(cx: &mut gpui::TestAppContext)
     assert_eq!(action.top() - footer.top(), px(8.));
     assert_eq!(footer.bottom() - action.bottom(), px(8.));
 }
+
+// ── model picker ↑/↓ end to end ───────────────────────────────────────
+
+/// The real `OrbitApp`, the real `bind_keys`, the real chip popup: ↑/↓ must
+/// move the model picker's highlight. The isolated picker tests pass even when
+/// the app's focus or keymap wiring is wrong, so this is the one that covers
+/// what a user actually sees.
+#[gpui::test]
+fn model_picker_arrows_move_the_highlight(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+
+    cx.update(|cx| {
+        cx.set_global(Theme::for_id(ThemeId::Orbit));
+        crate::bind_keys(cx);
+    });
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(1200.), px(820.)),
+        |_, _| app.clone(),
+    );
+
+    // A catalog big enough to be keyboard-navigable, then open the popup the
+    // way the model chip does.
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.available_models = (0..30)
+                .map(|ix| ModelEntry {
+                    id: format!("m{ix}"),
+                    name: format!("Model {ix}"),
+                    provider: "opencode-go".into(),
+                    context_window: Some(1_000_000),
+                })
+                .collect();
+            app.model_id = "m0".into();
+            app.model_label = "Model 0".into();
+            app.model_provider = "opencode-go".into();
+            app.open_picker(PickerKind::Model, window, cx);
+        });
+    });
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(1200.), px(820.)),
+        |_, _| app.clone(),
+    );
+
+    let highlighted = |cx: &mut gpui::VisualTestContext| {
+        cx.update(|_, cx| {
+            app.read(cx)
+                .model_selector
+                .as_ref()
+                .map(|(_, selector)| selector.read(cx).highlighted_row())
+        })
+    };
+    // The whole dispatch rests on the popup's filter holding focus: if the
+    // composer still had it, `Composer`'s `Up`/`Down` would win at runtime and
+    // the list would never move.
+    let filter_focused = cx.update(|window, cx| {
+        let (_, selector) = app.read(cx).model_selector.clone().expect("model picker open");
+        selector.read(cx).focus_handle(cx).is_focused(window)
+    });
+    assert!(filter_focused, "the popup's filter holds focus");
+
+    let before = highlighted(cx).expect("model picker open");
+    cx.simulate_keystrokes("down");
+    let after = highlighted(cx).expect("model picker open");
+    assert!(
+        after > before,
+        "↓ moved the model picker highlight from {before} to {after}"
+    );
+
+    // It must keep moving on every press, not just the first.
+    for expected in after + 1..after + 5 {
+        cx.simulate_keystrokes("down");
+        assert_eq!(
+            highlighted(cx),
+            Some(expected),
+            "↓ kept moving to row {expected}"
+        );
+    }
+    cx.simulate_keystrokes("up");
+    assert_eq!(highlighted(cx), Some(after + 3), "↑ moved back");
+}
+
+/// The palette route: `on_command` closes the palette and *then* runs the
+/// command, so the picker is opened while the palette's own filter still had
+/// focus a moment ago. ↑/↓ must still reach the picker.
+#[gpui::test]
+fn model_picker_arrows_work_after_the_palette_route(cx: &mut gpui::TestAppContext) {
+    use crate::command_palette::PaletteCommand;
+    use crate::theme::{Theme, ThemeId};
+
+    cx.update(|cx| {
+        cx.set_global(Theme::for_id(ThemeId::Orbit));
+        crate::bind_keys(cx);
+    });
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(1200.), px(820.)),
+        |_, _| app.clone(),
+    );
+
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.available_models = (0..30)
+                .map(|ix| ModelEntry {
+                    id: format!("m{ix}"),
+                    name: format!("Model {ix}"),
+                    provider: "opencode-go".into(),
+                    context_window: Some(1_000_000),
+                })
+                .collect();
+            app.model_id = "m0".into();
+            app.model_label = "Model 0".into();
+            app.model_provider = "opencode-go".into();
+            app.toggle_command_palette(window, cx);
+            // Exactly what `CommandPalette`'s `on_command` does.
+            app.command_palette = None;
+            app.run_palette_command(PaletteCommand::ChooseModel, window, cx);
+        });
+    });
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(1200.), px(820.)),
+        |_, _| app.clone(),
+    );
+
+    let filter_focused = cx.update(|window, cx| {
+        let (_, selector) = app
+            .read(cx)
+            .model_selector
+            .clone()
+            .expect("Choose Model opened the picker");
+        selector.read(cx).focus_handle(cx).is_focused(window)
+    });
+    assert!(filter_focused, "the picker's filter holds focus");
+
+    let highlighted = |cx: &mut gpui::VisualTestContext| {
+        cx.update(|_, cx| {
+            app.read(cx)
+                .model_selector
+                .as_ref()
+                .map(|(_, selector)| selector.read(cx).highlighted_row())
+        })
+    };
+    let before = highlighted(cx).expect("model picker open");
+    cx.simulate_keystrokes("down");
+    assert!(
+        highlighted(cx) > Some(before),
+        "↓ moves the picker after the palette route"
+    );
+}

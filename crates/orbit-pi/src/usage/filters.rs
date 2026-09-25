@@ -11,7 +11,7 @@
 
 use crate::app::{
     button_frame, context_menu_entry, context_menu_separator, context_menu_surface,
-    icon_button_frame, input_field_frame, menu_header, press, refresh_glyph, BUTTON_GROUP,
+    icon_button_frame, menu_header, picker_search_frame, press, refresh_glyph, BUTTON_GROUP,
 };
 use chrono::Datelike;
 use gpui::{
@@ -191,21 +191,13 @@ fn panel(
 
 /// The search field row at the top of a multi-select menu.
 fn search_row(query: &Entity<ComposerInput>, theme: Theme) -> AnyElement {
-    div()
-        .p(DynamicSpacing::Base06.px(&theme))
-        .pb(DynamicSpacing::Base04.px(&theme))
-        .border_b_1()
-        .border_color(theme.border)
-        .child(
-            input_field_frame(div(), &theme)
-                .bg(theme.bg_main)
-                .child(icon(
-                    "icons/search.svg",
-                    IconSize::Small.px(&theme),
-                    theme.text_3,
-                ))
-                .child(div().flex_1().min_w_0().child(query.clone())),
-        )
+    picker_search_frame(div(), &theme)
+        .child(icon(
+            "icons/search.svg",
+            IconSize::Small.px(&theme),
+            theme.text_3,
+        ))
+        .child(div().flex_1().min_w_0().child(query.clone()))
         .into_any_element()
 }
 

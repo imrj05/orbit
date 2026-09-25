@@ -20,7 +20,7 @@ use gpui::{
     Hsla, IntoElement, MouseButton, Pixels, Render, SharedString, Window,
 };
 
-use crate::theme::tokens::{Radius, IconSize, TextSize};
+use crate::theme::tokens::{Radius, DynamicSpacing, IconSize, TextSize};
 use crate::theme::Theme;
 
 /// A body row's height. Every table height is a whole number of these plus the
@@ -285,7 +285,7 @@ fn header_cell(ix: usize, column: &Column, theme: Theme, handlers: TableHandlers
         .relative()
         .flex()
         .items_center()
-        .gap(px(6.))
+        .gap(DynamicSpacing::Base06.px(&theme))
         .px(px(CELL_PADDING))
         .when(column.numeric, |cell| cell.justify_end())
         .when(column.sortable, |cell| {
@@ -428,7 +428,7 @@ pub(super) fn text_cell(column: &Column, text: String, color: Hsla, theme: Theme
 /// The empty state, centered in the table body.
 pub(super) fn empty_cell(text: &str, theme: Theme) -> AnyElement {
     div()
-        .py(px(28.))
+        .py(DynamicSpacing::Base24.px(&theme))
         .flex()
         .justify_center()
         .text_size(TextSize::Default.px(&theme))

@@ -1223,6 +1223,18 @@ fn scrollbar_thumb_height(track: Pixels, visible_rows: usize, total_rows: usize)
     (track * ratio).clamp(min_thumb, track)
 }
 
+/// Horizontal scroll that keeps the caret inside a `visible_width`-wide field
+/// of non-wrapping text, like a native single-line input. Capped so it never
+/// scrolls past the line's end, and zero once the caret is back in view.
+fn horizontal_scroll(caret_x: Pixels, line_width: Pixels, visible_width: Pixels) -> Pixels {
+    let max_scroll = (line_width - visible_width).max(px(0.));
+    if caret_x > visible_width {
+        (caret_x - visible_width).min(max_scroll)
+    } else {
+        px(0.)
+    }
+}
+
 /// Resolve a placeholder for `locale` (or the active locale when `locale` is
 /// `None`). Shared by the paint path and tests so both agree on precedence:
 /// default key → explicit key (+ interpolated vars) → literal.
@@ -1366,6 +1378,9 @@ struct PrepaintState {
     /// y offset of each logical line in content coordinates.
     line_y: Vec<Pixels>,
     scroll_offset: Pixels,
+    /// Horizontal content offset: keeps the caret on screen in a
+    /// non-wrapping (single-line) field, like a native text input.
+    scroll_x: Pixels,
     /// Selection wash quads, painted under the text.
     selection: Vec<PaintQuad>,
     /// Caret quad, painted over the text (focused only).
@@ -1551,17 +1566,48 @@ impl Element for TextElement {
             }
         }
 
-        // Window-coordinate mapping of a content point.
-        let map = |x: Pixels, y: Pixels| -> gpui::Point<Pixels> {
-            point(
-                bounds.origin.x + gutter_width + x,
-                bounds.origin.y + y - scroll_offset,
-            )
-        };
         let caret_fallback = |line: &WrappedLine| -> gpui::Point<Pixels> {
             point(
                 line.width(),
                 line.wrap_boundaries().len() as f32 * line_height,
+            )
+        };
+
+        // Caret anchor in content coordinates. Computed before `map` so the
+        // horizontal scroll below can keep it on screen.
+        let mut caret_pos: Option<gpui::Point<Pixels>> = None;
+        if !lines.is_empty() {
+            if content.is_empty() {
+                caret_pos = Some(point(px(0.), px(0.)));
+            } else if let Some((i, local)) = line_at_offset(&line_starts, &line_lens, cursor) {
+                let line = &lines[i];
+                let raw = line
+                    .position_for_index(local, line_height)
+                    .unwrap_or_else(|| caret_fallback(line));
+                caret_pos = Some(point(raw.x, line_y[i] + raw.y));
+            }
+        }
+
+        // Non-wrapping text can overflow its width, so slide it left until
+        // the caret is inside the field — a native single-line input. Wrapping
+        // text never overflows, so its scroll stays at 0.
+        let visible_width = (bounds.size.width - gutter_width).max(px(0.));
+        let mut scroll_x = px(0.);
+        if !wrap {
+            if let Some(caret) = caret_pos {
+                let line_width = line_at_offset(&line_starts, &line_lens, cursor)
+                    .and_then(|(i, _)| lines.get(i))
+                    .map(|line| line.width())
+                    .unwrap_or(px(0.));
+                scroll_x = horizontal_scroll(caret.x, line_width, visible_width);
+            }
+        }
+
+        // Window-coordinate mapping of a content point.
+        let map = |x: Pixels, y: Pixels| -> gpui::Point<Pixels> {
+            point(
+                bounds.origin.x + gutter_width + x - scroll_x,
+                bounds.origin.y + y - scroll_offset,
             )
         };
 
@@ -1608,18 +1654,6 @@ impl Element for TextElement {
         }
 
         // Caret: 2px accent bar spanning the visual row.
-        let mut caret_pos: Option<gpui::Point<Pixels>> = None;
-        if !lines.is_empty() {
-            if content.is_empty() {
-                caret_pos = Some(point(px(0.), px(0.)));
-            } else if let Some((i, local)) = line_at_offset(&line_starts, &line_lens, cursor) {
-                let line = &lines[i];
-                let raw = line
-                    .position_for_index(local, line_height)
-                    .unwrap_or_else(|| caret_fallback(line));
-                caret_pos = Some(point(raw.x, line_y[i] + raw.y));
-            }
-        }
         let caret = if caret_visible {
             caret_pos.map(|caret| {
                 let origin = map(caret.x, caret.y);
@@ -1713,6 +1747,7 @@ impl Element for TextElement {
             lines,
             line_y,
             scroll_offset,
+            scroll_x,
             selection,
             caret,
             scrollbar,
@@ -1741,34 +1776,30 @@ impl Element for TextElement {
 
         let focused = focus_handle.is_focused(window);
         let scroll = prepaint.scroll_offset;
+        let scroll_x = prepaint.scroll_x;
+        let gutter = prepaint.gutter;
         let line_height = window.line_height();
+        let selection = std::mem::take(&mut prepaint.selection);
+        let caret = prepaint.caret.take();
+        let scrollbar = prepaint.scrollbar.take();
+        // Text lives right of the gutter and clips there, so a horizontal
+        // scroll never slides the text under the line numbers.
+        let text_bounds = Bounds {
+            origin: point(bounds.origin.x + gutter, bounds.origin.y),
+            size: size(
+                (bounds.size.width - gutter).max(px(0.)),
+                bounds.size.height,
+            ),
+        };
 
         // Clip everything to the element: wrapping keeps text inside, the
         // mask handles the scrolled state past `max_lines`.
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            // Selection wash under the text.
-            for quad in prepaint.selection.drain(..) {
-                window.paint_quad(quad);
-            }
-            for (i, line) in prepaint.lines.iter().enumerate() {
-                line.paint(
-                    point(
-                        bounds.origin.x + prepaint.gutter,
-                        bounds.origin.y + prepaint.line_y[i] - scroll,
-                    ),
-                    line_height,
-                    TextAlign::Left,
-                    None,
-                    window,
-                    cx,
-                )
-                .unwrap();
-            }
-            // Line numbers, right-aligned in the gutter.
+            // Line numbers, right-aligned in the gutter (never x-scrolled).
             for (k, number) in prepaint.numbers.iter().enumerate() {
                 let i = prepaint.number_first + k;
                 if let Some(y) = prepaint.line_y.get(i).copied() {
-                    let x = bounds.origin.x + prepaint.gutter - px(9.) - number.width();
+                    let x = bounds.origin.x + gutter - px(9.) - number.width();
                     let _ = number.paint(
                         point(x, bounds.origin.y + y - scroll),
                         line_height,
@@ -1779,14 +1810,34 @@ impl Element for TextElement {
                     );
                 }
             }
-            // Caret over the text.
-            if focused {
-                if let Some(caret) = prepaint.caret.take() {
-                    window.paint_quad(caret);
+            window.with_content_mask(Some(ContentMask { bounds: text_bounds }), |window| {
+                // Selection wash under the text.
+                for quad in selection {
+                    window.paint_quad(quad);
                 }
-            }
+                for (i, line) in prepaint.lines.iter().enumerate() {
+                    line.paint(
+                        point(
+                            bounds.origin.x + gutter - scroll_x,
+                            bounds.origin.y + prepaint.line_y[i] - scroll,
+                        ),
+                        line_height,
+                        TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    )
+                    .unwrap();
+                }
+                // Caret over the text.
+                if focused {
+                    if let Some(caret) = caret {
+                        window.paint_quad(caret);
+                    }
+                }
+            });
             // Scroll thumb last, so it sits above the text and caret.
-            if let Some(scrollbar) = prepaint.scrollbar.take() {
+            if let Some(scrollbar) = scrollbar {
                 window.paint_quad(scrollbar);
             }
         });
@@ -1845,7 +1896,8 @@ impl Render for ComposerInput {
 #[cfg(test)]
 mod tests {
     use super::{
-        line_at_offset, line_range_at, resolve_placeholder, scrollbar_thumb_height, word_range_at,
+        horizontal_scroll, line_at_offset, line_range_at, resolve_placeholder, scrollbar_thumb_height,
+        word_range_at,
     };
     use gpui::{px, SharedString};
 
@@ -1976,6 +2028,20 @@ mod tests {
         assert_eq!(scrollbar_thumb_height(px(0.), 1, 8), px(0.));
         assert_eq!(scrollbar_thumb_height(px(100.), 1, 8), px(24.));
         assert_eq!(scrollbar_thumb_height(px(100.), 8, 8), px(100.));
+    }
+
+    /// A long single-line value scrolls so the caret stays inside the field,
+    /// capped at the line's own width and zero once the caret is back in view.
+    #[test]
+    fn horizontal_scroll_follows_the_caret() {
+        // Caret already inside the field: no scroll.
+        assert_eq!(horizontal_scroll(px(40.), px(80.), px(100.)), px(0.));
+        // Caret past the right edge: scroll by exactly the overflow.
+        assert_eq!(horizontal_scroll(px(150.), px(200.), px(100.)), px(50.));
+        // Capped so the line's end lands on the field's right edge.
+        assert_eq!(horizontal_scroll(px(150.), px(120.), px(100.)), px(20.));
+        // Nothing to scroll.
+        assert_eq!(horizontal_scroll(px(0.), px(0.), px(100.)), px(0.));
     }
 }
 

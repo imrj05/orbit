@@ -333,12 +333,14 @@ impl GitPanel {
                 .with_placeholder_key("git_panel.branch_name_placeholder")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
+                .with_wrap(false)
         });
         let issue_search = cx.new(|cx| {
             crate::composer::ComposerInput::new(cx)
                 .with_placeholder_key("git_panel.issue_search_placeholder")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
+                .with_wrap(false)
         });
         let issue_comment = cx.new(|cx| {
             crate::composer::ComposerInput::new(cx)
@@ -351,6 +353,7 @@ impl GitPanel {
                 .with_placeholder_key("git_panel.issue_title_placeholder")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
+                .with_wrap(false)
         });
         let issue_new_body = cx.new(|cx| {
             crate::composer::ComposerInput::new(cx)
@@ -363,6 +366,7 @@ impl GitPanel {
                 .with_placeholder_key("git_panel.pr_search_placeholder")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
+                .with_wrap(false)
         });
         let pr_comment = cx.new(|cx| {
             crate::composer::ComposerInput::new(cx)
@@ -375,6 +379,7 @@ impl GitPanel {
                 .with_placeholder_key("git_panel.pr_title_placeholder")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
+                .with_wrap(false)
         });
         let pr_new_body = cx.new(|cx| {
             crate::composer::ComposerInput::new(cx)
@@ -387,6 +392,7 @@ impl GitPanel {
                 .with_placeholder_key("git_panel.search_branches")
                 .with_key_context("Composer Picker")
                 .with_max_lines(1)
+                .with_wrap(false)
         });
         let branch_filter_sub = cx.observe(&branch_filter, |_, _, cx| cx.notify());
         Self {
@@ -2084,7 +2090,7 @@ impl GitPanel {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(DynamicSpacing::Base06.px(&theme))
                     .child(icon("icons/git-commit.svg", IconSize::Medium.px(&theme), theme.text_2))
                     .child(
                         div()
@@ -2157,7 +2163,7 @@ impl GitPanel {
                     div()
                         .flex()
                         .items_center()
-                        .gap_2()
+                        .gap(DynamicSpacing::Base08.px(&theme))
                         .text_size(TextSize::Small.px(&theme))
                         .child(div().text_color(theme.text_3).child(format!("↑{ahead}")))
                         .child(div().text_color(theme.text_3).child(format!("↓{behind}")))
@@ -2167,7 +2173,7 @@ impl GitPanel {
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .gap(DynamicSpacing::Base08.px(&theme))
                     .text_size(TextSize::Small.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
                     .child(
@@ -2244,7 +2250,7 @@ impl GitPanel {
             ));
         }
         div()
-            .h(px(40.))
+            .h(DynamicSpacing::Base40.px(&theme))
             .flex_none()
             .px(DynamicSpacing::Base16.px(&theme))
             .flex()
@@ -2255,49 +2261,45 @@ impl GitPanel {
             .children(tabs.into_iter().map(|(tab, tab_icon, key)| {
                 let label = tr!(key);
                 let selected = self.tab == tab;
-                div()
-                    .id(gpui::ElementId::Name(
+                button_frame(
+                    div().id(gpui::ElementId::Name(
                         format!("git-tab-{}", key.rsplit('.').next().unwrap_or(key)).into(),
-                    ))
-                    .h(px(28.))
-                    .px(px(10.))
-                    .rounded(Radius::Large.px(&theme))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .cursor_pointer()
-                    .text_size(TextSize::Small.px(&theme))
-                    .font_weight(if selected {
-                        FontWeight::MEDIUM
+                    )),
+                    &theme,
+                    ButtonSize::Medium,
+                )
+                .cursor_pointer()
+                .font_weight(if selected {
+                    FontWeight::MEDIUM
+                } else {
+                    FontWeight::NORMAL
+                })
+                .when(selected, |tab| {
+                    tab.bg(theme.active).text_color(theme.active_fg)
+                })
+                .when(!selected, |tab| {
+                    tab.text_color(theme.text_3)
+                        .hover(|s| s.bg(theme.bg_hover).text_color(theme.text_2))
+                })
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    if this.tab != tab {
+                        this.tab = tab;
+                    }
+                    this.branch_menu_open = false;
+                    this.branch_more_open = false;
+                    this.refresh_all(cx);
+                    cx.notify();
+                }))
+                .child(icon(
+                    tab_icon,
+                    IconSize::XSmall.px(&theme),
+                    if selected {
+                        theme.active_fg
                     } else {
-                        FontWeight::NORMAL
-                    })
-                    .when(selected, |tab| {
-                        tab.bg(theme.active).text_color(theme.active_fg)
-                    })
-                    .when(!selected, |tab| {
-                        tab.text_color(theme.text_3)
-                            .hover(|s| s.bg(theme.bg_hover).text_color(theme.text_2))
-                    })
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        if this.tab != tab {
-                            this.tab = tab;
-                        }
-                        this.branch_menu_open = false;
-                        this.branch_more_open = false;
-                        this.refresh_all(cx);
-                        cx.notify();
-                    }))
-                    .child(icon(
-                        tab_icon,
-                        IconSize::Small.px(&theme),
-                        if selected {
-                            theme.active_fg
-                        } else {
-                            theme.text_3
-                        },
-                    ))
-                    .child(label.to_string())
+                        theme.text_3
+                    },
+                ))
+                .child(label.to_string())
             }))
             .child(div().flex_1())
             .into_any_element()
@@ -2308,7 +2310,7 @@ impl GitPanel {
     /// message rides the right end of this row.
     fn branch_bar(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
         div()
-            .h(px(40.))
+            .h(DynamicSpacing::Base40.px(&theme))
             .flex_none()
             .px(DynamicSpacing::Base16.px(&theme))
             .flex()
@@ -2632,15 +2634,15 @@ impl GitPanel {
                 .border_1()
                 .border_color(theme.crit.opacity(0.45))
                 .rounded(Radius::Large.px(&theme))
-                .px(px(12.))
-                .py(px(9.))
+                .px(DynamicSpacing::Base12.px(&theme))
+                .py(DynamicSpacing::Base08.px(&theme))
                 .flex()
                 .items_start()
-                .gap_2()
+                .gap(DynamicSpacing::Base08.px(&theme))
                 .child(
                     div()
                         .flex_none()
-                        .mt(px(1.))
+                        .mt(DynamicSpacing::Base01.px(&theme))
                         .child(icon("icons/stop.svg", IconSize::Medium.px(&theme), theme.crit)),
                 )
                 .child(
@@ -2649,7 +2651,7 @@ impl GitPanel {
                         .min_w_0()
                         .flex()
                         .flex_col()
-                        .gap(px(3.))
+                        .gap(DynamicSpacing::Base03.px(&theme))
                         .child(
                             div()
                                 .text_size(TextSize::Small.px(&theme))
@@ -2670,7 +2672,7 @@ impl GitPanel {
                         )
                         .when(!actions.is_empty(), |column| {
                             column.child(
-                                div().flex().flex_wrap().gap(px(6.)).pt(px(3.)).children(
+                                div().flex().flex_wrap().gap(DynamicSpacing::Base06.px(&theme)).pt(DynamicSpacing::Base03.px(&theme)).children(
                                     actions
                                         .into_iter()
                                         .map(|action| recovery_button(action, theme, cx)),
@@ -2733,7 +2735,7 @@ impl GitPanel {
             tr!("git_panel.op_conflicts_other", count = conflicts)
         };
 
-        let mut buttons = div().flex().items_center().gap(px(6.)).flex_none();
+        let mut buttons = div().flex().items_center().gap(DynamicSpacing::Base06.px(&theme)).flex_none();
         if op.can_skip() {
             buttons = buttons.child(action_button(
                 "git-op-skip",
@@ -2783,16 +2785,16 @@ impl GitPanel {
                 .border_1()
                 .border_color(theme.warn.opacity(0.45))
                 .rounded(Radius::Large.px(&theme))
-                .px(px(12.))
-                .py(px(9.))
+                .px(DynamicSpacing::Base12.px(&theme))
+                .py(DynamicSpacing::Base08.px(&theme))
                 .flex()
                 .flex_col()
-                .gap(px(8.))
+                .gap(DynamicSpacing::Base08.px(&theme))
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
+                        .gap(DynamicSpacing::Base08.px(&theme))
                         .child(icon("icons/git-merge.svg", IconSize::Medium.px(&theme), theme.warn))
                         .child(
                             div()
@@ -2811,7 +2813,7 @@ impl GitPanel {
                         .child(buttons),
                 )
                 .children((!self.conflicts.is_empty()).then(|| {
-                    div().flex().flex_wrap().gap(px(6.)).children(
+                    div().flex().flex_wrap().gap(DynamicSpacing::Base06.px(&theme)).children(
                         self.conflicts.iter().take(8).map(|path| {
                             let target = path.clone();
                             button_frame(
@@ -2920,13 +2922,13 @@ impl GitPanel {
                     .children((!self.unstaged.is_empty()).then(|| {
                         div()
                             .id("git-include-unstaged-row")
-                            .h(px(28.))
-                            .px(px(6.))
+                            .h(ButtonSize::Medium.height(&theme))
+                            .px(DynamicSpacing::Base06.px(&theme))
                             .ml(px(-6.))
                             .rounded(Radius::Large.px(&theme))
                             .flex()
                             .items_center()
-                            .gap(px(8.))
+                            .gap(DynamicSpacing::Base08.px(&theme))
                             .cursor_pointer()
                             .hover(|s| s.bg(theme.bg_hover))
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -2945,7 +2947,7 @@ impl GitPanel {
                                 div()
                                     .flex()
                                     .items_center()
-                                    .gap_2()
+                                    .gap(DynamicSpacing::Base08.px(&theme))
                                     .text_size(TextSize::Small.px(&theme))
                                     .child(
                                         div()
@@ -3085,7 +3087,7 @@ impl GitPanel {
                         BarActions::Pull { behind } => div()
                             .flex()
                             .items_center()
-                            .gap(px(8.))
+                            .gap(DynamicSpacing::Base08.px(&theme))
                             .child(
                                 div()
                                     .text_size(TextSize::Small.px(&theme))
@@ -3114,7 +3116,7 @@ impl GitPanel {
                         BarActions::Merge { behind } => div()
                             .flex()
                             .items_center()
-                            .gap(px(8.))
+                            .gap(DynamicSpacing::Base08.px(&theme))
                             .child(
                                 div()
                                     .text_size(TextSize::Small.px(&theme))
@@ -3456,7 +3458,7 @@ impl GitPanel {
         let mut actions = div()
             .flex()
             .items_center()
-            .gap(px(4.))
+            .gap(DynamicSpacing::Base04.px(&theme))
             .flex_none()
             .opacity(if confirm { 1. } else { 0. })
             .group_hover("git-row", |s| s.opacity(1.));
@@ -3602,7 +3604,7 @@ impl GitPanel {
             ));
         } else {
             let history_entity = cx.entity();
-            let mut list = div().flex().flex_col().py(px(6.));
+            let mut list = div().flex().flex_col().py(DynamicSpacing::Base06.px(&theme));
             let total = self.history.len();
             for (ix, commit) in self.history.iter().enumerate() {
                 let url = self
@@ -3694,7 +3696,7 @@ impl GitPanel {
             .border_color(theme.border)
             .flex()
             .items_center()
-            .gap(px(6.))
+            .gap(DynamicSpacing::Base06.px(&theme))
             .child(filter_toggle_chip(
                 "git-filter-all",
                 &tr!("git_panel.all_branches"),
@@ -3786,7 +3788,7 @@ impl GitPanel {
         let mut meta = div()
             .flex()
             .items_center()
-            .gap(px(8.))
+            .gap(DynamicSpacing::Base08.px(&theme))
             .text_size(TextSize::Small.px(&theme))
             .text_color(theme.text_3)
             .child(format!("{} \u{b7} {}", detail.author, detail.author_date))
@@ -3973,7 +3975,7 @@ impl GitPanel {
                 Some(&tr!("git_panel.commits_across_branches")),
             ));
         } else {
-            let mut list = div().flex().flex_col().py(px(6.));
+            let mut list = div().flex().flex_col().py(DynamicSpacing::Base06.px(&theme));
             let total = self.graph.len();
             for (ix, row) in self.graph.iter().enumerate() {
                 let url = self
@@ -4050,7 +4052,7 @@ impl GitPanel {
                     .border_color(theme.border)
                     .flex()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(DynamicSpacing::Base06.px(&theme))
                     .child(filter_toggle_chip(
                         "git-graph-all-refs",
                         &tr!("git_panel.all_refs"),
@@ -4111,7 +4113,7 @@ impl GitPanel {
             .border_color(theme.border)
             .flex()
             .items_center()
-            .gap(px(6.))
+            .gap(DynamicSpacing::Base06.px(&theme))
             .children(
                 [
                     (gh::IssueState::Open, "git_panel.issue_open"),
@@ -4132,11 +4134,7 @@ impl GitPanel {
                     )
                 }),
             )
-            .child(
-                div()
-                    .ml(DynamicSpacing::Base04.px(&theme))
-                    .child(search_field(theme, self.issue_search.clone())),
-            )
+            .child(search_field(theme, self.issue_search.clone()))
             .child(action_button(
                 "git-issue-search",
                 &tr!("git_panel.search"),
@@ -4168,7 +4166,6 @@ impl GitPanel {
                     cx.listener(|this, _: &ClickEvent, _, cx| this.clear_issue_filter(cx)),
                 )
             }))
-            .child(div().flex_1())
             .child(action_button(
                 "git-issue-new",
                 &tr!("git_panel.new_issue"),
@@ -4212,7 +4209,7 @@ impl GitPanel {
                 Some(&tr!("git_panel.no_issues_detail")),
             ));
         } else {
-            let mut list = div().flex().flex_col().py(px(6.));
+            let mut list = div().flex().flex_col().py(DynamicSpacing::Base06.px(&theme));
             let total = self.issues.len();
             for (ix, issue) in self.issues.iter().enumerate() {
                 list = list.child(issue_row(issue, theme, cx));
@@ -4284,7 +4281,7 @@ impl GitPanel {
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap(px(8.))
+                    .gap(DynamicSpacing::Base08.px(&theme))
                     .child(
                         div()
                             .text_size(TextSize::Large.px(&theme))
@@ -4298,7 +4295,7 @@ impl GitPanel {
                             .flex()
                             .items_center()
                             .flex_wrap()
-                            .gap(px(8.))
+                            .gap(DynamicSpacing::Base08.px(&theme))
                             .child(state_chip(
                                 &state_label,
                                 state_color,
@@ -4319,7 +4316,7 @@ impl GitPanel {
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(DynamicSpacing::Base06.px(&theme))
                     .children((!issue.url.is_empty()).then(|| {
                         let url = issue.url.clone();
                         action_button(
@@ -4368,7 +4365,7 @@ impl GitPanel {
                     .flex()
                     .items_center()
                     .flex_wrap()
-                    .gap(px(6.))
+                    .gap(DynamicSpacing::Base06.px(&theme))
                     .children(
                         issue
                             .labels
@@ -4410,7 +4407,7 @@ impl GitPanel {
             div()
                 .flex()
                 .items_center()
-                .gap(px(8.))
+                .gap(DynamicSpacing::Base08.px(&theme))
                 .child(action_button(
                     "git-issue-state",
                     &if issue.is_open() {
@@ -4451,7 +4448,7 @@ impl GitPanel {
         );
 
         // ── metadata rail (assignees, labels, timeline) ──
-        let mut assignees = div().flex().flex_col().gap(px(6.));
+        let mut assignees = div().flex().flex_col().gap(DynamicSpacing::Base06.px(&theme));
         if issue.assignees.is_empty() {
             assignees = assignees.child(
                 div()
@@ -4464,7 +4461,7 @@ impl GitPanel {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(DynamicSpacing::Base06.px(&theme))
                     .child(author_avatar(&user.login, "", theme))
                     .child(
                         div()
@@ -4478,7 +4475,7 @@ impl GitPanel {
         // The chips live in the header; the rail keeps the manage action so
         // the two surfaces never repeat the same labels. With none set, the
         // header row is hidden and this button is the whole section.
-        let labels = div().flex().flex_col().gap(px(8.)).child(action_button(
+        let labels = div().flex().flex_col().gap(DynamicSpacing::Base08.px(&theme)).child(action_button(
             "git-issue-labels",
             &tr!("git_panel.edit_labels"),
             Some(
@@ -4496,7 +4493,7 @@ impl GitPanel {
         let timeline = div()
             .flex()
             .flex_col()
-            .gap(px(6.))
+            .gap(DynamicSpacing::Base06.px(&theme))
             .child(meta_time_row(
                 &tr!("git_panel.opened"),
                 &gh::relative_time(&issue.created_at),
@@ -4580,7 +4577,7 @@ impl GitPanel {
                     .flex()
                     .items_center()
                     .justify_end()
-                    .gap(px(8.))
+                    .gap(DynamicSpacing::Base08.px(&theme))
                     .child(action_button(
                         "git-issue-new-cancel",
                         &tr!("git_panel.cancel"),
@@ -4704,7 +4701,7 @@ impl GitPanel {
             .border_color(theme.border)
             .flex()
             .items_center()
-            .gap(px(6.))
+            .gap(DynamicSpacing::Base06.px(&theme))
             .children(
                 [
                     (gh::PrState::Open, "git_panel.issue_open"),
@@ -4726,11 +4723,7 @@ impl GitPanel {
                     )
                 }),
             )
-            .child(
-                div()
-                    .ml(DynamicSpacing::Base04.px(&theme))
-                    .child(search_field(theme, self.pr_search.clone())),
-            )
+            .child(search_field(theme, self.pr_search.clone()))
             .child(action_button(
                 "git-pr-search",
                 &tr!("git_panel.search"),
@@ -4752,7 +4745,6 @@ impl GitPanel {
                     cx.listener(|this, _: &ClickEvent, _, cx| this.clear_pr_filter(cx)),
                 )
             }))
-            .child(div().flex_1())
             .child(action_button(
                 "git-pr-new",
                 &tr!("git_panel.new_pull"),
@@ -4797,7 +4789,7 @@ impl GitPanel {
                 Some(&tr!("git_panel.no_pulls_detail")),
             ));
         } else {
-            let mut list = div().flex().flex_col().py(px(6.));
+            let mut list = div().flex().flex_col().py(DynamicSpacing::Base06.px(&theme));
             let total = self.pulls.len();
             for (ix, pull) in self.pulls.iter().enumerate() {
                 list = list.child(pr_row(pull, theme, cx));
@@ -4869,7 +4861,7 @@ impl GitPanel {
                         .min_w_0()
                         .flex()
                         .flex_col()
-                        .gap(px(6.))
+                        .gap(DynamicSpacing::Base06.px(&theme))
                         .child(
                             div()
                                 .text_size(TextSize::Large.px(&theme))
@@ -4885,7 +4877,7 @@ impl GitPanel {
                                 .flex()
                                 .items_center()
                                 .flex_wrap()
-                                .gap(px(6.))
+                                .gap(DynamicSpacing::Base06.px(&theme))
                                 .child(state_chip(
                                     &state_label,
                                     state_color,
@@ -4934,7 +4926,7 @@ impl GitPanel {
                 .flex()
                 .items_center()
                 .flex_wrap()
-                .gap(px(6.))
+                .gap(DynamicSpacing::Base06.px(&theme))
                 .children(
                     pull.labels
                         .iter()
@@ -4985,7 +4977,7 @@ impl GitPanel {
                     .rounded(Radius::Medium.px(&theme))
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(DynamicSpacing::Base08.px(&theme))
                     .hover(|s| s.bg(theme.bg_hover))
                     .child(
                         check_bucket_chip(Some(check.bucket_kind()), theme).unwrap_or_else(|| {
@@ -5040,7 +5032,7 @@ impl GitPanel {
                         .py(DynamicSpacing::Base04.px(&theme))
                         .flex()
                         .items_center()
-                        .gap(px(8.))
+                        .gap(DynamicSpacing::Base08.px(&theme))
                         .child(
                             div()
                                 .font_family(theme::code_font_family())
@@ -5165,9 +5157,9 @@ impl GitPanel {
                 .flex()
                 .items_center()
                 .flex_wrap()
-                .gap(px(8.))
+                .gap(DynamicSpacing::Base08.px(&theme))
                 .child(
-                    div().flex().items_center().gap(px(4.)).children(
+                    div().flex().items_center().gap(DynamicSpacing::Base04.px(&theme)).children(
                         [
                             (gh::MergeMethod::Merge, "git_panel.merge_method_merge"),
                             (gh::MergeMethod::Squash, "git_panel.merge_method_squash"),
@@ -5218,7 +5210,7 @@ impl GitPanel {
                 ));
             content = content.child(merge_row);
         } else {
-            content = content.child(div().flex().items_center().flex_wrap().gap(px(8.)).child(
+            content = content.child(div().flex().items_center().flex_wrap().gap(DynamicSpacing::Base08.px(&theme)).child(
                 action_button(
                     "git-pr-reopen",
                     &tr!("git_panel.reopen_pull"),
@@ -5238,7 +5230,7 @@ impl GitPanel {
                 .flex()
                 .items_center()
                 .flex_wrap()
-                .gap(px(8.))
+                .gap(DynamicSpacing::Base08.px(&theme))
                 .child(action_button(
                     "git-pr-checkout",
                     &tr!("git_panel.checkout_pull"),
@@ -5296,7 +5288,7 @@ impl GitPanel {
                 .flex()
                 .items_center()
                 .flex_wrap()
-                .gap(px(8.))
+                .gap(DynamicSpacing::Base08.px(&theme))
                 .child(action_button(
                     "git-pr-comment",
                     &tr!("git_panel.comment"),
@@ -5372,7 +5364,7 @@ impl GitPanel {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(DynamicSpacing::Base08.px(&theme))
                     .child(
                         div()
                             .text_size(TextSize::Small.px(&theme))
@@ -5407,7 +5399,7 @@ impl GitPanel {
                     .flex()
                     .items_center()
                     .justify_end()
-                    .gap(px(8.))
+                    .gap(DynamicSpacing::Base08.px(&theme))
                     .child(action_button(
                         "git-pr-new-cancel",
                         &tr!("git_panel.cancel"),
@@ -5817,10 +5809,10 @@ impl GitPanel {
             .w_full()
             .max_w(px(420.))
             .elevation_2(&theme)
-            .p(px(16.))
+            .p(DynamicSpacing::Base16.px(&theme))
             .flex()
             .flex_col()
-            .gap(px(12.))
+            .gap(DynamicSpacing::Base12.px(&theme))
             .occlude()
             .on_mouse_down_out(
                 cx.listener(|this, _: &MouseDownEvent, _, cx| this.dismiss_modal(cx)),
@@ -5844,14 +5836,14 @@ impl GitPanel {
             )
             .child(
                 div()
-                    .mt(px(2.))
+                    .mt(DynamicSpacing::Base02.px(&theme))
                     .w_full()
                     .min_w_0()
                     .flex()
                     .flex_wrap()
                     .items_center()
                     .justify_end()
-                    .gap(px(8.))
+                    .gap(DynamicSpacing::Base08.px(&theme))
                     .child(action_button(
                         "git-branch-prompt-cancel",
                         &tr!("git_panel.cancel"),
@@ -5875,7 +5867,7 @@ impl GitPanel {
             div()
                 .absolute()
                 .inset_0()
-                .px(px(16.))
+                .px(DynamicSpacing::Base16.px(&theme))
                 .bg(theme.bg_main.opacity(0.55))
                 .flex()
                 .items_center()
@@ -5905,10 +5897,10 @@ impl GitPanel {
             .w_full()
             .max_w(px(420.))
             .elevation_2(&theme)
-            .p(px(16.))
+            .p(DynamicSpacing::Base16.px(&theme))
             .flex()
             .flex_col()
-            .gap(px(12.))
+            .gap(DynamicSpacing::Base12.px(&theme))
             .occlude()
             .on_mouse_down_out(
                 cx.listener(|this, _: &MouseDownEvent, _, cx| this.dismiss_modal(cx)),
@@ -5934,14 +5926,14 @@ impl GitPanel {
             )
             .child(
                 div()
-                    .mt(px(2.))
+                    .mt(DynamicSpacing::Base02.px(&theme))
                     .w_full()
                     .min_w_0()
                     .flex()
                     .flex_wrap()
                     .items_center()
                     .justify_end()
-                    .gap(px(8.))
+                    .gap(DynamicSpacing::Base08.px(&theme))
                     .child(action_button(
                         "git-prompt-cancel",
                         &tr!("git_panel.cancel"),
@@ -5981,7 +5973,7 @@ impl GitPanel {
             div()
                 .absolute()
                 .inset_0()
-                .px(px(16.))
+                .px(DynamicSpacing::Base16.px(&theme))
                 .bg(theme.bg_main.opacity(0.55))
                 .flex()
                 .items_center()
@@ -6032,10 +6024,10 @@ impl GitPanel {
             .w_full()
             .max_w(px(420.))
             .elevation_2(&theme)
-            .p(px(16.))
+            .p(DynamicSpacing::Base16.px(&theme))
             .flex()
             .flex_col()
-            .gap(px(12.))
+            .gap(DynamicSpacing::Base12.px(&theme))
             .occlude()
             .on_mouse_down_out(
                 cx.listener(|this, _: &MouseDownEvent, _, cx| this.dismiss_modal(cx)),
@@ -6057,14 +6049,14 @@ impl GitPanel {
             )
             .child(
                 div()
-                    .mt(px(2.))
+                    .mt(DynamicSpacing::Base02.px(&theme))
                     .w_full()
                     .min_w_0()
                     .flex()
                     .flex_wrap()
                     .items_center()
                     .justify_end()
-                    .gap(px(8.))
+                    .gap(DynamicSpacing::Base08.px(&theme))
                     .child(action_button(
                         "git-confirm-cancel",
                         &tr!("git_panel.cancel"),
@@ -6088,7 +6080,7 @@ impl GitPanel {
             div()
                 .absolute()
                 .inset_0()
-                .px(px(16.))
+                .px(DynamicSpacing::Base16.px(&theme))
                 .bg(theme.bg_main.opacity(0.55))
                 .flex()
                 .items_center()
@@ -6300,7 +6292,7 @@ fn stash_row(stash: &git_ops::StashEntry, theme: Theme, cx: &Context<GitPanel>) 
                 .flex_none()
                 .flex()
                 .items_center()
-                .gap(px(4.))
+                .gap(DynamicSpacing::Base04.px(&theme))
                 .opacity(0.)
                 .group_hover("git-row", |s| s.opacity(1.))
                 .child(row_button(
@@ -6444,12 +6436,12 @@ fn issue_row(issue: &gh::GhIssue, theme: Theme, cx: &Context<GitPanel>) -> AnyEl
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .gap(px(3.))
+                .gap(DynamicSpacing::Base03.px(&theme))
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(6.))
+                        .gap(DynamicSpacing::Base06.px(&theme))
                         .min_w_0()
                         .child(
                             div()
@@ -6472,7 +6464,7 @@ fn issue_row(issue: &gh::GhIssue, theme: Theme, cx: &Context<GitPanel>) -> AnyEl
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(6.))
+                        .gap(DynamicSpacing::Base06.px(&theme))
                         .min_w_0()
                         .children(
                             issue
@@ -6492,7 +6484,7 @@ fn issue_row(issue: &gh::GhIssue, theme: Theme, cx: &Context<GitPanel>) -> AnyEl
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(3.))
+                                .gap(DynamicSpacing::Base03.px(&theme))
                                 .text_size(TextSize::Small.px(&theme))
                                 .text_color(theme.text_3)
                                 .child(icon(
@@ -6547,7 +6539,7 @@ fn issue_label_chip(label: &gh::GhLabel, theme: Theme) -> AnyElement {
     };
     div()
         .h(px(18.))
-        .px(px(6.))
+        .px(DynamicSpacing::Base06.px(&theme))
         .rounded(Radius::Small.px(&theme))
         .bg(color)
         .flex()
@@ -6587,14 +6579,14 @@ fn state_tile(glyph: &'static str, color: Hsla, theme: Theme) -> AnyElement {
 fn state_chip(label: &str, color: Hsla, glyph: Option<&'static str>, theme: Theme) -> AnyElement {
     div()
         .h(px(20.))
-        .px(px(8.))
+        .px(DynamicSpacing::Base08.px(&theme))
         .rounded(px(10.))
         .bg(color.opacity(0.15))
         .border_1()
         .border_color(color.opacity(0.5))
         .flex()
         .items_center()
-        .gap(px(4.))
+        .gap(DynamicSpacing::Base04.px(&theme))
         .text_size(TextSize::XSmall.px(&theme))
         .font_weight(FontWeight::MEDIUM)
         .text_color(color)
@@ -6632,14 +6624,18 @@ fn items_stretch<E: Styled>(mut el: E) -> E {
 }
 
 /// A filter-bar search field: an input box with a leading glyph and the
-/// filter input filling the rest.
-fn search_field(theme: Theme, input: Entity<crate::composer::ComposerInput>) -> AnyElement {
-    input_field_frame(div(), &theme)
-        .w(px(200.))
-        .bg(theme.bg_composer)
+/// filter input filling the rest. It grows to fill the bar and shrinks when
+/// the row is tight, so a bar with more chips (the Pulls tab) never overflows.
+fn search_field(
+    theme: Theme,
+    input: Entity<crate::composer::ComposerInput>,
+) -> impl IntoElement {
+    picker_search_frame(div(), &theme)
+        .flex_1()
+        .min_w(px(160.))
+        .ml(DynamicSpacing::Base04.px(&theme))
         .child(icon("icons/search.svg", IconSize::Small.px(&theme), theme.text_3))
         .child(div().flex_1().min_w_0().child(input))
-        .into_any_element()
 }
 
 /// One comment under an issue: author header plus the rendered markdown body.
@@ -6664,7 +6660,7 @@ fn issue_comment_card(comment: &gh::GhComment, theme: Theme) -> AnyElement {
                 .border_color(theme.border)
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .gap(DynamicSpacing::Base06.px(&theme))
                 .child(author_avatar(&author, "", theme))
                 .child(
                     div()
@@ -6719,12 +6715,12 @@ fn pr_row(pull: &gh::GhPull, theme: Theme, cx: &Context<GitPanel>) -> AnyElement
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .gap(px(3.))
+                .gap(DynamicSpacing::Base03.px(&theme))
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(6.))
+                        .gap(DynamicSpacing::Base06.px(&theme))
                         .min_w_0()
                         .child(
                             div()
@@ -6755,7 +6751,7 @@ fn pr_row(pull: &gh::GhPull, theme: Theme, cx: &Context<GitPanel>) -> AnyElement
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(6.))
+                        .gap(DynamicSpacing::Base06.px(&theme))
                         .min_w_0()
                         .children(
                             pull.labels
@@ -6903,7 +6899,7 @@ fn review_card(review: &gh::GhReview, theme: Theme) -> AnyElement {
                 .border_color(theme.border)
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .gap(DynamicSpacing::Base06.px(&theme))
                 .child(author_avatar(&author, "", theme))
                 .child(
                     div()
@@ -6966,7 +6962,7 @@ fn graph_row(
     let meta = div()
         .flex()
         .items_center()
-        .gap(px(6.))
+        .gap(DynamicSpacing::Base06.px(&theme))
         .text_size(TextSize::Small.px(&theme))
         .child(author_avatar(&commit.author, &commit.author_email, theme))
         .child(div().text_color(theme.text_2).child(commit.author.clone()))
@@ -6987,13 +6983,13 @@ fn graph_row(
             format!("git-graph-{}", commit.short).into(),
         ))
         .group("git-row")
-        .mx(px(12.))
-        .px(px(8.))
-        .py(px(6.))
+        .mx(DynamicSpacing::Base12.px(&theme))
+        .px(DynamicSpacing::Base08.px(&theme))
+        .py(DynamicSpacing::Base06.px(&theme))
         .rounded(Radius::Large.px(&theme))
         .flex()
         .items_center()
-        .gap(px(10.))
+        .gap(DynamicSpacing::Base08.px(&theme))
         .cursor_pointer()
         .hover(|s| s.bg(theme.bg_hover))
         .when(selected, |s| s.bg(theme.overlay))
@@ -7005,12 +7001,12 @@ fn graph_row(
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .gap(px(3.))
+                .gap(DynamicSpacing::Base03.px(&theme))
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(6.))
+                        .gap(DynamicSpacing::Base06.px(&theme))
                         .min_w_0()
                         .children(
                             commit
@@ -7167,7 +7163,7 @@ fn commit_row(
     let meta = div()
         .flex()
         .items_center()
-        .gap(px(6.))
+        .gap(DynamicSpacing::Base06.px(&theme))
         .text_size(TextSize::Small.px(&theme))
         .child(author_avatar(&commit.author, &commit.author_email, theme))
         .child({
@@ -7202,13 +7198,13 @@ fn commit_row(
         .id(gpui::ElementId::Name(
             format!("git-commit-{}", commit.short).into(),
         ))
-        .mx(px(12.))
-        .px(px(8.))
-        .py(px(9.))
+        .mx(DynamicSpacing::Base12.px(&theme))
+        .px(DynamicSpacing::Base08.px(&theme))
+        .py(DynamicSpacing::Base08.px(&theme))
         .rounded(Radius::Large.px(&theme))
         .flex()
         .items_center()
-        .gap(px(10.))
+        .gap(DynamicSpacing::Base08.px(&theme))
         .cursor_pointer()
         .hover(|s| s.bg(theme.bg_hover))
         .when(selected, |row| row.bg(theme.overlay))
@@ -7220,12 +7216,12 @@ fn commit_row(
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .gap(px(3.))
+                .gap(DynamicSpacing::Base03.px(&theme))
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(6.))
+                        .gap(DynamicSpacing::Base06.px(&theme))
                         .min_w_0()
                         .children(
                             commit
@@ -7247,7 +7243,7 @@ fn commit_row(
                 .child(meta),
         )
         .child(
-            div().flex_none().flex().items_center().gap(px(5.)).child(
+            div().flex_none().flex().items_center().gap(DynamicSpacing::Base04.px(&theme)).child(
                 div()
                     .font_family(theme::code_font_family())
                     .text_size(TextSize::Small.px(&theme))
@@ -7483,7 +7479,7 @@ fn section_title(label: &str, count: usize, theme: Theme) -> AnyElement {
     div()
         .flex()
         .items_center()
-        .gap(px(6.))
+        .gap(DynamicSpacing::Base06.px(&theme))
         .child(
             div()
                 .text_size(TextSize::Small.px(&theme))
@@ -7572,7 +7568,7 @@ fn delta_stats(additions: u64, deletions: u64, theme: Theme) -> AnyElement {
         .flex_none()
         .flex()
         .items_center()
-        .gap(px(6.))
+        .gap(DynamicSpacing::Base06.px(&theme))
         .text_size(TextSize::Small.px(&theme))
         .child(
             div()
@@ -7615,7 +7611,7 @@ fn commit_separator(theme: Theme) -> AnyElement {
     // 12 (row margin) + 8 (row padding) + leading marker + 10 (row gap).
     div()
         .ml(px(12. + 8. + HISTORY_LEADING + 10.))
-        .mr(px(20.))
+        .mr(DynamicSpacing::Base20.px(&theme))
         .h(px(1.))
         .bg(theme.border)
         .into_any_element()

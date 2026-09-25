@@ -251,6 +251,10 @@ pub struct CommandPalette {
     scroll: ScrollHandle,
     highlighted: usize,
     last_filter: String,
+    /// The list's actual on-screen height from the last render (the card is
+    /// capped by the window). `ensure_visible` scrolls against this, not the
+    /// uncapped `list_max_h`, or a short window scrolls too little.
+    list_viewport: f32,
     on_open: OpenSession,
     on_command: RunCommand,
     /// `bool` = dismissed by an outside mouse-down (vs. escape).
@@ -276,6 +280,7 @@ impl CommandPalette {
             scroll: ScrollHandle::new(),
             highlighted: 0,
             last_filter: String::new(),
+            list_viewport: 0.,
             on_open,
             on_command,
             on_dismiss,
@@ -677,9 +682,17 @@ impl CommandPalette {
 
     fn ensure_visible(&mut self, rows: &[PaletteItem], metrics: &PaletteMetrics) {
         let content_h = Self::content_height(rows, metrics);
-        let viewport_h = content_h.min(metrics.list_max_h);
+        let viewport_h = content_h.min(if self.list_viewport > 0. {
+            self.list_viewport
+        } else {
+            metrics.list_max_h
+        });
         let row_top = Self::row_top(rows, self.highlighted, metrics);
-        let current: f32 = self.scroll.offset().y.into();
+        // `ScrollHandle` keeps the offset as the first child's top relative to
+        // the container, which is **negative** once scrolled down; recover the
+        // positive distance-from-top before comparing, and negate on the way
+        // back out.
+        let current = -f32::from(self.scroll.offset().y);
         let mut offset = current;
         if row_top < current {
             offset = row_top;
@@ -688,7 +701,7 @@ impl CommandPalette {
         }
         let max_offset = (content_h - viewport_h).max(0.);
         self.scroll
-            .set_offset(point(px(0.), px(offset.clamp(0., max_offset))));
+            .set_offset(point(px(0.), px(-offset.clamp(0., max_offset))));
     }
 
     fn activate(
@@ -748,6 +761,7 @@ impl Render for CommandPalette {
         };
         let list_cap = metrics.card_max_h().min(card_cap) - metrics.search_h - metrics.footer_h;
         let list_h = content_h.min(list_cap);
+        self.list_viewport = list_h;
 
         // ── results list ──
         let mut list = div()
@@ -899,18 +913,18 @@ fn render_row(
         })
         .flex_none()
         .cursor_pointer()
-        // Hover moves the keyboard highlight; click activates the row.
-        .on_hover({
+        // Moving the pointer over a row moves the keyboard highlight; click
+        // activates it. `on_mouse_move` (not `on_hover`) so a scroll that
+        // slides rows under a stationary pointer can't hijack ↑/↓ navigation.
+        .on_mouse_move({
             let this = this.clone();
-            move |hovering, _, cx| {
-                if *hovering {
-                    this.update(cx, |palette, cx| {
-                        if palette.highlighted != ix {
-                            palette.highlighted = ix;
-                            cx.notify();
-                        }
-                    });
-                }
+            move |_, _, cx| {
+                this.update(cx, |palette, cx| {
+                    if palette.highlighted != ix {
+                        palette.highlighted = ix;
+                        cx.notify();
+                    }
+                });
             }
         })
         .on_click({
@@ -994,6 +1008,7 @@ pub fn layer(palette: Entity<CommandPalette>) -> impl IntoElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::size;
 
     #[test]
     fn fuzzy_subsequence_and_boundaries() {
@@ -1049,5 +1064,121 @@ mod tests {
             CommandPalette::content_height(&rows, &m),
             2. * m.list_pad_y + m.header_h * 2. + m.row_h * 3.
         );
+    }
+
+    /// With the palette filter focused, the `Picker` arrows must win over the
+    /// `Composer` arrows (both ride on the same input), so ↓/↑ move the
+    /// highlight instead of the caret.
+    #[gpui::test]
+    fn arrow_keys_move_the_highlight(cx: &mut gpui::TestAppContext) {
+        bind_picker_arrows(cx);
+        let cx = cx.add_empty_window();
+        let palette = open_test_palette(cx);
+        let _ = cx.draw(point(px(0.), px(0.)), size(px(900.), px(700.)), |_, _| {
+            palette.clone()
+        });
+
+        assert_eq!(cx.update(|_, cx| palette.read(cx).highlighted), 0);
+        cx.simulate_keystrokes("down");
+        assert_eq!(
+            cx.update(|_, cx| palette.read(cx).highlighted),
+            1,
+            "↓ moves the highlight"
+        );
+        cx.simulate_keystrokes("down");
+        assert_eq!(cx.update(|_, cx| palette.read(cx).highlighted), 2);
+        cx.simulate_keystrokes("up");
+        assert_eq!(
+            cx.update(|_, cx| palette.read(cx).highlighted),
+            1,
+            "↑ moves the highlight"
+        );
+    }
+
+    /// The highlight must stay inside the *actual* (window-capped) list
+    /// viewport, not just the uncapped `list_max_h`, or ↓ walks it off-screen
+    /// in a short window.
+    #[gpui::test]
+    fn arrows_keep_the_highlight_in_view(cx: &mut gpui::TestAppContext) {
+        bind_picker_arrows(cx);
+        let cx = cx.add_empty_window();
+        let palette = open_test_palette(cx);
+        let _ = cx.draw(point(px(0.), px(0.)), size(px(900.), px(700.)), |_, _| {
+            palette.clone()
+        });
+
+        let metrics = PaletteMetrics::new(&Theme::dark());
+        let rows = cx.update(|_, cx| palette.read(cx).results(""));
+        assert!(rows.len() > 12, "need enough rows to scroll: {}", rows.len());
+
+        // The test window's viewport isn't capped by the draw size, so force a
+        // short viewport (four rows) the way a short window would.
+        let viewport = metrics.row_h * 4.;
+        for highlighted in [12usize, 6, 0] {
+            cx.update(|_, cx| {
+                palette.update(cx, |p, _| {
+                    p.list_viewport = viewport;
+                    p.highlighted = highlighted;
+                    p.ensure_visible(&rows, &metrics);
+                });
+            });
+            let offset = cx.update(|_, cx| -f32::from(palette.read(cx).scroll.offset().y));
+            let top = CommandPalette::row_top(&rows, highlighted, &metrics);
+            assert!(
+                top >= offset - 0.5,
+                "row scrolled above the viewport: {top} < {offset}"
+            );
+            assert!(
+                top + metrics.row_h <= offset + viewport + 0.5,
+                "row below the viewport: {top} + {} > {offset} + {viewport}",
+                metrics.row_h
+            );
+        }
+    }
+
+    /// Bind the picker arrows exactly as `main::bind_keys` does: the `Composer`
+    /// arrows first, the `Picker` arrows after (later registration wins ties).
+    fn bind_picker_arrows(cx: &mut gpui::TestAppContext) {
+        use crate::{Down, PickerSelectNext, PickerSelectPrev, Up};
+        use gpui::KeyBinding;
+
+        cx.update(|cx| {
+            cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit));
+            cx.bind_keys([
+                KeyBinding::new("up", Up, Some("Composer")),
+                KeyBinding::new("down", Down, Some("Composer")),
+                KeyBinding::new("up", PickerSelectPrev, Some("Picker")),
+                KeyBinding::new("down", PickerSelectNext, Some("Picker")),
+            ]);
+        });
+    }
+
+    /// A palette with no sessions, its filter focused, ready to draw.
+    fn open_test_palette(cx: &mut gpui::VisualTestContext) -> Entity<CommandPalette> {
+        let snapshot = PaletteSnapshot {
+            sessions: Vec::new(),
+            active_path: None,
+            busy: false,
+            session_id: None,
+            sidebar_visible: true,
+            side_panel_visible: false,
+            terminal_visible: false,
+            project_panel_visible: false,
+            can_choose_model: false,
+            can_choose_thinking: false,
+        };
+        cx.update(|window, cx| {
+            let palette = cx.new(|cx| {
+                CommandPalette::new(
+                    snapshot,
+                    Box::new(|_, _, _| {}),
+                    Box::new(|_, _, _| {}),
+                    Box::new(|_, _, _| {}),
+                    cx,
+                )
+            });
+            window.focus(&palette.read(cx).focus_handle(cx));
+            palette
+        })
     }
 }

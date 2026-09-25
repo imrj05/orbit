@@ -195,7 +195,8 @@ impl WorkspacePicker {
         };
         let content_h = folder_rows as f32 * row_h;
         let viewport_h = content_h.min(list_max_h(theme));
-        let current: f32 = self.scroll.offset().y.into();
+        // `ScrollHandle`'s offset is negative once scrolled down.
+        let current = -f32::from(self.scroll.offset().y);
         let mut offset = current;
         if row_top < current {
             offset = row_top;
@@ -204,7 +205,7 @@ impl WorkspacePicker {
         }
         let max_offset = (content_h - viewport_h).max(0.);
         self.scroll
-            .set_offset(point(px(0.), px(offset.clamp(0., max_offset))));
+            .set_offset(point(px(0.), px(-offset.clamp(0., max_offset))));
     }
 
     fn activate(
@@ -275,17 +276,17 @@ impl Render for WorkspacePicker {
                 .when(!highlighted && !is_current, |row| {
                     row.hover(|s| s.bg(theme.overlay))
                 })
-                .on_hover({
+                // Pointer movement moves the highlight; a scroll sliding rows
+                // under a stationary pointer must not hijack ↑/↓ navigation.
+                .on_mouse_move({
                     let this = this.clone();
-                    move |hovering, _, cx| {
-                        if *hovering {
-                            this.update(cx, |picker, cx| {
-                                if picker.highlighted != ix {
-                                    picker.highlighted = ix;
-                                    cx.notify();
-                                }
-                            });
-                        }
+                    move |_, _, cx| {
+                        this.update(cx, |picker, cx| {
+                            if picker.highlighted != ix {
+                                picker.highlighted = ix;
+                                cx.notify();
+                            }
+                        });
                     }
                 })
                 .on_mouse_up(
@@ -450,19 +451,17 @@ impl Render for WorkspacePicker {
                             .when(!browse_highlighted, |row| {
                                 row.hover(|s| s.bg(theme.overlay))
                             })
-                            .on_hover({
+                            .on_mouse_move({
                                 let this = this.clone();
-                                move |hovering, _, cx| {
-                                    if *hovering {
-                                        this.update(cx, |picker, cx| {
-                                            let browse_ix =
-                                                picker.filtered(&picker.last_filter).len();
-                                            if picker.highlighted != browse_ix {
-                                                picker.highlighted = browse_ix;
-                                                cx.notify();
-                                            }
-                                        });
-                                    }
+                                move |_, _, cx| {
+                                    this.update(cx, |picker, cx| {
+                                        let browse_ix =
+                                            picker.filtered(&picker.last_filter).len();
+                                        if picker.highlighted != browse_ix {
+                                            picker.highlighted = browse_ix;
+                                            cx.notify();
+                                        }
+                                    });
                                 }
                             })
                             .on_mouse_up(
