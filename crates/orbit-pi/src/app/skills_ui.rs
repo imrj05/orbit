@@ -9,7 +9,7 @@
 use super::helpers::*;
 use super::*;
 use crate::skills::{self, Skill, SkillScope};
-use crate::theme::tokens::{ButtonSize, IconSize};
+use crate::theme::tokens::{Radius, TextSize, ButtonSize, IconSize};
 
 /// A Skills-page control, dispatched through one entry point.
 #[derive(Clone)]
@@ -75,7 +75,7 @@ impl OrbitApp {
             .mb(px(10.))
             .h(px(30.))
             .px(px(8.))
-            .rounded_lg()
+            .rounded(Radius::Large.px(&theme))
             .bg(theme.bg_raised)
             .border_1()
             .border_color(theme.border)
@@ -91,13 +91,13 @@ impl OrbitApp {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .text_size(theme.ui_px(12.5))
+                    .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.text_2)
                     .child(tr!("skills_ui.all_skills")),
             )
             .child(
                 div()
-                    .text_size(theme.ui_px(11.5))
+                    .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.text_3)
                     .child(self.skills.len().to_string()),
             );
@@ -143,7 +143,7 @@ impl OrbitApp {
                     ))
                     .child(
                         div()
-                            .text_size(theme.ui_px(12.))
+                            .text_size(TextSize::Small.px(&theme))
                             .text_color(theme.text_2)
                             .child(tr!("skills_ui.no_skills_match")),
                     )
@@ -156,7 +156,7 @@ impl OrbitApp {
             .py(px(8.))
             .border_t_1()
             .border_color(theme.border)
-            .text_size(theme.ui_px(11.5))
+            .text_size(TextSize::Small.px(&theme))
             .text_color(theme.text_3)
             .child(tr!("skills_ui.skill_count", count = filtered.len()));
 
@@ -186,14 +186,14 @@ impl OrbitApp {
             .gap_2()
             .child(
                 div()
-                    .text_size(theme.ui_px(10.5))
+                    .text_size(TextSize::XSmall.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_3)
                     .child(scope.label().to_uppercase()),
             )
             .child(
                 div()
-                    .text_size(theme.ui_px(10.5))
+                    .text_size(TextSize::XSmall.px(&theme))
                     .text_color(theme.text_3)
                     .child(count.to_string()),
             )
@@ -209,7 +209,7 @@ impl OrbitApp {
             .mx(px(10.))
             .px(px(8.))
             .py(px(7.))
-            .rounded_md()
+            .rounded(Radius::Medium.px(&theme))
             .flex()
             .items_start()
             .gap_2p5()
@@ -230,7 +230,7 @@ impl OrbitApp {
                     .gap_0p5()
                     .child(
                         div()
-                            .text_size(theme.ui_px(12.5))
+                            .text_size(TextSize::Small.px(&theme))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(if selected {
                                 theme.active_fg
@@ -243,7 +243,7 @@ impl OrbitApp {
                     .when(!description.is_empty(), |col| {
                         col.child(
                             div()
-                                .text_size(theme.ui_px(11.5))
+                                .text_size(TextSize::Small.px(&theme))
                                 .text_color(theme.text_3)
                                 .truncate()
                                 .child(description.to_string()),
@@ -305,14 +305,14 @@ impl OrbitApp {
                 ))
                 .child(
                     div()
-                        .text_size(theme.ui_px(13.))
+                        .text_size(TextSize::Default.px(&theme))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.text)
                         .child(tr!("skills_ui.select_a_skill")),
                 )
                 .child(
                     div()
-                        .text_size(theme.ui_px(12.))
+                        .text_size(TextSize::Small.px(&theme))
                         .text_color(theme.text_2)
                         .child(tr!(
                             "skills_ui.pick_one_from_the_list_to_see_its_details_and_sk"
@@ -359,7 +359,7 @@ impl OrbitApp {
                     )
                     .child(
                         div()
-                            .text_size(theme.ui_px(12.))
+                            .text_size(TextSize::Small.px(&theme))
                             .text_color(theme.text_3)
                             .truncate()
                             .child(self.skill_subtitle(&skill)),
@@ -427,7 +427,7 @@ impl OrbitApp {
                 .gap_2()
                 .child(
                     div()
-                        .text_size(theme.ui_px(12.))
+                        .text_size(TextSize::Small.px(&theme))
                         .text_color(theme.text_3)
                         .child(tr!("skills_ui.skill_md_is_empty")),
                 )
@@ -448,7 +448,7 @@ impl OrbitApp {
             .child(
                 div()
                     .max_w(px(760.))
-                    .text_size(theme.ui_px(12.5))
+                    .text_size(TextSize::Small.px(&theme))
                     .text_color(description_color)
                     .child(description),
             )
@@ -457,7 +457,7 @@ impl OrbitApp {
             .child(div().w_full().h(px(1.)).bg(theme.border))
             .child(
                 div()
-                    .text_size(theme.ui_px(10.5))
+                    .text_size(TextSize::XSmall.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_3)
                     .child(tr!("skills_ui.skill_md")),
@@ -494,7 +494,7 @@ impl OrbitApp {
                 div()
                     .w(px(84.))
                     .flex_none()
-                    .text_size(theme.ui_px(12.))
+                    .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.text_3)
                     .child(label.to_string()),
             )
@@ -506,7 +506,7 @@ impl OrbitApp {
         div()
             .min_w_0()
             .truncate()
-            .text_size(theme.ui_px(12.))
+            .text_size(TextSize::Small.px(&theme))
             .text_color(theme.text)
             .child(value.to_string())
             .into_any_element()
@@ -552,7 +552,7 @@ impl OrbitApp {
                     div()
                         .flex_1()
                         .min_w_0()
-                        .text_size(theme.ui_px(11.5))
+                        .text_size(TextSize::Small.px(&theme))
                         .text_color(theme.crit)
                         .child(tr!(
                             "skills_ui.delete_skill_hint",

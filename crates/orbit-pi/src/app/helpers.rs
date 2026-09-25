@@ -1,6 +1,6 @@
 use super::*;
 use crate::platform::WindowCommand;
-use crate::theme::tokens::{
+use crate::theme::tokens::{Radius, 
     self, button, context_menu, input, list, list_item, picker, ButtonSize, IconSize, StyledExt,
     TextSize,
 };
@@ -27,7 +27,7 @@ pub(crate) fn queue_chip(kind: &str, text: &str, follow: bool, theme: Theme) -> 
         .gap(px(6.))
         .px(px(8.))
         .py(px(5.))
-        .rounded(px(6.))
+        .rounded(Radius::Medium.px(&theme))
         .border_1()
         .border_color(theme.border)
         .bg(theme.bg_raised)
@@ -35,7 +35,7 @@ pub(crate) fn queue_chip(kind: &str, text: &str, follow: bool, theme: Theme) -> 
             div()
                 .flex_none()
                 .pt(px(1.))
-                .text_size(theme.ui_px(10.))
+                .text_size(TextSize::XSmall.px(&theme))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(if follow { theme.text_2 } else { theme.accent })
                 .child(kind.to_string()),
@@ -45,7 +45,7 @@ pub(crate) fn queue_chip(kind: &str, text: &str, follow: bool, theme: Theme) -> 
                 .flex_1()
                 .min_w_0()
                 .line_clamp(4)
-                .text_size(theme.ui_px(11.5))
+                .text_size(TextSize::Small.px(&theme))
                 .line_height(theme.ui_px(16.))
                 .text_color(theme.text)
                 .child(text.to_string()),
@@ -176,22 +176,6 @@ pub(crate) fn refresh_glyph(
     )
     .into_any_element()
 }
-
-/// The chrome every floating surface shares — anchored menus, dropdowns,
-/// popovers, tooltips, and modals: the raised menu fill, a strong 1px
-/// hairline, and the layered popover shadow. Callers keep their own radius,
-/// size, padding, and occlusion, so a menu, a tooltip, and a modal can't
-/// drift apart.
-pub(crate) trait PopoverSurface: Styled {
-    fn popover_surface(self, theme: Theme) -> Self {
-        self.border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.popover_shadow())
-    }
-}
-
-impl<T: Styled> PopoverSurface for T {}
 
 /// The shell of a context menu, built to Zed's `ContextMenu`: the elevated
 /// surface (`elevation_2`), a 200px minimum width, `List`'s vertical padding,
@@ -383,7 +367,7 @@ pub(crate) fn empty_state(
         .pb(px(24.))
         .child(
             div()
-                .text_size(theme.ui_px(13.))
+                .text_size(TextSize::Default.px(&theme))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text)
                 .child(title.to_string()),
@@ -394,7 +378,7 @@ pub(crate) fn empty_state(
                 .mt(px(6.))
                 .max_w(px(320.))
                 .text_align(TextAlign::Center)
-                .text_size(theme.ui_px(12.))
+                .text_size(TextSize::Small.px(&theme))
                 .line_height(theme.ui_px(17.))
                 .text_color(theme.text_3)
                 .child(detail.to_string()),
@@ -791,7 +775,7 @@ pub(crate) fn file_badge(path: &str, theme: Theme) -> AnyElement {
     div()
         .size(px(17.))
         .flex_none()
-        .rounded(px(4.))
+        .rounded(Radius::Small.px(&theme))
         .bg(color.opacity(0.16))
         .flex()
         .items_center()
@@ -809,7 +793,7 @@ pub(crate) fn runtime_text(theme: Theme, text: String) -> AnyElement {
     div()
         .min_w_0()
         .truncate()
-        .text_size(theme.ui_px(12.5))
+        .text_size(TextSize::Small.px(&theme))
         .text_color(theme.text)
         .child(text)
         .into_any_element()
@@ -832,7 +816,7 @@ pub(crate) fn runtime_error(theme: Theme, text: String) -> AnyElement {
     div()
         .min_w_0()
         .truncate()
-        .text_size(theme.ui_px(12.))
+        .text_size(TextSize::Small.px(&theme))
         .text_color(theme.crit)
         .child(text)
         .into_any_element()

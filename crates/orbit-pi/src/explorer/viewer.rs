@@ -29,7 +29,7 @@ use crate::app::{
 };
 use crate::composer::ComposerInput;
 use crate::highlight::{self, Lang, Token};
-use crate::theme::tokens::{ButtonSize, IconSize};
+use crate::theme::tokens::{Radius, TextSize, ButtonSize, DynamicSpacing, IconSize};
 use crate::theme::{self, Theme, ThemeMode};
 
 /// Files above this are not previewed. Two megabytes is far past any source
@@ -793,7 +793,7 @@ impl FileViewer {
             .h_full()
             .flex()
             .items_center()
-            .gap(theme.space(6.))
+            .gap(DynamicSpacing::Base06.px(&theme))
             .overflow_x_scroll()
             .track_scroll(&self.tab_scroll);
         for (index, tab) in self.tabs.iter().enumerate() {
@@ -826,9 +826,9 @@ impl FileViewer {
                     .flex()
                     .items_center()
                     .gap(px(6.))
-                    .rounded(px(8.))
+                    .rounded(Radius::Large.px(&theme))
                     .cursor_pointer()
-                    .text_size(theme.ui_px(12.5))
+                    .text_size(TextSize::Small.px(&theme))
                     .when(active, |el| el.bg(theme.active))
                     .when(!active, |el| {
                         el.text_color(theme.text_3)
@@ -901,7 +901,7 @@ impl FileViewer {
             .flex_none()
             .flex()
             .items_center()
-            .gap(theme.space(6.))
+            .gap(DynamicSpacing::Base06.px(&theme))
             // The surface spans the window when the sidebar is collapsed, so
             // the leading inset keeps the first tab clear of the macOS traffic
             // lights and the overlaid titlebar controls; the trailing inset
@@ -910,7 +910,7 @@ impl FileViewer {
             .pr(px(if self.reserve_controls {
                 crate::platform::WINDOW_CONTROLS_W
             } else {
-                f32::from(theme.space(16.))
+                f32::from(DynamicSpacing::Base16.px(&theme))
             }))
             .border_b_1()
             .border_color(theme.border)
@@ -944,14 +944,14 @@ impl FileViewer {
         div()
             .h(px(34.))
             .flex_none()
-            .px(theme.space(16.))
+            .px(DynamicSpacing::Base16.px(&theme))
             .flex()
             .items_center()
             .gap(px(12.))
             .border_b_1()
             .border_color(theme.border)
             .font_family(theme::code_font_family())
-            .text_size(theme.ui_px(11.5))
+            .text_size(TextSize::Small.px(&theme))
             .text_color(theme.text_3)
             .child(
                 div()
@@ -1022,7 +1022,7 @@ impl FileViewer {
             .flex_none()
             .h(px(20.))
             .px(px(6.))
-            .rounded(px(6.))
+            .rounded(Radius::Medium.px(&theme))
             .bg(theme.bg_raised)
             .border_1()
             .border_color(theme.border)
@@ -1078,7 +1078,7 @@ impl FileViewer {
                             .w_full()
                             .max_w(px(760.))
                             .mx_auto()
-                            .p(theme.space(20.))
+                            .p(DynamicSpacing::Base20.px(&theme))
                             .child(crate::transcript_view::render_markdown_document(
                                 &text, theme,
                             )),
@@ -1093,7 +1093,7 @@ impl FileViewer {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .p(theme.space(24.))
+                    .p(DynamicSpacing::Base24.px(&theme))
                     .child(
                         img(ImageSource::Image(image))
                             .max_w_full()
@@ -1241,7 +1241,7 @@ fn loading_state(theme: &Theme) -> AnyElement {
         ))
         .child(
             div()
-                .text_size(theme.ui_px(12.5))
+                .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.text_3)
                 .child(tr!("explorer.loading")),
         )

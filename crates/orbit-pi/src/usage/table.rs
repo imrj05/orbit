@@ -20,7 +20,7 @@ use gpui::{
     Hsla, IntoElement, MouseButton, Pixels, Render, SharedString, Window,
 };
 
-use crate::theme::tokens::IconSize;
+use crate::theme::tokens::{Radius, IconSize, TextSize};
 use crate::theme::Theme;
 
 /// A body row's height. Every table height is a whole number of these plus the
@@ -242,7 +242,7 @@ pub fn data_table(
 
     div()
         .w_full()
-        .rounded(px(12.))
+        .rounded(Radius::XLarge.px(&theme))
         .border_1()
         .border_color(theme.border)
         .overflow_hidden()
@@ -299,7 +299,7 @@ fn header_cell(ix: usize, column: &Column, theme: Theme, handlers: TableHandlers
             div()
                 .min_w_0()
                 .truncate()
-                .text_size(theme.ui_px(13.))
+                .text_size(TextSize::Default.px(&theme))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text)
                 .child(column.label.clone()),
@@ -406,7 +406,7 @@ pub(super) fn text_cell(column: &Column, text: String, color: Hsla, theme: Theme
                 div()
                     .font(super::view::num_font())
                     .whitespace_nowrap()
-                    .text_size(theme.ui_px(13.))
+                    .text_size(TextSize::Default.px(&theme))
                     .text_color(color)
                     .child(text),
             )
@@ -418,7 +418,7 @@ pub(super) fn text_cell(column: &Column, text: String, color: Hsla, theme: Theme
                 .flex_1()
                 .min_w_0()
                 .truncate()
-                .text_size(theme.ui_px(13.))
+                .text_size(TextSize::Default.px(&theme))
                 .text_color(color)
                 .child(text),
         )
@@ -431,7 +431,7 @@ pub(super) fn empty_cell(text: &str, theme: Theme) -> AnyElement {
         .py(px(28.))
         .flex()
         .justify_center()
-        .text_size(theme.ui_px(13.))
+        .text_size(TextSize::Default.px(&theme))
         .text_color(theme.text_3)
         .child(text.to_string())
         .into_any_element()

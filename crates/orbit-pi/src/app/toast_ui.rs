@@ -1,6 +1,6 @@
 use super::helpers::*;
 use super::*;
-use crate::theme::tokens::{ButtonSize, IconSize, StyledExt};
+use crate::theme::tokens::{TextSize, ButtonSize, IconSize, StyledExt};
 use crate::toast::{Toast, ToastKind};
 
 /// Width of a toast card. A stack hugs the window's bottom-right corner, so
@@ -134,7 +134,7 @@ impl OrbitApp {
                     .child(
                         div()
                             .line_clamp(2)
-                            .text_size(theme.ui_px(12.5))
+                            .text_size(TextSize::Small.px(&theme))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.text)
                             .child(toast.title.clone()),
@@ -143,7 +143,7 @@ impl OrbitApp {
                         div()
                             .whitespace_normal()
                             .line_clamp(3)
-                            .text_size(theme.ui_px(11.5))
+                            .text_size(TextSize::Small.px(&theme))
                             .text_color(theme.text_3)
                             .child(body.clone())
                     })),

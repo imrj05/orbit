@@ -6,7 +6,8 @@ use gpui::{point, Pixels};
 use crate::sessions::cap_chars;
 use crate::shimmer::ShimmerText;
 use crate::theme::tokens::{
-    context_menu, popover, ButtonSize, DynamicSpacing, IconSize, TextSize,
+    context_menu, list_item, popover, BufferLineHeight, ButtonSize, DynamicSpacing, IconSize,
+    TextSize,
 };
 
 /// Whether a workspace group is collapsed in the sidebar. The active
@@ -345,19 +346,19 @@ pub(crate) fn render_side_row(
             // flex_none, so nothing shifts when they appear).
             div()
                 .w_full()
-                .pt(px(12.))
-                .pb(px(2.))
+                .pt(DynamicSpacing::Base12.px(&theme))
+                .pb(DynamicSpacing::Base02.px(&theme))
                 .group("workspace-row")
                 .child(
                     div()
                         .w_full()
                         .h(px(26.))
-                        .pl(px(6.))
-                        .pr(px(8.))
-                        .rounded_md()
+                        .pl(DynamicSpacing::Base06.px(&theme))
+                        .pr(DynamicSpacing::Base08.px(&theme))
+                        .rounded(list_item::RADIUS.px(&theme))
                         .flex()
                         .items_center()
-                        .gap(px(6.))
+                        .gap(DynamicSpacing::Base06.px(&theme))
                         .cursor_pointer()
                         .when(cursor, |s| s.bg(theme.overlay))
                         .hover(|s| s.bg(theme.bg_hover))
@@ -407,7 +408,7 @@ pub(crate) fn render_side_row(
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .text_size(theme.ui_px(11.5))
+                                .text_size(TextSize::Small.px(&theme))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(theme.text_3)
                                 .child(label.clone()),
@@ -453,7 +454,7 @@ pub(crate) fn render_side_row(
                         .child(
                             div()
                                 .flex_none()
-                                .text_size(theme.ui_px(10.5))
+                                .text_size(TextSize::XSmall.px(&theme))
                                 .text_color(theme.text_3)
                                 .child(format!("{count}")),
                         ),
@@ -481,7 +482,7 @@ pub(crate) fn render_side_row(
                 .min_w_0()
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .gap(DynamicSpacing::Base06.px(&theme))
                 .cursor_pointer()
                 .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                     let label = label_for_click.clone();
@@ -496,7 +497,7 @@ pub(crate) fn render_side_row(
                 .child(icon("icons/chevron-down.svg", IconSize::XSmall.px(&theme), theme.text_3))
                 .child(
                     div()
-                        .text_size(theme.ui_px(11.))
+                        .text_size(TextSize::Small.px(&theme))
                         .text_color(theme.text_3)
                         .child(tr!("sidebar.show_count_more", count = count)),
                 );
@@ -504,10 +505,10 @@ pub(crate) fn render_side_row(
                 .w_full()
                 .h(px(26.))
                 .pl(px(22.))
-                .pr(px(4.))
+                .pr(DynamicSpacing::Base04.px(&theme))
                 .flex()
                 .items_center()
-                .rounded_md()
+                .rounded(list_item::RADIUS.px(&theme))
                 .when(cursor, |s| s.bg(theme.overlay))
                 .hover(|s| s.bg(theme.bg_hover))
                 .child(more);
@@ -540,11 +541,11 @@ pub(crate) fn render_side_row(
                 .w_full()
                 .h(px(26.))
                 .pl(px(22.))
-                .pr_2()
+                .pr(DynamicSpacing::Base08.px(&theme))
                 .flex()
                 .items_center()
-                .gap(px(6.))
-                .rounded_md()
+                .gap(DynamicSpacing::Base06.px(&theme))
+                .rounded(list_item::RADIUS.px(&theme))
                 .cursor_pointer()
                 .when(cursor, |s| s.bg(theme.overlay))
                 .hover(|s| s.bg(theme.bg_hover))
@@ -558,7 +559,7 @@ pub(crate) fn render_side_row(
                 .child(icon("icons/chevron-up.svg", IconSize::XSmall.px(&theme), theme.text_3))
                 .child(
                     div()
-                        .text_size(theme.ui_px(11.))
+                        .text_size(TextSize::Small.px(&theme))
                         .text_color(theme.text_3)
                         .child(tr!("sidebar.show_less")),
                 )
@@ -596,7 +597,7 @@ pub(crate) fn render_side_row(
             let mut row = div()
                 .id(ElementId::NamedInteger("side-session".into(), *ix as u64))
                 .w_full()
-                .py(px(1.))
+                .py(DynamicSpacing::Base01.px(&theme))
                 .cursor_pointer()
                 // Right-click anywhere on the row opens its actions menu at
                 // the pointer, context-menu style (context menus are the
@@ -636,12 +637,12 @@ pub(crate) fn render_side_row(
                 .group("srow")
                 .w_full()
                 .pl(px(22.))
-                .pr(px(8.))
-                .py(theme.space(5.))
-                .rounded_md()
+                .pr(DynamicSpacing::Base08.px(&theme))
+                .py(DynamicSpacing::Base04.px(&theme))
+                .rounded(list_item::RADIUS.px(&theme))
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .gap(DynamicSpacing::Base06.px(&theme))
                 .when(active, |card| card.bg(theme.active))
                 .when(cursor && !active, |card| card.bg(theme.overlay))
                 .when(!active && !cursor, |card| card.hover(|s| s.bg(theme.bg_hover)));
@@ -659,7 +660,7 @@ pub(crate) fn render_side_row(
                     .flex()
                     .flex_col()
                     .justify_center()
-                    .gap(px(2.))
+                    .gap(DynamicSpacing::Base02.px(&theme))
                     // Line 1 — title with the row actions pinned to its
                     // right: a small running spinner leads, the hover-revealed
                     // `…` menu trails. Wrapped in a flex row so the
@@ -671,7 +672,7 @@ pub(crate) fn render_side_row(
                             .w_full()
                             .flex()
                             .items_center()
-                            .gap(px(6.))
+                            .gap(DynamicSpacing::Base06.px(&theme))
                             .when(running, |line| {
                                 line.child(crate::app::spinner(
                                     ElementId::NamedInteger("side-spin".into(), *ix as u64),
@@ -701,7 +702,7 @@ pub(crate) fn render_side_row(
                                 line.child(
                                     div()
                                         .flex_none()
-                                        .text_size(theme.ui_px(10.5))
+                                        .text_size(TextSize::XSmall.px(&theme))
                                         .text_color(theme.text_3)
                                         .child(age.clone()),
                                 )
@@ -716,21 +717,21 @@ pub(crate) fn render_side_row(
                                 .w_full()
                                 .flex()
                                 .items_center()
-                                .gap(px(6.))
+                                .gap(DynamicSpacing::Base06.px(&theme))
                                 .child(
                                     div()
                                         .flex_1()
                                         .min_w_0()
                                         .truncate()
-                                        .text_size(theme.ui_px(11.))
-                                        .line_height(px(14.))
+                                        .text_size(TextSize::Small.px(&theme))
+                                        .line_height(BufferLineHeight::Standard.relative())
                                         .text_color(theme.text_3)
                                         .child(session.first_message.clone()),
                                 )
                                 .child(
                                     div()
                                         .flex_none()
-                                        .text_size(theme.ui_px(10.5))
+                                        .text_size(TextSize::XSmall.px(&theme))
                                         .text_color(theme.text_3)
                                         .child(age),
                                 ),
@@ -826,8 +827,8 @@ fn session_title(
     } else {
         FontWeight::NORMAL
     };
-    let size = theme.ui_px(13.);
-    let line_height = px(18.);
+    let size = TextSize::Default.px(&theme);
+    let line_height = BufferLineHeight::Standard.relative();
     if !running {
         return div()
             .flex_1()
@@ -1224,9 +1225,9 @@ pub(crate) fn empty_sessions_state(theme: Theme) -> impl IntoElement + use<> {
         .flex_col()
         .items_center()
         .justify_center()
-        .gap(px(6.))
-        .px(px(20.))
-        .pb(px(40.))
+        .gap(DynamicSpacing::Base06.px(&theme))
+        .px(DynamicSpacing::Base20.px(&theme))
+        .pb(DynamicSpacing::Base40.px(&theme))
         .child(
             div()
                 .size(px(36.))
@@ -1239,14 +1240,14 @@ pub(crate) fn empty_sessions_state(theme: Theme) -> impl IntoElement + use<> {
         )
         .child(
             div()
-                .text_size(theme.ui_px(12.5))
+                .text_size(TextSize::Default.px(&theme))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text_2)
                 .child(tr!("sidebar.no_projects_yet")),
         )
         .child(
             div()
-                .text_size(theme.ui_px(11.5))
+                .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.text_3)
                 .text_align(TextAlign::Center)
                 .child(tr!("sidebar.pick_a_folder_to_start_your_first_task")),

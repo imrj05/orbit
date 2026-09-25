@@ -866,7 +866,7 @@ impl Render for CommandPalette {
             .inset_0()
             .occlude()
             .bg(scrim)
-            .px(px(24.))
+            .px(DynamicSpacing::Base24.px(&theme))
             .pt(px(top))
             .flex()
             .items_start()

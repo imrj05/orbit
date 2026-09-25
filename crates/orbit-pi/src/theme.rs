@@ -399,7 +399,6 @@ pub struct Theme {
     pub crit: Hsla,
     pub trough: Hsla,
     pub shadow_contact: Hsla,
-    pub shadow_ambient: Hsla,
 }
 
 impl Global for Theme {}
@@ -2686,12 +2685,6 @@ impl Theme {
         px(value * (self.ui.terminal_font_size / 13.))
     }
 
-    /// Scale a spacing value by the Spacing Density setting
-    /// (`spacing_density / 100`).
-    pub fn space(&self, value: f32) -> Pixels {
-        px(value * (self.ui.spacing_density as f32 / 100.))
-    }
-
     /// Paint color for one syntax token, shared by transcript code blocks
     /// and the review diff so both read as the same editor. Each palette
     /// carries its own `syn_*` colors (so a ported editor theme keeps its
@@ -2741,9 +2734,9 @@ impl Theme {
     fn build(mode: ThemeMode, ui: UiPrefs, id: ThemeId, p: Palette) -> Self {
         let text = hex(p.text);
         let accent = hex(p.accent);
-        let (wash, wash_strong, border_strong, contact, ambient) = match mode {
-            ThemeMode::Dark => (0.05, 0.09, 0.14, 0.32, 0.40),
-            ThemeMode::Light => (0.06, 0.10, 0.16, 0.10, 0.14),
+        let (wash, wash_strong, border_strong, contact) = match mode {
+            ThemeMode::Dark => (0.05, 0.09, 0.14, 0.32),
+            ThemeMode::Light => (0.06, 0.10, 0.16, 0.10),
         };
         Self {
             theme_id: id,
@@ -2797,29 +2790,7 @@ impl Theme {
             crit: hex(p.crit),
             trough: hex(p.trough),
             shadow_contact: hsla(0., 0., 0., contact),
-            shadow_ambient: hsla(0., 0., 0., ambient),
         }
-    }
-
-    /// Orbit's layered drop shadow (tight contact + wide ambient) for the
-    /// floating surfaces not yet on [`tokens`]. Deliberately heavier than
-    /// Zed's elevation shadows; `tokens::ElevationIndex::shadow` is the Zed
-    /// stack.
-    pub fn popover_shadow(self) -> Vec<BoxShadow> {
-        vec![
-            BoxShadow {
-                color: self.shadow_contact,
-                offset: point(px(0.), px(4.)),
-                blur_radius: px(12.),
-                spread_radius: px(-2.),
-            },
-            BoxShadow {
-                color: self.shadow_ambient,
-                offset: point(px(0.), px(12.)),
-                blur_radius: px(32.),
-                spread_radius: px(-8.),
-            },
-        ]
     }
 
     /// Soft lift for the floating composer: one tight contact layer. The
@@ -2861,24 +2832,6 @@ impl Theme {
             ThemeMode::Dark => hsla(0., 0., 0., 0.72),
             ThemeMode::Light => hsla(0., 0., 0., 0.6),
         }
-    }
-
-    /// Compact hover-card shadow (slightly tighter than the picker).
-    pub fn card_shadow(self) -> Vec<BoxShadow> {
-        vec![
-            BoxShadow {
-                color: self.shadow_contact,
-                offset: point(px(0.), px(4.)),
-                blur_radius: px(12.),
-                spread_radius: px(-2.),
-            },
-            BoxShadow {
-                color: self.shadow_ambient,
-                offset: point(px(0.), px(8.)),
-                blur_radius: px(24.),
-                spread_radius: px(-6.),
-            },
-        ]
     }
 }
 
@@ -3299,7 +3252,6 @@ mod tests {
         assert_eq!(theme.ui_px(14.), px(14.));
         assert_eq!(theme.code_px(13.), px(13.));
         assert_eq!(theme.term_px(13.), px(13.));
-        assert_eq!(theme.space(12.), px(12.));
         theme.ui.ui_font_size = 18.;
         theme.ui.editor_font_size = 11.;
         theme.ui.terminal_font_size = 15.;
@@ -3307,7 +3259,6 @@ mod tests {
         assert_eq!(theme.ui_px(14.), px(18.));
         assert!(close(theme.code_px(13.), px(11.)));
         assert!(close(theme.term_px(13.), px(15.)));
-        assert_eq!(theme.space(10.), px(7.5));
         // A palette switch carries UI customization over.
         let light = Theme::for_id(ThemeId::OrbitLight).with_ui(theme.ui);
         assert_eq!(light.theme_id, ThemeId::OrbitLight);

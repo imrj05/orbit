@@ -15,7 +15,7 @@ use gpui::{
 use orbit_rpc::{ContextUsage, SessionUsage};
 
 use crate::app::{button_frame, icon_button_frame};
-use crate::theme::tokens::{ButtonSize, IconSize, StyledExt};
+use crate::theme::tokens::{Radius, TextSize, ButtonSize, IconSize, StyledExt};
 use crate::theme::Theme;
 
 const RING: f32 = 16.;
@@ -281,21 +281,21 @@ pub fn compact_card(
         .gap(px(2.))
         .child(
             div()
-                .text_size(theme.ui_px(13.))
+                .text_size(TextSize::Default.px(&theme))
                 .text_color(theme.text)
                 .whitespace_nowrap()
                 .child(title),
         )
         .child(
             div()
-                .text_size(theme.ui_px(12.))
+                .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.text_3)
                 .whitespace_nowrap()
                 .child(subtitle),
         )
         .children(cost.map(|cost| {
             div()
-                .text_size(theme.ui_px(12.))
+                .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.text_3)
                 .whitespace_nowrap()
                 .child(tr!("context_meter.spent", cost = cost))
@@ -361,7 +361,7 @@ pub fn details_card(
                 .child(
                     div()
                         .flex_1()
-                        .text_size(theme.ui_px(13.))
+                        .text_size(TextSize::Default.px(&theme))
                         .text_color(theme.text_2)
                         .child(tr!("context_meter.context_usage")),
                 )
@@ -372,7 +372,7 @@ pub fn details_card(
                         .on_click(on_close)
                         .child(
                             div()
-                                .text_size(theme.ui_px(14.))
+                                .text_size(TextSize::Default.px(&theme))
                                 .text_color(theme.text_3)
                                 .child("×"),
                         ),
@@ -385,7 +385,7 @@ pub fn details_card(
                 .child(
                     div()
                         .flex_1()
-                        .text_size(theme.ui_px(13.))
+                        .text_size(TextSize::Default.px(&theme))
                         .text_color(theme.text)
                         .child(
                             percent
@@ -395,7 +395,7 @@ pub fn details_card(
                 )
                 .children(totals.map(|label| {
                     div()
-                        .text_size(theme.ui_px(12.))
+                        .text_size(TextSize::Small.px(&theme))
                         .text_color(theme.text_3)
                         .child(label)
                 })),
@@ -457,7 +457,7 @@ fn segmented_bar(slices: &[ContextSlice], window: u64, theme: Theme) -> impl Int
 fn legend(slices: &[ContextSlice], theme: Theme) -> impl IntoElement + use<> {
     if slices.is_empty() {
         return div()
-            .text_size(theme.ui_px(12.))
+            .text_size(TextSize::Small.px(&theme))
             .text_color(theme.text_3)
             .child(tr!("context_meter.no_usage_reported_for_this_session_yet"))
             .into_any_element();
@@ -471,17 +471,17 @@ fn legend(slices: &[ContextSlice], theme: Theme) -> impl IntoElement + use<> {
                 .flex()
                 .items_center()
                 .gap(px(8.))
-                .child(div().size(px(8.)).rounded(px(2.)).bg(slice.color))
+                .child(div().size(px(8.)).rounded(Radius::XSmall.px(&theme)).bg(slice.color))
                 .child(
                     div()
                         .flex_1()
-                        .text_size(theme.ui_px(12.5))
+                        .text_size(TextSize::Small.px(&theme))
                         .text_color(theme.text_2)
                         .child(slice.label.clone()),
                 )
                 .child(
                     div()
-                        .text_size(theme.ui_px(12.5))
+                        .text_size(TextSize::Small.px(&theme))
                         .text_color(theme.text)
                         .child(format_tokens(slice.tokens)),
                 )
@@ -503,7 +503,7 @@ pub fn session_usage_section(usage: &SessionUsage, theme: Theme) -> AnyElement {
         .child(div().w_full().h(px(1.)).bg(theme.border))
         .child(
             div()
-                .text_size(theme.ui_px(12.))
+                .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.text_3)
                 .child(tr!("context_meter.session_usage")),
         )
@@ -580,14 +580,14 @@ fn session_row(
             div()
                 .flex_1()
                 .min_w(px(0.))
-                .text_size(theme.ui_px(12.))
+                .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.text_3)
                 .whitespace_nowrap()
                 .child(label),
         )
         .child(
             div()
-                .text_size(theme.ui_px(12.))
+                .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.text)
                 .whitespace_nowrap()
                 .child(value),
@@ -715,7 +715,7 @@ pub fn context_control<V: 'static>(
         })
         .children(percent.map(|label| {
             div()
-                .text_size(theme.ui_px(12.))
+                .text_size(TextSize::Small.px(&theme))
                 .text_color(fill)
                 .whitespace_nowrap()
                 .child(label)

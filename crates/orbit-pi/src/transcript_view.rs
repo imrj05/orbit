@@ -48,7 +48,9 @@ use crate::context_meter::{format_tokens, hit_percent_label};
 use crate::highlight::{self, Token};
 use crate::message_scroller::{self, MessageScrollerState};
 use crate::shimmer::ShimmerText;
-use crate::theme::tokens::{popover, ButtonSize, DynamicSpacing, IconSize, StyledExt};
+use crate::theme::tokens::{
+    popover, BufferLineHeight, ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize,
+};
 use crate::theme::{self, Theme, ThemeMode};
 use crate::transcript::{ChatMessage, Step, ToolCall, ToolFacts};
 
@@ -66,8 +68,6 @@ pub(crate) type ImageOpener = Rc<dyn Fn(Arc<Image>, &mut Window, &mut App)>;
 /// break out to the transcript pane's width; their scroll viewport must not
 /// inherit this cap.
 const CONTENT_MAX_WIDTH: f32 = 960.0;
-/// Extra space before a follow-up user message.
-const FOLLOWUP_TURN_TOP_GAP: f32 = 32.0;
 /// User-bubble max width.
 const USER_BUBBLE_MAX_WIDTH: f32 = 540.0;
 /// Message-footer action button size; the footer row, its timestamp, and
@@ -87,7 +87,6 @@ const NAVIGATION_RAIL_EMPHASIS_SCALE: [f32; 4] = [1.0, 0.68, 0.44, 0.25];
 const NAVIGATION_RAIL_MAX_HEIGHT: f32 = 0.8;
 const NAVIGATION_RAIL_MIN_MAIN_WIDTH: f32 = 1040.0;
 const CHANGED_FILES_PREVIEW_LIMIT: usize = 3;
-const CONTENT_GAP: f32 = 10.0;
 const NAVIGATION_RAIL_CONTENT_GAP: f32 = 12.0;
 const NAVIGATION_RAIL_PREVIEW_WIDTH: f32 = 320.0;
 const NAVIGATION_RAIL_PREVIEW_MAX_HEIGHT: f32 = 126.0;
@@ -1499,7 +1498,7 @@ fn render_rail_preview(
         .gap(px(7.))
         .child(
             div()
-                .text_size(theme.ui_px(10.5))
+                .text_size(TextSize::XSmall.px(&theme))
                 .line_height(theme.ui_px(14.))
                 .text_color(theme.text_3)
                 .child(tr!(
@@ -1512,7 +1511,7 @@ fn render_rail_preview(
             div()
                 .w_full()
                 .truncate()
-                .text_size(theme.ui_px(14.))
+                .text_size(TextSize::Default.px(&theme))
                 .line_height(theme.ui_px(20.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.text)
@@ -1525,7 +1524,7 @@ fn render_rail_preview(
                     .max_h(px(60.))
                     .overflow_hidden()
                     .whitespace_normal()
-                    .text_size(theme.ui_px(13.))
+                    .text_size(TextSize::Default.px(&theme))
                     .line_height(theme.ui_px(20.))
                     .text_color(theme.text_3)
                     .child(response.to_string()),
@@ -1556,7 +1555,7 @@ fn render_rail_hint(
         .cursor_pointer()
         .child(
             div()
-                .text_size(theme.ui_px(12.5))
+                .text_size(TextSize::Small.px(&theme))
                 .line_height(theme.ui_px(16.))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text)
@@ -1564,7 +1563,7 @@ fn render_rail_hint(
         )
         .child(
             div()
-                .text_size(theme.ui_px(11.5))
+                .text_size(TextSize::Small.px(&theme))
                 .line_height(theme.ui_px(16.))
                 .text_color(theme.text_3)
                 .child(tr!(
@@ -1620,11 +1619,11 @@ fn render_row(paint: RowPaint) -> AnyElement {
         .w_full()
         .flex()
         .justify_center()
-        .px(px(20.))
-        .py(px(8.))
-        .when(first, |row| row.pt(px(22.)))
-        .when(followup, |row| row.pt(px(FOLLOWUP_TURN_TOP_GAP)))
-        .when(last, |row| row.pb(px(22.)))
+        .px(DynamicSpacing::Base20.px(&paint.theme))
+        .py(DynamicSpacing::Base08.px(&paint.theme))
+        .when(first, |row| row.pt(DynamicSpacing::Base24.px(&paint.theme)))
+        .when(followup, |row| row.pt(DynamicSpacing::Base32.px(&paint.theme)))
+        .when(last, |row| row.pb(DynamicSpacing::Base24.px(&paint.theme)))
         // In-transcript find: matched rows get a quiet wash; the selected
         // hit is stronger. Painted on the full-width row so it reads as a
         // band, like a browser's find.
@@ -1660,7 +1659,7 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint) -> impl IntoEleme
         .flex()
         .flex_col()
         .items_end()
-        .gap(px(4.))
+        .gap(DynamicSpacing::Base04.px(&theme))
         // Attachment tiles (images queued with the prompt). Cover-cropped
         // squares; wrap when a message carries several.
         .when(!message.images.is_empty(), |column| {
@@ -1670,7 +1669,7 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint) -> impl IntoEleme
                     .flex()
                     .flex_wrap()
                     .justify_end()
-                    .gap(px(6.))
+                    .gap(DynamicSpacing::Base06.px(&theme))
                     .children(message.images.iter().enumerate().map(|(image_ix, image)| {
                         let image = image.clone();
                         let opener = paint.image_opener.clone();
@@ -1680,7 +1679,7 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint) -> impl IntoEleme
                                 (ix as u64) << 20 | image_ix as u64,
                             ))
                             .size(px(112.))
-                            .rounded(px(10.))
+                            .rounded(Radius::Large.px(&theme))
                             .border_1()
                             .border_color(theme.border)
                             .overflow_hidden()
@@ -1706,12 +1705,12 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint) -> impl IntoEleme
             column.child(
                 div()
                     .max_w(px(USER_BUBBLE_MAX_WIDTH))
-                    .rounded(px(12.))
+                    .rounded(Radius::XLarge.px(&theme))
                     .bg(theme.bg_raised)
                     .text_color(theme.text)
-                    .px(px(12.))
-                    .py(px(8.))
-                    .text_size(theme.ui_px(14.))
+                    .px(DynamicSpacing::Base12.px(&theme))
+                    .py(DynamicSpacing::Base08.px(&theme))
+                    .text_size(TextSize::Default.px(&theme))
                     .whitespace_normal()
                     .child(render_prose(
                         &text,
@@ -1755,7 +1754,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
         .flex()
         .flex_col()
         .items_start()
-        .gap(theme.space(CONTENT_GAP));
+        .gap(DynamicSpacing::Base08.px(&theme));
 
     // The turn fold precedes the run's first work (collapsed turns
     // hide the pre-answer work behind a single "Worked for" divider).
@@ -1966,9 +1965,9 @@ fn render_assistant_error(error: &str, ix: usize, theme: Theme) -> AnyElement {
         .bg(theme.crit.opacity(0.1))
         .border_1()
         .border_color(theme.crit.opacity(0.45))
-        .rounded_lg()
-        .px(px(12.))
-        .py(px(9.))
+        .rounded(Radius::Large.px(&theme))
+        .px(DynamicSpacing::Base12.px(&theme))
+        .py(DynamicSpacing::Base08.px(&theme))
         .flex()
         .items_start()
         .gap_2p5()
@@ -1982,14 +1981,14 @@ fn render_assistant_error(error: &str, ix: usize, theme: Theme) -> AnyElement {
                 .gap_0p5()
                 .child(
                     div()
-                        .text_size(theme.ui_px(12.5))
+                        .text_size(TextSize::Small.px(&theme))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.text)
                         .child(tr!("transcript_view.agent_error")),
                 )
                 .child(
                     div()
-                        .text_size(theme.ui_px(12.5))
+                        .text_size(TextSize::Small.px(&theme))
                         .text_color(theme.text_2)
                         .whitespace_normal()
                         .child({
@@ -2418,7 +2417,7 @@ fn render_thinking_body(
                 .items_center()
                 .gap(px(8.))
                 .cursor_pointer()
-                .text_size(theme.ui_px(13.))
+                .text_size(TextSize::Default.px(&theme))
                 .line_height(theme.ui_px(17.))
                 .hover(|style| style.text_color(theme.text))
                 .child(thought_icon)
@@ -2644,7 +2643,7 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
         .w_full()
         .min_w_0()
         .overflow_hidden()
-        .rounded(px(9.))
+        .rounded(Radius::Large.px(&theme))
         .border_1()
         .border_color(theme.border_strong)
         .bg(theme.overlay)
@@ -2653,13 +2652,13 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
 
     // ── header ──
     let mut header = div()
-        .h(px(32.))
-        .px(px(10.))
+        .h(DynamicSpacing::Base32.px(&theme))
+        .px(DynamicSpacing::Base08.px(&theme))
         .flex()
         .items_center()
-        .gap(px(8.))
-        .text_size(theme.ui_px(13.))
-        .line_height(theme.ui_px(17.))
+        .gap(DynamicSpacing::Base08.px(&theme))
+        .text_size(TextSize::Default.px(&theme))
+        .line_height(BufferLineHeight::Standard.relative())
         .child(glyph("icons/task.svg", IconSize::Small.px(&theme), theme.text_3))
         .child(
             div()
@@ -2672,7 +2671,7 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
         header = header.child(
             div()
                 .flex_none()
-                .text_size(theme.ui_px(11.))
+                .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.text_3)
                 .child(tr!("transcript.asked", count = questions.len())),
         );
@@ -2683,7 +2682,7 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
                 .flex_1()
                 .flex()
                 .justify_end()
-                .text_size(theme.ui_px(11.))
+                .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.text_3)
                 .child(tr!("transcript_view.no_answer")),
         );
@@ -2707,9 +2706,9 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
                     .flex_none()
                     .px(px(6.))
                     .py(px(1.))
-                    .rounded(px(4.))
+                    .rounded(Radius::Small.px(&theme))
                     .bg(theme.overlay_strong)
-                    .text_size(theme.ui_px(10.5))
+                    .text_size(TextSize::XSmall.px(&theme))
                     .line_height(theme.ui_px(14.))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_3)
@@ -2721,7 +2720,7 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
                 .min_w_0()
                 .flex_1()
                 .whitespace_normal()
-                .text_size(theme.ui_px(13.))
+                .text_size(TextSize::Default.px(&theme))
                 .line_height(theme.ui_px(18.))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text)
@@ -2747,13 +2746,13 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
                 .gap(px(8.))
                 .px(px(8.))
                 .py(px(4.))
-                .rounded(px(6.))
+                .rounded(Radius::Medium.px(&theme))
                 .when(chosen, |row| row.bg(theme.accent.opacity(0.10)));
             // A plain number keeps the list readable at a glance.
             row = row.child(
                 div()
                     .flex_none()
-                    .text_size(theme.ui_px(12.))
+                    .text_size(TextSize::Small.px(&theme))
                     .line_height(theme.ui_px(17.))
                     .text_color(if chosen { theme.accent } else { theme.text_3 })
                     .child(format!("{}.", ix + 1)),
@@ -2763,7 +2762,7 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
                     .min_w_0()
                     .flex_1()
                     .whitespace_normal()
-                    .text_size(theme.ui_px(12.5))
+                    .text_size(TextSize::Small.px(&theme))
                     .line_height(theme.ui_px(17.))
                     .text_color(if chosen { theme.text } else { theme.text_2 })
                     .child(SharedString::from(option.label.clone())),
@@ -2783,12 +2782,12 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
                     .gap(px(8.))
                     .px(px(8.))
                     .py(px(4.))
-                    .rounded(px(6.))
+                    .rounded(Radius::Medium.px(&theme))
                     .bg(theme.accent.opacity(0.10))
                     .child(
                         div()
                             .flex_none()
-                            .text_size(theme.ui_px(12.))
+                            .text_size(TextSize::Small.px(&theme))
                             .line_height(theme.ui_px(17.))
                             .text_color(theme.accent)
                             .child("A."),
@@ -2798,7 +2797,7 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
                             .min_w_0()
                             .flex_1()
                             .whitespace_normal()
-                            .text_size(theme.ui_px(12.5))
+                            .text_size(TextSize::Small.px(&theme))
                             .line_height(theme.ui_px(17.))
                             .text_color(theme.text)
                             .child(SharedString::from(answer.to_string())),
@@ -2811,7 +2810,7 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
             block = block.child(
                 div()
                     .px(px(8.))
-                    .text_size(theme.ui_px(11.))
+                    .text_size(TextSize::Small.px(&theme))
                     .line_height(theme.ui_px(15.))
                     .text_color(theme.text_3)
                     .child(tr!("transcript_view.waiting_for_an_answer")),
@@ -2876,19 +2875,19 @@ fn render_activity_card(
         .w_full()
         .min_w_0()
         .overflow_hidden()
-        .rounded(px(9.))
+        .rounded(Radius::Large.px(&theme))
         .border_1()
         .border_color(theme.border_strong)
         .bg(theme.overlay)
         .child(
             div()
-                .h(px(32.))
-                .px(px(10.))
+                .h(DynamicSpacing::Base32.px(&theme))
+                .px(DynamicSpacing::Base08.px(&theme))
                 .flex()
                 .items_center()
-                .gap(px(8.))
-                .text_size(theme.ui_px(13.))
-                .line_height(theme.ui_px(17.))
+                .gap(DynamicSpacing::Base08.px(&theme))
+                .text_size(TextSize::Default.px(&theme))
+                .line_height(BufferLineHeight::Standard.relative())
                 .when(has_detail, |row| row.cursor_pointer())
                 .hover(|style| style.bg(theme.overlay_strong))
                 .child(activity_badge(icon, tone, theme))
@@ -3075,7 +3074,7 @@ fn truncation_chip(facts: &ToolFacts, theme: Theme) -> Option<AnyElement> {
             .flex()
             .items_center()
             .gap(px(3.))
-            .text_size(theme.ui_px(11.))
+            .text_size(TextSize::Small.px(&theme))
             .line_height(theme.ui_px(15.))
             .text_color(theme.warn)
             .child(glyph("icons/tools/truncated.svg", IconSize::XSmall.px(&theme), theme.warn))
@@ -3112,11 +3111,11 @@ fn render_tool_error_strip(tool: &ToolCall, theme: Theme) -> impl IntoElement {
         .border_t_1()
         .border_color(theme.border_strong)
         .bg(theme.del_red.opacity(0.07))
-        .px(px(8.))
-        .py(px(4.))
+        .px(DynamicSpacing::Base08.px(&theme))
+        .py(DynamicSpacing::Base04.px(&theme))
         .flex()
         .items_center()
-        .gap(px(6.))
+        .gap(DynamicSpacing::Base06.px(&theme))
         .flex_none()
         .child(glyph("icons/stop.svg", IconSize::XSmall.px(&theme), theme.del_red))
         .child(
@@ -3124,8 +3123,8 @@ fn render_tool_error_strip(tool: &ToolCall, theme: Theme) -> impl IntoElement {
                 .min_w_0()
                 .flex_1()
                 .truncate()
-                .text_size(theme.ui_px(11.))
-                .line_height(theme.ui_px(15.))
+                .text_size(TextSize::Small.px(&theme))
+                .line_height(BufferLineHeight::Standard.relative())
                 .text_color(theme.del_red)
                 .child(snippet),
         )
@@ -3290,7 +3289,7 @@ fn render_detail_section(
                 .child(
                     div()
                         .font_weight(FontWeight::MEDIUM)
-                        .text_size(theme.ui_px(11.5))
+                        .text_size(TextSize::Small.px(&theme))
                         .line_height(theme.ui_px(15.))
                         .text_color(theme.text_2)
                         .child(label.to_string()),
@@ -3904,11 +3903,11 @@ fn footer_time_stamp(text: String, theme: Theme) -> AnyElement {
     div()
         .flex_none()
         .h(FOOTER_BUTTON.height(&theme))
-        .px(px(4.))
+        .px(DynamicSpacing::Base04.px(&theme))
         .flex()
         .items_center()
-        .text_size(theme.ui_px(11.5))
-        .line_height(theme.ui_px(16.))
+        .text_size(TextSize::Small.px(&theme))
+        .line_height(BufferLineHeight::Standard.relative())
         .text_color(theme.text_3)
         .child(text)
         .into_any_element()
@@ -3954,7 +3953,7 @@ fn render_message_footer(
         .h(FOOTER_BUTTON.height(&theme))
         .flex()
         .items_center()
-        .gap(px(1.))
+        .gap(DynamicSpacing::Base01.px(&theme))
         .when(align_right, |row| row.justify_end());
     if align_right {
         // Right-aligned footer: timestamp first, then actions.
@@ -4007,12 +4006,12 @@ fn usage_metric(
     let mut metric = div()
         .id(ElementId::NamedInteger("usage-metric".into(), ix as u64))
         .relative()
-        .ml(px(6.))
+        .ml(DynamicSpacing::Base06.px(&theme))
         .h(FOOTER_BUTTON.height(&theme))
         .flex()
         .items_center()
-        .text_size(theme.ui_px(11.5))
-        .line_height(theme.ui_px(16.))
+        .text_size(TextSize::Small.px(&theme))
+        .line_height(BufferLineHeight::Standard.relative())
         .text_color(theme.text_3)
         .child(label)
         .on_hover(move |is_hovered, _, cx| {
@@ -4045,14 +4044,14 @@ fn usage_breakdown_card(usage: &MessageUsage, theme: Theme) -> AnyElement {
     div()
         .w(px(224.))
         .elevation_2(&theme)
-        .px(px(12.))
-        .py(px(10.))
+        .px(DynamicSpacing::Base12.px(&theme))
+        .py(DynamicSpacing::Base08.px(&theme))
         .flex()
         .flex_col()
-        .gap(px(6.))
+        .gap(DynamicSpacing::Base06.px(&theme))
         .child(
             div()
-                .text_size(theme.ui_px(11.5))
+                .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.text_3)
                 .child(tr!("transcript_view.message_usage")),
         )
@@ -4107,20 +4106,20 @@ fn usage_metric_row(
         .w_full()
         .flex()
         .items_center()
-        .gap(px(7.))
+        .gap(DynamicSpacing::Base06.px(&theme))
         .child(glyph(icon_path, IconSize::Small.px(&theme), theme.text_3))
         .child(
             div()
                 .flex_1()
                 .min_w(px(0.))
-                .text_size(theme.ui_px(12.))
+                .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.text_3)
                 .whitespace_nowrap()
                 .child(label),
         )
         .child(
             div()
-                .text_size(theme.ui_px(12.))
+                .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.text)
                 .whitespace_nowrap()
                 .child(value),
@@ -4330,7 +4329,7 @@ fn render_stopped_marker(theme: Theme) -> impl IntoElement {
         .child(glyph("icons/stop.svg", IconSize::XSmall.px(&theme), theme.text_3))
         .child(
             div()
-                .text_size(theme.ui_px(13.5))
+                .text_size(TextSize::Default.px(&theme))
                 .line_height(theme.ui_px(18.))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text_3)
@@ -5500,7 +5499,7 @@ fn render_markdown_image(
             // keeping its intrinsic height and leaving a tall empty band (gpui
             // seeds `size.height` with the intrinsic value otherwise).
             .h(px(0.))
-            .rounded(px(8.))
+            .rounded(Radius::Large.px(&theme))
             .border_1()
             .border_color(theme.border)
             .object_fit(ObjectFit::Contain)
@@ -5519,13 +5518,13 @@ fn markdown_image_fallback(alt: &str, theme: Theme) -> AnyElement {
         alt.to_string()
     };
     div()
-        .px(theme.space(10.))
-        .py(theme.space(8.))
-        .rounded(px(8.))
+        .px(DynamicSpacing::Base08.px(&theme))
+        .py(DynamicSpacing::Base08.px(&theme))
+        .rounded(Radius::Large.px(&theme))
         .border_1()
         .border_color(theme.border)
         .bg(theme.overlay)
-        .text_size(theme.ui_px(12.))
+        .text_size(TextSize::Small.px(&theme))
         .text_color(theme.text_3)
         .child(label)
         .into_any_element()
@@ -5561,7 +5560,7 @@ fn render_alert(
                 .child(glyph(kind.icon(), IconSize::Small.px(&theme), color))
                 .child(
                     div()
-                        .text_size(theme.ui_px(12.))
+                        .text_size(TextSize::Small.px(&theme))
                         .line_height(theme.ui_px(16.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(color)
@@ -5600,7 +5599,7 @@ fn render_list_item(
                 "•".to_string()
             };
             div()
-                .text_size(theme.ui_px(14.))
+                .text_size(TextSize::Default.px(&theme))
                 .line_height(theme.ui_px(26.))
                 .text_color(if item.ordered {
                     theme.text
@@ -5652,7 +5651,7 @@ fn task_checkbox(checked: bool, theme: Theme) -> AnyElement {
     let mut box_ = div()
         .flex_none()
         .size(px(size))
-        .rounded(px(4.))
+        .rounded(Radius::Small.px(&theme))
         .flex()
         .items_center()
         .justify_center();
@@ -5750,7 +5749,7 @@ fn render_code_block(
                 .min_w_0()
                 .flex_1()
                 .truncate()
-                .text_size(theme.ui_px(11.5))
+                .text_size(TextSize::Small.px(&theme))
                 .line_height(theme.ui_px(15.))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text_3)
@@ -5771,7 +5770,7 @@ fn render_code_block(
     let mut card = div()
         .w_full()
         .min_w_0()
-        .rounded(px(12.))
+        .rounded(Radius::XLarge.px(&theme))
         .border_1()
         .border_color(theme.border)
         .bg(theme.code_bg)
@@ -5840,7 +5839,7 @@ fn render_code_block(
                 .items_center()
                 .gap(px(6.))
                 .cursor_pointer()
-                .text_size(theme.ui_px(11.5))
+                .text_size(TextSize::Small.px(&theme))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text_2)
                 .hover(|style| style.bg(theme.overlay).text_color(theme.text))
@@ -6122,7 +6121,7 @@ fn render_table(
         .max_w_full()
         .min_w_0()
         .overflow_hidden()
-        .rounded(px(12.))
+        .rounded(Radius::XLarge.px(&theme))
         .border_1()
         .border_color(theme.border)
         .child(
@@ -6231,7 +6230,7 @@ pub(crate) fn render_changed_files(
                         .min_w_0()
                         .flex_1()
                         .truncate()
-                        .text_size(theme.ui_px(11.5))
+                        .text_size(TextSize::Small.px(&theme))
                         .line_height(theme.ui_px(16.))
                         .text_color(theme.text_2)
                         .child(label),
@@ -6239,14 +6238,14 @@ pub(crate) fn render_changed_files(
                 .child(
                     div()
                         .flex_none()
-                        .text_size(theme.ui_px(10.5))
+                        .text_size(TextSize::XSmall.px(&theme))
                         .text_color(theme.add_green)
                         .child(format!("+{added}")),
                 )
                 .child(
                     div()
                         .flex_none()
-                        .text_size(theme.ui_px(10.5))
+                        .text_size(TextSize::XSmall.px(&theme))
                         .text_color(theme.del_red)
                         .child(format!("-{removed}")),
                 ),
@@ -6287,7 +6286,7 @@ pub(crate) fn render_changed_files(
             div()
                 .size(px(28.))
                 .flex_none()
-                .rounded(px(8.))
+                .rounded(Radius::Large.px(&theme))
                 .bg(theme.bg_raised)
                 .border_1()
                 .border_color(theme.border)
@@ -6305,7 +6304,7 @@ pub(crate) fn render_changed_files(
                 .child(
                     div()
                         .truncate()
-                        .text_size(theme.ui_px(13.))
+                        .text_size(TextSize::Default.px(&theme))
                         .line_height(theme.ui_px(17.))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.text)
@@ -6316,7 +6315,7 @@ pub(crate) fn render_changed_files(
                         .mt(px(2.))
                         .flex()
                         .gap(px(6.))
-                        .text_size(theme.ui_px(11.))
+                        .text_size(TextSize::Small.px(&theme))
                         .line_height(theme.ui_px(14.))
                         .child(
                             div()
@@ -6337,7 +6336,7 @@ pub(crate) fn render_changed_files(
     let mut card = div()
         .w_full()
         .min_w_0()
-        .rounded(px(12.))
+        .rounded(Radius::XLarge.px(&theme))
         .border_1()
         .border_color(theme.border)
         .bg(theme.bg_main)
@@ -6368,7 +6367,7 @@ pub(crate) fn render_changed_files(
             .items_center()
             .gap(px(6.))
             .cursor_pointer()
-            .text_size(theme.ui_px(11.5))
+            .text_size(TextSize::Small.px(&theme))
             .font_weight(FontWeight::MEDIUM)
             .text_color(theme.text_2)
             .hover(|style| style.bg(theme.bg_hover).text_color(theme.text))
@@ -6380,7 +6379,7 @@ pub(crate) fn render_changed_files(
                     .flex_1()
                     .truncate()
                     .font_weight(FontWeight::NORMAL)
-                    .text_size(theme.ui_px(11.5))
+                    .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.text_3)
                     .child(tr!(
                         "transcript_view.showing_first_of",
@@ -6537,7 +6536,7 @@ fn activity_badge(icon: &'static str, tone: Hsla, theme: Theme) -> impl IntoElem
     div()
         .flex_none()
         .size(px(22.))
-        .rounded(px(6.))
+        .rounded(Radius::Medium.px(&theme))
         .bg(tone.opacity(wash))
         .flex()
         .items_center()
@@ -8330,9 +8329,14 @@ mod tests {
                     |_, _| view.clone(),
                 );
                 let indicator = cx.debug_bounds("working-indicator").unwrap();
+                // The row's `pb` is `DynamicSpacing::Base24`; only that final
+                // padding belongs below the indicator, never per-row
+                // accumulation.
+                let row_bottom_pad =
+                    DynamicSpacing::Base24.px(&theme::Theme::for_id(theme::ThemeId::Orbit));
                 assert_eq!(
                     height - indicator.bottom(),
-                    px(22.),
+                    row_bottom_pad,
                     "only the final row padding belongs below the indicator: {count} tools at {width}px"
                 );
                 if count >= 6 {

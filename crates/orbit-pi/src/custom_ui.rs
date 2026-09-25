@@ -21,10 +21,10 @@ use gpui::{
 };
 use serde_json::Value;
 
-use crate::app::{icon, icon_button_frame, PopoverSurface};
+use crate::app::{icon, icon_button_frame};
 use crate::terminal::encode_key;
 use crate::theme;
-use crate::theme::tokens::{ButtonSize, IconSize};
+use crate::theme::tokens::{ButtonSize, IconSize, StyledExt, TextSize};
 use crate::widgets;
 
 /// Column budget the host offers the component: the card is exactly this many
@@ -319,7 +319,7 @@ impl Render for CustomUi {
         // ── header: the surface's origin, its title, and a close control ──
         let mut meta = div().flex().items_center().gap(px(8.)).child(
             div()
-                .text_size(theme.ui_px(11.))
+                .text_size(TextSize::Small.px(&theme))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text_3)
                 .child(SharedString::from("Extension UI")),
@@ -341,7 +341,7 @@ impl Render for CustomUi {
                     div()
                         .min_w_0()
                         .truncate()
-                        .text_size(theme.ui_px(13.))
+                        .text_size(TextSize::Small.px(&theme))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.text)
                         .child(SharedString::from(title.to_string())),
@@ -403,7 +403,7 @@ impl Render for CustomUi {
             .items_center()
             .border_t_1()
             .border_color(theme.border)
-            .text_size(theme.ui_px(11.))
+            .text_size(TextSize::Small.px(&theme))
             .text_color(theme.text_3)
             .child(SharedString::from("↑↓ Navigate · ⏎ Select · esc Back"));
 
@@ -411,8 +411,7 @@ impl Render for CustomUi {
             .id("custom-ui-card")
             .debug_selector(|| "custom-ui-card".to_string())
             .w(card_w)
-            .rounded(px(14.))
-            .popover_surface(theme)
+            .elevation_3(&theme)
             .flex()
             .flex_col()
             .overflow_hidden()

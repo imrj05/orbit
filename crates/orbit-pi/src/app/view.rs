@@ -5,7 +5,8 @@ use super::*;
 use gpui::StyledText;
 
 use crate::theme::tokens::{
-    button, context_menu, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
+    button, context_menu, picker, popover, AnimationDuration, ButtonSize, DynamicSpacing, IconSize,
+    Radius, TextSize,
 };
 use crate::usage::tooltip::Tooltip;
 use crate::widgets as ext_widgets;
@@ -95,7 +96,7 @@ fn feature_card(theme: Theme, body: AnyElement) -> AnyElement {
                 .flex()
                 .flex_col()
                 .overflow_hidden()
-                .rounded_lg()
+                .rounded(Radius::Large.px(&theme))
                 .border_1()
                 .border_color(theme.border)
                 .child(body),
@@ -624,7 +625,7 @@ impl Render for OrbitApp {
                                         div()
                                             .px(px(14.))
                                             .pb(px(2.))
-                                            .text_size(theme.ui_px(11.))
+                                            .text_size(TextSize::Small.px(&theme))
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(theme.text_3)
                                             .child(tr!("sidebar.projects")),
@@ -737,7 +738,7 @@ impl Render for OrbitApp {
                                             ))
                                             .child(
                                                 div()
-                                                    .text_size(theme.ui_px(11.))
+                                                    .text_size(TextSize::Small.px(&theme))
                                                     .text_color(theme.text_3)
                                                     .child(if self.client.is_some() {
                                                         tr!("status.connected")
@@ -834,7 +835,7 @@ impl Render for OrbitApp {
                                         .min_w_0()
                                         .overflow_hidden()
                                         .truncate()
-                                        .text_size(theme.ui_px(13.))
+                                        .text_size(TextSize::Default.px(&theme))
                                         .text_color(theme.text_2)
                                         .child(session_display_title(
                                             self.session_name.as_deref(),
@@ -969,18 +970,18 @@ impl Render for OrbitApp {
                                             } else {
                                                 theme.border
                                             })
-                                            .rounded_xl()
+                                            .rounded(Radius::XLarge.px(&theme))
                                             .shadow(theme.composer_shadow())
-                                            .px(theme.space(12.))
-                                            .pt(theme.space(8.))
-                                            .pb(theme.space(8.))
+                                            .px(DynamicSpacing::Base12.px(&theme))
+                                            .pt(DynamicSpacing::Base08.px(&theme))
+                                            .pb(DynamicSpacing::Base08.px(&theme))
                                             // Base interface font for the input
                                             // (scales with the UI font-size
                                             // setting); the editor inherits it.
-                                            .text_size(theme.ui_px(14.))
+                                            .text_size(TextSize::Default.px(&theme))
                                             .flex()
                                             .flex_col()
-                                            .gap(theme.space(8.))
+                                            .gap(DynamicSpacing::Base08.px(&theme))
                                             .on_mouse_up(
                                                 MouseButton::Left,
                                                 cx.listener(Self::on_composer_click),
@@ -997,7 +998,7 @@ impl Render for OrbitApp {
                                                 let overlay = div()
                                                     .absolute()
                                                     .inset_0()
-                                                    .rounded_xl()
+                                                    .rounded(Radius::XLarge.px(&theme))
                                                     .bg(theme.bg_composer.opacity(0.92))
                                                     .border_1()
                                                     .border_color(theme.accent)
@@ -1012,7 +1013,7 @@ impl Render for OrbitApp {
                                                     ))
                                                     .child(
                                                         div()
-                                                            .text_size(theme.ui_px(12.5))
+                                                            .text_size(TextSize::Small.px(&theme))
                                                             .font_weight(FontWeight::MEDIUM)
                                                             .text_color(theme.accent)
                                                             .child(tr!("composer.drop_to_attach")),
@@ -1334,13 +1335,13 @@ impl OrbitApp {
         }
         let theme = *theme::get(cx);
         let font = ext_widgets::widget_font();
-        let mut column = div().w_full().flex().flex_col().gap(theme.space(6.));
+        let mut column = div().w_full().flex().flex_col().gap(DynamicSpacing::Base06.px(&theme));
         for widget in items {
             let mut card = div()
                 .id(ElementId::Name(format!("ext-widget-{}", widget.key).into()))
                 .w_full()
-                .px(theme.space(12.))
-                .py(theme.space(8.))
+                .px(DynamicSpacing::Base12.px(&theme))
+                .py(DynamicSpacing::Base08.px(&theme))
                 .rounded(px(10.))
                 .border_1()
                 .border_color(theme.border)
@@ -1351,7 +1352,7 @@ impl OrbitApp {
                 .text_color(theme.code_text)
                 .flex()
                 .flex_col()
-                .gap(theme.space(2.));
+                .gap(DynamicSpacing::Base02.px(&theme));
             for line in &widget.lines {
                 let (text, runs) = ext_widgets::styled_line(line, &theme, &font);
                 card = card.child(StyledText::new(text).with_runs(runs));
@@ -1470,7 +1471,8 @@ impl OrbitApp {
             .text_color(fg)
             .with_animation(
                 animation_id,
-                Animation::new(Duration::from_millis(150)).with_easing(|d| 1.0 - (1.0 - d).powi(3)),
+                Animation::new(AnimationDuration::Fast.duration())
+                    .with_easing(|d| 1.0 - (1.0 - d).powi(3)),
                 |svg, d| {
                     svg.with_transformation(Transformation::rotate(radians(
                         std::f32::consts::PI * d,
@@ -2267,7 +2269,7 @@ impl OrbitApp {
                                     )
                                     .child(
                                         div()
-                                            .text_size(theme.ui_px(13.))
+                                            .text_size(TextSize::Default.px(&theme))
                                             .text_color(theme.text_3)
                                             .text_align(TextAlign::Center)
                                             .child(tr!("workspace.pick_workspace_hint")),
@@ -2285,7 +2287,7 @@ impl OrbitApp {
                                     .child(
                                         div()
                                             .px(px(2.))
-                                            .text_size(theme.ui_px(10.5))
+                                            .text_size(TextSize::XSmall.px(&theme))
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(theme.text_3)
                                             .child(tr!("view.mode")),
@@ -2364,7 +2366,7 @@ impl OrbitApp {
                                     .child(
                                         div()
                                             .px(px(2.))
-                                            .text_size(theme.ui_px(10.5))
+                                            .text_size(TextSize::XSmall.px(&theme))
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(theme.text_3)
                                             .child(tr!("view.workspace")),
@@ -2380,7 +2382,7 @@ impl OrbitApp {
                                                     .pl(px(8.))
                                                     .pr(px(10.))
                                                     .py(px(7.))
-                                                    .rounded(px(12.))
+                                                    .rounded(Radius::XLarge.px(&theme))
                                                     .border_1()
                                                     .border_color(if picker_open {
                                                         theme.accent.opacity(0.55)
@@ -2406,7 +2408,7 @@ impl OrbitApp {
                                                         div()
                                                             .size(px(28.))
                                                             .flex_none()
-                                                            .rounded(px(8.))
+                                                            .rounded(Radius::Large.px(&theme))
                                                             .bg(theme.overlay)
                                                             .flex()
                                                             .items_center()
@@ -2422,7 +2424,7 @@ impl OrbitApp {
                                                             .gap(px(1.))
                                                             .child(
                                                                 div()
-                                                                    .text_size(theme.ui_px(13.))
+                                                                    .text_size(TextSize::Default.px(&theme))
                                                                     .font_weight(FontWeight::MEDIUM)
                                                                     .text_color(theme.text)
                                                                     .truncate()
@@ -2430,7 +2432,7 @@ impl OrbitApp {
                                                             )
                                                             .child(
                                                                 div()
-                                                                    .text_size(theme.ui_px(11.))
+                                                                    .text_size(TextSize::Small.px(&theme))
                                                                     .text_color(theme.text_3)
                                                                     .truncate()
                                                                     .child(path_label),
@@ -2577,7 +2579,7 @@ impl OrbitApp {
                                     .child(
                                         div()
                                             .max_w(px(420.))
-                                            .text_size(theme.ui_px(13.))
+                                            .text_size(TextSize::Default.px(&theme))
                                             .text_color(theme.text_3)
                                             .text_align(TextAlign::Center)
                                             .child(if asked_for {
@@ -2604,7 +2606,7 @@ impl OrbitApp {
                                             .flex()
                                             .items_center()
                                             .gap(px(6.))
-                                            .text_size(theme.ui_px(12.))
+                                            .text_size(TextSize::Small.px(&theme))
                                             .text_color(theme.text_3)
                                             .child(
                                                 // Green once nothing is
@@ -2697,7 +2699,7 @@ impl OrbitApp {
             // A panel that hugs its rows: the setup page centres its column, so
             // a shrinkable child here would be clipped instead of grown.
             .flex_none()
-            .rounded_lg()
+            .rounded(Radius::Large.px(&theme))
             .border_1()
             .border_color(theme.border)
             .overflow_hidden()
@@ -2716,7 +2718,7 @@ impl OrbitApp {
                         div()
                             .w(px(88.))
                             .flex_none()
-                            .text_size(theme.ui_px(11.5))
+                            .text_size(TextSize::Small.px(&theme))
                             .text_color(theme.text_3)
                             .child(fact.label.clone()),
                     )
@@ -2725,14 +2727,14 @@ impl OrbitApp {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_size(theme.ui_px(11.5))
+                            .text_size(TextSize::Small.px(&theme))
                             .text_color(theme.text_2)
                             .child(fact.value.clone()),
                     )
                     .children(fact.note.clone().map(|note| {
                         div()
                             .flex_none()
-                            .text_size(theme.ui_px(11.5))
+                            .text_size(TextSize::Small.px(&theme))
                             .text_color(if fact.alert { theme.crit } else { theme.text_3 })
                             .child(note)
                     }))
@@ -2758,7 +2760,7 @@ impl OrbitApp {
             .w_full()
             .px(px(14.))
             .py(px(12.))
-            .rounded_lg()
+            .rounded(Radius::Large.px(&theme))
             .bg(theme.bg_raised)
             .border_1()
             .border_color(theme.border)
@@ -2780,14 +2782,14 @@ impl OrbitApp {
                             .gap(px(8.))
                             .child(
                                 div()
-                                    .text_size(theme.ui_px(13.))
+                                    .text_size(TextSize::Default.px(&theme))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(theme.text)
                                     .child(dep.name),
                             )
                             .child(
                                 div()
-                                    .text_size(theme.ui_px(11.))
+                                    .text_size(TextSize::Small.px(&theme))
                                     .text_color(theme.text_3)
                                     .child(if dep.required {
                                         tr!("setup.required")
@@ -2798,7 +2800,7 @@ impl OrbitApp {
                     )
                     .child(
                         div()
-                            .text_size(theme.ui_px(11.5))
+                            .text_size(TextSize::Small.px(&theme))
                             .text_color(theme.text_3)
                             .child(tr!(dep.detail_key)),
                     ),
@@ -2808,7 +2810,7 @@ impl OrbitApp {
                     .flex()
                     .items_center()
                     .gap(px(4.))
-                    .text_size(theme.ui_px(11.5))
+                    .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.ok_green)
                     .child(icon("icons/check.svg", IconSize::XSmall.px(&theme), theme.ok_green))
                     .child(
@@ -2827,11 +2829,11 @@ impl OrbitApp {
                         div()
                             .px(px(8.))
                             .py(px(4.))
-                            .rounded_md()
+                            .rounded(Radius::Medium.px(&theme))
                             .bg(theme.code_bg)
                             .border_1()
                             .border_color(theme.border)
-                            .text_size(theme.ui_px(11.))
+                            .text_size(TextSize::Small.px(&theme))
                             .text_color(theme.code_text)
                             .child(cmd),
                     )
@@ -2866,7 +2868,7 @@ impl OrbitApp {
             .flex()
             .items_center()
             .gap_4()
-            .text_size(theme.ui_px(11.5))
+            .text_size(TextSize::Small.px(&theme))
             .text_color(theme.text_3)
             .child(
                 button_frame(div().id("status-workspace"), &theme, ButtonSize::Default)
@@ -3180,7 +3182,7 @@ impl OrbitApp {
             .w_full()
             .h(px(28.))
             .px(px(10.))
-            .rounded_md()
+            .rounded(Radius::Medium.px(&theme))
             .flex()
             .items_center()
             .gap(px(8.))
@@ -3196,14 +3198,14 @@ impl OrbitApp {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_size(theme.ui_px(12.5))
+                    .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.text_3)
                     .child(tr!("view.search")),
             )
             .child(
                 div()
                     .flex_none()
-                    .text_size(theme.ui_px(11.))
+                    .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.text_3)
                     .child(crate::platform::shortcuts::PALETTE),
             )
@@ -3237,7 +3239,7 @@ impl OrbitApp {
             .w_full()
             .h(px(28.))
             .px(px(10.))
-            .rounded_md()
+            .rounded(Radius::Medium.px(&theme))
             .flex()
             .items_center()
             .gap(px(8.))
@@ -3259,7 +3261,7 @@ impl OrbitApp {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_size(theme.ui_px(12.5))
+                    .text_size(TextSize::Small.px(&theme))
                     .text_color(if active {
                         theme.active_fg
                     } else {
@@ -3321,7 +3323,7 @@ impl OrbitApp {
                     .mb(px(8.))
                     .px(px(10.))
                     .py(px(7.))
-                    .rounded_lg()
+                    .rounded(Radius::Large.px(&theme))
                     .border_1()
                     .border_color(theme.border)
                     .bg(theme.bg_raised)
@@ -3334,7 +3336,7 @@ impl OrbitApp {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_size(theme.ui_px(11.5))
+                            .text_size(TextSize::Small.px(&theme))
                             .text_color(theme.text_2)
                             .child(tr!(
                                 "runtime.retrying",
@@ -3365,7 +3367,7 @@ impl OrbitApp {
                     .mb(px(8.))
                     .px(px(10.))
                     .py(px(7.))
-                    .rounded_lg()
+                    .rounded(Radius::Large.px(&theme))
                     .border_1()
                     .border_color(theme.border)
                     .bg(theme.bg_raised)
@@ -3383,7 +3385,7 @@ impl OrbitApp {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .text_size(theme.ui_px(11.5))
+                            .text_size(TextSize::Small.px(&theme))
                             .text_color(theme.text_2)
                             .child(tr!("view.preparing_conversation_context")),
                     )
@@ -3416,7 +3418,7 @@ impl OrbitApp {
             .id("ask-panel")
             .w_full()
             .mb(px(8.))
-            .rounded(px(12.))
+            .rounded(Radius::XLarge.px(&theme))
             .border_1()
             .border_color(theme.accent.opacity(0.3))
             .bg(theme.bg_raised)
@@ -3457,7 +3459,7 @@ impl OrbitApp {
                     .py(px(2.))
                     .rounded(px(5.))
                     .bg(theme.overlay_strong)
-                    .text_size(theme.ui_px(10.5))
+                    .text_size(TextSize::XSmall.px(&theme))
                     .line_height(theme.ui_px(14.))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_2)
@@ -3469,7 +3471,7 @@ impl OrbitApp {
             header = header.child(
                 div()
                     .flex_none()
-                    .text_size(theme.ui_px(11.))
+                    .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.text_3)
                     .child(tr!("ask.question_of", current = cursor + 1, total = total)),
             );
@@ -3491,7 +3493,7 @@ impl OrbitApp {
                 .pt(px(8.))
                 .pb(px(10.))
                 .whitespace_normal()
-                .text_size(theme.ui_px(13.5))
+                .text_size(TextSize::Default.px(&theme))
                 .line_height(theme.ui_px(19.))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text)
@@ -3515,7 +3517,7 @@ impl OrbitApp {
             let marker = div()
                 .flex_none()
                 .w(px(16.))
-                .text_size(theme.ui_px(12.))
+                .text_size(TextSize::Small.px(&theme))
                 .line_height(theme.ui_px(17.))
                 .text_color(if chosen { theme.accent } else { theme.text_3 })
                 .child(format!("{}. ", ix + 1));
@@ -3523,7 +3525,7 @@ impl OrbitApp {
             copy = copy.child(
                 div()
                     .whitespace_normal()
-                    .text_size(theme.ui_px(12.5))
+                    .text_size(TextSize::Small.px(&theme))
                     .line_height(theme.ui_px(17.))
                     .text_color(if chosen { theme.text } else { theme.text_2 })
                     .child(SharedString::from(option.label.clone())),
@@ -3534,7 +3536,7 @@ impl OrbitApp {
                 copy = copy.child(
                     div()
                         .whitespace_normal()
-                        .text_size(theme.ui_px(11.5))
+                        .text_size(TextSize::Small.px(&theme))
                         .line_height(theme.ui_px(16.))
                         .text_color(theme.text_3)
                         .child(SharedString::from(option.description.clone())),
@@ -3546,7 +3548,7 @@ impl OrbitApp {
                 .min_w_0()
                 .px(px(10.))
                 .py(px(6.))
-                .rounded(px(8.))
+                .rounded(Radius::Large.px(&theme))
                 .border_1()
                 .border_color(if row_highlighted {
                     theme.border_strong
@@ -3579,7 +3581,7 @@ impl OrbitApp {
                 .min_w_0()
                 .px(px(10.))
                 .py(px(7.))
-                .rounded(px(8.))
+                .rounded(Radius::Large.px(&theme))
                 .border_1()
                 .border_color(if row_highlighted {
                     theme.border_strong
@@ -3595,7 +3597,7 @@ impl OrbitApp {
                 .child(icon("icons/compose.svg", IconSize::XSmall.px(&theme), theme.text_3))
                 .child(
                     div()
-                        .text_size(theme.ui_px(12.5))
+                        .text_size(TextSize::Small.px(&theme))
                         .line_height(theme.ui_px(17.))
                         .text_color(if row_highlighted {
                             theme.text
@@ -3652,7 +3654,7 @@ impl OrbitApp {
                                     ))
                                     .child(
                                         div()
-                                            .text_size(theme.ui_px(10.5))
+                                            .text_size(TextSize::XSmall.px(&theme))
                                             .line_height(theme.ui_px(14.))
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(theme.text_3)
@@ -3748,7 +3750,7 @@ impl OrbitApp {
                     div()
                         .flex_1()
                         .min_w_0()
-                        .text_size(theme.ui_px(11.))
+                        .text_size(TextSize::Small.px(&theme))
                         .text_color(theme.text_3)
                         .child(hint),
                 )
@@ -3827,7 +3829,7 @@ impl OrbitApp {
             .h(px(BAR_H))
             .mb(px(GAP))
             .px(px(12.))
-            .rounded(px(12.))
+            .rounded(Radius::XLarge.px(&theme))
             .border_1()
             .border_color(theme.accent.opacity(0.3))
             .bg(theme.bg_raised)
@@ -3845,7 +3847,7 @@ impl OrbitApp {
                 div()
                     .flex_none()
                     .size(px(28.))
-                    .rounded(px(8.))
+                    .rounded(Radius::Large.px(&theme))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -3860,7 +3862,7 @@ impl OrbitApp {
                     .flex_col()
                     .child(
                         div()
-                            .text_size(theme.ui_px(12.5))
+                            .text_size(TextSize::Small.px(&theme))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.text)
                             .child(heading),
@@ -3871,7 +3873,7 @@ impl OrbitApp {
                                 .mt(px(1.))
                                 .font_family(theme::code_font_family())
                                 .truncate()
-                                .text_size(theme.ui_px(11.))
+                                .text_size(TextSize::Small.px(&theme))
                                 .text_color(theme.text_3)
                                 .child(detail),
                         )
@@ -3916,7 +3918,7 @@ impl OrbitApp {
                 .mb(px(8.))
                 .px(px(10.))
                 .py(px(8.))
-                .rounded_lg()
+                .rounded(Radius::Large.px(&theme))
                 .border_1()
                 .border_color(theme.border)
                 .bg(theme.bg_raised)
@@ -3932,7 +3934,7 @@ impl OrbitApp {
                             div()
                                 .flex_1()
                                 .min_w_0()
-                                .text_size(theme.ui_px(11.))
+                                .text_size(TextSize::Small.px(&theme))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(theme.text_3)
                                 .child(if self.queue.follow_up.is_empty() {
@@ -3972,7 +3974,7 @@ impl OrbitApp {
                 .bg(theme.crit.opacity(0.1))
                 .border_1()
                 .border_color(theme.crit.opacity(0.45))
-                .rounded_lg()
+                .rounded(Radius::Large.px(&theme))
                 .px(px(12.))
                 .py(px(9.))
                 .flex()
@@ -3983,7 +3985,7 @@ impl OrbitApp {
                     div()
                         .flex_1()
                         .min_w_0()
-                        .text_size(theme.ui_px(12.))
+                        .text_size(TextSize::Small.px(&theme))
                         .text_color(theme.text)
                         .child(message.clone()),
                 )

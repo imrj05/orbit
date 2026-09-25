@@ -24,7 +24,7 @@ use gpui::{
 use super::aggregate::{ChartMetric, DailyCalendar};
 use super::format;
 use super::model::{local_datetime, stamp_label, Granularity};
-use crate::theme::tokens::{DynamicSpacing, StyledExt};
+use crate::theme::tokens::{Radius, TextSize, DynamicSpacing, StyledExt};
 use crate::theme::Theme;
 
 /// The smallest cell edge, in points.
@@ -231,7 +231,7 @@ fn month_strip(labels: &[Option<String>], geometry: &Geometry, theme: Theme) -> 
             div()
                 .w(px(geometry.w))
                 .flex_none()
-                .text_size(theme.ui_px(10.))
+                .text_size(TextSize::XSmall.px(&theme))
                 .text_color(theme.text_3)
                 .whitespace_nowrap()
                 .child(label.clone().unwrap_or_default()),
@@ -282,7 +282,7 @@ fn week_grid(
                 .flex()
                 .items_center()
                 .justify_end()
-                .text_size(theme.ui_px(10.))
+                .text_size(TextSize::XSmall.px(&theme))
                 .text_color(theme.text_3)
                 .child(text),
         );
@@ -368,7 +368,7 @@ fn day_cell(
         .w(w)
         .h(h)
         .flex_none()
-        .rounded(px(2.))
+        .rounded(Radius::XSmall.px(&theme))
         // Every in-range day is an outlined box, empty or not, so the calendar
         // reads as a grid even when a stretch has no activity; the ring
         // brightens for the hovered / selected day.
@@ -432,7 +432,7 @@ fn day_readout(
 
     let mut body = div().flex().flex_col().gap(px(2.)).child(
         div()
-            .text_size(theme.ui_px(11.5))
+            .text_size(TextSize::Small.px(&theme))
             .font_weight(FontWeight::MEDIUM)
             .text_color(theme.text)
             .child(stamp_label(day.start_ms, Granularity::Day)),
@@ -445,7 +445,7 @@ fn day_readout(
                 .justify_between()
                 .gap(px(12.))
                 .whitespace_nowrap()
-                .text_size(theme.ui_px(11.5))
+                .text_size(TextSize::Small.px(&theme))
                 .child(div().flex_none().text_color(theme.text_3).child(label))
                 .child(div().min_w_0().text_color(theme.text).child(value)),
         );
@@ -485,7 +485,7 @@ fn legend(theme: Theme) -> AnyElement {
         swatches = swatches.child(
             div()
                 .size(px(10.))
-                .rounded(px(2.))
+                .rounded(Radius::XSmall.px(&theme))
                 .border_1()
                 .border_color(theme.border)
                 .bg(level_color(shade, theme)),
@@ -498,7 +498,7 @@ fn legend(theme: Theme) -> AnyElement {
         .items_center()
         .justify_end()
         .gap(px(6.))
-        .text_size(theme.ui_px(10.))
+        .text_size(TextSize::XSmall.px(&theme))
         .text_color(theme.text_3)
         .child(tr!("heatmap.less"))
         .child(swatches)

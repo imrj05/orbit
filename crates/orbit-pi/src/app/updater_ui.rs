@@ -9,7 +9,9 @@
 
 use super::helpers::*;
 use super::*;
-use crate::theme::tokens::{button, ButtonSize, IconSize};
+use crate::theme::tokens::{
+    AnimationDuration, TextSize, button, modal, ButtonSize, DynamicSpacing, IconSize, StyledExt,
+};
 use crate::updater::{UpdateStatus, UpdaterEvent, UpdaterState};
 use crate::usage::tooltip::Tooltip;
 
@@ -377,7 +379,7 @@ impl OrbitApp {
             button
                 .with_animation(
                     ElementId::NamedInteger("sidebar-update-expand".into(), generation),
-                    Animation::new(Duration::from_millis(150))
+                    Animation::new(AnimationDuration::Fast.duration())
                         .with_easing(|d| 1.0 - (1.0 - d).powi(3)),
                     move |button, delta| {
                         let width = from_width + (target_width - from_width) * delta;
@@ -570,8 +572,7 @@ impl OrbitApp {
             .id("update-dialog-card")
             .w(card_width)
             .max_h(card_max_height)
-            .rounded(px(14.))
-            .popover_surface(theme)
+            .elevation_3(&theme)
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -581,11 +582,12 @@ impl OrbitApp {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 div()
-                    .px(px(18.))
-                    .pt(px(16.))
-                    .pb(px(10.))
+                    .px(modal::header_padding_x(&theme))
+                    .pt(modal::header_padding_top(&theme))
+                    .pb(modal::header_padding_bottom(&theme))
                     .flex_none()
-                    .text_size(theme.ui_px(14.5))
+                    .text_size(modal::HEADLINE.px(&theme))
+                    .line_height(modal::HEADLINE.line_height(&theme))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text)
                     .child(title),
@@ -602,7 +604,7 @@ impl OrbitApp {
                     .gap(px(10.))
                     .child(
                         div()
-                            .text_size(theme.ui_px(13.))
+                            .text_size(TextSize::Default.px(&theme))
                             .text_color(theme.text_2)
                             .child(tr!("updater_ui.searching_for_new_version")),
                     )
@@ -618,7 +620,7 @@ impl OrbitApp {
                 let notes: AnyElement = match notes.as_deref() {
                     Some(notes) if !notes.trim().is_empty() => release_notes_view(notes, theme),
                     _ => div()
-                        .text_size(theme.ui_px(12.5))
+                        .text_size(TextSize::Small.px(&theme))
                         .text_color(theme.text_3)
                         .child(tr!("updater_ui.no_release_notes"))
                         .into_any_element(),
@@ -632,7 +634,7 @@ impl OrbitApp {
                     .child(
                         div()
                             .whitespace_normal()
-                            .text_size(theme.ui_px(13.))
+                            .text_size(TextSize::Default.px(&theme))
                             .text_color(theme.text_2)
                             .child(intro),
                     );
@@ -640,7 +642,7 @@ impl OrbitApp {
                     column = column.child(
                         div()
                             .whitespace_normal()
-                            .text_size(theme.ui_px(12.5))
+                            .text_size(TextSize::Small.px(&theme))
                             .text_color(theme.text_3)
                             .child(tr!("updater_ui.check_only")),
                     );
@@ -650,7 +652,7 @@ impl OrbitApp {
                     column
                         .child(
                             div()
-                                .text_size(theme.ui_px(11.))
+                                .text_size(TextSize::Small.px(&theme))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(theme.text_3)
                                 .child(tr!("updater_ui.whats_new")),
@@ -671,7 +673,7 @@ impl OrbitApp {
                     .flex_1()
                     .min_w_0()
                     .whitespace_normal()
-                    .text_size(theme.ui_px(13.))
+                    .text_size(TextSize::Default.px(&theme))
                     .text_color(theme.text_2)
                     .child(tr!(
                         "updater_ui.up_to_date_detail",
@@ -685,7 +687,7 @@ impl OrbitApp {
                     .flex_1()
                     .min_w_0()
                     .whitespace_normal()
-                    .text_size(theme.ui_px(13.))
+                    .text_size(TextSize::Default.px(&theme))
                     .text_color(theme.text_2)
                     .child(error.clone())
                     .into_any_element(),
@@ -696,7 +698,7 @@ impl OrbitApp {
                     .flex_1()
                     .min_w_0()
                     .whitespace_normal()
-                    .text_size(theme.ui_px(13.))
+                    .text_size(TextSize::Default.px(&theme))
                     .text_color(theme.text_2)
                     .child(tr!("updater_ui.update_unavailable_detail"))
                     .into_any_element(),
@@ -722,12 +724,12 @@ impl OrbitApp {
             }
         };
         let mut footer = div()
-            .px(px(18.))
-            .py(px(14.))
+            .px(modal::footer_padding(&theme))
+            .py(modal::footer_padding(&theme))
             .flex_none()
             .flex()
             .justify_end()
-            .gap(px(8.));
+            .gap(modal::footer_gap(&theme));
         if !self.updater_history_open
             && !self.updater_history.is_empty()
             && matches!(
@@ -894,7 +896,7 @@ fn release_notes_view(notes: &str, theme: Theme) -> AnyElement {
         column = column.child(match block {
             NoteBlock::Heading(text) => div()
                 .pt(px(6.))
-                .text_size(theme.ui_px(11.))
+                .text_size(TextSize::Small.px(&theme))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.text_3)
                 .child(inline_notes_text(&text))
@@ -916,14 +918,14 @@ fn release_notes_view(notes: &str, theme: Theme) -> AnyElement {
                         .flex_1()
                         .min_w_0()
                         .whitespace_normal()
-                        .text_size(theme.ui_px(12.5))
+                        .text_size(TextSize::Small.px(&theme))
                         .text_color(theme.text_2)
                         .child(inline_notes_text(&text)),
                 )
                 .into_any_element(),
             NoteBlock::Paragraph(text) => div()
                 .whitespace_normal()
-                .text_size(theme.ui_px(12.5))
+                .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.text_2)
                 .child(inline_notes_text(&text))
                 .into_any_element(),
@@ -944,7 +946,7 @@ fn version_history_view(
     for release in history {
         let mut heading = div().flex().items_center().gap(px(8.)).child(
             div()
-                .text_size(theme.ui_px(13.))
+                .text_size(TextSize::Default.px(&theme))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.text)
                 .child(format!("v{}", release.version)),
@@ -956,7 +958,7 @@ fn version_history_view(
                     .py(px(1.))
                     .rounded_full()
                     .bg(theme.bg_hover)
-                    .text_size(theme.ui_px(10.5))
+                    .text_size(TextSize::XSmall.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_3)
                     .child(tr!("updater_ui.current")),
@@ -965,7 +967,7 @@ fn version_history_view(
         let notes: AnyElement = match release.notes.as_deref() {
             Some(notes) if !notes.trim().is_empty() => release_notes_view(notes, theme),
             _ => div()
-                .text_size(theme.ui_px(12.5))
+                .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.text_3)
                 .child(tr!("updater_ui.no_release_notes"))
                 .into_any_element(),
@@ -1072,14 +1074,14 @@ fn update_dialog_body(theme: Theme, content: AnyElement) -> AnyElement {
     div()
         .id("update-dialog-body")
         .debug_selector(|| "update-dialog-body".to_string())
-        .px(px(18.))
-        .pb(px(16.))
+        .px(modal::section_padding_x(&theme, false))
+        .pb(modal::section_padding_bottom(&theme))
         .flex()
         .flex_1()
         .min_h_0()
         .overflow_y_scroll()
         .items_start()
-        .gap(px(12.))
+        .gap(DynamicSpacing::Base12.px(&theme))
         .child(embedded_image(
             crate::app_icon::ASSET,
             f32::from(IconSize::XLarge.px(&theme)),
@@ -1205,7 +1207,7 @@ mod tests {
             "the probe stands in for the modal card"
         );
         assert!(
-            copy.right() <= card.right() - px(18.),
+            copy.right() <= card.right() - modal::section_padding_x(&Theme::dark(), false),
             "long copy must wrap inside the card padding: copy {copy:?}, card {card:?}"
         );
     }
@@ -1254,7 +1256,7 @@ mod tests {
                                     .child("Orbit Pi v0.0.11 is available.")
                                     .child(
                                         div()
-                                            .text_size(theme.ui_px(11.))
+                                            .text_size(TextSize::Small.px(&theme))
                                             .child("What's new"),
                                     )
                                     .child(

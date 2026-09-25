@@ -954,6 +954,11 @@ fn elevated<E: Styled>(el: E, theme: &Theme, index: ElevationIndex, bordered: bo
 // ── Motion (`ui/src/styles/animation.rs`) ───────────────────────────────
 
 /// Zed's `AnimationDuration`.
+///
+/// Only one-shot transitions use this scale. Orbit's looping affordances (the
+/// spinner, shimmer, streaming pulses) and its feedback timers (copy / refresh
+/// acknowledgment, gesture guards) run their own cadences, which Zed's
+/// three-value scale does not cover.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AnimationDuration {
     Instant = 50,

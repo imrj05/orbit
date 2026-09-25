@@ -33,7 +33,7 @@ use crate::app::{
 use crate::composer::ComposerInput;
 use crate::git;
 use crate::review::{self, ExpansionDirection, GapPosition, LineKind, Snapshot, Source};
-use crate::theme::tokens::{context_menu, popover, ButtonSize, IconSize, TextSize};
+use crate::theme::tokens::{Radius, context_menu, popover, ButtonSize, IconSize, TextSize};
 use crate::theme::{self, Theme, ThemeMode};
 
 /// Pane width defaults / drag clamps.
@@ -779,7 +779,7 @@ impl SidePane {
                     .min_w_0()
                     .overflow_hidden()
                     .whitespace_nowrap()
-                    .text_size(theme.ui_px(12.5))
+                    .text_size(TextSize::Small.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text)
                     .child(tr!("sidepane.review")),
@@ -890,7 +890,7 @@ impl SidePane {
             .when(truncated, |row| {
                 row.child(
                     div()
-                        .text_size(theme.ui_px(11.))
+                        .text_size(TextSize::Small.px(&theme))
                         .text_color(theme.warn)
                         .child(tr!("sidepane.partial")),
                 )
@@ -900,7 +900,7 @@ impl SidePane {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .text_size(theme.ui_px(12.))
+                    .text_size(TextSize::Small.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
                     .child(div().text_color(theme.add_green).child(format!("+{added}")))
                     .child(div().text_color(theme.del_red).child(format!("-{removed}")))
@@ -1118,7 +1118,7 @@ impl SidePane {
             .items_center()
             .overflow_hidden()
             .whitespace_nowrap()
-            .text_size(theme.ui_px(11.5))
+            .text_size(TextSize::Small.px(&theme))
             .text_color(theme.text_3)
             .bg(theme.overlay)
             .when(expandable, |label| {
@@ -1263,7 +1263,7 @@ impl SidePane {
                                 .flex_1()
                                 .overflow_hidden()
                                 .whitespace_nowrap()
-                                .text_size(theme.ui_px(12.5))
+                                .text_size(TextSize::Small.px(&theme))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(theme.text_2)
                                 .child(name),
@@ -1337,7 +1337,7 @@ impl SidePane {
                                     .flex_1()
                                     .overflow_hidden()
                                     .whitespace_nowrap()
-                                    .text_size(theme.ui_px(12.5))
+                                    .text_size(TextSize::Small.px(&theme))
                                     .text_color(if selected { theme.text } else { theme.text_2 })
                                     .child(name),
                             )
@@ -1346,13 +1346,13 @@ impl SidePane {
                                     .w(px(18.))
                                     .h(px(18.))
                                     .flex_none()
-                                    .rounded(px(4.))
+                                    .rounded(Radius::Small.px(&theme))
                                     .border_1()
                                     .border_color(status_color.opacity(0.65))
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .text_size(theme.ui_px(11.))
+                                    .text_size(TextSize::Small.px(&theme))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(status_color)
                                     .child(status),
@@ -1424,7 +1424,7 @@ impl SidePane {
                     .min_w_0()
                     .overflow_hidden()
                     .whitespace_nowrap()
-                    .text_size(theme.ui_px(12.))
+                    .text_size(TextSize::Small.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text)
                     .child(kind.label()),
@@ -1481,13 +1481,13 @@ impl SidePane {
             ReviewStatus::Running => {
                 body = body.child(
                     div()
-                        .text_size(theme.ui_px(11.5))
+                        .text_size(TextSize::Small.px(&theme))
                         .text_color(theme.text_3)
                         .child(tr!("ai_review.working")),
                 );
                 body = body.child(
                     div()
-                        .text_size(theme.ui_px(11.))
+                        .text_size(TextSize::Small.px(&theme))
                         .text_color(theme.text_3)
                         .child(kind.description()),
                 );
@@ -1495,7 +1495,7 @@ impl SidePane {
             ReviewStatus::Failed(error) => {
                 body = body.child(
                     div()
-                        .text_size(theme.ui_px(11.5))
+                        .text_size(TextSize::Small.px(&theme))
                         .text_color(theme.del_red)
                         .whitespace_normal()
                         .child(error.clone()),
@@ -1506,7 +1506,7 @@ impl SidePane {
                     if !report.summary.trim().is_empty() {
                         body = body.child(
                             div()
-                                .text_size(theme.ui_px(11.5))
+                                .text_size(TextSize::Small.px(&theme))
                                 .text_color(theme.text_2)
                                 .whitespace_normal()
                                 .child(report.summary.clone()),
@@ -1515,7 +1515,7 @@ impl SidePane {
                     if report.findings.is_empty() {
                         body = body.child(
                             div()
-                                .text_size(theme.ui_px(11.5))
+                                .text_size(TextSize::Small.px(&theme))
                                 .text_color(theme.text_3)
                                 .child(tr!("ai_review.no_findings")),
                         );
@@ -1696,7 +1696,7 @@ fn render_finding(
         .w_full()
         .px(px(6.))
         .py(px(5.))
-        .rounded(px(6.))
+        .rounded(Radius::Medium.px(&theme))
         .flex()
         .flex_col()
         .gap(px(2.))
@@ -1713,8 +1713,8 @@ fn render_finding(
                         .flex_none()
                         .mt(px(1.))
                         .px(px(5.))
-                        .rounded(px(4.))
-                        .text_size(theme.ui_px(10.))
+                        .rounded(Radius::Small.px(&theme))
+                        .text_size(TextSize::XSmall.px(&theme))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(tint)
                         .bg(tint.opacity(0.14))
@@ -1724,7 +1724,7 @@ fn render_finding(
                     div()
                         .min_w_0()
                         .flex_1()
-                        .text_size(theme.ui_px(12.))
+                        .text_size(TextSize::Small.px(&theme))
                         .text_color(theme.text)
                         .whitespace_normal()
                         .child(finding.title.clone()),
@@ -1734,7 +1734,7 @@ fn render_finding(
             row.child(
                 div()
                     .pl(px(2.))
-                    .text_size(theme.ui_px(10.5))
+                    .text_size(TextSize::XSmall.px(&theme))
                     .text_color(theme.text_3)
                     .child(location),
             )
@@ -1742,7 +1742,7 @@ fn render_finding(
         .when(!finding.detail.is_empty(), |row| {
             row.child(
                 div()
-                    .text_size(theme.ui_px(11.))
+                    .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.text_2)
                     .whitespace_normal()
                     .child(finding.detail.clone()),
@@ -1799,20 +1799,20 @@ fn render_file_header(
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .font_family(theme::code_font_family())
-                .text_size(theme.ui_px(12.))
+                .text_size(TextSize::Small.px(&theme))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text_2)
                 .child(file.path.clone()),
         )
         .child(
             div()
-                .text_size(theme.ui_px(12.))
+                .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.add_green)
                 .child(format!("+{}", file.additions)),
         )
         .child(
             div()
-                .text_size(theme.ui_px(12.))
+                .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.del_red)
                 .child(format!("-{}", file.deletions)),
         )
@@ -2082,7 +2082,7 @@ impl Render for SidePane {
                     .bg(theme.bg_main)
                     .border_1()
                     .border_color(theme.border)
-                    .rounded_lg()
+                    .rounded(Radius::Large.px(&theme))
                     .overflow_hidden()
                     .flex()
                     .flex_col()

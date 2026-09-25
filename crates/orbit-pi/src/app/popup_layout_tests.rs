@@ -334,3 +334,69 @@ impl Render for MaxHeightListTestView {
         .py(px(4.))
     }
 }
+
+// ── modal cards on Zed's tokens ──────────────────────────────────────────
+
+/// A modal card built like the app's dialogs: `elevation_3`, a header taking
+/// Zed's `ModalHeader` insets, and a footer taking `ModalFooter`'s.
+struct ModalCardProbe;
+
+impl Render for ModalCardProbe {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::theme::tokens::{modal, StyledExt};
+
+        let theme = *theme::get(cx);
+        let header = div()
+            .debug_selector(|| "modal-header".into())
+            .px(modal::header_padding_x(&theme))
+            .pt(modal::header_padding_top(&theme))
+            .pb(modal::header_padding_bottom(&theme))
+            .child(
+                div()
+                    .debug_selector(|| "modal-title".into())
+                    .h(px(10.))
+                    .child("Title"),
+            );
+        let footer = div()
+            .debug_selector(|| "modal-footer".into())
+            .px(modal::footer_padding(&theme))
+            .py(modal::footer_padding(&theme))
+            .child(div().debug_selector(|| "modal-action".into()).h(px(10.)));
+        div().size_full().flex().justify_center().child(
+            div()
+                .debug_selector(|| "modal-card".into())
+                .w(px(400.))
+                .elevation_3(&theme)
+                .flex()
+                .flex_col()
+                .child(header)
+                .child(footer),
+        )
+    }
+}
+
+#[gpui::test]
+fn modal_card_uses_zeds_header_and_footer_metrics(cx: &mut gpui::TestAppContext) {
+    use crate::theme::ThemeId;
+
+    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    let cx = cx.add_empty_window();
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(600.), px(400.)),
+        |_, cx| cx.new(|_| ModalCardProbe),
+    );
+    let header = cx.debug_bounds("modal-header").expect("header laid out");
+    let title = cx.debug_bounds("modal-title").expect("title laid out");
+    let footer = cx.debug_bounds("modal-footer").expect("footer laid out");
+    let action = cx.debug_bounds("modal-action").expect("action laid out");
+
+    // Zed's `ModalHeader`: Base08 above, Base04 below, Base12 in from the sides.
+    assert_eq!(title.top() - header.top(), px(8.));
+    assert_eq!(header.bottom() - title.bottom(), px(4.));
+    assert_eq!(title.left() - header.left(), px(12.));
+    // Zed's `ModalFooter`: Base08 on all four sides.
+    assert_eq!(action.left() - footer.left(), px(8.));
+    assert_eq!(action.top() - footer.top(), px(8.));
+    assert_eq!(footer.bottom() - action.bottom(), px(8.));
+}

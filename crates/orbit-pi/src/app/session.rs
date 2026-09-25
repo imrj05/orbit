@@ -2,7 +2,7 @@ use super::helpers::*;
 use super::*;
 use crate::context_meter::context_ring;
 use crate::quota::{is_five_hour_window, note_should_render, QuotaHeadline};
-use crate::theme::tokens::{
+use crate::theme::tokens::{Radius, 
     input, popover, ButtonSize, DynamicSpacing, IconSize, StyledExt, TextSize,
 };
 use crate::usage::tooltip::Tooltip;
@@ -1140,14 +1140,14 @@ impl OrbitApp {
             .gap(px(2.))
             .child(
                 div()
-                    .text_size(theme.ui_px(12.))
+                    .text_size(TextSize::Small.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text)
                     .child(tr!("session.session_details")),
             )
             .children(session_id.is_empty().then(|| {
                 div()
-                    .text_size(theme.ui_px(11.))
+                    .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.text_3)
                     .child(tr!("session.no_active"))
             }));
@@ -1219,7 +1219,7 @@ impl OrbitApp {
                 .px(px(12.))
                 .pt(px(10.))
                 .pb(px(4.))
-                .text_size(theme.ui_px(11.))
+                .text_size(TextSize::Small.px(&theme))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text_3)
                 .child(label.to_string())
@@ -1278,7 +1278,7 @@ impl OrbitApp {
                     .child(
                         div()
                             .flex_1()
-                            .text_size(theme.ui_px(12.))
+                            .text_size(TextSize::Small.px(&theme))
                             .text_color(theme.text)
                             .child(tr!("session.commit_or_push")),
                     )
@@ -1310,7 +1310,7 @@ impl OrbitApp {
                     .child(
                         div()
                             .flex_1()
-                            .text_size(theme.ui_px(12.))
+                            .text_size(TextSize::Small.px(&theme))
                             .text_color(theme.text)
                             .child(tr!("session.compare_branch")),
                     )
@@ -1546,14 +1546,14 @@ impl OrbitApp {
             .child(
                 div()
                     .flex_1()
-                    .text_size(theme.ui_px(12.))
+                    .text_size(TextSize::Small.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text)
                     .child(tr!("session.provider_usage")),
             )
             .child(
                 div()
-                    .text_size(theme.ui_px(11.))
+                    .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.text_2)
                     .child(tr!("session.provider_count", count = count)),
             )
@@ -1746,13 +1746,13 @@ impl OrbitApp {
                     .gap(px(2.))
                     .child(
                         div()
-                            .text_size(theme.ui_px(11.))
+                            .text_size(TextSize::Small.px(&theme))
                             .text_color(theme.text_3)
                             .child(label),
                     )
                     .child(
                         div()
-                            .text_size(theme.ui_px(12.))
+                            .text_size(TextSize::Small.px(&theme))
                             .text_color(theme.text)
                             .truncate()
                             .child(if value.is_empty() {
@@ -2270,7 +2270,7 @@ fn quota_provider_card(app: &OrbitApp, report: &QuotaReport, theme: Theme) -> An
                 .flex_1()
                 .min_w_0()
                 .truncate()
-                .text_size(theme.ui_px(12.))
+                .text_size(TextSize::Small.px(&theme))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text)
                 .child(name),
@@ -2285,7 +2285,7 @@ fn quota_provider_card(app: &OrbitApp, report: &QuotaReport, theme: Theme) -> An
     // the popup. The wash steps off any surface in every palette.
     let mut block = div()
         .w_full()
-        .rounded(px(8.))
+        .rounded(Radius::Large.px(&theme))
         .border_1()
         .border_color(theme.border)
         .bg(theme.overlay)
@@ -2324,14 +2324,14 @@ fn quota_provider_card(app: &OrbitApp, report: &QuotaReport, theme: Theme) -> An
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .text_size(theme.ui_px(11.))
+                        .text_size(TextSize::Small.px(&theme))
                         .text_color(theme.text_2)
                         .child(window.label.clone()),
                 )
                 .child(
                     div()
                         .flex_none()
-                        .text_size(theme.ui_px(11.5))
+                        .text_size(TextSize::Small.px(&theme))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.text)
                         .child(value),
@@ -2358,7 +2358,7 @@ fn quota_provider_card(app: &OrbitApp, report: &QuotaReport, theme: Theme) -> An
         if let Some(resets_at) = window.resets_at {
             row = row.child(
                 div()
-                    .text_size(theme.ui_px(10.5))
+                    .text_size(TextSize::XSmall.px(&theme))
                     .text_color(theme.text_2)
                     .child(quota_reset_hint(
                         resets_at,
@@ -2386,14 +2386,14 @@ fn quota_provider_card(app: &OrbitApp, report: &QuotaReport, theme: Theme) -> An
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .text_size(theme.ui_px(11.))
+                        .text_size(TextSize::Small.px(&theme))
                         .text_color(theme.text_2)
                         .child(balance.label.clone()),
                 )
                 .child(
                     div()
                         .flex_none()
-                        .text_size(theme.ui_px(11.5))
+                        .text_size(TextSize::Small.px(&theme))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.text)
                         .child(text),
@@ -2404,7 +2404,7 @@ fn quota_provider_card(app: &OrbitApp, report: &QuotaReport, theme: Theme) -> An
     if let Some(error) = &report.error {
         block = block.child(
             div()
-                .text_size(theme.ui_px(10.5))
+                .text_size(TextSize::XSmall.px(&theme))
                 .text_color(theme.crit)
                 .child(error.clone()),
         );
@@ -2412,7 +2412,7 @@ fn quota_provider_card(app: &OrbitApp, report: &QuotaReport, theme: Theme) -> An
         if let Some(note) = &report.note {
             block = block.child(
                 div()
-                    .text_size(theme.ui_px(10.5))
+                    .text_size(TextSize::XSmall.px(&theme))
                     .text_color(theme.text_3)
                     .child(note.clone()),
             );

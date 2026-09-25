@@ -56,7 +56,7 @@ use gpui::{
 use crate::app::{
     button_frame, icon, icon_button_frame, nerd_font_family, BUTTON_GROUP, refresh_glyph,
 };
-use crate::theme::tokens::{ButtonSize, IconSize};
+use crate::theme::tokens::{Radius, TextSize, ButtonSize, DynamicSpacing, IconSize};
 use crate::theme::{self, Theme};
 
 /// Emulator grid bounds, clamped so a collapsing panel never asks the PTY for
@@ -1474,10 +1474,10 @@ fn terminal_message(theme: &Theme, title: &str, detail: Option<&str>) -> AnyElem
         .flex_col()
         .items_center()
         .justify_center()
-        .gap(theme.space(4.))
+        .gap(DynamicSpacing::Base04.px(&theme))
         .child(
             div()
-                .text_size(theme.ui_px(12.5))
+                .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.text_2)
                 .child(SharedString::from(title.to_owned())),
         );
@@ -1485,7 +1485,7 @@ fn terminal_message(theme: &Theme, title: &str, detail: Option<&str>) -> AnyElem
         column = column.child(
             div()
                 .max_w(px(520.))
-                .text_size(theme.ui_px(11.5))
+                .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.stop_red)
                 .child(SharedString::from(detail.to_owned())),
         );
@@ -1680,7 +1680,7 @@ impl TerminalPanel {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_size(theme.ui_px(12.))
+                    .text_size(TextSize::Small.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(if exited { theme.text_2 } else { theme.text })
                     .child(title),
@@ -1691,9 +1691,9 @@ impl TerminalPanel {
                     .flex_none()
                     .px(px(6.))
                     .py(px(1.))
-                    .rounded_sm()
+                    .rounded(Radius::Small.px(&theme))
                     .bg(theme.stop_red.opacity(0.15))
-                    .text_size(theme.ui_px(10.5))
+                    .text_size(TextSize::XSmall.px(&theme))
                     .text_color(theme.stop_red)
                     .child(tr!("terminal.exited")),
             );
@@ -1751,17 +1751,17 @@ impl TerminalPanel {
                         .flex()
                         .flex_col()
                         .items_center()
-                        .gap(theme.space(8.))
-                        .px(theme.space(16.))
-                        .py(theme.space(12.))
-                        .rounded_lg()
+                        .gap(DynamicSpacing::Base08.px(&theme))
+                        .px(DynamicSpacing::Base16.px(&theme))
+                        .py(DynamicSpacing::Base12.px(&theme))
+                        .rounded(Radius::Large.px(&theme))
                         .bg(theme.bg_raised)
                         .border_1()
                         .border_color(theme.border)
                         .shadow(theme.composer_shadow())
                         .child(
                             div()
-                                .text_size(theme.ui_px(12.5))
+                                .text_size(TextSize::Small.px(&theme))
                                 .text_color(theme.text_2)
                                 .child(tr!("terminal.shell_exited")),
                         )

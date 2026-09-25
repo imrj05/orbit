@@ -1938,8 +1938,8 @@ mod titlebar_layout_tests;
 // `crate::app::…` paths stable for the other modules that import them.
 pub(crate) use helpers::{
     button_frame, context_menu_entry, context_menu_separator, context_menu_surface, empty_state,
-    file_badge, file_glyph, icon, icon_button_frame, icon_dyn, input_field_frame, input_label,
-    menu_header, nerd_font_family, picker_entry, picker_search_frame, picker_surface, press,
-    refresh_glyph, spinner, EmptyFill, PopoverSurface, BUTTON_GROUP, PRESS_DIM,
+    file_badge, file_glyph, icon, icon_button_frame, icon_dyn, input_field_frame, menu_header,
+    nerd_font_family, picker_entry, picker_search_frame, picker_surface, press, refresh_glyph,
+    spinner, EmptyFill, BUTTON_GROUP, PRESS_DIM,
 };
 use sidebar::sessions_with_placeholder;

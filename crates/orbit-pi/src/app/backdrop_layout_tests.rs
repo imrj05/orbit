@@ -1,5 +1,6 @@
 use super::*;
 use crate::theme::ThemeId;
+use crate::theme::tokens::{Radius, TextSize};
 use gpui::size;
 
 fn solid_image(width: u32, height: u32) -> std::sync::Arc<gpui::RenderImage> {
@@ -233,7 +234,7 @@ fn provider_name_column_has_a_real_width(cx: &mut gpui::TestAppContext) {
                                     div()
                                         .id("provider-name")
                                         .debug_selector(|| "provider-name".to_string())
-                                        .text_size(theme.ui_px(14.))
+                                        .text_size(TextSize::Default.px(&theme))
                                         .truncate()
                                         .child("Amazon Bedrock"),
                                 )
@@ -304,7 +305,7 @@ fn settings_cards_stay_inside_the_content_column(cx: &mut gpui::TestAppContext) 
                     .bg(theme.bg_composer)
                     .border_1()
                     .border_color(theme.border)
-                    .rounded_lg()
+                    .rounded(Radius::Large.px(&theme))
                     .px(px(14.))
                     .py(px(12.))
                     .flex()
@@ -319,14 +320,14 @@ fn settings_cards_stay_inside_the_content_column(cx: &mut gpui::TestAppContext) 
                             .gap_1()
                             .child(
                                 div()
-                                    .text_size(theme.ui_px(13.))
+                                    .text_size(TextSize::Default.px(&theme))
                                     .child("Follow-up messages"),
                             )
                             .child(
                                 div()
                                     .id("settings-card-desc")
                                     .debug_selector(|| "settings-card-desc".to_string())
-                                    .text_size(theme.ui_px(12.))
+                                    .text_size(TextSize::Small.px(&theme))
                                     .child("Messages sent while the agent is running wait in the queue above the composer and are delivered once the current task finishes. All delivers the whole queue at once; One at a time delivers one per run."),
                             ),
                     )
@@ -430,14 +431,14 @@ fn provider_grid_columns_fit_inside_the_content_column(cx: &mut gpui::TestAppCon
                     .bg(theme.bg_composer)
                     .border_1()
                     .border_color(theme.border)
-                    .rounded_lg()
+                    .rounded(Radius::Large.px(&theme))
                     .p(px(14.))
                     .flex()
                     .flex_col()
                     .gap_2()
                     .child(
                         div()
-                            .text_size(theme.ui_px(14.))
+                            .text_size(TextSize::Default.px(&theme))
                             .child(format!("Provider {i}")),
                     )
                     .child(

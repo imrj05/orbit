@@ -65,7 +65,7 @@ use crate::app::{
     icon_button_frame, input_field_frame, press, BUTTON_GROUP,
 };
 use crate::composer::ComposerInput;
-use crate::theme::tokens::{popover, ButtonSize, DynamicSpacing, IconSize, Radius};
+use crate::theme::tokens::{TextSize, popover, ButtonSize, DynamicSpacing, IconSize, Radius};
 use crate::theme::{self, Theme};
 
 /// Inner column width for a data surface (§58): wide enough for a full table,
@@ -106,7 +106,7 @@ impl Render for UsagePage {
             .bg(theme.bg_main)
             .text_color(theme.text)
             .font_family(theme::ui_font_family())
-            .text_size(theme.ui_px(13.))
+            .text_size(TextSize::Default.px(&theme))
             .child(self.header(theme, cx))
             .child(self.filter_bar(theme, cx))
             .child(
@@ -122,15 +122,15 @@ impl Render for UsagePage {
                             .flex_none()
                             .w(column_w)
                             .mx_auto()
-                            .pb(theme.space(56.))
+                            .pb(DynamicSpacing::Base48.px(&theme))
                             .flex()
                             .flex_col()
                             .children(self.active_filter_bar(theme, cx))
                             .child(
                                 div()
                                     .w_full()
-                                    .px(theme.space(20.))
-                                    .pt(theme.space(20.))
+                                    .px(DynamicSpacing::Base20.px(&theme))
+                                    .pt(DynamicSpacing::Base20.px(&theme))
                                     .flex()
                                     .flex_col()
                                     .child(self.body(theme, wide, kpi_cols, window, cx)),
@@ -199,14 +199,14 @@ impl UsagePage {
                     ))
                     .child(
                         div()
-                            .text_size(theme.ui_px(15.))
+                            .text_size(TextSize::Large.px(&theme))
                             .font_weight(FontWeight::MEDIUM)
                             .child(tr!("view.usage")),
                     ),
             )
             .children(status.map(|status| {
                 div()
-                    .text_size(theme.ui_px(11.5))
+                    .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.text_3)
                     .child(status)
             }))
@@ -275,13 +275,13 @@ impl UsagePage {
         let mut bar = div()
             .w_full()
             .flex_none()
-            .px(theme.space(20.))
-            .py(theme.space(8.))
+            .px(DynamicSpacing::Base20.px(&theme))
+            .py(DynamicSpacing::Base08.px(&theme))
             .border_b_1()
             .border_color(theme.border)
             .flex()
             .items_center()
-            .gap(theme.space(8.));
+            .gap(DynamicSpacing::Base08.px(&theme));
 
         let entity = cx.entity();
         let range_open = self.menu() == Some(MenuKind::Range);
@@ -565,16 +565,16 @@ impl UsagePage {
             div()
                 .id("usage-active-filters")
                 .w_full()
-                .px(theme.space(20.))
-                .pt(theme.space(14.))
+                .px(DynamicSpacing::Base20.px(&theme))
+                .pt(DynamicSpacing::Base12.px(&theme))
                 .flex()
                 .flex_wrap()
                 .items_center()
-                .gap(theme.space(6.))
+                .gap(DynamicSpacing::Base06.px(&theme))
                 .child(
                     div()
                         .pr(px(2.))
-                        .text_size(theme.ui_px(11.))
+                        .text_size(TextSize::Small.px(&theme))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.text_3)
                         .child(tr!("view.filters")),
@@ -667,7 +667,7 @@ impl UsagePage {
                     .w_full()
                     .flex()
                     .flex_col()
-                    .gap(theme.space(20.))
+                    .gap(DynamicSpacing::Base20.px(&theme))
                     .child(self.summary_card(snapshot, theme, kpi_cols, cx))
                     .child(self.activity_section(snapshot, theme, cx));
                 if !snapshot.insights.is_empty() {
@@ -693,7 +693,7 @@ impl UsagePage {
                     .w_full()
                     .flex()
                     .flex_col()
-                    .gap(theme.space(20.))
+                    .gap(DynamicSpacing::Base20.px(&theme))
                     .child(self.breakdown_section(snapshot, theme, cx))
                     .child(self.details_section(snapshot, theme, window, cx))
                     .into_any_element(),
@@ -835,7 +835,7 @@ impl UsagePage {
             div()
                 .w(px(width))
                 .h(px(height))
-                .rounded(px(4.))
+                .rounded(Radius::Small.px(&theme))
                 .bg(theme.trough)
                 .into_any_element()
         };
@@ -845,7 +845,7 @@ impl UsagePage {
             div()
                 .w_full()
                 .flex_none()
-                .rounded(px(12.))
+                .rounded(Radius::XLarge.px(&theme))
                 .border_1()
                 .border_color(theme.border)
                 .bg(theme.bg_raised)
@@ -898,12 +898,12 @@ impl UsagePage {
             .flex_col()
             .gap(px(12.))
             .child(bar(320., 26.))
-            .child(div().h(px(168.)).w_full().rounded(px(8.)).bg(theme.trough))
-            .child(div().h(px(96.)).w_full().rounded(px(8.)).bg(theme.trough))
-            .child(div().h(px(72.)).w_full().rounded(px(8.)).bg(theme.trough));
+            .child(div().h(px(168.)).w_full().rounded(Radius::Large.px(&theme)).bg(theme.trough))
+            .child(div().h(px(96.)).w_full().rounded(Radius::Large.px(&theme)).bg(theme.trough))
+            .child(div().h(px(72.)).w_full().rounded(Radius::Large.px(&theme)).bg(theme.trough));
 
         // Records: a header rule and a handful of rows.
-        let mut records = div().w_full().pt(theme.space(12.)).flex().flex_col();
+        let mut records = div().w_full().pt(DynamicSpacing::Base12.px(&theme)).flex().flex_col();
         for ix in 0..6 {
             records = records.child(
                 div()
@@ -912,7 +912,7 @@ impl UsagePage {
                     .px(px(14.))
                     .flex()
                     .items_center()
-                    .gap(theme.space(12.))
+                    .gap(DynamicSpacing::Base12.px(&theme))
                     .when(ix > 0, |row| row.border_t_1().border_color(theme.border))
                     .child(bar(140., 10.))
                     .child(div().flex_1())
@@ -931,7 +931,7 @@ impl UsagePage {
                 .child(
                     div()
                         .w_full()
-                        .pb(theme.space(12.))
+                        .pb(DynamicSpacing::Base12.px(&theme))
                         .flex()
                         .flex_col()
                         .gap(px(4.))
@@ -940,7 +940,7 @@ impl UsagePage {
                         .child(bar(120., 12.))
                         .child(bar(220., 10.)),
                 )
-                .child(div().pt(theme.space(12.)).child(body))
+                .child(div().pt(DynamicSpacing::Base12.px(&theme)).child(body))
                 .into_any_element()
         };
 
@@ -960,7 +960,7 @@ impl UsagePage {
                 .w_full()
                 .flex()
                 .flex_col()
-                .gap(theme.space(20.))
+                .gap(DynamicSpacing::Base20.px(&theme))
                 .child(heading(72., 280.))
                 .child(shell(grid.into_any_element()))
                 .child(section_shell(activity.into_any_element())),
@@ -968,7 +968,7 @@ impl UsagePage {
                 .w_full()
                 .flex()
                 .flex_col()
-                .gap(theme.space(20.))
+                .gap(DynamicSpacing::Base20.px(&theme))
                 .child(heading(64., 320.))
                 .child(section_shell(
                     div()
@@ -978,7 +978,7 @@ impl UsagePage {
                         .flex_col()
                         .gap(px(12.))
                         .child(bar(220., 26.))
-                        .child(div().h(px(96.)).w_full().rounded(px(8.)).bg(theme.trough))
+                        .child(div().h(px(96.)).w_full().rounded(Radius::Large.px(&theme)).bg(theme.trough))
                         .into_any_element(),
                 ))
                 .child(section_shell(records.into_any_element())),
@@ -1012,7 +1012,7 @@ impl UsagePage {
                         .w_full()
                         .flex()
                         .justify_center()
-                        .text_size(theme.ui_px(11.))
+                        .text_size(TextSize::Small.px(&theme))
                         .text_color(theme.text_3)
                         .child(note),
                 )
@@ -1061,7 +1061,7 @@ impl UsagePage {
             )
             .child(
                 div()
-                    .text_size(theme.ui_px(15.))
+                    .text_size(TextSize::Large.px(&theme))
                     .line_height(theme.ui_px(20.))
                     .font_weight(FontWeight::MEDIUM)
                     .child(title.to_string()),
@@ -1070,7 +1070,7 @@ impl UsagePage {
                 div()
                     .max_w(px(440.))
                     .text_align(gpui::TextAlign::Center)
-                    .text_size(theme.ui_px(12.))
+                    .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.text_3)
                     .child(body.to_string()),
             )
@@ -1127,7 +1127,7 @@ impl UsagePage {
                     })
                     .child(
                         div()
-                            .text_size(theme.ui_px(11.))
+                            .text_size(TextSize::Small.px(&theme))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.text_3)
                             .child(cell.label.clone()),
@@ -1142,7 +1142,7 @@ impl UsagePage {
                     )
                     .child(
                         div()
-                            .text_size(theme.ui_px(11.5))
+                            .text_size(TextSize::Small.px(&theme))
                             .text_color(theme.text_3)
                             .child(cell.sub.clone()),
                     );
@@ -1424,7 +1424,7 @@ impl UsagePage {
                     .flex()
                     .items_start()
                     .gap(px(8.))
-                    .text_size(theme.ui_px(12.))
+                    .text_size(TextSize::Small.px(&theme))
                     .child(div().pt(px(1.)).child(icon(path, IconSize::XSmall.px(&theme), color)))
                     .child(
                         div()
@@ -1621,7 +1621,7 @@ impl UsagePage {
         if !reason.is_empty() {
             content = content.child(
                 div()
-                    .text_size(theme.ui_px(11.))
+                    .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.text_3)
                     .child(reason),
             );
@@ -1798,7 +1798,7 @@ impl UsagePage {
             .w_full()
             .flex()
             .flex_col()
-            .gap(theme.space(12.))
+            .gap(DynamicSpacing::Base12.px(&theme))
             .child(toolbar)
             .child(table)
             .child(self.series_totals(snapshot, &result, theme))
@@ -2200,7 +2200,7 @@ impl UsagePage {
             .items_center()
             .gap(px(14.))
             .flex_wrap()
-            .text_size(theme.ui_px(11.))
+            .text_size(TextSize::Small.px(&theme))
             .child(
                 div()
                     .text_color(theme.text_3)
@@ -2218,7 +2218,7 @@ impl UsagePage {
             }))
             .child(
                 div()
-                    .text_size(theme.ui_px(10.5))
+                    .text_size(TextSize::XSmall.px(&theme))
                     .text_color(theme.text_3)
                     .child(if latency.has_percentiles() {
                         tr!("usage.sub_measured", count = format::count(latency.samples))
@@ -2335,7 +2335,7 @@ impl UsagePage {
             .w_full()
             .flex()
             .flex_col()
-            .gap(theme.space(12.))
+            .gap(DynamicSpacing::Base12.px(&theme))
             .child(tabs)
             .child(chart)
             .child(toolbar)
@@ -2660,7 +2660,7 @@ impl UsagePage {
                     )))
                     .px(px(8.))
                     .py(px(5.))
-                    .rounded(px(6.))
+                    .rounded(Radius::Medium.px(&theme))
                     .flex()
                     .items_center()
                     .gap(px(10.))
@@ -2720,7 +2720,7 @@ impl UsagePage {
                     .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into())
                     .px(px(8.))
                     .py(px(5.))
-                    .rounded(px(6.))
+                    .rounded(Radius::Medium.px(&theme))
                     .flex()
                     .items_center()
                     .gap(px(10.))
@@ -2767,7 +2767,7 @@ impl UsagePage {
                                 .flex_none()
                                 .max_w(px(column.width - 96.))
                                 .truncate()
-                                .text_size(theme.ui_px(13.))
+                                .text_size(TextSize::Default.px(&theme))
                                 .text_color(theme.text)
                                 .child(row.label.clone()),
                         )
@@ -2776,7 +2776,7 @@ impl UsagePage {
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .text_size(theme.ui_px(10.5))
+                                .text_size(TextSize::XSmall.px(&theme))
                                 .text_color(theme.text_3)
                                 .child(row.class.label()),
                         )
@@ -2879,7 +2879,7 @@ impl UsagePage {
         let mut stack = div()
             .w_full()
             .h(px(8.))
-            .rounded(px(4.))
+            .rounded(Radius::Small.px(&theme))
             .overflow_hidden()
             .flex()
             .bg(theme.trough);
@@ -2918,7 +2918,7 @@ impl UsagePage {
                     .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into())
                     .px(px(8.))
                     .py(px(4.))
-                    .rounded(px(6.))
+                    .rounded(Radius::Medium.px(&theme))
                     .flex()
                     .items_center()
                     .gap(px(10.))
@@ -2927,11 +2927,11 @@ impl UsagePage {
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         entity.update(cx, |page, cx| page.set_metric(metric, cx));
                     })
-                    .child(div().size(px(8.)).rounded(px(2.)).flex_none().bg(*color))
+                    .child(div().size(px(8.)).rounded(Radius::XSmall.px(&theme)).flex_none().bg(*color))
                     .child(
                         div()
                             .flex_1()
-                            .text_size(theme.ui_px(12.))
+                            .text_size(TextSize::Small.px(&theme))
                             .text_color(theme.text_2)
                             .child(label.clone()),
                     )
@@ -2939,7 +2939,7 @@ impl UsagePage {
                         div()
                             .whitespace_nowrap()
                             .font(num_font())
-                            .text_size(theme.ui_px(11.5))
+                            .text_size(TextSize::Small.px(&theme))
                             .text_color(theme.text)
                             .child(format::compact(*value)),
                     )
@@ -2949,7 +2949,7 @@ impl UsagePage {
                             .flex_none()
                             .whitespace_nowrap()
                             .font(num_font())
-                            .text_size(theme.ui_px(11.5))
+                            .text_size(TextSize::Small.px(&theme))
                             .text_color(theme.text_3)
                             .text_align(gpui::TextAlign::Right)
                             .child(share),
@@ -2960,7 +2960,7 @@ impl UsagePage {
         content = content.child(
             div()
                 .px(px(8.))
-                .text_size(theme.ui_px(10.5))
+                .text_size(TextSize::XSmall.px(&theme))
                 .text_color(theme.text_3)
                 .child(if total == 0 {
                     tr!("usage.no_tokens_in_range")
@@ -3012,7 +3012,7 @@ impl UsagePage {
                             )
                             .child(
                                 div()
-                                    .text_size(theme.ui_px(11.5))
+                                    .text_size(TextSize::Small.px(&theme))
                                     .text_color(theme.text_3)
                                     .child(tr!("view.of_prompt_tokens_served_from_cache")),
                             ),
@@ -3078,7 +3078,7 @@ impl UsagePage {
                     .gap(px(5.))
                     .child(
                         div()
-                            .text_size(theme.ui_px(10.5))
+                            .text_size(TextSize::XSmall.px(&theme))
                             .text_color(theme.text_3)
                             .child(tr!("view.hit_rate_over_time")),
                     )
@@ -3094,7 +3094,7 @@ impl UsagePage {
                 .flex()
                 .items_center()
                 .gap(px(6.))
-                .text_size(theme.ui_px(10.5))
+                .text_size(TextSize::XSmall.px(&theme))
                 .child(
                     div()
                         .text_color(theme.text_3)
@@ -3204,7 +3204,7 @@ impl UsagePage {
                 }
             },
         );
-        let tabs_row = div().pb(theme.space(12.)).child(tabs);
+        let tabs_row = div().pb(DynamicSpacing::Base12.px(&theme)).child(tabs);
 
         let (meta, content) = match tab {
             DetailTab::Sessions => {
@@ -3231,7 +3231,7 @@ impl UsagePage {
                         .w_full()
                         .flex()
                         .flex_col()
-                        .gap(theme.space(12.))
+                        .gap(DynamicSpacing::Base12.px(&theme))
                         .child(tabs_row)
                         .child(toolbar)
                         .child(table)
@@ -3268,7 +3268,7 @@ impl UsagePage {
                         .w_full()
                         .flex()
                         .flex_col()
-                        .gap(theme.space(12.))
+                        .gap(DynamicSpacing::Base12.px(&theme))
                         .child(tabs_row)
                         .child(toolbar)
                         .child(table)
@@ -3308,7 +3308,7 @@ impl UsagePage {
                         .w_full()
                         .flex()
                         .flex_col()
-                        .gap(theme.space(12.))
+                        .gap(DynamicSpacing::Base12.px(&theme))
                         .child(tabs_row)
                         .child(toolbar)
                         .child(table)
@@ -3867,13 +3867,13 @@ impl UsagePage {
                             .gap(px(8.))
                             .child(
                                 div()
-                                    .text_size(theme.ui_px(12.))
+                                    .text_size(TextSize::Small.px(&theme))
                                     .text_color(theme.text)
                                     .child(row.label.clone()),
                             )
                             .child(
                                 div()
-                                    .text_size(theme.ui_px(10.5))
+                                    .text_size(TextSize::XSmall.px(&theme))
                                     .text_color(theme.text_3)
                                     .child(granularity.label()),
                             ),
@@ -4038,11 +4038,11 @@ impl UsagePage {
         Some(
             div()
                 .w_full()
-                .pt(theme.space(8.))
+                .pt(DynamicSpacing::Base08.px(&theme))
                 .flex()
                 .items_center()
                 .gap(px(12.))
-                .text_size(theme.ui_px(12.))
+                .text_size(TextSize::Small.px(&theme))
                 .child(div().text_color(theme.text_3).child(filtered))
                 .child(div().flex_1())
                 .child(div().text_color(theme.text_3).child(page))
@@ -4413,7 +4413,7 @@ fn band(
         .w_full()
         .flex()
         .flex_col()
-        .gap(theme.space(20.))
+        .gap(DynamicSpacing::Base20.px(&theme))
         .child(
             div()
                 .w_full()
@@ -4422,7 +4422,7 @@ fn band(
                 .gap(px(4.))
                 .child(
                     div()
-                        .text_size(theme.ui_px(11.))
+                        .text_size(TextSize::Small.px(&theme))
                         .line_height(theme.ui_px(14.))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.text_3)
@@ -4430,7 +4430,7 @@ fn band(
                 )
                 .child(
                     div()
-                        .text_size(theme.ui_px(12.))
+                        .text_size(TextSize::Small.px(&theme))
                         .line_height(theme.ui_px(16.))
                         .text_color(theme.text_3)
                         .child(description.to_string()),
@@ -4461,14 +4461,14 @@ fn subpanel(label: &str, meta: Option<String>, content: AnyElement, theme: Theme
                 .gap(px(8.))
                 .child(
                     div()
-                        .text_size(theme.ui_px(11.))
+                        .text_size(TextSize::Small.px(&theme))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.text_3)
                         .child(label.to_uppercase()),
                 )
                 .children(meta.map(|meta| {
                     div()
-                        .text_size(theme.ui_px(11.))
+                        .text_size(TextSize::Small.px(&theme))
                         .text_color(theme.text_3)
                         .child(meta)
                 })),
@@ -4491,7 +4491,7 @@ fn card(
         .id(SharedString::from(id))
         .flex_none()
         .w_full()
-        .rounded(px(12.))
+        .rounded(Radius::XLarge.px(&theme))
         .border_1()
         .border_color(theme.border)
         .bg(theme.bg_raised)
@@ -4516,7 +4516,7 @@ fn card(
                         .gap(px(10.))
                         .child(
                             div()
-                                .text_size(theme.ui_px(15.))
+                                .text_size(TextSize::Large.px(&theme))
                                 .line_height(theme.ui_px(20.))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(theme.text)
@@ -4524,7 +4524,7 @@ fn card(
                         )
                         .children(meta.map(|meta| {
                             div()
-                                .text_size(theme.ui_px(11.))
+                                .text_size(TextSize::Small.px(&theme))
                                 .text_color(theme.text_3)
                                 .child(meta)
                         }))
@@ -4533,7 +4533,7 @@ fn card(
                 )
                 .children(description.map(|description| {
                     div()
-                        .text_size(theme.ui_px(12.))
+                        .text_size(TextSize::Small.px(&theme))
                         .line_height(theme.ui_px(16.))
                         .text_color(theme.text_3)
                         .child(description.to_string())
@@ -4618,7 +4618,7 @@ fn table_toolbar(search: AnyElement, columns: AnyElement, theme: Theme) -> AnyEl
         .w_full()
         .flex()
         .items_center()
-        .gap(theme.space(8.))
+        .gap(DynamicSpacing::Base08.px(&theme))
         .child(search)
         .child(columns)
         .into_any_element()
@@ -4637,7 +4637,7 @@ fn table_pager(
 ) -> AnyElement {
     div()
         .w_full()
-        .pt(theme.space(12.))
+        .pt(DynamicSpacing::Base12.px(&theme))
         .flex()
         .items_center()
         .gap(px(8.))
@@ -4645,13 +4645,13 @@ fn table_pager(
             div()
                 .flex_1()
                 .min_w_0()
-                .text_size(theme.ui_px(13.))
+                .text_size(TextSize::Default.px(&theme))
                 .text_color(theme.text_3)
                 .child(summary),
         )
         .child(
             div()
-                .text_size(theme.ui_px(12.))
+                .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.text_3)
                 .child(tr!("view.rows")),
         )
@@ -4660,7 +4660,7 @@ fn table_pager(
             div()
                 .px(px(2.))
                 .font(num_font())
-                .text_size(theme.ui_px(12.))
+                .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.text_3)
                 .child(format!("{current}/{pages}")),
         )
@@ -4679,14 +4679,14 @@ fn chart_label(label: &str, sub: Option<&str>, theme: Theme) -> AnyElement {
         .child(
             div()
                 .truncate()
-                .text_size(theme.ui_px(12.))
+                .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.text)
                 .child(label.to_string()),
         )
         .children(sub.map(|sub| {
             div()
                 .truncate()
-                .text_size(theme.ui_px(10.5))
+                .text_size(TextSize::XSmall.px(&theme))
                 .text_color(theme.text_3)
                 .child(sub.to_string())
         }))
@@ -4699,14 +4699,14 @@ fn bar_track(fraction: f64, theme: Theme) -> AnyElement {
         .flex_1()
         .min_w(px(48.))
         .h(px(8.))
-        .rounded(px(4.))
+        .rounded(Radius::Small.px(&theme))
         .bg(theme.trough)
         .overflow_hidden()
         .child(
             div()
                 .h_full()
                 .w(relative(fraction.clamp(0.0, 1.0) as f32))
-                .rounded(px(4.))
+                .rounded(Radius::Small.px(&theme))
                 .bg(theme.accent),
         )
         .into_any_element()
@@ -4718,7 +4718,7 @@ fn chart_value(value: &str, theme: Theme) -> AnyElement {
         .w(px(72.))
         .flex_none()
         .font(num_font())
-        .text_size(theme.ui_px(11.5))
+        .text_size(TextSize::Small.px(&theme))
         .text_color(theme.text)
         .text_align(gpui::TextAlign::Right)
         .child(value.to_string())
@@ -4732,7 +4732,7 @@ fn chart_share(share: &str, theme: Theme) -> AnyElement {
         .flex_none()
         .whitespace_nowrap()
         .font(num_font())
-        .text_size(theme.ui_px(11.5))
+        .text_size(TextSize::Small.px(&theme))
         .text_color(theme.text_3)
         .text_align(gpui::TextAlign::Right)
         .child(share.to_string())
@@ -4743,11 +4743,11 @@ fn chart_share(share: &str, theme: Theme) -> AnyElement {
 fn totals_row(filtered: &str, page: &str, theme: Theme) -> AnyElement {
     div()
         .w_full()
-        .pt(theme.space(8.))
+        .pt(DynamicSpacing::Base08.px(&theme))
         .flex()
         .items_center()
         .gap(px(12.))
-        .text_size(theme.ui_px(12.))
+        .text_size(TextSize::Small.px(&theme))
         .child(div().text_color(theme.text_3).child(filtered.to_string()))
         .child(div().flex_1())
         .child(div().text_color(theme.text_3).child(page.to_string()))
@@ -4758,7 +4758,7 @@ fn empty_line(text: &str, theme: Theme) -> AnyElement {
     div()
         .px(px(8.))
         .py(px(6.))
-        .text_size(theme.ui_px(11.5))
+        .text_size(TextSize::Small.px(&theme))
         .text_color(theme.text_3)
         .child(text.to_string())
         .into_any_element()
@@ -4766,7 +4766,7 @@ fn empty_line(text: &str, theme: Theme) -> AnyElement {
 
 fn retry_note(theme: Theme) -> AnyElement {
     div()
-        .text_size(theme.ui_px(12.))
+        .text_size(TextSize::Small.px(&theme))
         .text_color(theme.text_3)
         .child(tr!("view.retries_are_unavailable_pi_records_automatic_ret"))
         .into_any_element()
@@ -4779,7 +4779,7 @@ fn stat_row(label: &str, value: &str, theme: Theme) -> AnyElement {
         .flex()
         .items_center()
         .gap(px(12.))
-        .text_size(theme.ui_px(11.5))
+        .text_size(TextSize::Small.px(&theme))
         .child(
             div()
                 .flex_1()
@@ -4875,7 +4875,7 @@ fn breakdown_name_cell(column: &Column, row: &GroupRow, theme: Theme) -> AnyElem
                 .flex_none()
                 .max_w(px(column.width - 24.))
                 .truncate()
-                .text_size(theme.ui_px(12.))
+                .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.text)
                 .child(row.label.clone()),
         )
@@ -4884,7 +4884,7 @@ fn breakdown_name_cell(column: &Column, row: &GroupRow, theme: Theme) -> AnyElem
                 .flex_1()
                 .min_w_0()
                 .truncate()
-                .text_size(theme.ui_px(10.5))
+                .text_size(TextSize::XSmall.px(&theme))
                 .text_color(theme.text_3)
                 .child(sub)
         }))
@@ -4968,7 +4968,7 @@ fn summary_stat(label: String, value: String, theme: Theme) -> AnyElement {
         .flex()
         .items_center()
         .gap(px(6.))
-        .text_size(theme.ui_px(11.5))
+        .text_size(TextSize::Small.px(&theme))
         .child(div().text_color(theme.text_3).child(label))
         .child(div().font(num_font()).text_color(theme.text_2).child(value))
         .into_any_element()

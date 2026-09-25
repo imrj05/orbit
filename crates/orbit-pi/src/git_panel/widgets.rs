@@ -11,7 +11,7 @@ use gpui::{
 
 use crate::app::{button_frame, icon, icon_button_frame, press, BUTTON_GROUP};
 use crate::git::RefKind;
-use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize};
+use crate::theme::tokens::{Radius, TextSize, ButtonSize, DynamicSpacing, IconSize};
 use crate::theme::Theme;
 use crate::usage::tooltip::Tooltip;
 
@@ -30,7 +30,7 @@ pub fn status_color(badge: char, theme: Theme) -> Hsla {
 pub fn check_box(checked: bool, theme: Theme) -> gpui::Div {
     div()
         .size(px(16.))
-        .rounded(px(4.))
+        .rounded(Radius::Small.px(&theme))
         .border_1()
         .border_color(if checked {
             theme.accent
@@ -131,12 +131,12 @@ pub fn ref_badge(name: &str, kind: RefKind, theme: Theme) -> AnyElement {
     div()
         .h(px(18.))
         .px(px(6.))
-        .rounded(px(4.))
+        .rounded(Radius::Small.px(&theme))
         .border_1()
         .border_color(border.opacity(0.6))
         .flex()
         .items_center()
-        .text_size(theme.ui_px(10.5))
+        .text_size(TextSize::XSmall.px(&theme))
         .font_weight(FontWeight::MEDIUM)
         .text_color(fg)
         .child(name.to_string())
@@ -189,7 +189,7 @@ pub fn empty_note(
         .child(
             div()
                 .size(px(32.))
-                .rounded(px(8.))
+                .rounded(Radius::Large.px(&theme))
                 .border_1()
                 .border_color(theme.border)
                 .bg(theme.bg_raised)
@@ -201,7 +201,7 @@ pub fn empty_note(
         .child(
             div()
                 .mt(px(12.))
-                .text_size(theme.ui_px(13.))
+                .text_size(TextSize::Default.px(&theme))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text)
                 .child(title.to_string()),
@@ -212,7 +212,7 @@ pub fn empty_note(
                 .mt(px(6.))
                 .max_w(px(320.))
                 .text_align(gpui::TextAlign::Center)
-                .text_size(theme.ui_px(12.))
+                .text_size(TextSize::Small.px(&theme))
                 .line_height(theme.ui_px(17.))
                 .text_color(theme.text_3)
                 .child(detail.to_string()),

@@ -18,7 +18,7 @@ use gpui::{
 
 use super::aggregate::{ChartMetric, LatencyMetric, TimeSeries};
 use super::format;
-use crate::theme::tokens::{DynamicSpacing, StyledExt};
+use crate::theme::tokens::{TextSize, DynamicSpacing, StyledExt};
 use crate::theme::Theme;
 
 const PLOT_H: f32 = 168.;
@@ -145,7 +145,7 @@ pub fn timeline(
                 .left_0()
                 .w_full()
                 .h(px(plot_h))
-                .text_size(theme.ui_px(10.))
+                .text_size(TextSize::XSmall.px(&theme))
                 .text_color(theme.text_3)
                 .children((0..=4).map(|step| {
                     // step 4 = the axis maximum (top line), 0 = the baseline.
@@ -322,7 +322,7 @@ fn x_axis_labels(
         .left_0()
         .w_full()
         .h(px(AXIS_GAP))
-        .text_size(theme.ui_px(10.))
+        .text_size(TextSize::XSmall.px(&theme))
         .text_color(theme.text_3);
     for (i, point) in series.points.iter().enumerate() {
         if (i + 1) % tick_margin != 0 {
@@ -493,7 +493,7 @@ fn readout(
         .line_height(theme.ui_px(11.5) * 1.25)
         .child(
             div()
-                .text_size(theme.ui_px(11.5))
+                .text_size(TextSize::Small.px(&theme))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text)
                 .child(bucket.stamp.clone()),
@@ -549,7 +549,7 @@ fn readout_row(label: &str, value: &str, theme: Theme) -> AnyElement {
         .justify_between()
         .gap(px(12.))
         .whitespace_nowrap()
-        .text_size(theme.ui_px(11.5))
+        .text_size(TextSize::Small.px(&theme))
         .child(
             div()
                 .flex_none()

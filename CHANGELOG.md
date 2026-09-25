@@ -28,6 +28,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Extension dialogs use Zed's modal layout: `ModalHeader` / section / footer
   insets, a Small headline, a 32px input field, 32px confirm buttons, and the
   four-layer modal shadow.
+- The remaining floating modals — provider usage / API key / provider editor
+  (Settings), the update dialog, and the custom-UI card — use Zed's
+  `ModalSurface` (`elevation_3`): the four-layer shadow, an 8px radius, and
+  `ModalHeader` / section / `ModalFooter` insets. The legacy heavier
+  `popover_shadow` helper is gone.
+- Sidebar session and workspace rows use Zed's list-item tokens: a 4px
+  (`rounded_sm`) hover/selection radius, `TextSize` for title / label / metadata
+  text, and `DynamicSpacing` for their padding and gaps.
+- Transcript chrome follows the token scales: message-row padding, user-bubble
+  radius / padding / text, tool and question card shells and headers, tool error
+  strips, and the usage footer metric and breakdown card now read `TextSize`,
+  `DynamicSpacing`, `Radius`, and `BufferLineHeight` instead of ad-hoc px.
+- Settings chrome follows the token scales: the page header, section labels,
+  grouped boards, and `setting_row` layout use `TextSize` / `DynamicSpacing` /
+  `Radius`, the row separators use the 1px hairline token, and keycap chips size
+  to `ButtonSize::Default` height. Setting cards and toolbars migrate next.
+- Spacing is unified on `DynamicSpacing`. The ad-hoc `Theme::space` helper — which
+  scaled with density but ignored the UI font size — is removed, and its ~185
+  call sites (mostly the Git panel, Usage page, and Settings) now resolve through
+  the token scale, so they follow the UI font size too.
+- UI type is unified on `TextSize`. ~370 `.text_size(theme.ui_px(…))` sites snap
+  onto the 10 / 12 / 14 / 16 scale (`XSmall` / `Small` / `Default` / `Large`); at
+  most a 1px shift each. Sub-10px badge glyphs and 17px+ display headings, which
+  the UI scale doesn't cover, keep their sizing.
+- Corner radii are unified on `Radius`. gpui's fixed `rounded_sm/md/lg/xl` helpers
+  and every on-scale `rounded(px(N))` (`2/4/6/8/12`) now resolve through the theme,
+  so card, chip, and input corners also follow the UI font size.
+- One-shot transitions adopt `AnimationDuration` (`Fast`, 150ms). Looping affordances
+  (spinner, shimmer, streaming) and feedback timers keep their own cadences, which
+  the three-value token scale doesn't cover.
 
 ## [0.0.17] - 2026-09-25
 

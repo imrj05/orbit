@@ -30,7 +30,7 @@ use crate::app::{
 use crate::composer::ComposerInput;
 use crate::git;
 use crate::platform;
-use crate::theme::tokens::{context_menu, ButtonSize, IconSize, StyledExt, TextSize};
+use crate::theme::tokens::{Radius, context_menu, ButtonSize, IconSize, StyledExt, TextSize};
 use crate::theme::{self, Theme, ThemeMode};
 
 /// Panel width defaults / drag clamps.
@@ -792,7 +792,7 @@ impl ProjectPanel {
                     .min_w_0()
                     .overflow_hidden()
                     .whitespace_nowrap()
-                    .text_size(theme.ui_px(12.5))
+                    .text_size(TextSize::Small.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text)
                     .child(title),
@@ -970,7 +970,7 @@ impl ProjectPanel {
             row = row.child(
                 div()
                     .flex_none()
-                    .text_size(theme.ui_px(12.5))
+                    .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.text_3)
                     .child(format!("{}/", entry.dir)),
             );
@@ -997,7 +997,7 @@ impl ProjectPanel {
                 .border_b_1()
                 .border_color(theme.border)
                 .bg(theme.crit.opacity(0.12))
-                .text_size(theme.ui_px(11.5))
+                .text_size(TextSize::Small.px(&theme))
                 .line_height(theme.ui_px(15.))
                 .text_color(theme.crit)
                 .child(message)
@@ -1019,7 +1019,7 @@ impl ProjectPanel {
             .border_color(theme.border)
             .flex()
             .items_center()
-            .text_size(theme.ui_px(11.))
+            .text_size(TextSize::Small.px(&theme))
             .text_color(if self.index.truncated {
                 theme.warn
             } else {
@@ -1060,7 +1060,7 @@ impl ProjectPanel {
             .h(px(ROW_H))
             .pl(px(indent))
             .pr(px(8.))
-            .rounded(px(8.))
+            .rounded(Radius::Large.px(&theme))
             .flex()
             .items_center()
             .gap(px(6.));
@@ -1126,7 +1126,7 @@ impl ProjectPanel {
                         .flex_1()
                         .overflow_hidden()
                         .whitespace_nowrap()
-                        .text_size(theme.ui_px(12.5))
+                        .text_size(TextSize::Small.px(&theme))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(name_color)
                         .child(row.name.clone()),
@@ -1160,7 +1160,7 @@ impl ProjectPanel {
                         .flex_1()
                         .overflow_hidden()
                         .whitespace_nowrap()
-                        .text_size(theme.ui_px(12.5))
+                        .text_size(TextSize::Small.px(&theme))
                         .text_color(name_color)
                         .child(row.name.clone()),
                 );
@@ -1169,7 +1169,7 @@ impl ProjectPanel {
                     content = content.child(
                         div()
                             .flex_none()
-                            .text_size(theme.ui_px(11.))
+                            .text_size(TextSize::Small.px(&theme))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(color)
                             .child(badge.letter().to_string()),
@@ -1421,14 +1421,14 @@ impl ProjectPanel {
             )
             .child(
                 div()
-                    .text_size(theme.ui_px(13.))
+                    .text_size(TextSize::Default.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text)
                     .child(tr!("explorer.delete_title", name = target.name.clone())),
             )
             .child(
                 div()
-                    .text_size(theme.ui_px(12.))
+                    .text_size(TextSize::Small.px(&theme))
                     .line_height(theme.ui_px(16.))
                     .whitespace_normal()
                     .text_color(theme.text_2)
@@ -1576,7 +1576,7 @@ fn loading_state(theme: &Theme) -> AnyElement {
         ))
         .child(
             div()
-                .text_size(theme.ui_px(12.5))
+                .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.text_3)
                 .child(tr!("explorer.loading")),
         )
@@ -1628,7 +1628,7 @@ impl Render for ProjectPanel {
                     .bg(theme.bg_sidebar)
                     .border_1()
                     .border_color(theme.border)
-                    .rounded_lg()
+                    .rounded(Radius::Large.px(&theme))
                     .overflow_hidden()
                     .flex()
                     .flex_col()
