@@ -21,9 +21,10 @@ use gpui::{
 };
 use serde_json::Value;
 
-use crate::app::{icon, PopoverSurface};
+use crate::app::{icon, icon_button_frame, PopoverSurface};
 use crate::terminal::encode_key;
 use crate::theme;
+use crate::theme::tokens::{ButtonSize, IconSize};
 use crate::widgets;
 
 /// Column budget the host offers the component: the card is exactly this many
@@ -356,18 +357,19 @@ impl Render for CustomUi {
             .gap(px(10.))
             .border_b_1()
             .border_color(theme.border)
-            .child(icon("icons/extensions.svg", 14., theme.text_3))
+            .child(icon(
+                "icons/extensions.svg",
+                IconSize::Small.px(&theme),
+                theme.text_3,
+            ))
             .child(div().flex_1().min_w_0().flex().items_center().child(meta))
             .child(
-                div()
-                    .id("custom-ui-close")
+                icon_button_frame(div().id("custom-ui-close"), &theme, ButtonSize::Default)
                     .debug_selector(|| "custom-ui-close".to_string())
-                    .p_1()
-                    .rounded_sm()
                     .cursor_pointer()
                     .hover(|style| style.bg(theme.bg_hover))
                     .on_click(cx.listener(Self::on_close_click))
-                    .child(icon("icons/x.svg", 14., theme.text_3)),
+                    .child(icon("icons/x.svg", IconSize::Small.px(&theme), theme.text_3)),
             );
 
         // ── body: an inset code surface holding the server's grid ──

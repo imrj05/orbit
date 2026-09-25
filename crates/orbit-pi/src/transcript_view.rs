@@ -41,11 +41,14 @@ use serde_json::Value;
 
 use orbit_rpc::MessageUsage;
 
-use crate::app::{PopoverSurface, BUTTON_GROUP};
+use crate::app::{
+    button_frame, context_menu_entry, context_menu_surface, icon_button_frame, BUTTON_GROUP,
+};
 use crate::context_meter::{format_tokens, hit_percent_label};
 use crate::highlight::{self, Token};
 use crate::message_scroller::{self, MessageScrollerState};
 use crate::shimmer::ShimmerText;
+use crate::theme::tokens::{popover, ButtonSize, DynamicSpacing, IconSize, StyledExt};
 use crate::theme::{self, Theme, ThemeMode};
 use crate::transcript::{ChatMessage, Step, ToolCall, ToolFacts};
 
@@ -67,8 +70,9 @@ const CONTENT_MAX_WIDTH: f32 = 960.0;
 const FOLLOWUP_TURN_TOP_GAP: f32 = 32.0;
 /// User-bubble max width.
 const USER_BUBBLE_MAX_WIDTH: f32 = 540.0;
-/// Message-footer action button size.
-const FOOTER_BUTTON_SIZE: f32 = 27.0;
+/// Message-footer action button size; the footer row, its timestamp, and
+/// its usage metric share the button's height.
+const FOOTER_BUTTON: ButtonSize = ButtonSize::Medium;
 const COPY_FEEDBACK: Duration = Duration::from_secs(2);
 const NAVIGATION_RAIL_LEFT: f32 = 16.0;
 const NAVIGATION_RAIL_WIDTH: f32 = 44.0;
@@ -116,7 +120,7 @@ const CODE_PREVIEW_LINES: usize = 24;
 /// Code-block copy feedback shares the detail-section feedback map; section
 /// `2` never collides with Arguments (`0`) / Output (`1`).
 const CODE_COPY_SECTION: u8 = 2;
-const CODE_COPY_BUTTON: f32 = 28.0;
+const CODE_COPY_BUTTON: ButtonSize = ButtonSize::Medium;
 /// Inline edit diff — an edit/write tool's `oldText`/`newText` shown as a
 /// compact diff. Row height and text size track the Review pane's diff.
 const EDIT_DIFF_TEXT_SIZE: f32 = 12.5;
@@ -871,24 +875,23 @@ fn text_selection_menu(menu: &TextMenu, state: TextSelectionState, theme: Theme)
     );
     let dismiss = state.clone();
     deferred(
-        anchored().position(menu.position).snap_to_window().child(
-            div()
-                .id("transcript-text-menu")
-                .min_w(px(190.))
-                .rounded(px(9.))
-                .popover_surface(theme)
-                .flex()
-                .flex_col()
-                .overflow_hidden()
-                .occlude()
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_mouse_down_out(move |_, window, _| {
-                    dismiss.borrow_mut().menu = None;
-                    window.refresh();
-                })
-                .child(copy_selection_item)
-                .child(copy_message_item),
-        ),
+        anchored()
+            .position(menu.position)
+            .snap_to_window_with_margin(popover::WINDOW_MARGIN)
+            .child(
+                context_menu_surface(div().id("transcript-text-menu"), &theme)
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    .occlude()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_down_out(move |_, window, _| {
+                        dismiss.borrow_mut().menu = None;
+                        window.refresh();
+                    })
+                    .child(copy_selection_item)
+                    .child(copy_message_item),
+            ),
     )
     .into_any_element()
 }
@@ -899,10 +902,7 @@ fn selection_menu_item(
     theme: Theme,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    div()
-        .px(px(10.))
-        .py(px(6.))
-        .text_size(theme.ui_px(12.))
+    context_menu_entry(div(), &theme)
         .text_color(if enabled { theme.text } else { theme.text_3 })
         .when(enabled, |item| {
             item.cursor_pointer()
@@ -1491,11 +1491,7 @@ fn render_rail_preview(
         .w(px(NAVIGATION_RAIL_PREVIEW_WIDTH))
         .max_h(px(NAVIGATION_RAIL_PREVIEW_MAX_HEIGHT))
         .overflow_hidden()
-        .rounded(px(14.))
-        .border_1()
-        .border_color(theme.border_strong)
-        .bg(theme.bg_raised)
-        .shadow(theme.card_shadow())
+        .elevation_2(&theme)
         .px(px(15.))
         .py(px(12.))
         .flex()
@@ -1551,11 +1547,7 @@ fn render_rail_hint(
         .left(px(NAVIGATION_RAIL_WIDTH + NAVIGATION_RAIL_CONTENT_GAP))
         .top_0()
         .w(px(216.))
-        .rounded(px(12.))
-        .border_1()
-        .border_color(theme.border_strong)
-        .bg(theme.bg_raised)
-        .shadow(theme.card_shadow())
+        .elevation_2(&theme)
         .px(px(13.))
         .py(px(10.))
         .flex()
@@ -1980,7 +1972,7 @@ fn render_assistant_error(error: &str, ix: usize, theme: Theme) -> AnyElement {
         .flex()
         .items_start()
         .gap_2p5()
-        .child(glyph("icons/info.svg", 15., theme.crit))
+        .child(glyph("icons/info.svg", IconSize::Medium.px(&theme), theme.crit))
         .child(
             div()
                 .flex_1()
@@ -2166,75 +2158,69 @@ fn render_activity_group(
         // instead of a full-width band across the answer column.
         .items_start()
         .child(
-            div()
-                .id(ElementId::NamedInteger(
+            button_frame(
+                div().id(ElementId::NamedInteger(
                     "activity-toggle".into(),
                     ((ix as u64) << 20) | range.start as u64,
-                ))
-                .min_w_0()
-                .max_w_full()
-                .h(px(26.))
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                // Raised fill + hairline = DESIGN.md's chip treatment: the
-                // open state steps the border up for emphasis.
-                .pl(px(8.))
-                .pr(px(10.))
-                .bg(theme.bg_raised)
-                .border_1()
-                .border_color(if open {
-                    theme.border_strong
+                )),
+                &theme,
+                ButtonSize::Medium,
+            )
+            .min_w_0()
+            .max_w_full()
+            // Raised fill + hairline = DESIGN.md's chip treatment: the
+            // open state steps the border up for emphasis.
+            .bg(theme.bg_raised)
+            .border_1()
+            .border_color(if open {
+                theme.border_strong
+            } else {
+                theme.border
+            })
+            .cursor_pointer()
+            .hover(|style| style.bg(theme.bg_hover).text_color(theme.text))
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(DynamicSpacing::Base04.px(&theme))
+                    .children(icons.iter().copied().map(|icon| {
+                        glyph(
+                            icon,
+                            IconSize::XSmall.px(&theme),
+                            cluster_state.unwrap_or_else(|| work_tint(icon, theme)),
+                        )
+                    })),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text_2)
+                    .child(title),
+            )
+            .child(glyph(
+                if open {
+                    "icons/chevron-down.svg"
                 } else {
-                    theme.border
-                })
-                .rounded(px(8.))
-                .cursor_pointer()
-                .text_size(theme.ui_px(12.5))
-                .line_height(theme.ui_px(16.))
-                .hover(|style| style.bg(theme.bg_hover).text_color(theme.text))
-                .child(
-                    div()
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .gap(px(4.))
-                        .children(icons.iter().copied().map(|icon| {
-                            glyph(
-                                icon,
-                                11.,
-                                cluster_state.unwrap_or_else(|| work_tint(icon, theme)),
-                            )
-                        })),
-                )
-                .child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text_2)
-                        .child(title),
-                )
-                .child(glyph(
-                    if open {
-                        "icons/chevron-down.svg"
-                    } else {
-                        "icons/chevron-right.svg"
-                    },
-                    10.,
-                    theme.text_3,
-                ))
-                .on_click({
-                    let expanded_activities = expanded_activities.clone();
-                    let scroller = scroller.clone();
-                    move |_, _, cx| {
-                        let mut map = expanded_activities.borrow_mut();
-                        let next = !map.get(&key).copied().unwrap_or(false);
-                        map.insert(key, next);
-                        scroller.remeasure_toggle(ix);
-                        cx.refresh_windows();
-                    }
-                }),
+                    "icons/chevron-right.svg"
+                },
+                IconSize::Indicator.px(&theme),
+                theme.text_3,
+            ))
+            .on_click({
+                let expanded_activities = expanded_activities.clone();
+                let scroller = scroller.clone();
+                move |_, _, cx| {
+                    let mut map = expanded_activities.borrow_mut();
+                    let next = !map.get(&key).copied().unwrap_or(false);
+                    map.insert(key, next);
+                    scroller.remeasure_toggle(ix);
+                    cx.refresh_windows();
+                }
+            }),
         );
 
     if open {
@@ -2396,7 +2382,7 @@ fn render_thinking_body(
     let thought_icon: AnyElement = if live && !theme.ui.reduce_motion {
         div()
             .flex_none()
-            .child(glyph("icons/tools/thinking.svg", 13., theme.accent))
+            .child(glyph("icons/tools/thinking.svg", IconSize::Small.px(&theme), theme.accent))
             .with_animation(
                 ElementId::NamedInteger("thought-icon".into(), id),
                 Animation::new(Duration::from_millis(1600)).repeat(),
@@ -2406,7 +2392,7 @@ fn render_thinking_body(
     } else {
         glyph(
             "icons/tools/thinking.svg",
-            13.,
+            IconSize::Small.px(&theme),
             if live { theme.accent } else { theme.text_3 },
         )
         .into_any_element()
@@ -2467,7 +2453,7 @@ fn render_thinking_body(
                     } else {
                         "icons/chevron-down.svg"
                     },
-                    11.,
+                    IconSize::XSmall.px(&theme),
                     theme.text_3,
                 ))
                 .on_click({
@@ -2674,7 +2660,7 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
         .gap(px(8.))
         .text_size(theme.ui_px(13.))
         .line_height(theme.ui_px(17.))
-        .child(glyph("icons/task.svg", 13., theme.text_3))
+        .child(glyph("icons/task.svg", IconSize::Small.px(&theme), theme.text_3))
         .child(
             div()
                 .flex_none()
@@ -2704,7 +2690,7 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
     } else if tool.failed {
         header = header.child(div().flex_1().flex().justify_end().child(glyph(
             "icons/stop.svg",
-            12.,
+            IconSize::XSmall.px(&theme),
             theme.del_red,
         )));
     }
@@ -2783,7 +2769,7 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
                     .child(SharedString::from(option.label.clone())),
             );
             if chosen {
-                row = row.child(glyph("icons/check.svg", 11., theme.accent));
+                row = row.child(glyph("icons/check.svg", IconSize::XSmall.px(&theme), theme.accent));
             }
             list = list.child(row);
         }
@@ -2967,16 +2953,16 @@ fn render_activity_card(
                             "activity-spin".into(),
                             (key.0 as u64) << 16 | key.1 as u64,
                         ),
-                        12.,
+                        IconSize::XSmall.px(&theme),
                         theme.accent,
                         theme,
                     ))
                 })
                 .when(tool.failed, |row| {
-                    row.child(glyph("icons/stop.svg", 12., theme.del_red))
+                    row.child(glyph("icons/stop.svg", IconSize::XSmall.px(&theme), theme.del_red))
                 })
                 .when(complete && !tool.failed, |row| {
-                    row.child(glyph("icons/check.svg", 11., theme.text_3))
+                    row.child(glyph("icons/check.svg", IconSize::XSmall.px(&theme), theme.text_3))
                 })
                 .when_some(diff.clone(), |row, rows| {
                     let copied = copied_sections
@@ -2986,36 +2972,33 @@ fn render_activity_card(
                     let patch = edit_patch_text(&rows);
                     let copied_sections = copied_sections.clone();
                     row.child(
-                        div()
-                            .id(ElementId::NamedInteger(
+                        icon_button_frame(
+                            div().id(ElementId::NamedInteger(
                                 "copy-edit-diff".into(),
                                 (key.0 as u64) << 16 | key.1 as u64,
-                            ))
-                            .flex_none()
-                            .size(px(20.))
-                            .rounded(px(5.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .hover(|style| style.bg(theme.overlay_strong))
-                            .child(glyph(
-                                if copied {
-                                    "icons/check.svg"
-                                } else {
-                                    "icons/copy.svg"
-                                },
-                                12.,
-                                if copied { theme.ok_green } else { theme.text_3 },
-                            ))
-                            .on_click(move |_, _, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(patch.clone()));
-                                copied_sections
-                                    .borrow_mut()
-                                    .insert((key.0, key.1, EDIT_DIFF_COPY_SECTION), Instant::now());
-                                cx.stop_propagation();
-                                cx.refresh_windows();
-                            }),
+                            )),
+                            &theme,
+                            ButtonSize::Compact,
+                        )
+                        .cursor_pointer()
+                        .hover(|style| style.bg(theme.overlay_strong))
+                        .child(glyph(
+                            if copied {
+                                "icons/check.svg"
+                            } else {
+                                "icons/copy.svg"
+                            },
+                            IconSize::XSmall.px(&theme),
+                            if copied { theme.ok_green } else { theme.text_3 },
+                        ))
+                        .on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(patch.clone()));
+                            copied_sections
+                                .borrow_mut()
+                                .insert((key.0, key.1, EDIT_DIFF_COPY_SECTION), Instant::now());
+                            cx.stop_propagation();
+                            cx.refresh_windows();
+                        }),
                     )
                 })
                 .child(glyph(
@@ -3027,7 +3010,7 @@ fn render_activity_card(
                         // Placeholder keeps the row height stable either way.
                         "icons/chevron-right.svg"
                     },
-                    12.,
+                    IconSize::XSmall.px(&theme),
                     if has_detail {
                         theme.text_3
                     } else {
@@ -3095,7 +3078,7 @@ fn truncation_chip(facts: &ToolFacts, theme: Theme) -> Option<AnyElement> {
             .text_size(theme.ui_px(11.))
             .line_height(theme.ui_px(15.))
             .text_color(theme.warn)
-            .child(glyph("icons/tools/truncated.svg", 11., theme.warn))
+            .child(glyph("icons/tools/truncated.svg", IconSize::XSmall.px(&theme), theme.warn))
             .child(label)
             .into_any_element(),
     )
@@ -3135,7 +3118,7 @@ fn render_tool_error_strip(tool: &ToolCall, theme: Theme) -> impl IntoElement {
         .items_center()
         .gap(px(6.))
         .flex_none()
-        .child(glyph("icons/stop.svg", 11., theme.del_red))
+        .child(glyph("icons/stop.svg", IconSize::XSmall.px(&theme), theme.del_red))
         .child(
             div()
                 .min_w_0()
@@ -3313,35 +3296,32 @@ fn render_detail_section(
                         .child(label.to_string()),
                 )
                 .child(
-                    div()
-                        .id(ElementId::NamedInteger(
+                    icon_button_frame(
+                        div().id(ElementId::NamedInteger(
                             "copy-activity-section".into(),
                             ((key.0 as u64) << 16 | key.1 as u64) << 8 | section as u64,
-                        ))
-                        .flex_none()
-                        .size(px(24.))
-                        .rounded(px(6.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .cursor_pointer()
-                        .hover(|style| style.bg(theme.overlay_strong))
-                        .child(glyph(
-                            if copied {
-                                "icons/check.svg"
-                            } else {
-                                "icons/copy.svg"
-                            },
-                            12.,
-                            if copied { theme.ok_green } else { theme.text_3 },
-                        ))
-                        .on_click(move |_, _, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(copy_content.clone()));
-                            copied_sections
-                                .borrow_mut()
-                                .insert((key.0, key.1, section), Instant::now());
-                            cx.refresh_windows();
-                        }),
+                        )),
+                        &theme,
+                        ButtonSize::Default,
+                    )
+                    .cursor_pointer()
+                    .hover(|style| style.bg(theme.overlay_strong))
+                    .child(glyph(
+                        if copied {
+                            "icons/check.svg"
+                        } else {
+                            "icons/copy.svg"
+                        },
+                        IconSize::XSmall.px(&theme),
+                        if copied { theme.ok_green } else { theme.text_3 },
+                    ))
+                    .on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(copy_content.clone()));
+                        copied_sections
+                            .borrow_mut()
+                            .insert((key.0, key.1, section), Instant::now());
+                        cx.refresh_windows();
+                    }),
                 ),
         )
         .child(
@@ -3374,55 +3354,56 @@ fn render_detail_section(
             tr!("transcript.show_all_lines", total = total)
         };
         card.child(
-            div()
-                .id(ElementId::NamedInteger(
+            button_frame(
+                div().id(ElementId::NamedInteger(
                     "section-fold".into(),
                     ((key.0 as u64) << 16 | key.1 as u64) << 8 | section as u64,
-                ))
-                .w_full()
-                .h(px(22.))
-                .flex()
-                .items_center()
-                .gap(px(5.))
-                .cursor_pointer()
-                .text_size(theme.ui_px(11.))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_3)
-                .hover(|style| style.text_color(theme.text))
-                .child(glyph(
-                    if expanded {
-                        "icons/chevron-down.svg"
-                    } else {
-                        "icons/chevron-right.svg"
-                    },
-                    10.,
-                    theme.text_3,
-                ))
-                .child(toggle_label)
-                .when(paint_clipped, |toggle| {
-                    toggle.child(
-                        div()
-                            .min_w_0()
-                            .flex_1()
-                            .truncate()
-                            .font_weight(FontWeight::NORMAL)
-                            .text_color(theme.text_3)
-                            .child(tr!(
-                                "transcript.showing_first_output",
-                                count = OUTPUT_EXPANDED_PAINT_LINES
-                            )),
-                    )
-                })
-                .on_click(move |_, _, cx| {
-                    let fold_key = (key.0, key.1, section);
-                    let mut open = expanded_sections.borrow_mut();
-                    if !open.remove(&fold_key) {
-                        open.insert(fold_key);
-                    }
-                    drop(open);
-                    scroller.remeasure_toggle(key.0);
-                    cx.refresh_windows();
-                }),
+                )),
+                &theme,
+                ButtonSize::Default,
+            )
+            // Full width with its label at the start, so the paint-cap note
+            // can fill the rest of the row.
+            .w_full()
+            .justify_start()
+            .cursor_pointer()
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme.text_3)
+            .hover(|style| style.text_color(theme.text))
+            .child(glyph(
+                if expanded {
+                    "icons/chevron-down.svg"
+                } else {
+                    "icons/chevron-right.svg"
+                },
+                IconSize::Indicator.px(&theme),
+                theme.text_3,
+            ))
+            .child(toggle_label)
+            .when(paint_clipped, |toggle| {
+                toggle.child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .truncate()
+                        .font_weight(FontWeight::NORMAL)
+                        .text_color(theme.text_3)
+                        .child(tr!(
+                            "transcript.showing_first_output",
+                            count = OUTPUT_EXPANDED_PAINT_LINES
+                        )),
+                )
+            })
+            .on_click(move |_, _, cx| {
+                let fold_key = (key.0, key.1, section);
+                let mut open = expanded_sections.borrow_mut();
+                if !open.remove(&fold_key) {
+                    open.insert(fold_key);
+                }
+                drop(open);
+                scroller.remeasure_toggle(key.0);
+                cx.refresh_windows();
+            }),
         )
     } else {
         card
@@ -3735,59 +3716,59 @@ fn render_edit_diff(
             tr!("transcript.show_all_lines", total = total)
         };
         body = body.child(
-            div()
-                .id(ElementId::NamedInteger(
+            button_frame(
+                div().id(ElementId::NamedInteger(
                     "edit-diff-fold".into(),
                     ((key.0 as u64) << 16 | key.1 as u64) << 8 | EDIT_DIFF_COPY_SECTION as u64,
-                ))
-                .w_full()
-                .h(px(24.))
-                .px(px(14.))
-                .flex()
-                .items_center()
-                .gap(px(5.))
-                .cursor_pointer()
-                .text_size(theme.ui_px(11.))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_3)
-                .hover(|style| style.text_color(theme.text))
-                .child(glyph(
-                    if expanded {
-                        "icons/chevron-down.svg"
-                    } else {
-                        "icons/chevron-right.svg"
-                    },
-                    10.,
-                    theme.text_3,
-                ))
-                .child(label)
-                .when(clipped, |toggle| {
-                    toggle.child(
-                        div()
-                            .min_w_0()
-                            .flex_1()
-                            .truncate()
-                            .font_weight(FontWeight::NORMAL)
-                            .text_color(theme.text_3)
-                            .child(tr!(
-                                "transcript.showing_first_diff",
-                                count = EDIT_DIFF_PAINT_LINES
-                            )),
-                    )
-                })
-                .on_click(move |_, _, cx| {
-                    let fold_key = (key.0, key.1, EDIT_DIFF_COPY_SECTION);
-                    let mut open = expanded_sections.borrow_mut();
-                    if !open.remove(&fold_key) {
-                        open.insert(fold_key);
-                    }
-                    drop(open);
-                    scroller.remeasure_toggle(key.0);
-                    // The fold is not a card toggle — don't collapse the card
-                    // out from under the click.
-                    cx.stop_propagation();
-                    cx.refresh_windows();
-                }),
+                )),
+                &theme,
+                ButtonSize::Default,
+            )
+            // Full width with its label at the start, so the paint-cap note
+            // can fill the rest of the row.
+            .w_full()
+            .justify_start()
+            .cursor_pointer()
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme.text_3)
+            .hover(|style| style.text_color(theme.text))
+            .child(glyph(
+                if expanded {
+                    "icons/chevron-down.svg"
+                } else {
+                    "icons/chevron-right.svg"
+                },
+                IconSize::Indicator.px(&theme),
+                theme.text_3,
+            ))
+            .child(label)
+            .when(clipped, |toggle| {
+                toggle.child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .truncate()
+                        .font_weight(FontWeight::NORMAL)
+                        .text_color(theme.text_3)
+                        .child(tr!(
+                            "transcript.showing_first_diff",
+                            count = EDIT_DIFF_PAINT_LINES
+                        )),
+                )
+            })
+            .on_click(move |_, _, cx| {
+                let fold_key = (key.0, key.1, EDIT_DIFF_COPY_SECTION);
+                let mut open = expanded_sections.borrow_mut();
+                if !open.remove(&fold_key) {
+                    open.insert(fold_key);
+                }
+                drop(open);
+                scroller.remeasure_toggle(key.0);
+                // The fold is not a card toggle — don't collapse the card
+                // out from under the click.
+                cx.stop_propagation();
+                cx.refresh_windows();
+            }),
         );
     }
     body.into_any_element()
@@ -3922,7 +3903,7 @@ fn cap_chars(text: &str, max: usize) -> String {
 fn footer_time_stamp(text: String, theme: Theme) -> AnyElement {
     div()
         .flex_none()
-        .h(px(FOOTER_BUTTON_SIZE))
+        .h(FOOTER_BUTTON.height(&theme))
         .px(px(4.))
         .flex()
         .items_center()
@@ -3948,32 +3929,29 @@ fn render_message_footer(
     copied_at: Rc<RefCell<HashMap<usize, Instant>>>,
     hovered_usage: Rc<Cell<Option<usize>>>,
 ) -> impl IntoElement {
-    let button = div()
-        .id(ElementId::NamedInteger("copy-response".into(), ix as u64))
-        .flex_none()
-        .size(px(FOOTER_BUTTON_SIZE))
-        .rounded(px(8.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
-        .hover(|style| style.bg(theme.overlay_strong))
-        .child(glyph(
-            if copied {
-                "icons/check.svg"
-            } else {
-                "icons/copy.svg"
-            },
-            18.,
-            if copied { theme.ok_green } else { theme.text_3 },
-        ))
-        .on_click(move |_, _, cx| {
-            cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
-            copied_at.borrow_mut().insert(ix, Instant::now());
-            cx.refresh_windows();
-        });
+    let button = icon_button_frame(
+        div().id(ElementId::NamedInteger("copy-response".into(), ix as u64)),
+        &theme,
+        FOOTER_BUTTON,
+    )
+    .cursor_pointer()
+    .hover(|style| style.bg(theme.overlay_strong))
+    .child(glyph(
+        if copied {
+            "icons/check.svg"
+        } else {
+            "icons/copy.svg"
+        },
+        IconSize::Medium.px(&theme),
+        if copied { theme.ok_green } else { theme.text_3 },
+    ))
+    .on_click(move |_, _, cx| {
+        cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
+        copied_at.borrow_mut().insert(ix, Instant::now());
+        cx.refresh_windows();
+    });
     let mut footer = div()
-        .h(px(FOOTER_BUTTON_SIZE))
+        .h(FOOTER_BUTTON.height(&theme))
         .flex()
         .items_center()
         .gap(px(1.))
@@ -4030,7 +4008,7 @@ fn usage_metric(
         .id(ElementId::NamedInteger("usage-metric".into(), ix as u64))
         .relative()
         .ml(px(6.))
-        .h(px(FOOTER_BUTTON_SIZE))
+        .h(FOOTER_BUTTON.height(&theme))
         .flex()
         .items_center()
         .text_size(theme.ui_px(11.5))
@@ -4050,7 +4028,7 @@ fn usage_metric(
                 .absolute()
                 .bottom_full()
                 .left_0()
-                .mb(px(6.))
+                .mb(popover::MENU_OFFSET)
                 .child(deferred(usage_breakdown_card(&usage, theme))),
         );
     }
@@ -4066,11 +4044,7 @@ fn usage_breakdown_card(usage: &MessageUsage, theme: Theme) -> AnyElement {
         .unwrap_or_else(|| "—".into());
     div()
         .w(px(224.))
-        .rounded(px(10.))
-        .border_1()
-        .border_color(theme.border_strong)
-        .bg(theme.menu_bg)
-        .shadow(theme.card_shadow())
+        .elevation_2(&theme)
         .px(px(12.))
         .py(px(10.))
         .flex()
@@ -4134,7 +4108,7 @@ fn usage_metric_row(
         .flex()
         .items_center()
         .gap(px(7.))
-        .child(glyph(icon_path, 13., theme.text_3))
+        .child(glyph(icon_path, IconSize::Small.px(&theme), theme.text_3))
         .child(
             div()
                 .flex_1()
@@ -4188,7 +4162,7 @@ fn format_time(millis: i64) -> Option<String> {
         .map(|dt| dt.with_timezone(&chrono::Local).format("%H:%M").to_string())
 }
 
-fn glyph(path: &'static str, size: f32, color: Hsla) -> impl IntoElement {
+fn glyph(path: &'static str, size: impl Into<Pixels>, color: Hsla) -> impl IntoElement {
     // The shared icon carries the button hover ink-lift, so every control in
     // the transcript that opts into `BUTTON_GROUP` brightens its glyph.
     crate::app::icon(path, size, color)
@@ -4265,36 +4239,31 @@ fn render_turn_fold(
         .gap(px(10.))
         .child(div().h(px(1.)).flex_1().bg(theme.border))
         .child(
-            div()
-                .id(ElementId::NamedInteger("turn-fold".into(), ix as u64))
-                .group(BUTTON_GROUP)
-                .h(px(24.))
-                .px(px(2.))
-                .flex_none()
-                .flex()
-                .items_center()
-                .gap(px(5.))
-                .cursor_pointer()
-                .text_size(theme.ui_px(13.5))
-                .line_height(theme.ui_px(18.))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_3)
-                .hover(|style| style.text_color(theme.text_2))
-                .child(label)
-                .child(glyph(
-                    if expanded {
-                        "icons/chevron-down.svg"
-                    } else {
-                        "icons/chevron-right.svg"
-                    },
-                    11.5,
-                    theme.text_3,
-                ))
-                .on_click(move |_, _, cx| {
-                    toggle_index(&expanded_turns, ix);
-                    scroller.remeasure_toggle(ix);
-                    cx.refresh_windows();
-                }),
+            button_frame(
+                div().id(ElementId::NamedInteger("turn-fold".into(), ix as u64)),
+                &theme,
+                ButtonSize::Default,
+            )
+            .group(BUTTON_GROUP)
+            .cursor_pointer()
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme.text_3)
+            .hover(|style| style.text_color(theme.text_2))
+            .child(label)
+            .child(glyph(
+                if expanded {
+                    "icons/chevron-down.svg"
+                } else {
+                    "icons/chevron-right.svg"
+                },
+                IconSize::XSmall.px(&theme),
+                theme.text_3,
+            ))
+            .on_click(move |_, _, cx| {
+                toggle_index(&expanded_turns, ix);
+                scroller.remeasure_toggle(ix);
+                cx.refresh_windows();
+            }),
         )
         .child(div().h(px(1.)).flex_1().bg(theme.border))
 }
@@ -4358,7 +4327,7 @@ fn render_stopped_marker(theme: Theme) -> impl IntoElement {
         .flex()
         .items_center()
         .gap(px(8.))
-        .child(glyph("icons/stop.svg", 11., theme.text_3))
+        .child(glyph("icons/stop.svg", IconSize::XSmall.px(&theme), theme.text_3))
         .child(
             div()
                 .text_size(theme.ui_px(13.5))
@@ -5589,7 +5558,7 @@ fn render_alert(
                 .flex()
                 .items_center()
                 .gap(px(8.))
-                .child(glyph(kind.icon(), 14., color))
+                .child(glyph(kind.icon(), IconSize::Small.px(&theme), color))
                 .child(
                     div()
                         .text_size(theme.ui_px(12.))
@@ -5690,7 +5659,7 @@ fn task_checkbox(checked: bool, theme: Theme) -> AnyElement {
     if checked {
         box_ = box_
             .bg(theme.accent)
-            .child(glyph("icons/check.svg", 10., theme.send_fg));
+            .child(glyph("icons/check.svg", IconSize::Indicator.px(&theme), theme.send_fg));
     } else {
         box_ = box_.border_1().border_color(theme.border_strong);
     }
@@ -5737,35 +5706,32 @@ fn render_code_block(
         .borrow()
         .get(&(ix, block_key, CODE_COPY_SECTION))
         .is_some_and(|at| at.elapsed() < COPY_FEEDBACK);
-    let copy_button = div()
-        .id(ElementId::NamedInteger(
+    let copy_button = icon_button_frame(
+        div().id(ElementId::NamedInteger(
             "copy-code".into(),
             (ix as u64) << 32 | block_key as u64,
-        ))
-        .flex_none()
-        .size(px(CODE_COPY_BUTTON))
-        .rounded(px(6.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
-        .hover(|style| style.bg(theme.overlay_strong))
-        .child(glyph(
-            if copied {
-                "icons/check.svg"
-            } else {
-                "icons/copy.svg"
-            },
-            14.,
-            if copied { theme.ok_green } else { theme.text_3 },
-        ))
-        .on_click(move |_, _, cx| {
-            cx.write_to_clipboard(ClipboardItem::new_string(code.clone()));
-            copied_sections
-                .borrow_mut()
-                .insert((ix, block_key, CODE_COPY_SECTION), Instant::now());
-            cx.refresh_windows();
-        });
+        )),
+        &theme,
+        CODE_COPY_BUTTON,
+    )
+    .cursor_pointer()
+    .hover(|style| style.bg(theme.overlay_strong))
+    .child(glyph(
+        if copied {
+            "icons/check.svg"
+        } else {
+            "icons/copy.svg"
+        },
+        IconSize::Small.px(&theme),
+        if copied { theme.ok_green } else { theme.text_3 },
+    ))
+    .on_click(move |_, _, cx| {
+        cx.write_to_clipboard(ClipboardItem::new_string(code.clone()));
+        copied_sections
+            .borrow_mut()
+            .insert((ix, block_key, CODE_COPY_SECTION), Instant::now());
+        cx.refresh_windows();
+    });
     // Title strip: the language name and the copy affordance in one row, so
     // context and action sit in the same place on every code block.
     let header = div()
@@ -5886,7 +5852,7 @@ fn render_code_block(
                     } else {
                         "icons/chevron-right.svg"
                     },
-                    11.,
+                    IconSize::XSmall.px(&theme),
                     theme.text_3,
                 ))
                 .on_click(move |_, _, cx| {
@@ -6290,28 +6256,24 @@ pub(crate) fn render_changed_files(
     // Review affordance: opens the changed-files diff in the right side
     // pane's Review tab (no external editor hop).
     let review = review_changes.map(|review| {
-        div()
-            .id(ElementId::NamedInteger(
+        button_frame(
+            div().id(ElementId::NamedInteger(
                 "review-changes".into(),
                 message_ix as u64,
-            ))
-            .h(px(28.))
-            .px(px(10.))
-            .rounded(px(8.))
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.bg_raised)
-            .flex()
-            .items_center()
-            .gap(px(4.))
-            .cursor_pointer()
-            .text_size(theme.ui_px(11.5))
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(theme.text_2)
-            .hover(|style| style.bg(theme.bg_hover).text_color(theme.text))
-            .child(glyph("icons/file-diff.svg", 12., theme.text_3))
-            .child(tr!("transcript_view.review"))
-            .on_click(move |_, window, cx| review(window, cx))
+            )),
+            &theme,
+            ButtonSize::Medium,
+        )
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.bg_raised)
+        .cursor_pointer()
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(theme.text_2)
+        .hover(|style| style.bg(theme.bg_hover).text_color(theme.text))
+        .child(glyph("icons/file-diff.svg", IconSize::XSmall.px(&theme), theme.text_3))
+        .child(tr!("transcript_view.review"))
+        .on_click(move |_, window, cx| review(window, cx))
     });
 
     let mut header = div()
@@ -6332,7 +6294,7 @@ pub(crate) fn render_changed_files(
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(glyph("icons/file-diff.svg", 14., theme.text_2)),
+                .child(glyph("icons/file-diff.svg", IconSize::Small.px(&theme), theme.text_2)),
         )
         .child(
             div()
@@ -6436,7 +6398,7 @@ pub(crate) fn render_changed_files(
                     } else {
                         "icons/chevron-right.svg"
                     },
-                    11.,
+                    IconSize::XSmall.px(&theme),
                     theme.text_3,
                 ))
                 .on_click(move |_, _, cx| {
@@ -6580,7 +6542,7 @@ fn activity_badge(icon: &'static str, tone: Hsla, theme: Theme) -> impl IntoElem
         .flex()
         .items_center()
         .justify_center()
-        .child(glyph(icon, 13., tone))
+        .child(glyph(icon, IconSize::Small.px(&theme), tone))
 }
 
 /// Human label for a tool card header. Known pi tools get a short, scannable

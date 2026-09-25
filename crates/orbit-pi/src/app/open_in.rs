@@ -1,5 +1,6 @@
 use super::helpers::*;
 use super::*;
+use crate::theme::tokens::{context_menu, picker, popover, ButtonSize, IconSize};
 
 impl OrbitApp {
     /// Resolve installed folder-capable apps once, off-thread.
@@ -118,43 +119,33 @@ impl OrbitApp {
         let this = cx.entity().clone();
         let path = Rc::from(path.as_path());
 
-        let primary = div()
-            .id("header-open-in")
+        let primary = icon_button_frame(div().id("header-open-in"), &theme, ButtonSize::Medium)
             .group(BUTTON_GROUP)
             .h_full()
-            .px(px(2.))
+            .rounded(px(0.))
             .rounded_tl(px(HEADER_CTRL_R))
             .rounded_bl(px(HEADER_CTRL_R))
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_center()
             .cursor_pointer()
             .active(|s| s.bg(theme.active).text_color(theme.active_fg))
             .child(
                 img(ImageSource::Image(preferred_icon))
-                    .size(px(20.))
+                    .size(IconSize::Medium.px(&theme))
                     .flex_none(),
             )
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_open_in_primary));
 
-        let caret = div()
-            .id("header-open-in-caret")
+        let caret = icon_button_frame(div().id("header-open-in-caret"), &theme, ButtonSize::Compact)
             .group(BUTTON_GROUP)
             .relative()
             .h_full()
-            .w(px(19.))
+            .rounded(px(0.))
             .rounded_tr(px(HEADER_CTRL_R))
             .rounded_br(px(HEADER_CTRL_R))
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_center()
             .cursor_pointer()
             .when(self.open_in_menu_open, |s| {
                 s.bg(theme.active).text_color(theme.active_fg)
             })
-            .child(icon("icons/chevron-down.svg", 11., theme.text_3))
+            .child(icon("icons/chevron-down.svg", IconSize::XSmall.px(&theme), theme.text_3))
             // Pin the dropdown to the caret's bottom-right — same zero-size
             // anchor trick as the session row menu, so flex centering doesn't
             // pull the popup toward the button's middle.
@@ -200,11 +191,9 @@ impl OrbitApp {
             .collect();
         let mut list = div()
             .w_full()
-            .px(px(4.))
-            .py(px(4.))
+            .py(picker::list_padding_y(&theme))
             .flex()
-            .flex_col()
-            .gap(px(2.));
+            .flex_col();
         for app in apps.iter() {
             let selected = app.id == preferred_id;
             let this = this.clone();
@@ -213,59 +202,54 @@ impl OrbitApp {
             let app_icon = app.icon.clone();
             let label = app.label;
             list = list.child(
-                div()
-                    .id(ElementId::Name(format!("open-in-{}", app.id).into()))
-                    .h(px(28.))
-                    .px(px(8.))
-                    .rounded(px(6.))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .cursor_pointer()
-                    .when(selected, |row| row.bg(theme.active))
-                    .hover(|style| style.bg(theme.overlay))
-                    .child(img(ImageSource::Image(app_icon)).size(px(16.)).flex_none())
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_size(theme.ui_px(12.))
-                            .text_color(if selected {
-                                theme.active_fg
-                            } else {
-                                theme.text_2
-                            })
-                            .child(label),
-                    )
-                    .when(selected, |row| {
-                        row.child(icon("icons/check.svg", 11., theme.accent))
-                    })
-                    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                        this.update(cx, |app, cx| {
-                            app.open_workspace_in_app(&path, app_id, cx);
-                        });
-                    }),
+                picker_entry(
+                    div().id(ElementId::Name(format!("open-in-{}", app.id).into())),
+                    &theme,
+                )
+                .cursor_pointer()
+                .when(selected, |row| row.bg(theme.active))
+                .hover(|style| style.bg(theme.overlay))
+                .child(
+                    img(ImageSource::Image(app_icon))
+                        .size(context_menu::ICON.px(&theme))
+                        .flex_none(),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_color(if selected {
+                            theme.active_fg
+                        } else {
+                            theme.text_2
+                        })
+                        .child(label),
+                )
+                .when(selected, |row| {
+                    row.child(icon(
+                        "icons/check.svg",
+                        context_menu::ICON.px(&theme),
+                        theme.accent,
+                    ))
+                })
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    this.update(cx, |app, cx| {
+                        app.open_workspace_in_app(&path, app_id, cx);
+                    });
+                }),
             );
         }
 
         if apps.is_empty() {
             list = list.child(
-                div()
-                    .h(px(28.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_size(theme.ui_px(12.))
+                picker_entry(div(), &theme)
                     .text_color(theme.text_3)
                     .child(tr!("open_in.no_matches")),
             );
         }
 
-        let popup = div()
+        let popup = picker_surface(div(), &theme)
             .w(px(200.))
-            .font_family(theme::ui_font_family())
-            .rounded(px(8.))
-            .popover_surface(theme)
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -287,17 +271,9 @@ impl OrbitApp {
             })
             // Search field — filters the apps below.
             .child(
-                div()
-                    .h(px(30.))
-                    .px(px(8.))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .text_size(theme.ui_px(12.))
-                    .child(icon("icons/search.svg", 13., theme.text_3))
-                    .child(self.open_in_filter.clone()),
+                picker_search_frame(div(), &theme)
+                    .child(icon("icons/search.svg", IconSize::Small.px(&theme), theme.text_3))
+                    .child(div().flex_1().min_w_0().child(self.open_in_filter.clone())),
             )
             .child(list);
 
@@ -311,8 +287,8 @@ impl OrbitApp {
                     anchored()
                         .position_mode(AnchoredPositionMode::Local)
                         .anchor(Corner::TopRight)
-                        .offset(point(px(0.), px(4.)))
-                        .snap_to_window()
+                        .offset(point(px(0.), popover::MENU_OFFSET))
+                        .snap_to_window_with_margin(popover::WINDOW_MARGIN)
                         .child(deferred(popup)),
                 )
                 .into_any_element(),

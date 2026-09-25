@@ -8,15 +8,36 @@ use gpui::{
     FontWeight, IntoElement, MouseDownEvent, ParentElement, Render, ScrollHandle, Styled, Window,
 };
 
-use crate::app::{icon, PopoverSurface};
+use crate::app::{
+    button_frame, icon, menu_header, picker_entry, picker_search_frame, picker_surface,
+};
 use crate::composer::ComposerInput;
-use crate::theme;
+use crate::theme::tokens::{context_menu, picker, ButtonSize, DynamicSpacing, IconSize, TextSize};
+use crate::theme::{self, Theme};
 
 const POPOVER_W: f32 = 280.;
-const ROW_H: f32 = 30.;
-const ROW_GAP: f32 = 1.;
-const ROW_STRIDE: f32 = ROW_H + ROW_GAP;
-const LIST_MAX_H: f32 = 7. * ROW_STRIDE;
+/// Branch rows visible before the list scrolls.
+const VISIBLE_ROWS: f32 = 7.;
+
+/// A branch row: a one-line picker entry. Layout and the keyboard reveal
+/// math both read these, so they can never disagree.
+fn row_h(theme: &Theme) -> f32 {
+    picker::entry_height(theme).into()
+}
+
+/// Air between branch rows.
+fn row_gap(theme: &Theme) -> f32 {
+    DynamicSpacing::Base01.px(theme).into()
+}
+
+fn row_stride(theme: &Theme) -> f32 {
+    row_h(theme) + row_gap(theme)
+}
+
+/// Largest list height before it scrolls.
+fn list_max_h(theme: &Theme) -> f32 {
+    VISIBLE_ROWS * row_stride(theme)
+}
 
 /// Checkout/create callback: the chosen branch plus the ambient window.
 type BranchAction = Box<dyn Fn(String, &mut Window, &mut App)>;
@@ -151,16 +172,18 @@ impl BranchPicker {
             pos.saturating_sub(1)
         };
         self.highlighted = next;
-        let row_top = next as f32 * ROW_STRIDE;
+        let theme = theme::get(cx);
+        let (row_h, row_gap) = (row_h(theme), row_gap(theme));
+        let row_top = next as f32 * row_stride(theme);
         let current: f32 = self.list_scroll.offset().y.into();
         let n = rows.len() as f32;
-        let content_h = (n * ROW_H + (n - 1.).max(0.) * ROW_GAP).max(0.);
-        let viewport_h = content_h.min(LIST_MAX_H);
+        let content_h = (n * row_h + (n - 1.).max(0.) * row_gap).max(0.);
+        let viewport_h = content_h.min(list_max_h(theme));
         let mut offset = current;
         if row_top < current {
             offset = row_top;
-        } else if row_top + ROW_H > current + viewport_h {
-            offset = row_top + ROW_H - viewport_h;
+        } else if row_top + row_h > current + viewport_h {
+            offset = row_top + row_h - viewport_h;
         }
         let max_offset = (content_h - viewport_h).max(0.);
         self.list_scroll
@@ -198,13 +221,11 @@ impl Render for BranchPicker {
         let this = cx.entity();
 
         if self.mode == Mode::Create {
-            return div()
+            // The same picker surface as Browse, so switching modes never
+            // swaps the popover's chrome.
+            return picker_surface(div(), &theme)
                 .w(px(POPOVER_W))
-                .font_family(theme::ui_font_family())
-                .pt(px(6.))
-                .pb(px(6.))
-                .rounded(px(10.))
-                .popover_surface(theme)
+                .py(DynamicSpacing::Base06.px(&theme))
                 .flex()
                 .flex_col()
                 .overflow_hidden()
@@ -214,40 +235,34 @@ impl Render for BranchPicker {
                 .on_action(cx.listener(Self::on_confirm))
                 .child(
                     div()
-                        .px(px(12.))
-                        .pt(px(4.))
-                        .pb(px(8.))
+                        .px(DynamicSpacing::Base12.px(&theme))
+                        .pt(DynamicSpacing::Base04.px(&theme))
+                        .pb(DynamicSpacing::Base08.px(&theme))
                         .flex()
                         .flex_col()
-                        .gap(px(6.))
+                        .gap(DynamicSpacing::Base06.px(&theme))
                         .child(
                             div()
-                                .text_size(theme.ui_px(12.5))
+                                .text_size(TextSize::Small.px(&theme))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(theme.text)
                                 .child(tr!("branch_picker.create_and_checkout_new_branch")),
                         )
                         .child(
                             div()
-                                .text_size(theme.ui_px(11.5))
+                                .text_size(TextSize::Small.px(&theme))
                                 .text_color(theme.text_3)
                                 .child(tr!("branch_picker.uncommitted_changes_come_with_you")),
                         )
                         .child(self.create_input.clone()),
                 )
                 .child(
-                    div()
-                        .mx(px(8.))
-                        .mb(px(4.))
-                        .h(px(28.))
-                        .rounded(px(6.))
+                    button_frame(div(), &theme, ButtonSize::Medium)
+                        .mx(DynamicSpacing::Base08.px(&theme))
+                        .mb(DynamicSpacing::Base04.px(&theme))
                         .bg(theme.send_bg)
                         .hover(|s| s.bg(theme.send_bg_hover))
                         .cursor_pointer()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_size(theme.ui_px(12.))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.send_fg)
                         .on_mouse_up(
@@ -277,14 +292,13 @@ impl Render for BranchPicker {
         let mut list = div()
             .id("branch-picker-list")
             .w_full()
-            .max_h(px(LIST_MAX_H))
+            .max_h(px(list_max_h(&theme)))
             .overflow_y_scroll()
             .track_scroll(&self.list_scroll)
-            .px(px(4.))
-            .py(px(2.))
+            .py(picker::list_padding_y(&theme))
             .flex()
             .flex_col()
-            .gap(px(ROW_GAP));
+            .gap(px(row_gap(&theme)));
         for (ix, branch) in rows.iter().enumerate() {
             let selected = *branch == self.current;
             let highlighted = ix == self.highlighted;
@@ -293,69 +307,69 @@ impl Render for BranchPicker {
             let branch_action = branch.clone();
             let this = this.clone();
             list = list.child(
-                div()
-                    .id(ElementId::NamedInteger("branch-row".into(), ix as u64))
-                    .h(px(ROW_H))
-                    .px(px(8.))
-                    .rounded(px(6.))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .cursor_pointer()
-                    .when(selected || highlighted, |row| row.bg(theme.active))
-                    .when(!selected && !highlighted, |row| {
-                        row.hover(|s| s.bg(theme.overlay))
-                    })
-                    .on_hover({
-                        let this = this.clone();
-                        move |hovering, _, cx| {
-                            if *hovering {
-                                this.update(cx, |picker, cx| {
-                                    if picker.highlighted != ix {
-                                        picker.highlighted = ix;
-                                        cx.notify();
-                                    }
-                                });
-                            }
+                picker_entry(
+                    div().id(ElementId::NamedInteger("branch-row".into(), ix as u64)),
+                    &theme,
+                )
+                .h(px(row_h(&theme)))
+                .flex_none()
+                .cursor_pointer()
+                .when(selected || highlighted, |row| row.bg(theme.active))
+                .when(!selected && !highlighted, |row| {
+                    row.hover(|s| s.bg(theme.overlay))
+                })
+                .on_hover({
+                    let this = this.clone();
+                    move |hovering, _, cx| {
+                        if *hovering {
+                            this.update(cx, |picker, cx| {
+                                if picker.highlighted != ix {
+                                    picker.highlighted = ix;
+                                    cx.notify();
+                                }
+                            });
                         }
-                    })
-                    .on_mouse_up(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |picker, _, window, cx| {
-                            if branch_compare == picker.current {
-                                (picker.on_dismiss)(false, window, cx);
-                            } else {
-                                (picker.on_checkout)(branch_action.clone(), window, cx);
-                            }
-                        }),
-                    )
-                    .child(icon("icons/branch.svg", 12., theme.text_3))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(theme.ui_px(12.))
-                            .text_color(if selected {
-                                theme.active_fg
-                            } else {
-                                theme.text_2
-                            })
-                            .child(branch_label),
-                    )
-                    .when(selected, |row| {
-                        row.child(icon("icons/check.svg", 11., theme.accent))
+                    }
+                })
+                .on_mouse_up(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |picker, _, window, cx| {
+                        if branch_compare == picker.current {
+                            (picker.on_dismiss)(false, window, cx);
+                        } else {
+                            (picker.on_checkout)(branch_action.clone(), window, cx);
+                        }
                     }),
+                )
+                .child(icon(
+                    "icons/branch.svg",
+                    context_menu::ICON.px(&theme),
+                    theme.text_3,
+                ))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(if selected {
+                            theme.active_fg
+                        } else {
+                            theme.text_2
+                        })
+                        .child(branch_label),
+                )
+                .when(selected, |row| {
+                    row.child(icon(
+                        "icons/check.svg",
+                        context_menu::ICON.px(&theme),
+                        theme.accent,
+                    ))
+                }),
             );
         }
 
-        div()
+        picker_surface(div(), &theme)
             .w(px(POPOVER_W))
-            .font_family(theme::ui_font_family())
-            .pt(px(6.))
-            .pb(px(4.))
-            .rounded(px(10.))
-            .popover_surface(theme)
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -366,64 +380,51 @@ impl Render for BranchPicker {
             .on_action(cx.listener(Self::on_next))
             .on_action(cx.listener(Self::on_prev))
             .child(
-                div()
-                    .h(px(34.))
-                    .px(px(12.))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .text_size(theme.ui_px(12.5))
-                    .child(icon("icons/search.svg", 13., theme.text_3))
-                    .child(self.filter.clone()),
+                picker_search_frame(div(), &theme)
+                    .child(icon(
+                        "icons/search.svg",
+                        IconSize::Small.px(&theme),
+                        theme.text_3,
+                    ))
+                    .child(div().flex_1().min_w_0().child(self.filter.clone())),
             )
             .child(
-                div()
-                    .px(px(12.))
-                    .pt(px(8.))
-                    .pb(px(4.))
-                    .text_size(theme.ui_px(10.5))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_3)
-                    .child(tr!("branch_picker.branches")),
+                menu_header(tr!("branch_picker.branches"), &theme)
+                    .pt(picker::list_padding_y(&theme)),
             )
             .child(if rows.is_empty() {
+                // Zed's no-match state: one muted picker entry.
                 div()
-                    .h(px(56.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_size(theme.ui_px(12.))
-                    .text_color(theme.text_3)
-                    .child(tr!("branch_picker.no_branches_match"))
+                    .py(picker::list_padding_y(&theme))
+                    .child(
+                        picker_entry(div(), &theme)
+                            .text_color(theme.text_3)
+                            .child(tr!("branch_picker.no_branches_match")),
+                    )
                     .into_any_element()
             } else {
                 list.into_any_element()
             })
+            // Footer action, below a full-width hairline like Zed's picker
+            // footer.
             .child(
                 div()
-                    .mx(px(4.))
-                    .mt(px(4.))
+                    .py(picker::list_padding_y(&theme))
                     .border_t_1()
                     .border_color(theme.border)
                     .child(
-                        div()
-                            .h(px(32.))
-                            .mx(px(4.))
-                            .my(px(4.))
-                            .px(px(8.))
-                            .rounded(px(6.))
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
+                        picker_entry(div(), &theme)
+                            .h(picker::entry_height(&theme))
                             .cursor_pointer()
                             .hover(|s| s.bg(theme.overlay))
                             .on_mouse_up(gpui::MouseButton::Left, cx.listener(Self::begin_create))
-                            .child(icon("icons/plus.svg", 12., theme.text_2))
+                            .child(icon(
+                                "icons/plus.svg",
+                                context_menu::ICON.px(&theme),
+                                theme.text_2,
+                            ))
                             .child(
                                 div()
-                                    .text_size(theme.ui_px(12.))
                                     .text_color(theme.text_2)
                                     .child(tr!("branch_picker.create_and_checkout_new_branch_2")),
                             ),

@@ -60,8 +60,12 @@ use super::table::{
     TableKind, HEADER_H, ROW_H,
 };
 use super::tooltip::Tooltip;
-use crate::app::{icon, press, BUTTON_GROUP, PopoverSurface};
+use crate::app::{
+    button_frame, context_menu_entry, context_menu_separator, context_menu_surface, icon,
+    icon_button_frame, input_field_frame, press, BUTTON_GROUP,
+};
 use crate::composer::ComposerInput;
+use crate::theme::tokens::{popover, ButtonSize, DynamicSpacing, IconSize, Radius};
 use crate::theme::{self, Theme};
 
 /// Inner column width for a data surface (§58): wide enough for a full table,
@@ -167,14 +171,7 @@ impl UsagePage {
             .border_b_1()
             .border_color(theme.border)
             .child(
-                div()
-                    .id("usage-back")
-                    .px(px(8.))
-                    .h(px(28.))
-                    .rounded(px(8.))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
+                button_frame(div().id("usage-back"), &theme, ButtonSize::Medium)
                     .cursor_pointer()
                     .hover(|style| style.bg(theme.bg_hover))
                     .on_mouse_down(MouseButton::Left, {
@@ -183,20 +180,23 @@ impl UsagePage {
                             entity.update(cx, |page, cx| page.close_page(window, cx));
                         }
                     })
-                    .child(icon("icons/arrow-left.svg", 14., theme.text_2))
-                    .child(
-                        div()
-                            .text_size(theme.ui_px(12.5))
-                            .text_color(theme.text_2)
-                            .child(tr!("view.back")),
-                    ),
+                    .child(icon(
+                        "icons/arrow-left.svg",
+                        IconSize::Small.px(&theme),
+                        theme.text_2,
+                    ))
+                    .child(div().text_color(theme.text_2).child(tr!("view.back"))),
             )
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap(px(7.))
-                    .child(icon("icons/usage-total.svg", 15., theme.text_2))
+                    .child(icon(
+                        "icons/usage-total.svg",
+                        IconSize::Medium.px(&theme),
+                        theme.text_2,
+                    ))
                     .child(
                         div()
                             .text_size(theme.ui_px(15.))
@@ -258,6 +258,7 @@ impl UsagePage {
             button,
             true,
             Corner::TopRight,
+            theme,
             move || panel,
         )
     }
@@ -301,6 +302,7 @@ impl UsagePage {
             range_chip,
             range_open,
             Corner::TopLeft,
+            theme,
             move || range_panel.unwrap_or_else(|| div().into_any_element()),
         ));
 
@@ -431,12 +433,12 @@ impl UsagePage {
             },
         );
         if !open {
-            return filters::chip_with_menu(id, chip, false, Corner::TopLeft, || {
+            return filters::chip_with_menu(id, chip, false, Corner::TopLeft, theme, || {
                 div().into_any_element()
             });
         }
         let panel = filters::multi_menu(self, kind, ranked, all, selected, cx, theme);
-        filters::chip_with_menu(id, chip, true, Corner::TopLeft, move || panel)
+        filters::chip_with_menu(id, chip, true, Corner::TopLeft, theme, move || panel)
     }
 
     /// The active-filter bar (§45): every narrowing filter as a removable
@@ -600,19 +602,12 @@ impl UsagePage {
             // The store could not be read at all: say so, and offer the retry.
             if let Some(error) = self.error().map(str::to_string) {
                 let entity = cx.entity();
-                let action = div()
-                    .id("usage-retry")
-                    .mt(px(2.))
-                    .h(px(28.))
-                    .px(px(10.))
-                    .rounded(px(8.))
+                let action = button_frame(div().id("usage-retry"), &theme, ButtonSize::Medium)
+                    .mt(DynamicSpacing::Base02.px(&theme))
                     .border_1()
                     .border_color(theme.border)
                     .bg(theme.bg_raised)
-                    .flex()
-                    .items_center()
                     .cursor_pointer()
-                    .text_size(theme.ui_px(12.))
                     .hover(|style| style.bg(theme.bg_hover))
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         entity.update(cx, |page, cx| page.refresh(cx));
@@ -816,20 +811,13 @@ impl UsagePage {
         let entity = cx.entity();
         Some(
             press(
-                div()
-                    .id("usage-state-clear")
+                button_frame(div().id("usage-state-clear"), &theme, ButtonSize::Medium)
                     .group(BUTTON_GROUP)
-                    .mt(px(2.))
-                    .h(px(28.))
-                    .px(px(10.))
-                    .rounded(px(7.))
+                    .mt(DynamicSpacing::Base02.px(&theme))
                     .border_1()
                     .border_color(theme.border)
                     .bg(theme.bg_raised)
-                    .flex()
-                    .items_center()
                     .cursor_pointer()
-                    .text_size(theme.ui_px(12.))
                     .hover(|style| style.bg(theme.bg_hover)),
             )
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
@@ -1065,7 +1053,11 @@ impl UsagePage {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(icon(icon_path, 20., theme.text_3)),
+                    .child(icon(
+                        icon_path,
+                        IconSize::Custom(20. / 16.).px(&theme),
+                        theme.text_3,
+                    )),
             )
             .child(
                 div()
@@ -1384,12 +1376,8 @@ impl UsagePage {
         if totals.errors > 0 {
             let fail_entity = cx.entity();
             values.push(
-                div()
-                    .id("usage-summary-failures")
-                    .flex()
-                    .items_center()
+                button_frame(div().id("usage-summary-failures"), &theme, ButtonSize::Compact)
                     .cursor_pointer()
-                    .text_size(theme.ui_px(11.5))
                     .text_color(theme.crit)
                     .hover(|style| style.text_color(theme.text))
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
@@ -1437,7 +1425,7 @@ impl UsagePage {
                     .items_start()
                     .gap(px(8.))
                     .text_size(theme.ui_px(12.))
-                    .child(div().pt(px(1.)).child(icon(path, 12., color)))
+                    .child(div().pt(px(1.)).child(icon(path, IconSize::XSmall.px(&theme), color)))
                     .child(
                         div()
                             .flex_1()
@@ -1470,9 +1458,9 @@ impl UsagePage {
         let mut tabs = div()
             .flex()
             .items_center()
-            .gap(px(2.))
-            .p(px(2.))
-            .rounded(px(8.))
+            .gap(DynamicSpacing::Base02.px(&theme))
+            .p(DynamicSpacing::Base02.px(&theme))
+            .rounded(Radius::Large.px(&theme))
             .border_1()
             .border_color(theme.border)
             .bg(theme.bg_main);
@@ -1485,17 +1473,11 @@ impl UsagePage {
             let active = option == metric;
             let entity = cx.entity();
             tabs = tabs.child(
-                div()
+                button_frame(div(), &theme, ButtonSize::Default)
                     .id(SharedString::from(format!(
                         "usage-metric-{}",
                         option.as_str()
                     )))
-                    .h(px(24.))
-                    .px(px(9.))
-                    .rounded(px(6.))
-                    .flex()
-                    .items_center()
-                    .text_size(theme.ui_px(11.5))
                     .when(active, |tab| {
                         tab.bg(theme.active)
                             .text_color(theme.active_fg)
@@ -1525,9 +1507,9 @@ impl UsagePage {
             let mut segment = div()
                 .flex()
                 .items_center()
-                .gap(px(2.))
-                .p(px(2.))
-                .rounded(px(8.))
+                .gap(DynamicSpacing::Base02.px(&theme))
+                .p(DynamicSpacing::Base02.px(&theme))
+                .rounded(Radius::Large.px(&theme))
                 .border_1()
                 .border_color(theme.border)
                 .bg(theme.bg_main);
@@ -1536,17 +1518,11 @@ impl UsagePage {
                 let active = choice == latency_metric;
                 let entity = cx.entity();
                 segment = segment.child(
-                    div()
+                    button_frame(div(), &theme, ButtonSize::Default)
                         .id(SharedString::from(format!(
                             "usage-latency-{}",
                             choice.as_str()
                         )))
-                        .h(px(24.))
-                        .px(px(9.))
-                        .rounded(px(6.))
-                        .flex()
-                        .items_center()
-                        .text_size(theme.ui_px(11.5))
                         .when(active, |tab| {
                             tab.bg(theme.active)
                                 .text_color(theme.active_fg)
@@ -1853,6 +1829,7 @@ impl UsagePage {
                 chip,
                 false,
                 Corner::TopRight,
+                theme,
                 || div().into_any_element(),
             );
         }
@@ -1862,6 +1839,7 @@ impl UsagePage {
             chip,
             true,
             Corner::TopRight,
+            theme,
             move || panel,
         )
     }
@@ -1934,6 +1912,7 @@ impl UsagePage {
             size_chip,
             size_open,
             Corner::TopRight,
+            theme,
             move || size_panel.unwrap_or_else(|| div().into_any_element()),
         );
 
@@ -1979,6 +1958,7 @@ impl UsagePage {
                 chip,
                 false,
                 Corner::TopRight,
+                theme,
                 || div().into_any_element(),
             );
         }
@@ -1988,6 +1968,7 @@ impl UsagePage {
             chip,
             true,
             Corner::TopRight,
+            theme,
             move || panel,
         )
     }
@@ -2050,6 +2031,7 @@ impl UsagePage {
             size_chip,
             size_open,
             Corner::TopRight,
+            theme,
             move || size_panel.unwrap_or_else(|| div().into_any_element()),
         );
         let prev = filters::outline_button(
@@ -2103,6 +2085,7 @@ impl UsagePage {
                 chip,
                 false,
                 Corner::TopRight,
+                theme,
                 || div().into_any_element(),
             );
         }
@@ -2112,6 +2095,7 @@ impl UsagePage {
             chip,
             true,
             Corner::TopRight,
+            theme,
             move || panel,
         )
     }
@@ -2165,6 +2149,7 @@ impl UsagePage {
             size_chip,
             size_open,
             Corner::TopRight,
+            theme,
             move || size_panel.unwrap_or_else(|| div().into_any_element()),
         );
         let prev = filters::outline_button(
@@ -2392,6 +2377,7 @@ impl UsagePage {
                 chip,
                 false,
                 Corner::TopRight,
+                theme,
                 || div().into_any_element(),
             );
         }
@@ -2401,6 +2387,7 @@ impl UsagePage {
             chip,
             true,
             Corner::TopRight,
+            theme,
             move || panel,
         )
     }
@@ -2488,6 +2475,7 @@ impl UsagePage {
             size_chip,
             size_open,
             Corner::TopRight,
+            theme,
             move || size_panel.unwrap_or_else(|| div().into_any_element()),
         );
 
@@ -3113,8 +3101,7 @@ impl UsagePage {
                         .child(tr!("usage.hit_rate_formula")),
                 )
                 .child(
-                    div()
-                        .id("usage-cache-toggle")
+                    button_frame(div().id("usage-cache-toggle"), &theme, ButtonSize::Compact)
                         .text_color(theme.text_2)
                         .cursor_pointer()
                         .hover(|style| style.text_color(theme.accent))
@@ -4011,6 +3998,7 @@ impl UsagePage {
                 chip,
                 false,
                 Corner::TopRight,
+                theme,
                 || div().into_any_element(),
             );
         }
@@ -4020,6 +4008,7 @@ impl UsagePage {
             chip,
             true,
             Corner::TopRight,
+            theme,
             move || panel,
         )
     }
@@ -4102,6 +4091,7 @@ impl UsagePage {
             size_chip,
             size_open,
             Corner::TopRight,
+            theme,
             move || size_panel.unwrap_or_else(|| div().into_any_element()),
         );
 
@@ -4236,13 +4226,8 @@ fn open_session_cell(
         .items_center()
         .justify_center()
         .child(
-            div()
+            icon_button_frame(div(), &theme, ButtonSize::Default)
                 .id(SharedString::from(format!("usage-open-{session}")))
-                .size(px(22.))
-                .rounded(px(5.))
-                .flex()
-                .items_center()
-                .justify_center()
                 .cursor_pointer()
                 .opacity(0.)
                 .group_hover("usage-row", |style| style.opacity(1.))
@@ -4253,7 +4238,11 @@ fn open_session_cell(
                     cx.stop_propagation();
                     page.update(cx, |page, cx| page.open_session(window, cx, session));
                 })
-                .child(icon("icons/arrow-up-right.svg", 12., theme.text_3)),
+                .child(icon(
+                    "icons/arrow-up-right.svg",
+                    IconSize::XSmall.px(&theme),
+                    theme.text_3,
+                )),
         )
         .into_any_element()
 }
@@ -4332,18 +4321,15 @@ fn session_context_menu(row: &SessionRow, theme: Theme, page: Entity<UsagePage>)
     anchored()
         .position_mode(gpui::AnchoredPositionMode::Local)
         .anchor(Corner::TopLeft)
-        .snap_to_window()
+        .snap_to_window_with_margin(popover::WINDOW_MARGIN)
         .child(deferred(context_menu_shell(theme, page, items)))
         .into_any_element()
 }
 
-/// The menu shell: the app's popover register, dismissed by an outside click.
+/// The menu shell, on Zed's context-menu metrics ([`context_menu_surface`]),
+/// dismissed by an outside click.
 fn context_menu_shell(theme: Theme, page: Entity<UsagePage>, items: Vec<AnyElement>) -> AnyElement {
-    div()
-        .id("usage-row-menu")
-        .min_w(px(220.))
-        .rounded(px(9.))
-        .popover_surface(theme)
+    context_menu_surface(div().id("usage-row-menu"), &theme)
         .flex()
         .flex_col()
         .overflow_hidden()
@@ -4356,16 +4342,13 @@ fn context_menu_shell(theme: Theme, page: Entity<UsagePage>, items: Vec<AnyEleme
         .into_any_element()
 }
 
-/// One row of a context menu.
+/// One row of a context menu ([`context_menu_entry`]).
 fn context_item(
     label: String,
     theme: Theme,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    div()
-        .px(px(10.))
-        .py(px(6.))
-        .text_size(theme.ui_px(12.))
+    context_menu_entry(div(), &theme)
         .text_color(theme.text)
         .cursor_pointer()
         .hover(|style| style.bg(theme.bg_hover))
@@ -4378,7 +4361,7 @@ fn context_item(
 }
 
 fn context_separator(theme: Theme) -> AnyElement {
-    div().h(px(1.)).w_full().bg(theme.border).into_any_element()
+    context_menu_separator(&theme).into_any_element()
 }
 
 // ── shared pieces ─────────────────────────────────────────────────────────
@@ -4585,9 +4568,9 @@ where
     let mut row = div()
         .flex()
         .items_center()
-        .gap(px(2.))
-        .p(px(2.))
-        .rounded(px(8.))
+        .gap(DynamicSpacing::Base02.px(&theme))
+        .p(DynamicSpacing::Base02.px(&theme))
+        .rounded(Radius::Large.px(&theme))
         .border_1()
         .border_color(theme.border)
         .bg(theme.bg_main);
@@ -4595,14 +4578,8 @@ where
         let is_active = option == active;
         let handler = on_pick.clone();
         row = row.child(
-            div()
+            button_frame(div(), &theme, ButtonSize::Default)
                 .id(SharedString::from(format!("{prefix}-{}", key(option))))
-                .h(px(24.))
-                .px(px(9.))
-                .rounded(px(6.))
-                .flex()
-                .items_center()
-                .text_size(theme.ui_px(11.5))
                 .when(is_active, |tab| {
                     tab.bg(theme.active)
                         .text_color(theme.active_fg)
@@ -4625,26 +4602,12 @@ where
 /// A search field, shared by the Sessions table and the Breakdown table so both
 /// read the same.
 fn search_box(input: &Entity<ComposerInput>, theme: Theme) -> AnyElement {
-    div()
+    input_field_frame(div(), &theme)
         .flex_1()
         .min_w(px(180.))
-        .h(px(32.))
-        .px(px(12.))
-        .rounded(px(8.))
         .bg(theme.bg_main)
-        .border_1()
-        .border_color(theme.border)
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .child(icon("icons/search.svg", 13., theme.text_3))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .text_size(theme.ui_px(13.))
-                .child(input.clone()),
-        )
+        .child(icon("icons/search.svg", IconSize::Small.px(&theme), theme.text_3))
+        .child(div().flex_1().min_w_0().child(input.clone()))
         .into_any_element()
 }
 

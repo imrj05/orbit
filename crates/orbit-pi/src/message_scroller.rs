@@ -16,7 +16,8 @@ use gpui::{
     ListOffset, ListScrollEvent, ListState, Pixels,
 };
 
-use crate::app::BUTTON_GROUP;
+use crate::app::{button_frame, icon_button_frame, BUTTON_GROUP};
+use crate::theme::tokens::{ButtonSize, IconSize, StyledExt};
 use crate::theme::Theme;
 
 const LIST_OVERDRAW: f32 = 400.0;
@@ -315,6 +316,14 @@ fn render_jump_button(state: MessageScrollerState, theme: Theme) -> impl IntoEle
     // affordance grows a "New activity" label so the stream's continued
     // progress is visible from anywhere in the transcript.
     let unread = state.has_unread();
+    let button = div()
+        .id(ElementId::Name("message-scroller-jump".into()))
+        .group(BUTTON_GROUP);
+    let button = if unread {
+        button_frame(button, &theme, ButtonSize::Large)
+    } else {
+        icon_button_frame(button, &theme, ButtonSize::Large)
+    };
     div()
         .id(ElementId::Name("message-scroller-jump-layer".into()))
         .absolute()
@@ -325,23 +334,13 @@ fn render_jump_button(state: MessageScrollerState, theme: Theme) -> impl IntoEle
         .flex()
         .justify_center()
         .child(
-            // Floating round scroll-to-bottom affordance.
-            div()
-                .id(ElementId::Name("message-scroller-jump".into()))
-                .group(BUTTON_GROUP)
-                .h(px(32.))
-                .when(unread, |button| button.px(px(12.)))
-                .when(!unread, |button| button.w(px(32.)))
+            // Floating round scroll-to-bottom affordance: the elevated
+            // surface, kept round and on the composer's fill.
+            button
+                .elevation_2(&theme)
                 .rounded_full()
-                .border_1()
-                .border_color(theme.border_strong)
                 .bg(theme.bg_composer)
-                .flex()
-                .items_center()
-                .justify_center()
-                .gap(px(6.))
                 .cursor_pointer()
-                .shadow(theme.card_shadow())
                 .hover(|style| style.bg(theme.bg_raised))
                 .on_click(move |_, _, cx| {
                     state.scroll_to_end();
@@ -351,13 +350,12 @@ fn render_jump_button(state: MessageScrollerState, theme: Theme) -> impl IntoEle
                     svg()
                         .path("icons/arrow-down.svg")
                         .flex_none()
-                        .size(px(16.))
+                        .size(IconSize::Medium.px(&theme))
                         .text_color(theme.text),
                 )
                 .when(unread, |button| {
                     button.child(
                         div()
-                            .text_size(theme.ui_px(11.5))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(theme.text)
                             .child(tr!("message_scroller.new_activity")),

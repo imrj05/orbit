@@ -80,6 +80,7 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/git.rs            git plumbing: branch discovery, review diffs, status/staging/history/graph
   src/git_panel.rs      full-page Git surface: Changes / History / Graph + commit bar
   src/terminal.rs       bottom terminal panel (⌘J): alacritty_terminal PTY + VT grid, GPUI canvas render, keys/selection/paste
+  src/theme/tokens.rs   Zed design tokens (DynamicSpacing, TextSize, IconSize, ButtonSize, ElevationIndex + elevation_1/2/3, component metrics) resolved through the Theme; see INTENT.md D11
   src/providers.rs      provider catalog + models.json / auth.json read/write for Settings → Providers (provider metadata introspected from pi-ai; curated table is the fallback)
   src/quota.rs          account quota/balance/spend reducer over the `quota.*` RPC and the bridge's session entries (no secrets, no I/O)
   src/access.rs         access mode (Supervised / Auto-accept edits / Full access): persistence to `~/.orbit-pi/access.json`, which the guard extension reads
@@ -227,6 +228,11 @@ stack is gone; do not resurrect it.
   as menus/buttons.
 - Theme values come from the shared theme system; components must not introduce
   hardcoded palette values.
+- Sizes come from `theme::tokens` (Zed's design tokens, D11): new chrome uses
+  `DynamicSpacing` / `TextSize` / `IconSize` / `ButtonSize` / `Radius` and
+  `elevation_2` / `elevation_3` instead of px literals. Context menus build on
+  `context_menu_surface` / `context_menu_entry` / `context_menu_separator`
+  (`app/helpers.rs`).
 - Public releases cannot assume the author's providers, models, paths, or machine state.
 
 ### Known gaps

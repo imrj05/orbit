@@ -1,6 +1,9 @@
 use super::helpers::*;
 use super::*;
 use crate::quota::note_should_render;
+use crate::theme::tokens::{
+    button, context_menu, input, picker, popover, ButtonSize, IconSize,
+};
 
 /// A Plugins-page button action, dispatched through one entry point.
 #[derive(Clone)]
@@ -15,8 +18,8 @@ pub(super) enum PluginAction {
 }
 
 /// Toolbar vs. card button geometry. Settings' pinned toolbars size their
-/// controls to the 30px row used by Providers and Models; card actions stay
-/// compact at 28px.
+/// controls to `ButtonSize::Large`, the row Providers and Models use; card
+/// actions stay compact at `ButtonSize::Medium`.
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum PluginButtonSize {
     Compact,
@@ -26,6 +29,10 @@ pub(super) enum PluginButtonSize {
 /// How long the Plugins Refresh button turns after a click, so a synchronous
 /// reload still reads as a deliberate action.
 const PLUGIN_REFRESH_FEEDBACK: Duration = Duration::from_millis(650);
+
+/// The settings select chip's size. Its dropdown is offset by this height
+/// plus `popover::MENU_OFFSET`, so the two must move together.
+const SELECT_CHIP_SIZE: ButtonSize = ButtonSize::Medium;
 
 /// The operation a background plugin task runs.
 #[derive(Clone, Copy)]
@@ -142,7 +149,11 @@ impl OrbitApp {
                                 .cursor_pointer()
                                 .hover(|s| s.bg(theme.bg_hover))
                                 .on_mouse_up(MouseButton::Left, cx.listener(Self::on_settings_back))
-                                .child(icon("icons/arrow-left.svg", 13., theme.text_3))
+                                .child(icon(
+                                    "icons/arrow-left.svg",
+                                    IconSize::Small.px(&theme),
+                                    theme.text_3,
+                                ))
                                 .child(
                                     div()
                                         .text_size(theme.ui_px(13.))
@@ -209,7 +220,7 @@ impl OrbitApp {
                                 })
                                 .child(icon(
                                     section_icon,
-                                    13.,
+                                    IconSize::Small.px(&theme),
                                     if selected { theme.accent } else { theme.text_3 },
                                 ))
                                 .child(
@@ -385,7 +396,10 @@ impl OrbitApp {
             .flex_col()
             .gap(px(4.))
             .when(self.settings_section == SettingsSection::About, |header| {
-                header.child(embedded_image(crate::app_icon::ASSET, 48.))
+                header.child(embedded_image(
+                    crate::app_icon::ASSET,
+                    f32::from(IconSize::XLarge.px(&theme)),
+                ))
             })
             .child(
                 div()
@@ -549,20 +563,11 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
     ) -> AnyElement {
-        let search = div()
+        let search = input_field_frame(div(), &theme)
             .w_full()
-            .h(px(34.))
-            .px(px(10.))
-            .rounded_lg()
-            .border_1()
-            .border_color(theme.border)
             .bg(theme.bg_main)
-            .flex()
-            .items_center()
-            .gap_2()
-            .text_size(theme.ui_px(13.))
-            .child(icon("icons/search.svg", 14., theme.text_3))
-            .child(self.models_filter.clone());
+            .child(icon("icons/search.svg", IconSize::Small.px(&theme), theme.text_3))
+            .child(div().flex_1().min_w_0().child(self.models_filter.clone()));
 
         let needle = self.models_filter.read(cx).text().trim().to_lowercase();
         let favorites = crate::favorites::all();
@@ -581,49 +586,45 @@ impl OrbitApp {
         // A filter chip in the toolbar's button language: `bg_raised` + a
         // hairline when off, the standard `active` fill when on — never an
         // accent wash, which is reserved for the favorite stars themselves.
-        let favorites_button = div()
-            .id("models-favorites-filter")
-            .h(px(30.))
-            .px(px(12.))
-            .rounded_lg()
-            .border_1()
-            .border_color(theme.border)
-            .flex()
-            .items_center()
-            .gap_1p5()
-            .cursor_pointer()
-            .when(self.models_favorites_only, |button| {
-                button.bg(theme.active).text_color(theme.active_fg)
-            })
-            .when(!self.models_favorites_only, |button| {
-                button.bg(theme.bg_raised).hover(|s| s.bg(theme.bg_hover))
-            })
-            .on_mouse_up(MouseButton::Left, {
-                let this = this.clone();
-                move |_, _, cx| {
-                    this.update(cx, |app, cx| app.toggle_models_favorites_only(cx));
-                }
-            })
-            .child(icon(
-                "icons/star.svg",
-                13.,
-                if self.models_favorites_only {
+        let favorites_button = button_frame(
+            div().id("models-favorites-filter"),
+            &theme,
+            ButtonSize::Large,
+        )
+        .border_1()
+        .border_color(theme.border)
+        .cursor_pointer()
+        .when(self.models_favorites_only, |button| {
+            button.bg(theme.active).text_color(theme.active_fg)
+        })
+        .when(!self.models_favorites_only, |button| {
+            button.bg(theme.bg_raised).hover(|s| s.bg(theme.bg_hover))
+        })
+        .on_mouse_up(MouseButton::Left, {
+            let this = this.clone();
+            move |_, _, cx| {
+                this.update(cx, |app, cx| app.toggle_models_favorites_only(cx));
+            }
+        })
+        .child(icon(
+            "icons/star.svg",
+            IconSize::Small.px(&theme),
+            if self.models_favorites_only {
+                theme.active_fg
+            } else {
+                theme.text_2
+            },
+        ))
+        .child(
+            div()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(if self.models_favorites_only {
                     theme.active_fg
                 } else {
                     theme.text_2
-                },
-            ))
-            .child(
-                div()
-                    .text_size(theme.ui_px(12.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(if self.models_favorites_only {
-                        theme.active_fg
-                    } else {
-                        theme.text_2
-                    })
-                    .child(tr!("settings.favorites")),
-            );
+                })
+                .child(tr!("settings.favorites")),
+        );
 
         div()
             .w_full()
@@ -729,7 +730,11 @@ impl OrbitApp {
                             .pb(theme.space(6.))
                             .border_b_1()
                             .border_color(theme.border)
-                            .child(icon_dyn(provider_icon(&provider), 14., theme.text_3))
+                            .child(icon_dyn(
+                                provider_icon(&provider),
+                                IconSize::Small.px(&theme),
+                                theme.text_3,
+                            ))
                             .child(
                                 div()
                                     .flex_1()
@@ -798,34 +803,31 @@ impl OrbitApp {
             theme.text_3
         };
 
-        let star = div()
-            .id(ElementId::Name(
+        let star = icon_button_frame(
+            div().id(ElementId::Name(
                 format!("model-star-{provider}-{id}").into(),
-            ))
-            .flex_none()
-            .size(px(24.))
-            .rounded_md()
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
-            .hover(|s| s.bg(theme.overlay))
-            .on_mouse_up(MouseButton::Left, {
-                let this = this.clone();
-                let (provider, id) = (provider.clone(), id.clone());
-                move |_, _, cx| {
-                    // Keep the star from bubbling to the card's
-                    // "set active model" handler.
-                    cx.stop_propagation();
-                    crate::favorites::toggle(&provider, &id);
-                    this.update(cx, |_, cx| cx.notify());
-                }
-            })
-            .child(icon(
-                "icons/star.svg",
-                14.,
-                if is_favorite { theme.accent } else { meta_ink },
-            ));
+            )),
+            &theme,
+            ButtonSize::Default,
+        )
+        .cursor_pointer()
+        .hover(|s| s.bg(theme.overlay))
+        .on_mouse_up(MouseButton::Left, {
+            let this = this.clone();
+            let (provider, id) = (provider.clone(), id.clone());
+            move |_, _, cx| {
+                // Keep the star from bubbling to the card's
+                // "set active model" handler.
+                cx.stop_propagation();
+                crate::favorites::toggle(&provider, &id);
+                this.update(cx, |_, cx| cx.notify());
+            }
+        })
+        .child(icon(
+            "icons/star.svg",
+            IconSize::Small.px(&theme),
+            if is_favorite { theme.accent } else { meta_ink },
+        ));
 
         let mut footer = div().flex().items_center().gap(px(6.));
         if let Some(window) = model.context_window {
@@ -857,7 +859,11 @@ impl OrbitApp {
                     .flex()
                     .items_center()
                     .gap_1p5()
-                    .child(icon("icons/check.svg", 11., theme.active_fg))
+                    .child(icon(
+                        "icons/check.svg",
+                        IconSize::XSmall.px(&theme),
+                        theme.active_fg,
+                    ))
                     .child(
                         div()
                             .text_size(theme.ui_px(10.5))
@@ -1169,7 +1175,11 @@ impl OrbitApp {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(icon("icons/extensions.svg", 14., theme.text_2)),
+                            .child(icon(
+                                "icons/extensions.svg",
+                                IconSize::Small.px(&theme),
+                                theme.text_2,
+                            )),
                     )
                     .child(
                         div()
@@ -1220,21 +1230,12 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         _cx: &Context<Self>,
     ) -> AnyElement {
-        let field = div()
+        let field = input_field_frame(div(), &theme)
             .flex_1()
             .min_w_0()
-            .h(px(34.))
-            .px(px(10.))
-            .rounded_lg()
-            .border_1()
-            .border_color(theme.border)
             .bg(theme.bg_main)
-            .flex()
-            .items_center()
-            .gap_2()
-            .text_size(theme.ui_px(13.))
-            .child(icon("icons/extensions.svg", 14., theme.text_3))
-            .child(self.plugin_source_input.clone());
+            .child(icon("icons/extensions.svg", IconSize::Small.px(&theme), theme.text_3))
+            .child(div().flex_1().min_w_0().child(self.plugin_source_input.clone()));
 
         let scope = div()
             .flex()
@@ -1279,8 +1280,12 @@ impl OrbitApp {
             PluginAction::Refresh,
         );
 
-        let plugin_spinner: AnyElement =
-            crate::app::spinner("plugin-action-spin", 13., theme.text_2, theme);
+        let plugin_spinner: AnyElement = crate::app::spinner(
+            "plugin-action-spin",
+            IconSize::Small.px(&theme),
+            theme.text_2,
+            theme,
+        );
         let status: AnyElement = match &self.plugin_action {
             Some(action) => div()
                 .flex_1()
@@ -1302,20 +1307,11 @@ impl OrbitApp {
                 .into_any_element(),
         };
 
-        let search = div()
+        let search = input_field_frame(div(), &theme)
             .w_full()
-            .h(px(34.))
-            .px(px(10.))
-            .rounded_lg()
-            .border_1()
-            .border_color(theme.border)
             .bg(theme.bg_main)
-            .flex()
-            .items_center()
-            .gap_2()
-            .text_size(theme.ui_px(13.))
-            .child(icon("icons/search.svg", 14., theme.text_3))
-            .child(self.plugins_filter.clone());
+            .child(icon("icons/search.svg", IconSize::Small.px(&theme), theme.text_3))
+            .child(div().flex_1().min_w_0().child(self.plugins_filter.clone()));
 
         div()
             .w_full()
@@ -1359,15 +1355,8 @@ impl OrbitApp {
             "plugin-scope-{}",
             if project { "project" } else { "global" }
         );
-        let mut chip = div()
-            .id(ElementId::Name(id.into()))
-            .h(px(30.))
-            .px(px(12.))
-            .rounded_lg()
-            .flex()
-            .items_center()
+        let mut chip = button_frame(div().id(ElementId::Name(id.into())), &theme, ButtonSize::Large)
             .cursor_pointer()
-            .text_size(theme.ui_px(12.))
             .font_weight(FontWeight::MEDIUM);
         chip = if active {
             chip.bg(theme.active).text_color(theme.active_fg)
@@ -1400,23 +1389,14 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         action: PluginAction,
     ) -> AnyElement {
-        let (height, pad_x, text_size, icon_size) = match size {
-            PluginButtonSize::Compact => (px(28.), px(10.), theme.ui_px(11.5), 12.),
-            PluginButtonSize::Toolbar => (px(30.), px(12.), theme.ui_px(12.), 13.),
+        let (button_size, icon_size) = match size {
+            PluginButtonSize::Compact => (ButtonSize::Medium, IconSize::XSmall.px(&theme)),
+            PluginButtonSize::Toolbar => (ButtonSize::Large, IconSize::Small.px(&theme)),
         };
         let spin_id = ElementId::Name(format!("{id}-spin").into());
-        let base = div()
-            .id(ElementId::Name(id.into()))
+        let base = button_frame(div().id(ElementId::Name(id.into())), &theme, button_size)
             .group(BUTTON_GROUP)
-            .h(height)
-            .px(pad_x)
-            .rounded_lg()
-            .flex()
-            .items_center()
-            .justify_center()
-            .gap_1p5()
             .cursor_pointer()
-            .text_size(text_size)
             .font_weight(FontWeight::MEDIUM);
         let (button, icon_color) = if primary {
             (
@@ -1472,7 +1452,7 @@ impl OrbitApp {
             .flex_col()
             .items_center()
             .gap_2()
-            .child(icon(icon_path, 26., theme.text_3))
+            .child(icon(icon_path, IconSize::Custom(26. / 16.).px(&theme), theme.text_3))
             .child(
                 div()
                     .text_size(theme.ui_px(13.))
@@ -1504,40 +1484,24 @@ impl OrbitApp {
         let active = all.iter().filter(|view| view.active).count();
         let connected = all.iter().filter(|view| view.connected()).count();
 
-        let search = div()
+        let search = input_field_frame(div(), &theme)
             .w_full()
-            .h(px(34.))
-            .px(px(10.))
-            .rounded_lg()
-            .border_1()
-            .border_color(theme.border)
             .bg(theme.bg_main)
-            .flex()
-            .items_center()
-            .gap_2()
-            .text_size(theme.ui_px(13.))
-            .child(icon("icons/search.svg", 14., theme.text_3))
-            .child(self.provider_filter.clone());
+            .child(icon("icons/search.svg", IconSize::Small.px(&theme), theme.text_3))
+            .child(div().flex_1().min_w_0().child(self.provider_filter.clone()));
 
         let refresh_icon = refresh_glyph(
             "providers-refresh-spin",
-            13.,
+            IconSize::Small.px(&theme),
             self.providers_refreshing,
             theme.text_2,
             theme,
         );
-        let refresh_button = div()
-            .id("providers-refresh")
+        let refresh_button = button_frame(div().id("providers-refresh"), &theme, ButtonSize::Large)
             .group(BUTTON_GROUP)
-            .h(px(30.))
-            .px(px(12.))
-            .rounded_lg()
             .border_1()
             .border_color(theme.border)
             .bg(theme.bg_raised)
-            .flex()
-            .items_center()
-            .gap_1p5()
             .cursor_pointer()
             .when(self.providers_refreshing, |button| button.opacity(0.6))
             .hover(|style| style.bg(theme.bg_hover))
@@ -1551,21 +1515,13 @@ impl OrbitApp {
             .child(refresh_icon)
             .child(
                 div()
-                    .text_size(theme.ui_px(12.))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_2)
                     .child(tr!("settings.refresh")),
             );
 
-        let add_button = div()
-            .id("providers-add")
-            .h(px(30.))
-            .px(px(12.))
-            .rounded_lg()
+        let add_button = button_frame(div().id("providers-add"), &theme, ButtonSize::Large)
             .bg(theme.send_bg)
-            .flex()
-            .items_center()
-            .gap_1p5()
             .cursor_pointer()
             .hover(|style| style.bg(theme.send_bg_hover))
             .on_mouse_up(MouseButton::Left, {
@@ -1574,10 +1530,9 @@ impl OrbitApp {
                     this.update(cx, |app, cx| app.provider_editor_open(None, window, cx));
                 }
             })
-            .child(icon("icons/plus.svg", 13., theme.send_fg))
+            .child(icon("icons/plus.svg", IconSize::Small.px(&theme), theme.send_fg))
             .child(
                 div()
-                    .text_size(theme.ui_px(12.))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.send_fg)
                     .child(tr!("settings.add_provider")),
@@ -1670,7 +1625,7 @@ impl OrbitApp {
                     .flex()
                     .items_center()
                     .gap_2p5()
-                    .child(icon("icons/info.svg", 15., theme.accent))
+                    .child(icon("icons/info.svg", IconSize::Medium.px(&theme), theme.accent))
                     .child(
                         div()
                             .flex_1()
@@ -1734,7 +1689,11 @@ impl OrbitApp {
                     .flex_col()
                     .items_center()
                     .gap_2()
-                    .child(icon("icons/search.svg", 26., theme.text_3))
+                    .child(icon(
+                        "icons/search.svg",
+                        IconSize::Custom(26. / 16.).px(&theme),
+                        theme.text_3,
+                    ))
                     .child(
                         div()
                             .text_size(theme.ui_px(13.))
@@ -1782,7 +1741,7 @@ impl OrbitApp {
             .flex()
             .items_start()
             .gap_2p5()
-            .child(icon("icons/info.svg", 15., theme.crit))
+            .child(icon("icons/info.svg", IconSize::Medium.px(&theme), theme.crit))
             .child(
                 div()
                     .flex_1()
@@ -2393,7 +2352,7 @@ impl OrbitApp {
             .justify_center()
             .child(icon_dyn(
                 provider_icon(&view.id),
-                30.,
+                IconSize::Custom(30. / 16.).px(&theme),
                 if view.active || view.connected() {
                     theme.text
                 } else {
@@ -2832,19 +2791,14 @@ impl OrbitApp {
         action: ProviderAction,
     ) -> AnyElement {
         let icon_path = Self::provider_action_icon(&action);
-        let mut button = div()
-            .id(ElementId::Name(id.into()))
-            .group(BUTTON_GROUP)
-            .h(px(28.))
-            .px(px(10.))
-            .rounded_lg()
-            .flex()
-            .items_center()
-            .justify_center()
-            .gap_1p5()
-            .cursor_pointer()
-            .text_size(theme.ui_px(11.5))
-            .font_weight(FontWeight::MEDIUM);
+        let mut button = button_frame(
+            div().id(ElementId::Name(id.into())),
+            &theme,
+            ButtonSize::Medium,
+        )
+        .group(BUTTON_GROUP)
+        .cursor_pointer()
+        .font_weight(FontWeight::MEDIUM);
         button = match style {
             ProviderButtonStyle::Primary => button
                 .bg(theme.send_bg)
@@ -2874,7 +2828,7 @@ impl OrbitApp {
         };
         press(button)
             .when_some(icon_path, |button, path| {
-                button.child(icon(path, 12., icon_color))
+                button.child(icon(path, IconSize::XSmall.px(&theme), icon_color))
             })
             .child(div().child(label.to_string()))
             .on_mouse_up(MouseButton::Left, move |_, window, cx| {
@@ -2989,17 +2943,10 @@ impl OrbitApp {
             .find(|view| view.id == id)?;
         let body = self.provider_quota_section(&view, theme)?;
 
-        let close = div()
-            .id("provider-usage-close")
-            .h(px(32.))
-            .px(px(14.))
-            .rounded_lg()
+        let close = button_frame(div().id("provider-usage-close"), &theme, ButtonSize::Large)
             .border_1()
             .border_color(theme.border)
             .bg(theme.bg_raised)
-            .flex()
-            .items_center()
-            .justify_center()
             .cursor_pointer()
             .hover(|style| style.bg(theme.bg_hover))
             .on_mouse_up(MouseButton::Left, {
@@ -3011,12 +2958,7 @@ impl OrbitApp {
                     });
                 }
             })
-            .child(
-                div()
-                    .text_size(theme.ui_px(12.))
-                    .text_color(theme.text_2)
-                    .child(tr!("settings.close")),
-            );
+            .child(div().text_color(theme.text_2).child(tr!("settings.close")));
 
         let card = div()
             .w_full()
@@ -3131,24 +3073,16 @@ impl OrbitApp {
             div()
                 .flex()
                 .flex_col()
-                .gap_1p5()
+                .gap(input::gap(&theme))
                 .child(
-                    div()
-                        .text_size(theme.ui_px(12.))
+                    input_label(field_label, &theme)
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text_2)
-                        .child(field_label),
+                        .text_color(theme.text_2),
                 )
                 .child(
-                    div()
+                    input_field_frame(div(), &theme)
                         .w_full()
-                        .px_2p5()
-                        .py_1p5()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(theme.border)
                         .bg(theme.bg_main)
-                        .text_size(theme.ui_px(13.))
                         .child(editor.key.clone()),
                 )
                 .child(
@@ -3207,17 +3141,10 @@ impl OrbitApp {
             );
         }
 
-        let cancel = div()
-            .id("provider-key-close")
-            .h(px(32.))
-            .px(px(14.))
-            .rounded_lg()
+        let cancel = button_frame(div().id("provider-key-close"), &theme, ButtonSize::Large)
             .border_1()
             .border_color(theme.border)
             .bg(theme.bg_raised)
-            .flex()
-            .items_center()
-            .justify_center()
             .cursor_pointer()
             .hover(|style| style.bg(theme.bg_hover))
             .on_mouse_up(MouseButton::Left, {
@@ -3229,12 +3156,7 @@ impl OrbitApp {
                     });
                 }
             })
-            .child(
-                div()
-                    .text_size(theme.ui_px(12.))
-                    .text_color(theme.text_2)
-                    .child(tr!("settings.cancel")),
-            );
+            .child(div().text_color(theme.text_2).child(tr!("settings.cancel")));
         let save = self.provider_button(
             "provider-key-save".into(),
             &tr!("settings.save_key"),
@@ -3363,24 +3285,16 @@ impl OrbitApp {
             let mut column = div()
                 .flex()
                 .flex_col()
-                .gap_1p5()
+                .gap(input::gap(&theme))
                 .child(
-                    div()
-                        .text_size(theme.ui_px(12.))
+                    input_label(label.to_string(), &theme)
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text_2)
-                        .child(label.to_string()),
+                        .text_color(theme.text_2),
                 )
                 .child(
-                    div()
+                    input_field_frame(div(), &theme)
                         .w_full()
-                        .px_2p5()
-                        .py_1p5()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(theme.border)
                         .bg(theme.bg_main)
-                        .text_size(theme.ui_px(13.))
                         .child(input),
                 );
             if let Some(hint) = hint {
@@ -3400,39 +3314,38 @@ impl OrbitApp {
             let selected = editor.api == api;
             let this = this.clone();
             api_chips = api_chips.child(
-                div()
-                    .id(ElementId::Name(format!("provider-api-{api}").into()))
-                    .px(px(8.))
-                    .py(px(3.))
-                    .rounded(px(6.))
-                    .border_1()
-                    .border_color(if selected {
-                        theme.accent.opacity(0.5)
-                    } else {
-                        theme.border
-                    })
-                    .bg(if selected {
-                        theme.accent.opacity(0.12)
-                    } else {
-                        theme.bg_raised
-                    })
-                    .cursor_pointer()
-                    .hover(|style| style.bg(theme.bg_hover))
-                    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                        this.update(cx, |app, cx| {
-                            if let Some(editor) = app.provider_editor.as_mut() {
-                                editor.api = api.to_string();
-                                cx.notify();
-                            }
-                        });
-                    })
-                    .child(
-                        div()
-                            .font_family(theme::code_font_family())
-                            .text_size(theme.code_px(10.5))
-                            .text_color(if selected { theme.accent } else { theme.text_3 })
-                            .child(api),
-                    ),
+                button_frame(
+                    div().id(ElementId::Name(format!("provider-api-{api}").into())),
+                    &theme,
+                    ButtonSize::Default,
+                )
+                .border_1()
+                .border_color(if selected {
+                    theme.accent.opacity(0.5)
+                } else {
+                    theme.border
+                })
+                .bg(if selected {
+                    theme.accent.opacity(0.12)
+                } else {
+                    theme.bg_raised
+                })
+                .cursor_pointer()
+                .hover(|style| style.bg(theme.bg_hover))
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    this.update(cx, |app, cx| {
+                        if let Some(editor) = app.provider_editor.as_mut() {
+                            editor.api = api.to_string();
+                            cx.notify();
+                        }
+                    });
+                })
+                .child(
+                    div()
+                        .font_family(theme::code_font_family())
+                        .text_color(if selected { theme.accent } else { theme.text_3 })
+                        .child(api),
+                ),
             );
         }
 
@@ -3441,13 +3354,11 @@ impl OrbitApp {
             div()
                 .flex()
                 .flex_col()
-                .gap_1p5()
+                .gap(input::gap(&theme))
                 .child(
-                    div()
-                        .text_size(theme.ui_px(12.))
+                    input_label(tr!("settings.provider_id"), &theme)
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text_2)
-                        .child(tr!("settings.provider_id")),
+                        .text_color(theme.text_2),
                 )
                 .child(
                     div()
@@ -3493,13 +3404,11 @@ impl OrbitApp {
                 div()
                     .flex()
                     .flex_col()
-                    .gap_1p5()
+                    .gap(input::gap(&theme))
                     .child(
-                        div()
-                            .text_size(theme.ui_px(12.))
+                        input_label(tr!("settings.api_type"), &theme)
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_2)
-                            .child(tr!("settings.api_type")),
+                            .text_color(theme.text_2),
                     )
                     .child(api_chips),
             )
@@ -3588,17 +3497,10 @@ impl OrbitApp {
 
         let cancel = {
             let this = this.clone();
-            div()
-                .id("provider-editor-cancel")
-                .h(px(32.))
-                .px(px(14.))
-                .rounded_lg()
+            button_frame(div().id("provider-editor-cancel"), &theme, ButtonSize::Large)
                 .border_1()
                 .border_color(theme.border)
                 .bg(theme.bg_raised)
-                .flex()
-                .items_center()
-                .justify_center()
                 .cursor_pointer()
                 .hover(|style| style.bg(theme.bg_hover))
                 .on_mouse_up(MouseButton::Left, move |_, _, cx| {
@@ -3607,24 +3509,12 @@ impl OrbitApp {
                         cx.notify();
                     });
                 })
-                .child(
-                    div()
-                        .text_size(theme.ui_px(12.))
-                        .text_color(theme.text_2)
-                        .child(tr!("settings.cancel")),
-                )
+                .child(div().text_color(theme.text_2).child(tr!("settings.cancel")))
         };
         let save = {
             let this = this.clone();
-            div()
-                .id("provider-editor-save")
-                .h(px(32.))
-                .px(px(16.))
-                .rounded_lg()
+            button_frame(div().id("provider-editor-save"), &theme, ButtonSize::Large)
                 .bg(theme.send_bg)
-                .flex()
-                .items_center()
-                .justify_center()
                 .cursor_pointer()
                 .hover(|style| style.bg(theme.send_bg_hover))
                 .on_mouse_up(MouseButton::Left, move |_, window, cx| {
@@ -3632,7 +3522,6 @@ impl OrbitApp {
                 })
                 .child(
                     div()
-                        .text_size(theme.ui_px(12.))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.send_fg)
                         .child(if editing {
@@ -3826,24 +3715,16 @@ impl OrbitApp {
     /// The About page's repository link: a ghost button that opens the
     /// project's GitHub page in the OS browser.
     pub(super) fn about_github_button(&self, theme: Theme) -> AnyElement {
-        div()
-            .id("about-github")
+        button_frame(div().id("about-github"), &theme, ButtonSize::Medium)
             .group(BUTTON_GROUP)
-            .h(px(26.))
-            .px(px(12.))
-            .rounded_lg()
             .border_1()
             .border_color(theme.border)
             .bg(theme.bg_raised)
-            .flex()
-            .items_center()
-            .gap_1p5()
-            .text_size(theme.ui_px(12.))
             .font_weight(FontWeight::MEDIUM)
             .text_color(theme.text_2)
             .cursor_pointer()
             .hover(|s| s.bg(theme.bg_hover))
-            .child(icon("icons/arrow-up-right.svg", 12., theme.text_2))
+            .child(icon("icons/arrow-up-right.svg", IconSize::XSmall.px(&theme), theme.text_2))
             .child(tr!("settings.github"))
             .on_mouse_up(MouseButton::Left, |_, _, cx| {
                 cx.open_url(env!("CARGO_PKG_REPOSITORY"));
@@ -4534,17 +4415,16 @@ impl OrbitApp {
         let (one_id, all_id) = ("follow-up-mode-one", "follow-up-mode-all");
         let one_label = tr!("settings.one_at_a_time");
         let all_label = tr!("settings.all");
+        // One segmented control: only its outer corners round, and the two
+        // halves share the hairline between them.
+        let radius = button::RADIUS.px(&theme);
         let button = |label: String, value_all: bool, id: &'static str, this: Entity<OrbitApp>| {
             let active = all == value_all;
-            div()
-                .id(id)
-                .h(px(28.))
-                .px(px(10.))
-                .rounded_lg()
+            button_frame(div().id(id), &theme, ButtonSize::Medium)
+                .rounded_none()
                 .border_1()
-                .flex()
-                .items_center()
-                .text_size(theme.ui_px(12.))
+                .when(!value_all, |b| b.rounded_l(radius))
+                .when(value_all, |b| b.rounded_r(radius).border_l_0())
                 .font_weight(FontWeight::MEDIUM)
                 .cursor_pointer()
                 .when(active, |b| {
@@ -4566,7 +4446,6 @@ impl OrbitApp {
         div()
             .flex()
             .items_center()
-            .gap_2()
             .child(button(one_label, false, one_id, this.clone()))
             .child(button(all_label, true, all_id, this))
             .into_any_element()
@@ -4746,18 +4625,9 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         action: fn(&mut OrbitApp, &mut Context<OrbitApp>),
     ) -> AnyElement {
-        let mut button = div()
-            .id(id)
+        let mut button = button_frame(div().id(id), &theme, ButtonSize::Medium)
             .group(BUTTON_GROUP)
-            .h(px(28.))
-            .px(px(12.))
-            .rounded_lg()
-            .flex()
-            .items_center()
-            .justify_center()
-            .gap(px(6.))
             .cursor_pointer()
-            .text_size(theme.ui_px(12.))
             .font_weight(FontWeight::MEDIUM);
         if primary {
             button = button
@@ -5620,11 +5490,7 @@ impl OrbitApp {
             // dropdown anchored below the chip when open
             .children(self.settings_select_popup(kind, options, selected, theme, &this, cx))
             .child(
-                div()
-                    .id(ElementId::Name(id.into()))
-                    .h(px(26.))
-                    .px(px(10.))
-                    .rounded(px(7.))
+                button_frame(div().id(ElementId::Name(id.into())), &theme, SELECT_CHIP_SIZE)
                     .border_1()
                     .border_color(if open {
                         theme.border_strong
@@ -5632,11 +5498,7 @@ impl OrbitApp {
                         theme.border
                     })
                     .bg(if open { theme.overlay } else { theme.bg_raised })
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
                     .cursor_pointer()
-                    .text_size(theme.ui_px(12.))
                     .text_color(theme.text_2)
                     .hover(|s| s.bg(theme.overlay))
                     .on_mouse_up(MouseButton::Left, move |_, window, cx| {
@@ -5668,7 +5530,11 @@ impl OrbitApp {
                         });
                     })
                     .child(label)
-                    .child(icon("icons/chevron-down.svg", 10., theme.text_3)),
+                    .child(icon(
+                        "icons/chevron-down.svg",
+                        IconSize::Indicator.px(&theme),
+                        theme.text_3,
+                    )),
             )
             .into_any_element()
     }
@@ -5704,21 +5570,18 @@ impl OrbitApp {
         // `uniform_list`'s Infer sizing reads the *available* height, and this
         // popup lives inside a 0×0 anchor div, so the available height is 0 and
         // the list collapses to nothing. Give it an explicit height computed
-        // from the row count instead (30 px stride + 8 px vertical padding,
-        // capped at the old 220 px max) — same visual, real viewport.
-        let list_h = (rows.len() as f32 * 30. + 8.).min(220.);
+        // from the row count instead (one picker entry per row plus the
+        // list's vertical padding, capped at the old 220 px max) — a real
+        // viewport. Rows and height share `row_h`, so they cannot drift.
+        let row_h = picker::entry_height(&theme);
+        let list_pad_y = picker::list_padding_y(&theme);
+        let list_h = (row_h * rows.len() as f32 + list_pad_y * 2.).min(px(220.));
         let list: AnyElement = if empty {
             div()
                 .w_full()
-                .px(px(4.))
-                .py(px(4.))
+                .py(list_pad_y)
                 .child(
-                    div()
-                        .h(px(28.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_size(theme.ui_px(12.))
+                    picker_entry(div(), &theme)
                         .text_color(theme.text_3)
                         .child(tr!("settings.no_matches")),
                 )
@@ -5736,24 +5599,17 @@ impl OrbitApp {
                         let selected_row = orig_ix == selected;
                         let highlighted_row = highlight == Some(orig_ix);
                         let this = this.clone();
-                        // 30 px stride = 28 px row + the 2 px gap the old
-                        // flex list had between rows (uniform_list has no
-                        // gap support, so the gap rides on the row shell).
+                        // Every row is exactly one picker entry tall
+                        // (`uniform_list` strides by the first row, and
+                        // `list_h` uses the same `row_h`). The block shell
+                        // fits the entry's inset margins inside the list.
+                        let row_id =
+                            ElementId::NamedInteger("settings-select-row".into(), orig_ix as u64);
                         children.push(
-                            div().h(px(30.)).w_full().child(
-                                div()
-                                    .id(ElementId::NamedInteger(
-                                        "settings-select-row".into(),
-                                        orig_ix as u64,
-                                    ))
-                                    .h(px(28.))
-                                    .w_full()
-                                    .px(px(10.))
-                                    .rounded(px(6.))
-                                    .flex()
-                                    .items_center()
+                            div().h(row_h).w_full().child(
+                                picker_entry(div().id(row_id), &theme)
+                                    .h(row_h)
                                     .justify_between()
-                                    .gap(px(10.))
                                     .cursor_pointer()
                                     // The keyboard cursor is a wash; the
                                     // chosen option keeps the fill.
@@ -5764,7 +5620,6 @@ impl OrbitApp {
                                     .when(!highlighted_row && !selected_row, |row| {
                                         row.hover(|style| style.bg(theme.overlay))
                                     })
-                                    .text_size(theme.ui_px(12.))
                                     .text_color(if selected_row {
                                         theme.active_fg
                                     } else if highlighted_row {
@@ -5774,7 +5629,11 @@ impl OrbitApp {
                                     })
                                     .child(option.clone())
                                     .when(selected_row, |row| {
-                                        row.child(icon("icons/check.svg", 11., theme.accent))
+                                        row.child(icon(
+                                            "icons/check.svg",
+                                            context_menu::ICON.px(&theme),
+                                            theme.accent,
+                                        ))
                                     })
                                     .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                                         this.update(cx, |app, cx| {
@@ -5790,16 +5649,13 @@ impl OrbitApp {
                 },
             )
             .w_full()
-            .h(px(list_h))
+            .h(list_h)
             .track_scroll(self.settings_select_scroll.clone())
-            .px(px(4.))
-            .py(px(4.))
+            .py(list_pad_y)
             .into_any_element()
         };
-        let popup = div()
+        let popup = picker_surface(div(), &theme)
             .min_w(px(360.))
-            .rounded(px(8.))
-            .popover_surface(theme)
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -5844,21 +5700,14 @@ impl OrbitApp {
             })
             // Search field — filters the options below.
             .child(
-                div()
-                    .h(px(34.))
-                    .px(px(10.))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .text_size(theme.ui_px(12.))
-                    .child(icon("icons/search.svg", 13., theme.text_3))
-                    .child(self.settings_filter.clone()),
+                picker_search_frame(div(), &theme)
+                    .child(icon("icons/search.svg", IconSize::Small.px(&theme), theme.text_3))
+                    .child(div().flex_1().min_w_0().child(self.settings_filter.clone())),
             )
             .child(list);
         // Anchor to the chip's top-right corner (via a zero-size point) and
-        // drop the popup 4 px below the 26 px chip, right-aligned. `Window`
+        // drop the popup `popover::MENU_OFFSET` below the chip
+        // (`SELECT_CHIP_SIZE`), right-aligned. `Window`
         // position mode (not `Local`) is deliberate: `anchored`'s switch-anchor
         // fit then flips the popup above the chip when the viewport bottom is
         // closer than the list is tall, instead of sliding it down over its own
@@ -5874,7 +5723,10 @@ impl OrbitApp {
                     anchored()
                         .position_mode(AnchoredPositionMode::Window)
                         .anchor(Corner::TopRight)
-                        .offset(point(px(0.), px(30.)))
+                        .offset(point(
+                            px(0.),
+                            SELECT_CHIP_SIZE.height(&theme) + popover::MENU_OFFSET,
+                        ))
                         .child(deferred(popup)),
                 )
                 .into_any_element(),

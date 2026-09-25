@@ -26,12 +26,19 @@ use gpui::{
 };
 use std::time::{Duration, Instant};
 
-use crate::app::{icon, icon_dyn, ModelEntry, PopoverSurface};
+use crate::app::{
+    button_frame, icon, icon_button_frame, icon_dyn, picker_entry, picker_search_frame,
+    picker_surface, ModelEntry,
+};
 use crate::composer::ComposerInput;
 use crate::context_meter::format_tokens;
 use crate::favorites::Favorites;
 use crate::model_selector_match::is_model_selected;
 use crate::providers::provider_display_name;
+use crate::theme::tokens::{
+    context_menu, list, list_item, picker, BufferLineHeight, ButtonSize, DynamicSpacing, IconSize,
+    Radius, TextSize,
+};
 use crate::theme::{self, Theme};
 
 /// Model popover width — room for a scope row, provider header, and two-line
@@ -40,27 +47,42 @@ const MODEL_POPOVER_W: f32 = 360.;
 /// Thinking popover width — level rows are short, so it hugs tighter than the
 /// model catalog while still fitting the footer legend on one line.
 const THINKING_POPOVER_W: f32 = 300.;
-/// Tight line boxes for a row's two lines (name over context/id), so the
-/// stacked label reads as one block rather than two spaced lines.
-const LABEL_LINE_H: f32 = 16.;
-const SUB_LINE_H: f32 = 14.;
-/// Vertical padding above and below an option row's content.
-const ROW_PAD_V: f32 = 8.;
-/// Uniform option-row height: the two text lines plus the vertical padding,
-/// so the row is taller than its content and breathes on both sides.
-const ROW_H: f32 = LABEL_LINE_H + SUB_LINE_H + 2. * ROW_PAD_V;
-/// Air between list children. Two option rows are separated by `ROW_GAP`
-/// above and below a 1px hairline, so sibling models get `2 * ROW_GAP + 1`
-/// of breathing room while a header hugs its first row.
-const ROW_GAP: f32 = 5.;
-/// Hairline separator drawn between sibling option rows.
+/// Hairline separator drawn between sibling option rows (a fixed 1px).
 const SEP_H: f32 = 1.;
-/// Provider group header height inside the list.
-const HEADER_H: f32 = 26.;
-/// Largest list height before it scrolls (≈ 6 visible option rows).
-const LIST_MAX_H: f32 = 6. * (ROW_H + ROW_GAP + SEP_H);
-/// Popup shell radius — the popover register (composer is the larger 16).
-const SHELL_RADIUS: f32 = 12.;
+/// Option rows visible before the list scrolls.
+const VISIBLE_ROWS: f32 = 6.;
+
+/// The list's layout metrics, resolved from the theme so the keyboard
+/// scroll math measures exactly what the rows paint.
+#[derive(Debug, Clone, Copy)]
+struct ListMetrics {
+    /// An option row: Zed's two-line picker entry (a label over a secondary
+    /// line), held at a fixed height so every row measures the same.
+    row_h: f32,
+    /// A group header: a list sub-header row plus its bottom padding.
+    header_h: f32,
+    /// Air between list children. Two option rows are separated by
+    /// `row_gap` above and below a 1px hairline, so sibling models get
+    /// `2 * row_gap + SEP_H` of breathing room while a header hugs its
+    /// first row.
+    row_gap: f32,
+}
+
+impl ListMetrics {
+    fn new(theme: &Theme) -> Self {
+        Self {
+            row_h: picker::two_line_entry_height(theme).into(),
+            header_h: (list::sub_header_height(theme) + list::sub_header_padding_bottom(theme))
+                .into(),
+            row_gap: DynamicSpacing::Base06.px(theme).into(),
+        }
+    }
+
+    /// Largest list height before it scrolls (≈ 6 visible option rows).
+    fn list_max_h(&self) -> f32 {
+        VISIBLE_ROWS * (self.row_h + self.row_gap + SEP_H)
+    }
+}
 
 /// Model-select callback: model name, model id, and the ambient window.
 type SelectModel = Box<dyn Fn(&str, &str, &mut Window, &mut App)>;
@@ -113,11 +135,11 @@ impl Row {
     }
 
     /// Laid-out height; headers are shorter than option rows.
-    fn height(&self) -> f32 {
+    fn height(&self, metrics: &ListMetrics) -> f32 {
         if self.is_header() {
-            HEADER_H
+            metrics.header_h
         } else {
-            ROW_H
+            metrics.row_h
         }
     }
 }
@@ -206,7 +228,8 @@ impl ModelSelector {
         );
         let mut list_scroll = ScrollHandle::new();
         if let Some(ix) = Self::selected_row_index(&rows) {
-            Self::apply_scroll_to_row(&mut list_scroll, &rows, ix);
+            let metrics = ListMetrics::new(theme::get(cx));
+            Self::apply_scroll_to_row(&mut list_scroll, &rows, ix, &metrics);
         }
         let highlighted = Self::first_selectable(&rows).unwrap_or(0);
         Self {
@@ -454,15 +477,16 @@ impl ModelSelector {
             )
         }));
 
+        // Part of the picker head: inset like the search row above it.
         let mut row = div()
             .id("picker-scope")
             .w_full()
-            .h(px(40.))
             .flex_none()
-            .px(px(14.))
+            .px(picker::search_padding_x(&theme))
+            .py(DynamicSpacing::Base06.px(&theme))
             .flex()
             .items_center()
-            .gap(px(6.))
+            .gap(DynamicSpacing::Base06.px(&theme))
             .border_b_1()
             .border_color(theme.border)
             .overflow_x_scroll();
@@ -477,9 +501,10 @@ impl ModelSelector {
             // carries its own brand mark.
             let lead = match &scope {
                 Scope::Provider(provider) => {
-                    icon_dyn(provider_icon(provider), 13., brand).into_any_element()
+                    icon_dyn(provider_icon(provider), IconSize::Small.px(&theme), brand)
+                        .into_any_element()
                 }
-                _ => icon(static_icon, 13., brand).into_any_element(),
+                _ => icon(static_icon, IconSize::Small.px(&theme), brand).into_any_element(),
             };
             let chip_id = ElementId::NamedInteger("scope-chip".into(), ix as u64);
             let this = this.clone();
@@ -506,7 +531,8 @@ impl ModelSelector {
                     row = row.child(scope_chip(
                         ElementId::Name(id.into()),
                         tr!("model_selector.favorite_current"),
-                        icon("icons/star.svg", 13., theme.text_3).into_any_element(),
+                        icon("icons/star.svg", IconSize::Small.px(&theme), theme.text_3)
+                            .into_any_element(),
                         false,
                         theme,
                         move |_, cx| {
@@ -537,39 +563,44 @@ impl ModelSelector {
         ix + 1 < rows.len() && !rows[ix].is_header() && !rows[ix + 1].is_header()
     }
 
-    fn content_height(rows: &[Row]) -> f32 {
+    fn content_height(rows: &[Row], metrics: &ListMetrics) -> f32 {
         if rows.is_empty() {
             return 0.;
         }
-        let rows_h: f32 = rows.iter().map(Row::height).sum();
+        let rows_h: f32 = rows.iter().map(|row| row.height(metrics)).sum();
         let seps = (0..rows.len())
             .filter(|&ix| Self::separator_after(rows, ix))
             .count();
         let children = rows.len() + seps;
-        rows_h + seps as f32 * SEP_H + (children - 1) as f32 * ROW_GAP
+        rows_h + seps as f32 * SEP_H + (children - 1) as f32 * metrics.row_gap
     }
 
     /// Pixel offset of a row's top edge, accounting for the separators and
     /// gaps interleaved between list children.
-    fn row_top(rows: &[Row], ix: usize) -> f32 {
+    fn row_top(rows: &[Row], ix: usize, metrics: &ListMetrics) -> f32 {
         let mut y = 0.;
         for i in 0..ix {
-            y += rows[i].height() + ROW_GAP;
+            y += rows[i].height(metrics) + metrics.row_gap;
             if Self::separator_after(rows, i) {
-                y += SEP_H + ROW_GAP;
+                y += SEP_H + metrics.row_gap;
             }
         }
         y
     }
 
-    fn apply_scroll_to_row(list_scroll: &mut ScrollHandle, rows: &[Row], ix: usize) {
+    fn apply_scroll_to_row(
+        list_scroll: &mut ScrollHandle,
+        rows: &[Row],
+        ix: usize,
+        metrics: &ListMetrics,
+    ) {
         if ix >= rows.len() {
             return;
         }
-        let content_h = Self::content_height(rows);
-        let viewport_h = content_h.min(LIST_MAX_H);
-        let row_top = Self::row_top(rows, ix);
-        let row_h = rows[ix].height();
+        let content_h = Self::content_height(rows, metrics);
+        let viewport_h = content_h.min(metrics.list_max_h());
+        let row_top = Self::row_top(rows, ix, metrics);
+        let row_h = rows[ix].height(metrics);
         let max_offset = (content_h - viewport_h).max(0.);
         let centered = row_top - (viewport_h - row_h) / 2.0;
         let offset = centered.clamp(0., max_offset);
@@ -620,7 +651,8 @@ impl ModelSelector {
         }
         let rows = self.rows("");
         if let Some(ix) = Self::selected_row_index(&rows) {
-            Self::apply_scroll_to_row(&mut self.list_scroll, &rows, ix);
+            let metrics = ListMetrics::new(theme::get(cx));
+            Self::apply_scroll_to_row(&mut self.list_scroll, &rows, ix, &metrics);
         }
         self.block_hover_highlight();
         self.needs_scroll = true;
@@ -665,7 +697,7 @@ impl ModelSelector {
             cx.spawn(async move |_, cx| {
                 gpui::Timer::after(Duration::from_millis(delay)).await;
                 this.update(cx, |selector, cx| {
-                    selector.scroll_to_row(ix, &rows);
+                    selector.scroll_to_row(ix, &rows, cx);
                     cx.notify();
                 })
                 .ok();
@@ -674,8 +706,9 @@ impl ModelSelector {
         }
     }
 
-    fn scroll_to_row(&mut self, ix: usize, rows: &[Row]) {
-        Self::apply_scroll_to_row(&mut self.list_scroll, rows, ix);
+    fn scroll_to_row(&mut self, ix: usize, rows: &[Row], cx: &App) {
+        let metrics = ListMetrics::new(theme::get(cx));
+        Self::apply_scroll_to_row(&mut self.list_scroll, rows, ix, &metrics);
     }
 
     /// Move the highlight one option, skipping provider headers so the
@@ -697,7 +730,7 @@ impl ModelSelector {
             }
         }
         self.highlighted = next;
-        self.scroll_to_row(next, &rows);
+        self.scroll_to_row(next, &rows, cx);
         cx.notify();
     }
 
@@ -748,7 +781,7 @@ impl Render for ModelSelector {
         if pin_to_selection {
             if let Some(ix) = Self::selected_row_index(&rows) {
                 self.highlighted = ix;
-                self.scroll_to_row(ix, &rows);
+                self.scroll_to_row(ix, &rows, cx);
                 if self.needs_scroll {
                     self.defer_scroll(ix, rows.clone(), cx);
                 }
@@ -767,6 +800,7 @@ impl Render for ModelSelector {
 
         let this = cx.entity();
         let theme = *theme::get(cx);
+        let metrics = ListMetrics::new(&theme);
         let width = match self.kind {
             PickerKind::Model => MODEL_POPOVER_W,
             PickerKind::Thinking => THINKING_POPOVER_W,
@@ -786,15 +820,13 @@ impl Render for ModelSelector {
         let mut list = div()
             .id("picker-list")
             .w_full()
-            .max_h(px(LIST_MAX_H))
+            .max_h(px(metrics.list_max_h()))
             .overflow_y_scroll()
             .track_scroll(&self.list_scroll)
-            .px(px(4.))
-            .pt(px(4.))
-            .pb(px(8.))
+            .py(picker::list_padding_y(&theme))
             .flex()
             .flex_col()
-            .gap(px(ROW_GAP));
+            .gap(px(metrics.row_gap));
         for ix in 0..rows.len() {
             list = list.child(render_row(
                 &rows,
@@ -809,11 +841,8 @@ impl Render for ModelSelector {
             }
         }
 
-        div()
+        picker_surface(div(), &theme)
             .w(px(width))
-            .font_family(theme::ui_font_family())
-            .rounded(px(SHELL_RADIUS))
-            .popover_surface(theme)
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -826,18 +855,13 @@ impl Render for ModelSelector {
             .on_action(cx.listener(Self::on_prev))
             // search field — grouped above the list with a divider
             .child(
-                div()
-                    .h(px(40.))
-                    .flex_none()
-                    .px(px(14.))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .text_size(theme.ui_px(13.))
-                    .child(icon("icons/search.svg", 14., theme.text_3))
-                    .child(self.filter.clone()),
+                picker_search_frame(div(), &theme)
+                    .child(icon(
+                        "icons/search.svg",
+                        IconSize::Small.px(&theme),
+                        theme.text_3,
+                    ))
+                    .child(div().flex_1().min_w_0().child(self.filter.clone())),
             )
             // provider scope chips (models only) — one row, horizontally
             // scrollable, so the popover never grows from a wrapped chip row
@@ -960,19 +984,24 @@ fn thinking_hint(level: &str) -> String {
 
 /// Icon chip in the thinking picker rows — sized like sidebar session chips
 /// so HugeIcons glyphs read clearly (some levels use small artwork in the
-/// 24×24 viewBox, e.g. minimal’s dot).
+/// 24×24 viewBox, e.g. minimal’s dot). The glyph inside is a picker-row icon
+/// (`context_menu::ICON`).
 const THINKING_CHIP: f32 = 28.;
-const THINKING_ICON: f32 = 15.;
 
 fn trailing_check(selected: bool, theme: Theme) -> impl IntoElement + use<> {
     div()
-        .w(px(14.))
+        .w(context_menu::ICON.px(&theme))
         .flex_none()
         .flex()
         .items_center()
         .justify_center()
         .child(if selected {
-            icon("icons/check.svg", 12., theme.accent).into_any_element()
+            icon(
+                "icons/check.svg",
+                context_menu::ICON.px(&theme),
+                theme.accent,
+            )
+            .into_any_element()
         } else {
             div().into_any_element()
         })
@@ -984,7 +1013,7 @@ fn thinking_chip(level: &str, selected: bool, theme: Theme) -> impl IntoElement 
     div()
         .size(px(THINKING_CHIP))
         .flex_none()
-        .rounded(px(7.))
+        .rounded(Radius::Large.px(&theme))
         .bg(if selected && !is_off {
             theme.accent.opacity(0.14)
         } else {
@@ -999,7 +1028,7 @@ fn thinking_chip(level: &str, selected: bool, theme: Theme) -> impl IntoElement 
         .flex()
         .items_center()
         .justify_center()
-        .child(icon(path, THINKING_ICON, color))
+        .child(icon(path, context_menu::ICON.px(&theme), color))
 }
 
 /// Brand-mark chip leading a model row — the same 28px raised square as the
@@ -1008,7 +1037,7 @@ fn provider_chip(provider: &str, selected: bool, theme: Theme) -> impl IntoEleme
     div()
         .size(px(THINKING_CHIP))
         .flex_none()
-        .rounded(px(7.))
+        .rounded(Radius::Large.px(&theme))
         .bg(theme.bg_raised)
         .border_1()
         .border_color(theme.border)
@@ -1017,15 +1046,20 @@ fn provider_chip(provider: &str, selected: bool, theme: Theme) -> impl IntoEleme
         .justify_center()
         .child(icon_dyn(
             provider_icon(provider),
-            THINKING_ICON,
+            context_menu::ICON.px(&theme),
             if selected { theme.text } else { theme.text_2 },
         ))
 }
 
 /// Hairline separator between sibling option rows, inset to align with the
-/// row content rather than the popover edge.
+/// row content (a picker entry's inset plus its padding) rather than the
+/// popover edge.
 fn separator(theme: Theme) -> impl IntoElement + use<> {
-    div().h(px(SEP_H)).flex_none().mx(px(10.)).bg(theme.border)
+    div()
+        .h(px(SEP_H))
+        .flex_none()
+        .mx(list_item::inset(&theme) + list_item::padding_x(&theme))
+        .bg(theme.border)
 }
 
 /// A scope chip in the picker's top row: optional leading glyph, label, and
@@ -1038,12 +1072,7 @@ fn scope_chip(
     theme: Theme,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> gpui::AnyElement {
-    div()
-        .id(id)
-        .h(px(28.))
-        .px(px(9.))
-        .flex_none()
-        .rounded(px(7.))
+    button_frame(div().id(id), &theme, ButtonSize::Medium)
         .border_1()
         .border_color(if active {
             theme.border_strong
@@ -1055,7 +1084,6 @@ fn scope_chip(
         } else {
             theme.bg_raised
         })
-        .text_size(theme.ui_px(12.))
         .text_color(if active {
             theme.active_fg
         } else {
@@ -1063,9 +1091,6 @@ fn scope_chip(
         })
         .cursor_pointer()
         .when(!active, |chip| chip.hover(|s| s.bg(theme.bg_hover)))
-        .flex()
-        .items_center()
-        .gap(px(6.))
         .on_click(move |_, window, cx| on_click(window, cx))
         .child(lead)
         .child(label)
@@ -1080,13 +1105,7 @@ fn favorite_button(
     theme: Theme,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> gpui::AnyElement {
-    div()
-        .size(px(24.))
-        .flex_none()
-        .rounded(px(6.))
-        .flex()
-        .items_center()
-        .justify_center()
+    icon_button_frame(div(), &theme, ButtonSize::Default)
         .cursor_pointer()
         .group_hover("picker-row", |s| s.opacity(1.))
         .when(!favorited, |button| button.opacity(0.))
@@ -1098,7 +1117,7 @@ fn favorite_button(
         })
         .child(icon(
             "icons/star.svg",
-            13.,
+            IconSize::Small.px(&theme),
             if favorited {
                 theme.accent
             } else {
@@ -1111,6 +1130,10 @@ fn favorite_button(
 /// Group header: an optional leading glyph, an uppercase label, and the
 /// group count pushed right. Used for both provider groups and the pinned
 /// Favorites section, so the two read as the same register.
+///
+/// Laid out on Zed's inset `ListSubHeader` metrics like
+/// [`crate::app::menu_header`], which has no glyph or trailing-count slot;
+/// its height is [`ListMetrics::header_h`].
 fn group_header(
     label: &str,
     glyph: Option<&'static str>,
@@ -1118,24 +1141,26 @@ fn group_header(
     theme: Theme,
 ) -> impl IntoElement + use<> {
     div()
-        .h(px(HEADER_H))
-        .px(px(10.))
-        .flex()
-        .items_center()
-        .gap(px(6.))
-        .children(glyph.map(|path| icon(path, 12., theme.text_3)))
+        .w_full()
+        .flex_none()
+        .px(list::sub_header_padding_x(&theme))
+        .pb(list::sub_header_padding_bottom(&theme))
         .child(
             div()
-                .text_size(theme.ui_px(10.5))
-                .font_weight(FontWeight::MEDIUM)
+                .h(list::sub_header_height(&theme))
+                .px(list::sub_header_inset_x(&theme))
+                .flex()
+                .items_center()
+                .gap(theme.rems(0.25))
+                .text_size(list::SUB_HEADER_TEXT.px(&theme))
                 .text_color(theme.text_3)
-                .child(label.to_string()),
-        )
-        .child(div().flex_1())
-        .child(
-            div()
-                .text_size(theme.ui_px(10.5))
-                .text_color(theme.text_3)
+                .children(glyph.map(|path| icon(path, IconSize::XSmall.px(&theme), theme.text_3)))
+                .child(
+                    div()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(label.to_string()),
+                )
+                .child(div().flex_1())
                 .child(count.to_string()),
         )
 }
@@ -1151,42 +1176,44 @@ fn empty_state(kind: PickerKind, theme: Theme) -> impl IntoElement + use<> {
             tr!("model_selector.try_a_reasoning_level"),
         ),
     };
-    div()
-        .h(px(120.))
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .gap(px(6.))
-        .child(icon("icons/search.svg", 18., theme.text_3))
-        .child(
-            div()
-                .text_size(theme.ui_px(13.))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_2)
-                .child(title),
-        )
-        .child(
-            div()
-                .text_size(theme.ui_px(12.))
-                .text_color(theme.text_3)
-                .child(hint),
-        )
+    // Zed's no-match state: one muted picker entry in the list's place.
+    div().py(picker::list_padding_y(&theme)).child(
+        picker_entry(div(), &theme)
+            .text_color(theme.text_3)
+            .child(icon(
+                "icons/search.svg",
+                context_menu::ICON.px(&theme),
+                theme.text_3,
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(div().font_weight(FontWeight::MEDIUM).child(title))
+                    .child(
+                        div()
+                            .text_size(picker::SECONDARY_TEXT.px(&theme))
+                            .child(hint),
+                    ),
+            ),
+    )
 }
 
 /// Footer: the live option count on the left, a quiet keyboard legend on the
 /// right (the palette names its keys once, so the pickers do too).
 fn footer(count_label: String, theme: Theme) -> impl IntoElement + use<> {
     div()
-        .h(px(30.))
         .flex_none()
-        .px(px(14.))
+        .px(picker::search_padding_x(&theme))
+        .py(DynamicSpacing::Base06.px(&theme))
         .flex()
         .items_center()
-        .gap(px(12.))
+        .gap(DynamicSpacing::Base12.px(&theme))
         .border_t_1()
         .border_color(theme.border)
-        .text_size(theme.ui_px(11.))
+        .text_size(TextSize::Small.px(&theme))
         .text_color(theme.text_3)
         .child(count_label)
         .child(div().flex_1())
@@ -1202,11 +1229,14 @@ fn label_column<P: IntoElement, S: IntoElement>(
     secondary_mono: bool,
     theme: Theme,
 ) -> impl IntoElement + use<P, S> {
+    // Fixed Comfortable line boxes: the two lines are exactly what
+    // `picker::two_line_entry_height` (the row height) measures.
+    let line_box = |size: TextSize| BufferLineHeight::Comfortable.resolve(size.px(&theme));
     let secondary_text = div()
         .w_full()
         .truncate()
-        .text_size(theme.ui_px(11.))
-        .line_height(theme.ui_px(SUB_LINE_H))
+        .text_size(picker::SECONDARY_TEXT.px(&theme))
+        .line_height(line_box(picker::SECONDARY_TEXT))
         .text_color(theme.text_3)
         .child(secondary);
     let secondary_text = if secondary_mono {
@@ -1224,8 +1254,7 @@ fn label_column<P: IntoElement, S: IntoElement>(
             div()
                 .w_full()
                 .truncate()
-                .text_size(theme.ui_px(13.))
-                .line_height(theme.ui_px(LABEL_LINE_H))
+                .line_height(line_box(picker::TEXT))
                 .font_weight(if selected {
                     FontWeight::MEDIUM
                 } else {
@@ -1286,49 +1315,46 @@ fn render_row(
     let this = this.clone();
 
     let row_shell = |content: gpui::Div| {
-        content
-            .id(ElementId::NamedInteger("picker-row".into(), ix as u64))
-            .group("picker-row")
-            .min_h(px(ROW_H))
-            .py(px(ROW_PAD_V))
-            .px(px(10.))
-            .rounded(px(8.))
-            .cursor_pointer()
-            .flex()
-            .items_center()
-            .gap(px(10.))
-            .on_hover({
-                let this = this.clone();
-                move |hovering, _, cx| {
-                    if *hovering {
-                        this.update(cx, |selector, cx| {
-                            if selector.hover_highlight_blocked() {
-                                return;
-                            }
-                            if selector.highlighted != ix {
-                                selector.highlighted = ix;
-                                cx.notify();
-                            }
-                        });
-                    }
-                }
-            })
-            .on_click({
-                let this = this.clone();
-                move |_, window, cx| {
+        picker_entry(
+            content.id(ElementId::NamedInteger("picker-row".into(), ix as u64)),
+            &theme,
+        )
+        .group("picker-row")
+        // Fixed so every option row measures `ListMetrics::row_h`.
+        .h(picker::two_line_entry_height(&theme))
+        .cursor_pointer()
+        .on_hover({
+            let this = this.clone();
+            move |hovering, _, cx| {
+                if *hovering {
                     this.update(cx, |selector, cx| {
-                        let rows = selector.rows(&selector.last_filter);
-                        selector.activate(ix, &rows, window, cx);
+                        if selector.hover_highlight_blocked() {
+                            return;
+                        }
+                        if selector.highlighted != ix {
+                            selector.highlighted = ix;
+                            cx.notify();
+                        }
                     });
                 }
-            })
-            // Keyboard/hover cursor and the chosen option are separate
-            // states: the cursor is a wash, the choice keeps the fill.
-            .when(highlighted, |row| row.bg(theme.overlay_strong))
-            .when(!highlighted && selected, |row| row.bg(theme.active))
-            .when(!highlighted && !selected, |row| {
-                row.hover(|style| style.bg(theme.overlay))
-            })
+            }
+        })
+        .on_click({
+            let this = this.clone();
+            move |_, window, cx| {
+                this.update(cx, |selector, cx| {
+                    let rows = selector.rows(&selector.last_filter);
+                    selector.activate(ix, &rows, window, cx);
+                });
+            }
+        })
+        // Keyboard/hover cursor and the chosen option are separate
+        // states: the cursor is a wash, the choice keeps the fill.
+        .when(highlighted, |row| row.bg(theme.overlay_strong))
+        .when(!highlighted && selected, |row| row.bg(theme.active))
+        .when(!highlighted && !selected, |row| {
+            row.hover(|style| style.bg(theme.overlay))
+        })
     };
 
     match row {
@@ -1401,11 +1427,27 @@ mod tests {
             .collect()
     }
 
+    fn metrics() -> ListMetrics {
+        ListMetrics::new(&Theme::dark())
+    }
+
     fn offset_for(ix: usize, row_count: usize) -> f32 {
         let rows = model_rows(row_count);
         let mut scroll = ScrollHandle::new();
-        ModelSelector::apply_scroll_to_row(&mut scroll, &rows, ix);
+        ModelSelector::apply_scroll_to_row(&mut scroll, &rows, ix, &metrics());
         scroll.offset().y.into()
+    }
+
+    #[test]
+    fn metrics_follow_the_picker_tokens() {
+        let theme = Theme::dark();
+        let m = metrics();
+        assert_eq!(m.row_h, f32::from(picker::two_line_entry_height(&theme)));
+        assert_eq!(
+            m.header_h,
+            f32::from(list::sub_header_height(&theme) + list::sub_header_padding_bottom(&theme))
+        );
+        assert_eq!(m.row_gap, f32::from(DynamicSpacing::Base06.px(&theme)));
     }
 
     #[test]
@@ -1422,13 +1464,14 @@ mod tests {
 
     #[test]
     fn scroll_offset_centers_selected_row() {
+        let m = metrics();
         let offset = offset_for(20, 30);
         // Row 20's top sits below the centered 6-row viewport; the scrolled
         // offset places the row fully within it.
-        let row_top = ModelSelector::row_top(&model_rows(30), 20);
-        let viewport_h = LIST_MAX_H;
+        let row_top = ModelSelector::row_top(&model_rows(30), 20, &m);
+        let viewport_h = m.list_max_h();
         assert!(row_top + offset >= 0.);
-        assert!(row_top + offset <= viewport_h - ROW_H + 0.5);
+        assert!(row_top + offset <= viewport_h - m.row_h + 0.5);
     }
 
     #[test]
@@ -1439,26 +1482,28 @@ mod tests {
             favorites: false,
         }];
         rows.extend(model_rows(5));
+        let m = metrics();
         // Two hairlines sit between the three leading children.
-        let top = ModelSelector::row_top(&rows, 3);
-        assert_eq!(top, HEADER_H + 2. * ROW_H + 5. * ROW_GAP + 2. * SEP_H);
+        let top = ModelSelector::row_top(&rows, 3, &m);
+        assert_eq!(top, m.header_h + 2. * m.row_h + 5. * m.row_gap + 2. * SEP_H);
     }
 
     #[test]
     fn separators_add_breathing_room_between_rows() {
         let rows = model_rows(3);
+        let m = metrics();
         assert_eq!(
-            ModelSelector::row_top(&rows, 1),
-            ROW_H + SEP_H + 2. * ROW_GAP
+            ModelSelector::row_top(&rows, 1, &m),
+            m.row_h + SEP_H + 2. * m.row_gap
         );
         assert_eq!(
-            ModelSelector::row_top(&rows, 2),
-            2. * ROW_H + 2. * SEP_H + 4. * ROW_GAP
+            ModelSelector::row_top(&rows, 2, &m),
+            2. * m.row_h + 2. * SEP_H + 4. * m.row_gap
         );
         // Content height counts the two interleaved hairlines and four gaps.
         assert_eq!(
-            ModelSelector::content_height(&rows),
-            3. * ROW_H + 2. * SEP_H + 4. * ROW_GAP
+            ModelSelector::content_height(&rows, &m),
+            3. * m.row_h + 2. * SEP_H + 4. * m.row_gap
         );
     }
 

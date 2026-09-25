@@ -1,5 +1,9 @@
 use super::*;
 use crate::platform::WindowCommand;
+use crate::theme::tokens::{
+    self, button, context_menu, input, list, list_item, picker, ButtonSize, IconSize, StyledExt,
+    TextSize,
+};
 
 /// Turn a wire command name into a short human label, e.g. `set_model` →
 /// `Set model failed`.
@@ -79,23 +83,25 @@ fn icon_hover_ink(color: Hsla) -> Hsla {
 /// push/pop stack, so one shared group name is safe across siblings and nested
 /// buttons — the nearest opt-in button wins. An icon outside any such button
 /// sees no group and stays inert, so decorative glyphs never react.
-pub(crate) fn icon(path: &'static str, size: f32, color: Hsla) -> gpui::Svg {
+///
+/// `size` is px: a literal, or a token such as `IconSize::Small.px(&theme)`.
+pub(crate) fn icon(path: &'static str, size: impl Into<Pixels>, color: Hsla) -> gpui::Svg {
     let hover = icon_hover_ink(color);
     gpui::svg()
         .path(path)
         .flex_none()
-        .size(px(size))
+        .size(size.into())
         .text_color(color)
         .group_hover(BUTTON_GROUP, move |style| style.text_color(hover))
 }
 
 /// Same as [`icon`] but for runtime-computed paths (per-provider marks).
-pub(crate) fn icon_dyn(path: SharedString, size: f32, color: Hsla) -> gpui::Svg {
+pub(crate) fn icon_dyn(path: SharedString, size: impl Into<Pixels>, color: Hsla) -> gpui::Svg {
     let hover = icon_hover_ink(color);
     gpui::svg()
         .path(path)
         .flex_none()
-        .size(px(size))
+        .size(size.into())
         .text_color(color)
         .group_hover(BUTTON_GROUP, move |style| style.text_color(hover))
 }
@@ -108,14 +114,14 @@ pub(crate) fn icon_dyn(path: SharedString, size: f32, color: Hsla) -> gpui::Svg 
 /// shares this so "working" reads identically everywhere.
 pub(crate) fn spinner(
     id: impl Into<ElementId>,
-    size: f32,
+    size: impl Into<Pixels>,
     color: Hsla,
     theme: Theme,
 ) -> AnyElement {
     let svg = gpui::svg()
         .path("icons/loader.svg")
         .flex_none()
-        .size(px(size))
+        .size(size.into())
         .text_color(color);
     if theme.ui.reduce_motion {
         return svg.into_any_element();
@@ -142,18 +148,19 @@ pub(crate) fn spinner(
 /// `id` must be unique per instance — GPUI tracks the animation by it.
 pub(crate) fn refresh_glyph(
     id: impl Into<ElementId>,
-    size: f32,
+    size: impl Into<Pixels>,
     active: bool,
     idle_color: Hsla,
     theme: Theme,
 ) -> AnyElement {
+    let size: Pixels = size.into();
     if !active {
         return icon("icons/refresh.svg", size, idle_color).into_any_element();
     }
     let svg = gpui::svg()
         .path("icons/refresh.svg")
         .flex_none()
-        .size(px(size))
+        .size(size)
         .text_color(theme.accent);
     if theme.ui.reduce_motion {
         return svg.into_any_element();
@@ -185,6 +192,165 @@ pub(crate) trait PopoverSurface: Styled {
 }
 
 impl<T: Styled> PopoverSurface for T {}
+
+/// The shell of a context menu, built to Zed's `ContextMenu`: the elevated
+/// surface (`elevation_2`), a 200px minimum width, `List`'s vertical padding,
+/// and the Comfortable line height a menu forces so its entries measure the
+/// same wherever it is deferred from. Callers keep positioning, occlusion,
+/// dismissal, and a fixed width when the menu needs one.
+pub(crate) fn context_menu_surface<E: Styled>(el: E, theme: &Theme) -> E {
+    el.elevation_2(theme)
+        .min_w(context_menu::MIN_WIDTH)
+        .py(list::padding_y(theme))
+        .font_family(theme::ui_font_family())
+        .text_size(context_menu::TEXT.px(theme))
+        .line_height(context_menu::LINE_HEIGHT.relative())
+}
+
+/// One context-menu entry, laid out like Zed's inset `ListItem`: Base04
+/// outside, Base06 inside, `rounded_sm`, one Comfortable line tall, and the
+/// entry label's `gap_1p5` between icon and label. Callers add the id,
+/// colors, hover, and click handling; icons take `context_menu::ICON`.
+pub(crate) fn context_menu_entry<E: Styled>(el: E, theme: &Theme) -> E {
+    el.h(context_menu::entry_height(theme))
+        .mx(list_item::inset(theme))
+        .px(list_item::padding_x(theme))
+        .rounded(list_item::RADIUS.px(theme))
+        .flex()
+        .items_center()
+        .gap(context_menu::icon_gap(theme))
+        .text_size(context_menu::TEXT.px(theme))
+}
+
+/// Zed's `ListSeparator`: a full-width hairline with Base06 above and below.
+pub(crate) fn context_menu_separator(theme: &Theme) -> gpui::Div {
+    div()
+        .h(tokens::BORDER_WIDTH)
+        .w_full()
+        .my(list::separator_margin_y(theme))
+        .bg(theme.border)
+}
+
+/// Zed's inset `ListSubHeader`, the section label inside a menu or picker:
+/// a 20px row of Small, muted text, Base02 + `px_2` in from the edges, with
+/// Base04 below.
+pub(crate) fn menu_header(label: impl Into<SharedString>, theme: &Theme) -> gpui::Div {
+    div()
+        .w_full()
+        .flex_none()
+        .flex()
+        .px(list::sub_header_padding_x(theme))
+        .pb(list::sub_header_padding_bottom(theme))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .h(list::sub_header_height(theme))
+                .px(list::sub_header_inset_x(theme))
+                .flex()
+                .items_center()
+                .gap(theme.rems(0.25))
+                .truncate()
+                .text_size(list::SUB_HEADER_TEXT.px(theme))
+                .text_color(theme.text_3)
+                .child(label.into()),
+        )
+}
+
+/// The shell of a picker (search + list), built to Zed's `Picker`: the modal
+/// elevation it draws even as a popover, and the UI face at Default size.
+/// Callers keep their width, positioning, occlusion, and dismissal.
+pub(crate) fn picker_surface<E: Styled>(el: E, theme: &Theme) -> E {
+    el.elevation_3(theme)
+        .font_family(theme::ui_font_family())
+        .text_size(picker::TEXT.px(theme))
+}
+
+/// A picker's search row, Zed's picker head: 36px tall, `px_2p5`, a hairline
+/// below, and Default-size input text. Put the `ComposerInput` in a
+/// `flex_1` child; a leading search icon takes `IconSize::Small`.
+pub(crate) fn picker_search_frame<E: Styled>(el: E, theme: &Theme) -> E {
+    el.flex_none()
+        .h(picker::search_height(theme))
+        .px(picker::search_padding_x(theme))
+        .flex()
+        .items_center()
+        .gap(input::gap(theme))
+        .overflow_hidden()
+        .border_b_1()
+        .border_color(theme.border)
+        .text_size(TextSize::Default.px(theme))
+}
+
+/// One picker row, Zed's inset `ListItem` at `Sparse` spacing: Base04
+/// outside, Base06 inside, 4px above and below, `rounded_sm`, and at least
+/// one Comfortable line of Default text (31px). A row with a secondary line
+/// grows to fit it (see `picker::two_line_entry_height`). Callers add the id,
+/// colors, hover, selection, and click handling.
+pub(crate) fn picker_entry<E: Styled>(el: E, theme: &Theme) -> E {
+    el.min_h(picker::entry_height(theme))
+        .mx(list_item::inset(theme))
+        .px(list_item::padding_x(theme))
+        .py(picker::ROW_SPACING.padding_y(theme))
+        .rounded(list_item::RADIUS.px(theme))
+        .flex()
+        .items_center()
+        .gap(list_item::content_gap(theme))
+        .text_size(picker::TEXT.px(theme))
+}
+
+/// A labeled button's frame, Zed's `ButtonLike`: the size's height and
+/// horizontal padding, Base04 between icon and label, `rounded_sm`, and a
+/// one-line label at 1× line height (Zed's `UiLabel`) so it sits inside even
+/// a 22px button. The label size follows [`button::label_size`]. Callers
+/// keep colors, border, hover, press, and click handling.
+pub(crate) fn button_frame<E: Styled>(el: E, theme: &Theme, size: ButtonSize) -> E {
+    el.flex_none()
+        .h(size.height(theme))
+        .px(size.padding_x(theme))
+        .flex()
+        .items_center()
+        .justify_center()
+        .gap(button::gap(theme))
+        .rounded(button::RADIUS.px(theme))
+        .whitespace_nowrap()
+        .text_size(button::label_size(size).px(theme))
+        .line_height(relative(1.))
+}
+
+/// An icon-only button's frame, Zed's `IconButton`: a square as tall as its
+/// [`ButtonSize`], `rounded_sm`, the icon centered. Callers keep colors,
+/// hover, press, tooltip, and click handling.
+pub(crate) fn icon_button_frame<E: Styled>(el: E, theme: &Theme, size: ButtonSize) -> E {
+    el.flex_none()
+        .size(size.height(theme))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(button::RADIUS.px(theme))
+}
+
+/// A text field's box, Zed's `InputField`: at least 32px tall, `px_2`
+/// `py_1p5`, a 1px hairline, `rounded_md`, and Default-size text, which the
+/// `ComposerInput` inside inherits. Callers set the fill (and a focus border)
+/// and give the input a `flex_1` wrapper when an icon shares the row.
+pub(crate) fn input_field_frame<E: Styled>(el: E, theme: &Theme) -> E {
+    el.min_h(input::min_height(theme))
+        .px(input::padding_x(theme))
+        .py(input::padding_y(theme))
+        .flex()
+        .items_center()
+        .gap(input::gap(theme))
+        .rounded(input::RADIUS.px(theme))
+        .border_1()
+        .border_color(theme.border)
+        .text_size(TextSize::Default.px(theme))
+}
+
+/// A field's label, Zed's `InputField` label: Small text.
+pub(crate) fn input_label(label: impl Into<SharedString>, theme: &Theme) -> gpui::Div {
+    div().text_size(input::LABEL.px(theme)).child(label.into())
+}
 
 /// How an empty/error state fills its parent: `Full` when the parent is a plain
 /// sized box (a panel body), `Grow` when the parent is a flex column.
@@ -242,11 +408,15 @@ pub(crate) fn empty_state(
 /// Shared height of every top-bar control — the quota pill, the "open in"
 /// split, the diff chip and the icon buttons — so a row of mixed
 /// affordances reads as one instrument panel instead of assorted sizes.
+/// It is Zed's `ButtonSize::Medium` at the default UI size, held fixed
+/// because the titlebar's traffic-light clearance is fixed px layout
+/// (`view::TITLEBAR_CONTROLS_W`).
 pub(crate) const HEADER_CTRL_H: f32 = 28.;
 
-/// Corner radius of the rectangular header chips (the quota pill keeps a
-/// full round so it still reads as a meter, not a button).
-pub(crate) const HEADER_CTRL_R: f32 = 8.;
+/// Corner radius of the rectangular header chips: a button's `rounded_sm`
+/// ([`button::RADIUS`]) at the default UI size, fixed like the height. The
+/// quota pill keeps a full round so it still reads as a meter.
+pub(crate) const HEADER_CTRL_R: f32 = 4.;
 
 /// The glass fill every resting top-bar chip shares: the text-wash overlay
 /// with its alpha raised toward the top edge and eased off at the bottom,
@@ -437,7 +607,7 @@ fn caption_button(
     } else {
         theme.bg_hover
     };
-    let mut glyph_el = icon(glyph, 14., theme.text_2);
+    let mut glyph_el = icon(glyph, IconSize::Small.px(&theme), theme.text_2);
     if close {
         // The close glyph rides the caption's red hover; the shared button ink
         // lift already brightens it.
@@ -578,11 +748,14 @@ pub(crate) fn dev_file_icon(path: &str, dark: bool) -> Option<(char, Hsla)> {
 
 /// Paint a devicons glyph (or fall back to `fallback` when no Nerd Font
 /// is installed) — shared by the @-mention rows and attachment chips.
+///
+/// `size` is the glyph's size, an [`IconSize`] resolved to px; the glyph
+/// sits in that icon's square (the size plus Base02 either side).
 pub(crate) fn file_glyph(
     path: &str,
     dark: bool,
     nerd_family: Option<&SharedString>,
-    font_size: f32,
+    size: impl Into<Pixels>,
     fallback: AnyElement,
 ) -> AnyElement {
     let Some(family) = nerd_family else {
@@ -591,14 +764,15 @@ pub(crate) fn file_glyph(
     let Some((glyph, color)) = dev_file_icon(path, dark) else {
         return fallback;
     };
+    let size: Pixels = size.into();
     div()
-        .w(px(18.))
+        .w(size + px(4.))
         .flex_none()
         .flex()
         .items_center()
         .justify_center()
         .font_family(family)
-        .text_size(px(font_size))
+        .text_size(size)
         .text_color(color)
         .child(glyph.to_string())
         .into_any_element()

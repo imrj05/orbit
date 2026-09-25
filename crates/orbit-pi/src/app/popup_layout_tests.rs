@@ -225,6 +225,91 @@ fn max_h_collapses_uniform_list_in_zero_height_context(cx: &mut gpui::TestAppCon
     );
 }
 
+// ── context menus on Zed's tokens ─────────────────────────────────────────
+
+/// A context menu built exactly like the sidebar's: the shared shell and
+/// entries, content-sized inside `anchored` + `deferred`, anchored 20px from
+/// the viewport's right edge so it has to snap back into the window (the
+/// snap reads the window viewport, not the drawn area).
+struct ContextMenuProbe;
+
+impl Render for ContextMenuProbe {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::theme::tokens::{context_menu, popover};
+
+        let theme = *theme::get(cx);
+        let anchor_x = window.viewport_size().width - px(20.);
+        let entry = |id: &'static str, label: &'static str| {
+            context_menu_entry(div().debug_selector(move || id.to_string()), &theme)
+                .child(div().size(context_menu::ICON.px(&theme)).flex_none())
+                .child(label)
+        };
+        let popup = context_menu_surface(div().debug_selector(|| "menu".into()), &theme)
+            .flex()
+            .flex_col()
+            .child(entry("entry-a", "Copy path"))
+            .child(context_menu_separator(&theme).debug_selector(|| "menu-sep".into()))
+            .child(entry("entry-b", "Remove"));
+        div().size_full().child(
+            div()
+                .absolute()
+                .top(px(40.))
+                .left(anchor_x)
+                .size(px(0.))
+                .child(
+                    anchored()
+                        .position_mode(AnchoredPositionMode::Local)
+                        .anchor(Corner::TopLeft)
+                        .snap_to_window_with_margin(popover::WINDOW_MARGIN)
+                        .child(deferred(popup)),
+                ),
+        )
+    }
+}
+
+#[gpui::test]
+fn context_menu_shell_lays_out_on_zeds_metrics(cx: &mut gpui::TestAppContext) {
+    use crate::theme::ThemeId;
+
+    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    let cx = cx.add_empty_window();
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(300.), px(400.)),
+        |_, cx| cx.new(|_| ContextMenuProbe),
+    );
+    let viewport = cx.update(|window, _| window.viewport_size());
+    let menu = cx.debug_bounds("menu").expect("menu laid out");
+    let a = cx.debug_bounds("entry-a").expect("first entry laid out");
+    let sep = cx.debug_bounds("menu-sep").expect("separator laid out");
+    let b = cx.debug_bounds("entry-b").expect("second entry laid out");
+
+    // Content-sized, never below Zed's 200px minimum.
+    assert!(
+        menu.size.width >= px(200.),
+        "menu width {:?}",
+        menu.size.width
+    );
+    // Snapped back inside the window with Zed's 8px margin.
+    assert_eq!(
+        menu.right(),
+        viewport.width - px(8.),
+        "menu {menu:?} in {viewport:?}"
+    );
+    // Entries: one Comfortable line of 14px text (23px), inset Base04 inside
+    // a 1px hairline, below `List`'s Base04 top padding.
+    assert_eq!(a.size.height, px(23.));
+    assert_eq!(b.size.height, px(23.));
+    assert_eq!(a.top() - menu.top(), px(5.));
+    assert_eq!(a.left() - menu.left(), px(5.));
+    assert_eq!(menu.right() - a.right(), px(5.));
+    // The separator is Zed's `ListSeparator`: 1px, Base06 above and below.
+    assert_eq!(sep.size.height, px(1.));
+    assert_eq!(sep.top() - a.bottom(), px(6.));
+    assert_eq!(b.top() - sep.bottom(), px(6.));
+    assert_eq!(menu.bottom() - b.bottom(), px(5.));
+}
+
 /// Same list as [`SettingsPopupListTestView`] but with `max_h` — documents
 /// the gpui sizing behavior the explicit height works around.
 struct MaxHeightListTestView(gpui::UniformListScrollHandle);

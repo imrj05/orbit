@@ -9,8 +9,9 @@ use gpui::{
     div, prelude::*, px, AnyElement, ClickEvent, FontWeight, Hsla, Window,
 };
 
-use crate::app::{icon, press, BUTTON_GROUP};
+use crate::app::{button_frame, icon, icon_button_frame, press, BUTTON_GROUP};
 use crate::git::RefKind;
+use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize};
 use crate::theme::Theme;
 use crate::usage::tooltip::Tooltip;
 
@@ -45,12 +46,12 @@ pub fn check_box(checked: bool, theme: Theme) -> gpui::Div {
         .items_center()
         .justify_center()
         .when(checked, |box_| {
-            box_.child(icon("icons/check.svg", 10., theme.send_fg))
+            box_.child(icon("icons/check.svg", IconSize::Indicator.px(&theme), theme.send_fg))
         })
 }
 
-/// A 28px action button with an optional leading glyph. `primary` paints it in
-/// the send/accent colors; `disabled` mutes it and drops the click handler.
+/// A Medium action button with an optional leading glyph. `primary` paints it
+/// in the send/accent colors; `disabled` mutes it and drops the click handler.
 pub fn action_button(
     id: &'static str,
     label: &str,
@@ -60,16 +61,7 @@ pub fn action_button(
     theme: Theme,
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
-    let mut button = div()
-        .id(id)
-        .h(px(28.))
-        .px(px(10.))
-        .rounded(px(8.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .gap(px(5.))
-        .text_size(theme.ui_px(12.))
+    let mut button = button_frame(div().id(id), &theme, ButtonSize::Medium)
         .font_weight(FontWeight::MEDIUM)
         .border_1();
     if disabled {
@@ -102,8 +94,8 @@ pub fn action_button(
     button.child(label.to_string()).into_any_element()
 }
 
-/// A 24px icon-only button for a row action, with a tooltip so the glyph is
-/// never a guess. Stops propagation so clicking it never also triggers the
+/// An icon-only row-action button (`ButtonSize::Default`), with a tooltip so
+/// the glyph is never a guess. Stops propagation so clicking it never also triggers the
 /// row's own click handler.
 pub fn row_button(
     id: impl Into<gpui::SharedString>,
@@ -114,14 +106,8 @@ pub fn row_button(
 ) -> AnyElement {
     let label = tr!(tip_key);
     press(
-        div()
-            .id(gpui::ElementId::Name(id.into()))
+        icon_button_frame(div().id(gpui::ElementId::Name(id.into())), &theme, ButtonSize::Default)
             .group(BUTTON_GROUP)
-            .size(px(24.))
-            .rounded(px(6.))
-            .flex()
-            .items_center()
-            .justify_center()
             .cursor_pointer()
             .hover(|s| s.bg(theme.overlay)),
     )
@@ -130,7 +116,7 @@ pub fn row_button(
         cx.stop_propagation();
         listener(event, window, cx);
     })
-    .child(icon(icon_path, 12., theme.text_3))
+    .child(icon(icon_path, IconSize::XSmall.px(&theme), theme.text_3))
     .into_any_element()
 }
 
@@ -164,21 +150,13 @@ pub fn load_more(
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
     press(
-        div()
-            .id("git-load-more")
+        button_frame(div().id("git-load-more"), &theme, ButtonSize::Large)
             .group(BUTTON_GROUP)
-            .mx(px(12.))
-            .mt(px(6.))
-            .h(px(32.))
-            .rounded_md()
+            .mx(DynamicSpacing::Base12.px(&theme))
+            .mt(DynamicSpacing::Base06.px(&theme))
             .border_1()
             .border_color(theme.border)
-            .flex()
-            .items_center()
-            .justify_center()
-            .gap(px(6.))
             .cursor_pointer()
-            .text_size(theme.ui_px(12.))
             .text_color(theme.text_2)
             .hover(|s| s.bg(theme.bg_hover)),
     )
@@ -218,7 +196,7 @@ pub fn empty_note(
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(icon(glyph, 16., theme.text_2)),
+                .child(icon(glyph, IconSize::Medium.px(&theme), theme.text_2)),
         )
         .child(
             div()

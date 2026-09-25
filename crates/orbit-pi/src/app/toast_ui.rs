@@ -1,5 +1,6 @@
 use super::helpers::*;
 use super::*;
+use crate::theme::tokens::{ButtonSize, IconSize, StyledExt};
 use crate::toast::{Toast, ToastKind};
 
 /// Width of a toast card. A stack hugs the window's bottom-right corner, so
@@ -99,11 +100,7 @@ impl OrbitApp {
             ))
             .debug_selector(move || format!("toast-{id}"))
             .w(px(TOAST_W))
-            .rounded(px(10.))
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.bg_raised)
-            .shadow(theme.card_shadow())
+            .elevation_2(&theme)
             .px(px(12.))
             .py(px(9.))
             .flex()
@@ -125,7 +122,7 @@ impl OrbitApp {
                     .items_center()
                     .justify_center()
                     .bg(tint.opacity(0.14))
-                    .child(icon(glyph, 13., tint)),
+                    .child(icon(glyph, IconSize::Small.px(&theme), tint)),
             )
             .child(
                 div()
@@ -152,14 +149,11 @@ impl OrbitApp {
                     })),
             )
             .child(
-                div()
-                    .flex_none()
-                    .size(px(18.))
-                    .rounded(px(5.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(icon("icons/x.svg", 11., theme.text_3)),
+                icon_button_frame(div(), &theme, ButtonSize::Compact).child(icon(
+                    "icons/x.svg",
+                    IconSize::XSmall.px(&theme),
+                    theme.text_3,
+                )),
             );
 
         // The animation spans the card's whole life: fade in, hold through

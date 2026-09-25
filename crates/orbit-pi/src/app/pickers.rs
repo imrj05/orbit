@@ -1,4 +1,5 @@
 use super::*;
+use crate::theme::tokens::popover;
 
 impl OrbitApp {
     /// Recent workspaces for the folder selector: distinct session folders,
@@ -581,8 +582,8 @@ impl OrbitApp {
                     anchored()
                         .position_mode(AnchoredPositionMode::Local)
                         .anchor(Corner::TopLeft)
-                        .offset(point(px(0.), px(6.)))
-                        .snap_to_window()
+                        .offset(point(px(0.), popover::MENU_OFFSET))
+                        .snap_to_window_with_margin(popover::WINDOW_MARGIN)
                         .child(deferred(picker)),
                 )
                 .into_any_element()
@@ -601,8 +602,8 @@ impl OrbitApp {
                     anchored()
                         .position_mode(AnchoredPositionMode::Local)
                         .anchor(Corner::BottomLeft)
-                        .offset(point(px(0.), px(-6.)))
-                        .snap_to_window()
+                        .offset(point(px(0.), -popover::MENU_OFFSET))
+                        .snap_to_window_with_margin(popover::WINDOW_MARGIN)
                         .child(deferred(picker)),
                 )
                 .into_any_element()

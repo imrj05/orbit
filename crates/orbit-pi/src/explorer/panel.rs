@@ -23,12 +23,14 @@ use super::ops;
 use super::tree::{self, Row, StatusBadge, TreeIndex};
 use super::walk;
 use crate::app::{
-    empty_state, file_badge, file_glyph, icon, nerd_font_family, press, BUTTON_GROUP, refresh_glyph, EmptyFill,
-    PopoverSurface,
+    button_frame, context_menu_entry, context_menu_separator, context_menu_surface, empty_state,
+    file_badge, file_glyph, icon, icon_button_frame, nerd_font_family, picker_search_frame, press,
+    BUTTON_GROUP, refresh_glyph, EmptyFill,
 };
 use crate::composer::ComposerInput;
 use crate::git;
 use crate::platform;
+use crate::theme::tokens::{context_menu, ButtonSize, IconSize, StyledExt, TextSize};
 use crate::theme::{self, Theme, ThemeMode};
 
 /// Panel width defaults / drag clamps.
@@ -39,7 +41,6 @@ pub const PANEL_MAX_W: f32 = 460.;
 /// Fixed tree row height — 28px, the design system's navigation-row height.
 const ROW_H: f32 = 28.;
 const HEADER_H: f32 = 40.;
-const FILTER_H: f32 = 34.;
 const FOOTER_H: f32 = 26.;
 
 /// What a row click does when the app is told a file was picked. The string
@@ -816,23 +817,20 @@ impl ProjectPanel {
             ))
             .child(
                 press(
-                    div()
-                        .id("explorer-refresh")
-                        .group(BUTTON_GROUP)
-                        .size(px(24.))
-                        .rounded(px(6.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .cursor_pointer()
-                        .hover(|el| el.bg(theme.bg_hover)),
+                    icon_button_frame(
+                        div().id("explorer-refresh").group(BUTTON_GROUP),
+                        &theme,
+                        ButtonSize::Default,
+                    )
+                    .cursor_pointer()
+                    .hover(|el| el.bg(theme.bg_hover)),
                 )
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.mark_stale(cx);
                 }))
                 .child(refresh_glyph(
                     "explorer-refresh-spin",
-                    13.,
+                    IconSize::Small.px(&theme),
                     self.loading,
                     theme.text_3,
                     theme,
@@ -884,17 +882,9 @@ impl ProjectPanel {
 
     fn filter_row(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
         let has_text = !self.filter.read(cx).text().is_empty();
-        div()
-            .h(px(FILTER_H))
-            .flex_none()
-            .px(px(10.))
-            .flex()
-            .items_center()
-            .gap(px(6.))
-            .border_b_1()
-            .border_color(theme.border)
-            .child(icon("icons/search.svg", 12., theme.text_3))
-            .child(self.filter.clone())
+        picker_search_frame(div(), &theme)
+            .child(icon("icons/search.svg", IconSize::Small.px(&theme), theme.text_3))
+            .child(div().flex_1().min_w_0().child(self.filter.clone()))
             .when(has_text, |row| {
                 row.child(ghost_icon(
                     &theme,
@@ -975,7 +965,7 @@ impl ProjectPanel {
             .flex()
             .items_center()
             .gap(px(6.))
-            .child(icon(icon_path, 13., theme.text_3));
+            .child(icon(icon_path, IconSize::Small.px(&theme), theme.text_3));
         if !entry.dir.is_empty() {
             row = row.child(
                 div()
@@ -1123,10 +1113,10 @@ impl ProjectPanel {
                     } else {
                         "icons/chevron-right.svg"
                     },
-                    10.,
+                    IconSize::Indicator.px(&theme),
                     icon_color,
                 ))
-                .child(icon("icons/folder.svg", 13., icon_color));
+                .child(icon("icons/folder.svg", IconSize::Small.px(&theme), icon_color));
             if let Some(input) = entry_input {
                 content = content.child(div().flex().flex_1().min_w_0().child(input));
             } else {
@@ -1153,7 +1143,13 @@ impl ProjectPanel {
             }
         } else {
             let fallback = file_badge(&row.path, theme);
-            let glyph = file_glyph(&row.path, dark, nerd.as_ref(), 13., fallback);
+            let glyph = file_glyph(
+                &row.path,
+                dark,
+                nerd.as_ref(),
+                IconSize::Small.px(&theme),
+                fallback,
+            );
             content = content.child(glyph);
             if let Some(input) = entry_input {
                 content = content.child(div().flex().flex_1().min_w_0().child(input));
@@ -1206,12 +1202,8 @@ impl ProjectPanel {
         let relative = menu.path.clone();
         let is_dir = menu.is_dir;
         let expanded = menu.expanded;
-        let mut popup = div()
-            .id("explorer-context-menu")
+        let mut popup = context_menu_surface(div().id("explorer-context-menu"), &theme)
             .w(px(220.))
-            .py(px(4.))
-            .rounded(px(10.))
-            .popover_surface(theme)
             .flex()
             .flex_col()
             .occlude()
@@ -1418,11 +1410,7 @@ impl ProjectPanel {
         let card = div()
             .w_full()
             .max_w(px(250.))
-            .rounded(px(12.))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.card_shadow())
+            .elevation_2(&theme)
             .p(px(14.))
             .flex()
             .flex_col()
@@ -1496,15 +1484,7 @@ fn prompt_button(
         (theme.bg_raised, theme.text)
     };
     press(
-        div()
-            .id(id)
-            .group(BUTTON_GROUP)
-            .h(px(28.))
-            .px(px(12.))
-            .rounded(px(8.))
-            .flex()
-            .items_center()
-            .justify_center()
+        button_frame(div().id(id).group(BUTTON_GROUP), &theme, ButtonSize::Medium)
             .cursor_pointer()
             .bg(bg)
             .hover(|el| el.opacity(0.9)),
@@ -1512,7 +1492,6 @@ fn prompt_button(
     .on_click(listener)
     .child(
         div()
-            .text_size(theme.ui_px(12.))
             .font_weight(FontWeight::MEDIUM)
             .text_color(fg)
             .child(label),
@@ -1520,7 +1499,8 @@ fn prompt_button(
     .into_any_element()
 }
 
-/// A header/toolbar ghost icon control: 24px hit area, hover fill only.
+/// A header/toolbar ghost icon control: a Default icon button, hover fill
+/// only.
 fn ghost_icon(
     theme: &Theme,
     id: &'static str,
@@ -1529,31 +1509,20 @@ fn ghost_icon(
     listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     press(
-        div()
-            .id(id)
-            .group(BUTTON_GROUP)
-            .size(px(24.))
-            .rounded(px(6.))
-            .flex()
-            .items_center()
-            .justify_center()
+        icon_button_frame(div().id(id).group(BUTTON_GROUP), theme, ButtonSize::Default)
             .cursor_pointer()
             .hover(|el| el.bg(theme.bg_hover)),
     )
     .on_click(listener)
-    .child(icon(path, 13., color))
+    .child(icon(path, IconSize::Small.px(theme), color))
     .into_any_element()
 }
 
 fn separator(theme: Theme) -> AnyElement {
-    div()
-        .h(px(1.))
-        .mx(px(4.))
-        .my(px(4.))
-        .bg(theme.border)
-        .into_any_element()
+    context_menu_separator(&theme).into_any_element()
 }
 
+/// One Explorer context-menu entry, on Zed's context menu metrics.
 fn menu_row(
     theme: Theme,
     icon_path: &'static str,
@@ -1561,38 +1530,34 @@ fn menu_row(
     hint: Option<String>,
     listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    div()
-        .id(gpui::ElementId::Name(
+    context_menu_entry(
+        div().id(gpui::ElementId::Name(
             format!("explorer-menu-{label}").into(),
-        ))
-        .h(px(28.))
-        .mx(px(4.))
-        .px(px(8.))
-        .rounded(px(6.))
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .cursor_pointer()
-        .hover(|el| el.bg(theme.overlay))
-        .on_click(listener)
-        .child(icon(icon_path, 12., theme.text_3))
-        .child(
-            div()
-                .min_w_0()
-                .flex_1()
-                .truncate()
-                .text_size(theme.ui_px(12.))
-                .text_color(theme.text_2)
-                .child(label),
-        )
-        .children(hint.map(|hint| {
-            div()
-                .flex_none()
-                .text_size(theme.ui_px(10.5))
-                .text_color(theme.text_3)
-                .child(hint)
-        }))
-        .into_any_element()
+        )),
+        &theme,
+    )
+    .cursor_pointer()
+    .hover(|el| el.bg(theme.overlay))
+    .on_click(listener)
+    .child(icon(icon_path, context_menu::ICON.px(&theme), theme.text_3))
+    .child(
+        div()
+            .min_w_0()
+            .flex_1()
+            .truncate()
+            .text_color(theme.text_2)
+            .child(label),
+    )
+    .children(hint.map(|hint| {
+        // Zed's `ml_4` before a keybinding, less the row gap already there.
+        div()
+            .flex_none()
+            .ml(context_menu::keybinding_gap(&theme) - context_menu::icon_gap(&theme))
+            .text_size(TextSize::Small.px(&theme))
+            .text_color(theme.text_3)
+            .child(hint)
+    }))
+    .into_any_element()
 }
 
 /// A page-level spinner; static under reduce-motion.
@@ -1603,7 +1568,12 @@ fn loading_state(theme: &Theme) -> AnyElement {
         .items_center()
         .justify_center()
         .gap(px(8.))
-        .child(crate::app::spinner("explorer-loading", 13., theme.text_3, *theme))
+        .child(crate::app::spinner(
+            "explorer-loading",
+            IconSize::Small.px(theme),
+            theme.text_3,
+            *theme,
+        ))
         .child(
             div()
                 .text_size(theme.ui_px(12.5))

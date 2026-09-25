@@ -24,6 +24,7 @@ use gpui::{
 use super::aggregate::{ChartMetric, DailyCalendar};
 use super::format;
 use super::model::{local_datetime, stamp_label, Granularity};
+use crate::theme::tokens::{DynamicSpacing, StyledExt};
 use crate::theme::Theme;
 
 /// The smallest cell edge, in points.
@@ -453,12 +454,8 @@ fn day_readout(
     let card = div()
         .absolute()
         .w(px(TOOLTIP_W))
-        .p(px(8.))
-        .rounded(px(8.))
-        .border_1()
-        .border_color(theme.border_strong)
-        .bg(theme.menu_bg)
-        .shadow(theme.card_shadow())
+        .p(DynamicSpacing::Base08.px(&theme))
+        .elevation_2(&theme)
         .flex()
         .flex_col()
         .child(body)

@@ -18,6 +18,10 @@ use crate::highlight::TokenClass;
 mod appearance;
 pub use appearance::*;
 
+/// Zed's design tokens (spacing, type, icons, buttons, elevation, motion),
+/// resolved through this theme.
+pub mod tokens;
+
 /// Dark or light appearance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeMode {
@@ -2797,8 +2801,10 @@ impl Theme {
         }
     }
 
-    /// Layered drop shadow (tight contact + wide ambient), like Zed's
-    /// `ElevationIndex::ModalSurface`.
+    /// Orbit's layered drop shadow (tight contact + wide ambient) for the
+    /// floating surfaces not yet on [`tokens`]. Deliberately heavier than
+    /// Zed's elevation shadows; `tokens::ElevationIndex::shadow` is the Zed
+    /// stack.
     pub fn popover_shadow(self) -> Vec<BoxShadow> {
         vec![
             BoxShadow {

@@ -18,6 +18,7 @@ use gpui::{
 
 use super::aggregate::{ChartMetric, LatencyMetric, TimeSeries};
 use super::format;
+use crate::theme::tokens::{DynamicSpacing, StyledExt};
 use crate::theme::Theme;
 
 const PLOT_H: f32 = 168.;
@@ -512,12 +513,8 @@ fn readout(
         .absolute()
         .top(px(4.))
         .w(px(TOOLTIP_W))
-        .p(px(8.))
-        .rounded(px(8.))
-        .border_1()
-        .border_color(theme.border_strong)
-        .bg(theme.menu_bg)
-        .shadow(theme.card_shadow())
+        .p(DynamicSpacing::Base08.px(&theme))
+        .elevation_2(&theme)
         .flex()
         .flex_col()
         .child(body)

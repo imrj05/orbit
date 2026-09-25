@@ -53,7 +53,10 @@ use gpui::{
     UnderlineStyle, Window,
 };
 
-use crate::app::{icon, nerd_font_family, BUTTON_GROUP, refresh_glyph};
+use crate::app::{
+    button_frame, icon, icon_button_frame, nerd_font_family, BUTTON_GROUP, refresh_glyph,
+};
+use crate::theme::tokens::{ButtonSize, IconSize};
 use crate::theme::{self, Theme};
 
 /// Emulator grid bounds, clamped so a collapsing panel never asks the PTY for
@@ -1669,7 +1672,7 @@ impl TerminalPanel {
             .on_drag(TerminalResize, |_, _, _, cx| cx.new(|_| DragGhost))
             .child(icon(
                 "icons/terminal.svg",
-                14.,
+                IconSize::Small.px(&theme),
                 if exited { theme.text_3 } else { theme.text_2 },
             ))
             .child(
@@ -1698,11 +1701,8 @@ impl TerminalPanel {
         header
             // Restart reads as the primary action once the shell has exited.
             .child(
-                div()
-                    .id("terminal-restart")
+                icon_button_frame(div().id("terminal-restart"), &theme, ButtonSize::Default)
                     .group(BUTTON_GROUP)
-                    .p_1()
-                    .rounded_sm()
                     .cursor_pointer()
                     .hover(|style| style.bg(theme.bg_hover))
                     .active(|style| style.bg(theme.active))
@@ -1712,25 +1712,22 @@ impl TerminalPanel {
                     )
                     .child(refresh_glyph(
                         "terminal-restart-spin",
-                        14.,
+                        IconSize::Small.px(&theme),
                         self.restart_spin_until.is_some(),
                         if exited { theme.accent } else { theme.text_2 },
                         theme,
                     )),
             )
             .child(
-                div()
-                    .id("terminal-close")
+                icon_button_frame(div().id("terminal-close"), &theme, ButtonSize::Default)
                     .group(BUTTON_GROUP)
-                    .p_1()
-                    .rounded_sm()
                     .cursor_pointer()
                     .hover(|style| style.bg(theme.bg_hover))
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(|this, _, window, cx| this.toggle(window, cx)),
                     )
-                    .child(icon("icons/x.svg", 14., theme.text_2)),
+                    .child(icon("icons/x.svg", IconSize::Small.px(&theme), theme.text_2)),
             )
             .into_any_element()
     }
@@ -1769,26 +1766,26 @@ impl TerminalPanel {
                                 .child(tr!("terminal.shell_exited")),
                         )
                         .child(
-                            div()
-                                .id("terminal-exited-restart")
-                                .flex()
-                                .items_center()
-                                .gap(px(6.))
-                                .px(theme.space(10.))
-                                .py(px(5.))
-                                .rounded_lg()
-                                .bg(theme.accent)
-                                .cursor_pointer()
-                                .text_size(theme.ui_px(12.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme.active_fg)
-                                .hover(|style| style.opacity(0.9))
-                                .on_mouse_up(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _, _, cx| this.restart(cx)),
-                                )
-                                .child(icon("icons/refresh.svg", 13., theme.active_fg))
-                                .child(tr!("terminal.restart")),
+                            button_frame(
+                                div().id("terminal-exited-restart"),
+                                &theme,
+                                ButtonSize::Medium,
+                            )
+                            .bg(theme.accent)
+                            .cursor_pointer()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.active_fg)
+                            .hover(|style| style.opacity(0.9))
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| this.restart(cx)),
+                            )
+                            .child(icon(
+                                "icons/refresh.svg",
+                                IconSize::Small.px(&theme),
+                                theme.active_fg,
+                            ))
+                            .child(tr!("terminal.restart")),
                         ),
                 )
                 .into_any_element(),

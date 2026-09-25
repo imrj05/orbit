@@ -70,6 +70,7 @@ Usage — requests, tokens, cost, and cache, read from your own sessions:
 **Native**
 
 - Keyboard operability, custom macOS window chrome, native dialogs, and reduce-motion
+- Zed's design tokens (spacing and density, type, icon and button sizes, elevation, motion) in `theme/tokens.rs`, scaling with the UI font size and Spacing Density settings; context menus, tooltips, and extension dialogs use them today
 - A signed, notarizable `.app` bundle
 
 ## Structure
@@ -133,6 +134,7 @@ issue before starting.
 | Explorer gaps | Explorer | Quick-open, sticky scroll, and directory folding in the file tree. | Planned | — |
 | Conversation fork/rewind | Sessions | Branch and rewind a conversation (clone ships today). | Planned | — |
 | Scroll-perf measurement | Performance | On-device measurement of transcript scroll performance. | Planned | — |
+| Zed token migration | Design | Move the remaining surfaces (settings, pickers, command palette, modals, transcript chrome, sidebar rows) onto the Zed design tokens. | In progress — context menus, tooltips, and extension dialogs ship today | — |
 
 ### Contributor checklist
 

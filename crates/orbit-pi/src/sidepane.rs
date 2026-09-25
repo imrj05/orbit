@@ -25,10 +25,15 @@ use gpui::{
 };
 
 use crate::ai_review::{Finding, Report, ReviewKind, ReviewStatus, Severity};
-use crate::app::{empty_state, file_glyph, icon, nerd_font_family, BUTTON_GROUP, PRESS_DIM, refresh_glyph, EmptyFill, PopoverSurface, spinner};
+use crate::app::{
+    button_frame, context_menu_entry, context_menu_separator, context_menu_surface, empty_state,
+    file_glyph, icon, icon_button_frame, nerd_font_family, picker_search_frame, refresh_glyph,
+    spinner, EmptyFill, BUTTON_GROUP, PRESS_DIM,
+};
 use crate::composer::ComposerInput;
 use crate::git;
 use crate::review::{self, ExpansionDirection, GapPosition, LineKind, Snapshot, Source};
+use crate::theme::tokens::{context_menu, popover, ButtonSize, IconSize, TextSize};
 use crate::theme::{self, Theme, ThemeMode};
 
 /// Pane width defaults / drag clamps.
@@ -46,6 +51,8 @@ const DIFF_TEXT_SIZE: f32 = 12.5;
 const REVIEW_FILE_HEADER_HEIGHT: f32 = 36.;
 const REVIEW_HUNK_HEIGHT: f32 = 24.;
 const REVIEW_GAP_HEIGHT: f32 = 32.;
+/// The pane's header and toolbar rows; the dropdowns hang off their buttons.
+const PANE_ROW_H: f32 = 40.;
 
 /// How long the Review refresh button spins after a click, so a fast diff
 /// read still reads as acknowledged (the same floor Settings uses).
@@ -756,7 +763,7 @@ impl SidePane {
 
         // Header row: title + tree toggle + refresh + close.
         let head = div()
-            .h(px(40.))
+            .h(px(PANE_ROW_H))
             .flex()
             .items_center()
             .gap_1()
@@ -778,18 +785,15 @@ impl SidePane {
                     .child(tr!("sidepane.review")),
             )
             .child(
-                div()
-                    .id("review-ai")
+                icon_button_frame(div().id("review-ai"), &theme, ButtonSize::Default)
                     .group(BUTTON_GROUP)
-                    .p_1()
-                    .rounded_sm()
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.bg_hover))
                     .active(|s| s.opacity(PRESS_DIM))
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_ai_menu(cx)))
                     .child(icon(
                         "icons/spark.svg",
-                        14.,
+                        IconSize::Small.px(&theme),
                         if self.ai_menu_open {
                             theme.text
                         } else {
@@ -798,18 +802,15 @@ impl SidePane {
                     )),
             )
             .children(tree_available.then(|| {
-                div()
-                    .id("review-tree-toggle")
+                icon_button_frame(div().id("review-tree-toggle"), &theme, ButtonSize::Default)
                     .group(BUTTON_GROUP)
-                    .p_1()
-                    .rounded_sm()
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.bg_hover))
                     .active(|s| s.opacity(PRESS_DIM))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_tree(cx)))
                     .child(icon(
                         "icons/folder.svg",
-                        14.,
+                        IconSize::Small.px(&theme),
                         if self.tree_open {
                             theme.text
                         } else {
@@ -818,11 +819,8 @@ impl SidePane {
                     ))
             }))
             .child(
-                div()
-                    .id("review-refresh")
+                icon_button_frame(div().id("review-refresh"), &theme, ButtonSize::Default)
                     .group(BUTTON_GROUP)
-                    .p_1()
-                    .rounded_sm()
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.bg_hover))
                     .active(|s| s.opacity(PRESS_DIM))
@@ -831,28 +829,25 @@ impl SidePane {
                     }))
                     .child(refresh_glyph(
                         "review-spinner",
-                        13.,
+                        IconSize::Small.px(&theme),
                         self.review_loading || self.refresh_spin_until.is_some(),
                         theme.text_3,
                         theme,
                     )),
             )
             .child(
-                div()
-                    .id("pane-close")
+                icon_button_frame(div().id("pane-close"), &theme, ButtonSize::Default)
                     .group(BUTTON_GROUP)
-                    .p_1()
-                    .rounded_sm()
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.bg_hover))
                     .active(|s| s.opacity(PRESS_DIM))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close(cx)))
-                    .child(icon("icons/x.svg", 14., theme.text_3)),
+                    .child(icon("icons/x.svg", IconSize::Small.px(&theme), theme.text_3)),
             );
 
         // Toolbar: the source filter chip + live ±stats + refresh.
         let toolbar = div()
-            .h(px(40.))
+            .h(px(PANE_ROW_H))
             .flex()
             .items_center()
             .gap_2()
@@ -860,12 +855,8 @@ impl SidePane {
             .border_b_1()
             .border_color(theme.border)
             .child(
-                div()
-                    .id("review-source")
+                button_frame(div().id("review-source"), &theme, ButtonSize::Medium)
                     .group(BUTTON_GROUP)
-                    .h(px(28.))
-                    .px(px(8.))
-                    .rounded(px(6.))
                     .border_1()
                     .border_color(if self.source_menu_open {
                         theme.border_strong
@@ -873,27 +864,27 @@ impl SidePane {
                         theme.border
                     })
                     .bg(theme.bg_raised)
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.bg_hover))
                     .active(|s| s.opacity(PRESS_DIM))
                     .on_click(
                         cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_source_menu(cx)),
                     )
-                    .child(icon("icons/file-diff.svg", 12., theme.text_3))
+                    .child(icon("icons/file-diff.svg", IconSize::XSmall.px(&theme), theme.text_3))
                     .child(
                         div()
                             .max_w(px(120.))
                             .overflow_hidden()
                             .whitespace_nowrap()
-                            .text_size(theme.ui_px(12.))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.text)
                             .child(self.source_label(self.source)),
                     )
-                    .child(icon("icons/chevron-down.svg", 10., theme.text_3)),
+                    .child(icon(
+                        "icons/chevron-down.svg",
+                        IconSize::Indicator.px(&theme),
+                        theme.text_3,
+                    )),
             )
             .child(div().flex_1())
             .when(truncated, |row| {
@@ -1107,7 +1098,11 @@ impl SidePane {
                             };
                             this.expand_gap(index, direction, cx);
                         }))
-                        .child(icon(gap_icon(direction), 10., theme.text_3)),
+                        .child(icon(
+                            gap_icon(direction),
+                            IconSize::Indicator.px(&theme),
+                            theme.text_3,
+                        )),
                 );
             }
         }
@@ -1181,17 +1176,9 @@ impl SidePane {
         .py(px(4.));
 
         let column_w = (f32::from(self.width) * 0.42).clamp(TREE_MIN_COL_W, TREE_MAX_COL_W);
-        let filter_row = div()
-            .h(px(40.))
-            .flex_none()
-            .px(px(10.))
-            .flex()
-            .items_center()
-            .gap(px(6.))
-            .border_b_1()
-            .border_color(theme.border)
-            .child(icon("icons/search.svg", 13., theme.text_3))
-            .child(self.tree_filter.clone());
+        let filter_row = picker_search_frame(div(), &theme)
+            .child(icon("icons/search.svg", IconSize::Small.px(&theme), theme.text_3))
+            .child(div().flex_1().min_w_0().child(self.tree_filter.clone()));
 
         div()
             .w(px(column_w))
@@ -1266,10 +1253,10 @@ impl SidePane {
                             } else {
                                 "icons/chevron-right.svg"
                             },
-                            10.,
+                            IconSize::Indicator.px(&theme),
                             theme.text_3,
                         ))
-                        .child(icon("icons/folder.svg", 13., theme.text_3))
+                        .child(icon("icons/folder.svg", IconSize::Small.px(&theme), theme.text_3))
                         .child(
                             div()
                                 .min_w_0()
@@ -1302,8 +1289,16 @@ impl SidePane {
                 };
                 let nerd = nerd_font_family(cx);
                 let dark = theme.mode == ThemeMode::Dark;
-                let fallback = icon("icons/file.svg", 13., theme.text_3).into_any_element();
-                let glyph = file_glyph(&file.path, dark, nerd.as_ref(), 13., fallback);
+                let fallback =
+                    icon("icons/file.svg", IconSize::Small.px(&theme), theme.text_3)
+                        .into_any_element();
+                let glyph = file_glyph(
+                    &file.path,
+                    dark,
+                    nerd.as_ref(),
+                    IconSize::Small.px(&theme),
+                    fallback,
+                );
                 div()
                     .w_full()
                     .h(px(30.))
@@ -1375,18 +1370,13 @@ impl SidePane {
         }
         let action = self.ai_review_action.clone();
         let pane = cx.weak_entity();
-        let mut menu = div()
-            .id("review-ai-menu")
+        let mut menu = context_menu_surface(div().id("review-ai-menu"), &theme)
             .absolute()
-            .top(px(40.))
+            // Below the header's sparkles button (the pane card's 1px border
+            // sits above the header row).
+            .top(menu_top(1., ButtonSize::Default, &theme))
             .left(px(10.))
             .w(px(230.))
-            .py(px(4.))
-            .rounded(px(10.))
-            .border_1()
-            .border_color(theme.border_strong)
-            .bg(theme.menu_bg)
-            .shadow(theme.popover_shadow())
             .flex()
             .flex_col()
             .occlude()
@@ -1427,7 +1417,7 @@ impl SidePane {
             .flex()
             .items_center()
             .gap(px(6.))
-            .child(icon("icons/spark.svg", 13., theme.accent))
+            .child(icon("icons/spark.svg", IconSize::Small.px(&theme), theme.accent))
             .child(
                 div()
                     .flex_1()
@@ -1440,35 +1430,31 @@ impl SidePane {
                     .child(kind.label()),
             );
         if running {
-            header = header.child(spinner("ai-review-spinner", 12., theme.accent, theme)).child(
-                div()
-                    .id("review-ai-stop")
-                    .h(px(22.))
-                    .px(px(8.))
-                    .rounded(px(6.))
-                    .border_1()
-                    .border_color(theme.border)
-                    .flex()
-                    .items_center()
-                    .gap(px(4.))
-                    .cursor_pointer()
-                    .text_size(theme.ui_px(11.))
-                    .text_color(theme.text_2)
-                    .hover(|s| s.bg(theme.bg_hover))
-                    .on_click(move |_: &ClickEvent, window, cx| {
-                        cx.stop_propagation();
-                        if let Some(action) = action.as_ref() {
-                            action(AiReviewRequest::Cancel, window, cx);
-                        }
-                    })
-                    .child(tr!("ai_review.stop")),
-            );
+            header = header
+                .child(spinner(
+                    "ai-review-spinner",
+                    IconSize::XSmall.px(&theme),
+                    theme.accent,
+                    theme,
+                ))
+                .child(
+                    button_frame(div().id("review-ai-stop"), &theme, ButtonSize::Default)
+                        .border_1()
+                        .border_color(theme.border)
+                        .cursor_pointer()
+                        .text_color(theme.text_2)
+                        .hover(|s| s.bg(theme.bg_hover))
+                        .on_click(move |_: &ClickEvent, window, cx| {
+                            cx.stop_propagation();
+                            if let Some(action) = action.as_ref() {
+                                action(AiReviewRequest::Cancel, window, cx);
+                            }
+                        })
+                        .child(tr!("ai_review.stop")),
+                );
         } else {
             header = header.child(
-                div()
-                    .id("review-ai-toggle")
-                    .p_1()
-                    .rounded_sm()
+                icon_button_frame(div().id("review-ai-toggle"), &theme, ButtonSize::Compact)
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.bg_hover))
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_ai_findings(cx)))
@@ -1478,7 +1464,7 @@ impl SidePane {
                         } else {
                             "icons/chevron-down.svg"
                         },
-                        11.,
+                        IconSize::XSmall.px(&theme),
                         theme.text_3,
                     )),
             );
@@ -1565,15 +1551,12 @@ impl SidePane {
         if !self.source_menu_open {
             return None;
         }
-        let mut menu = div()
-            .id("review-source-menu")
+        let mut menu = context_menu_surface(div().id("review-source-menu"), &theme)
             .absolute()
-            .top(px(84.))
+            // Below the toolbar's source button.
+            .top(menu_top(1. + PANE_ROW_H, ButtonSize::Medium, &theme))
             .left(px(10.))
             .w(px(200.))
-            .py(px(4.))
-            .rounded(px(10.))
-            .popover_surface(theme)
             .flex()
             .flex_col()
             .occlude()
@@ -1624,57 +1607,53 @@ fn source_row(
     theme: Theme,
     cx: &mut Context<SidePane>,
 ) -> AnyElement {
-    let row = div()
-        .id(gpui::ElementId::Name(
+    let row = context_menu_entry(
+        div().id(gpui::ElementId::Name(
             format!("review-source-{label}").into(),
-        ))
-        .h(px(28.))
-        .mx(px(4.))
-        .px(px(8.))
-        .rounded(px(6.))
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .text_size(theme.ui_px(12.))
-        .when(enabled, |row| row.cursor_pointer())
-        .when(selected, |row| row.bg(theme.active))
-        .when(enabled && !selected, |row| {
-            row.hover(|s| s.bg(theme.overlay))
-        })
-        .when(enabled && choice.is_some(), |row| {
-            row.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                if let Some(choice) = choice {
-                    this.set_source(choice, cx);
-                }
-            }))
-        })
-        .child(
+        )),
+        &theme,
+    )
+    .when(enabled, |row| row.cursor_pointer())
+    .when(selected, |row| row.bg(theme.active))
+    .when(enabled && !selected, |row| {
+        row.hover(|s| s.bg(theme.overlay))
+    })
+    .when(enabled && choice.is_some(), |row| {
+        row.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+            if let Some(choice) = choice {
+                this.set_source(choice, cx);
+            }
+        }))
+    })
+    .child(
+        div()
+            .min_w_0()
+            .flex_1()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_color(if !enabled {
+                theme.text_3
+            } else if selected {
+                theme.active_fg
+            } else {
+                theme.text_2
+            })
+            .child(label.to_string()),
+    )
+    .when(!enabled, |row| {
+        // Zed's `ml_4` before a trailing hint, less the row gap already there.
+        row.child(
             div()
-                .min_w_0()
-                .flex_1()
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_color(if !enabled {
-                    theme.text_3
-                } else if selected {
-                    theme.active_fg
-                } else {
-                    theme.text_2
-                })
-                .child(label.to_string()),
+                .flex_none()
+                .ml(context_menu::keybinding_gap(&theme) - context_menu::icon_gap(&theme))
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_3)
+                .child(tr!("sidepane.no_turns_yet")),
         )
-        .when(!enabled, |row| {
-            row.child(
-                div()
-                    .flex_none()
-                    .text_size(theme.ui_px(10.))
-                    .text_color(theme.text_3)
-                    .child(tr!("sidepane.no_turns_yet")),
-            )
-        })
-        .when(selected, |row| {
-            row.child(icon("icons/check.svg", 11., theme.accent))
-        });
+    })
+    .when(selected, |row| {
+        row.child(icon("icons/check.svg", context_menu::ICON.px(&theme), theme.accent))
+    });
     row.into_any_element()
 }
 
@@ -1684,23 +1663,17 @@ fn ai_menu_row(
     theme: Theme,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    div()
-        .id(gpui::ElementId::Name(format!("review-ai-{kind:?}").into()))
-        .h(px(30.))
-        .mx(px(4.))
-        .px(px(8.))
-        .rounded(px(6.))
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .cursor_pointer()
-        .text_size(theme.ui_px(12.))
-        .text_color(theme.text)
-        .hover(|s| s.bg(theme.bg_hover))
-        .child(icon("icons/spark.svg", 13., theme.text_3))
-        .child(div().child(kind.label()))
-        .on_click(move |_, window, cx| on_click(window, cx))
-        .into_any_element()
+    context_menu_entry(
+        div().id(gpui::ElementId::Name(format!("review-ai-{kind:?}").into())),
+        &theme,
+    )
+    .cursor_pointer()
+    .text_color(theme.text)
+    .hover(|s| s.bg(theme.bg_hover))
+    .child(icon("icons/spark.svg", context_menu::ICON.px(&theme), theme.text_3))
+    .child(div().child(kind.label()))
+    .on_click(move |_, window, cx| on_click(window, cx))
+    .into_any_element()
 }
 
 /// One finding row: severity chip, title, location, and detail. Clicking a
@@ -1785,12 +1758,14 @@ fn render_finding(
 }
 
 fn separator(theme: Theme) -> AnyElement {
-    div()
-        .h(px(1.))
-        .my(px(4.))
-        .mx(px(8.))
-        .bg(theme.border)
-        .into_any_element()
+    context_menu_separator(&theme).into_any_element()
+}
+
+/// The top of a dropdown hung from a button centered in the pane row that
+/// starts `row_top` px below the pane: the button's bottom edge plus Zed's
+/// menu offset.
+fn menu_top(row_top: f32, trigger: ButtonSize, theme: &Theme) -> Pixels {
+    px(row_top + PANE_ROW_H / 2.) + trigger.height(theme) * 0.5 + popover::MENU_OFFSET
 }
 
 // ── diff row rendering ─────────────────────────────────────────────────────
@@ -1802,8 +1777,9 @@ fn render_file_header(
     nerd: Option<&SharedString>,
     dark: bool,
 ) -> AnyElement {
-    let fallback = icon("icons/file.svg", 13., theme.text_3).into_any_element();
-    let glyph = file_glyph(&file.path, dark, nerd, 13., fallback);
+    let fallback =
+        icon("icons/file.svg", IconSize::Small.px(&theme), theme.text_3).into_any_element();
+    let glyph = file_glyph(&file.path, dark, nerd, IconSize::Small.px(&theme), fallback);
     div()
         .w_full()
         .min_w_0()

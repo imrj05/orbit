@@ -1,5 +1,8 @@
 use super::helpers::*;
 use super::*;
+use crate::theme::tokens::{
+    context_menu, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
+};
 
 impl OrbitApp {
     /// The filtered menu entries for the active trigger (empty when none).
@@ -157,17 +160,16 @@ impl OrbitApp {
         let highlighted = highlighted.min(entries.len() - 1);
         let theme = *theme::get(cx);
         let this = cx.weak_entity();
+        // Rows are one fixed height, so the list is exactly tall enough for
+        // the `AUTOCOMPLETE_LIMIT` entries it ever shows.
+        let row_h = picker::entry_height(&theme);
         let mut list = div()
             .id("ac-list")
             .w_full()
-            .max_h(px(8. * 34.))
+            .max_h(row_h * AUTOCOMPLETE_LIMIT as f32)
             .overflow_y_scroll()
-            .px(px(4.))
-            .pt(px(4.))
-            .pb(px(4.))
             .flex()
-            .flex_col()
-            .gap(px(2.));
+            .flex_col();
         for (ix, entry) in entries.iter().enumerate() {
             let selected = ix == highlighted;
             let this = this.clone();
@@ -178,13 +180,14 @@ impl OrbitApp {
             let nerd = nerd_font_family(cx);
             let leading: AnyElement = match &entry {
                 AcEntry::Command { .. } => {
-                    icon("icons/extensions.svg", 13., theme.text_3).into_any_element()
+                    icon("icons/extensions.svg", context_menu::ICON.px(&theme), theme.text_3)
+                        .into_any_element()
                 }
                 AcEntry::File { path } => file_glyph(
                     path.as_str(),
                     theme.mode == ThemeMode::Dark,
                     nerd.as_ref(),
-                    13.,
+                    context_menu::ICON.px(&theme),
                     file_badge(path.as_str(), theme),
                 ),
             };
@@ -207,14 +210,8 @@ impl OrbitApp {
                 AcEntry::File { .. } => None,
             };
             list = list.child(
-                div()
-                    .id(ElementId::NamedInteger("ac-row".into(), ix as u64))
-                    .h(px(30.))
-                    .px(px(8.))
-                    .rounded(px(6.))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
+                picker_entry(div().id(ElementId::NamedInteger("ac-row".into(), ix as u64)), &theme)
+                    .h(row_h)
                     .cursor_pointer()
                     .when(selected, |row| row.bg(theme.active))
                     .hover(|style| style.bg(theme.overlay))
@@ -229,7 +226,7 @@ impl OrbitApp {
                             .flex_1()
                             .flex()
                             .items_center()
-                            .gap(px(8.))
+                            .gap(DynamicSpacing::Base08.px(&theme))
                             // Fuzzy match first: the basename (or command
                             // name) leads, then — after a breath — the rest
                             // of the path / description in dimmed text.
@@ -238,7 +235,6 @@ impl OrbitApp {
                                     .flex_none()
                                     .max_w(px(CONTENT_MAX_W / 2.))
                                     .truncate()
-                                    .text_size(theme.ui_px(12.))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(if selected {
                                         theme.active_fg
@@ -253,7 +249,7 @@ impl OrbitApp {
                                         .min_w_0()
                                         .flex_1()
                                         .truncate()
-                                        .text_size(theme.ui_px(11.))
+                                        .text_size(picker::SECONDARY_TEXT.px(&theme))
                                         .text_color(theme.text_3)
                                         .child(subtitle),
                                 )
@@ -263,13 +259,13 @@ impl OrbitApp {
                         row.child(
                             div()
                                 .h(px(18.))
-                                .px(px(6.))
-                                .rounded(px(5.))
+                                .px(DynamicSpacing::Base06.px(&theme))
+                                .rounded(Radius::Medium.px(&theme))
                                 .flex_none()
                                 .flex()
                                 .items_center()
                                 .bg(theme.overlay_strong)
-                                .text_size(theme.ui_px(10.5))
+                                .text_size(TextSize::XSmall.px(&theme))
                                 .text_color(theme.text_3)
                                 .child(badge),
                         )
@@ -277,11 +273,8 @@ impl OrbitApp {
             );
         }
         // Full width of the chat box, so long paths are never cut.
-        let popup = div()
+        let popup = context_menu_surface(div(), &theme)
             .w(px(CONTENT_MAX_W))
-            .font_family(theme::ui_font_family())
-            .rounded(px(10.))
-            .popover_surface(theme)
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -293,8 +286,8 @@ impl OrbitApp {
             anchored()
                 .position_mode(AnchoredPositionMode::Local)
                 .anchor(Corner::BottomLeft)
-                .offset(point(px(0.), px(-4.)))
-                .snap_to_window()
+                .offset(point(px(0.), -popover::MENU_OFFSET))
+                .snap_to_window_with_margin(popover::WINDOW_MARGIN)
                 .child(deferred(popup))
                 .into_any_element(),
         )
@@ -313,9 +306,9 @@ impl OrbitApp {
                 // fallback if a preview never decoded.
                 let visual: AnyElement = match &a.preview {
                     Some(image) => div()
-                        .size(px(18.))
+                        .size(IconSize::Medium.px(&theme))
                         .flex_none()
-                        .rounded(px(4.))
+                        .rounded(Radius::Small.px(&theme))
                         .overflow_hidden()
                         .child(
                             img(ImageSource::Image(image.clone()))
@@ -327,23 +320,17 @@ impl OrbitApp {
                         &a.name,
                         theme.mode == ThemeMode::Dark,
                         nerd_font_family(cx).as_ref(),
-                        12.,
-                        icon("icons/task.svg", 12., theme.text_3).into_any_element(),
+                        IconSize::XSmall.px(&theme),
+                        icon("icons/task.svg", IconSize::XSmall.px(&theme), theme.text_3)
+                            .into_any_element(),
                     )
                     .into_any_element(),
                 };
-                div()
-                    .id(ElementId::NamedInteger("attachment".into(), ix as u64))
-                    .h(px(26.))
-                    .pl(px(7.))
-                    .pr(px(6.))
-                    .rounded(px(6.))
+                let chip = div().id(ElementId::NamedInteger("attachment".into(), ix as u64));
+                button_frame(chip, &theme, ButtonSize::Medium)
                     .border_1()
                     .border_color(theme.border)
                     .bg(theme.bg_raised)
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.overlay))
                     .child(visual)
@@ -351,13 +338,12 @@ impl OrbitApp {
                         div()
                             .max_w(px(160.))
                             .truncate()
-                            .text_size(theme.ui_px(11.5))
                             .text_color(theme.text_2)
                             .child(a.name.clone()),
                     )
                     .child(
                         div()
-                            .text_size(theme.ui_px(11.))
+                            .text_size(TextSize::Small.px(&theme))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme.text_3)
                             .child("×".to_string()),

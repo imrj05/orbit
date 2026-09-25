@@ -2,6 +2,9 @@ use super::helpers::*;
 use super::*;
 use crate::context_meter::context_ring;
 use crate::quota::{is_five_hour_window, note_should_render, QuotaHeadline};
+use crate::theme::tokens::{
+    input, popover, ButtonSize, DynamicSpacing, IconSize, StyledExt, TextSize,
+};
 use crate::usage::tooltip::Tooltip;
 
 /// How a composer message is delivered while the agent is running. Both fall
@@ -866,23 +869,19 @@ impl OrbitApp {
             return None;
         }
         let generating = self.title_generating;
-        let mut button = div()
-            .id("sess-generate-title")
-            .group(BUTTON_GROUP)
-            .flex_none()
-            .h(px(28.))
-            .w(px(28.))
-            .rounded(px(8.))
-            .border_1()
-            .border_color(theme.border)
-            .bg(if generating {
-                theme.overlay
-            } else {
-                theme.bg_raised
-            })
-            .flex()
-            .items_center()
-            .justify_center();
+        let mut button = icon_button_frame(
+            div().id("sess-generate-title"),
+            &theme,
+            ButtonSize::Medium,
+        )
+        .group(BUTTON_GROUP)
+        .border_1()
+        .border_color(theme.border)
+        .bg(if generating {
+            theme.overlay
+        } else {
+            theme.bg_raised
+        });
         if !generating {
             button = button
                 .cursor_pointer()
@@ -899,9 +898,15 @@ impl OrbitApp {
         Some(
             button
                 .child(if generating {
-                    crate::app::spinner("sess-generate-title-spinner", 12., theme.accent, theme)
+                    crate::app::spinner(
+                        "sess-generate-title-spinner",
+                        IconSize::XSmall.px(&theme),
+                        theme.accent,
+                        theme,
+                    )
                 } else {
-                    icon("icons/magic-wand.svg", 12., theme.text_2).into_any_element()
+                    icon("icons/magic-wand.svg", IconSize::XSmall.px(&theme), theme.text_2)
+                        .into_any_element()
                 })
                 .into_any_element(),
         )
@@ -1077,7 +1082,7 @@ impl OrbitApp {
         let svg = gpui::svg()
             .path("icons/check.svg")
             .flex_none()
-            .size(px(12.))
+            .size(IconSize::XSmall.px(&theme))
             .text_color(theme.send_fg);
         if theme::reduce_motion(cx) {
             return svg.into_any_element();
@@ -1156,13 +1161,8 @@ impl OrbitApp {
                 .border_color(theme.border)
                 .flex()
                 .flex_col()
-                .gap(px(6.))
-                .child(
-                    div()
-                        .text_size(theme.ui_px(11.))
-                        .text_color(theme.text_3)
-                        .child(tr!("session.name")),
-                )
+                .gap(input::gap(&theme))
+                .child(input_label(tr!("session.name"), &theme).text_color(theme.text_3))
                 .child(
                     div()
                         .w_full()
@@ -1170,43 +1170,29 @@ impl OrbitApp {
                         .items_center()
                         .gap(px(8.))
                         .child(
-                            div()
+                            input_field_frame(div(), &theme)
                                 .flex_1()
                                 .min_w_0()
-                                .min_h(px(28.))
-                                .px(px(8.))
-                                .py(px(4.))
-                                .rounded(px(8.))
-                                .border_1()
-                                .border_color(theme.border)
                                 .bg(theme.bg_main)
                                 .overflow_hidden()
-                                .flex()
-                                .items_center()
-                                .text_size(theme.ui_px(12.))
                                 .child(self.session_name_input.clone()),
                         )
                         .children(self.generate_title_button(theme, this.clone()))
                         .child({
-                            let mut button = div()
-                                .id("sess-rename")
-                                .flex_none()
-                                .h(px(28.))
-                                .px(px(10.))
-                                .rounded(px(8.))
-                                .border_1()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .cursor_pointer()
-                                .text_size(theme.ui_px(12.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .on_mouse_up(MouseButton::Left, {
-                                    let this = this.clone();
-                                    move |_, _, cx| {
-                                        this.update(cx, |app, cx| app.rename_session(cx));
-                                    }
-                                });
+                            let mut button = button_frame(
+                                div().id("sess-rename"),
+                                &theme,
+                                ButtonSize::Medium,
+                            )
+                            .border_1()
+                            .cursor_pointer()
+                            .font_weight(FontWeight::MEDIUM)
+                            .on_mouse_up(MouseButton::Left, {
+                                let this = this.clone();
+                                move |_, _, cx| {
+                                    this.update(cx, |app, cx| app.rename_session(cx));
+                                }
+                            });
                             if rename_saved {
                                 // Commit succeeded: the label becomes a check
                                 // that pops in, so the button confirms the
@@ -1243,8 +1229,7 @@ impl OrbitApp {
             .id("session-details-popup")
             .w(px(320.))
             .font_family(theme::ui_font_family())
-            .rounded(px(12.))
-            .popover_surface(theme)
+            .elevation_2(&theme)
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -1289,7 +1274,7 @@ impl OrbitApp {
                             });
                         }
                     })
-                    .child(icon("icons/branch.svg", 13., theme.text_2))
+                    .child(icon("icons/branch.svg", IconSize::Small.px(&theme), theme.text_2))
                     .child(
                         div()
                             .flex_1()
@@ -1297,7 +1282,11 @@ impl OrbitApp {
                             .text_color(theme.text)
                             .child(tr!("session.commit_or_push")),
                     )
-                    .child(icon("icons/chevron-right.svg", 11., theme.text_3)),
+                    .child(icon(
+                        "icons/chevron-right.svg",
+                        IconSize::XSmall.px(&theme),
+                        theme.text_3,
+                    )),
             )
             .child(
                 div()
@@ -1317,7 +1306,7 @@ impl OrbitApp {
                             });
                         }
                     })
-                    .child(icon("icons/file-diff.svg", 13., theme.text_2))
+                    .child(icon("icons/file-diff.svg", IconSize::Small.px(&theme), theme.text_2))
                     .child(
                         div()
                             .flex_1()
@@ -1325,7 +1314,11 @@ impl OrbitApp {
                             .text_color(theme.text)
                             .child(tr!("session.compare_branch")),
                     )
-                    .child(icon("icons/chevron-right.svg", 11., theme.text_3)),
+                    .child(icon(
+                        "icons/chevron-right.svg",
+                        IconSize::XSmall.px(&theme),
+                        theme.text_3,
+                    )),
             )
             .child(
                 div()
@@ -1351,8 +1344,8 @@ impl OrbitApp {
                     anchored()
                         .position_mode(AnchoredPositionMode::Local)
                         .anchor(Corner::TopRight)
-                        .offset(point(px(0.), px(6.)))
-                        .snap_to_window()
+                        .offset(point(px(0.), popover::MENU_OFFSET))
+                        .snap_to_window_with_margin(popover::WINDOW_MARGIN)
                         .child(deferred(popup)),
                 )
                 .into_any_element(),
@@ -1388,12 +1381,13 @@ impl OrbitApp {
                 .group(BUTTON_GROUP)
                 .relative()
                 .h(px(HEADER_CTRL_H))
-                .pl(px(10.))
-                .pr(px(8.))
+                // A Medium button's padding; the left keeps its extra 2px.
+                .pl(ButtonSize::Medium.padding_x(&theme) + DynamicSpacing::Base02.px(&theme))
+                .pr(ButtonSize::Medium.padding_x(&theme))
                 .rounded_full()
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .gap(DynamicSpacing::Base06.px(&theme))
                 .cursor_pointer(),
             &theme,
         ))
@@ -1412,13 +1406,17 @@ impl OrbitApp {
             div()
                 .flex()
                 .items_center()
-                .gap(px(6.))
-                .child(icon_dyn(provider_icon(&report.provider), 12., theme.text_3))
+                .gap(DynamicSpacing::Base06.px(&theme))
+                .child(icon_dyn(
+                    provider_icon(&report.provider),
+                    IconSize::XSmall.px(&theme),
+                    theme.text_3,
+                ))
                 .child(
                     div()
                         .max_w(px(96.))
                         .truncate()
-                        .text_size(theme.ui_px(11.5))
+                        .text_size(TextSize::Small.px(&theme))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.text_2)
                         .child(providers::provider_display_name(&report.provider)),
@@ -1435,7 +1433,7 @@ impl OrbitApp {
                         div()
                             .max_w(px(72.))
                             .truncate()
-                            .text_size(theme.ui_px(10.5))
+                            .text_size(TextSize::XSmall.px(&theme))
                             .text_color(theme.text_3)
                             .child(if is_five_hour_window(window) {
                                 "5h".to_string()
@@ -1455,7 +1453,7 @@ impl OrbitApp {
                         .child(
                             div()
                                 .font(crate::usage::view::num_font())
-                                .text_size(theme.ui_px(11.5))
+                                .text_size(TextSize::Small.px(&theme))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(tint)
                                 .child(format!("{}%", (fraction * 100.0).round() as i32)),
@@ -1474,7 +1472,7 @@ impl OrbitApp {
                 pill = pill.child(provider_head(report)).child(divider()).child(
                     div()
                         .font(crate::usage::view::num_font())
-                        .text_size(theme.ui_px(11.5))
+                        .text_size(TextSize::Small.px(&theme))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme.text)
                         .child(text),
@@ -1484,10 +1482,10 @@ impl OrbitApp {
             // the popover reachable.
             QuotaHeadline::Quiet => {
                 pill = pill
-                    .child(icon("icons/spark.svg", 13., theme.text_2))
+                    .child(icon("icons/spark.svg", IconSize::Small.px(&theme), theme.text_2))
                     .child(
                         div()
-                            .text_size(theme.ui_px(11.5))
+                            .text_size(TextSize::Small.px(&theme))
                             .text_color(theme.text_2)
                             .child(tr!("session.usage")),
                     );
@@ -1515,29 +1513,26 @@ impl OrbitApp {
         // keeps the spin off, but the accent still marks the active state.
         let refresh_icon = refresh_glyph(
             "quota-refresh-spin",
-            13.,
+            IconSize::Small.px(&theme),
             self.quota_refreshing,
             theme.text_2,
             theme,
         );
-        let refresh_button = div()
-            .id("quota-refresh")
-            .group(BUTTON_GROUP)
-            .flex_none()
-            .size(px(26.))
-            .rounded_md()
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
-            .hover(|style| style.bg(theme.bg_hover))
-            .active(|style| style.bg(theme.active))
-            .tooltip({
-                let label = tr!("common.refresh");
-                move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
-            })
-            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_quota_refresh))
-            .child(refresh_icon);
+        let refresh_button = icon_button_frame(
+            div().id("quota-refresh"),
+            &theme,
+            ButtonSize::Medium,
+        )
+        .group(BUTTON_GROUP)
+        .cursor_pointer()
+        .hover(|style| style.bg(theme.bg_hover))
+        .active(|style| style.bg(theme.active))
+        .tooltip({
+            let label = tr!("common.refresh");
+            move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
+        })
+        .on_mouse_up(MouseButton::Left, cx.listener(Self::on_quota_refresh))
+        .child(refresh_icon);
 
         let header = div()
             .flex_none()
@@ -1587,8 +1582,7 @@ impl OrbitApp {
             .w(px(320.))
             .max_h(px(460.))
             .font_family(theme::ui_font_family())
-            .rounded(px(12.))
-            .popover_surface(theme)
+            .elevation_2(&theme)
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -1624,8 +1618,8 @@ impl OrbitApp {
                     anchored()
                         .position_mode(AnchoredPositionMode::Local)
                         .anchor(Corner::TopRight)
-                        .offset(point(px(0.), px(6.)))
-                        .snap_to_window()
+                        .offset(point(px(0.), popover::MENU_OFFSET))
+                        .snap_to_window_with_margin(popover::WINDOW_MARGIN)
                         .child(deferred(popup)),
                 )
                 .into_any_element(),
@@ -1769,16 +1763,13 @@ impl OrbitApp {
                     ),
             )
             .child(
-                div()
-                    .id(("sess-copy", ix))
-                    .p_1()
-                    .rounded_sm()
+                icon_button_frame(div().id(("sess-copy", ix)), &theme, ButtonSize::Compact)
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.bg_hover))
                     .on_click(move |_, _window, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(v.clone()));
                     })
-                    .child(icon("icons/copy.svg", 12., theme.text_3)),
+                    .child(icon("icons/copy.svg", IconSize::XSmall.px(&theme), theme.text_3)),
             )
     }
 
@@ -2273,7 +2264,7 @@ fn quota_provider_card(app: &OrbitApp, report: &QuotaReport, theme: Theme) -> An
         .flex()
         .items_center()
         .gap(px(7.))
-        .child(icon_dyn(provider_icon(&report.provider), 13., theme.text_3))
+        .child(icon_dyn(provider_icon(&report.provider), IconSize::Small.px(&theme), theme.text_3))
         .child(
             div()
                 .flex_1()

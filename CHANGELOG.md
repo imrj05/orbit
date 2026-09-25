@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Zed design tokens** — `theme/tokens.rs` ports Zed's sizing system: dynamic
+  spacing with Compact / Default / Comfortable density, text / headline / icon /
+  button sizes, list, popover, context-menu, modal, tooltip, input and scrollbar
+  metrics, the corner-radius scale, elevation shadows with `elevation_1/2/3`, and
+  motion durations. Tokens equal Zed's default pixels at Orbit's defaults and
+  follow the UI font size and Spacing Density settings.
+
+### Changed
+
+- Context menus (sidebar session / workspace, Explorer, Git sync / branch / file)
+  now follow Zed's context-menu metrics: 200px minimum width, 23px entries,
+  14px text and icons, Base04 / Base06 insets, `ListSeparator` spacing, an 8px
+  radius with Zed's lighter popover shadow, and an 8px window-edge margin.
+  Their sizes now scale with the UI font size.
+- Tooltips use Zed's tooltip metrics: offset off the cursor, 14px text, and
+  wrapping at 288px instead of overflowing on one line.
+- Extension dialogs use Zed's modal layout: `ModalHeader` / section / footer
+  insets, a Small headline, a 32px input field, 32px confirm buttons, and the
+  four-layer modal shadow.
+
 ## [0.0.17] - 2026-09-25
 
 ### Added

@@ -9,6 +9,7 @@
 use super::helpers::*;
 use super::*;
 use crate::skills::{self, Skill, SkillScope};
+use crate::theme::tokens::{ButtonSize, IconSize};
 
 /// A Skills-page control, dispatched through one entry point.
 #[derive(Clone)]
@@ -57,22 +58,17 @@ impl OrbitApp {
         };
         let filtered: Vec<&Skill> = self.skills.iter().filter(matches).collect();
 
-        let search = div()
+        let search = input_field_frame(div(), &theme)
             .mx(px(12.))
             .mt(px(14.))
             .mb(px(10.))
-            .h(px(32.))
-            .px(px(10.))
-            .rounded_lg()
-            .border_1()
-            .border_color(theme.border)
             .bg(theme.bg_main)
-            .flex()
-            .items_center()
-            .gap_2()
-            .text_size(theme.ui_px(12.5))
-            .child(icon("icons/search.svg", 14., theme.text_3))
-            .child(self.skills_filter.clone());
+            .child(icon(
+                "icons/search.svg",
+                IconSize::Small.px(&theme),
+                theme.text_3,
+            ))
+            .child(div().flex_1().min_w_0().child(self.skills_filter.clone()));
 
         let all_row = div()
             .mx(px(12.))
@@ -86,7 +82,11 @@ impl OrbitApp {
             .flex()
             .items_center()
             .gap_2()
-            .child(icon("icons/magic-wand.svg", 13., theme.text_2))
+            .child(icon(
+                "icons/magic-wand.svg",
+                IconSize::Small.px(&theme),
+                theme.text_2,
+            ))
             .child(
                 div()
                     .flex_1()
@@ -136,7 +136,11 @@ impl OrbitApp {
                     .flex_col()
                     .items_center()
                     .gap_2()
-                    .child(icon("icons/search.svg", 22., theme.text_3))
+                    .child(icon(
+                        "icons/search.svg",
+                        IconSize::Custom(22. / 16.).px(&theme),
+                        theme.text_3,
+                    ))
                     .child(
                         div()
                             .text_size(theme.ui_px(12.))
@@ -267,7 +271,11 @@ impl OrbitApp {
             .flex()
             .items_center()
             .justify_center()
-            .child(icon("icons/magic-wand.svg", 14., color))
+            .child(icon(
+                "icons/magic-wand.svg",
+                IconSize::Small.px(&theme),
+                color,
+            ))
             .into_any_element()
     }
 
@@ -290,7 +298,11 @@ impl OrbitApp {
                 .items_center()
                 .justify_center()
                 .gap_2()
-                .child(icon("icons/magic-wand.svg", 30., theme.text_3))
+                .child(icon(
+                    "icons/magic-wand.svg",
+                    IconSize::Custom(30. / 16.).px(&theme),
+                    theme.text_3,
+                ))
                 .child(
                     div()
                         .text_size(theme.ui_px(13.))
@@ -324,7 +336,11 @@ impl OrbitApp {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(icon("icons/magic-wand.svg", 20., theme.text_2)),
+                    .child(icon(
+                        "icons/magic-wand.svg",
+                        IconSize::Custom(20. / 16.).px(&theme),
+                        theme.text_2,
+                    )),
             )
             .child(
                 div()
@@ -620,19 +636,14 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         action: SkillAction,
     ) -> AnyElement {
-        let base = div()
-            .id(ElementId::Name(id.into()))
-            .group(BUTTON_GROUP)
-            .h(px(28.))
-            .px(px(10.))
-            .rounded_lg()
-            .flex()
-            .items_center()
-            .justify_center()
-            .gap_1p5()
-            .cursor_pointer()
-            .text_size(theme.ui_px(11.5))
-            .font_weight(FontWeight::MEDIUM);
+        let base = button_frame(
+            div().id(ElementId::Name(id.into())),
+            &theme,
+            ButtonSize::Medium,
+        )
+        .group(BUTTON_GROUP)
+        .cursor_pointer()
+        .font_weight(FontWeight::MEDIUM);
         let (button, icon_color) = if danger {
             (
                 base.border_1()
@@ -658,7 +669,7 @@ impl OrbitApp {
         };
         press(button)
             .when_some(icon_path, |button, path| {
-                button.child(icon(path, 12., icon_color))
+                button.child(icon(path, IconSize::XSmall.px(&theme), icon_color))
             })
             .child(div().child(label.to_string()))
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {

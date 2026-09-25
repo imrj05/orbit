@@ -14,6 +14,8 @@ use gpui::{
 };
 use orbit_rpc::{ContextUsage, SessionUsage};
 
+use crate::app::{button_frame, icon_button_frame};
+use crate::theme::tokens::{ButtonSize, IconSize, StyledExt};
 use crate::theme::Theme;
 
 const RING: f32 = 16.;
@@ -273,11 +275,7 @@ pub fn compact_card(
         .w_full()
         .px(px(12.))
         .py(px(8.))
-        .rounded(px(10.))
-        .border_1()
-        .border_color(theme.border_strong)
-        .bg(theme.menu_bg)
-        .shadow(theme.card_shadow())
+        .elevation_2(&theme)
         .flex()
         .flex_col()
         .gap(px(2.))
@@ -347,11 +345,7 @@ pub fn details_card(
 
     div()
         .w(px(PANEL_W))
-        .rounded(px(12.))
-        .border_1()
-        .border_color(theme.border_strong)
-        .bg(theme.menu_bg)
-        .shadow(theme.card_shadow())
+        .elevation_2(&theme)
         .occlude()
         .on_mouse_down_out(on_outside)
         .flex()
@@ -372,13 +366,7 @@ pub fn details_card(
                         .child(tr!("context_meter.context_usage")),
                 )
                 .child(
-                    div()
-                        .id("context-close")
-                        .size(px(20.))
-                        .rounded_sm()
-                        .flex()
-                        .items_center()
-                        .justify_center()
+                    icon_button_frame(div().id("context-close"), &theme, ButtonSize::Compact)
                         .cursor_pointer()
                         .hover(|s| s.bg(theme.overlay))
                         .on_click(on_close)
@@ -422,18 +410,11 @@ pub fn details_card(
 /// label names the in-flight state while pi works, so the control is never
 /// a second click on a run that is already compacting.
 fn compact_action(is_compacting: bool, on_compact: Rc<ActionClick>, theme: Theme) -> AnyElement {
-    let button = div()
-        .id("context-compact-now")
+    let button = button_frame(div().id("context-compact-now"), &theme, ButtonSize::Medium)
         .w_full()
-        .h(px(28.))
-        .rounded_lg()
         .border_1()
         .border_color(theme.border)
         .bg(theme.bg_raised)
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_size(theme.ui_px(12.))
         .font_weight(FontWeight::MEDIUM);
     if is_compacting {
         button
@@ -594,7 +575,7 @@ fn session_row(
         .flex()
         .items_center()
         .gap(px(7.))
-        .child(glyph(icon_path, 13., theme.text_3))
+        .child(glyph(icon_path, IconSize::Small.px(&theme), theme.text_3))
         .child(
             div()
                 .flex_1()
@@ -614,12 +595,8 @@ fn session_row(
 }
 
 /// Inline stroke icon at a fixed size, tinted with `currentColor`.
-fn glyph(path: &'static str, size: f32, color: Hsla) -> impl IntoElement {
-    svg()
-        .path(path)
-        .flex_none()
-        .size(px(size))
-        .text_color(color)
+fn glyph(path: &'static str, size: Pixels, color: Hsla) -> impl IntoElement {
+    svg().path(path).flex_none().size(size).text_color(color)
 }
 
 /// Sit the card fully above the ring, right-aligned with it.

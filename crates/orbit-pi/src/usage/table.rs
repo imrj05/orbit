@@ -20,6 +20,7 @@ use gpui::{
     Hsla, IntoElement, MouseButton, Pixels, Render, SharedString, Window,
 };
 
+use crate::theme::tokens::IconSize;
 use crate::theme::Theme;
 
 /// A body row's height. Every table height is a whole number of these plus the
@@ -363,8 +364,16 @@ fn sort_caret(sort: SortState, theme: Theme) -> AnyElement {
         .flex_col()
         .items_center()
         .when(!visible, |caret| caret.opacity(0.))
-        .child(crate::app::icon("icons/chevron-up.svg", 8., color))
-        .child(crate::app::icon("icons/chevron-down.svg", 8., color))
+        .child(crate::app::icon(
+            "icons/chevron-up.svg",
+            IconSize::Indicator.px(&theme),
+            color,
+        ))
+        .child(crate::app::icon(
+            "icons/chevron-down.svg",
+            IconSize::Indicator.px(&theme),
+            color,
+        ))
         .into_any_element()
 }
 

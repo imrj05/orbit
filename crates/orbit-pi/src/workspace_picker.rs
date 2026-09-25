@@ -13,9 +13,10 @@ use gpui::{
     FontWeight, IntoElement, MouseDownEvent, ParentElement, Render, ScrollHandle, Styled, Window,
 };
 
-use crate::app::{icon, PopoverSurface};
+use crate::app::{icon, menu_header, picker_entry, picker_search_frame, picker_surface};
 use crate::composer::ComposerInput;
-use crate::theme;
+use crate::theme::tokens::{context_menu, list, picker, DynamicSpacing, IconSize};
+use crate::theme::{self, Theme};
 
 /// The field caps at this width; the popover matches it exactly. Feeds
 /// [`width_for_window`], the single source of truth both the new-task field
@@ -26,11 +27,21 @@ pub const FIELD_MAX_W: f32 = 400.;
 pub const PAGE_PAD: f32 = 24.;
 /// Smallest the popover ever gets (very narrow windows).
 const POPOVER_MIN_W: f32 = 240.;
-const ROW_H: f32 = 38.;
+/// Folder rows visible before the recents list scrolls.
+const VISIBLE_ROWS: f32 = 4.;
+
+/// A folder row: a one-line picker entry. Layout and the keyboard reveal
+/// math both read it, so they can never disagree.
+fn row_h(theme: &Theme) -> f32 {
+    picker::entry_height(theme).into()
+}
+
 /// Tallest the recents list grows before scrolling (≈ 4 rows). Sized so the
 /// whole popover still fits below the centered field at the 960×640 minimum
 /// window, instead of `snap_to_window` shoving it up over the card.
-const LIST_MAX_H: f32 = 4. * ROW_H;
+fn list_max_h(theme: &Theme) -> f32 {
+    VISIBLE_ROWS * row_h(theme)
+}
 /// Recents the app hands us at most.
 pub const MAX_RECENTS: usize = 8;
 
@@ -170,25 +181,26 @@ impl WorkspacePicker {
         let pos = self.highlighted.min(count - 1) as isize;
         let next = (pos + dir).rem_euclid(count as isize) as usize;
         self.highlighted = next;
-        self.ensure_visible(rows.len());
+        self.ensure_visible(rows.len(), theme::get(cx));
         cx.notify();
     }
 
-    fn ensure_visible(&mut self, folder_rows: usize) {
+    fn ensure_visible(&mut self, folder_rows: usize, theme: &Theme) {
+        let row_h = row_h(theme);
         // The browse row sits below the list: scroll to the very bottom.
         let row_top = if self.highlighted >= folder_rows {
-            folder_rows as f32 * ROW_H + ROW_H
+            folder_rows as f32 * row_h + row_h
         } else {
-            self.highlighted as f32 * ROW_H
+            self.highlighted as f32 * row_h
         };
-        let content_h = folder_rows as f32 * ROW_H;
-        let viewport_h = content_h.min(LIST_MAX_H);
+        let content_h = folder_rows as f32 * row_h;
+        let viewport_h = content_h.min(list_max_h(theme));
         let current: f32 = self.scroll.offset().y.into();
         let mut offset = current;
         if row_top < current {
             offset = row_top;
-        } else if row_top + ROW_H > current + viewport_h {
-            offset = row_top + ROW_H - viewport_h;
+        } else if row_top + row_h > current + viewport_h {
+            offset = row_top + row_h - viewport_h;
         }
         let max_offset = (content_h - viewport_h).max(0.);
         self.scroll
@@ -237,11 +249,10 @@ impl Render for WorkspacePicker {
         let mut list = div()
             .id("workspace-picker-list")
             .w_full()
-            .max_h(px(LIST_MAX_H))
+            .max_h(px(list_max_h(&theme)))
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
-            .px(px(4.))
-            .py(px(2.))
+            .py(picker::list_padding_y(&theme))
             .flex()
             .flex_col();
         for (ix, entry) in rows.iter().enumerate() {
@@ -249,110 +260,110 @@ impl Render for WorkspacePicker {
             let highlighted = ix == self.highlighted;
             let this = this.clone();
             list = list.child(
-                div()
-                    .id(ElementId::NamedInteger("workspace-row".into(), ix as u64))
-                    .h(px(ROW_H))
-                    .px(px(8.))
-                    .rounded(px(8.))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .cursor_pointer()
-                    .when(highlighted, |row| row.bg(theme.overlay_strong))
-                    // The current folder keeps the `active` fill at rest (the
-                    // same "chosen" register the model picker uses); the accent
-                    // check alone is never the only signal.
-                    .when(!highlighted && is_current, |row| row.bg(theme.active))
-                    .when(!highlighted && !is_current, |row| {
-                        row.hover(|s| s.bg(theme.overlay))
-                    })
-                    .on_hover({
-                        let this = this.clone();
-                        move |hovering, _, cx| {
-                            if *hovering {
-                                this.update(cx, |picker, cx| {
-                                    if picker.highlighted != ix {
-                                        picker.highlighted = ix;
-                                        cx.notify();
-                                    }
-                                });
-                            }
+                picker_entry(
+                    div().id(ElementId::NamedInteger("workspace-row".into(), ix as u64)),
+                    &theme,
+                )
+                .h(px(row_h(&theme)))
+                .flex_none()
+                .cursor_pointer()
+                .when(highlighted, |row| row.bg(theme.overlay_strong))
+                // The current folder keeps the `active` fill at rest (the
+                // same "chosen" register the model picker uses); the accent
+                // check alone is never the only signal.
+                .when(!highlighted && is_current, |row| row.bg(theme.active))
+                .when(!highlighted && !is_current, |row| {
+                    row.hover(|s| s.bg(theme.overlay))
+                })
+                .on_hover({
+                    let this = this.clone();
+                    move |hovering, _, cx| {
+                        if *hovering {
+                            this.update(cx, |picker, cx| {
+                                if picker.highlighted != ix {
+                                    picker.highlighted = ix;
+                                    cx.notify();
+                                }
+                            });
                         }
-                    })
-                    .on_mouse_up(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |picker, _, window, cx| {
-                            let rows = picker.filtered(&picker.last_filter.clone());
-                            picker.activate(ix, &rows, window, cx);
-                        }),
-                    )
-                    // The check carries "current" — the icon stays quiet, one
-                    // accent signal per fact.
-                    .child(icon("icons/folder.svg", 16., theme.text_3))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .items_baseline()
-                            .gap(px(8.))
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .max_w(px(170.))
-                                    .truncate()
-                                    .text_size(theme.ui_px(14.))
-                                    .font_weight(if highlighted || is_current {
-                                        FontWeight::MEDIUM
-                                    } else {
-                                        FontWeight::NORMAL
-                                    })
-                                    .text_color(if highlighted {
-                                        theme.text
-                                    } else if is_current {
-                                        theme.active_fg
-                                    } else {
-                                        theme.text_2
-                                    })
-                                    .child(entry.name.clone()),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    // Paths are machine text — mono, like the
-                                    // model picker's id line.
-                                    .font_family(theme::code_font_family())
-                                    .text_size(theme.ui_px(12.))
-                                    .text_color(theme.text_3)
-                                    .child(entry.path.to_string_lossy().into_owned()),
-                            ),
-                    )
-                    .when_some(entry.last_active.clone(), |row, ago| {
-                        row.child(
+                    }
+                })
+                .on_mouse_up(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |picker, _, window, cx| {
+                        let rows = picker.filtered(&picker.last_filter.clone());
+                        picker.activate(ix, &rows, window, cx);
+                    }),
+                )
+                // The check carries "current" — the icon stays quiet, one
+                // accent signal per fact.
+                .child(icon(
+                    "icons/folder.svg",
+                    context_menu::ICON.px(&theme),
+                    theme.text_3,
+                ))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .items_baseline()
+                        .gap(DynamicSpacing::Base08.px(&theme))
+                        .child(
                             div()
                                 .flex_none()
-                                .text_size(theme.ui_px(12.))
-                                .text_color(theme.text_3)
-                                .child(ago),
+                                .max_w(px(170.))
+                                .truncate()
+                                .font_weight(if highlighted || is_current {
+                                    FontWeight::MEDIUM
+                                } else {
+                                    FontWeight::NORMAL
+                                })
+                                .text_color(if highlighted {
+                                    theme.text
+                                } else if is_current {
+                                    theme.active_fg
+                                } else {
+                                    theme.text_2
+                                })
+                                .child(entry.name.clone()),
                         )
-                    })
-                    .when(is_current, |row| {
-                        row.child(icon("icons/check.svg", 12., theme.accent))
-                    }),
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                // Paths are machine text — mono, like the
+                                // model picker's id line.
+                                .font_family(theme::code_font_family())
+                                .text_size(picker::SECONDARY_TEXT.px(&theme))
+                                .text_color(theme.text_3)
+                                .child(entry.path.to_string_lossy().into_owned()),
+                        ),
+                )
+                .when_some(entry.last_active.clone(), |row, ago| {
+                    row.child(
+                        div()
+                            .flex_none()
+                            .text_size(picker::SECONDARY_TEXT.px(&theme))
+                            .text_color(theme.text_3)
+                            .child(ago),
+                    )
+                })
+                .when(is_current, |row| {
+                    row.child(icon(
+                        "icons/check.svg",
+                        context_menu::ICON.px(&theme),
+                        theme.accent,
+                    ))
+                }),
             );
         }
 
         let browse_highlighted = self.highlighted == rows.len();
 
-        div()
+        picker_surface(div(), &theme)
             .w(px(self.width))
-            .font_family(theme::ui_font_family())
-            .pt(px(6.))
-            .pb(px(4.))
-            .rounded(px(12.))
-            .popover_surface(theme)
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -362,83 +373,78 @@ impl Render for WorkspacePicker {
             .on_action(cx.listener(Self::on_confirm))
             .on_action(cx.listener(Self::on_next))
             .on_action(cx.listener(Self::on_prev))
-            // search row — the picker register (44px, 14px inset, 14px text).
+            // search row — Zed's picker head.
             .child(
-                div()
-                    .h(px(44.))
-                    .flex_none()
-                    .px(px(14.))
-                    .flex()
-                    .items_center()
-                    .gap(px(10.))
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .text_size(theme.ui_px(14.))
+                picker_search_frame(div(), &theme)
                     .text_color(theme.text)
-                    .child(icon("icons/search.svg", 16., theme.text_3))
+                    .child(icon("icons/search.svg", IconSize::Small.px(&theme), theme.text_3))
                     .child(div().flex_1().min_w_0().child(self.filter.clone())),
             )
-            // section label — a count on the right, like every other list header.
+            // section label — a count on the right, like every other list
+            // header, in a trailing slot on the sub-header's own metrics.
             .child(
-                div()
-                    .px(px(12.))
-                    .pt(px(8.))
-                    .pb(px(4.))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .text_size(theme.ui_px(12.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_3)
-                    .child(tr!("workspace_picker.recent_folders"))
-                    .child(div().flex_1())
-                    .when(!rows.is_empty(), |row| row.child(rows.len().to_string())),
+                menu_header(tr!("workspace_picker.recent_folders"), &theme)
+                    .pt(picker::list_padding_y(&theme))
+                    .when(!rows.is_empty(), |header| {
+                        header.child(
+                            div()
+                                .flex_none()
+                                .h(list::sub_header_height(&theme))
+                                .px(list::sub_header_inset_x(&theme))
+                                .flex()
+                                .items_center()
+                                .text_size(list::SUB_HEADER_TEXT.px(&theme))
+                                .text_color(theme.text_3)
+                                .child(rows.len().to_string()),
+                        )
+                    }),
             )
             .child(if rows.is_empty() {
+                // Zed's no-match state: one muted picker entry.
                 div()
-                    .h(px(96.))
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .gap(px(6.))
-                    .child(icon("icons/search.svg", 20., theme.text_3))
+                    .py(picker::list_padding_y(&theme))
                     .child(
-                        div()
-                            .text_size(theme.ui_px(14.))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_2)
-                            .child(tr!("workspace_picker.no_folders_match")),
-                    )
-                    .child(
-                        div()
-                            .text_size(theme.ui_px(13.))
+                        picker_entry(div(), &theme)
                             .text_color(theme.text_3)
-                            .child(tr!(
-                                "workspace_picker.try_another_name_or_choose_a_folder_below"
-                            )),
+                            .child(icon(
+                                "icons/search.svg",
+                                context_menu::ICON.px(&theme),
+                                theme.text_3,
+                            ))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .child(tr!("workspace_picker.no_folders_match")),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(picker::SECONDARY_TEXT.px(&theme))
+                                            .child(tr!(
+                                                "workspace_picker.try_another_name_or_choose_a_folder_below"
+                                            )),
+                                    ),
+                            ),
                     )
                     .into_any_element()
             } else {
                 list.into_any_element()
             })
-            // browse row — the OS dialog, one step away.
+            // browse row — the OS dialog, one step away, below a full-width
+            // hairline like Zed's picker footer.
             .child(
                 div()
-                    .mx(px(4.))
-                    .mt(px(4.))
+                    .py(picker::list_padding_y(&theme))
                     .border_t_1()
                     .border_color(theme.border)
                     .child(
-                        div()
-                            .id("workspace-browse-row")
-                            .h(px(ROW_H))
-                            .my(px(4.))
-                            .px(px(8.))
-                            .rounded(px(8.))
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
+                        picker_entry(div().id("workspace-browse-row"), &theme)
+                            .h(px(row_h(&theme)))
                             .cursor_pointer()
                             .when(browse_highlighted, |row| row.bg(theme.overlay_strong))
                             .when(!browse_highlighted, |row| {
@@ -467,11 +473,14 @@ impl Render for WorkspacePicker {
                             )
                             // The browse action opens the OS dialog, so it
                             // leads with a launch glyph, not a second folder.
-                            .child(icon("icons/arrow-up-right.svg", 16., theme.text_2))
+                            .child(icon(
+                                "icons/arrow-up-right.svg",
+                                context_menu::ICON.px(&theme),
+                                theme.text_2,
+                            ))
                             .child(
                                 div()
                                     .flex_1()
-                                    .text_size(theme.ui_px(14.))
                                     .text_color(theme.text_2)
                                     .child(tr!("workspace_picker.choose_folder")),
                             ),
