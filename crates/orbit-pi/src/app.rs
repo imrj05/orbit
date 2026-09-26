@@ -538,6 +538,15 @@ pub struct OrbitApp {
     review_facts: review_page::ReviewPageFacts,
     /// A facts refresh is in flight.
     review_facts_inflight: bool,
+    /// The repository the Review page's form is set to. Defaults to the
+    /// current workspace; the page can point a review at another project.
+    review_workspace: Option<PathBuf>,
+    /// The model the next review runs on (`id`, `provider`). `None` follows
+    /// the session default (D12).
+    review_model: Option<(String, String)>,
+    /// The thinking level the next review runs on. `None` follows the
+    /// session default.
+    review_thinking: Option<String>,
     /// Custom providers read from `~/.pi/agent/models.json` (cached; reloaded
     /// when the Providers page opens, on Refresh, and after a save/remove).
     custom_providers: Vec<CustomProvider>,
@@ -1180,6 +1189,9 @@ impl OrbitApp {
             review_page: review_page.clone(),
             review_facts: review_page::ReviewPageFacts::default(),
             review_facts_inflight: false,
+            review_workspace: None,
+            review_model: None,
+            review_thinking: None,
             custom_providers: Vec::new(),
             custom_providers_error: None,
             provider_auth: HashMap::new(),

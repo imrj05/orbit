@@ -17,9 +17,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    div, prelude::*, px, AnyElement, App, ClickEvent, Context, CursorStyle, Entity, Font,
-    FontFeatures, FontStyle, FontWeight, Hsla, KeyDownEvent, ListAlignment, ListOffset, ListState,
-    MouseDownEvent, Pixels, Render, SharedString, StyledText, TextRun, Window,
+    div, prelude::*, px, AnyElement, ClickEvent, Context, CursorStyle, Entity, FontWeight,
+    KeyDownEvent, ListAlignment, ListOffset, ListState, MouseDownEvent, Pixels, Render,
+    SharedString, Window,
 };
 
 use crate::app::{
@@ -43,10 +43,12 @@ const TREE_MIN_PANE_W: f32 = 440.;
 /// Directory tree column width range.
 const TREE_MIN_COL_W: f32 = 180.;
 const TREE_MAX_COL_W: f32 = 240.;
-/// Review diff row metrics.
-const DIFF_TEXT_SIZE: f32 = 12.5;
-const REVIEW_FILE_HEADER_HEIGHT: f32 = 36.;
-const REVIEW_HUNK_HEIGHT: f32 = 24.;
+/// Review diff row metrics. The row painters live in [`crate::diff_view`], so
+/// the pane and the Review page's preview share them; only the gap height is
+/// the pane's alone (the page's preview lists whole files).
+use crate::diff_view::{
+    render_code_row, render_file_header, render_hunk_header, render_meta,
+};
 const REVIEW_GAP_HEIGHT: f32 = 32.;
 /// The pane's header and toolbar rows; the dropdowns hang off their buttons.
 const PANE_ROW_H: f32 = 40.;
@@ -1441,249 +1443,6 @@ fn menu_top(row_top: f32, trigger: ButtonSize, theme: &Theme) -> Pixels {
 
 // ── diff row rendering ─────────────────────────────────────────────────────
 
-/// Sticky/normal file header: icon, path, +additions, -deletions.
-fn render_file_header(
-    file: &review::File,
-    theme: Theme,
-    nerd: Option<&SharedString>,
-    dark: bool,
-) -> AnyElement {
-    let fallback =
-        icon("icons/file.svg", IconSize::Small.px(&theme), theme.text_3).into_any_element();
-    let glyph = file_glyph(&file.path, dark, nerd, IconSize::Small.px(&theme), fallback);
-    div()
-        .w_full()
-        .min_w_0()
-        .h(px(REVIEW_FILE_HEADER_HEIGHT))
-        .px(px(12.))
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .border_b_1()
-        .border_color(theme.border)
-        .bg(theme.bg_raised)
-        .child(glyph)
-        .child(
-            div()
-                .min_w_0()
-                .flex_1()
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .font_family(theme::code_font_family())
-                .text_size(TextSize::Small.px(&theme))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_2)
-                .child(file.path.clone()),
-        )
-        .child(
-            div()
-                .text_size(TextSize::Small.px(&theme))
-                .text_color(theme.add_green)
-                .child(format!("+{}", file.additions)),
-        )
-        .child(
-            div()
-                .text_size(TextSize::Small.px(&theme))
-                .text_color(theme.del_red)
-                .child(format!("-{}", file.deletions)),
-        )
-        .into_any_element()
-}
-
-fn render_hunk_header(content: &str, theme: Theme) -> AnyElement {
-    let gutter_w = diff_gutter_width();
-    div()
-        .min_h(px(REVIEW_HUNK_HEIGHT))
-        .w_full()
-        .min_w_0()
-        .flex()
-        .font_family(theme::code_font_family())
-        .text_size(theme.code_px(DIFF_TEXT_SIZE))
-        .line_height(theme.code_px(16.))
-        .text_color(theme.text_3)
-        .child(
-            div()
-                .w(px(gutter_w))
-                .min_h(px(REVIEW_HUNK_HEIGHT))
-                .flex_none()
-                .border_r_1()
-                .border_color(theme.border)
-                .bg(theme.overlay),
-        )
-        .child(
-            div()
-                .min_w_0()
-                .flex_1()
-                .px(px(12.))
-                .py(px(4.))
-                .overflow_hidden()
-                .whitespace_normal()
-                .bg(theme.overlay)
-                .child(content.to_string()),
-        )
-        .into_any_element()
-}
-
-fn render_meta(content: &str, theme: Theme) -> AnyElement {
-    let gutter_w = diff_gutter_width();
-    div()
-        .min_h(px(REVIEW_HUNK_HEIGHT))
-        .w_full()
-        .min_w_0()
-        .flex()
-        .font_family(theme::code_font_family())
-        .text_size(theme.code_px(DIFF_TEXT_SIZE))
-        .line_height(theme.code_px(16.))
-        .text_color(theme.text_3)
-        .child(
-            div()
-                .w(px(gutter_w))
-                .min_h(px(REVIEW_HUNK_HEIGHT))
-                .flex_none(),
-        )
-        .child(
-            div()
-                .min_w_0()
-                .flex_1()
-                .py(px(4.))
-                .pr(px(10.))
-                .overflow_hidden()
-                .whitespace_normal()
-                .child(content.to_string()),
-        )
-        .into_any_element()
-}
-
-fn diff_gutter_width() -> f32 {
-    (DIFF_TEXT_SIZE * 3. + 14.).round()
-}
-
-fn diff_row_height() -> f32 {
-    (DIFF_TEXT_SIZE * 1.5).round()
-}
-
-/// One context/addition/deletion row: a single line-number gutter (the new
-/// number, falling back to the old one) and syntax-coloured code.
-fn render_code_row(line: &review::Line, theme: Theme) -> AnyElement {
-    let row_height = diff_row_height();
-    let (body_bg, gutter_bg, edge, number_color) = match line.kind {
-        LineKind::Addition => (
-            Some(theme.add_green.opacity(body_wash(theme))),
-            Some(theme.add_green.opacity(gutter_wash(theme))),
-            Some(theme.add_green),
-            theme.add_green,
-        ),
-        LineKind::Deletion => (
-            Some(theme.del_red.opacity(body_wash(theme))),
-            Some(theme.del_red.opacity(gutter_wash(theme))),
-            Some(theme.del_red),
-            theme.del_red,
-        ),
-        _ => (None, None, None, theme.text_3),
-    };
-    let shown_line = line.new_line.or(line.old_line);
-    let number = shown_line.map(|n| n.to_string()).unwrap_or_default();
-    let content = code_text(line, theme);
-    div()
-        .w_full()
-        .min_w_0()
-        .min_h(px(row_height))
-        .flex()
-        .font_family(theme::code_font_family())
-        .text_size(theme.code_px(DIFF_TEXT_SIZE))
-        .line_height(theme.code_px(16.))
-        .when_some(edge, |row, edge| row.border_l_2().border_color(edge))
-        .child(
-            div()
-                .w(px(diff_gutter_width()))
-                .min_h(px(row_height))
-                .flex_none()
-                .pr(px(9.))
-                .flex()
-                .justify_end()
-                .border_r_1()
-                .border_color(theme.border)
-                .text_color(number_color)
-                .when_some(gutter_bg, |gutter, bg| gutter.bg(bg))
-                .child(number),
-        )
-        .child(
-            div()
-                .min_h(px(row_height))
-                .min_w_0()
-                .flex_1()
-                .pl(px(12.))
-                .pr(px(10.))
-                .overflow_hidden()
-                .whitespace_normal()
-                .when_some(body_bg, |body, bg| body.bg(bg))
-                .child(content),
-        )
-        .into_any_element()
-}
-
-fn body_wash(theme: Theme) -> f32 {
-    if theme.mode == ThemeMode::Dark {
-        0.20
-    } else {
-        0.12
-    }
-}
-
-fn gutter_wash(theme: Theme) -> f32 {
-    if theme.mode == ThemeMode::Dark {
-        0.15
-    } else {
-        0.09
-    }
-}
-
-/// Build syntax-colored text for one diff line.
-fn code_text(line: &review::Line, theme: Theme) -> StyledText {
-    let base = theme.text_2;
-    let font = mono_font();
-    let mut runs: Vec<TextRun> = Vec::new();
-    let mut offset = 0usize;
-    for token in &line.tokens {
-        let start = token.range.start.min(line.content.len());
-        let end = token.range.end.min(line.content.len());
-        if start > offset {
-            runs.push(run(start - offset, base, &font));
-        }
-        if end > start {
-            runs.push(run(end - start, theme.token_color(token.class), &font));
-        }
-        offset = offset.max(end);
-    }
-    if offset < line.content.len() {
-        runs.push(run(line.content.len() - offset, base, &font));
-    }
-    if runs.is_empty() {
-        runs.push(run(line.content.len(), base, &font));
-    }
-    StyledText::new(line.content.clone()).with_runs(runs)
-}
-
-fn run(len: usize, color: Hsla, font: &Font) -> TextRun {
-    TextRun {
-        len,
-        font: font.clone(),
-        color,
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-    }
-}
-
-fn mono_font() -> Font {
-    Font {
-        family: theme::code_font_family(),
-        features: FontFeatures::default(),
-        fallbacks: None,
-        weight: FontWeight::NORMAL,
-        style: FontStyle::Normal,
-    }
-}
 
 fn gap_icon(direction: ExpansionDirection) -> &'static str {
     match direction {

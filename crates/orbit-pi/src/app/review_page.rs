@@ -4,11 +4,14 @@
 //! The page itself ([`crate::review_page`]) is a dumb renderer; everything
 //! that touches the review store or Git lives here.
 
+use std::sync::Arc;
+
 use super::*;
-use crate::git;
 use crate::ai_review::ReviewKind;
+use crate::git;
 use crate::review_page::{
-    ChangedFile, CommitRow, ReviewPageAction, ReviewPageSnapshot, TargetFacts,
+    ChangedFile, CommitRow, ModelOption, ReviewPageAction, ReviewPageSnapshot, TargetFacts,
+    WorkspaceOption,
 };
 
 /// The commits shown in the New review tab's inline list.
@@ -17,7 +20,7 @@ const COMMIT_ROWS: usize = 8;
 /// The Review page's Git facts, collected off the UI thread and cached on the
 /// app. Collecting Git inside layout would block a frame, so the page reads
 /// this cache and a background task refreshes it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub(super) struct ReviewPageFacts {
     /// The workspace the facts describe; a different workspace invalidates
     /// them.
@@ -30,6 +33,28 @@ pub(super) struct ReviewPageFacts {
     /// The target the changed files belong to; a different target invalidates
     /// them.
     pub kind: Option<ReviewKind>,
+    /// The parsed diff for the Changes tab's per-file preview. Compare with
+    /// `Arc::ptr_eq`, not `==`: the snapshot is large and has no cheap equality.
+    pub snapshot: Option<Arc<crate::review::Snapshot>>,
+    /// `REVIEW_GUIDELINES.md` contents, when the workspace has one. Appended
+    /// verbatim to every review prompt for that workspace.
+    pub guidelines: Option<String>,
+}
+
+impl PartialEq for ReviewPageFacts {
+    fn eq(&self, other: &Self) -> bool {
+        self.workspace == other.workspace
+            && self.facts == other.facts
+            && self.commits == other.commits
+            && self.changed_files == other.changed_files
+            && self.kind == other.kind
+            && self.guidelines == other.guidelines
+            && match (&self.snapshot, &other.snapshot) {
+                (None, None) => true,
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                _ => false,
+            }
+    }
 }
 
 impl OrbitApp {
@@ -42,10 +67,16 @@ impl OrbitApp {
         kind: Option<ReviewKind>,
         cx: &mut Context<Self>,
     ) {
-        let Some(workspace) = self.current_workspace.clone() else {
+        let Some(workspace) = self
+            .review_workspace
+            .clone()
+            .or_else(|| self.current_workspace.clone())
+        else {
             return;
         };
-        let kind = kind.or_else(|| self.review_page.read(cx).target_kind());
+        // Never read the page here: this runs from the page's own action
+        // callback, while that entity is leased. The caller passes the kind.
+        let kind = kind.or_else(|| self.review_facts.kind.clone());
         if self.review_facts_inflight {
             return;
         }
@@ -60,20 +91,36 @@ impl OrbitApp {
                 .spawn(async move {
                     let mut facts = collect_review_facts(&workspace);
                     if let Some(kind) = kind_for_files.as_ref() {
-                        facts.changed_files = git::kind_diff_files(&workspace, kind)
-                            .map(|files| {
-                                files
-                                    .into_iter()
+                        match git::collect_kind_diff(&workspace, kind) {
+                            Ok(diff) => {
+                                // The page parses the collected diff exactly like
+                                // the pane does, so the preview and the pane show
+                                // the same rows for the same target.
+                                let snapshot = crate::review::parse_collected(
+                                    crate::review::Source::Uncommitted,
+                                    &diff.numstat,
+                                    &diff.patch,
+                                    diff.complete_context,
+                                );
+                                facts.changed_files = snapshot
+                                    .files
+                                    .iter()
                                     .map(|file| ChangedFile {
-                                        path: file.path,
-                                        status: file.status,
-                                        added: file.added,
-                                        deleted: file.deleted,
+                                        path: file.path.clone(),
+                                        status: 'M',
+                                        added: file.additions,
+                                        deleted: file.deletions,
                                     })
-                                    .collect()
-                            })
-                            .unwrap_or_default();
+                                    .collect();
+                                facts.snapshot = Some(Arc::new(snapshot));
+                            }
+                            Err(_) => {
+                                facts.changed_files = Vec::new();
+                                facts.snapshot = None;
+                            }
+                        }
                     }
+                    facts.guidelines = load_review_guidelines(&workspace);
                     facts.kind = kind_for_files;
                     facts
                 })
@@ -127,21 +174,30 @@ fn collect_review_facts(workspace: &Path) -> ReviewPageFacts {
         commits,
         changed_files: Vec::new(),
         kind: None,
+        snapshot: None,
+        guidelines: None,
     }
 }
 
 impl OrbitApp {
     /// Open the Review page. One main-area feature at a time.
     pub(super) fn open_review_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The form starts on the open workspace; the page can re-point it.
+        if self.review_workspace.is_none() {
+            self.review_workspace = self.current_workspace.clone();
+        }
         self.git_open = false;
         self.usage_open = false;
         self.session_details_open = false;
         self.close_files(cx);
+        // Read the target kind before leasing the page: the collection runs
+        // after, but the page is the authority on which target it shows.
+        let kind = self.review_page.read(cx).target_kind();
         self.review_page.update(cx, |page, cx| {
             page.open(window, cx);
             cx.notify();
         });
-        self.refresh_review_facts(None, cx);
+        self.refresh_review_facts(kind, cx);
         cx.notify();
     }
 
@@ -153,6 +209,8 @@ impl OrbitApp {
         });
         cx.notify();
     }
+
+
 
     /// Sidebar nav row: the Review page is a destination, toggled like Usage.
     pub(super) fn on_review_nav_click(
@@ -173,29 +231,115 @@ impl OrbitApp {
     /// come from the store.
     pub(super) fn review_page_snapshot(&self, cx: &Context<Self>) -> ReviewPageSnapshot {
         let facts = self.review_facts.clone();
+        let workspace = self
+            .review_workspace
+            .clone()
+            .or_else(|| self.current_workspace.clone())
+            .unwrap_or_default();
+        let config = self.review_config();
         ReviewPageSnapshot {
-            workspace: self
-                .current_workspace
-                .as_ref()
-                .and_then(|path| path.file_name())
+            workspace: workspace
+                .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_default(),
+            workspace_path: workspace.to_string_lossy().into_owned(),
+            workspaces: self.review_workspace_options(),
+            models: self.review_model_options(),
+            thinking_levels: self.review_thinking_levels(),
+            model: config.model.clone().unwrap_or_default(),
+            provider: config.provider.clone().unwrap_or_default(),
+            thinking: config.thinking.clone().unwrap_or_default(),
+            branches: self.review_branches(),
+            target: self.review_page.read(cx).target_label(),
             facts: facts.facts,
             commits: facts.commits,
             changed_files: facts.changed_files,
-            target: self.review_page.read(cx).target_label(),
+            snapshot: facts.snapshot.clone(),
+            guidelines: facts.guidelines.clone(),
             runs: self.reviews.runs().to_vec(),
-            config_label: self.review_config().label(),
             error: self.reviews_error.clone(),
         }
+    }
+
+    /// The repositories the review form can target: every tracked workspace
+    /// plus the current one, the review's own choice marked.
+    fn review_workspace_options(&self) -> Vec<WorkspaceOption> {
+        let mut paths = self.workspaces.clone();
+        if let Some(current) = self.current_workspace.as_ref() {
+            if !paths.iter().any(|path| path == current) {
+                paths.push(current.clone());
+            }
+        }
+        let selected = self.review_workspace.clone();
+        paths
+            .into_iter()
+            .map(|path| {
+                let label = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.to_string_lossy().into_owned());
+                WorkspaceOption {
+                    is_current: selected.as_deref() == Some(path.as_path()),
+                    path: path.to_string_lossy().into_owned(),
+                    label,
+                }
+            })
+            .collect()
+    }
+
+    /// The models the reviewer can run on, current first.
+    fn review_model_options(&self) -> Vec<ModelOption> {
+        let selected = self.review_config();
+        let mut options: Vec<ModelOption> = self
+            .available_models
+            .iter()
+            .map(|model| ModelOption {
+                id: model.id.clone(),
+                provider: model.provider.clone(),
+                label: model.name.clone(),
+            })
+            .collect();
+        options.sort_by(|a, b| {
+            let a_selected = selected.model.as_deref() == Some(a.id.as_str());
+            let b_selected = selected.model.as_deref() == Some(b.id.as_str());
+            b_selected.cmp(&a_selected).then_with(|| a.label.cmp(&b.label))
+        });
+        options
+    }
+
+    /// The selected model's thinking levels, from the catalog entry.
+    fn review_thinking_levels(&self) -> Vec<String> {
+        let selected = self.review_config();
+        self.available_models
+            .iter()
+            .find(|model| selected.model.as_deref() == Some(model.id.as_str()))
+            .map(|model| model.thinking_levels.clone())
+            .unwrap_or_else(|| self.available_thinking_levels.clone())
+    }
+
+    /// Local branches for the branch target's base picker.
+    fn review_branches(&self) -> Vec<String> {
+        let Some(workspace) = self.review_workspace.as_ref() else {
+            return Vec::new();
+        };
+        git::list_branches(workspace).unwrap_or_default()
     }
 
     /// The page's action callback: start a run, stop one, or leave.
     pub(super) fn review_page_action(&self, cx: &Context<Self>) -> crate::review_page::ReviewAction {
         let this = cx.weak_entity();
         Rc::new(move |action, _window, cx| match action {
-            ReviewPageAction::Start(kind) => {
-                let _ = this.update(cx, |app, cx| app.start_review(kind, cx));
+            ReviewPageAction::Start {
+                kind,
+                workspace,
+                model,
+                provider,
+                thinking,
+            } => {
+                let _ = this.update(cx, |app, cx| {
+                    app.set_review_selection(&workspace, &model, &provider, &thinking);
+                    app.start_review(kind, cx);
+                });
             }
             ReviewPageAction::Cancel(id) => {
                 let _ = this.update(cx, |app, cx| app.cancel_review(id, cx));
@@ -203,7 +347,57 @@ impl OrbitApp {
             ReviewPageAction::TargetChanged(kind) => {
                 let _ = this.update(cx, |app, cx| app.refresh_review_facts(Some(kind), cx));
             }
+            ReviewPageAction::WorkspaceChanged(path, kind) => {
+                let _ = this.update(cx, |app, cx| {
+                    app.review_workspace = Some(PathBuf::from(path));
+                    // Force a recollect: the cached facts describe the old repo.
+                    app.review_facts = Default::default();
+                    app.refresh_review_facts(Some(kind), cx);
+                });
+            }
+            ReviewPageAction::ModelChanged { id, provider } => {
+                let _ = this.update(cx, |app, cx| {
+                    app.review_model = Some((id, provider));
+                    // The ladder belongs to the model, so re-default the level.
+                    app.review_thinking = None;
+                    cx.notify();
+                });
+            }
+            ReviewPageAction::ThinkingChanged(level) => {
+                let _ = this.update(cx, |app, cx| {
+                    app.review_thinking = Some(level);
+                    cx.notify();
+                });
+            }
+            ReviewPageAction::BaseChanged(_) => {
+                let _ = this.update(cx, |app, cx| app.refresh_review_facts(None, cx));
+            }
+            ReviewPageAction::Refresh(kind) => {
+                let _ = this.update(cx, |app, cx| {
+                    app.review_facts = Default::default();
+                    app.refresh_review_facts(Some(kind), cx);
+                });
+            }
         })
+    }
+}
+
+/// Read `REVIEW_GUIDELINES.md` from the nearest ancestor that has a `.pi`
+/// directory (the same rule the reference extension uses). Missing or empty
+/// files mean no guidelines; a workspace is never left without a reviewer
+/// because the file could not be read.
+fn load_review_guidelines(workspace: &Path) -> Option<String> {
+    let mut dir = workspace.to_path_buf();
+    loop {
+        if dir.join(".pi").is_dir() {
+            let guidelines = dir.join("REVIEW_GUIDELINES.md");
+            let text = std::fs::read_to_string(guidelines).ok()?;
+            let trimmed = text.trim();
+            return (!trimmed.is_empty()).then(|| trimmed.to_string());
+        }
+        if !dir.pop() {
+            return None;
+        }
     }
 }
 

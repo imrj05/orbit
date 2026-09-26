@@ -34,10 +34,16 @@ impl OrbitApp {
             }
         }
         if self.review_page.read(cx).is_open() {
-            let workspace = self.current_workspace.clone();
+            // Reads only: this block must not update the page, or the sync in
+            // `view.rs` would re-enter it.
+            let workspace = self
+                .review_workspace
+                .clone()
+                .or_else(|| self.current_workspace.clone());
             let stale = workspace
                 .as_deref()
-                .is_some_and(|workspace| self.review_facts.workspace != *workspace);
+                .is_some_and(|workspace| self.review_facts.workspace != *workspace)
+                || self.review_facts.workspace.as_os_str().is_empty();
             if stale {
                 self.refresh_review_facts(None, cx);
             }

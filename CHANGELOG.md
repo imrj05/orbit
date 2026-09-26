@@ -9,15 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Review page** — AI review now has its own destination (sidebar → Review, or
-  command palette → Open AI Review) with four tabs: **New review** picks a target
-  (uncommitted changes, the current branch against a base, one commit, chosen files, or
-  the whole project) with live file counts and an inline commit list; **Running** shows
-  every live run with progress and Stop, and keeps finished runs in place under a
-  **Review completed** status with their verdict and findings; **Changes** lists the
-  selected target's changed files with per-file counts; **History** holds finished runs
-  including other workspaces. Runs are capped at two concurrent reviewer processes with
-  the rest queued.
+- **Review page** — AI review now has its own destination (sidebar → Review, ⌘⇧R, or
+  command palette → Open AI Review). The form picks the **repository** (any tracked
+  project, not just the open one), the **review type** with its live file count
+  (uncommitted changes, the current branch against a chosen base, one commit, chosen
+  files, or the whole project), and the **model + thinking level** the run uses; one
+  accent button starts it. **Running** lists every live run with Stop and keeps finished
+  runs in place under a **Review completed** status; clicking a run opens its **detail
+  view** — status, target, model, duration, verdict, findings, and files changed.
+  **Changes** lists the selected target's files with per-file counts and shows the
+  selected file's diff. **History** holds finished runs across workspaces. Runs are
+  capped at two concurrent reviewer processes with the rest queued.
 - **Reviewer prompts carry a shared review rubric** (what to flag and what not, silent
   failure and duplication rules, how to phrase findings) and answers return a verdict
   (`correct` / `needs attention`) alongside the findings.

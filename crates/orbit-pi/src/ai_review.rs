@@ -269,6 +269,18 @@ pub fn cap_patch(patch: &str) -> (String, bool) {
     (patch[..end].to_string(), true)
 }
 
+/// Append project review guidelines (when the workspace has a
+/// `REVIEW_GUIDELINES.md`) to a finished prompt body. The rubric says those
+/// guidelines override it, so they go last, after the diff.
+pub fn with_guidelines(prompt: String, guidelines: Option<&str>) -> String {
+    match guidelines.map(str::trim).filter(|text| !text.is_empty()) {
+        Some(guidelines) => format!(
+            "{prompt}\n\nThis project has additional instructions for code reviews:\n\n{guidelines}"
+        ),
+        None => prompt,
+    }
+}
+
 /// The findings-contract shared by every prompt. Kept in one place so the
 /// parser and the instructions can never drift.
 const FINDINGS_CONTRACT: &str = "\

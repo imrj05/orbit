@@ -88,6 +88,8 @@ impl ReviewStore {
         self.runs.iter().filter(|run| run.is_active()).count()
     }
 
+
+
     /// The newest run for `workspace`, active or finished.
     pub fn latest_for(&self, workspace: &Path) -> Option<&ReviewRun> {
         self.runs.iter().find(|run| run.workspace == workspace)
@@ -119,7 +121,6 @@ impl ReviewStore {
                 status: RunStatus::Queued,
                 started_at: now_secs(),
                 finished_at: None,
-                progress: Default::default(),
                 report: None,
             },
         );
@@ -188,13 +189,6 @@ impl ReviewStore {
         self.save();
     }
 
-    /// Update coarse progress for a running run.
-    pub fn note_progress(&mut self, id: u64, progress: crate::reviews::RunProgress) {
-        if let Some(run) = self.run_mut(id) {
-            run.progress = progress;
-        }
-    }
-
     /// Cancel a run. A queued run never had a process; a running one is
     /// aborted and its process dropped.
     pub fn cancel(&mut self, id: u64) {
@@ -252,8 +246,9 @@ impl OrbitApp {
     /// collected off-thread before the process spawns.
     pub(super) fn start_review(&mut self, kind: ReviewKind, cx: &mut Context<Self>) -> Option<u64> {
         let Some(cwd) = self
-            .current_workspace
+            .review_workspace
             .clone()
+            .or_else(|| self.current_workspace.clone())
             .or_else(|| std::env::current_dir().ok())
         else {
             self.reviews_error = Some(tr!("ai_review.no_workspace"));
@@ -336,7 +331,10 @@ impl OrbitApp {
             Some(Ok(patch)) => Some(patch),
             None => None,
         };
-        let prompt = self.review_prompt(&kind, patch.as_deref(), cx);
+        let prompt = model::with_guidelines(
+            self.review_prompt(&kind, patch.as_deref(), cx),
+            self.review_facts.guidelines.as_deref(),
+        );
         let client = match self.extensions.spawn_reviewer(&workspace) {
             Ok(client) => client,
             Err(error) => {
@@ -518,38 +516,48 @@ impl OrbitApp {
         cx.notify();
     }
 
-    /// Cancel the run the pane is showing (its Stop button).
-    pub(super) fn cancel_focused_review(&mut self, cx: &mut Context<Self>) {
-        if let Some(id) = self.focused_review_id() {
-            self.cancel_review(id, cx);
-        }
-    }
-
-    /// The run the pane is showing: the focused one while it exists, else the
-    /// newest for the current workspace.
-    pub(super) fn focused_review_id(&self) -> Option<u64> {
-        if let Some(id) = self
-            .focused_review
-            .filter(|id| self.reviews.get(*id).is_some())
-        {
-            return Some(id);
-        }
-        let workspace = self.current_workspace.clone()?;
-        self.reviews.latest_for(&workspace).map(|run| run.id)
-    }
-
     /// Forget the review history for a workspace (the folder left the app).
     pub(super) fn forget_reviews(&mut self, workspace: &Path) {
         self.reviews.forget_workspace(workspace);
     }
 
-    /// The model/thinking the next review starts on: the session default, so
-    /// the common case needs no picker interaction.
+    /// The model/thinking the next review starts on: the page's explicit
+    /// selection when it has one, else the session default (D12), so the
+    /// common case needs no picker interaction.
     pub(super) fn review_config(&self) -> ReviewRunConfig {
+        let (model, provider) = match self.review_model.as_ref() {
+            Some((id, provider)) => (Some(id.clone()), Some(provider.clone())),
+            None => (
+                self.session_default.model_id.clone(),
+                self.session_default.provider.clone(),
+            ),
+        };
         ReviewRunConfig {
-            provider: self.session_default.provider.clone(),
-            model: self.session_default.model_id.clone(),
-            thinking: self.session_default.thinking.clone(),
+            provider,
+            model,
+            thinking: self
+                .review_thinking
+                .clone()
+                .or_else(|| self.session_default.thinking.clone()),
+        }
+    }
+
+    /// Record the Review page's selection and re-point the run workspace.
+    pub(super) fn set_review_selection(
+        &mut self,
+        workspace: &str,
+        model: &str,
+        provider: &str,
+        thinking: &str,
+    ) {
+        if !workspace.is_empty() {
+            self.review_workspace = Some(PathBuf::from(workspace));
+        }
+        if !model.is_empty() {
+            self.review_model = Some((model.to_string(), provider.to_string()));
+        }
+        if !thinking.is_empty() {
+            self.review_thinking = Some(thinking.to_string());
         }
     }
 }
@@ -639,7 +647,6 @@ mod tests {
             status: RunStatus::Completed,
             started_at: 1,
             finished_at: Some(2),
-            progress: Default::default(),
             report: None,
         }];
         let next_id = runs.iter().map(|run| run.id).max().unwrap_or(0) + 1;

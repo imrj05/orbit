@@ -129,50 +129,6 @@ impl RunStatus {
     }
 }
 
-/// Coarse progress for a running review: what the reviewer has touched so far.
-/// Derived from its streamed tool events — never a fabricated percentage.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct RunProgress {
-    /// Distinct files the reviewer has read.
-    pub files_read: usize,
-    /// The last path it touched, for the status line.
-    pub last_path: Option<String>,
-}
-
-impl RunProgress {
-    /// The status line under a running run (`Reading 14 files…`).
-    pub fn label(&self) -> String {
-        if self.files_read == 0 {
-            return tr!("ai_review.working");
-        }
-        if self.files_read == 1 {
-            return tr!("ai_review.files_read", count = 1);
-        }
-        tr!("ai_review.files_read_plural", count = self.files_read)
-    }
-
-    /// Record a touched path; returns whether anything changed.
-    pub fn note_path(&mut self, path: &str) -> bool {
-        let path = path.trim();
-        if path.is_empty() {
-            return false;
-        }
-        let changed = self.last_path.as_deref() != Some(path);
-        self.last_path = Some(path.to_string());
-        changed
-    }
-
-    /// Record a file read. Paths are counted once (the reviewer re-reads).
-    pub fn note_file(&mut self, path: &str) {
-        let path = path.trim();
-        if path.is_empty() {
-            return;
-        }
-        self.files_read += 1;
-        self.last_path = Some(path.to_string());
-    }
-}
-
 /// One review run — the unit the store owns and `reviews.json` persists.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReviewRun {
@@ -192,8 +148,6 @@ pub struct ReviewRun {
     pub started_at: u64,
     /// Unix seconds the run reached a finished status.
     pub finished_at: Option<u64>,
-    /// Coarse progress, meaningful while running.
-    pub progress: RunProgress,
     /// The parsed findings, once the run has settled.
     pub report: Option<Report>,
 }
@@ -301,7 +255,6 @@ impl ReviewRun {
             status,
             started_at: value.get("started_at").and_then(Value::as_u64).unwrap_or(0),
             finished_at: value.get("finished_at").and_then(Value::as_u64),
-            progress: RunProgress::default(),
             report: value.get("report").and_then(report_from_json),
         })
     }
@@ -458,7 +411,6 @@ mod tests {
             status,
             started_at: 1_760_000_000,
             finished_at: None,
-            progress: RunProgress::default(),
             report: None,
         }
     }
@@ -568,20 +520,6 @@ mod tests {
         let mut run = run(1, "/w", RunStatus::Completed);
         run.report = Some(Report::default());
         assert_eq!(run.summary_line(), "No issues found.");
-    }
-
-    #[test]
-    fn progress_tracks_paths() {
-        let mut progress = RunProgress::default();
-        assert_eq!(progress.label(), tr!("ai_review.working"));
-        progress.note_file("src/a.rs");
-        assert_eq!(progress.files_read, 1);
-        assert_eq!(progress.last_path.as_deref(), Some("src/a.rs"));
-        assert_eq!(progress.label(), tr!("ai_review.files_read", count = 1));
-        progress.note_file("src/b.rs");
-        assert_eq!(progress.label(), tr!("ai_review.files_read_plural", count = 2));
-        assert!(progress.note_path("src/c.rs"));
-        assert!(!progress.note_path("src/c.rs"));
     }
 
     #[test]

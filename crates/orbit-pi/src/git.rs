@@ -791,6 +791,8 @@ fn parse_commit_churn(out: &str) -> Vec<CommitChurn> {
     commits
 }
 
+
+
 /// How many files Git tracks in the workspace, for the whole-project target's
 /// count.
 pub fn tracked_file_count(cwd: &Path) -> Option<usize> {
@@ -801,6 +803,8 @@ pub fn tracked_file_count(cwd: &Path) -> Option<usize> {
             .count(),
     )
 }
+
+
 
 /// One file in a diff's `--numstat` output: the Review page's Changes list
 /// and the per-target file count both read this.

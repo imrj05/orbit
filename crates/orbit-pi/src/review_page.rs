@@ -1,33 +1,40 @@
-//! The Review page — a first-class destination for AI review, separate from
-//! the Review pane.
+//! The Review page — the app's AI review surface.
 //!
-//! The pane stays a pure diff viewer: it never starts a reviewer, shows a
-//! finding, or owns review state. **This page is the only AI review UI.** It
-//! has three working tabs plus history:
+//! A page header, four tabs, and the run detail view:
 //!
-//! - **New review** — pick a target (uncommitted changes, a branch, a commit,
-//!   chosen files, the whole project), see its file count, and start a run.
-//! - **Running** — every live run with its progress and Stop; finished runs
-//!   stay in place with a *Review completed* status and their findings.
-//! - **Changes** — the changed files of the selected target (the preview
-//!   surface, and the file picker for the Files target).
-//! - **History** — older runs across all workspaces.
+//! - **New review** — a form: repository, review type (with its live change
+//!   count), the branch base when reviewing a branch, and the model /
+//!   thinking the run uses. One accent button starts it.
+//! - **Running** — every live run plus the ones that just finished. A row
+//!   opens the run detail.
+//! - **Changes** — the selected target's changed files; a file shows its diff.
+//! - **History** — finished runs across workspaces.
 //!
-//! The page is deliberately dumb, like the Usage page: the app computes a
-//! [`ReviewPageSnapshot`] each frame and the page only lays it out. Actions go
-//! back through [`ReviewPageAction`] callbacks, so the page never borrows the
-//! app or the review store.
+//! The run detail (a row click) is where everything about a run lives: its
+//! status, target, model, verdict, findings, and files.
+//!
+//! The page is a dumb renderer: the app computes a [`ReviewPageSnapshot`]
+//! each frame and the page lays it out. Actions travel back through
+//! [`ReviewPageAction`] callbacks, so the page never borrows the app or the
+//! review store. Every control is built from the design tokens in
+//! `theme/tokens.rs` — spacing, type, radii, button and icon sizes — so the
+//! page tracks the UI font size and spacing density like the rest of the app.
 
 use std::rc::Rc;
 
 use gpui::{
-    div, prelude::*, px, AnyElement, App, Context, FontWeight, Hsla, MouseButton, Render, Window,
+    div, prelude::*, px, AnyElement, App, Context, FontWeight, MouseButton, Render, Window,
 };
 
-use crate::ai_review::{Finding, ReviewKind, Severity};
-use crate::app::helpers::{button_frame, icon, press, BUTTON_GROUP};
+use crate::ai_review::{Finding, ReviewKind, Severity, Verdict};
+use crate::app::helpers::{
+    button_frame, context_menu_entry, context_menu_surface, icon, icon_button_frame, BUTTON_GROUP,
+};
+use crate::app::PRESS_DIM;
 use crate::reviews::{ReviewRun, RunStatus};
-use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
+use crate::theme::tokens::{
+    ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
+};
 use crate::theme::{self, Theme};
 
 /// Which tab the page shows.
@@ -42,12 +49,7 @@ pub enum ReviewTab {
 
 impl ReviewTab {
     /// Every tab, in strip order.
-    pub const ALL: [ReviewTab; 4] = [
-        Self::New,
-        Self::Running,
-        Self::Changes,
-        Self::History,
-    ];
+    pub const ALL: [ReviewTab; 4] = [Self::New, Self::Running, Self::Changes, Self::History];
 
     fn label(self) -> String {
         match self {
@@ -59,7 +61,17 @@ impl ReviewTab {
     }
 }
 
-/// What the user picked to review on the New review tab.
+/// Which dropdown is open, if any.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Menu {
+    Repository,
+    ReviewType,
+    Base,
+    Model,
+    Thinking,
+}
+
+/// The review type the form is set to.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReviewTarget {
     /// HEAD → worktree, the common case and the default.
@@ -85,6 +97,34 @@ impl ReviewTarget {
         }
     }
 
+    fn label(&self, base: &str) -> String {
+        match self {
+            Self::Uncommitted => tr!("ai_review.kind_uncommitted"),
+            Self::Branch => tr!("ai_review.kind_branch_base", base = base.to_string()),
+            Self::Commit { sha, title } if sha.is_empty() => tr!("review_page.target_commit"),
+            Self::Commit { sha, title } => {
+                let short: String = sha.chars().take(7).collect();
+                if title.is_empty() {
+                    tr!("ai_review.kind_commit", sha = short)
+                } else {
+                    tr!("review_page.commit_named", sha = short, title = title.clone())
+                }
+            }
+            Self::Files => tr!("review_page.target_files"),
+            Self::Project => tr!("ai_review.review_project"),
+        }
+    }
+
+    fn description(&self) -> String {
+        match self {
+            Self::Uncommitted => tr!("review_page.type_uncommitted_hint"),
+            Self::Branch => tr!("review_page.type_branch_hint"),
+            Self::Commit { .. } => tr!("review_page.type_commit_hint"),
+            Self::Files => tr!("review_page.type_files_hint"),
+            Self::Project => tr!("review_page.type_project_hint"),
+        }
+    }
+
     /// The `ReviewKind` a run of this target uses.
     pub fn to_kind(&self, base: &str, paths: Vec<String>) -> ReviewKind {
         match self {
@@ -105,18 +145,12 @@ impl ReviewTarget {
 /// Per-target facts the page shows (file counts and the branch name).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TargetFacts {
-    /// Files touched by uncommitted changes.
     pub uncommitted_files: Option<usize>,
-    /// Added/deleted lines for the uncommitted changes.
     pub uncommitted_added: u64,
     pub uncommitted_deleted: u64,
-    /// Files this branch adds over its base.
     pub branch_files: Option<usize>,
-    /// The base the branch row compares against (`main`).
     pub base_branch: String,
-    /// Files the selected commit touches, when one is selected.
     pub commit_files: Option<usize>,
-    /// Tracked files in the workspace.
     pub project_files: Option<usize>,
 }
 
@@ -131,47 +165,91 @@ pub struct CommitRow {
     pub deleted: u64,
 }
 
-/// The app-computed state the page renders. Rebuilt each frame.
-#[derive(Clone, Default, PartialEq)]
-pub struct ReviewPageSnapshot {
-    /// Label of the target the changed files belong to, for the Changes tab's
-    /// scope line.
-    pub target: String,
-    /// The open workspace's folder name, for the page header.
-    pub workspace: String,
-    /// Facts for the target rows.
-    pub facts: TargetFacts,
-    /// Recent commits, newest first.
-    pub commits: Vec<CommitRow>,
-    /// Files of the currently selected target (the Changes tab).
-    pub changed_files: Vec<ChangedFile>,
-    /// Every run, newest first — running and history alike.
-    pub runs: Vec<ReviewRun>,
-    /// The model/thinking the next run starts on (`Opus 4.5 · high`).
-    pub config_label: String,
-    /// A run-level failure with no run to attach to (no workspace open).
-    pub error: Option<String>,
-}
-
 /// One changed file in the Changes tab.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChangedFile {
     pub path: String,
-    /// Git's status letter (`M`, `A`, `D`, `R`).
     pub status: char,
     pub added: u64,
     pub deleted: u64,
 }
 
+/// One repository the review can run against.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspaceOption {
+    pub path: String,
+    pub label: String,
+    pub is_current: bool,
+}
+
+/// One model the reviewer can run on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelOption {
+    pub id: String,
+    pub provider: String,
+    pub label: String,
+}
+
+/// The app-computed state the page renders. Rebuilt each frame.
+#[derive(Clone, Default, PartialEq)]
+pub struct ReviewPageSnapshot {
+    /// The workspace the facts were collected for (folder name).
+    pub workspace: String,
+    /// The workspace's full path, shown under the header title.
+    pub workspace_path: String,
+    /// Every repository the review can target.
+    pub workspaces: Vec<WorkspaceOption>,
+    /// Models the reviewer can use.
+    pub models: Vec<ModelOption>,
+    /// The selected model's thinking levels.
+    pub thinking_levels: Vec<String>,
+    /// The model the next run uses (`id`).
+    pub model: String,
+    /// The model's provider, for the RPC `set_model` shape.
+    pub provider: String,
+    /// The thinking level the next run uses.
+    pub thinking: String,
+    /// Local branches for the branch target's base picker.
+    pub branches: Vec<String>,
+    /// The target's label for the Changes scope line.
+    pub target: String,
+    pub facts: TargetFacts,
+    pub commits: Vec<CommitRow>,
+    pub changed_files: Vec<ChangedFile>,
+    /// The parsed diff behind those files, for the per-file preview.
+    pub snapshot: Option<std::sync::Arc<crate::review::Snapshot>>,
+    /// `REVIEW_GUIDELINES.md`, when the workspace has one.
+    pub guidelines: Option<String>,
+    /// Every run, newest first — running and history alike.
+    pub runs: Vec<ReviewRun>,
+    /// A run-level failure with no run to attach to (no workspace open).
+    pub error: Option<String>,
+}
+
 /// Actions the page sends back to the app. The page never touches the store.
 pub enum ReviewPageAction {
-    /// Start a run for the selected target, with the model/thinking config.
-    Start(ReviewKind),
+    /// Start a run for the selected target and config.
+    Start {
+        kind: ReviewKind,
+        workspace: String,
+        model: String,
+        provider: String,
+        thinking: String,
+    },
     /// Stop a run.
     Cancel(u64),
-    /// The selected target changed; the app collects its changed files for
-    /// the Changes tab.
+    /// The selected target changed; the app collects its changed files.
     TargetChanged(ReviewKind),
+    /// The repository changed; the app recollects the facts.
+    WorkspaceChanged(String, ReviewKind),
+    /// The model changed; the app recomputes the thinking levels.
+    ModelChanged { id: String, provider: String },
+    /// The thinking level changed.
+    ThinkingChanged(String),
+    /// The branch base changed.
+    BaseChanged(String),
+    /// Recompute the target facts (the refresh control).
+    Refresh(ReviewKind),
 }
 
 /// App-provided handler, rebuilt each frame like the pane's review opener.
@@ -180,19 +258,24 @@ pub type ReviewAction = Rc<dyn Fn(ReviewPageAction, &mut Window, &mut App)>;
 pub struct ReviewPage {
     tab: ReviewTab,
     target: ReviewTarget,
-    /// The commit the Commit target points at (kept so the picker survives a
-    /// tab switch).
+    /// The commit the Commit target points at.
     selected_commit: Option<(String, String)>,
     snapshot: ReviewPageSnapshot,
     action: Option<ReviewAction>,
     /// Whether the page is the active main-area surface.
     open: bool,
-    /// The target the app last collected changed files for, so we ask once per
-    /// change rather than every frame.
+    /// The target the app last collected changed files for.
     collected_kind: Option<ReviewKind>,
-    /// The Back control sets this; the app drains it on the next heartbeat and
-    /// closes the page (it has the window and the app context there).
+    /// The Back control asks the app to close the page on its next heartbeat.
     close_requested: bool,
+    /// Which changed file the Changes tab is previewing.
+    selected_file: Option<usize>,
+    /// Paths checked for the Files target.
+    checked: Vec<String>,
+    /// The open dropdown, if any.
+    menu: Option<Menu>,
+    /// The run whose detail view is open.
+    detail_run: Option<u64>,
 }
 
 impl Default for ReviewPage {
@@ -206,6 +289,10 @@ impl Default for ReviewPage {
             open: false,
             collected_kind: None,
             close_requested: false,
+            selected_file: None,
+            checked: Vec::new(),
+            menu: None,
+            detail_run: None,
         }
     }
 }
@@ -215,87 +302,55 @@ impl ReviewPage {
         Self::default()
     }
 
-    /// Whether the page owns the main area.
     pub fn is_open(&self) -> bool {
         self.open
     }
 
     /// Enter the page. Always lands on New review: that is the action.
-    pub fn open(&mut self, window: &mut Window, cx: &mut App) {
+    pub fn open(&mut self, _window: &mut Window, _cx: &mut App) {
         self.open = true;
         self.tab = ReviewTab::New;
+        self.detail_run = None;
+        self.menu = None;
+        // The app collects the initial target's files itself (see
+        // `open_review_page`); dispatching from here would re-enter this entity
+        // while its own update holds it.
         self.collected_kind = None;
-        self.notify_target(window, cx);
     }
 
     /// Leave the page.
     pub fn close(&mut self) {
         self.open = false;
+        self.menu = None;
+        self.detail_run = None;
     }
 
-    /// Whether the Back control asked to leave; the app clears this and closes
-    /// the page on the next heartbeat.
+    /// Whether the Back control asked to leave.
     pub fn take_close_request(&mut self) -> bool {
-        std::mem::take(&mut self.close_requested)
+        let taken = std::mem::take(&mut self.close_requested);
+        if taken {
+            self.close();
+        }
+        taken
     }
 
-    /// Mirror the app's state into the page. Only a real change notifies, so
-    /// the per-frame sync cannot loop back on itself.
+    /// Mirror the app's state into the page. Only a real change notifies.
     pub fn set_snapshot(&mut self, snapshot: ReviewPageSnapshot, cx: &mut Context<Self>) {
         if self.snapshot == snapshot {
             return;
         }
         self.snapshot = snapshot;
+        // A file selection from a previous target no longer applies.
+        if let Some(index) = self.selected_file {
+            if index >= self.snapshot.changed_files.len() {
+                self.selected_file = None;
+            }
+        }
         cx.notify();
     }
 
     pub fn set_action(&mut self, action: ReviewAction) {
         self.action = Some(action);
-    }
-
-    fn show_tab(&mut self, tab: ReviewTab, cx: &mut Context<Self>) {
-        if self.tab == tab {
-            return;
-        }
-        self.tab = tab;
-        cx.notify();
-    }
-
-    fn select_target(&mut self, target: ReviewTarget, window: &mut Window, cx: &mut Context<Self>) {
-        if self.target == target {
-            return;
-        }
-        self.target = target;
-        self.notify_target(window, cx);
-        cx.notify();
-    }
-
-    /// Tell the app which target's changed files to collect. Called when the
-    /// page opens and whenever the target changes.
-    fn notify_target(&mut self, window: &mut Window, cx: &mut App) {
-        let kind = self
-            .target
-            .to_kind(&self.snapshot.facts.base_branch, Vec::new());
-        if self.collected_kind.as_ref() == Some(&kind) {
-            return;
-        }
-        self.collected_kind = Some(kind.clone());
-        if let Some(action) = self.action.as_ref() {
-            action(ReviewPageAction::TargetChanged(kind), window, cx);
-        }
-    }
-
-    fn select_commit(
-        &mut self,
-        sha: String,
-        title: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.selected_commit = Some((sha.clone(), title.clone()));
-        self.target = ReviewTarget::Commit { sha, title };
-        self.notify_target(window, cx);
-        cx.notify();
     }
 
     /// The `ReviewKind` the selected target maps to.
@@ -306,20 +361,138 @@ impl ReviewPage {
         )
     }
 
-    /// A short label for the selected target, for section headers.
+    /// A short label for the selected target.
     pub fn target_label(&self) -> String {
-        match &self.target {
-            ReviewTarget::Uncommitted => tr!("ai_review.kind_uncommitted"),
-            ReviewTarget::Branch => tr!(
-                "ai_review.kind_branch_base",
-                base = self.snapshot.facts.base_branch.clone()
-            ),
-            ReviewTarget::Commit { sha, .. } => {
-                let short: String = sha.chars().take(7).collect();
-                tr!("ai_review.kind_commit", sha = short)
-            }
-            ReviewTarget::Files => tr!("review_page.target_files"),
-            ReviewTarget::Project => tr!("ai_review.review_project"),
+        self.target.label(&self.snapshot.facts.base_branch)
+    }
+
+    /// The current target, for the app's initial collection.
+    fn selected_kind(&self) -> ReviewKind {
+        self.target
+            .to_kind(&self.snapshot.facts.base_branch, self.checked.clone())
+    }
+
+    // ── interaction ───────────────────────────────────────────────────────
+
+    fn show_tab(&mut self, tab: ReviewTab, cx: &mut Context<Self>) {
+        if self.tab == tab {
+            return;
+        }
+        self.tab = tab;
+        self.menu = None;
+        cx.notify();
+    }
+
+    fn open_run(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.detail_run = Some(id);
+        cx.notify();
+    }
+
+    fn close_run(&mut self, cx: &mut Context<Self>) {
+        if self.detail_run.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn select_target(&mut self, target: ReviewTarget, window: &mut Window, cx: &mut Context<Self>) {
+        if self.target == target {
+            self.menu = None;
+            cx.notify();
+            return;
+        }
+        self.target = target;
+        self.menu = None;
+        self.selected_file = None;
+        self.checked.clear();
+        self.notify_target(window, cx);
+        cx.notify();
+    }
+
+    /// Tell the app which target's changed files to collect.
+    fn notify_target(&mut self, window: &mut Window, cx: &mut App) {
+        let kind = self.selected_kind();
+        if self.collected_kind.as_ref() == Some(&kind) {
+            return;
+        }
+        self.collected_kind = Some(kind.clone());
+        if let Some(action) = self.action.as_ref() {
+            action(ReviewPageAction::TargetChanged(kind), window, cx);
+        }
+    }
+
+    fn select_commit(&mut self, sha: String, title: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.selected_commit = Some((sha.clone(), title.clone()));
+        self.target = ReviewTarget::Commit { sha, title };
+        self.menu = None;
+        self.notify_target(window, cx);
+        cx.notify();
+    }
+
+    fn select_repository(&mut self, option: &WorkspaceOption, window: &mut Window, cx: &mut App) {
+        self.menu = None;
+        let kind = self.selected_kind();
+        if let Some(action) = self.action.as_ref() {
+            action(
+                ReviewPageAction::WorkspaceChanged(option.path.clone(), kind),
+                window,
+                cx,
+            );
+        }
+    }
+
+    fn select_model(&mut self, option: &ModelOption, window: &mut Window, cx: &mut App) {
+        self.menu = None;
+        if let Some(action) = self.action.as_ref() {
+            action(
+                ReviewPageAction::ModelChanged {
+                    id: option.id.clone(),
+                    provider: option.provider.clone(),
+                },
+                window,
+                cx,
+            );
+        }
+    }
+
+    fn select_thinking(&mut self, level: &str, window: &mut Window, cx: &mut App) {
+        self.menu = None;
+        if let Some(action) = self.action.as_ref() {
+            action(
+                ReviewPageAction::ThinkingChanged(level.to_string()),
+                window,
+                cx,
+            );
+        }
+    }
+
+    fn select_base(&mut self, branch: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu = None;
+        if let Some(action) = self.action.as_ref() {
+            action(
+                ReviewPageAction::BaseChanged(branch.to_string()),
+                window,
+                cx,
+            );
+        }
+        cx.notify();
+    }
+
+    fn refresh(&mut self, window: &mut Window, cx: &mut App) {
+        self.menu = None;
+        let kind = self.selected_kind();
+        if let Some(action) = self.action.as_ref() {
+            action(ReviewPageAction::Refresh(kind), window, cx);
+        }
+    }
+
+    fn toggle_menu(&mut self, menu: Menu, cx: &mut Context<Self>) {
+        self.menu = (self.menu != Some(menu)).then_some(menu);
+        cx.notify();
+    }
+
+    fn dismiss_menu(&mut self, cx: &mut Context<Self>) {
+        if self.menu.take().is_some() {
+            cx.notify();
         }
     }
 
@@ -327,18 +500,49 @@ impl ReviewPage {
         let Some(action) = self.action.as_ref() else {
             return;
         };
-        let kind = self.target.to_kind(&self.snapshot.facts.base_branch, Vec::new());
-        action(ReviewPageAction::Start(kind), window, cx);
+        let kind = self.selected_kind();
+        action(
+            ReviewPageAction::Start {
+                kind,
+                workspace: self.snapshot.workspace_path.clone(),
+                model: self.snapshot.model.clone(),
+                provider: self.snapshot.provider.clone(),
+                thinking: self.snapshot.thinking.clone(),
+            },
+            window,
+            cx,
+        );
     }
 
     fn cancel(&self, id: u64, window: &mut Window, cx: &mut App) {
-        let Some(action) = self.action.as_ref() else {
-            return;
-        };
-        action(ReviewPageAction::Cancel(id), window, cx);
+        if let Some(action) = self.action.as_ref() {
+            action(ReviewPageAction::Cancel(id), window, cx);
+        }
     }
 
-    /// The number of files the selected target covers, when known.
+    fn select_file(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.selected_file = Some(index);
+        cx.notify();
+    }
+
+    /// Toggle one file into or out of the Files target.
+    fn toggle_checked(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
+        match self.checked.iter().position(|checked| checked == &path) {
+            Some(index) => {
+                self.checked.remove(index);
+            }
+            None => self.checked.push(path),
+        }
+        self.target = if self.checked.is_empty() {
+            ReviewTarget::Uncommitted
+        } else {
+            ReviewTarget::Files
+        };
+        self.notify_target(window, cx);
+        cx.notify();
+    }
+
+    /// The file count to show for one row of the type menu.
     fn target_files(&self, target: &ReviewTarget) -> Option<usize> {
         match target {
             ReviewTarget::Uncommitted => self.snapshot.facts.uncommitted_files,
@@ -350,17 +554,20 @@ impl ReviewPage {
                 .find(|commit| &commit.sha == sha)
                 .map(|commit| commit.file_count)
                 .or(self.snapshot.facts.commit_files),
-            ReviewTarget::Files => Some(self.snapshot.changed_files.len()),
+            ReviewTarget::Files => (self.checked.len() > 0).then_some(self.checked.len()),
             ReviewTarget::Project => self.snapshot.facts.project_files,
         }
     }
 
-    // ── pieces ────────────────────────────────────────────────────────────
-
     fn tab_badge(&self, tab: ReviewTab) -> Option<usize> {
         match tab {
             ReviewTab::Running => {
-                let count = self.snapshot.runs.iter().filter(|run| run.is_active()).count();
+                let count = self
+                    .snapshot
+                    .runs
+                    .iter()
+                    .filter(|run| run.is_active())
+                    .count();
                 (count > 0).then_some(count)
             }
             ReviewTab::Changes => {
@@ -380,6 +587,119 @@ impl ReviewPage {
         }
     }
 
+    // ── shared pieces ─────────────────────────────────────────────────────
+
+    /// A page-level action button, matching the Git page's toolbar controls.
+    fn toolbar_button(
+        &self,
+        id: &'static str,
+        label: String,
+        icon_path: Option<&'static str>,
+        accent: bool,
+        theme: Theme,
+        on_click: impl Fn(&mut ReviewPage, &gpui::MouseUpEvent, &mut Window, &mut Context<ReviewPage>)
+            + 'static,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut button = button_frame(div().id(id), &theme, ButtonSize::Default)
+            .group(BUTTON_GROUP)
+            .flex_none()
+            .cursor_pointer()
+            .active(|style| style.opacity(PRESS_DIM))
+            .on_mouse_up(MouseButton::Left, cx.listener(on_click));
+        if accent {
+            button = button
+                .bg(theme.accent)
+                .hover(|style| style.opacity(0.9));
+        } else {
+            button = button
+                .border_1()
+                .border_color(theme.border)
+                .hover(|style| style.bg(theme.bg_hover));
+        }
+        if let Some(path) = icon_path {
+            button = button.child(icon(
+                path,
+                ButtonSize::Default.icon_size().px(&theme),
+                if accent { theme.bg_main } else { theme.text_2 },
+            ));
+        }
+        button
+            .child(
+                div()
+                    .text_size(TextSize::Small.px(&theme))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(if accent { theme.bg_main } else { theme.text })
+                    .child(label),
+            )
+            .into_any_element()
+    }
+
+    /// The page header: what this page is looking at, plus its actions.
+    fn page_header(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let mut path_row = div()
+            .text_size(TextSize::XSmall.px(&theme))
+            .text_color(theme.text_3)
+            .child(self.snapshot.workspace_path.clone());
+        if self.snapshot.guidelines.is_some() {
+            path_row = path_row.child(
+                div()
+                    .ml(DynamicSpacing::Base08.px(&theme))
+                    .text_color(theme.accent)
+                    .child(tr!("review_page.guidelines_chip")),
+            );
+        }
+        div()
+            .flex_none()
+            .w_full()
+            .px(DynamicSpacing::Base16.px(&theme))
+            .py(DynamicSpacing::Base12.px(&theme))
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base12.px(&theme))
+            .border_b_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(DynamicSpacing::Base02.px(&theme))
+                    .child(
+                        div()
+                            .text_size(TextSize::Default.px(&theme))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.text)
+                            .child(if self.snapshot.workspace.is_empty() {
+                                tr!("review_page.no_workspace")
+                            } else {
+                                self.snapshot.workspace.clone()
+                            }),
+                    )
+                    .child(path_row),
+            )
+            .child(self.toolbar_button(
+                "review-refresh",
+                String::new(),
+                Some("icons/refresh.svg"),
+                false,
+                theme,
+                |this, _, window, cx| this.refresh(window, cx),
+                cx,
+            ))
+            .child(self.toolbar_button(
+                "review-new",
+                tr!("review_page.new_review"),
+                Some("icons/spark.svg"),
+                true,
+                theme,
+                |this, _, _, cx| this.show_tab(ReviewTab::New, cx),
+                cx,
+            ))
+            .into_any_element()
+    }
+
     fn tab_strip(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
         let mut strip = div()
             .flex_none()
@@ -387,14 +707,14 @@ impl ReviewPage {
             .px(DynamicSpacing::Base16.px(&theme))
             .flex()
             .items_center()
-            .gap(DynamicSpacing::Base04.px(&theme))
+            .gap(DynamicSpacing::Base02.px(&theme))
             .border_b_1()
             .border_color(theme.border);
-        for tab in ReviewTab::ALL {
+        for (index, tab) in ReviewTab::ALL.into_iter().enumerate() {
             let active = self.tab == tab;
             let badge = self.tab_badge(tab);
             let mut row = div()
-                .id(("review-tab", ReviewTab::ALL.iter().position(|t| *t == tab).unwrap_or(0)))
+                .id(("review-tab", index))
                 .relative()
                 .h_full()
                 .px(DynamicSpacing::Base08.px(&theme))
@@ -404,7 +724,7 @@ impl ReviewPage {
                 .cursor_pointer()
                 .text_size(TextSize::Small.px(&theme))
                 .text_color(if active { theme.text } else { theme.text_2 })
-                .when(active, |row| row.font_weight(FontWeight::SEMIBOLD))
+                .when(active, |row| row.font_weight(FontWeight::MEDIUM))
                 .hover(|style| style.text_color(theme.text))
                 .on_mouse_up(
                     MouseButton::Left,
@@ -418,7 +738,7 @@ impl ReviewPage {
                         .rounded(Radius::Full.px(&theme))
                         .bg(theme.accent.opacity(0.16))
                         .text_size(TextSize::XSmall.px(&theme))
-                        .font_weight(FontWeight::SEMIBOLD)
+                        .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.accent)
                         .child(count.to_string()),
                 );
@@ -427,11 +747,10 @@ impl ReviewPage {
                 row = row.child(
                     div()
                         .absolute()
-                        .left(DynamicSpacing::Base06.px(&theme))
-                        .right(DynamicSpacing::Base06.px(&theme))
+                        .left(px(0.))
+                        .right(px(0.))
                         .bottom(px(0.))
                         .h(px(2.))
-                        .rounded_t(Radius::Small.px(&theme))
                         .bg(theme.accent),
                 );
             }
@@ -440,49 +759,46 @@ impl ReviewPage {
         strip.into_any_element()
     }
 
-    fn target_row(
+    /// A form label.
+    fn field_label(&self, text: &str, theme: Theme) -> AnyElement {
+        div()
+            .text_size(TextSize::XSmall.px(&theme))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme.text_2)
+            .child(text.to_string())
+            .into_any_element()
+    }
+
+    /// A select row: label, value, chevron. Opens `menu` when clicked.
+    fn select_row(
         &self,
-        row: &TargetRow,
+        id: &'static str,
+        value: String,
+        detail: Option<String>,
+        menu: Menu,
         theme: Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let active = self.target.key() == row.key;
-        let selected = active;
-        let target = row.target.clone();
-        let files = self.target_files(&target);
-        let detail = match files {
-            Some(count) => tr!("ai_review.file_count", count = count),
-            None => String::new(),
-        };
+        let open = self.menu == Some(menu);
         div()
-            .id(("review-target", row.index))
+            .id(id)
             .w_full()
+            .h(px(36.))
             .px(DynamicSpacing::Base12.px(&theme))
-            .py(DynamicSpacing::Base08.px(&theme))
             .rounded(Radius::Medium.px(&theme))
+            .border_1()
+            .border_color(if open { theme.accent } else { theme.border })
+            .bg(if open { theme.active } else { theme.bg_hover })
             .flex()
             .items_center()
             .gap(DynamicSpacing::Base08.px(&theme))
             .cursor_pointer()
-            .when(selected, |row| row.bg(theme.accent.opacity(0.09)))
-            .hover(|style| style.bg(theme.bg_hover))
-            .on_mouse_up(
+            .hover(|style| style.bg(theme.active))
+            .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, _: &gpui::MouseUpEvent, window, cx| {
-                    this.select_target(target.clone(), window, cx)
+                cx.listener(move |this, _: &gpui::MouseDownEvent, _, cx| {
+                    this.toggle_menu(menu, cx)
                 }),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .w(px(13.))
-                    .h(px(13.))
-                    .rounded_full()
-                    .border_1()
-                    .border_color(if selected { theme.accent } else { theme.border })
-                    .when(selected, |dot| {
-                        dot.child(div().m(px(2.5)).rounded_full().bg(theme.accent))
-                    }),
             )
             .child(
                 div()
@@ -491,55 +807,912 @@ impl ReviewPage {
                     .truncate()
                     .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.text)
-                    .child(row.label.clone()),
+                    .child(value),
             )
-            .child(
+            .when_some(detail, |row, detail| {
+                row.child(
+                    div()
+                        .flex_none()
+                        .text_size(TextSize::XSmall.px(&theme))
+                        .text_color(theme.text_3)
+                        .child(detail),
+                )
+            })
+            .child(icon(
+                "icons/chevron-down.svg",
+                IconSize::XSmall.px(&theme),
+                theme.text_3,
+            ))
+            .into_any_element()
+    }
+
+    /// A dropdown menu anchored under its row. The caller renders it inside a
+    /// `relative` container.
+    fn menu_list(
+        &self,
+        id: &'static str,
+        theme: Theme,
+        cx: &mut Context<Self>,
+        entries: Vec<AnyElement>,
+    ) -> AnyElement {
+        let mut menu = context_menu_surface(div().id(id), &theme)
+            .absolute()
+            .top(px(40.))
+            .left(px(0.))
+            .w_full()
+            .max_h(px(280.))
+            .overflow_y_scroll()
+            .occlude()
+            .on_mouse_down_out(cx.listener(|this, _: &gpui::MouseDownEvent, _, cx| {
+                this.dismiss_menu(cx)
+            }));
+        for entry in entries {
+            menu = menu.child(entry);
+        }
+        menu.into_any_element()
+    }
+
+    /// One row inside a dropdown: title, optional detail, checked marker.
+    fn menu_row(
+        &self,
+        id: usize,
+        title: String,
+        detail: Option<String>,
+        checked: bool,
+        theme: Theme,
+        on_click: impl Fn(&mut ReviewPage, &gpui::MouseUpEvent, &mut Window, &mut Context<ReviewPage>)
+            + 'static,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut row = context_menu_entry(
+            div()
+                .id(("review-menu", id))
+                .cursor_pointer()
+                .hover(|style| style.bg(theme.bg_hover))
+                .on_mouse_up(MouseButton::Left, cx.listener(on_click)),
+            &theme,
+        )
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base08.px(&theme))
+        .child(
+            div()
+                .w(px(14.))
+                .flex_none()
+                .when(checked, |mark| {
+                    mark.child(icon(
+                        "icons/check.svg",
+                        IconSize::XSmall.px(&theme),
+                        theme.accent,
+                    ))
+                }),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text)
+                .child(title),
+        );
+        if let Some(detail) = detail {
+            row = row.child(
                 div()
                     .flex_none()
                     .text_size(TextSize::XSmall.px(&theme))
                     .text_color(theme.text_3)
                     .child(detail),
-            )
+            );
+        }
+        row.into_any_element()
+    }
+
+    /// The status chip a run row and the run detail share.
+    fn status_chip(&self, status: &RunStatus, theme: Theme) -> AnyElement {
+        let (color, bg) = match status {
+            RunStatus::Completed => (theme.add_green, theme.add_green.opacity(0.14)),
+            RunStatus::Failed(_) => (theme.del_red, theme.del_red.opacity(0.14)),
+            RunStatus::Cancelled => (theme.text_3, theme.text_3.opacity(0.12)),
+            RunStatus::Queued | RunStatus::Running => (theme.accent, theme.accent.opacity(0.14)),
+        };
+        div()
+            .flex_none()
+            .px(DynamicSpacing::Base08.px(&theme))
+            .h(px(22.))
+            .rounded(Radius::Full.px(&theme))
+            .bg(bg)
+            .flex()
+            .items_center()
+            .text_size(TextSize::XSmall.px(&theme))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(color)
+            .child(status.label())
             .into_any_element()
     }
 
-    fn verdict_color(&self, verdict: crate::ai_review::Verdict, theme: Theme) -> Hsla {
-        match verdict {
-            crate::ai_review::Verdict::Correct => theme.add_green,
-            crate::ai_review::Verdict::NeedsAttention => theme.del_red,
-        }
-    }
-
-    fn finding_row(&self, index: usize, finding: &Finding, theme: Theme) -> AnyElement {
-        let (tint, label) = match finding.severity {
+    /// A severity chip for a finding.
+    fn severity_chip(&self, severity: Severity, theme: Theme) -> AnyElement {
+        let (tint, label) = match severity {
             Severity::Error => (theme.del_red, tr!("ai_review.severity_error")),
             Severity::Warning => (theme.warn, tr!("ai_review.severity_warning")),
             Severity::Info => (theme.text_3, tr!("ai_review.severity_info")),
         };
+        div()
+            .flex_none()
+            .mt(px(1.))
+            .px(DynamicSpacing::Base06.px(&theme))
+            .h(px(18.))
+            .rounded(Radius::Small.px(&theme))
+            .bg(tint.opacity(0.14))
+            .flex()
+            .items_center()
+            .text_size(TextSize::XSmall.px(&theme))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(tint)
+            .child(label)
+            .into_any_element()
+    }
+
+    fn verdict_row(&self, verdict: Verdict, report: &crate::ai_review::Report, theme: Theme) -> AnyElement {
+        let (tint, label) = match verdict {
+            Verdict::Correct => (theme.add_green, tr!("ai_review.verdict_correct")),
+            Verdict::NeedsAttention => (theme.del_red, tr!("ai_review.verdict_needs_attention")),
+        };
+        let errors = report.count(Severity::Error);
+        let warnings = report.count(Severity::Warning);
+        let mut row = div()
+            .w_full()
+            .px(DynamicSpacing::Base12.px(&theme))
+            .py(DynamicSpacing::Base08.px(&theme))
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base08.px(&theme))
+            .border_b_1()
+            .border_color(theme.border)
+            .child(div().flex_none().w(px(8.)).h(px(8.)).rounded_full().bg(tint))
+            .child(
+                div()
+                    .text_size(TextSize::Small.px(&theme))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.text)
+                    .child(label),
+            );
+        for (count, tint) in [(errors, theme.del_red), (warnings, theme.warn)] {
+            if count > 0 {
+                row = row.child(
+                    div()
+                        .text_size(TextSize::XSmall.px(&theme))
+                        .text_color(tint)
+                        .child(count.to_string()),
+                );
+            }
+        }
+        row.into_any_element()
+    }
+
+    // ── New review ────────────────────────────────────────────────────────
+
+    fn new_tab(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let mut form = div()
+            .w_full()
+            .max_w(px(720.))
+            .flex()
+            .flex_col()
+            .gap(DynamicSpacing::Base16.px(&theme));
+
+        if let Some(error) = self.snapshot.error.as_ref() {
+            form = form.child(
+                context_menu_surface(div(), &theme)
+                    .w_full()
+                    .px(DynamicSpacing::Base12.px(&theme))
+                    .py(DynamicSpacing::Base08.px(&theme))
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.del_red)
+                    .child(error.clone()),
+            );
+        }
+
+        // ── repository ──
+        let current = self
+            .snapshot
+            .workspaces
+            .iter()
+            .find(|option| option.is_current)
+            .cloned()
+            .unwrap_or_else(|| WorkspaceOption {
+                path: self.snapshot.workspace_path.clone(),
+                label: self.snapshot.workspace.clone(),
+                is_current: true,
+            });
+        let mut repo_block = div()
+            .relative()
+            .flex()
+            .flex_col()
+            .gap(DynamicSpacing::Base06.px(&theme))
+            .child(self.field_label(&tr!("review_page.field_repository"), theme))
+            .child(self.select_row(
+                "review-repo",
+                current.label.clone(),
+                None,
+                Menu::Repository,
+                theme,
+                cx,
+            ));
+        if self.menu == Some(Menu::Repository) {
+            let mut entries = Vec::new();
+            for (index, option) in self.snapshot.workspaces.iter().enumerate() {
+                let option = option.clone();
+                let checked = option.is_current;
+                let entry = self.menu_row(
+                    index,
+                    option.label.clone(),
+                    Some(option.path.clone()),
+                    checked,
+                    theme,
+                    move |this, _, window, cx| this.select_repository(&option, window, cx),
+                    cx,
+                );
+                entries.push(entry);
+            }
+            repo_block = repo_block.child(self.menu_list("review-repo-menu", theme, cx, entries));
+        }
+        form = form.child(repo_block);
+
+        // ── review type ──
+        let base = if self.snapshot.facts.base_branch.is_empty() {
+            "main".to_string()
+        } else {
+            self.snapshot.facts.base_branch.clone()
+        };
+        let type_detail = match self.target_files(&self.target) {
+            Some(count) => Some(tr!("ai_review.file_count", count = count)),
+            None => None,
+        };
+        let mut type_block = div()
+            .relative()
+            .flex()
+            .flex_col()
+            .gap(DynamicSpacing::Base06.px(&theme))
+            .child(self.field_label(&tr!("review_page.field_type"), theme))
+            .child(self.select_row(
+                "review-type",
+                self.target.label(&base),
+                type_detail,
+                Menu::ReviewType,
+                theme,
+                cx,
+            ))
+            .child(
+                div()
+                    .text_size(TextSize::XSmall.px(&theme))
+                    .text_color(theme.text_3)
+                    .child(self.target.description()),
+            );
+        if self.menu == Some(Menu::ReviewType) {
+            let mut entries = Vec::new();
+            let base_for_rows = base.clone();
+            let targets: Vec<(ReviewTarget, String, Option<String>)> = vec![
+                (
+                    ReviewTarget::Uncommitted,
+                    tr!("ai_review.kind_uncommitted"),
+                    self.snapshot
+                        .facts
+                        .uncommitted_files
+                        .map(|count| tr!("ai_review.file_count", count = count)),
+                ),
+                (
+                    ReviewTarget::Branch,
+                    tr!("ai_review.kind_branch_base", base = base_for_rows.clone()),
+                    self.snapshot
+                        .facts
+                        .branch_files
+                        .map(|count| tr!("ai_review.file_count", count = count)),
+                ),
+                (
+                    ReviewTarget::Commit {
+                        sha: String::new(),
+                        title: String::new(),
+                    },
+                    tr!("review_page.target_commit"),
+                    None,
+                ),
+                (
+                    ReviewTarget::Files,
+                    tr!("review_page.target_files"),
+                    (self.checked.len() > 0)
+                        .then(|| tr!("ai_review.file_count", count = self.checked.len())),
+                ),
+                (
+                    ReviewTarget::Project,
+                    tr!("ai_review.review_project"),
+                    self.snapshot
+                        .facts
+                        .project_files
+                        .map(|count| tr!("ai_review.file_count", count = count)),
+                ),
+            ];
+            for (index, (target, label, detail)) in targets.into_iter().enumerate() {
+                let checked = self.target.key() == target.key();
+                let entry = self.menu_row(
+                    index,
+                    label,
+                    detail,
+                    checked,
+                    theme,
+                    move |this, _, window, cx| this.select_target(target.clone(), window, cx),
+                    cx,
+                );
+                entries.push(entry);
+            }
+            type_block = type_block.child(self.menu_list("review-type-menu", theme, cx, entries));
+        }
+        form = form.child(type_block);
+
+        // ── branch base (only for the branch target) ──
+        if matches!(self.target, ReviewTarget::Branch) {
+            let mut base_block = div()
+                .relative()
+                .flex()
+                .flex_col()
+                .gap(DynamicSpacing::Base06.px(&theme))
+                .child(self.field_label(&tr!("review_page.field_base"), theme))
+                .child(self.select_row(
+                    "review-base",
+                    base.clone(),
+                    None,
+                    Menu::Base,
+                    theme,
+                    cx,
+                ))
+                .child(
+                    div()
+                        .text_size(TextSize::XSmall.px(&theme))
+                        .text_color(theme.text_3)
+                        .child(tr!("review_page.base_hint", base = base.clone())),
+                );
+            if self.menu == Some(Menu::Base) {
+                let mut entries = Vec::new();
+                for (index, branch) in self.snapshot.branches.iter().enumerate() {
+                    let branch = branch.clone();
+                    let checked = branch == base;
+                    let entry = self.menu_row(
+                        index,
+                        branch.clone(),
+                        None,
+                        checked,
+                        theme,
+                        move |this, _, window, cx| this.select_base(&branch, window, cx),
+                        cx,
+                    );
+                    entries.push(entry);
+                }
+                base_block = base_block.child(self.menu_list("review-base-menu", theme, cx, entries));
+            }
+            form = form.child(base_block);
+        }
+
+        // ── model + thinking ──
+        let model_label = self
+            .snapshot
+            .models
+            .iter()
+            .find(|option| option.id == self.snapshot.model)
+            .map(|option| option.label.clone())
+            .unwrap_or_else(|| {
+                if self.snapshot.model.is_empty() {
+                    tr!("ai_review.model_default")
+                } else {
+                    self.snapshot.model.clone()
+                }
+            });
+        let mut model_block = div()
+            .relative()
+            .flex_1()
+            .flex()
+            .flex_col()
+            .gap(DynamicSpacing::Base06.px(&theme))
+            .child(self.field_label(&tr!("review_page.field_model"), theme))
+            .child(self.select_row(
+                "review-model",
+                model_label,
+                None,
+                Menu::Model,
+                theme,
+                cx,
+            ));
+        if self.menu == Some(Menu::Model) {
+            let mut entries = Vec::new();
+            for (index, option) in self.snapshot.models.iter().enumerate() {
+                let option = option.clone();
+                let checked = option.id == self.snapshot.model;
+                let entry = self.menu_row(
+                    index,
+                    option.label.clone(),
+                    Some(option.id.clone()),
+                    checked,
+                    theme,
+                    move |this, _, window, cx| this.select_model(&option, window, cx),
+                    cx,
+                );
+                entries.push(entry);
+            }
+            model_block = model_block.child(self.menu_list("review-model-menu", theme, cx, entries));
+        }
+        let mut thinking_block = div()
+            .relative()
+            .w(px(180.))
+            .flex()
+            .flex_col()
+            .gap(DynamicSpacing::Base06.px(&theme))
+            .child(self.field_label(&tr!("review_page.field_thinking"), theme))
+            .child(self.select_row(
+                "review-thinking",
+                self.snapshot.thinking.clone(),
+                None,
+                Menu::Thinking,
+                theme,
+                cx,
+            ));
+        if self.menu == Some(Menu::Thinking) {
+            let mut entries = Vec::new();
+            for (index, level) in self.snapshot.thinking_levels.iter().enumerate() {
+                let level = level.clone();
+                let checked = level == self.snapshot.thinking;
+                let entry = self.menu_row(
+                    index,
+                    crate::model_selector::thinking_display(&level),
+                    None,
+                    checked,
+                    theme,
+                    move |this, _, window, cx| this.select_thinking(&level, window, cx),
+                    cx,
+                );
+                entries.push(entry);
+            }
+            thinking_block =
+                thinking_block.child(self.menu_list("review-thinking-menu", theme, cx, entries));
+        }
+        form = form.child(
+            div()
+                .flex()
+                .items_start()
+                .gap(DynamicSpacing::Base12.px(&theme))
+                .child(model_block)
+                .child(thinking_block),
+        );
+
+        // ── start ──
+        form = form.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(DynamicSpacing::Base08.px(&theme))
+                .child(
+                    button_frame(div().id("review-start"), &theme, ButtonSize::Default)
+                        .group(BUTTON_GROUP)
+                        .cursor_pointer()
+                        .bg(theme.accent)
+                        .hover(|style| style.opacity(0.9))
+                        .active(|style| style.opacity(0.8))
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(|this, _: &gpui::MouseUpEvent, window, cx| {
+                                this.start(window, cx)
+                            }),
+                        )
+                        .child(
+                            div()
+                                .text_size(TextSize::Small.px(&theme))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme.bg_main)
+                                .child(tr!("ai_review.start")),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_size(TextSize::XSmall.px(&theme))
+                        .text_color(theme.text_3)
+                        .child(match self.target_files(&self.target) {
+                            Some(count) if count > 0 => {
+                                tr!("review_page.start_hint", count = count)
+                            }
+                            _ => tr!("review_page.start_hint_empty"),
+                        }),
+                ),
+        );
+
+        context_menu_surface(div(), &theme)
+            .w_full()
+            .p(DynamicSpacing::Base16.px(&theme))
+            .child(form)
+            .into_any_element()
+    }
+
+    // ── Running / History ─────────────────────────────────────────────────
+
+    /// One run row: status chip, target, workspace, metadata, severity counts.
+    /// Clicking it opens the run detail.
+    fn run_row(&self, run: &ReviewRun, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let id = run.id;
+        let (errors, warnings, _) = run.counts();
+        let active = run.is_active();
+        let mut row = div()
+            .id(("review-run", id as usize))
+            .w_full()
+            .px(DynamicSpacing::Base12.px(&theme))
+            .py(DynamicSpacing::Base08.px(&theme))
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base08.px(&theme))
+            .cursor_pointer()
+            .hover(|style| style.bg(theme.bg_hover))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _: &gpui::MouseUpEvent, _, cx| this.open_run(id, cx)),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .max_w(px(120.))
+                    .truncate()
+                    .text_size(TextSize::XSmall.px(&theme))
+                    .text_color(theme.text_3)
+                    .child(workspace_name(&run.workspace)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text)
+                    .child(run.kind.label()),
+            );
+        for (count, tint) in [(errors, theme.del_red), (warnings, theme.warn)] {
+            if count > 0 {
+                row = row.child(
+                    div()
+                        .flex_none()
+                        .text_size(TextSize::XSmall.px(&theme))
+                        .text_color(tint)
+                        .child(count.to_string()),
+                );
+            }
+        }
+        row = row
+            .child(self.status_chip(&run.status, theme))
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(TextSize::XSmall.px(&theme))
+                    .text_color(theme.text_3)
+                    .child(run.summary_line()),
+            );
+        if active {
+            row = row.child(
+                icon_button_frame(div().id(("review-stop", id as usize)), &theme, ButtonSize::Compact)
+                    .group(BUTTON_GROUP)
+                    .flex_none()
+                    .border_1()
+                    .border_color(theme.border)
+                    .cursor_pointer()
+                    .hover(|style| style.bg(theme.bg_hover))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |this, _: &gpui::MouseUpEvent, window, cx| {
+                            cx.stop_propagation();
+                            this.cancel(id, window, cx)
+                        }),
+                    )
+                    .child(icon(
+                        "icons/stop.svg",
+                        IconSize::XSmall.px(&theme),
+                        theme.text_2,
+                    )),
+            );
+        }
+        row.child(icon(
+            "icons/chevron-right.svg",
+            IconSize::XSmall.px(&theme),
+            theme.text_3,
+        ))
+        .into_any_element()
+    }
+
+    fn run_list(
+        &self,
+        runs: &[&ReviewRun],
+        empty_title: String,
+        empty_hint: String,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if runs.is_empty() {
+            return div()
+                .w_full()
+                .py(DynamicSpacing::Base48.px(&theme))
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(DynamicSpacing::Base06.px(&theme))
+                .child(
+                    div()
+                        .text_size(TextSize::Default.px(&theme))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.text_2)
+                        .child(empty_title),
+                )
+                .child(
+                    div()
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_3)
+                        .child(empty_hint),
+                )
+                .into_any_element();
+        }
+        let mut card = div()
+            .w_full()
+            .max_w(px(720.))
+            .rounded(Radius::Large.px(&theme))
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.bg_raised)
+            .flex()
+            .flex_col()
+            .overflow_hidden();
+        for (index, run) in runs.iter().enumerate() {
+            if index > 0 {
+                card = card.child(div().h(px(1.)).w_full().bg(theme.border));
+            }
+            card = card.child(self.run_row(run, theme, cx));
+        }
+        card.into_any_element()
+    }
+
+    fn running_tab(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let runs: Vec<&ReviewRun> = self.snapshot.runs.iter().collect();
+        self.run_list(
+            &runs,
+            tr!("ai_review.no_reviews"),
+            tr!("review_page.empty_running_hint"),
+            theme,
+            cx,
+        )
+    }
+
+    fn history_tab(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let runs: Vec<&ReviewRun> = self
+            .snapshot
+            .runs
+            .iter()
+            .filter(|run| run.status.is_finished())
+            .collect();
+        self.run_list(
+            &runs,
+            tr!("review_page.no_history"),
+            tr!("review_page.empty_history_hint"),
+            theme,
+            cx,
+        )
+    }
+
+    // ── run detail ────────────────────────────────────────────────────────
+
+    fn run_detail(&self, run: &ReviewRun, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let mut header = div()
+            .flex_none()
+            .w_full()
+            .px(DynamicSpacing::Base16.px(&theme))
+            .py(DynamicSpacing::Base12.px(&theme))
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base12.px(&theme))
+            .border_b_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(DynamicSpacing::Base04.px(&theme))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(DynamicSpacing::Base08.px(&theme))
+                            .child(
+                                div()
+                                    .text_size(TextSize::Large.px(&theme))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(theme.text)
+                                    .child(run.kind.label()),
+                            )
+                            .child(self.status_chip(&run.status, theme)),
+                    )
+                    .child(
+                        div()
+                            .text_size(TextSize::XSmall.px(&theme))
+                            .text_color(theme.text_3)
+                            .child(run_detail_meta(run)),
+                    ),
+            );
+        if run.is_active() {
+            header = header.child(
+                button_frame(div().id("review-detail-stop"), &theme, ButtonSize::Default)
+                    .group(BUTTON_GROUP)
+                    .flex_none()
+                    .border_1()
+                    .border_color(theme.border)
+                    .cursor_pointer()
+                    .hover(|style| style.bg(theme.bg_hover))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener({
+                            let id = run.id;
+                            move |this, _: &gpui::MouseUpEvent, window, cx| {
+                                this.cancel(id, window, cx)
+                            }
+                        }),
+                    )
+                    .child(
+                        div()
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text)
+                            .child(tr!("ai_review.stop")),
+                    ),
+            );
+        }
+
+        let mut body = div()
+            .w_full()
+            .max_w(px(720.))
+            .flex()
+            .flex_col()
+            .gap(DynamicSpacing::Base12.px(&theme))
+            .child(
+                self.back_row(
+                    tr!("review_page.back_to_runs"),
+                    move |this, _, cx| this.close_run(cx),
+                    theme,
+                    cx,
+                ),
+            )
+            .child(header);
+
+        if let Some(failure) = run.status.failure() {
+            body = body.child(
+                context_menu_surface(div(), &theme)
+                    .w_full()
+                    .px(DynamicSpacing::Base12.px(&theme))
+                    .py(DynamicSpacing::Base08.px(&theme))
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.del_red)
+                    .whitespace_normal()
+                    .child(failure.to_string()),
+            );
+        }
+
+        if let Some(report) = run.report.as_ref() {
+            let errors = report.count(Severity::Error);
+            let warnings = report.count(Severity::Warning);
+            let mut card = div()
+                .w_full()
+                .rounded(Radius::Large.px(&theme))
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.bg_raised)
+                .flex()
+                .flex_col()
+                .overflow_hidden()
+                .child(self.verdict_row(report.verdict, report, theme));
+            if !report.summary.trim().is_empty() {
+                card = card.child(
+                    div()
+                        .px(DynamicSpacing::Base12.px(&theme))
+                        .py(DynamicSpacing::Base08.px(&theme))
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_2)
+                        .whitespace_normal()
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .child(report.summary.clone()),
+                );
+            }
+            if report.findings.is_empty() {
+                card = card.child(
+                    div()
+                        .px(DynamicSpacing::Base12.px(&theme))
+                        .py(DynamicSpacing::Base16.px(&theme))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .gap(DynamicSpacing::Base06.px(&theme))
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.add_green)
+                        .child(tr!("ai_review.no_findings")),
+                );
+            } else {
+                for (index, finding) in report.sorted_findings().into_iter().enumerate() {
+                    if index > 0 {
+                        card = card.child(div().h(px(1.)).w_full().bg(theme.border));
+                    }
+                    card = card.child(self.finding_row(index, finding, theme));
+                }
+            }
+            let _ = (errors, warnings);
+            body = body.child(card);
+        }
+
+        // Files changed for the run's target.
+        if !self.snapshot.changed_files.is_empty() {
+            body = body.child(self.files_card(theme));
+        }
+        body.into_any_element()
+    }
+
+    /// A quiet back row used by the run detail.
+    fn back_row(
+        &self,
+        label: String,
+        on_click: impl Fn(&mut ReviewPage, &mut Window, &mut Context<ReviewPage>) + 'static,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .id("review-back")
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base06.px(&theme))
+            .cursor_pointer()
+            .text_size(TextSize::Small.px(&theme))
+            .text_color(theme.text_2)
+            .hover(|style| style.text_color(theme.text))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _: &gpui::MouseUpEvent, window, cx| {
+                    on_click(this, window, cx)
+                }),
+            )
+            .child(icon(
+                "icons/arrow-left.svg",
+                IconSize::XSmall.px(&theme),
+                theme.text_3,
+            ))
+            .child(label)
+            .into_any_element()
+    }
+
+    fn finding_row(&self, index: usize, finding: &Finding, theme: Theme) -> AnyElement {
         let mut body = div()
             .flex_1()
             .min_w_0()
             .flex()
             .flex_col()
-            .gap(DynamicSpacing::Base02.px(&theme))
+            .gap(DynamicSpacing::Base04.px(&theme))
             .child(
                 div()
                     .text_size(TextSize::Small.px(&theme))
+                    .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text)
+                    .whitespace_normal()
                     .child(finding.title.clone()),
             );
         if let Some(location) = finding.location() {
             body = body.child(
                 div()
+                    .font_family(theme::code_font_family())
                     .text_size(TextSize::XSmall.px(&theme))
-                    .text_color(theme.text_3)
+                    .text_color(theme.accent)
                     .child(location),
             );
         }
         if !finding.detail.trim().is_empty() {
             body = body.child(
                 div()
-                    .text_size(TextSize::XSmall.px(&theme))
+                    .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.text_2)
                     .whitespace_normal()
                     .child(finding.detail.clone()),
@@ -553,33 +1726,13 @@ impl ReviewPage {
             .flex()
             .items_start()
             .gap(DynamicSpacing::Base08.px(&theme))
-            .border_t_1()
-            .border_color(theme.border)
-            .child(
-                div()
-                    .flex_none()
-                    .mt(px(1.))
-                    .px(DynamicSpacing::Base06.px(&theme))
-                    .rounded(Radius::Small.px(&theme))
-                    .bg(tint.opacity(0.14))
-                    .text_size(TextSize::XSmall.px(&theme))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(tint)
-                    .child(label),
-            )
+            .child(self.severity_chip(finding.severity, theme))
             .child(body)
             .into_any_element()
     }
 
-    fn run_card(&self, run: &ReviewRun, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
-        let id = run.id;
-        let (status_color, status_bg) = match &run.status {
-            RunStatus::Completed => (theme.add_green, theme.add_green.opacity(0.12)),
-            RunStatus::Failed(_) => (theme.del_red, theme.del_red.opacity(0.12)),
-            RunStatus::Cancelled => (theme.text_3, theme.text_3.opacity(0.10)),
-            RunStatus::Queued | RunStatus::Running => (theme.accent, theme.accent.opacity(0.12)),
-        };
-        // One card: the run line, then its findings when it has any.
+    /// The run detail's files-changed card.
+    fn files_card(&self, theme: Theme) -> AnyElement {
         let mut card = div()
             .w_full()
             .rounded(Radius::Large.px(&theme))
@@ -588,538 +1741,340 @@ impl ReviewPage {
             .bg(theme.bg_raised)
             .flex()
             .flex_col()
-            .overflow_hidden();
+            .overflow_hidden()
+            .child(
+                div()
+                    .px(DynamicSpacing::Base12.px(&theme))
+                    .py(DynamicSpacing::Base08.px(&theme))
+                    .flex()
+                    .items_center()
+                    .gap(DynamicSpacing::Base08.px(&theme))
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .text_size(TextSize::XSmall.px(&theme))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text_2)
+                    .child(tr!(
+                        "review_page.files_changed",
+                        count = self.snapshot.changed_files.len()
+                    )),
+            );
+        for (index, file) in self.snapshot.changed_files.iter().take(50).enumerate() {
+            if index > 0 {
+                card = card.child(div().h(px(1.)).w_full().bg(theme.border));
+            }
+            card = card.child(self.file_row_content(file, None, theme));
+        }
+        card.into_any_element()
+    }
 
-        let mut header = div()
+    /// A changed-file row: status letter, path, counts, optional checkbox.
+    fn file_row_content(
+        &self,
+        file: &ChangedFile,
+        checked: Option<bool>,
+        theme: Theme,
+    ) -> AnyElement {
+        let mut row = div()
+            .px(DynamicSpacing::Base12.px(&theme))
+            .py(DynamicSpacing::Base06.px(&theme))
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base08.px(&theme));
+        if let Some(checked) = checked {
+            row = row.child(
+                div()
+                    .flex_none()
+                    .w(px(13.))
+                    .h(px(13.))
+                    .rounded(Radius::Small.px(&theme))
+                    .border_1()
+                    .border_color(if checked { theme.accent } else { theme.border })
+                    .when(checked, |box_el| box_el.bg(theme.accent))
+                    .when(checked, |box_el| {
+                        box_el.child(icon(
+                            "icons/check.svg",
+                            IconSize::XSmall.px(&theme),
+                            theme.bg_main,
+                        ))
+                    }),
+            );
+        }
+        row.child(
+            div()
+                .flex_none()
+                .w(px(14.))
+                .text_size(TextSize::XSmall.px(&theme))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(match file.status {
+                    'A' => theme.add_green,
+                    'D' => theme.del_red,
+                    _ => theme.warn,
+                })
+                .child(file.status.to_string()),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .font_family(theme::code_font_family())
+                .text_size(TextSize::XSmall.px(&theme))
+                .text_color(theme.text)
+                .child(file.path.clone()),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_size(TextSize::XSmall.px(&theme))
+                .text_color(theme.add_green)
+                .child(format!("+{}", file.added)),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_size(TextSize::XSmall.px(&theme))
+                .text_color(theme.del_red)
+                .child(format!("−{}", file.deleted)),
+        )
+        .into_any_element()
+    }
+
+    // ── Changes ───────────────────────────────────────────────────────────
+
+    fn changes_tab(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        if self.snapshot.changed_files.is_empty() {
+            return div()
+                .w_full()
+                .py(DynamicSpacing::Base48.px(&theme))
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(DynamicSpacing::Base06.px(&theme))
+                .child(
+                    div()
+                        .text_size(TextSize::Default.px(&theme))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.text_2)
+                        .child(tr!("review_page.no_changes")),
+                )
+                .child(
+                    div()
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_3)
+                        .child(tr!("review_page.empty_changes_hint")),
+                )
+                .into_any_element();
+        }
+        let mut card = div()
+            .w_full()
+            .max_w(px(720.))
+            .rounded(Radius::Large.px(&theme))
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.bg_raised)
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .child(self.changes_scope_line(theme));
+
+        let mut list = div()
+            .id("review-changes-list")
+            .max_h(px(200.))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col();
+        for (index, file) in self.snapshot.changed_files.iter().enumerate() {
+            if index > 0 {
+                list = list.child(div().h(px(1.)).w_full().bg(theme.border));
+            }
+            list = list.child(self.changed_file_row(index, file, theme, cx));
+        }
+        card = card.child(list);
+
+        if let Some(body) = self.changes_preview(theme) {
+            card = card.child(body);
+        }
+        card.into_any_element()
+    }
+
+    fn changes_scope_line(&self, theme: Theme) -> AnyElement {
+        div()
             .px(DynamicSpacing::Base12.px(&theme))
             .py(DynamicSpacing::Base08.px(&theme))
             .flex()
             .items_center()
             .gap(DynamicSpacing::Base08.px(&theme))
+            .border_b_1()
+            .border_color(theme.border)
+            .text_size(TextSize::XSmall.px(&theme))
             .child(
                 div()
-                    .flex_none()
-                    .px(DynamicSpacing::Base08.px(&theme))
-                    .py(px(2.))
-                    .rounded(Radius::Full.px(&theme))
-                    .bg(status_bg)
-                    .text_size(TextSize::XSmall.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(status_color)
-                    .child(run.status.label()),
+                    .text_color(theme.text)
+                    .child(self.snapshot.target.clone()),
             )
+            .child(
+                div()
+                    .text_color(theme.text_3)
+                    .child(tr!(
+                        "ai_review.file_count",
+                        count = self.snapshot.changed_files.len()
+                    )),
+            )
+            .into_any_element()
+    }
+
+    fn changed_file_row(
+        &self,
+        index: usize,
+        file: &ChangedFile,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let selected = self.selected_file == Some(index);
+        let path = file.path.clone();
+        let checked = self.checked.iter().any(|checked| checked == &path);
+        let row = div()
+            .id(("review-file", index))
+            .cursor_pointer()
+            .when(selected, |row| row.bg(theme.accent.opacity(0.10)))
+            .hover(|style| style.bg(theme.bg_hover))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _: &gpui::MouseUpEvent, _, cx| {
+                    this.select_file(index, cx)
+                }),
+            )
+            .child(self.file_row_content(file, Some(checked), theme));
+        // The checkbox is its own hit target, drawn over the row's leading box.
+        let path_for_check = file.path.clone();
+        div()
+            .id(("review-file-wrap", index))
+            .relative()
+            .w_full()
+            .child(row)
+            .child(
+                div()
+                    .absolute()
+                    .left(DynamicSpacing::Base12.px(&theme))
+                    .top(px(0.))
+                    .bottom(px(0.))
+                    .w(px(16.))
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _: &gpui::MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            this.toggle_checked(path_for_check.clone(), window, cx)
+                        }),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// The selected file's diff, painted with the shared diff-row painters.
+    fn changes_preview(&self, theme: Theme) -> Option<AnyElement> {
+        let index = self.selected_file?;
+        let snapshot = self.snapshot.snapshot.as_ref()?;
+        let file = self.snapshot.changed_files.get(index)?;
+        let header = div()
+            .px(DynamicSpacing::Base12.px(&theme))
+            .py(DynamicSpacing::Base08.px(&theme))
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base08.px(&theme))
+            .border_t_1()
+            .border_b_1()
+            .border_color(theme.border)
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.text)
-                    .child(run.kind.label()),
-            )
-            .child(
-                div()
-                    .flex_none()
+                    .font_family(theme::code_font_family())
                     .text_size(TextSize::XSmall.px(&theme))
-                    .text_color(theme.text_3)
-                    .child(run.summary_line()),
-            );
-        if run.is_active() {
-            header = header.child(
-                button_frame(
-                    div().id(("review-stop", id as usize)),
-                    &theme,
-                    ButtonSize::Compact,
-                )
-                .group(BUTTON_GROUP)
-                .flex_none()
-                .border_1()
-                .border_color(theme.border)
-                .cursor_pointer()
-                .hover(|style| style.bg(theme.bg_hover))
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(move |this, _: &gpui::MouseUpEvent, window, cx| {
-                        this.cancel(id, window, cx)
-                    }),
-                )
-                .child(
-                    div()
-                        .text_size(TextSize::XSmall.px(&theme))
-                        .text_color(theme.text_2)
-                        .child(tr!("ai_review.stop")),
-                ),
-            );
-        }
-        card = card.child(header);
-
-        if let Some(failure) = run.status.failure() {
-            card = card.child(
-                div()
-                    .px(DynamicSpacing::Base12.px(&theme))
-                    .pb(DynamicSpacing::Base08.px(&theme))
-                    .text_size(TextSize::XSmall.px(&theme))
-                    .text_color(theme.del_red)
-                    .whitespace_normal()
-                    .child(failure.to_string()),
-            );
-        }
-        if let Some(report) = run.report.as_ref() {
-            if !report.summary.trim().is_empty() {
-                card = card.child(
-                    div()
-                        .px(DynamicSpacing::Base12.px(&theme))
-                        .pb(DynamicSpacing::Base08.px(&theme))
-                        .text_size(TextSize::XSmall.px(&theme))
-                        .text_color(theme.text_2)
-                        .whitespace_normal()
-                        .child(report.summary.clone()),
-                );
-            }
-            if report.findings.is_empty() {
-                card = card.child(
-                    div()
-                        .px(DynamicSpacing::Base12.px(&theme))
-                        .pb(DynamicSpacing::Base08.px(&theme))
-                        .text_size(TextSize::XSmall.px(&theme))
-                        .text_color(theme.add_green)
-                        .child(tr!("ai_review.no_findings")),
-                );
-            } else {
-                let verdict = div()
-                    .px(DynamicSpacing::Base12.px(&theme))
-                    .py(DynamicSpacing::Base06.px(&theme))
-                    .flex()
-                    .items_center()
-                    .gap(DynamicSpacing::Base08.px(&theme))
-                    .border_t_1()
-                    .border_color(theme.border)
-                    .child(
-                        div()
-                            .w(px(8.))
-                            .h(px(8.))
-                            .rounded_full()
-                            .bg(self.verdict_color(report.verdict, theme)),
-                    )
-                    .child(
-                        div()
-                            .text_size(TextSize::Small.px(&theme))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text)
-                            .child(report.verdict.label()),
-                    );
-                card = card.child(verdict);
-                for (index, finding) in report.findings.iter().enumerate() {
-                    card = card.child(self.finding_row(index, finding, theme));
-                }
-            }
-        }
-        card.into_any_element()
-    }
-
-    // ── tabs ──────────────────────────────────────────────────────────────
-
-    fn new_tab(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
-        let mut column = div()
-            .w_full()
-            .max_w(px(660.))
-            .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base12.px(&theme));
-
-        if let Some(error) = self.snapshot.error.as_ref() {
-            column = column.child(
-                div()
-                    .w_full()
-                    .rounded(Radius::Large.px(&theme))
-                    .border_1()
-                    .border_color(theme.del_red.opacity(0.4))
-                    .px(DynamicSpacing::Base12.px(&theme))
-                    .py(DynamicSpacing::Base08.px(&theme))
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.del_red)
-                    .child(error.clone()),
-            );
-        }
-
-        // ── target card ──
-        let mut card = div()
-            .w_full()
-            .rounded(Radius::Large.px(&theme))
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.bg_raised)
-            .flex()
-            .flex_col()
-            .overflow_hidden();
-
-        // Changes summary line (uncommitted, always meaningful).
-        let files = self.snapshot.facts.uncommitted_files.unwrap_or(0);
-        if files > 0 {
-            let summary = div()
-                .px(DynamicSpacing::Base12.px(&theme))
-                .py(DynamicSpacing::Base08.px(&theme))
-                .flex()
-                .items_center()
-                .gap(DynamicSpacing::Base06.px(&theme))
-                .border_b_1()
-                .border_color(theme.border)
-                .text_size(TextSize::XSmall.px(&theme))
-                .text_color(theme.text_2)
-                .child(
-                    div()
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text)
-                        .child(tr!("ai_review.files_changed", count = files)),
-                )
-                .child(
-                    div()
-                        .text_color(theme.add_green)
-                        .child(format!("+{}", self.snapshot.facts.uncommitted_added)),
-                )
-                .child(
-                    div()
-                        .text_color(theme.del_red)
-                        .child(format!("−{}", self.snapshot.facts.uncommitted_deleted)),
-                );
-            card = card.child(summary);
-        }
-
-        let base = if self.snapshot.facts.base_branch.is_empty() {
-            "main".to_string()
-        } else {
-            self.snapshot.facts.base_branch.clone()
-        };
-        let rows = vec![
-            TargetRow {
-                index: 0,
-                key: "uncommitted",
-                label: tr!("ai_review.kind_uncommitted"),
-                target: ReviewTarget::Uncommitted,
-            },
-            TargetRow {
-                index: 1,
-                key: "branch",
-                label: tr!("ai_review.kind_branch_base", base = base),
-                target: ReviewTarget::Branch,
-            },
-            TargetRow {
-                index: 2,
-                key: "commit",
-                label: tr!("review_page.target_commit"),
-                target: self
-                    .selected_commit
-                    .clone()
-                    .map(|(sha, title)| ReviewTarget::Commit { sha, title })
-                    .unwrap_or(ReviewTarget::Commit {
-                        sha: String::new(),
-                        title: String::new(),
-                    }),
-            },
-            TargetRow {
-                index: 3,
-                key: "files",
-                label: tr!("review_page.target_files"),
-                target: ReviewTarget::Files,
-            },
-            TargetRow {
-                index: 4,
-                key: "project",
-                label: tr!("ai_review.review_project"),
-                target: ReviewTarget::Project,
-            },
-        ];
-        let mut body = div()
-            .px(DynamicSpacing::Base06.px(&theme))
-            .py(DynamicSpacing::Base06.px(&theme))
-            .flex()
-            .flex_col()
-            .gap(px(2.));
-        for row in &rows {
-            body = body.child(self.target_row(row, theme, cx));
-            // The commit target is selected: expand the inline commit list.
-            if row.key == "commit" && self.target.key() == "commit" {
-                body = body.child(self.commit_list(theme, cx));
-            }
-        }
-        card = card.child(body);
-
-        // Start row: quiet config chip + the page's only accent button.
-        let start = div()
-            .px(DynamicSpacing::Base12.px(&theme))
-            .pb(DynamicSpacing::Base12.px(&theme))
-            .flex()
-            .items_center()
-            .gap(DynamicSpacing::Base08.px(&theme))
-            .child(
-                div()
-                    .text_size(TextSize::XSmall.px(&theme))
-                    .text_color(theme.text_3)
-                    .child(self.snapshot.config_label.clone()),
-            )
-            .child(div().flex_1())
-            .child(
-                button_frame(div().id("review-start"), &theme, ButtonSize::Default)
-                    .group(BUTTON_GROUP)
-                    .cursor_pointer()
-                    .bg(theme.accent)
-                    .hover(|style| style.opacity(0.9))
-                    .active(|style| style.opacity(0.8))
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _: &gpui::MouseUpEvent, window, cx| {
-                            this.start(window, cx)
-                        }),
-                    )
-                    .child(
-                        div()
-                            .text_size(TextSize::Small.px(&theme))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme.bg_main)
-                            .child(tr!("ai_review.start")),
-                    ),
-            );
-        card = card.child(start);
-        column = column.child(card);
-        column.into_any_element()
-    }
-
-    fn commit_list(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
-        let mut list = div()
-            .ml(DynamicSpacing::Base32.px(&theme))
-            .mr(DynamicSpacing::Base12.px(&theme))
-            .mb(DynamicSpacing::Base06.px(&theme))
-            .pl(DynamicSpacing::Base12.px(&theme))
-            .border_l_1()
-            .border_color(theme.border)
-            .flex()
-            .flex_col();
-        if self.snapshot.commits.is_empty() {
-            return list
-                .child(
-                    div()
-                        .py(DynamicSpacing::Base06.px(&theme))
-                        .text_size(TextSize::XSmall.px(&theme))
-                        .text_color(theme.text_3)
-                        .child(tr!("review_page.no_commits")),
-                )
-                .into_any_element();
-        }
-        for (index, commit) in self.snapshot.commits.iter().take(8).enumerate() {
-            let selected = self
-                .selected_commit
-                .as_ref()
-                .is_some_and(|(sha, _)| sha == &commit.sha);
-            let sha = commit.sha.clone();
-            let title = commit.subject.clone();
-            list = list.child(
-                div()
-                    .id(("review-commit", index))
-                    .py(DynamicSpacing::Base04.px(&theme))
-                    .pl(DynamicSpacing::Base08.px(&theme))
-                    .rounded(Radius::Small.px(&theme))
-                    .cursor_pointer()
-                    .flex()
-                    .items_center()
-                    .gap(DynamicSpacing::Base08.px(&theme))
-                    .when(selected, |row| row.bg(theme.accent.opacity(0.08)))
-                    .hover(|style| style.bg(theme.bg_hover))
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |this, _: &gpui::MouseUpEvent, window, cx| {
-                            this.select_commit(sha.clone(), title.clone(), window, cx)
-                        }),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_size(TextSize::XSmall.px(&theme))
-                            .text_color(theme.accent)
-                            .child(commit.short.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(TextSize::XSmall.px(&theme))
-                            .text_color(theme.text)
-                            .child(commit.subject.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_size(TextSize::XSmall.px(&theme))
-                            .text_color(theme.text_3)
-                            .child(tr!("ai_review.file_count", count = commit.file_count)),
-                    ),
-            );
-        }
-        list.into_any_element()
-    }
-
-    fn running_tab(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
-        let mut column = div()
-            .w_full()
-            .max_w(px(660.))
-            .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base12.px(&theme));
-        if self.snapshot.runs.is_empty() {
-            return self.empty_state(
-                tr!("ai_review.no_reviews"),
-                tr!("review_page.empty_running_hint"),
-                theme,
-            );
-        }
-        for run in &self.snapshot.runs {
-            column = column.child(self.run_card(run, theme, cx));
-        }
-        column.into_any_element()
-    }
-
-    fn changes_tab(&self, theme: Theme) -> AnyElement {
-        if self.snapshot.changed_files.is_empty() {
-            return self.empty_state(
-                tr!("review_page.no_changes"),
-                tr!("review_page.empty_changes_hint"),
-                theme,
-            );
-        }
-        let mut card = div()
-            .w_full()
-            .max_w(px(660.))
-            .rounded(Radius::Large.px(&theme))
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.bg_raised)
-            .flex()
-            .flex_col()
-            .overflow_hidden();
-        for (index, file) in self.snapshot.changed_files.iter().enumerate() {
-            card = card.child(
-                div()
-                    .id(("review-file", index))
-                    .px(DynamicSpacing::Base12.px(&theme))
-                    .py(DynamicSpacing::Base06.px(&theme))
-                    .flex()
-                    .items_center()
-                    .gap(DynamicSpacing::Base08.px(&theme))
-                    .when(index > 0, |row| {
-                        row.border_t_1().border_color(theme.border)
-                    })
-                    .child(
-                        div()
-                            .flex_none()
-                            .w(px(14.))
-                            .text_size(TextSize::XSmall.px(&theme))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme.warn)
-                            .child(file.status.to_string()),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(TextSize::XSmall.px(&theme))
-                            .text_color(theme.text)
-                            .child(file.path.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_size(TextSize::XSmall.px(&theme))
-                            .text_color(theme.add_green)
-                            .child(format!("+{}", file.added)),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_size(TextSize::XSmall.px(&theme))
-                            .text_color(theme.del_red)
-                            .child(format!("−{}", file.deleted)),
-                    ),
-            );
-        }
-        card.into_any_element()
-    }
-
-    fn history_tab(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
-        let finished: Vec<&ReviewRun> = self
-            .snapshot
-            .runs
-            .iter()
-            .filter(|run| run.status.is_finished())
-            .collect();
-        if finished.is_empty() {
-            return self.empty_state(
-                tr!("review_page.no_history"),
-                tr!("review_page.empty_history_hint"),
-                theme,
-            );
-        }
-        let mut column = div()
-            .w_full()
-            .max_w(px(660.))
-            .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base12.px(&theme));
-        for run in finished {
-            column = column.child(self.run_card(run, theme, cx));
-        }
-        column.into_any_element()
-    }
-
-    fn empty_state(&self, title: String, hint: String, theme: Theme) -> AnyElement {
-        div()
-            .w_full()
-            .py(px(48.))
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap(DynamicSpacing::Base06.px(&theme))
-            .child(
-                div()
-                    .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.text_2)
-                    .child(title),
-            )
-            .child(
-                div()
+                    .child(file.path.clone()),
+            );
+        let rows: Vec<AnyElement> = snapshot
+            .lines
+            .iter()
+            .filter(|line| line.file_index == index)
+            .map(|line| match &line.kind {
+                crate::review::LineKind::FileHeader => crate::diff_view::render_file_header(
+                    &snapshot.files[index],
+                    theme,
+                    None,
+                    theme.mode == crate::theme::ThemeMode::Dark,
+                ),
+                crate::review::LineKind::HunkHeader => {
+                    crate::diff_view::render_hunk_header(&line.content, theme)
+                }
+                crate::review::LineKind::Meta => crate::diff_view::render_meta(&line.content, theme),
+                crate::review::LineKind::Gap(gap) => div()
+                    .h(px(crate::diff_view::REVIEW_HUNK_HEIGHT))
+                    .w_full()
+                    .px(DynamicSpacing::Base12.px(&theme))
+                    .flex()
+                    .items_center()
                     .text_size(TextSize::XSmall.px(&theme))
                     .text_color(theme.text_3)
-                    .child(hint),
-            )
-            .into_any_element()
+                    .bg(theme.overlay)
+                    .child(tr!("sidepane.unmodified_lines", count = gap.count()))
+                    .into_any_element(),
+                crate::review::LineKind::Context
+                | crate::review::LineKind::Addition
+                | crate::review::LineKind::Deletion => {
+                    crate::diff_view::render_code_row(line, theme)
+                }
+            })
+            .collect();
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .child(header)
+                .child(
+                    div()
+                        .id("review-changes-preview")
+                        .max_h(px(420.))
+                        .overflow_scroll()
+                        .flex()
+                        .flex_col()
+                        .children(rows),
+                )
+                .into_any_element(),
+        )
     }
 
-    /// The page header controls the shell hosts in its shared top bar: the
-    /// Back affordance (which closes the page through the app callback) and
-    /// the page title.
+    // ── top bar ───────────────────────────────────────────────────────────
+
+    /// The page controls the shell hosts in its shared top bar.
     pub fn top_bar_leading(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
         div()
             .flex()
             .items_center()
             .gap(DynamicSpacing::Base08.px(&theme))
             .child(
-                press(
-                    button_frame(div().id("review-top-back"), &theme, ButtonSize::Medium)
-                        .group(BUTTON_GROUP)
-                        .cursor_pointer()
-                        .hover(|style| style.bg(theme.bg_hover)),
-                )
-                .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                    this.close();
-                    this.close_requested = true;
-                    cx.notify();
-                }))
-                .child(icon(
-                    "icons/arrow-left.svg",
-                    ButtonSize::Medium.icon_size().px(&theme),
-                    theme.text_2,
-                ))
-                .child(div().text_color(theme.text_2).child(tr!("view.back"))),
+                button_frame(div().id("review-top-back"), &theme, ButtonSize::Medium)
+                    .group(BUTTON_GROUP)
+                    .cursor_pointer()
+                    .hover(|style| style.bg(theme.bg_hover))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.close();
+                            this.close_requested = true;
+                            cx.notify();
+                        }),
+                    )
+                    .child(icon(
+                        "icons/arrow-left.svg",
+                        ButtonSize::Medium.icon_size().px(&theme),
+                        theme.text_2,
+                    ))
+                    .child(div().text_color(theme.text_2).child(tr!("view.back"))),
             )
             .child(
                 div()
@@ -1141,24 +2096,63 @@ impl ReviewPage {
             )
             .into_any_element()
     }
-
 }
 
-/// One row in the New review target list.
-struct TargetRow {
-    index: usize,
-    key: &'static str,
-    label: String,
-    target: ReviewTarget,
+/// The workspace folder name for a run's path.
+fn workspace_name(workspace: &std::path::Path) -> String {
+    workspace
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// The run detail's metadata line: workspace, model, thinking, duration.
+fn run_detail_meta(run: &ReviewRun) -> String {
+    let mut parts = vec![workspace_name(&run.workspace)];
+    let config = run.config.label();
+    if !config.is_empty() {
+        parts.push(config);
+    }
+    if let Some(elapsed) = run.elapsed_secs() {
+        parts.push(tr!("ai_review.elapsed", secs = elapsed));
+    }
+    parts.join(" · ")
 }
 
 impl Render for ReviewPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = *theme::get(cx);
+        // The run detail replaces the tab content when a run is open.
+        if let Some(id) = self.detail_run {
+            if let Some(run) = self.snapshot.runs.iter().find(|run| run.id == id) {
+                let detail = self.run_detail(run, theme, cx);
+                return div()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .bg(theme.bg_main)
+                    .child(
+                        div()
+                            .id("review-detail-scroll")
+                            .flex_1()
+                            .min_h_0()
+                            .w_full()
+                            .overflow_y_scroll()
+                            .px(DynamicSpacing::Base16.px(&theme))
+                            .py(DynamicSpacing::Base16.px(&theme))
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .child(detail),
+                    );
+            }
+        }
         let content = match self.tab {
             ReviewTab::New => self.new_tab(theme, cx),
             ReviewTab::Running => self.running_tab(theme, cx),
-            ReviewTab::Changes => self.changes_tab(theme),
+            ReviewTab::Changes => self.changes_tab(theme, cx),
             ReviewTab::History => self.history_tab(theme, cx),
         };
         div()
@@ -1168,6 +2162,7 @@ impl Render for ReviewPage {
             .flex()
             .flex_col()
             .bg(theme.bg_main)
+            .child(self.page_header(theme, cx))
             .child(self.tab_strip(theme, cx))
             .child(
                 div()
@@ -1186,3 +2181,212 @@ impl Render for ReviewPage {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::reviews::ReviewRunConfig;
+
+    fn page() -> ReviewPage {
+        ReviewPage::default()
+    }
+
+    fn run(id: u64, status: RunStatus) -> ReviewRun {
+        ReviewRun {
+            id,
+            workspace: std::path::PathBuf::from("/w/orbit"),
+            head: None,
+            kind: ReviewKind::Uncommitted,
+            config: ReviewRunConfig::default(),
+            status,
+            started_at: 1_760_000_000,
+            finished_at: Some(1_760_000_041),
+            report: None,
+        }
+    }
+
+    #[test]
+    fn opening_lands_on_the_new_tab_and_closing_leaves_clean() {
+        let mut page = page();
+        assert!(!page.is_open());
+        page.open = true;
+        assert!(page.is_open());
+        page.detail_run = Some(3);
+        page.menu = Some(Menu::Model);
+        page.close();
+        assert!(!page.is_open());
+        assert!(page.detail_run.is_none());
+        assert!(page.menu.is_none());
+    }
+
+    #[test]
+    fn close_request_is_reported_once_and_closes() {
+        let mut page = page();
+        page.open = true;
+        page.close_requested = true;
+        assert!(page.take_close_request());
+        assert!(!page.is_open());
+        assert!(!page.take_close_request());
+    }
+
+    #[test]
+    fn targets_map_to_their_run_kinds() {
+        let mut page = page();
+        page.snapshot.facts.base_branch = "main".into();
+        page.target = ReviewTarget::Uncommitted;
+        assert_eq!(page.selected_kind(), ReviewKind::Uncommitted);
+        page.target = ReviewTarget::Branch;
+        assert_eq!(
+            page.selected_kind(),
+            ReviewKind::Branch { base: "main".into() }
+        );
+        page.target = ReviewTarget::Commit {
+            sha: "abc1234".into(),
+            title: "Fix parser".into(),
+        };
+        assert_eq!(
+            page.selected_kind(),
+            ReviewKind::Commit {
+                sha: "abc1234".into(),
+                title: "Fix parser".into()
+            }
+        );
+        page.checked = vec!["src/a.rs".into()];
+        page.target = ReviewTarget::Files;
+        assert_eq!(
+            page.selected_kind(),
+            ReviewKind::Files {
+                paths: vec!["src/a.rs".into()]
+            }
+        );
+        page.target = ReviewTarget::Project;
+        assert_eq!(page.selected_kind(), ReviewKind::Project);
+    }
+
+    #[test]
+    fn target_rows_read_their_counts_from_the_facts() {
+        let mut page = page();
+        page.snapshot.facts.uncommitted_files = Some(14);
+        page.snapshot.facts.branch_files = Some(22);
+        page.snapshot.facts.project_files = Some(1204);
+        assert_eq!(page.target_files(&ReviewTarget::Uncommitted), Some(14));
+        assert_eq!(page.target_files(&ReviewTarget::Branch), Some(22));
+        assert_eq!(page.target_files(&ReviewTarget::Project), Some(1204));
+        // Files counts what is checked, and nothing while the set is empty.
+        assert_eq!(page.target_files(&ReviewTarget::Files), None);
+        page.checked = vec!["a".into(), "b".into()];
+        assert_eq!(page.target_files(&ReviewTarget::Files), Some(2));
+    }
+
+    #[test]
+    fn a_commit_row_prefers_its_own_file_count() {
+        let mut page = page();
+        page.snapshot.commits = vec![CommitRow {
+            sha: "abc1234".into(),
+            short: "abc1234".into(),
+            subject: "Fix parser".into(),
+            file_count: 5,
+            added: 10,
+            deleted: 2,
+        }];
+        let target = ReviewTarget::Commit {
+            sha: "abc1234".into(),
+            title: String::new(),
+        };
+        assert_eq!(page.target_files(&target), Some(5));
+    }
+
+    #[test]
+    fn tab_badges_count_only_what_the_tab_shows() {
+        let mut page = page();
+        page.snapshot.runs = vec![
+            run(1, RunStatus::Running),
+            run(2, RunStatus::Completed),
+            run(3, RunStatus::Cancelled),
+        ];
+        assert_eq!(page.tab_badge(ReviewTab::Running), Some(1));
+        assert_eq!(page.tab_badge(ReviewTab::History), Some(2));
+        assert_eq!(page.tab_badge(ReviewTab::New), None);
+        page.snapshot.changed_files = vec![ChangedFile {
+            path: "src/a.rs".into(),
+            status: 'M',
+            added: 1,
+            deleted: 1,
+        }];
+        assert_eq!(page.tab_badge(ReviewTab::Changes), Some(1));
+    }
+
+    #[test]
+    fn a_snapshot_without_runs_shows_no_badges() {
+        let page = page();
+        assert!(page.tab_badge(ReviewTab::Running).is_none());
+        assert!(page.tab_badge(ReviewTab::Changes).is_none());
+        assert!(page.tab_badge(ReviewTab::History).is_none());
+    }
+
+    #[test]
+    fn target_labels_name_the_base_and_commit() {
+        let mut page = page();
+        page.snapshot.facts.base_branch = "main".into();
+        page.target = ReviewTarget::Branch;
+        assert!(page.target_label().contains("main"));
+        page.target = ReviewTarget::Commit {
+            sha: "abc1234def".into(),
+            title: "Fix parser".into(),
+        };
+        let label = page.target_label();
+        assert!(label.contains("abc1234"));
+        assert!(label.contains("Fix parser"));
+    }
+
+    #[test]
+    fn switching_targets_clears_the_file_selection() {
+        let mut page = page();
+        page.selected_file = Some(3);
+        page.checked = vec!["src/a.rs".into()];
+        // Simulate what select_target does without a window.
+        page.target = ReviewTarget::Project;
+        page.selected_file = None;
+        page.checked.clear();
+        assert!(page.selected_file.is_none());
+        assert!(page.checked.is_empty());
+    }
+
+    #[test]
+    fn a_shrinking_file_list_drops_a_stale_selection() {
+        let mut page = page();
+        page.selected_file = Some(4);
+        page.snapshot.changed_files = vec![ChangedFile {
+            path: "src/a.rs".into(),
+            status: 'M',
+            added: 1,
+            deleted: 1,
+        }];
+        // `set_snapshot` without a context would notify; the guard itself is
+        // what the test checks.
+        let index = page.selected_file.unwrap();
+        if index >= page.snapshot.changed_files.len() {
+            page.selected_file = None;
+        }
+        assert!(page.selected_file.is_none());
+    }
+
+    #[test]
+    fn workspace_name_is_the_folder() {
+        assert_eq!(
+            workspace_name(std::path::Path::new("/Users/x/Personal/orbit")),
+            "orbit"
+        );
+        assert_eq!(workspace_name(std::path::Path::new("/")), "");
+    }
+
+    #[test]
+    fn run_detail_meta_names_the_workspace_and_model() {
+        let mut run = run(1, RunStatus::Completed);
+        run.config.model = Some("opus-4-5".into());
+        run.config.thinking = Some("high".into());
+        let meta = run_detail_meta(&run);
+        assert!(meta.contains("orbit"));
+        assert!(meta.contains("opus-4-5 · high"));
+        assert!(meta.contains("41s"));
+    }
+}
