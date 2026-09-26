@@ -47,7 +47,6 @@ use orbit_rpc::{
 use serde_json::Value;
 
 use crate::access::AccessMode;
-use crate::ai_review::{Report, ReviewKind, ReviewStatus};
 use crate::ask::{AskPrompt, AskQuestion};
 use crate::auth::{AuthEffect, AuthManager, AuthSupport, LoginPhase, ProviderStatus};
 use crate::branch_picker::BranchPicker;
@@ -507,18 +506,16 @@ pub struct OrbitApp {
     latest_turn: Option<usize>,
     /// Right side pane — Review (git diff).
     sidepane: Entity<SidePane>,
-    /// The dedicated AI reviewer process, when one is running. Kept out of
-    /// `lives` — it is not a user session and must never appear in the sidebar.
-    ai_review: Option<ai_review::ReviewAgent>,
-    /// What the running/last reviewer was asked to inspect.
-    ai_review_kind: Option<ReviewKind>,
-    /// The reviewer's lifecycle, mirrored into the Review pane each frame.
-    ai_review_status: ReviewStatus,
-    /// The parsed findings (and prose) of the last completed review.
-    ai_report: Option<Report>,
-    /// Monotonic id guarding against a superseded review's async diff
-    /// collection launching a process after the user started or cancelled one.
-    ai_review_generation: u64,
+    /// Every AI review run — live and finished, across all workspaces. Kept out
+    /// of `lives`: reviewers are not user sessions and must never appear in the
+    /// sidebar or its notifications.
+    reviews: reviews::ReviewStore,
+    /// The run the Review pane is currently mirroring, when the user picked one
+    /// explicitly. `None` falls back to the newest run for the current
+    /// workspace.
+    focused_review: Option<u64>,
+    /// A run-level failure with no run to attach to (no workspace open).
+    reviews_error: Option<String>,
     /// Right dock — the workspace file tree (cmd-shift-e).
     project_panel: Entity<crate::explorer::ProjectPanel>,
     /// Full-page read-only file viewer (the Files surface).
@@ -1157,11 +1154,9 @@ impl OrbitApp {
             turn_open: false,
             latest_turn: None,
             sidepane,
-            ai_review: None,
-            ai_review_kind: None,
-            ai_review_status: ReviewStatus::default(),
-            ai_report: None,
-            ai_review_generation: 0,
+            reviews: reviews::ReviewStore::load(),
+            focused_review: None,
+            reviews_error: None,
             project_panel,
             file_viewer,
             terminal_panel,
@@ -1968,7 +1963,6 @@ enum SettingsSelect {
 // `app.rs` keeps the `OrbitApp` model, the shared types, and the controller
 // wiring. Rendering and feature-specific logic live in child modules; they
 // are descendants of `app`, so they reach private fields/methods directly.
-mod ai_review;
 mod ask;
 mod composer_ops;
 mod dialogs;
@@ -1977,6 +1971,7 @@ mod helpers;
 mod open_in;
 mod pi_update_ui;
 mod pickers;
+mod reviews;
 mod runtime;
 mod search;
 mod session;

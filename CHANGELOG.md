@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **AI reviews run in the background.** A review is now a first-class run pinned to the
+  workspace it was started from, so it keeps going when you switch workspace, session,
+  or page; at most two reviewer processes run at once and the rest wait in a queue.
+  Finished runs persist to `~/.orbit-pi/reviews.json`, so findings survive a restart
+  (a run caught mid-flight by a quit reopens as "Interrupted by app restart").
+- **Review targets grew beyond the two pane actions.** Runs can target uncommitted
+  changes, a branch (merge-base against a chosen base), a single commit, chosen files
+  (snapshot), or the whole project, each with its own prompt. Reviewer prompts now carry
+  a shared review rubric (what to flag and what not to, silent-failure and duplication
+  rules, how to phrase findings) and answers carry a verdict alongside the findings.
+  The Review pane keeps its existing two actions for now; the Review page that exposes
+  the new targets is next.
+
 ## [0.0.18] - 2026-09-26
 
 ### Added

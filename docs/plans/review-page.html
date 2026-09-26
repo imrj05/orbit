@@ -1,0 +1,345 @@
+<style>
+  .rv-wrap { display: flex; flex-direction: column; gap: 12px; margin: 4px 0 8px; }
+  .rv-meta { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; color: var(--muted); font-size: 13px; }
+  .rv-note { font-size: 12.5px; color: var(--muted); line-height: 1.6; }
+  .rv-note b { color: var(--fg); }
+  h3.rv-h { font-size: 14px; margin: 22px 0 8px; font-weight: 600; }
+  code { font-family: ui-monospace, monospace; font-size: .92em; }
+
+  /* page frame */
+  .rv-frame { border: 1px solid color-mix(in srgb, var(--fg) 14%, transparent); border-radius: 12px; overflow: hidden; background: color-mix(in srgb, var(--fg) 2%, transparent); }
+  .rv-topbar { display: flex; align-items: center; gap: 12px; padding: 0 16px; height: 42px; border-bottom: 1px solid color-mix(in srgb, var(--fg) 12%, transparent); background: color-mix(in srgb, var(--fg) 4%, transparent); }
+  .rv-topbar .t { font-size: 13.5px; font-weight: 600; color: var(--fg); }
+  .rv-topbar .sp { flex: 1; }
+
+  /* tabs */
+  .rv-tabs { display: flex; align-items: stretch; gap: 2px; height: 42px; padding: 0 12px; border-bottom: 1px solid color-mix(in srgb, var(--fg) 12%, transparent); background: color-mix(in srgb, var(--fg) 3%, transparent); }
+  .rv-tab { display: inline-flex; align-items: center; gap: 7px; padding: 0 11px; font-size: 13px; color: var(--muted); position: relative; }
+  .rv-tab:hover { color: var(--fg); }
+  .rv-tab.on { color: var(--fg); font-weight: 600; }
+  .rv-tab.on::after { content: ""; position: absolute; left: 8px; right: 8px; bottom: -1px; height: 2px; background: var(--accent); border-radius: 2px 2px 0 0; }
+  .rv-tab .n { font-size: 10.5px; font-weight: 700; color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); border-radius: 999px; padding: 1px 6px; }
+  .rv-tabs .sp { flex: 1; }
+
+  /* single column */
+  .rv-main { padding: 16px; display: flex; flex-direction: column; gap: 12px; max-width: 660px; margin: 0 auto; }
+
+  .rv-card { border: 1px solid color-mix(in srgb, var(--fg) 11%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--fg) 2%, transparent); }
+  .rv-card .hd { padding: 9px 14px; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid color-mix(in srgb, var(--fg) 8%, transparent); display: flex; align-items: center; gap: 8px; }
+  .rv-card .hd .sp { flex: 1; }
+  .rv-card .bd { padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+
+  .rv-changes { display: flex; align-items: center; gap: 9px; padding: 10px 14px; font-size: 12.5px; color: var(--muted); }
+  .rv-changes b { color: var(--fg); font-weight: 500; }
+  .rv-changes .add { color: var(--green); } .rv-changes .del { color: var(--red); }
+  .rv-changes .sp { flex: 1; }
+  .rv-link { color: var(--accent); font-weight: 500; white-space: nowrap; }
+
+  .rv-t { display: grid; grid-template-columns: 18px 1fr auto; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 7px; font-size: 13px; color: var(--fg); }
+  .rv-t:hover { background: color-mix(in srgb, var(--fg) 4%, transparent); }
+  .rv-t.sel { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+  .rv-t .radio { width: 13px; height: 13px; border-radius: 50%; border: 1.5px solid color-mix(in srgb, var(--fg) 30%, transparent); }
+  .rv-t.sel .radio { border-color: var(--accent); background: radial-gradient(circle at center, var(--accent) 0 4px, transparent 4.5px); }
+  .rv-t .n { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  .rv-commits { margin: 3px 12px 6px 40px; border-left: 1px solid color-mix(in srgb, var(--fg) 10%, transparent); display: flex; flex-direction: column; }
+  .rv-c { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; padding: 5px 0 5px 12px; font-size: 12.5px; }
+  .rv-c.sel { background: color-mix(in srgb, var(--accent) 7%, transparent); border-radius: 0 6px 6px 0; }
+  .rv-c .sha { font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--accent); }
+  .rv-c .st { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+  .rv-c .stt { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .rv-c .files { grid-column: 2 / 4; font-size: 10.5px; color: color-mix(in srgb, var(--fg) 42%, transparent); font-family: ui-monospace, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .rv-start { display: flex; align-items: center; gap: 8px; padding: 0 14px 14px; }
+  .rv-chip { font-size: 12.5px; color: var(--muted); background: none; border: none; padding: 4px 0; display: inline-flex; gap: 5px; align-items: center; }
+  .rv-chip:hover { color: var(--fg); }
+  .rv-chip .caret { font-size: 9px; }
+  .rv-btn { font-size: 12.5px; font-weight: 600; padding: 6px 15px; border-radius: 8px; background: var(--accent); color: var(--bg); border: none; }
+  .rv-btn.ghost { background: none; color: var(--fg); border: 1px solid color-mix(in srgb, var(--fg) 16%, transparent); font-weight: 500; }
+  .rv-start .sp { flex: 1; }
+
+  /* running rows */
+  .rv-run { padding: 11px 14px; display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--fg); border-bottom: 1px solid color-mix(in srgb, var(--fg) 6%, transparent); }
+  .rv-run:last-child { border-bottom: none; }
+  .rv-run .sp { flex: 1; }
+  .rv-run .m { color: var(--muted); font-size: 11.5px; }
+  .rv-run .stop { font-size: 12px; color: var(--muted); border: 1px solid color-mix(in srgb, var(--fg) 14%, transparent); border-radius: 7px; padding: 3px 10px; background: none; }
+  .rv-run .bar { height: 3px; width: 78px; border-radius: 2px; background: color-mix(in srgb, var(--fg) 10%, transparent); overflow: hidden; }
+  .rv-run .bar i { display: block; height: 100%; width: 62%; background: var(--accent); }
+  .rv-run.done { color: var(--muted); }
+  .rv-run .ok { color: var(--green); }
+  .rv-done { font-size: 10.5px; font-weight: 600; letter-spacing: .02em; color: var(--green); background: color-mix(in srgb, var(--green) 12%, transparent); border-radius: 999px; padding: 2px 8px; white-space: nowrap; }
+
+  /* findings */
+  .rv-verdict { display: flex; align-items: center; gap: 9px; padding: 11px 14px; border-bottom: 1px solid color-mix(in srgb, var(--fg) 8%, transparent); font-size: 13px; }
+  .rv-verdict .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); flex: none; }
+  .rv-verdict .dot.ok { background: var(--green); }
+  .rv-verdict .vt { font-weight: 600; color: var(--fg); }
+  .rv-verdict .vm { color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+  .rv-verdict .sp { flex: 1; }
+  .rv-f { display: grid; grid-template-columns: auto 1fr; gap: 9px; padding: 10px 14px; align-items: start; border-bottom: 1px solid color-mix(in srgb, var(--fg) 6%, transparent); }
+  .rv-f:last-child { border-bottom: none; }
+  .rv-f:hover { background: color-mix(in srgb, var(--fg) 3%, transparent); }
+  .rv-sev { font-size: 10px; font-weight: 700; letter-spacing: .04em; padding: 2px 6px; border-radius: 5px; margin-top: 1px; text-transform: uppercase; }
+  .rv-sev.err { color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); }
+  .rv-sev.wrn { color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, transparent); }
+  .rv-f .ttl { font-size: 13px; color: var(--fg); }
+  .rv-f .loc { font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted); margin-top: 3px; }
+  .rv-f.exp .det { font-size: 12px; color: var(--muted); margin-top: 6px; line-height: 1.55; }
+  .rv-f.exp .acts { margin-top: 7px; display: flex; gap: 12px; font-size: 12px; color: var(--accent); }
+  .rv-sum { padding: 10px 14px; font-size: 12.5px; color: var(--muted); line-height: 1.55; border-bottom: 1px solid color-mix(in srgb, var(--fg) 7%, transparent); }
+  .rv-empty { padding: 22px 14px; text-align: center; font-size: 12.5px; color: var(--muted); }
+
+  /* changes tab */
+  .rv-flist { display: flex; flex-direction: column; gap: 1px; padding: 6px; }
+  .rv-file { display: grid; grid-template-columns: 16px 14px 1fr auto; gap: 8px; align-items: center; padding: 5px 8px; border-radius: 5px; font-size: 12px; }
+  .rv-file:hover { background: color-mix(in srgb, var(--fg) 4%, transparent); }
+  .rv-file.sel { background: color-mix(in srgb, var(--accent) 11%, transparent); }
+  .rv-file .cb { width: 12px; height: 12px; border-radius: 3px; border: 1.5px solid color-mix(in srgb, var(--fg) 28%, transparent); }
+  .rv-file .cb.on { background: var(--accent); border-color: var(--accent); }
+  .rv-file .st { font-size: 10px; font-weight: 700; text-align: center; }
+  .rv-file .st.m { color: var(--amber); } .rv-file .st.a { color: var(--green); } .rv-file .st.d { color: var(--red); }
+  .rv-file .fp { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--fg); }
+  .rv-file .fc { font-size: 10.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .rv-file .fc .add { color: var(--green); } .rv-file .fc .del { color: var(--red); }
+  .rv-dh { display: flex; align-items: center; gap: 7px; padding: 8px 13px; font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted); border-top: 1px solid color-mix(in srgb, var(--fg) 8%, transparent); border-bottom: 1px solid color-mix(in srgb, var(--fg) 8%, transparent); }
+  .rv-dh .sp { flex: 1; }
+  .rv-diff { padding: 4px 0; overflow: auto; font-family: ui-monospace, monospace; font-size: 11.5px; line-height: 1.6; }
+  .rv-dl { display: grid; grid-template-columns: 28px 28px 1fr; min-width: max-content; }
+  .rv-dl .ln { color: color-mix(in srgb, var(--fg) 28%, transparent); text-align: right; padding-right: 7px; user-select: none; }
+  .rv-dl .co { padding-left: 8px; white-space: pre; color: color-mix(in srgb, var(--fg) 78%, transparent); }
+  .rv-dl.add { background: color-mix(in srgb, var(--green) 11%, transparent); }
+  .rv-dl.add .co { color: var(--green); }
+  .rv-dl.del { background: color-mix(in srgb, var(--red) 10%, transparent); }
+  .rv-dl.del .co { color: var(--red); }
+  .rv-dl.hunk .co { color: var(--muted); }
+  .rv-more { padding: 6px 13px; font-size: 11px; color: color-mix(in srgb, var(--fg) 45%, transparent); border-top: 1px solid color-mix(in srgb, var(--fg) 8%, transparent); }
+</style>
+
+<h2 style="margin-top:0">Review page — tabs layout</h2>
+<p class="rv-note">Three top tabs do the work — <b>New review</b>, <b>Running</b>, <b>Changes</b> —
+with History one click away. One shared scope: the target you pick on <i>New</i> decides
+what <i>Changes</i> shows. Full design doc: <code>docs/plans/review-page.md</code>.</p>
+
+<div class="rv-wrap">
+  <div class="rv-meta">
+    <span>Severity colors:</span>
+    <span style="color:var(--red)">● error</span>
+    <span style="color:var(--amber)">● warning</span>
+    <span style="color:var(--muted)">● info</span>
+  </div>
+
+  <div class="rv-frame">
+    <div class="rv-topbar">
+      <span class="t">Review</span>
+      <span class="sp"></span>
+      <span style="font-size:11.5px;color:var(--muted)">History</span>
+    </div>
+    <div class="rv-tabs">
+      <span class="rv-tab on">New review</span>
+      <span class="rv-tab">Running <span class="n">1</span></span>
+      <span class="rv-tab">Changes <span class="n">14</span></span>
+      <span class="sp"></span>
+    </div>
+
+    <!-- ── TAB 1 · NEW REVIEW ── -->
+    <div class="rv-main">
+      <div class="rv-card">
+        <div class="rv-changes">
+          <span><b>14 files changed</b> · <span class="add">+120</span> <span class="del">−43</span></span>
+          <span class="sp"></span>
+          <span class="rv-link">See changes →</span>
+        </div>
+        <div class="bd">
+          <div class="rv-t sel">
+            <span class="radio"></span>
+            <span>Uncommitted changes</span>
+            <span class="n">14 files</span>
+          </div>
+          <div class="rv-t">
+            <span class="radio"></span>
+            <span>Current branch vs main</span>
+            <span class="n">22 files</span>
+          </div>
+          <div class="rv-t">
+            <span class="radio"></span>
+            <span>A commit</span>
+            <span class="n">▾</span>
+          </div>
+          <div class="rv-commits">
+            <div class="rv-c sel">
+              <span class="sha">9f0e1d2</span>
+              <span class="st">Refactor auth token refresh</span>
+              <span class="stt">12 files <span style="color:var(--green)">+540</span> <span style="color:var(--red)">−388</span></span>
+              <span class="files">src/auth/token.rs · src/auth/session.rs · src/api/client.rs · …</span>
+            </div>
+            <div class="rv-c">
+              <span class="sha">a1b2c3d</span>
+              <span class="st">Fix parser panic on empty input</span>
+              <span class="stt">5 files <span style="color:var(--green)">+212</span> <span style="color:var(--red)">−31</span></span>
+            </div>
+            <div class="rv-c">
+              <span class="sha">4c5d6e7</span>
+              <span class="st">Add retry backoff to fetcher</span>
+              <span class="stt">3 files <span style="color:var(--green)">+88</span> <span style="color:var(--red)">−12</span></span>
+            </div>
+          </div>
+          <div class="rv-t">
+            <span class="radio"></span>
+            <span>Files… <span style="color:var(--muted);font-size:11.5px">(pick in Changes)</span></span>
+            <span class="n">none</span>
+          </div>
+          <div class="rv-t">
+            <span class="radio"></span>
+            <span>Whole project</span>
+            <span class="n">1,204 files</span>
+          </div>
+        </div>
+        <div class="rv-start">
+          <button class="rv-chip">Opus 4.5 · high <span class="caret">▾</span></button>
+          <span class="sp"></span>
+          <button class="rv-btn">Start review</button>
+        </div>
+      </div>
+      <p class="rv-note">The idle page is still one question: what should be reviewed?
+      Model defaults to your session's; the chip changes it for this run only.</p>
+    </div>
+  </div>
+
+  <!-- ── TAB 2 · RUNNING ── -->
+  <div class="rv-frame" style="margin-top:14px">
+    <div class="rv-tabs">
+      <span class="rv-tab">New review</span>
+      <span class="rv-tab on">Running <span class="n">1</span></span>
+      <span class="rv-tab">Changes <span class="n">14</span></span>
+      <span class="sp"></span>
+    </div>
+    <div class="rv-main">
+      <div class="rv-card">
+        <div class="rv-run done">
+          <span class="ok">✓</span>
+          <span>Branch vs main · pi-sdk</span>
+          <span class="rv-done">Review completed</span>
+          <span class="sp"></span>
+          <span class="m">no issues · 3m ago</span>
+        </div>
+        <div class="rv-run">
+          <span>Uncommitted changes · orbit</span>
+          <span class="bar"><i></i></span>
+          <span class="m">14 files read · 12s</span>
+          <span class="sp"></span>
+          <button class="stop">Stop</button>
+        </div>
+      </div>
+
+      <div class="rv-card">
+        <div class="rv-verdict">
+          <span class="dot"></span>
+          <span class="vt">Needs attention</span>
+          <span class="vm">3 findings · 14 files · 41s</span>
+          <span class="sp"></span>
+          <span class="rv-pill" style="font-size:11.5px;color:var(--muted);border:1px solid color-mix(in srgb, var(--fg) 14%, transparent);border-radius:999px;padding:2px 9px">Copy</span>
+        </div>
+        <div class="rv-sum">Three issues, all in the auth path. The retry change is safe;
+        the error-handling ones should be fixed before merge.</div>
+        <div class="rv-f exp">
+          <span class="rv-sev err">error</span>
+          <div>
+            <div class="ttl">Unwrap on None for absent config key</div>
+            <div class="loc">src/config.rs:47</div>
+            <div class="det">Panics when <code>providers</code> is missing. Use
+            <code>unwrap_or_default()</code> or propagate the parse error.</div>
+            <div class="acts"><span>Open file</span><span>Copy</span></div>
+          </div>
+        </div>
+        <div class="rv-f">
+          <span class="rv-sev err">error</span>
+          <div>
+            <div class="ttl">Silent error swallow in refresh path</div>
+            <div class="loc">src/auth/token.rs:122</div>
+          </div>
+        </div>
+        <div class="rv-f">
+          <span class="rv-sev wrn">warn</span>
+          <div>
+            <div class="ttl">Blocking file read inside async handler</div>
+            <div class="loc">src/api/client.rs:88</div>
+          </div>
+        </div>
+      </div>
+      <p class="rv-note">While a run is live the tab label carries the count. When it
+      finishes it stays in place with a <b>Review completed</b> status and its findings
+      right below — nothing moves, nothing auto-archives. Clicking a finding opens the
+      file in the Changes tab at that line.</p>
+    </div>
+  </div>
+
+  <!-- ── TAB 3 · CHANGES ── -->
+  <div class="rv-frame" style="margin-top:14px">
+    <div class="rv-tabs">
+      <span class="rv-tab">New review</span>
+      <span class="rv-tab">Running <span class="n">1</span></span>
+      <span class="rv-tab on">Changes <span class="n">14</span></span>
+      <span class="sp"></span>
+    </div>
+    <div class="rv-main">
+      <div class="rv-card">
+        <div class="rv-changes">
+          <span>Uncommitted changes · <b>14 files</b> · <span class="add">+120</span> <span class="del">−43</span></span>
+          <span class="sp"></span>
+          <span style="font-size:12px;color:var(--muted)">Filter files…</span>
+        </div>
+        <div class="rv-flist">
+          <div class="rv-file"><span class="cb"></span><span class="st m">M</span><span class="fp">src/config.rs</span><span class="fc"><span class="add">+42</span> <span class="del">−7</span></span></div>
+          <div class="rv-file sel"><span class="cb on"></span><span class="st m">M</span><span class="fp">src/auth/token.rs</span><span class="fc"><span class="add">+31</span> <span class="del">−12</span></span></div>
+          <div class="rv-file"><span class="cb"></span><span class="st a">A</span><span class="fp">src/auth/refresh.rs</span><span class="fc"><span class="add">+88</span> <span class="del">−0</span></span></div>
+          <div class="rv-file"><span class="cb"></span><span class="st d">D</span><span class="fp">src/auth/legacy.rs</span><span class="fc"><span class="add">+0</span> <span class="del">−23</span></span></div>
+          <div class="rv-file"><span class="cb"></span><span class="st m">M</span><span class="fp">src/api/client.rs</span><span class="fc"><span class="add">+9</span> <span class="del">−4</span></span></div>
+        </div>
+        <div class="rv-dh">
+          <span>src/auth/token.rs</span>
+          <span class="sp"></span>
+          <span>unified ▾</span>
+        </div>
+        <div class="rv-diff" style="max-height:190px">
+          <div class="rv-dl hunk"><span class="ln"></span><span class="ln"></span><span class="co">@@ -118,6 +118,7 @@ fn refresh()</span></div>
+          <div class="rv-dl"><span class="ln">118</span><span class="ln">118</span><span class="co">    let token = store.load()?;</span></div>
+          <div class="rv-dl del"><span class="ln">119</span><span class="ln"></span><span class="co">-   refresh(&amp;token).ok();</span></div>
+          <div class="rv-dl add"><span class="ln"></span><span class="ln">119</span><span class="co">+   refresh(&amp;token).context("refresh failed")?;</span></div>
+          <div class="rv-dl add"><span class="ln"></span><span class="ln">120</span><span class="co">+   // retry once with the fresh token</span></div>
+          <div class="rv-dl"><span class="ln">120</span><span class="ln">121</span><span class="co">    let next = api::call(&amp;token).await?;</span></div>
+          <div class="rv-dl"><span class="ln">121</span><span class="ln">122</span><span class="co">    Ok(next)</span></div>
+          <div class="rv-dl"><span class="ln">122</span><span class="ln">123</span><span class="co">}</span></div>
+        </div>
+        <div class="rv-more">2 of 5 hunks · open full diff in the Review pane →</div>
+        <div class="rv-start">
+          <span style="font-size:12px;color:var(--muted)">2 files selected</span>
+          <span class="sp"></span>
+          <button class="rv-btn ghost">Review selected</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h3 class="rv-h">How the tabs fit together</h3>
+<p class="rv-note">
+<b>One shared scope.</b> Target chosen on <i>New review</i> decides what <i>Changes</i>
+shows; files checked in <i>Changes</i> feed the <b>Files…</b> target back on <i>New
+review</i>. Tabs are views of the same state, not separate pages.
+<b>Running is the activity home.</b> Live runs show progress + Stop. When a run finishes
+it <b>stays exactly where it was</b> — a <b>Review completed</b> status replaces the
+progress bar, and its findings render below. Nothing auto-archives, nothing moves.
+<b>History</b> (top-right) is the archive of older runs and the only way runs leave this
+tab. <b>Changes is the preview and the picker.</b> File list with per-file counts, inline
+syntax-highlighted diff, and checkboxes for picking files.
+</p>
+
+<h3 class="rv-h">States</h3>
+<p class="rv-note">
+Running badge = active count only · Changes badge = current file count ·
+completed runs show a green <b>Review completed</b> status in place ·
+empty Changes (<i>Whole project</i>) shows a quiet "No diff for this target" ·
+no runs yet shows an empty Running tab with "Start a review from New review" ·
+a run with no issues shows a green ✓ status and "no issues", never an empty pane.
+</p>

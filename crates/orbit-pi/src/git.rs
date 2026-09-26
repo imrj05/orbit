@@ -13,6 +13,7 @@ use std::process::{Command, Output};
 
 use anyhow::{anyhow, bail};
 
+use crate::ai_review::ReviewKind;
 use crate::checkpoint::{self, EMPTY_TREE};
 use crate::review::Source;
 
@@ -309,6 +310,71 @@ pub fn collect_review_diff(
     collect_review_diff_inner(cwd, source, session).map_err(|err| err.to_string())
 }
 
+/// Collect the diff an AI review target describes, for prompts and the
+/// Changes preview. Unlike [`collect_review_diff`] this takes the reviewer's
+/// own [`ReviewKind`], so the page, the store, and the prompt all resolve the
+/// same range.
+pub fn collect_kind_diff(cwd: &Path, kind: &ReviewKind) -> Result<ReviewDiff, String> {
+    collect_kind_diff_inner(cwd, kind).map_err(|err| err.to_string())
+}
+
+fn collect_kind_diff_inner(cwd: &Path, kind: &ReviewKind) -> anyhow::Result<ReviewDiff> {
+    ensure_repository(cwd)?;
+    let (from, to) = resolve_kind_range(cwd, kind)?;
+    let numstat = diff_output(cwd, &from, &to, &["--numstat"])?;
+    let hydrated = diff_output(cwd, &from, &to, &["--unified=2147483647"])?;
+    let (patch, complete_context) = if hydrated.len() <= MAX_HYDRATED_PATCH_BYTES {
+        (hydrated, true)
+    } else {
+        (diff_output(cwd, &from, &to, &["--unified=3"])?, false)
+    };
+    Ok(ReviewDiff {
+        numstat,
+        patch,
+        complete_context,
+    })
+}
+
+fn resolve_kind_range(cwd: &Path, kind: &ReviewKind) -> anyhow::Result<(String, String)> {
+    Ok(match kind {
+        // A snapshot target has no range; the reviewer reads the files itself.
+        ReviewKind::Project | ReviewKind::Files { .. } => (EMPTY_TREE.to_owned(), head_or_empty(cwd)),
+        ReviewKind::Uncommitted => (head_or_empty(cwd), checkpoint::capture_worktree_commit(cwd)?),
+        ReviewKind::Branch { base } => (base_ref(cwd, base)?, checkpoint::capture_worktree_commit(cwd)?),
+        ReviewKind::Commit { sha, .. } => {
+            let commit = checkpoint::resolve(cwd, sha)
+                .ok_or_else(|| anyhow!("commit {sha} is not available in this repository"))?;
+            (commit_parent(cwd, &commit)?, commit)
+        }
+        // Unreachable through the page (the pane's own Review sources pass
+        // `Source` straight to `collect_review_diff`), but a stored kind could
+        // still name one: resolve it like the uncommitted case rather than fail.
+        ReviewKind::Changes => (head_or_empty(cwd), checkpoint::capture_worktree_commit(cwd)?),
+    })
+}
+
+/// The merge-base of `HEAD` and `base` — the branch review's left side.
+fn base_ref(cwd: &Path, base: &str) -> anyhow::Result<String> {
+    let rev = if base.trim().is_empty() { "HEAD" } else { base };
+    let merge_base = run_git(cwd, &["merge-base", "HEAD", rev]).map_err(anyhow::Error::msg)?;
+    let merge_base = merge_base.trim().to_owned();
+    if merge_base.is_empty() {
+        bail!("no merge base between HEAD and {rev}");
+    }
+    Ok(merge_base)
+}
+
+/// A commit's first parent, or the empty tree for a root commit.
+fn commit_parent(cwd: &Path, commit: &str) -> anyhow::Result<String> {
+    let parent = run_git(cwd, &["rev-parse", &format!("{commit}^")]).unwrap_or_default();
+    let parent = parent.trim();
+    Ok(if parent.is_empty() {
+        EMPTY_TREE.to_owned()
+    } else {
+        parent.to_owned()
+    })
+}
+
 fn collect_review_diff_inner(
     cwd: &Path,
     source: Source,
@@ -403,6 +469,12 @@ fn branch_base(cwd: &Path) -> String {
 
 fn head_or_empty(cwd: &Path) -> String {
     checkpoint::resolve(cwd, "HEAD").unwrap_or_else(|| EMPTY_TREE.to_owned())
+}
+
+/// The workspace's current `HEAD`, when it has one. Used to stamp review runs
+/// so a later `HEAD` can mark their findings as stale.
+pub fn head_revision(cwd: &Path) -> Option<String> {
+    checkpoint::resolve(cwd, "HEAD")
 }
 
 fn diff_output(cwd: &Path, from: &str, to: &str, modes: &[&str]) -> anyhow::Result<String> {

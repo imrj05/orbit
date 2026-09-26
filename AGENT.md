@@ -85,7 +85,8 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/quota.rs          account quota/balance/spend reducer over the `quota.*` RPC and the bridge's session entries (no secrets, no I/O)
   src/access.rs         access mode (Supervised / Auto-accept edits / Full access): persistence to `~/.orbit-pi/access.json`, which the guard extension reads
   src/layout.rs         persisted workbench layout: resizable panel sizes in `~/.orbit-pi/layout.json` (recorded on drag, flushed by the heartbeat once a drag settles)
-  src/ai_review.rs      AI reviewer model: prompt builders + findings parsing (process lifecycle in app/ai_review.rs)
+  src/ai_review.rs      AI reviewer model: prompt builders + findings parsing (run store in app/reviews.rs, durable runs in reviews.rs)
+  src/reviews.rs        AI review runs: run/status/report shape, persistence to ~/.orbit-pi/reviews.json, retention
   src/workflow.rs       workflow mode (Plan / Build / Ask): per-session persistence to `~/.orbit-pi/workflow.json`, which the workflow extension reads
   src/bundled_extensions.rs  materializes the bundled pi extensions (quota bridge + access guard + auto-title + workflow) under `~/.orbit-pi/` and spawns every session with `--extension`
   src/commit_message.rs one-shot, tool-free `pi -p` conventional-commit generation
@@ -209,7 +210,7 @@ stack is gone; do not resurrect it.
 | Composer | `composer.rs`, `app/composer_ops.rs` | Multiline input, commands, file mentions, image attachments, queued follow-ups, steer, abort, and access/workflow controls. |
 | Explorer / Files | `src/explorer/` | Gitignore-aware workspace tree, keyboard navigation, file editor, Markdown/image views, autosave, file operations, and honest binary/oversized/non-UTF-8 states. |
 | Review / Git | `review.rs`, `sidepane.rs`, `git.rs`, `git_panel.rs` | Diff review, changed-file navigation, Git status/history/graph, staging, commit, branch operations, and GitHub issue/PR workflows where `gh` is available. |
-| Agent controls | `access.rs`, `workflow.rs`, `ai_review.rs` | Supervised/Auto-accept edits/Full access, Plan/Build/Ask workflow modes, and a read-only AI reviewer. These are extension-backed controls, not a sandbox. |
+| Agent controls | `access.rs`, `workflow.rs`, `ai_review.rs`, `reviews.rs` | Supervised/Auto-accept edits/Full access, Plan/Build/Ask workflow modes, and read-only AI reviewer runs (background, per-workspace, persisted). These are extension-backed controls, not a sandbox. |
 | Settings | `app/settings.rs`, `providers.rs`, `auth.rs`, `quota.rs`, `skills_ui.rs` | General/runtime/agent/skills/plugins/models/appearance/providers/about/shortcuts plus provider auth, model catalog, quota, skills and plugin management. |
 | Native infrastructure | `notifications.rs`, `pi_update.rs`, `app/open_in.rs` | Desktop notifications, pi self-update, open-in-editor/terminal integration, and native menus. |
 

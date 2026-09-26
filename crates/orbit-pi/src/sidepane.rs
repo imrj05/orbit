@@ -63,7 +63,7 @@ pub struct SidePaneResize;
 /// One request the pane's AI controls send back to the app. The pane lives in
 /// the app and does not know how to spawn a pi process, so it hands the intent
 /// back through [`AiReviewAction`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AiReviewRequest {
     Start(ReviewKind),
     Cancel,
@@ -1423,6 +1423,7 @@ impl SidePane {
         for kind in [ReviewKind::Changes, ReviewKind::Project] {
             let action = action.clone();
             let pane = pane.clone();
+            let start_kind = kind.clone();
             menu = menu.child(ai_menu_row(kind, theme, move |window, cx| {
                 let _ = pane.update(cx, |this, cx| {
                     this.ai_menu_open = false;
@@ -1430,7 +1431,7 @@ impl SidePane {
                     cx.notify();
                 });
                 if let Some(action) = action.as_ref() {
-                    action(AiReviewRequest::Start(kind), window, cx);
+                    action(AiReviewRequest::Start(start_kind.clone()), window, cx);
                 }
             }));
         }
@@ -1440,7 +1441,7 @@ impl SidePane {
     /// The AI findings section, between the toolbar and the diff. `None` until
     /// a review has run in this session.
     fn render_ai_review(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let kind = self.ai_review.kind?;
+        let kind = self.ai_review.kind.clone()?;
         let running = self.ai_review.status == ReviewStatus::Running;
         let open = self.ai_findings_open;
         let action = self.ai_review_action.clone();

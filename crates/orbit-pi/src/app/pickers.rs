@@ -402,12 +402,12 @@ impl OrbitApp {
             PaletteCommand::AiReviewChanges => {
                 self.command_palette = None;
                 self.sidepane.update(cx, |pane, cx| pane.show_review(cx));
-                self.start_ai_review(crate::ai_review::ReviewKind::Changes, cx);
+                self.start_review(crate::ai_review::ReviewKind::Changes, cx);
             }
             PaletteCommand::AiReviewProject => {
                 self.command_palette = None;
                 self.sidepane.update(cx, |pane, cx| pane.show_review(cx));
-                self.start_ai_review(crate::ai_review::ReviewKind::Project, cx);
+                self.start_review(crate::ai_review::ReviewKind::Project, cx);
             }
             PaletteCommand::OpenGit => {
                 self.command_palette = None;
