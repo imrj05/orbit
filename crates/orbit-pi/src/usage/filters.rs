@@ -910,9 +910,10 @@ fn calendar(page: &UsagePage, cx: &mut gpui::Context<UsagePage>, theme: Theme) -
     };
     let offset = dt.weekday().num_days_from_monday() as i64;
 
-    // Month header with the two navigation affordances.
+    // Month header with the two navigation affordances. One button tall, so
+    // it lines up with the icon buttons it holds.
     let header = div()
-        .h(px(28.))
+        .h(TRIGGER_SIZE.height(&theme))
         .px(DynamicSpacing::Base08.px(&theme))
         .flex()
         .items_center()

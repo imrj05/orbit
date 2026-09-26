@@ -137,6 +137,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   row's hover highlight are on the same tokens / `on_mouse_move` as the other
   pickers.
 
+### Fixed
+
+- The model and thinking chip pickers keep keyboard focus when opened from
+  their composer chip. The composer box's own mouse-up handler (which focuses
+  the input) is an ancestor of the chip and ran after it in gpui's bubble
+  order, so ↑/↓/Enter/Escape went to the composer instead of the popup. The
+  composer box now leaves focus alone while any of its popovers is open, and a
+  click inside the model popup no longer bubbles out to it.
+- The top-bar provider-quota popover no longer clips its last provider card
+  when several accounts are connected: the card list scrolls inside the
+  popover's height cap instead of stretching past it. The list now carries its
+  own max height rather than living in a `flex_1` body — inside the deferred,
+  anchored popover the available height is zero, where a flexible child
+  collapses and the overflow is clipped.
+
 ## [0.0.17] - 2026-09-25
 
 ### Added

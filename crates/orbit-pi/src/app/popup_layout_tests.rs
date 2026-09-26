@@ -555,3 +555,205 @@ fn model_picker_arrows_work_after_the_palette_route(cx: &mut gpui::TestAppContex
         "↓ moves the picker after the palette route"
     );
 }
+
+/// The chip route: the model picker opens from a chip nested inside the
+/// composer box, whose own mouse-up handler focuses the composer input. gpui
+/// bubbles mouse events leaf-first, so that ancestor handler runs *after* the
+/// chip's and (before this fix) yanked focus straight back out of the popup —
+/// leaving ↑/↓ and typing on the composer input. The direct `open_picker`
+/// tests never see that ancestor, so this drives the chip handler and then
+/// replays the composer box's bubbled mouse-up exactly as gpui would.
+#[gpui::test]
+fn chip_click_does_not_let_the_composer_steal_picker_focus(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+    use gpui::{Modifiers, MouseButton, MouseUpEvent};
+
+    cx.update(|cx| {
+        cx.set_global(Theme::for_id(ThemeId::Orbit));
+        crate::bind_keys(cx);
+    });
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(1200.), px(820.)),
+        |_, _| app.clone(),
+    );
+
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.available_models = (0..30)
+                .map(|ix| ModelEntry {
+                    id: format!("m{ix}"),
+                    name: format!("Model {ix}"),
+                    provider: "opencode-go".into(),
+                    context_window: Some(1_000_000),
+                })
+                .collect();
+            app.model_id = "m0".into();
+            app.model_label = "Model 0".into();
+            app.model_provider = "opencode-go".into();
+            cx.notify();
+        });
+    });
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(1200.), px(820.)),
+        |_, _| app.clone(),
+    );
+
+    // The chip's own handler (what `on_mouse_up` calls) opens the popup.
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.on_chip_trigger_click(PickerKind::Model, window, cx);
+        });
+    });
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(1200.), px(820.)),
+        |_, _| app.clone(),
+    );
+    let filter_focused = cx.update(|window, cx| {
+        let (_, selector) = app
+            .read(cx)
+            .model_selector
+            .clone()
+            .expect("the chip opened the model picker");
+        selector.read(cx).focus_handle(cx).is_focused(window)
+    });
+    assert!(filter_focused, "the chip click focuses the picker filter");
+
+    // Now replay the composer box's bubbled mouse-up, which gpui runs after
+    // the chip's because the composer box is the chip's ancestor.
+    let mouse_up = MouseUpEvent {
+        button: MouseButton::Left,
+        position: point(px(0.), px(0.)),
+        modifiers: Modifiers::none(),
+        click_count: 1,
+    };
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| app.on_composer_click(&mouse_up, window, cx));
+    });
+
+    let filter_focused = cx.update(|window, cx| {
+        let (_, selector) = app.read(cx).model_selector.clone().expect("still open");
+        selector.read(cx).focus_handle(cx).is_focused(window)
+    });
+    assert!(
+        filter_focused,
+        "the composer box's mouse-up must not steal focus from the open picker"
+    );
+
+    let highlighted = |cx: &mut gpui::VisualTestContext| {
+        cx.update(|_, cx| {
+            app.read(cx)
+                .model_selector
+                .as_ref()
+                .map(|(_, selector)| selector.read(cx).highlighted_row())
+        })
+    };
+    let before = highlighted(cx).expect("model picker open");
+    cx.simulate_keystrokes("down");
+    let after = highlighted(cx).expect("model picker open");
+    assert!(
+        after > before,
+        "↓ moved the model picker highlight from {before} to {after}"
+    );
+
+    // Closing the picker hands focus back to the composer, and a click on the
+    // box then focuses it normally (the guard only applies while a popover is
+    // open).
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| app.close_model_selector(window, cx));
+    });
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| app.on_composer_click(&mouse_up, window, cx));
+    });
+    let composer_focused = cx.update(|window, cx| {
+        app.read(cx)
+            .input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
+    });
+    assert!(
+        composer_focused,
+        "with no popover open the composer box still focuses the input"
+    );
+}
+
+// ── top-bar provider-quota popover ────────────────────────────────────
+
+/// The quota popover grows with the number of connected providers. Past its
+/// height cap the card list must scroll rather than let the popover clip the
+/// last card. The list is the scroll region (content-sized up to the cap):
+/// inside the deferred, anchored popover the available height is zero, where a
+/// `flex_1` child collapses and the cards get clipped instead.
+#[gpui::test]
+fn quota_popup_scrolls_instead_of_clipping_its_last_card(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+
+    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(1200.), px(820.)),
+        |_, _| app.clone(),
+    );
+
+    // Five providers with two windows each: comfortably past the 460px cap
+    // that three providers already brush.
+    cx.update(|_, cx| {
+        app.update(cx, |app, _cx| {
+            let providers: Vec<serde_json::Value> = (0..5)
+                .map(|ix| {
+                    serde_json::json!({
+                        "provider": format!("provider-{ix}"),
+                        "kind": "subscription",
+                        "windows": [
+                            {"id": "session", "label": "5-hour session", "usedPercent": 40.0, "resetsAt": 1},
+                            {"id": "weekly", "label": "Weekly", "usedPercent": 70.0, "resetsAt": 1}
+                        ]
+                    })
+                })
+                .collect();
+            app.quota.on_response(
+                true,
+                Some(&serde_json::json!({ "providers": providers })),
+                None,
+            );
+            app.quota_popup_open = true;
+        });
+    });
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(1200.), px(820.)),
+        |_, _| app.clone(),
+    );
+
+    let popup = cx
+        .debug_bounds("quota-popup")
+        .expect("quota popup laid out");
+    let body = cx
+        .debug_bounds("quota-popup-body")
+        .expect("quota popup body laid out");
+
+    // The popover stays within its cap...
+    assert!(
+        popup.size.height <= px(460.),
+        "popup height {:?}",
+        popup.size.height
+    );
+    // ...and the card list ends at the popover's bottom edge, so nothing is
+    // clipped away below it.
+    assert!(
+        body.bottom() <= popup.bottom(),
+        "the card list overflows the popover: body {body:?}, popup {popup:?}"
+    );
+    // The list left room for the header instead of stretching over it.
+    assert!(
+        body.size.height < popup.size.height,
+        "the card list did not leave room for the header: body {body:?}, popup {popup:?}"
+    );
+}

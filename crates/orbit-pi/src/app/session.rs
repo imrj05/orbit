@@ -35,6 +35,12 @@ const QUOTA_REFRESH_MIN_SPIN: Duration = Duration::from_millis(450);
 /// bridge-only pi (no `quota.list`) can never leave the button stuck spinning.
 const QUOTA_REFRESH_TIMEOUT: Duration = Duration::from_millis(4000);
 
+/// Top-bar provider-quota popover width: room for a provider name, its plan
+/// badge, and a window row.
+const QUOTA_POPOVER_W: f32 = 320.;
+/// Largest total height of the quota popover before its card list scrolls.
+const QUOTA_POPOVER_MAX_H: f32 = 460.;
+
 impl OrbitApp {
     /// True while a run is in flight (busy flag or a streaming transcript).
     pub(super) fn is_running(&self) -> bool {
@@ -1560,27 +1566,34 @@ impl OrbitApp {
             .child(refresh_button);
 
         // One card per provider, 8 px apart: the boundary between accounts
-        // is what tells a glance which numbers belong together.
-        let body = div().flex().flex_col().child(header).child(
-            div()
-                .id("quota-popup-body")
-                .flex_1()
-                .min_h_0()
-                .overflow_y_scroll()
-                .p(px(8.))
-                .flex()
-                .flex_col()
-                .gap(px(8.))
-                .children(
-                    reports
-                        .iter()
-                        .map(|report| quota_provider_card(self, report, theme)),
-                ),
-        );
+        // is what tells a glance which numbers belong together. The list is
+        // the scroll region, content-sized up to the space the popover cap
+        // leaves under the header. It must not lean on `flex_1`: inside the
+        // deferred, anchored popover the available height is zero, where a
+        // flexible child collapses and the cards get clipped instead (the
+        // same reason the model picker's list carries its own `max_h`).
+        // Ordinary children keep it independent of measured-layout sizing.
+        let header_h = ButtonSize::Medium.height(&theme) + px(21.);
+        let cards = div()
+            .id("quota-popup-body")
+            .debug_selector(|| "quota-popup-body".to_string())
+            .w_full()
+            .max_h(px(QUOTA_POPOVER_MAX_H) - header_h)
+            .overflow_y_scroll()
+            .p(px(8.))
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .children(
+                reports
+                    .iter()
+                    .map(|report| quota_provider_card(self, report, theme)),
+            );
 
         let popup = div()
-            .w(px(320.))
-            .max_h(px(460.))
+            .debug_selector(|| "quota-popup".to_string())
+            .w(px(QUOTA_POPOVER_W))
+            .max_h(px(QUOTA_POPOVER_MAX_H))
             .font_family(theme::ui_font_family())
             .elevation_2(&theme)
             .flex()
@@ -1606,7 +1619,8 @@ impl OrbitApp {
                     });
                 }
             })
-            .child(body);
+            .child(header)
+            .child(cards);
 
         Some(
             div()
@@ -2121,12 +2135,33 @@ impl OrbitApp {
         })
     }
 
+    /// Whether one of the composer's anchored popovers currently owns the
+    /// keyboard. See [`Self::on_composer_click`] for why this gates focus.
+    pub(super) fn composer_popup_open(&self) -> bool {
+        self.model_selector.is_some()
+            || self.add_menu_open
+            || self.access_menu_open
+            || self.workflow_menu_open
+    }
+
     pub(super) fn on_composer_click(
         &mut self,
         _: &MouseUpEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A composer-anchored popover (model/thinking picker, add menu, access
+        // menu, workflow menu) rides a descendant of the composer box, so a
+        // click that opens one — or a click on its search field — bubbles here
+        // after the popover has grabbed focus. Pulling focus back to the
+        // composer input would silently kill the popover's ↑/↓/Enter/Escape,
+        // which is exactly what made the chip pickers feel dead next to the
+        // command palette and branch picker. The popovers dismiss on an
+        // outside mouse-down, so a click meant to close one has already cleared
+        // these flags by the time the mouse-up lands.
+        if self.composer_popup_open() {
+            return;
+        }
         self.input.read(cx).focus(window);
     }
 

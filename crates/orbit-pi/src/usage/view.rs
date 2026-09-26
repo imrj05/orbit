@@ -65,7 +65,7 @@ use crate::app::{
     icon_button_frame, picker_search_frame, press, BUTTON_GROUP,
 };
 use crate::composer::ComposerInput;
-use crate::theme::tokens::{TextSize, popover, ButtonSize, DynamicSpacing, IconSize, Radius};
+use crate::theme::tokens::{button, TextSize, popover, ButtonSize, DynamicSpacing, IconSize, Radius};
 use crate::theme::{self, Theme};
 
 /// Inner column width for a data surface (§58): wide enough for a full table,
@@ -73,9 +73,10 @@ use crate::theme::{self, Theme};
 pub(super) const CONTENT_MAX_W: f32 = 1180.;
 /// The page column's horizontal padding (both sides), which the tables sit inside.
 pub(super) const PAGE_PAD: f32 = 40.;
-/// Inner padding of a section card (each side). Tables budget against this
-/// so their last column is not squeezed into a scrollbar.
-pub(super) const SECTION_PAD: f32 = 14.;
+/// Inner padding of a section card (each side), at the default density —
+/// [`DynamicSpacing::Base12`]. Tables budget against this so their last
+/// column is not squeezed into a scrollbar.
+pub(super) const SECTION_PAD: f32 = 12.;
 /// Below this column width the paired panels stack into one column.
 const TWO_COLUMN_MIN: f32 = 820.;
 const FOUR_KPI_MIN: f32 = 880.;
@@ -171,21 +172,24 @@ impl UsagePage {
             .border_b_1()
             .border_color(theme.border)
             .child(
-                button_frame(div().id("usage-back"), &theme, ButtonSize::Medium)
-                    .cursor_pointer()
-                    .hover(|style| style.bg(theme.bg_hover))
-                    .on_mouse_down(MouseButton::Left, {
-                        let entity = cx.entity();
-                        move |_, window, cx| {
-                            entity.update(cx, |page, cx| page.close_page(window, cx));
-                        }
-                    })
-                    .child(icon(
-                        "icons/arrow-left.svg",
-                        IconSize::Small.px(&theme),
-                        theme.text_2,
-                    ))
-                    .child(div().text_color(theme.text_2).child(tr!("view.back"))),
+                press(
+                    button_frame(div().id("usage-back"), &theme, ButtonSize::Medium)
+                        .group(BUTTON_GROUP)
+                        .cursor_pointer()
+                        .hover(|style| style.bg(theme.bg_hover)),
+                )
+                .on_mouse_down(MouseButton::Left, {
+                    let entity = cx.entity();
+                    move |_, window, cx| {
+                        entity.update(cx, |page, cx| page.close_page(window, cx));
+                    }
+                })
+                .child(icon(
+                    "icons/arrow-left.svg",
+                    IconSize::Small.px(&theme),
+                    theme.text_2,
+                ))
+                .child(div().text_color(theme.text_2).child(tr!("view.back"))),
             )
             .child(
                 div()
@@ -388,6 +392,8 @@ impl UsagePage {
             self.usage_mode(),
             |choice| choice.label(),
             |choice| choice.as_str(),
+            |_| true,
+            false,
             theme,
             {
                 let entity = cx.entity();
@@ -602,18 +608,21 @@ impl UsagePage {
             // The store could not be read at all: say so, and offer the retry.
             if let Some(error) = self.error().map(str::to_string) {
                 let entity = cx.entity();
-                let action = button_frame(div().id("usage-retry"), &theme, ButtonSize::Medium)
-                    .mt(DynamicSpacing::Base02.px(&theme))
-                    .border_1()
-                    .border_color(theme.border)
-                    .bg(theme.bg_raised)
-                    .cursor_pointer()
-                    .hover(|style| style.bg(theme.bg_hover))
-                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                        entity.update(cx, |page, cx| page.refresh(cx));
-                    })
-                    .child(tr!("view.try_again"))
-                    .into_any_element();
+                let action = press(
+                    button_frame(div().id("usage-retry"), &theme, ButtonSize::Medium)
+                        .group(BUTTON_GROUP)
+                        .mt(DynamicSpacing::Base02.px(&theme))
+                        .border_1()
+                        .border_color(theme.border)
+                        .bg(theme.bg_raised)
+                        .cursor_pointer()
+                        .hover(|style| style.bg(theme.bg_hover)),
+                )
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    entity.update(cx, |page, cx| page.refresh(cx));
+                })
+                .child(tr!("view.try_again"))
+                .into_any_element();
                 return self.message_state(
                     theme,
                     "icons/info.svg",
@@ -1376,15 +1385,17 @@ impl UsagePage {
         if totals.errors > 0 {
             let fail_entity = cx.entity();
             values.push(
-                button_frame(div().id("usage-summary-failures"), &theme, ButtonSize::Compact)
-                    .cursor_pointer()
-                    .text_color(theme.crit)
-                    .hover(|style| style.text_color(theme.text))
-                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                        fail_entity.update(cx, |page, cx| page.set_errors_only(true, cx));
-                    })
-                    .child(tr!("view.view_failures"))
-                    .into_any_element(),
+                press(
+                    button_frame(div().id("usage-summary-failures"), &theme, ButtonSize::Compact)
+                        .text_color(theme.crit)
+                        .cursor_pointer()
+                        .hover(|style| style.text_color(theme.text)),
+                )
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    fail_entity.update(cx, |page, cx| page.set_errors_only(true, cx));
+                })
+                .child(tr!("view.view_failures"))
+                .into_any_element(),
             );
         }
 
@@ -1399,8 +1410,8 @@ impl UsagePage {
                     .min_w_0()
                     .flex()
                     .flex_wrap()
-                    .gap_x(px(20.))
-                    .gap_y(px(6.))
+                    .gap_x(DynamicSpacing::Base20.px(&theme))
+                    .gap_y(DynamicSpacing::Base06.px(&theme))
                     .children(values),
             )
             .into_any_element()
@@ -1455,92 +1466,47 @@ impl UsagePage {
         // Metric switcher: one visualization, several measures (§19). A metric
         // with no source data stays visible but disabled, and the line under
         // the chart says why.
-        let mut tabs = div()
-            .flex()
-            .items_center()
-            .gap(DynamicSpacing::Base02.px(&theme))
-            .p(DynamicSpacing::Base02.px(&theme))
-            .rounded(Radius::Large.px(&theme))
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.bg_main);
-        let mut unavailable: Vec<&str> = Vec::new();
-        for option in ChartMetric::ALL {
-            let available = option.available(&snapshot.summary);
-            if !available {
-                unavailable.push(option.as_str());
-            }
-            let active = option == metric;
-            let entity = cx.entity();
-            tabs = tabs.child(
-                button_frame(div(), &theme, ButtonSize::Default)
-                    .id(SharedString::from(format!(
-                        "usage-metric-{}",
-                        option.as_str()
-                    )))
-                    .when(active, |tab| {
-                        tab.bg(theme.active)
-                            .text_color(theme.active_fg)
-                            .font_weight(FontWeight::MEDIUM)
-                    })
-                    .when(!active, |tab| {
-                        tab.text_color(if available {
-                            theme.text_3
-                        } else {
-                            theme.text_3.opacity(0.55)
-                        })
-                    })
-                    .when(available && !active, |tab| {
-                        tab.cursor_pointer()
-                            .hover(|style| style.bg(theme.bg_hover).text_color(theme.text_2))
-                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                entity.update(cx, |page, cx| page.set_metric(option, cx));
-                            })
-                    })
-                    .child(option.label()),
-            );
-        }
+        let unavailable: Vec<&str> = ChartMetric::ALL
+            .iter()
+            .filter(|option| !option.available(&snapshot.summary))
+            .map(|option| option.as_str())
+            .collect();
+        let tabs = segmented(
+            "usage-metric",
+            &ChartMetric::ALL,
+            metric,
+            |option| option.label(),
+            |option| option.as_str(),
+            |option| option.available(&snapshot.summary),
+            true,
+            theme,
+            {
+                let entity = cx.entity();
+                move |option, _, cx| {
+                    entity.update(cx, |page, cx| page.set_metric(option, cx));
+                }
+            },
+        );
 
         // Latency register selector (§20): only offered when the window has
         // enough observations for percentiles to be meaningful.
         let latency_selector = (metric == ChartMetric::Latency).then(|| {
-            let mut segment = div()
-                .flex()
-                .items_center()
-                .gap(DynamicSpacing::Base02.px(&theme))
-                .p(DynamicSpacing::Base02.px(&theme))
-                .rounded(Radius::Large.px(&theme))
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.bg_main);
-            for choice in LatencyMetric::ALL {
-                let available = choice.available(&snapshot.latency);
-                let active = choice == latency_metric;
-                let entity = cx.entity();
-                segment = segment.child(
-                    button_frame(div(), &theme, ButtonSize::Default)
-                        .id(SharedString::from(format!(
-                            "usage-latency-{}",
-                            choice.as_str()
-                        )))
-                        .when(active, |tab| {
-                            tab.bg(theme.active)
-                                .text_color(theme.active_fg)
-                                .font_weight(FontWeight::MEDIUM)
-                        })
-                        .when(!active, |tab| tab.text_color(theme.text_3))
-                        .when(available && !active, |tab| {
-                            tab.cursor_pointer()
-                                .hover(|style| style.bg(theme.bg_hover).text_color(theme.text_2))
-                                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                    entity
-                                        .update(cx, |page, cx| page.set_latency_metric(choice, cx));
-                                })
-                        })
-                        .child(choice.label()),
-                );
-            }
-            segment.into_any_element()
+            segmented(
+                "usage-latency",
+                &LatencyMetric::ALL,
+                latency_metric,
+                |choice| choice.label(),
+                |choice| choice.as_str(),
+                |choice| choice.available(&snapshot.latency),
+                true,
+                theme,
+                {
+                    let entity = cx.entity();
+                    move |choice, _, cx| {
+                        entity.update(cx, |page, cx| page.set_latency_metric(choice, cx));
+                    }
+                },
+            )
         });
 
         // The metric switcher sits in the body, above the plot: a row of
@@ -2252,6 +2218,8 @@ impl UsagePage {
             tab,
             |choice| choice.label(),
             |choice| choice.as_str(),
+            |_| true,
+            true,
             theme,
             {
                 let entity = cx.entity();
@@ -3021,14 +2989,14 @@ impl UsagePage {
                         div()
                             .w_full()
                             .h(px(6.))
-                            .rounded(px(3.))
+                            .rounded(Radius::Full.px(&theme))
                             .bg(theme.trough)
                             .overflow_hidden()
                             .child(
                                 div()
                                     .h_full()
                                     .w(relative((rate / 100.0).clamp(0.0, 1.0) as f32))
-                                    .rounded(px(3.))
+                                    .rounded(Radius::Full.px(&theme))
                                     .bg(theme.accent),
                             ),
                     ),
@@ -3101,18 +3069,24 @@ impl UsagePage {
                         .child(tr!("usage.hit_rate_formula")),
                 )
                 .child(
-                    button_frame(div().id("usage-cache-toggle"), &theme, ButtonSize::Compact)
+                    press(
+                        button_frame(
+                            div().id("usage-cache-toggle"),
+                            &theme,
+                            ButtonSize::Compact,
+                        )
                         .text_color(theme.text_2)
                         .cursor_pointer()
-                        .hover(|style| style.text_color(theme.accent))
-                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                            entity.update(cx, |page, cx| page.set_cached_only(!cached_only, cx));
-                        })
-                        .child(if cached_only {
-                            tr!("usage.show_all_requests")
-                        } else {
-                            tr!("usage.show_cached_only")
-                        }),
+                        .hover(|style| style.text_color(theme.accent)),
+                    )
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        entity.update(cx, |page, cx| page.set_cached_only(!cached_only, cx));
+                    })
+                    .child(if cached_only {
+                        tr!("usage.show_all_requests")
+                    } else {
+                        tr!("usage.show_cached_only")
+                    }),
                 ),
         );
 
@@ -3196,6 +3170,8 @@ impl UsagePage {
             tab,
             |choice| choice.label(),
             |choice| choice.as_str(),
+            |_| true,
+            true,
             theme,
             {
                 let entity = cx.entity();
@@ -4388,9 +4364,9 @@ fn section(
         right,
         div()
             .w_full()
-            .px(px(SECTION_PAD))
-            .pt(px(SECTION_PAD))
-            .pb(px(SECTION_PAD))
+            .px(DynamicSpacing::Base12.px(&theme))
+            .pt(DynamicSpacing::Base12.px(&theme))
+            .pb(DynamicSpacing::Base12.px(&theme))
             .child(content)
             .into_any_element(),
         theme,
@@ -4450,7 +4426,7 @@ fn subpanel(label: &str, meta: Option<String>, content: AnyElement, theme: Theme
         .flex_col()
         .gap(DynamicSpacing::Base08.px(&theme))
         .p(DynamicSpacing::Base12.px(&theme))
-        .rounded(px(10.))
+        .rounded(Radius::Large.px(&theme))
         .border_1()
         .border_color(theme.border)
         .bg(theme.bg_main)
@@ -4550,14 +4526,28 @@ fn card(
 /// can be cloned into every option.
 type SegmentPick<T> = Rc<dyn Fn(T, &mut Window, &mut App)>;
 
-/// A compact segmented control: one active segment, the rest quiet. Reuses the
-/// metric switcher's register so every tab row on the page reads the same.
+/// A segmented control: one active segment, the rest quiet. The group is
+/// joined the way the settings card's "One at a time / All" control is — no
+/// gap, a shared hairline between neighbours, and only the group's outer
+/// corners round. Height, horizontal padding, label size, and radius all come
+/// from the button tokens ([`button_frame`] at [`ButtonSize::Medium`]), so the
+/// group lines up with the page's chips and buttons.
+///
+/// `inset` picks the resting fill for the surface the group sits on, exactly as
+/// [`filters::chip`] does: `bg_raised` on the canvas, `bg_main` inside a raised
+/// card so the inactive segments read as recessed wells instead of vanishing
+/// into the card. `enabled` keeps a segment that has no data yet visible but
+/// inert — the chart's metric switcher dims a metric it cannot plot rather
+/// than dropping it and reflowing the group.
+#[allow(clippy::too_many_arguments)]
 fn segmented<T>(
     prefix: &'static str,
     options: &[T],
     active: T,
     label: impl Fn(T) -> String,
     key: impl Fn(T) -> &'static str,
+    enabled: impl Fn(T) -> bool,
+    inset: bool,
     theme: Theme,
     on_pick: impl Fn(T, &mut Window, &mut App) + 'static,
 ) -> AnyElement
@@ -4565,33 +4555,48 @@ where
     T: Copy + PartialEq + 'static,
 {
     let on_pick: SegmentPick<T> = Rc::new(on_pick);
-    let mut row = div()
-        .flex()
-        .items_center()
-        .gap(DynamicSpacing::Base02.px(&theme))
-        .p(DynamicSpacing::Base02.px(&theme))
-        .rounded(Radius::Large.px(&theme))
-        .border_1()
-        .border_color(theme.border)
-        .bg(theme.bg_main);
-    for option in options.iter().copied() {
+    let resting = if inset { theme.bg_main } else { theme.bg_raised };
+    let radius = button::RADIUS.px(&theme);
+    let many = options.len() > 1;
+    let last = options.len().saturating_sub(1);
+    let mut row = div().flex().items_center();
+    for (ix, option) in options.iter().copied().enumerate() {
         let is_active = option == active;
+        let is_enabled = enabled(option);
         let handler = on_pick.clone();
         row = row.child(
-            button_frame(div(), &theme, ButtonSize::Default)
+            button_frame(div(), &theme, ButtonSize::Medium)
                 .id(SharedString::from(format!("{prefix}-{}", key(option))))
+                .rounded_none()
+                .border_1()
+                .border_color(theme.border)
+                // One control: only the outer corners round, and the segments
+                // share the hairline between them.
+                .when(!many, |tab| tab.rounded(radius))
+                .when(many && ix == 0, |tab| tab.rounded_l(radius))
+                .when(many && ix == last, |tab| tab.rounded_r(radius).border_l_0())
+                .when(many && ix > 0 && ix < last, |tab| tab.border_l_0())
                 .when(is_active, |tab| {
                     tab.bg(theme.active)
                         .text_color(theme.active_fg)
                         .font_weight(FontWeight::MEDIUM)
-                })
-                .when(!is_active, |tab| {
-                    tab.text_color(theme.text_3)
                         .cursor_pointer()
-                        .hover(|style| style.bg(theme.bg_hover).text_color(theme.text_2))
+                })
+                .when(!is_active && is_enabled, |tab| {
+                    tab.bg(resting)
+                        .text_color(theme.text_2)
+                        .cursor_pointer()
+                        .hover(|style| style.bg(theme.bg_hover))
                         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                             handler(option, window, cx)
                         })
+                })
+                // A metric with no source data stays visible but disabled, so
+                // the group keeps its shape as availability changes.
+                .when(!is_active && !is_enabled, |tab| {
+                    tab.bg(resting)
+                        .text_color(theme.text_3.opacity(0.55))
+                        .cursor_default()
                 })
                 .child(label(option)),
         );
@@ -4843,7 +4848,7 @@ fn hit_rate_bars(series: &TimeSeries, theme: Theme) -> AnyElement {
                 .child(
                     div()
                         .w_full()
-                        .rounded_t(px(2.))
+                        .rounded_t(Radius::XSmall.px(&theme))
                         .bg(color)
                         .h(relative(height))
                         .group_hover("usage-cache-bar", |style| style.bg(theme.accent)),
