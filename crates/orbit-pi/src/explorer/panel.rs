@@ -14,9 +14,9 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    div, prelude::*, px, AnyElement, App, ClickEvent, Context,
-    CursorStyle, Entity, FocusHandle, FontWeight, Hsla, KeyDownEvent, ListAlignment, ListState,
-    MouseButton, MouseDownEvent, Pixels, Render, Subscription, Window,
+    div, prelude::*, px, AnyElement, App, ClickEvent, Context, CursorStyle, Entity, FocusHandle,
+    FontWeight, Hsla, KeyDownEvent, ListAlignment, ListState, MouseButton, MouseDownEvent, Pixels,
+    Render, Subscription, Window,
 };
 
 use super::ops;
@@ -25,12 +25,14 @@ use super::walk;
 use crate::app::{
     button_frame, context_menu_entry, context_menu_separator, context_menu_surface, empty_state,
     file_badge, file_glyph, icon, icon_button_frame, nerd_font_family, picker_search_frame, press,
-    BUTTON_GROUP, refresh_glyph, EmptyFill,
+    refresh_glyph, EmptyFill, BUTTON_GROUP,
 };
 use crate::composer::ComposerInput;
 use crate::git;
 use crate::platform;
-use crate::theme::tokens::{Radius, context_menu, ButtonSize, IconSize, StyledExt, TextSize};
+use crate::theme::tokens::{
+    context_menu, input, ButtonSize, IconSize, Radius, StyledExt, TextSize,
+};
 use crate::theme::{self, Theme, ThemeMode};
 
 /// Panel width defaults / drag clamps.
@@ -350,16 +352,10 @@ impl ProjectPanel {
             self.list.reset(rows.len());
         }
         self.rows = rows;
-        self.cursor = self
-            .cursor
-            .filter(|index| *index < self.rows.len());
+        self.cursor = self.cursor.filter(|index| *index < self.rows.len());
         // A rename prompt whose row vanished (an external change, a filter)
         // has nowhere to render; retire it rather than stranding the keyboard.
-        if let Some(target) = self
-            .entry
-            .as_ref()
-            .and_then(|entry| entry.target.clone())
-        {
+        if let Some(target) = self.entry.as_ref().and_then(|entry| entry.target.clone()) {
             if !self.rows.iter().any(|row| row.path == target) {
                 self.entry = None;
             }
@@ -554,21 +550,19 @@ impl ProjectPanel {
         self.start_new_folder_in(dir, window, cx);
     }
 
-    fn start_new_file_in(
-        &mut self,
-        dir: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.begin_entry(EntryKind::NewFile, dir, None, "", "explorer.name_file", window, cx);
+    fn start_new_file_in(&mut self, dir: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.begin_entry(
+            EntryKind::NewFile,
+            dir,
+            None,
+            "",
+            "explorer.name_file",
+            window,
+            cx,
+        );
     }
 
-    fn start_new_folder_in(
-        &mut self,
-        dir: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn start_new_folder_in(&mut self, dir: String, window: &mut Window, cx: &mut Context<Self>) {
         self.begin_entry(
             EntryKind::NewFolder,
             dir,
@@ -830,7 +824,7 @@ impl ProjectPanel {
                 }))
                 .child(refresh_glyph(
                     "explorer-refresh-spin",
-                    IconSize::Small.px(&theme),
+                    ButtonSize::Default.icon_size().px(&theme),
                     self.loading,
                     theme.text_3,
                     theme,
@@ -883,7 +877,11 @@ impl ProjectPanel {
     fn filter_row(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
         let has_text = !self.filter.read(cx).text().is_empty();
         picker_search_frame(div(), &theme)
-            .child(icon("icons/search.svg", IconSize::Small.px(&theme), theme.text_3))
+            .child(icon(
+                "icons/search.svg",
+                input::ICON.px(&theme),
+                theme.text_3,
+            ))
             .child(div().flex_1().min_w_0().child(self.filter.clone()))
             .when(has_text, |row| {
                 row.child(ghost_icon(
@@ -915,7 +913,12 @@ impl ProjectPanel {
         let body: AnyElement = if self.loading && self.rows.is_empty() {
             loading_state(&theme)
         } else if let Some(error) = &self.error {
-            empty_state(theme, &tr!("explorer.load_error"), Some(error.as_str()), EmptyFill::Full)
+            empty_state(
+                theme,
+                &tr!("explorer.load_error"),
+                Some(error.as_str()),
+                EmptyFill::Full,
+            )
         } else if self.rows.is_empty() {
             empty_state(
                 theme,
@@ -934,9 +937,9 @@ impl ProjectPanel {
             .min_h_0()
             .flex()
             .flex_col()
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                this.on_key_down(event, cx)
-            }))
+            .on_key_down(
+                cx.listener(|this, event: &KeyDownEvent, _, cx| this.on_key_down(event, cx)),
+            )
             .on_action(cx.listener(Self::on_entry_confirm))
             .on_action(cx.listener(Self::on_entry_cancel))
             .children(self.entry_row(theme))
@@ -1070,7 +1073,13 @@ impl ProjectPanel {
             .entry
             .as_ref()
             .is_some_and(|entry| entry.target.as_deref() == Some(row.path.as_str()));
-        let entry_input = renaming.then(|| self.entry.as_ref().expect("renaming implies an entry").input.clone());
+        let entry_input = renaming.then(|| {
+            self.entry
+                .as_ref()
+                .expect("renaming implies an entry")
+                .input
+                .clone()
+        });
         if renaming {
             content = content.bg(theme.active);
         } else {
@@ -1080,7 +1089,9 @@ impl ProjectPanel {
                 // quieter wash; pointer hover is the lightest step.
                 .when(active, |el| el.bg(theme.active))
                 .when(!active && cursor, |el| el.bg(theme.overlay))
-                .when(!active && !cursor, |el| el.hover(|el| el.bg(theme.bg_hover)))
+                .when(!active && !cursor, |el| {
+                    el.hover(|el| el.bg(theme.bg_hover))
+                })
                 .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                     // Clicking away from an open prompt cancels it rather than
                     // activating the row under the pointer.
@@ -1116,7 +1127,11 @@ impl ProjectPanel {
                     IconSize::Indicator.px(&theme),
                     icon_color,
                 ))
-                .child(icon("icons/folder.svg", IconSize::Small.px(&theme), icon_color));
+                .child(icon(
+                    "icons/folder.svg",
+                    IconSize::Small.px(&theme),
+                    icon_color,
+                ));
             if let Some(input) = entry_input {
                 content = content.child(div().flex().flex_1().min_w_0().child(input));
             } else {
@@ -1132,13 +1147,8 @@ impl ProjectPanel {
                         .child(row.name.clone()),
                 );
                 if row.dirty {
-                    content = content.child(
-                        div()
-                            .size(px(5.))
-                            .flex_none()
-                            .rounded_full()
-                            .bg(theme.warn),
-                    );
+                    content =
+                        content.child(div().size(px(5.)).flex_none().rounded_full().bg(theme.warn));
                 }
             }
         } else {
@@ -1183,11 +1193,7 @@ impl ProjectPanel {
         // rename `ComposerInput`, which has no intrinsic width) would collapse.
         // A full-width wrapper gives them the row's width to fill; the 4px side
         // inset rides on this wrapper instead of a margin on the row.
-        div()
-            .w_full()
-            .px(px(4.))
-            .child(content)
-            .into_any_element()
+        div().w_full().px(px(4.)).child(content).into_any_element()
     }
 
     fn context_menu(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1514,7 +1520,7 @@ fn ghost_icon(
             .hover(|el| el.bg(theme.bg_hover)),
     )
     .on_click(listener)
-    .child(icon(path, IconSize::Small.px(theme), color))
+    .child(icon(path, ButtonSize::Default.icon_size().px(theme), color))
     .into_any_element()
 }
 
@@ -1689,20 +1695,28 @@ mod tests {
             });
         });
         let drawn = panel.clone();
-        cx.draw(gpui::point(px(0.), px(0.)), gpui::size(px(280.), px(600.)), {
-            let drawn = drawn.clone();
-            move |_, _| drawn.clone()
-        });
+        cx.draw(
+            gpui::point(px(0.), px(0.)),
+            gpui::size(px(280.), px(600.)),
+            {
+                let drawn = drawn.clone();
+                move |_, _| drawn.clone()
+            },
+        );
         assert_prompt_has_width(cx, "rename");
 
         cx.update(|window, app| {
             panel.update(app, |panel, cx| panel.start_new_file(window, cx));
         });
         let drawn = panel.clone();
-        cx.draw(gpui::point(px(0.), px(0.)), gpui::size(px(280.), px(600.)), {
-            let drawn = drawn.clone();
-            move |_, _| drawn.clone()
-        });
+        cx.draw(
+            gpui::point(px(0.), px(0.)),
+            gpui::size(px(280.), px(600.)),
+            {
+                let drawn = drawn.clone();
+                move |_, _| drawn.clone()
+            },
+        );
         assert_prompt_has_width(cx, "new file");
     }
 

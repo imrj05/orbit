@@ -91,10 +91,7 @@ pub fn checkout_branch(cwd: &Path, branch: &str) -> Result<(), String> {
 /// reflog (so it survives restarts); only names that still exist are returned.
 pub fn recent_branches(cwd: &Path) -> Vec<String> {
     let out = run_git(cwd, &["reflog", "--format=%gs", "-n", "200"]).unwrap_or_default();
-    let known: HashSet<String> = list_branches(cwd)
-        .unwrap_or_default()
-        .into_iter()
-        .collect();
+    let known: HashSet<String> = list_branches(cwd).unwrap_or_default().into_iter().collect();
     let mut seen = HashSet::new();
     let mut recent = Vec::new();
     for line in out.lines() {

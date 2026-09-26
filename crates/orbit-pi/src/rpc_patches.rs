@@ -217,7 +217,10 @@ pub(crate) fn apply_on_launch() -> PatchReport {
     if report.error.is_none() {
         let state = AppliedState {
             fingerprint,
-            targets: find_targets(&root).iter().filter_map(|path| target_id(path)).collect(),
+            targets: find_targets(&root)
+                .iter()
+                .filter_map(|path| target_id(path))
+                .collect(),
         };
         write_state(&base, &state);
     }
@@ -249,7 +252,11 @@ pub(crate) fn set_enabled(enabled: bool) {
 }
 
 fn base_dir() -> Option<PathBuf> {
-    Some(crate::platform::home_dir_opt()?.join(".orbit-pi").join("rpc-patches"))
+    Some(
+        crate::platform::home_dir_opt()?
+            .join(".orbit-pi")
+            .join("rpc-patches"),
+    )
 }
 
 /// Resolve the pi package root from the `pi` executable: walk up from its
@@ -262,7 +269,12 @@ fn pi_package_root(bin: &Path) -> Option<PathBuf> {
         let name = fs::read_to_string(&package_json)
             .ok()
             .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-            .and_then(|value| value.get("name").and_then(Value::as_str).map(str::to_string));
+            .and_then(|value| {
+                value
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            });
         if name.as_deref() == Some("@earendil-works/pi-coding-agent") {
             return Some(dir);
         }
@@ -509,7 +521,10 @@ mod tests {
     #[test]
     fn package_root_walks_up_to_the_pi_manifest() {
         let dir = scratch_dir();
-        let root = dir.join("node_modules").join("@earendil-works").join("pi-coding-agent");
+        let root = dir
+            .join("node_modules")
+            .join("@earendil-works")
+            .join("pi-coding-agent");
         fs::create_dir_all(root.join("dist").join("bundle")).unwrap();
         fs::write(
             root.join("package.json"),
@@ -519,7 +534,10 @@ mod tests {
         let bin = root.join("dist").join("bundle").join("cli.js");
         fs::write(&bin, "#!/usr/bin/env node").unwrap();
 
-        assert_eq!(pi_package_root(&bin), Some(fs::canonicalize(&root).unwrap()));
+        assert_eq!(
+            pi_package_root(&bin),
+            Some(fs::canonicalize(&root).unwrap())
+        );
         assert_eq!(pi_package_root(&dir.join("missing")), None);
         fs::remove_dir_all(&dir).ok();
     }

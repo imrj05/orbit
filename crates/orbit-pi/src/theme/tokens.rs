@@ -418,6 +418,25 @@ impl ButtonSize {
             Self::None => px(1.),
         }
     }
+
+    /// The [`IconSize`] an icon inside a button frame draws at — the one
+    /// mapping every icon in a `button_frame` / `icon_button_frame` resolves
+    /// through, so icon buttons, labeled buttons, and chips share one scale
+    /// instead of each surface picking its own glyph size.
+    ///
+    /// The icon grows with the frame: `None` 16px → Indicator 10px, `Compact`
+    /// 18px → XSmall 12px, `Default` 22px and `Medium` 28px → Small 14px, and
+    /// `Large` 32px → Medium 16px. A chevron or other disclosure glyph inside
+    /// a button is not its icon: those take `IconSize::XSmall` (see the fold
+    /// rows), and dense tree rows keep `IconSize::Indicator`.
+    pub fn icon_size(self) -> IconSize {
+        match self {
+            Self::None => IconSize::Indicator,
+            Self::Compact => IconSize::XSmall,
+            Self::Default | Self::Medium => IconSize::Small,
+            Self::Large => IconSize::Medium,
+        }
+    }
 }
 
 /// Metrics every [`ButtonSize`] shares.
@@ -1126,6 +1145,20 @@ mod tests {
         assert!(close(ButtonSize::Large.padding_x(&theme), 8.));
         assert!(close(ButtonSize::Default.padding_x(&theme), 4.));
         assert_eq!(ButtonSize::None.padding_x(&theme), px(1.));
+    }
+
+    #[test]
+    fn button_icons_grow_with_the_frame() {
+        let scale = [
+            (ButtonSize::None, IconSize::Indicator),
+            (ButtonSize::Compact, IconSize::XSmall),
+            (ButtonSize::Default, IconSize::Small),
+            (ButtonSize::Medium, IconSize::Small),
+            (ButtonSize::Large, IconSize::Medium),
+        ];
+        for (button, icon) in scale {
+            assert_eq!(button.icon_size(), icon, "{button:?}");
+        }
     }
 
     #[test]

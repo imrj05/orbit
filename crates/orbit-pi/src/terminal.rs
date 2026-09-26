@@ -45,18 +45,17 @@ use alacritty_terminal::vte::ansi::{Color as AnsiColor, CursorShape, NamedColor,
 use anyhow::{Context as _, Result};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use gpui::{
-    canvas, div, fill, point, prelude::*, px, size, AnyElement,
-    App, Background, Bounds, ClipboardItem, Context, CursorStyle, Entity, FocusHandle, Focusable,
-    Font, FontFallbacks, FontFeatures, FontStyle, FontWeight, Hsla, IntoElement, Keystroke,
-    MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, Render, Rgba,
-    ScrollDelta, ScrollWheelEvent, SharedString, StrikethroughStyle, Styled, Task, TextRun,
-    UnderlineStyle, Window,
+    canvas, div, fill, point, prelude::*, px, size, AnyElement, App, Background, Bounds,
+    ClipboardItem, Context, CursorStyle, Entity, FocusHandle, Focusable, Font, FontFallbacks,
+    FontFeatures, FontStyle, FontWeight, Hsla, IntoElement, Keystroke, MouseButton, MouseDownEvent,
+    MouseMoveEvent, ParentElement, Pixels, Point, Render, Rgba, ScrollDelta, ScrollWheelEvent,
+    SharedString, StrikethroughStyle, Styled, Task, TextRun, UnderlineStyle, Window,
 };
 
 use crate::app::{
-    button_frame, icon, icon_button_frame, nerd_font_family, BUTTON_GROUP, refresh_glyph,
+    button_frame, icon, icon_button_frame, nerd_font_family, refresh_glyph, BUTTON_GROUP,
 };
-use crate::theme::tokens::{Radius, TextSize, ButtonSize, DynamicSpacing, IconSize};
+use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
 use crate::theme::{self, Theme};
 
 /// Emulator grid bounds, clamped so a collapsing panel never asks the PTY for
@@ -1712,7 +1711,7 @@ impl TerminalPanel {
                     )
                     .child(refresh_glyph(
                         "terminal-restart-spin",
-                        IconSize::Small.px(&theme),
+                        ButtonSize::Default.icon_size().px(&theme),
                         self.restart_spin_until.is_some(),
                         if exited { theme.accent } else { theme.text_2 },
                         theme,
@@ -1727,7 +1726,11 @@ impl TerminalPanel {
                         MouseButton::Left,
                         cx.listener(|this, _, window, cx| this.toggle(window, cx)),
                     )
-                    .child(icon("icons/x.svg", IconSize::Small.px(&theme), theme.text_2)),
+                    .child(icon(
+                        "icons/x.svg",
+                        ButtonSize::Default.icon_size().px(&theme),
+                        theme.text_2,
+                    )),
             )
             .into_any_element()
     }
@@ -1782,7 +1785,7 @@ impl TerminalPanel {
                             )
                             .child(icon(
                                 "icons/refresh.svg",
-                                IconSize::Small.px(&theme),
+                                ButtonSize::Medium.icon_size().px(&theme),
                                 theme.active_fg,
                             ))
                             .child(tr!("terminal.restart")),

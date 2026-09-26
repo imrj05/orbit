@@ -15,7 +15,7 @@ use gpui::{
 
 use crate::app::{icon, menu_header, picker_entry, picker_search_frame, picker_surface};
 use crate::composer::ComposerInput;
-use crate::theme::tokens::{context_menu, list, picker, DynamicSpacing, IconSize};
+use crate::theme::tokens::{context_menu, input, list, picker, DynamicSpacing};
 use crate::theme::{self, Theme};
 
 /// The field caps at this width; the popover matches it exactly. Feeds
@@ -378,7 +378,7 @@ impl Render for WorkspacePicker {
             .child(
                 picker_search_frame(div(), &theme)
                     .text_color(theme.text)
-                    .child(icon("icons/search.svg", IconSize::Small.px(&theme), theme.text_3))
+                    .child(icon("icons/search.svg", input::ICON.px(&theme), theme.text_3))
                     .child(div().flex_1().min_w_0().child(self.filter.clone())),
             )
             // section label — a count on the right, like every other list

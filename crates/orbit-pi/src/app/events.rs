@@ -553,6 +553,9 @@ impl OrbitApp {
                 self.reset_turns();
                 self.reset_queue();
                 self.session_id = None;
+                // A clone mirrors its source session; it is not put on the
+                // mode default.
+                self.mode_defaults_armed = false;
                 if let Some(data) = data.as_ref() {
                     if let Some(file) = data.get("sessionFile").and_then(Value::as_str) {
                         self.adopt_session_file(PathBuf::from(file));
@@ -638,6 +641,9 @@ impl OrbitApp {
                         .iter()
                         .any(|method| method.as_str() == Some("custom"));
                 }
+                // A `new_session` birth (or a mode change) may still need its
+                // default model/thinking pushed; this is a no-op otherwise.
+                self.apply_mode_defaults(cx);
             }
             "get_messages" => {
                 self.apply_messages_snapshot(data);
@@ -667,6 +673,9 @@ impl OrbitApp {
                     })
                     .unwrap_or_default();
                 self.sync_model_selector(cx);
+                // The model catalog arrived after the session: retry a mode
+                // default that could not be resolved yet.
+                self.apply_mode_defaults(cx);
             }
             "get_available_thinking_levels" => {
                 self.available_thinking_levels = data
@@ -679,6 +688,7 @@ impl OrbitApp {
                     })
                     .unwrap_or_default();
                 self.sync_model_selector(cx);
+                self.apply_mode_defaults(cx);
             }
             "get_commands" => {
                 let home = crate::platform::home_dir_opt();
@@ -727,6 +737,8 @@ impl OrbitApp {
             }
             "switch_session" => {
                 if success {
+                    // A resumed session keeps the model in its file (D-D).
+                    self.mode_defaults_armed = false;
                     self.reset_turns();
                     self.reset_queue();
                     // Load the session *before* the slower auth/quota probes,
@@ -752,6 +764,10 @@ impl OrbitApp {
                 self.reset_turns();
                 self.reset_queue();
                 *refresh_sessions = true;
+                // A fresh session is born on its mode's default model/thinking;
+                // `set_model`/`set_thinking_level` are pushed once `get_state`
+                // reports the new id (see `apply_mode_defaults`).
+                self.mode_defaults_armed = true;
                 self.send(CommandBody::GetState, "get_state");
                 self.refresh_catalogs();
             }

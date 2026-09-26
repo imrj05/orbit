@@ -1,8 +1,8 @@
 use super::*;
 use crate::platform::WindowCommand;
-use crate::theme::tokens::{Radius, 
-    self, button, context_menu, input, list, list_item, picker, ButtonSize, IconSize, StyledExt,
-    TextSize,
+use crate::theme::tokens::{
+    self, button, context_menu, input, list, list_item, picker, ButtonSize, IconSize, Radius,
+    StyledExt, TextSize,
 };
 
 /// Turn a wire command name into a short human label, e.g. `set_model` →
@@ -286,8 +286,9 @@ pub(crate) fn picker_entry<E: Styled>(el: E, theme: &Theme) -> E {
 /// A labeled button's frame, Zed's `ButtonLike`: the size's height and
 /// horizontal padding, Base04 between icon and label, `rounded_sm`, and a
 /// one-line label at 1× line height (Zed's `UiLabel`) so it sits inside even
-/// a 22px button. The label size follows [`button::label_size`]. Callers
-/// keep colors, border, hover, press, and click handling.
+/// a 22px button. The label size follows [`button::label_size`] and an icon
+/// inside it takes [`ButtonSize::icon_size`], so every button's glyph matches
+/// its frame. Callers keep colors, border, hover, press, and click handling.
 pub(crate) fn button_frame<E: Styled>(el: E, theme: &Theme, size: ButtonSize) -> E {
     el.flex_none()
         .h(size.height(theme))
@@ -302,9 +303,55 @@ pub(crate) fn button_frame<E: Styled>(el: E, theme: &Theme, size: ButtonSize) ->
         .line_height(relative(1.))
 }
 
+/// Where a segment sits inside a segmented control (a grouped row of
+/// [`button_frame`]s sharing one control outline).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SegmentPosition {
+    First,
+    Middle,
+    Last,
+    /// The only segment — rounds every corner like a standalone button.
+    Only,
+}
+
+impl SegmentPosition {
+    /// The position of `index` in a group of `count` segments.
+    pub(crate) fn at(index: usize, count: usize) -> Self {
+        match (index, count) {
+            (_, 0 | 1) => Self::Only,
+            (0, _) => Self::First,
+            (index, count) if index + 1 == count => Self::Last,
+            _ => Self::Middle,
+        }
+    }
+}
+
+/// One segment of a segmented control: a [`button_frame`] trimmed to its
+/// [`SegmentPosition`] so abutting segments round only the group's outer
+/// corners and share a single hairline between them. The segments read as
+/// one control while each keeps a real button's size, padding, label, and
+/// [`button::RADIUS`]. Callers keep the colors, hover, press, and click
+/// handling, exactly as with a standalone button.
+pub(crate) fn segmented_segment<E: Styled>(
+    el: E,
+    theme: &Theme,
+    size: ButtonSize,
+    position: SegmentPosition,
+) -> E {
+    let radius = button::RADIUS.px(theme);
+    let el = button_frame(el, theme, size).rounded_none().border_1();
+    match position {
+        SegmentPosition::Only => el.rounded(radius),
+        SegmentPosition::First => el.rounded_l(radius),
+        SegmentPosition::Last => el.rounded_r(radius).border_l_0(),
+        SegmentPosition::Middle => el.border_l_0(),
+    }
+}
+
 /// An icon-only button's frame, Zed's `IconButton`: a square as tall as its
-/// [`ButtonSize`], `rounded_sm`, the icon centered. Callers keep colors,
-/// hover, press, tooltip, and click handling.
+/// [`ButtonSize`], `rounded_sm`, the icon centered at
+/// [`ButtonSize::icon_size`]. Callers keep colors, hover, press, tooltip, and
+/// click handling.
 pub(crate) fn icon_button_frame<E: Styled>(el: E, theme: &Theme, size: ButtonSize) -> E {
     el.flex_none()
         .size(size.height(theme))
@@ -885,5 +932,49 @@ mod tests {
                 .clone(),
             square
         );
+    }
+
+    /// A group of segments rounds only its outer corners: the first rounds
+    /// its left edge, the last its right, and the middle stays square so
+    /// abutting segments read as one control.
+    #[test]
+    fn segment_positions_trim_the_group_outline() {
+        let theme = Theme::dark();
+        let radius = button::RADIUS.px(&theme);
+        let corners = |position| {
+            segmented_segment(div(), &theme, ButtonSize::Medium, position)
+                .style()
+                .corner_radii
+                .clone()
+        };
+        let explicit = |mut el: gpui::Div| el.style().corner_radii.clone();
+        assert_eq!(
+            corners(SegmentPosition::Only),
+            explicit(div().rounded_none().rounded(radius))
+        );
+        assert_eq!(
+            corners(SegmentPosition::First),
+            explicit(div().rounded_none().rounded_l(radius))
+        );
+        assert_eq!(
+            corners(SegmentPosition::Last),
+            explicit(div().rounded_none().rounded_r(radius))
+        );
+        assert_eq!(
+            corners(SegmentPosition::Middle),
+            explicit(div().rounded_none())
+        );
+    }
+
+    #[test]
+    fn segment_positions_cover_a_group() {
+        use SegmentPosition::{First, Last, Middle, Only};
+        assert_eq!(SegmentPosition::at(0, 1), Only);
+        assert_eq!(SegmentPosition::at(0, 0), Only);
+        assert_eq!(SegmentPosition::at(0, 2), First);
+        assert_eq!(SegmentPosition::at(1, 2), Last);
+        assert_eq!(SegmentPosition::at(0, 3), First);
+        assert_eq!(SegmentPosition::at(1, 3), Middle);
+        assert_eq!(SegmentPosition::at(2, 3), Last);
     }
 }

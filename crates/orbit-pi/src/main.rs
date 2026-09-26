@@ -78,6 +78,7 @@ mod providers;
 mod quota;
 mod review;
 mod rpc_patches;
+mod session_defaults;
 mod sessions;
 mod shimmer;
 mod sidepane;
@@ -253,7 +254,10 @@ actions!(update_dialog_keys, [UpdateDialogClose]);
 // the prompt's text field, which also carries `Composer`). Registered after the
 // Composer bindings so Enter confirms the name instead of submitting the
 // composer and Escape cancels instead of aborting the run.
-actions!(explorer_entry_keys, [ExplorerEntryConfirm, ExplorerEntryCancel]);
+actions!(
+    explorer_entry_keys,
+    [ExplorerEntryConfirm, ExplorerEntryCancel]
+);
 
 // Sessions-sidebar keyboard navigation (bound to the `Sidebar` context, which
 // rides the sidebar's focus handle while it is keyboard-focused). Arrow keys

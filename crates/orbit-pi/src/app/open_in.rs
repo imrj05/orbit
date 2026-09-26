@@ -1,6 +1,6 @@
 use super::helpers::*;
 use super::*;
-use crate::theme::tokens::{context_menu, picker, popover, ButtonSize, IconSize};
+use crate::theme::tokens::{context_menu, input, picker, popover, ButtonSize, IconSize};
 
 impl OrbitApp {
     /// Resolve installed folder-capable apps once, off-thread.
@@ -32,7 +32,12 @@ impl OrbitApp {
         app_id: &str,
         cx: &mut Context<Self>,
     ) {
-        let Some(app) = self.open_in_apps.iter().find(|app| app.id == app_id).cloned() else {
+        let Some(app) = self
+            .open_in_apps
+            .iter()
+            .find(|app| app.id == app_id)
+            .cloned()
+        else {
             return;
         };
         platform::open_path_in_app(path, &app);
@@ -129,28 +134,36 @@ impl OrbitApp {
             .active(|s| s.bg(theme.active).text_color(theme.active_fg))
             .child(
                 img(ImageSource::Image(preferred_icon))
-                    .size(IconSize::Medium.px(&theme))
+                    .size(ButtonSize::Medium.icon_size().px(&theme))
                     .flex_none(),
             )
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_open_in_primary));
 
-        let caret = icon_button_frame(div().id("header-open-in-caret"), &theme, ButtonSize::Compact)
-            .group(BUTTON_GROUP)
-            .relative()
-            .h_full()
-            .rounded(px(0.))
-            .rounded_tr(px(HEADER_CTRL_R))
-            .rounded_br(px(HEADER_CTRL_R))
-            .cursor_pointer()
-            .when(self.open_in_menu_open, |s| {
-                s.bg(theme.active).text_color(theme.active_fg)
-            })
-            .child(icon("icons/chevron-down.svg", IconSize::XSmall.px(&theme), theme.text_3))
-            // Pin the dropdown to the caret's bottom-right — same zero-size
-            // anchor trick as the session row menu, so flex centering doesn't
-            // pull the popup toward the button's middle.
-            .children(self.open_in_menu_popup(&this, path, preferred_id, theme, cx))
-            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_open_in_caret));
+        let caret = icon_button_frame(
+            div().id("header-open-in-caret"),
+            &theme,
+            ButtonSize::Compact,
+        )
+        .group(BUTTON_GROUP)
+        .relative()
+        .h_full()
+        .rounded(px(0.))
+        .rounded_tr(px(HEADER_CTRL_R))
+        .rounded_br(px(HEADER_CTRL_R))
+        .cursor_pointer()
+        .when(self.open_in_menu_open, |s| {
+            s.bg(theme.active).text_color(theme.active_fg)
+        })
+        .child(icon(
+            "icons/chevron-down.svg",
+            IconSize::XSmall.px(&theme),
+            theme.text_3,
+        ))
+        // Pin the dropdown to the caret's bottom-right — same zero-size
+        // anchor trick as the session row menu, so flex centering doesn't
+        // pull the popup toward the button's middle.
+        .children(self.open_in_menu_popup(&this, path, preferred_id, theme, cx))
+        .on_mouse_up(MouseButton::Left, cx.listener(Self::on_open_in_caret));
 
         Some(
             header_chip(
@@ -272,7 +285,11 @@ impl OrbitApp {
             // Search field — filters the apps below.
             .child(
                 picker_search_frame(div(), &theme)
-                    .child(icon("icons/search.svg", IconSize::Small.px(&theme), theme.text_3))
+                    .child(icon(
+                        "icons/search.svg",
+                        input::ICON.px(&theme),
+                        theme.text_3,
+                    ))
                     .child(div().flex_1().min_w_0().child(self.open_in_filter.clone())),
             )
             .child(list);

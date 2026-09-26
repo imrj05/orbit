@@ -17,10 +17,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    div, img, prelude::*, px, AnyElement, App, ClickEvent, Context,
-    Entity, FocusHandle, Focusable, Font, FontFeatures, FontStyle, FontWeight, Hsla, Image,
-    ImageFormat, ImageSource, ListAlignment, ListState, ObjectFit, Render, ScrollHandle,
-    StyledText, Subscription, TextRun, Timer, Window,
+    div, img, prelude::*, px, AnyElement, App, ClickEvent, Context, Entity, FocusHandle, Focusable,
+    Font, FontFeatures, FontStyle, FontWeight, Hsla, Image, ImageFormat, ImageSource,
+    ListAlignment, ListState, ObjectFit, Render, ScrollHandle, StyledText, Subscription, TextRun,
+    Timer, Window,
 };
 
 use crate::app::{
@@ -29,7 +29,7 @@ use crate::app::{
 };
 use crate::composer::ComposerInput;
 use crate::highlight::{self, Lang, Token};
-use crate::theme::tokens::{Radius, TextSize, ButtonSize, DynamicSpacing, IconSize};
+use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
 use crate::theme::{self, Theme, ThemeMode};
 
 /// Files above this are not previewed. Two megabytes is far past any source
@@ -886,7 +886,7 @@ impl FileViewer {
                         }))
                         .child(icon(
                             "icons/x.svg",
-                            IconSize::Indicator.px(&theme),
+                            ButtonSize::None.icon_size().px(&theme),
                             if active {
                                 theme.active_fg
                             } else {
@@ -927,7 +927,11 @@ impl FileViewer {
                         this.hide(cx);
                         on_close(cx);
                     }))
-                    .child(icon("icons/x.svg", IconSize::Small.px(&theme), theme.text_3)),
+                    .child(icon(
+                        "icons/x.svg",
+                        ButtonSize::Default.icon_size().px(&theme),
+                        theme.text_3,
+                    )),
             )
             .into_any_element()
     }
@@ -974,29 +978,26 @@ impl FileViewer {
                         .child(tr!("explorer.truncated")),
                 )
             })
-            .when(
-                content.mode == Mode::Markdown && content.editable(),
-                |el| {
-                    el.child(
-                        button_frame(div().id("viewer-md-toggle"), &theme, ButtonSize::Compact)
-                            .bg(theme.bg_raised)
-                            .border_1()
-                            .border_color(theme.border)
-                            .font_family(theme::ui_font_family())
-                            .cursor_pointer()
-                            .text_color(theme.text_2)
-                            .hover(|el| el.bg(theme.bg_hover))
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.toggle_markdown_preview(cx)
-                            }))
-                            .child(if tab.markdown_preview {
-                                tr!("explorer.edit")
-                            } else {
-                                tr!("explorer.preview")
-                            }),
-                    )
-                },
-            )
+            .when(content.mode == Mode::Markdown && content.editable(), |el| {
+                el.child(
+                    button_frame(div().id("viewer-md-toggle"), &theme, ButtonSize::Compact)
+                        .bg(theme.bg_raised)
+                        .border_1()
+                        .border_color(theme.border)
+                        .font_family(theme::ui_font_family())
+                        .cursor_pointer()
+                        .text_color(theme.text_2)
+                        .hover(|el| el.bg(theme.bg_hover))
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.toggle_markdown_preview(cx)
+                        }))
+                        .child(if tab.markdown_preview {
+                            tr!("explorer.edit")
+                        } else {
+                            tr!("explorer.preview")
+                        }),
+                )
+            })
             .child(self.status_chip(theme, tab))
             .into_any_element()
     }
@@ -1031,7 +1032,11 @@ impl FileViewer {
             .items_center()
             .gap(px(4.))
             .when(!tab.editable(), |el| {
-                el.child(icon("icons/lock.svg", IconSize::Indicator.px(&theme), theme.text_3))
+                el.child(icon(
+                    "icons/lock.svg",
+                    IconSize::Indicator.px(&theme),
+                    theme.text_3,
+                ))
             })
             .child(div().text_color(color).child(label))
             .into_any_element()
@@ -1043,21 +1048,38 @@ impl FileViewer {
         }
         let Some(tab) = self.tabs.get(self.active) else {
             let detail = tr!("explorer.select_file_detail");
-            return empty_state(theme, &tr!("explorer.select_file"), Some(detail.as_str()), EmptyFill::Grow);
+            return empty_state(
+                theme,
+                &tr!("explorer.select_file"),
+                Some(detail.as_str()),
+                EmptyFill::Grow,
+            );
         };
         let Some(content) = tab.content.as_ref() else {
             let detail = tr!("explorer.select_file_detail");
-            return empty_state(theme, &tr!("explorer.select_file"), Some(detail.as_str()), EmptyFill::Grow);
+            return empty_state(
+                theme,
+                &tr!("explorer.select_file"),
+                Some(detail.as_str()),
+                EmptyFill::Grow,
+            );
         };
         if let Some(error) = &content.error {
-            return empty_state(theme, &tr!("explorer.read_error"), Some(error.as_str()), EmptyFill::Grow);
+            return empty_state(
+                theme,
+                &tr!("explorer.read_error"),
+                Some(error.as_str()),
+                EmptyFill::Grow,
+            );
         }
         match content.mode {
             // Editable: the buffer is the body (empty files included, so the
             // user can type into a new file).
             Mode::Code { .. } | Mode::Text if content.editable() => editor_body(theme, tab),
             // Markdown gets an editor too, with a Preview toggle.
-            Mode::Markdown if content.editable() && !tab.markdown_preview => editor_body(theme, tab),
+            Mode::Markdown if content.editable() && !tab.markdown_preview => {
+                editor_body(theme, tab)
+            }
             // Truncated / non-UTF-8 text: read-only, since saving the buffer
             // would not reproduce the file's real bytes.
             Mode::Code { .. } | Mode::Text => self.text_body(theme, cx),
@@ -1104,7 +1126,12 @@ impl FileViewer {
             },
             Mode::Binary => {
                 let detail = tr!("explorer.binary_detail");
-                empty_state(theme, &tr!("explorer.binary"), Some(detail.as_str()), EmptyFill::Grow)
+                empty_state(
+                    theme,
+                    &tr!("explorer.binary"),
+                    Some(detail.as_str()),
+                    EmptyFill::Grow,
+                )
             }
             Mode::TooLarge => {
                 let detail = tr!("explorer.too_large", size = format_bytes(content.bytes));

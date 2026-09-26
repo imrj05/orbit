@@ -119,13 +119,11 @@ mod windows_open_in {
 
     use gpui::Image;
     use windows_sys::Win32::Graphics::Gdi::{
-        BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC,
-        DeleteObject, GetDIBits, GetObjectW, HBITMAP, HDC,
+        CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, GetObjectW, BITMAP, BITMAPINFO,
+        BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC,
     };
-    use windows_sys::Win32::UI::Shell::{SHFILEINFOW, SHGFI_ICON, SHGetFileInfoW};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        DestroyIcon, GetIconInfo, HICON, ICONINFO,
-    };
+    use windows_sys::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, HICON, ICONINFO};
 
     use super::ExternalApp;
 
@@ -423,10 +421,7 @@ mod windows_open_in {
         let image = image::RgbaImage::from_raw(width as u32, height as u32, rgba)?;
         let mut out = Vec::new();
         image
-            .write_to(
-                &mut std::io::Cursor::new(&mut out),
-                image::ImageFormat::Png,
-            )
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
             .ok()?;
         Some(out)
     }
@@ -488,10 +483,7 @@ mod windows_open_in {
         }
         let mut out = Vec::new();
         image
-            .write_to(
-                &mut std::io::Cursor::new(&mut out),
-                image::ImageFormat::Png,
-            )
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
             .ok()?;
         Some(out)
     }
@@ -601,9 +593,7 @@ pub fn trash_path(path: &Path) -> std::io::Result<()> {
     let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
     NSFileManager::defaultManager()
         .trashItemAtURL_resultingItemURL_error(&url, None)
-        .map_err(|error| {
-            std::io::Error::other(error.localizedDescription().to_string())
-        })
+        .map_err(|error| std::io::Error::other(error.localizedDescription().to_string()))
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -775,7 +765,10 @@ impl OpenInPrefs {
             .into_iter()
             .flatten()
             .find_map(|id| apps.iter().find(|app| app.id == id))
-            .or_else(|| apps.iter().find(|app| app.id == DEFAULT_OPEN_IN_FILE_MANAGER))
+            .or_else(|| {
+                apps.iter()
+                    .find(|app| app.id == DEFAULT_OPEN_IN_FILE_MANAGER)
+            })
             .or_else(|| apps.first())
     }
 
@@ -1450,10 +1443,16 @@ mod tests {
             .cloned()
             .collect();
         assert_eq!(
-            prefs.preferred_app(Some(workspace), &without_rider).unwrap().id,
+            prefs
+                .preferred_app(Some(workspace), &without_rider)
+                .unwrap()
+                .id,
             "vscode"
         );
-        assert_eq!(prefs.preferred_app(Some(workspace), &apps).unwrap().id, "rider");
+        assert_eq!(
+            prefs.preferred_app(Some(workspace), &apps).unwrap().id,
+            "rider"
+        );
     }
 
     #[test]

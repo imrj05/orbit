@@ -12,9 +12,9 @@
 //! the entity — the same entity-with-callbacks shape as `CommandPalette`.
 
 use gpui::{
-    deferred, div, point, prelude::*, px, AnyElement, App, Context, ElementId, Entity,
-    FocusHandle, Focusable, FontWeight, IntoElement, MouseButton, MouseDownEvent, Render,
-    ScrollHandle, SharedString, Window,
+    deferred, div, point, prelude::*, px, AnyElement, App, Context, ElementId, Entity, FocusHandle,
+    Focusable, FontWeight, IntoElement, MouseButton, MouseDownEvent, Render, ScrollHandle,
+    SharedString, Window,
 };
 
 use crate::composer::ComposerInput;

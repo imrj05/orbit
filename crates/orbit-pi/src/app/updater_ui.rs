@@ -10,7 +10,7 @@
 use super::helpers::*;
 use super::*;
 use crate::theme::tokens::{
-    AnimationDuration, TextSize, button, modal, ButtonSize, DynamicSpacing, IconSize, StyledExt,
+    button, modal, AnimationDuration, ButtonSize, DynamicSpacing, IconSize, StyledExt, TextSize,
 };
 use crate::updater::{UpdateStatus, UpdaterEvent, UpdaterState};
 use crate::usage::tooltip::Tooltip;
@@ -332,7 +332,7 @@ impl OrbitApp {
                 .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into())
                 .child(crate::app::spinner(
                     ElementId::NamedInteger("update-spin".into(), 0),
-                    IconSize::Small.px(&theme),
+                    ButtonSize::Compact.icon_size().px(&theme),
                     theme.bg_main,
                     theme,
                 ));
@@ -504,44 +504,56 @@ impl OrbitApp {
         match self.updater_status {
             UpdateStatus::Available => {
                 let label = tr!("updater_ui.update");
-                icon_button_frame(div().id("settings-update-action"), &theme, ButtonSize::Medium)
-                    .group(BUTTON_GROUP)
-                    .bg(theme.send_bg)
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme.send_bg_hover))
-                    .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into())
-                    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                        this.update(cx, |app, cx| app.open_staged_update_dialog(cx));
-                    })
-                    .child(icon("icons/arrow-down.svg", IconSize::Small.px(&theme), theme.send_fg))
-                    .into_any_element()
+                icon_button_frame(
+                    div().id("settings-update-action"),
+                    &theme,
+                    ButtonSize::Medium,
+                )
+                .group(BUTTON_GROUP)
+                .bg(theme.send_bg)
+                .cursor_pointer()
+                .hover(|s| s.bg(theme.send_bg_hover))
+                .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into())
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    this.update(cx, |app, cx| app.open_staged_update_dialog(cx));
+                })
+                .child(icon(
+                    "icons/arrow-down.svg",
+                    ButtonSize::Medium.icon_size().px(&theme),
+                    theme.send_fg,
+                ))
+                .into_any_element()
             }
-            UpdateStatus::Updating => {
-                button_frame(div().id("settings-update-action"), &theme, ButtonSize::Medium)
-                    .font_weight(FontWeight::MEDIUM)
-                    .border_1()
-                    .border_color(theme.border)
-                    .bg(theme.bg_raised)
-                    .text_color(theme.text_3)
-                    .cursor_default()
-                    .child(tr!("updater_ui.updating"))
-                    .into_any_element()
-            }
-            UpdateStatus::Idle => {
-                button_frame(div().id("settings-update-action"), &theme, ButtonSize::Medium)
-                    .font_weight(FontWeight::MEDIUM)
-                    .border_1()
-                    .border_color(theme.border)
-                    .bg(theme.bg_raised)
-                    .text_color(theme.text_2)
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme.bg_hover))
-                    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                        this.update(cx, |app, cx| app.begin_update_check(cx));
-                    })
-                    .child(tr!("updater_ui.check_for_updates"))
-                    .into_any_element()
-            }
+            UpdateStatus::Updating => button_frame(
+                div().id("settings-update-action"),
+                &theme,
+                ButtonSize::Medium,
+            )
+            .font_weight(FontWeight::MEDIUM)
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.bg_raised)
+            .text_color(theme.text_3)
+            .cursor_default()
+            .child(tr!("updater_ui.updating"))
+            .into_any_element(),
+            UpdateStatus::Idle => button_frame(
+                div().id("settings-update-action"),
+                &theme,
+                ButtonSize::Medium,
+            )
+            .font_weight(FontWeight::MEDIUM)
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.bg_raised)
+            .text_color(theme.text_2)
+            .cursor_pointer()
+            .hover(|s| s.bg(theme.bg_hover))
+            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                this.update(cx, |app, cx| app.begin_update_check(cx));
+            })
+            .child(tr!("updater_ui.check_for_updates"))
+            .into_any_element(),
         }
     }
 
@@ -1239,12 +1251,7 @@ mod tests {
                             .flex()
                             .flex_col()
                             .overflow_hidden()
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .p(px(12.))
-                                    .child("Update available"),
-                            )
+                            .child(div().flex_none().p(px(12.)).child("Update available"))
                             .child(update_dialog_body(
                                 theme,
                                 div()

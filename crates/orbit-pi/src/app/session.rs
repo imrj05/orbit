@@ -587,7 +587,7 @@ impl OrbitApp {
         self.add_workspace(cwd.clone());
         self.set_current_workspace(cwd.clone());
 
-        match self.extensions.spawn(&cwd) {
+        match self.extensions.spawn(&cwd, Some(self.workflow_mode)) {
             Ok(client) => {
                 self.adopt_client(client);
                 self.send(CommandBody::NewSession, "new_session");
@@ -720,9 +720,11 @@ impl OrbitApp {
             self.preview_session_transcript(session.path.clone(), cx);
             // Spawn a dedicated pi process rooted at the session's workspace
             // and point it at the session file.
-            let spawned = self.extensions.spawn(&session.cwd).or_else(|_| {
-                self.extensions
-                    .spawn(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+            let spawned = self.extensions.spawn(&session.cwd, None).or_else(|_| {
+                self.extensions.spawn(
+                    &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                    None,
+                )
             });
             match spawned {
                 Ok(client) => {
@@ -875,19 +877,16 @@ impl OrbitApp {
             return None;
         }
         let generating = self.title_generating;
-        let mut button = icon_button_frame(
-            div().id("sess-generate-title"),
-            &theme,
-            ButtonSize::Large,
-        )
-        .group(BUTTON_GROUP)
-        .border_1()
-        .border_color(theme.border)
-        .bg(if generating {
-            theme.overlay
-        } else {
-            theme.bg_raised
-        });
+        let mut button =
+            icon_button_frame(div().id("sess-generate-title"), &theme, ButtonSize::Large)
+                .group(BUTTON_GROUP)
+                .border_1()
+                .border_color(theme.border)
+                .bg(if generating {
+                    theme.overlay
+                } else {
+                    theme.bg_raised
+                });
         if !generating {
             button = button
                 .cursor_pointer()
@@ -906,13 +905,17 @@ impl OrbitApp {
                 .child(if generating {
                     crate::app::spinner(
                         "sess-generate-title-spinner",
-                        IconSize::XSmall.px(&theme),
+                        ButtonSize::Large.icon_size().px(&theme),
                         theme.accent,
                         theme,
                     )
                 } else {
-                    icon("icons/magic-wand.svg", IconSize::XSmall.px(&theme), theme.text_2)
-                        .into_any_element()
+                    icon(
+                        "icons/magic-wand.svg",
+                        ButtonSize::Large.icon_size().px(&theme),
+                        theme.text_2,
+                    )
+                    .into_any_element()
                 })
                 .into_any_element(),
         )
@@ -1185,20 +1188,17 @@ impl OrbitApp {
                         )
                         .children(self.generate_title_button(theme, this.clone()))
                         .child({
-                            let mut button = button_frame(
-                                div().id("sess-rename"),
-                                &theme,
-                                ButtonSize::Large,
-                            )
-                            .border_1()
-                            .cursor_pointer()
-                            .font_weight(FontWeight::MEDIUM)
-                            .on_mouse_up(MouseButton::Left, {
-                                let this = this.clone();
-                                move |_, _, cx| {
-                                    this.update(cx, |app, cx| app.rename_session(cx));
-                                }
-                            });
+                            let mut button =
+                                button_frame(div().id("sess-rename"), &theme, ButtonSize::Large)
+                                    .border_1()
+                                    .cursor_pointer()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .on_mouse_up(MouseButton::Left, {
+                                        let this = this.clone();
+                                        move |_, _, cx| {
+                                            this.update(cx, |app, cx| app.rename_session(cx));
+                                        }
+                                    });
                             if rename_saved {
                                 // Commit succeeded: the label becomes a check
                                 // that pops in, so the button confirms the
@@ -1280,7 +1280,11 @@ impl OrbitApp {
                             });
                         }
                     })
-                    .child(icon("icons/branch.svg", IconSize::Small.px(&theme), theme.text_2))
+                    .child(icon(
+                        "icons/branch.svg",
+                        IconSize::Small.px(&theme),
+                        theme.text_2,
+                    ))
                     .child(
                         div()
                             .flex_1()
@@ -1312,7 +1316,11 @@ impl OrbitApp {
                             });
                         }
                     })
-                    .child(icon("icons/file-diff.svg", IconSize::Small.px(&theme), theme.text_2))
+                    .child(icon(
+                        "icons/file-diff.svg",
+                        IconSize::Small.px(&theme),
+                        theme.text_2,
+                    ))
                     .child(
                         div()
                             .flex_1()
@@ -1488,7 +1496,11 @@ impl OrbitApp {
             // the popover reachable.
             QuotaHeadline::Quiet => {
                 pill = pill
-                    .child(icon("icons/spark.svg", IconSize::Small.px(&theme), theme.text_2))
+                    .child(icon(
+                        "icons/spark.svg",
+                        IconSize::Small.px(&theme),
+                        theme.text_2,
+                    ))
                     .child(
                         div()
                             .text_size(TextSize::Small.px(&theme))
@@ -1519,26 +1531,23 @@ impl OrbitApp {
         // keeps the spin off, but the accent still marks the active state.
         let refresh_icon = refresh_glyph(
             "quota-refresh-spin",
-            IconSize::Small.px(&theme),
+            ButtonSize::Medium.icon_size().px(&theme),
             self.quota_refreshing,
             theme.text_2,
             theme,
         );
-        let refresh_button = icon_button_frame(
-            div().id("quota-refresh"),
-            &theme,
-            ButtonSize::Medium,
-        )
-        .group(BUTTON_GROUP)
-        .cursor_pointer()
-        .hover(|style| style.bg(theme.bg_hover))
-        .active(|style| style.bg(theme.active))
-        .tooltip({
-            let label = tr!("common.refresh");
-            move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
-        })
-        .on_mouse_up(MouseButton::Left, cx.listener(Self::on_quota_refresh))
-        .child(refresh_icon);
+        let refresh_button =
+            icon_button_frame(div().id("quota-refresh"), &theme, ButtonSize::Medium)
+                .group(BUTTON_GROUP)
+                .cursor_pointer()
+                .hover(|style| style.bg(theme.bg_hover))
+                .active(|style| style.bg(theme.active))
+                .tooltip({
+                    let label = tr!("common.refresh");
+                    move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
+                })
+                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_quota_refresh))
+                .child(refresh_icon);
 
         let header = div()
             .flex_none()
@@ -1783,7 +1792,11 @@ impl OrbitApp {
                     .on_click(move |_, _window, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(v.clone()));
                     })
-                    .child(icon("icons/copy.svg", IconSize::XSmall.px(&theme), theme.text_3)),
+                    .child(icon(
+                        "icons/copy.svg",
+                        ButtonSize::Compact.icon_size().px(&theme),
+                        theme.text_3,
+                    )),
             )
     }
 
@@ -2047,13 +2060,9 @@ impl OrbitApp {
                                 app.toast_success(tr!("explorer.deleted", name = name));
                             }
                             Err(error) => {
-                                let message = format!(
-                                    "{}: {error}",
-                                    tr!("explorer.err_delete")
-                                );
-                                app.project_panel.update(cx, |panel, cx| {
-                                    panel.set_notice(Some(message), cx)
-                                });
+                                let message = format!("{}: {error}", tr!("explorer.err_delete"));
+                                app.project_panel
+                                    .update(cx, |panel, cx| panel.set_notice(Some(message), cx));
                             }
                         }
                         cx.notify();
@@ -2071,11 +2080,7 @@ impl OrbitApp {
     }
 
     /// Surface a failed create/rename in the Explorer's notice strip.
-    fn explorer_op_error(
-        &mut self,
-        error: &crate::explorer::ops::OpError,
-        cx: &mut Context<Self>,
-    ) {
+    fn explorer_op_error(&mut self, error: &crate::explorer::ops::OpError, cx: &mut Context<Self>) {
         let message = error.message();
         self.project_panel
             .update(cx, |panel, cx| panel.set_notice(Some(message), cx));
@@ -2299,7 +2304,11 @@ fn quota_provider_card(app: &OrbitApp, report: &QuotaReport, theme: Theme) -> An
         .flex()
         .items_center()
         .gap(px(7.))
-        .child(icon_dyn(provider_icon(&report.provider), IconSize::Small.px(&theme), theme.text_3))
+        .child(icon_dyn(
+            provider_icon(&report.provider),
+            IconSize::Small.px(&theme),
+            theme.text_3,
+        ))
         .child(
             div()
                 .flex_1()

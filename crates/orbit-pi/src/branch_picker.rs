@@ -13,7 +13,7 @@ use crate::app::{
     picker_surface,
 };
 use crate::composer::ComposerInput;
-use crate::theme::tokens::{context_menu, picker, ButtonSize, DynamicSpacing, IconSize, TextSize};
+use crate::theme::tokens::{context_menu, input, picker, ButtonSize, DynamicSpacing, TextSize};
 use crate::theme::{self, Theme};
 
 const POPOVER_W: f32 = 280.;
@@ -392,7 +392,7 @@ impl Render for BranchPicker {
                 picker_search_frame(div(), &theme)
                     .child(icon(
                         "icons/search.svg",
-                        IconSize::Small.px(&theme),
+                        input::ICON.px(&theme),
                         theme.text_3,
                     ))
                     .child(div().flex_1().min_w_0().child(self.filter.clone())),

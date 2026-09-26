@@ -28,7 +28,7 @@ use super::page::{
 };
 use super::table::FailureSort;
 use crate::theme::tokens::{
-    context_menu, list, popover, ButtonSize, DynamicSpacing, IconSize, TextSize,
+    context_menu, input, list, popover, ButtonSize, DynamicSpacing, IconSize, TextSize,
 };
 use crate::theme::Theme;
 use crate::{app::icon, composer::ComposerInput};
@@ -131,7 +131,13 @@ pub fn chip(
     .cursor_pointer()
     .hover(|style| style.bg(if active { theme.active } else { theme.bg_hover }))
     .on_mouse_down(MouseButton::Left, on_click)
-    .children(icon_path.map(|path| icon(path, IconSize::XSmall.px(&theme), leading_color)))
+    .children(icon_path.map(|path| {
+        icon(
+            path,
+            ButtonSize::Medium.icon_size().px(&theme),
+            leading_color,
+        )
+    }))
     .child(
         div()
             .max_w(px(180.))
@@ -141,7 +147,7 @@ pub fn chip(
     )
     .child(icon(
         "icons/chevron-down.svg",
-        IconSize::Indicator.px(&theme),
+        IconSize::XSmall.px(&theme),
         if active {
             theme.active_fg
         } else {
@@ -194,7 +200,7 @@ fn search_row(query: &Entity<ComposerInput>, theme: Theme) -> AnyElement {
     picker_search_frame(div(), &theme)
         .child(icon(
             "icons/search.svg",
-            IconSize::Small.px(&theme),
+            input::ICON.px(&theme),
             theme.text_3,
         ))
         .child(div().flex_1().min_w_0().child(query.clone()))
@@ -930,7 +936,7 @@ fn calendar(page: &UsagePage, cx: &mut gpui::Context<UsagePage>, theme: Theme) -
                 })
                 .child(icon(
                     "icons/chevron-left.svg",
-                    IconSize::XSmall.px(&theme),
+                    ButtonSize::Default.icon_size().px(&theme),
                     theme.text_3,
                 )),
         )
@@ -957,7 +963,7 @@ fn calendar(page: &UsagePage, cx: &mut gpui::Context<UsagePage>, theme: Theme) -
                 })
                 .child(icon(
                     "icons/chevron-right.svg",
-                    IconSize::XSmall.px(&theme),
+                    ButtonSize::Default.icon_size().px(&theme),
                     theme.text_3,
                 )),
         );
@@ -1108,7 +1114,7 @@ pub fn toggle_chip(
         .on_mouse_down(MouseButton::Left, on_clear)
         .child(icon(
             "icons/x.svg",
-            IconSize::Indicator.px(&theme),
+            ButtonSize::None.icon_size().px(&theme),
             theme.active_fg,
         )),
     )
@@ -1145,13 +1151,13 @@ pub fn text_button(
             // place instead of swapping in a loader, matching the popover.
             refresh_glyph(
                 ElementId::Name(SharedString::from(format!("{id}-spin"))),
-                IconSize::XSmall.px(&theme),
+                ButtonSize::Medium.icon_size().px(&theme),
                 true,
                 color,
                 theme,
             )
         } else {
-            icon(path, IconSize::XSmall.px(&theme), color).into_any_element()
+            icon(path, ButtonSize::Medium.icon_size().px(&theme), color).into_any_element()
         }
     }))
     .child(label.to_string())

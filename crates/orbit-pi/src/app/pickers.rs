@@ -144,10 +144,10 @@ impl OrbitApp {
         self.session_usage = None;
         self.reset_turns();
         self.reset_queue();
-        match self
-            .extensions
-            .spawn(self.current_workspace.as_ref().unwrap())
-        {
+        match self.extensions.spawn(
+            self.current_workspace.as_ref().unwrap(),
+            Some(self.workflow_mode),
+        ) {
             Ok(client) => {
                 self.adopt_client(client);
                 self.send(CommandBody::GetState, "get_state");

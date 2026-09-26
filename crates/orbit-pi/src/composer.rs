@@ -1786,10 +1786,7 @@ impl Element for TextElement {
         // scroll never slides the text under the line numbers.
         let text_bounds = Bounds {
             origin: point(bounds.origin.x + gutter, bounds.origin.y),
-            size: size(
-                (bounds.size.width - gutter).max(px(0.)),
-                bounds.size.height,
-            ),
+            size: size((bounds.size.width - gutter).max(px(0.)), bounds.size.height),
         };
 
         // Clip everything to the element: wrapping keeps text inside, the
@@ -1810,32 +1807,37 @@ impl Element for TextElement {
                     );
                 }
             }
-            window.with_content_mask(Some(ContentMask { bounds: text_bounds }), |window| {
-                // Selection wash under the text.
-                for quad in selection {
-                    window.paint_quad(quad);
-                }
-                for (i, line) in prepaint.lines.iter().enumerate() {
-                    line.paint(
-                        point(
-                            bounds.origin.x + gutter - scroll_x,
-                            bounds.origin.y + prepaint.line_y[i] - scroll,
-                        ),
-                        line_height,
-                        TextAlign::Left,
-                        None,
-                        window,
-                        cx,
-                    )
-                    .unwrap();
-                }
-                // Caret over the text.
-                if focused {
-                    if let Some(caret) = caret {
-                        window.paint_quad(caret);
+            window.with_content_mask(
+                Some(ContentMask {
+                    bounds: text_bounds,
+                }),
+                |window| {
+                    // Selection wash under the text.
+                    for quad in selection {
+                        window.paint_quad(quad);
                     }
-                }
-            });
+                    for (i, line) in prepaint.lines.iter().enumerate() {
+                        line.paint(
+                            point(
+                                bounds.origin.x + gutter - scroll_x,
+                                bounds.origin.y + prepaint.line_y[i] - scroll,
+                            ),
+                            line_height,
+                            TextAlign::Left,
+                            None,
+                            window,
+                            cx,
+                        )
+                        .unwrap();
+                    }
+                    // Caret over the text.
+                    if focused {
+                        if let Some(caret) = caret {
+                            window.paint_quad(caret);
+                        }
+                    }
+                },
+            );
             // Scroll thumb last, so it sits above the text and caret.
             if let Some(scrollbar) = scrollbar {
                 window.paint_quad(scrollbar);
@@ -1896,8 +1898,8 @@ impl Render for ComposerInput {
 #[cfg(test)]
 mod tests {
     use super::{
-        horizontal_scroll, line_at_offset, line_range_at, resolve_placeholder, scrollbar_thumb_height,
-        word_range_at,
+        horizontal_scroll, line_at_offset, line_range_at, resolve_placeholder,
+        scrollbar_thumb_height, word_range_at,
     };
     use gpui::{px, SharedString};
 

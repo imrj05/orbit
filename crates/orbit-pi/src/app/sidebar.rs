@@ -402,7 +402,11 @@ pub(crate) fn render_side_row(
                             IconSize::Indicator.px(&theme),
                             theme.text_3,
                         ))
-                        .child(icon("icons/folder.svg", IconSize::Small.px(&theme), theme.text_3))
+                        .child(icon(
+                            "icons/folder.svg",
+                            IconSize::Small.px(&theme),
+                            theme.text_3,
+                        ))
                         .child(
                             div()
                                 .flex_1()
@@ -446,7 +450,7 @@ pub(crate) fn render_side_row(
                             })
                             .child(icon(
                                 "icons/plus.svg",
-                                IconSize::Small.px(&theme),
+                                ButtonSize::Compact.icon_size().px(&theme),
                                 theme.text_3,
                             )),
                         )
@@ -494,7 +498,11 @@ pub(crate) fn render_side_row(
                         cx.notify();
                     });
                 })
-                .child(icon("icons/chevron-down.svg", IconSize::XSmall.px(&theme), theme.text_3))
+                .child(icon(
+                    "icons/chevron-down.svg",
+                    IconSize::XSmall.px(&theme),
+                    theme.text_3,
+                ))
                 .child(
                     div()
                         .text_size(TextSize::Small.px(&theme))
@@ -556,7 +564,11 @@ pub(crate) fn render_side_row(
                         cx.notify();
                     });
                 })
-                .child(icon("icons/chevron-up.svg", IconSize::XSmall.px(&theme), theme.text_3))
+                .child(icon(
+                    "icons/chevron-up.svg",
+                    IconSize::XSmall.px(&theme),
+                    theme.text_3,
+                ))
                 .child(
                     div()
                         .text_size(TextSize::Small.px(&theme))
@@ -645,7 +657,9 @@ pub(crate) fn render_side_row(
                 .gap(DynamicSpacing::Base06.px(&theme))
                 .when(active, |card| card.bg(theme.active))
                 .when(cursor && !active, |card| card.bg(theme.overlay))
-                .when(!active && !cursor, |card| card.hover(|s| s.bg(theme.bg_hover)));
+                .when(!active && !cursor, |card| {
+                    card.hover(|s| s.bg(theme.bg_hover))
+                });
             // Text column: title + actions, then the first-message preview
             // with the age. Every row with a message keeps the same two-line
             // shape — even when the title repeats it — so the list scans
@@ -790,7 +804,11 @@ pub(crate) fn session_menu_button(
             );
         });
     })
-    .child(icon("icons/more.svg", IconSize::Small.px(&theme), theme.text_3))
+    .child(icon(
+        "icons/more.svg",
+        ButtonSize::Compact.icon_size().px(&theme),
+        theme.text_3,
+    ))
     // The dropdown hangs off a zero-size anchor pinned to the button's
     // top-left corner. The button centers its icon (`items_center` +
     // `justify_center`), and Taffy lays absolutely-positioned children out
@@ -999,16 +1017,15 @@ pub(crate) fn session_menu_popup(
                 |app, cx| app.on_menu_clone_session(cx),
             ))
             .when(deletable, |menu| {
-                menu.child(context_menu_separator(&theme))
-                    .child(menu_item(
-                        "menu-delete",
-                        "icons/trash.svg",
-                        tr!("sidebar.delete_session_menu"),
-                        theme,
-                        this.clone(),
-                        true,
-                        |app, cx| app.on_menu_delete_request(cx),
-                    ))
+                menu.child(context_menu_separator(&theme)).child(menu_item(
+                    "menu-delete",
+                    "icons/trash.svg",
+                    tr!("sidebar.delete_session_menu"),
+                    theme,
+                    this.clone(),
+                    true,
+                    |app, cx| app.on_menu_delete_request(cx),
+                ))
             })
             .into_any_element()
     };
@@ -1016,7 +1033,9 @@ pub(crate) fn session_menu_popup(
     // Zed's context-menu shell sizes the action list to its entries from a
     // 200px minimum; the delete confirmation keeps its own fixed card.
     let popup = context_menu_surface(div(), &theme)
-        .when(confirm, |pop| pop.w(px(210.)).p(DynamicSpacing::Base12.px(&theme)))
+        .when(confirm, |pop| {
+            pop.w(px(210.)).p(DynamicSpacing::Base12.px(&theme))
+        })
         .flex()
         .flex_col()
         .overflow_hidden()
@@ -1051,7 +1070,10 @@ pub(crate) fn session_menu_popup(
         anchored()
             .position_mode(AnchoredPositionMode::Local)
             .anchor(Corner::TopLeft)
-            .offset(point(px(0.), ButtonSize::Compact.height(&theme) + popover::MENU_OFFSET))
+            .offset(point(
+                px(0.),
+                ButtonSize::Compact.height(&theme) + popover::MENU_OFFSET,
+            ))
     };
     anchor
         .snap_to_window_with_margin(popover::WINDOW_MARGIN)
@@ -1093,7 +1115,11 @@ pub(crate) fn workspace_menu_button(
         };
         this.update(cx, |app, cx| app.toggle_workspace_menu(menu, window, cx));
     })
-    .child(icon("icons/more.svg", IconSize::Small.px(&theme), theme.text_3))
+    .child(icon(
+        "icons/more.svg",
+        ButtonSize::Compact.icon_size().px(&theme),
+        theme.text_3,
+    ))
     .children(menu.map(|menu| {
         div()
             .absolute()
@@ -1155,7 +1181,10 @@ pub(crate) fn workspace_menu_popup(
         anchored()
             .position_mode(AnchoredPositionMode::Local)
             .anchor(Corner::TopLeft)
-            .offset(point(px(0.), ButtonSize::Compact.height(&theme) + popover::MENU_OFFSET))
+            .offset(point(
+                px(0.),
+                ButtonSize::Compact.height(&theme) + popover::MENU_OFFSET,
+            ))
     };
     anchor
         .snap_to_window_with_margin(popover::WINDOW_MARGIN)
@@ -1236,7 +1265,11 @@ pub(crate) fn empty_sessions_state(theme: Theme) -> impl IntoElement + use<> {
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(icon("icons/spark.svg", IconSize::Medium.px(&theme), theme.accent)),
+                .child(icon(
+                    "icons/spark.svg",
+                    IconSize::Medium.px(&theme),
+                    theme.accent,
+                )),
         )
         .child(
             div()
@@ -1504,7 +1537,9 @@ impl OrbitApp {
     fn active_session_row(&self, rows: &[SideRow]) -> Option<usize> {
         let sessions = self.sidebar_sessions();
         let active = self.current_session_path.as_ref()?;
-        let session_ix = sessions.iter().position(|session| &session.path == active)?;
+        let session_ix = sessions
+            .iter()
+            .position(|session| &session.path == active)?;
         rows.iter()
             .position(|row| matches!(row, SideRow::Session(ix) if *ix == session_ix))
     }
@@ -1527,7 +1562,8 @@ impl OrbitApp {
             self.sidebar_slide_gen = self.sidebar_slide_gen.wrapping_add(1);
         }
         let rows = self.sidebar_rows_for_nav();
-        self.sidebar_cursor = (!rows.is_empty()).then(|| self.active_session_row(&rows).unwrap_or(0));
+        self.sidebar_cursor =
+            (!rows.is_empty()).then(|| self.active_session_row(&rows).unwrap_or(0));
         window.focus(&self.sidebar_focus);
         cx.notify();
     }

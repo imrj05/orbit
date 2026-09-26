@@ -15,8 +15,8 @@
 
 use alacritty_terminal::term::TermMode;
 use gpui::{
-    deferred, div, prelude::*, px, App, ClickEvent, Context, Entity, FocusHandle, Focusable,
-    Font, FontWeight, KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Render, ScrollHandle,
+    deferred, div, prelude::*, px, App, ClickEvent, Context, Entity, FocusHandle, Focusable, Font,
+    FontWeight, KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Render, ScrollHandle,
     SharedString, StyledText, Window,
 };
 use serde_json::Value;
@@ -369,7 +369,11 @@ impl Render for CustomUi {
                     .cursor_pointer()
                     .hover(|style| style.bg(theme.bg_hover))
                     .on_click(cx.listener(Self::on_close_click))
-                    .child(icon("icons/x.svg", IconSize::Small.px(&theme), theme.text_3)),
+                    .child(icon(
+                        "icons/x.svg",
+                        ButtonSize::Default.icon_size().px(&theme),
+                        theme.text_3,
+                    )),
             );
 
         // ── body: an inset code surface holding the server's grid ──

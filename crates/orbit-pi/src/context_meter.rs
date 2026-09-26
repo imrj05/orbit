@@ -15,7 +15,7 @@ use gpui::{
 use orbit_rpc::{ContextUsage, SessionUsage};
 
 use crate::app::{button_frame, icon_button_frame};
-use crate::theme::tokens::{Radius, TextSize, ButtonSize, IconSize, StyledExt};
+use crate::theme::tokens::{ButtonSize, IconSize, Radius, StyledExt, TextSize};
 use crate::theme::Theme;
 
 const RING: f32 = 16.;
@@ -370,12 +370,11 @@ pub fn details_card(
                         .cursor_pointer()
                         .hover(|s| s.bg(theme.overlay))
                         .on_click(on_close)
-                        .child(
-                            div()
-                                .text_size(TextSize::Default.px(&theme))
-                                .text_color(theme.text_3)
-                                .child("×"),
-                        ),
+                        .child(glyph(
+                            "icons/x.svg",
+                            ButtonSize::Compact.icon_size().px(&theme),
+                            theme.text_3,
+                        )),
                 ),
         )
         .child(
@@ -471,7 +470,12 @@ fn legend(slices: &[ContextSlice], theme: Theme) -> impl IntoElement + use<> {
                 .flex()
                 .items_center()
                 .gap(px(8.))
-                .child(div().size(px(8.)).rounded(Radius::XSmall.px(&theme)).bg(slice.color))
+                .child(
+                    div()
+                        .size(px(8.))
+                        .rounded(Radius::XSmall.px(&theme))
+                        .bg(slice.color),
+                )
                 .child(
                     div()
                         .flex_1()

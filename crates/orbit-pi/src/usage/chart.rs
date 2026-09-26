@@ -18,7 +18,7 @@ use gpui::{
 
 use super::aggregate::{ChartMetric, LatencyMetric, TimeSeries};
 use super::format;
-use crate::theme::tokens::{TextSize, DynamicSpacing, StyledExt};
+use crate::theme::tokens::{DynamicSpacing, StyledExt, TextSize};
 use crate::theme::Theme;
 
 const PLOT_H: f32 = 168.;
@@ -520,7 +520,9 @@ fn readout(
         .child(body)
         .occlude();
     if on_left_half {
-        card.ml(DynamicSpacing::Base12.px(&theme)).left(relative(fraction)).into_any_element()
+        card.ml(DynamicSpacing::Base12.px(&theme))
+            .left(relative(fraction))
+            .into_any_element()
     } else {
         card.mr(DynamicSpacing::Base12.px(&theme))
             .right(relative(1.0 - fraction))

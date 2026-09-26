@@ -219,10 +219,7 @@ pub fn parse_report(markdown: &str) -> Report {
                 }
                 summary.push_str(tail);
             }
-            return Report {
-                findings,
-                summary,
-            };
+            return Report { findings, summary };
         }
     }
     Report {
@@ -358,7 +355,10 @@ mod tests {
         let report = parse_report(answer);
         assert_eq!(report.findings.len(), 2);
         assert_eq!(report.findings[0].severity, Severity::Error);
-        assert_eq!(report.findings[0].location().as_deref(), Some("src/a.rs:12"));
+        assert_eq!(
+            report.findings[0].location().as_deref(),
+            Some("src/a.rs:12")
+        );
         assert_eq!(report.findings[1].severity, Severity::Info);
         assert_eq!(report.findings[1].location(), None);
         assert_eq!(report.summary, "Two issues found.");

@@ -18,10 +18,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    div, prelude::*, px, AnyElement, App, ClickEvent, Context,
-    CursorStyle, Entity, Font, FontFeatures, FontStyle, FontWeight, Hsla, KeyDownEvent,
-    ListAlignment, ListOffset, ListState, MouseDownEvent, Pixels, Render, SharedString, StyledText,
-    TextRun, Window,
+    div, prelude::*, px, AnyElement, App, ClickEvent, Context, CursorStyle, Entity, Font,
+    FontFeatures, FontStyle, FontWeight, Hsla, KeyDownEvent, ListAlignment, ListOffset, ListState,
+    MouseDownEvent, Pixels, Render, SharedString, StyledText, TextRun, Window,
 };
 
 use crate::ai_review::{Finding, Report, ReviewKind, ReviewStatus, Severity};
@@ -33,7 +32,7 @@ use crate::app::{
 use crate::composer::ComposerInput;
 use crate::git;
 use crate::review::{self, ExpansionDirection, GapPosition, LineKind, Snapshot, Source};
-use crate::theme::tokens::{Radius, context_menu, popover, ButtonSize, IconSize, TextSize};
+use crate::theme::tokens::{context_menu, input, popover, ButtonSize, IconSize, Radius, TextSize};
 use crate::theme::{self, Theme, ThemeMode};
 
 /// Pane width defaults / drag clamps.
@@ -394,7 +393,12 @@ impl SidePane {
                 .files
                 .iter()
                 .position(|file| file.path == path)
-                .or_else(|| snapshot.files.iter().position(|file| file.path.ends_with(path)))
+                .or_else(|| {
+                    snapshot
+                        .files
+                        .iter()
+                        .position(|file| file.path.ends_with(path))
+                })
         });
         if let Some(ix) = ix {
             self.selected_file = Some(ix);
@@ -793,7 +797,7 @@ impl SidePane {
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_ai_menu(cx)))
                     .child(icon(
                         "icons/spark.svg",
-                        IconSize::Small.px(&theme),
+                        ButtonSize::Default.icon_size().px(&theme),
                         if self.ai_menu_open {
                             theme.text
                         } else {
@@ -810,7 +814,7 @@ impl SidePane {
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_tree(cx)))
                     .child(icon(
                         "icons/folder.svg",
-                        IconSize::Small.px(&theme),
+                        ButtonSize::Default.icon_size().px(&theme),
                         if self.tree_open {
                             theme.text
                         } else {
@@ -829,7 +833,7 @@ impl SidePane {
                     }))
                     .child(refresh_glyph(
                         "review-spinner",
-                        IconSize::Small.px(&theme),
+                        ButtonSize::Default.icon_size().px(&theme),
                         self.review_loading || self.refresh_spin_until.is_some(),
                         theme.text_3,
                         theme,
@@ -842,7 +846,11 @@ impl SidePane {
                     .hover(|s| s.bg(theme.bg_hover))
                     .active(|s| s.opacity(PRESS_DIM))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close(cx)))
-                    .child(icon("icons/x.svg", IconSize::Small.px(&theme), theme.text_3)),
+                    .child(icon(
+                        "icons/x.svg",
+                        ButtonSize::Default.icon_size().px(&theme),
+                        theme.text_3,
+                    )),
             );
 
         // Toolbar: the source filter chip + live ±stats + refresh.
@@ -870,7 +878,11 @@ impl SidePane {
                     .on_click(
                         cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_source_menu(cx)),
                     )
-                    .child(icon("icons/file-diff.svg", IconSize::XSmall.px(&theme), theme.text_3))
+                    .child(icon(
+                        "icons/file-diff.svg",
+                        ButtonSize::Medium.icon_size().px(&theme),
+                        theme.text_3,
+                    ))
                     .child(
                         div()
                             .max_w(px(120.))
@@ -882,7 +894,7 @@ impl SidePane {
                     )
                     .child(icon(
                         "icons/chevron-down.svg",
-                        IconSize::Indicator.px(&theme),
+                        IconSize::XSmall.px(&theme),
                         theme.text_3,
                     )),
             )
@@ -927,13 +939,28 @@ impl SidePane {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let diff = if self.review_loading && self.review.is_none() {
-            empty_state(theme, &tr!("sidepane.loading_changes"), None, EmptyFill::Grow)
+            empty_state(
+                theme,
+                &tr!("sidepane.loading_changes"),
+                None,
+                EmptyFill::Grow,
+            )
         } else if let Some(error) = self.review_error.as_deref() {
-            empty_state(theme, &tr!("sidepane.changes_unavailable"), Some(error), EmptyFill::Grow)
+            empty_state(
+                theme,
+                &tr!("sidepane.changes_unavailable"),
+                Some(error),
+                EmptyFill::Grow,
+            )
         } else if let Some(snapshot) = self.review.clone() {
             if snapshot.files.is_empty() {
                 let empty = self.source.empty_description();
-                empty_state(theme, &tr!("sidepane.no_changes"), Some(&empty), EmptyFill::Grow)
+                empty_state(
+                    theme,
+                    &tr!("sidepane.no_changes"),
+                    Some(&empty),
+                    EmptyFill::Grow,
+                )
             } else {
                 self.render_diff(snapshot, theme, cx)
             }
@@ -1177,7 +1204,11 @@ impl SidePane {
 
         let column_w = (f32::from(self.width) * 0.42).clamp(TREE_MIN_COL_W, TREE_MAX_COL_W);
         let filter_row = picker_search_frame(div(), &theme)
-            .child(icon("icons/search.svg", IconSize::Small.px(&theme), theme.text_3))
+            .child(icon(
+                "icons/search.svg",
+                input::ICON.px(&theme),
+                theme.text_3,
+            ))
             .child(div().flex_1().min_w_0().child(self.tree_filter.clone()));
 
         div()
@@ -1256,7 +1287,11 @@ impl SidePane {
                             IconSize::Indicator.px(&theme),
                             theme.text_3,
                         ))
-                        .child(icon("icons/folder.svg", IconSize::Small.px(&theme), theme.text_3))
+                        .child(icon(
+                            "icons/folder.svg",
+                            IconSize::Small.px(&theme),
+                            theme.text_3,
+                        ))
                         .child(
                             div()
                                 .min_w_0()
@@ -1289,9 +1324,8 @@ impl SidePane {
                 };
                 let nerd = nerd_font_family(cx);
                 let dark = theme.mode == ThemeMode::Dark;
-                let fallback =
-                    icon("icons/file.svg", IconSize::Small.px(&theme), theme.text_3)
-                        .into_any_element();
+                let fallback = icon("icons/file.svg", IconSize::Small.px(&theme), theme.text_3)
+                    .into_any_element();
                 let glyph = file_glyph(
                     &file.path,
                     dark,
@@ -1417,7 +1451,11 @@ impl SidePane {
             .flex()
             .items_center()
             .gap(px(6.))
-            .child(icon("icons/spark.svg", IconSize::Small.px(&theme), theme.accent))
+            .child(icon(
+                "icons/spark.svg",
+                IconSize::Small.px(&theme),
+                theme.accent,
+            ))
             .child(
                 div()
                     .flex_1()
@@ -1652,7 +1690,11 @@ fn source_row(
         )
     })
     .when(selected, |row| {
-        row.child(icon("icons/check.svg", context_menu::ICON.px(&theme), theme.accent))
+        row.child(icon(
+            "icons/check.svg",
+            context_menu::ICON.px(&theme),
+            theme.accent,
+        ))
     });
     row.into_any_element()
 }
@@ -1670,7 +1712,11 @@ fn ai_menu_row(
     .cursor_pointer()
     .text_color(theme.text)
     .hover(|s| s.bg(theme.bg_hover))
-    .child(icon("icons/spark.svg", context_menu::ICON.px(&theme), theme.text_3))
+    .child(icon(
+        "icons/spark.svg",
+        context_menu::ICON.px(&theme),
+        theme.text_3,
+    ))
     .child(div().child(kind.label()))
     .on_click(move |_, window, cx| on_click(window, cx))
     .into_any_element()

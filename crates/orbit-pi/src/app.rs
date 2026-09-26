@@ -572,6 +572,18 @@ pub struct OrbitApp {
     /// A mode chosen on the New Task page, before a session id exists to key
     /// it to.
     workflow_pending: Option<WorkflowMode>,
+    /// Per-mode startup defaults (model + thinking) from
+    /// `~/.orbit-pi/session-defaults.json`, loaded at launch.
+    session_defaults: crate::session_defaults::SessionDefaults,
+    /// Whether the active session should still be moved onto its mode's
+    /// default model/thinking. Armed by a `new_session` birth or a user mode
+    /// change; disarmed once the defaults have been pushed (or there are none),
+    /// so a later catalog refresh never clobbers a manual composer choice.
+    mode_defaults_armed: bool,
+    /// What `apply_mode_defaults` has already sent for the active session,
+    /// so the two catalog refreshes that follow a session birth don't resend
+    /// the same `set_model` / `set_thinking_level`.
+    mode_defaults_pushed: ModeDefaultsPushed,
     /// Whether the composer's workflow-mode picker popover is open.
     workflow_menu_open: bool,
     /// Highlighted row in the workflow-mode picker.
@@ -873,7 +885,8 @@ impl OrbitApp {
         // the file on the very first tool call of the session.
         let access_mode = AccessMode::load();
         access_mode.persist();
-        let (client, connect_error) = match extensions.spawn(&workspace) {
+        let (client, connect_error) = match extensions.spawn(&workspace, Some(WorkflowMode::Build))
+        {
             Ok(client) => (Some(client), String::new()),
             Err(err) => (None, tr!("runtime.pi_spawn_failed", error = err)),
         };
@@ -943,16 +956,14 @@ impl OrbitApp {
                 Rc::new({
                     let app_weak = app_weak.clone();
                     move |path, display, cx: &mut App| {
-                        let _ = app_weak.update(cx, |app, cx| {
-                            app.open_file_in_viewer(path, display, cx)
-                        });
+                        let _ = app_weak
+                            .update(cx, |app, cx| app.open_file_in_viewer(path, display, cx));
                     }
                 }),
                 Rc::new({
                     let app_weak = app_weak.clone();
                     move |request, cx: &mut App| {
-                        let _ = app_weak
-                            .update(cx, |app, cx| app.on_file_op(request, cx));
+                        let _ = app_weak.update(cx, |app, cx| app.on_file_op(request, cx));
                     }
                 }),
                 Rc::new(move |cx: &mut App| {
@@ -1137,6 +1148,9 @@ impl OrbitApp {
             access_menu_focus: cx.focus_handle(),
             workflow_mode: WorkflowMode::default(),
             workflow_pending: None,
+            session_defaults: crate::session_defaults::SessionDefaults::load(),
+            mode_defaults_armed: false,
+            mode_defaults_pushed: ModeDefaultsPushed::default(),
             workflow_menu_open: false,
             workflow_menu_highlight: 0,
             workflow_menu_focus: cx.focus_handle(),
@@ -1884,6 +1898,15 @@ enum RuntimeState {
     Failed,
 }
 
+/// The RPC commands already sent to put the active session on its per-mode
+/// defaults, so a follow-up catalog refresh doesn't resend them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct ModeDefaultsPushed {
+    session: Option<String>,
+    model: Option<(String, String)>,
+    thinking: Option<String>,
+}
+
 /// Which dropdown is open on the settings surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SettingsSelect {
@@ -1900,6 +1923,13 @@ enum SettingsSelect {
     BackdropFade,
     /// The model the auto-title extension asks (Settings → Agent).
     TitleModel,
+    /// Per-mode session defaults, Settings → Agent (model + thinking each).
+    PlanModel,
+    PlanThinking,
+    BuildModel,
+    BuildThinking,
+    AskModel,
+    AskThinking,
 }
 
 // ── feature modules ───────────────────────────────────────────────────────

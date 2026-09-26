@@ -17,7 +17,7 @@ use gpui::{
 };
 
 use crate::app::{button_frame, icon_button_frame, BUTTON_GROUP};
-use crate::theme::tokens::{ButtonSize, IconSize, StyledExt};
+use crate::theme::tokens::{ButtonSize, StyledExt};
 use crate::theme::Theme;
 
 const LIST_OVERDRAW: f32 = 400.0;
@@ -350,7 +350,7 @@ fn render_jump_button(state: MessageScrollerState, theme: Theme) -> impl IntoEle
                     svg()
                         .path("icons/arrow-down.svg")
                         .flex_none()
-                        .size(IconSize::Medium.px(&theme))
+                        .size(ButtonSize::Large.icon_size().px(&theme))
                         .text_color(theme.text),
                 )
                 .when(unread, |button| {

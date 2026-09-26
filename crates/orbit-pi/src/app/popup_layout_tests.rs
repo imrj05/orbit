@@ -459,7 +459,11 @@ fn model_picker_arrows_move_the_highlight(cx: &mut gpui::TestAppContext) {
     // composer still had it, `Composer`'s `Up`/`Down` would win at runtime and
     // the list would never move.
     let filter_focused = cx.update(|window, cx| {
-        let (_, selector) = app.read(cx).model_selector.clone().expect("model picker open");
+        let (_, selector) = app
+            .read(cx)
+            .model_selector
+            .clone()
+            .expect("model picker open");
         selector.read(cx).focus_handle(cx).is_focused(window)
     });
     assert!(filter_focused, "the popup's filter holds focus");

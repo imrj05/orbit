@@ -20,7 +20,7 @@ use gpui::{
     Hsla, IntoElement, MouseButton, Pixels, Render, SharedString, Window,
 };
 
-use crate::theme::tokens::{Radius, DynamicSpacing, IconSize, TextSize};
+use crate::theme::tokens::{DynamicSpacing, IconSize, Radius, TextSize};
 use crate::theme::Theme;
 
 /// A body row's height. Every table height is a whole number of these plus the

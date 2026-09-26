@@ -5,13 +5,11 @@
 //! deliberately page-agnostic so a History row, a Graph row, an Issues row, or
 //! a future Pulls row can reuse them without caring which tab paints them.
 
-use gpui::{
-    div, prelude::*, px, AnyElement, ClickEvent, FontWeight, Hsla, Window,
-};
+use gpui::{div, prelude::*, px, AnyElement, ClickEvent, FontWeight, Hsla, Window};
 
 use crate::app::{button_frame, icon, icon_button_frame, press, BUTTON_GROUP};
 use crate::git::RefKind;
-use crate::theme::tokens::{Radius, TextSize, ButtonSize, DynamicSpacing, IconSize};
+use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
 use crate::theme::Theme;
 use crate::usage::tooltip::Tooltip;
 
@@ -46,7 +44,11 @@ pub fn check_box(checked: bool, theme: Theme) -> gpui::Div {
         .items_center()
         .justify_center()
         .when(checked, |box_| {
-            box_.child(icon("icons/check.svg", IconSize::Indicator.px(&theme), theme.send_fg))
+            box_.child(icon(
+                "icons/check.svg",
+                IconSize::Indicator.px(&theme),
+                theme.send_fg,
+            ))
         })
 }
 
@@ -106,17 +108,25 @@ pub fn row_button(
 ) -> AnyElement {
     let label = tr!(tip_key);
     press(
-        icon_button_frame(div().id(gpui::ElementId::Name(id.into())), &theme, ButtonSize::Default)
-            .group(BUTTON_GROUP)
-            .cursor_pointer()
-            .hover(|s| s.bg(theme.overlay)),
+        icon_button_frame(
+            div().id(gpui::ElementId::Name(id.into())),
+            &theme,
+            ButtonSize::Default,
+        )
+        .group(BUTTON_GROUP)
+        .cursor_pointer()
+        .hover(|s| s.bg(theme.overlay)),
     )
     .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into())
     .on_click(move |event, window, cx| {
         cx.stop_propagation();
         listener(event, window, cx);
     })
-    .child(icon(icon_path, IconSize::XSmall.px(&theme), theme.text_3))
+    .child(icon(
+        icon_path,
+        ButtonSize::Default.icon_size().px(&theme),
+        theme.text_3,
+    ))
     .into_any_element()
 }
 

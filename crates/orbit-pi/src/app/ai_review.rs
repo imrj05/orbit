@@ -11,8 +11,8 @@
 //! first hook and the access guard never raises a dialog nobody is routing.
 
 use super::*;
-use crate::git;
 use crate::ai_review::{self as model, ReviewKind, ReviewStatus};
+use crate::git;
 
 /// The dedicated reviewer process. Kept out of `lives`: it is not a user
 /// session and must never appear in the sidebar or its notifications.

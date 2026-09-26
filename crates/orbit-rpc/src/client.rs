@@ -118,6 +118,35 @@ impl PiClient {
         )
     }
 
+    /// Spawn with extra startup flags appended to the base `--mode rpc
+    /// --approve` argv. Orbit uses this for per-mode session defaults
+    /// (`--provider` / `--model` / `--thinking`).
+    pub fn spawn_with_args(
+        workspace_dir: &Path,
+        session_dir: Option<&Path>,
+        args: &[String],
+    ) -> Result<Self> {
+        Self::spawn_with_bin_and_args(&resolve_pi_bin(), workspace_dir, session_dir, args)
+    }
+
+    /// [`spawn_with_extensions`](Self::spawn_with_extensions) plus extra
+    /// startup flags (see [`spawn_with_args`](Self::spawn_with_args)).
+    pub fn spawn_with_extensions_and_args(
+        workspace_dir: &Path,
+        session_dir: Option<&Path>,
+        extensions: &[PathBuf],
+        args: &[String],
+    ) -> Result<Self> {
+        Self::spawn_inner(
+            &resolve_pi_bin(),
+            workspace_dir,
+            session_dir,
+            extensions,
+            &[],
+            args,
+        )
+    }
+
     /// Spawn with extra extension files **and** process-scoped environment
     /// variables. Orbit uses this for the AI reviewer: `ORBIT_WORKFLOW_MODE=ask`
     /// makes the workflow extension read-only from the first hook (before the
@@ -135,6 +164,7 @@ impl PiClient {
             session_dir,
             extensions,
             env,
+            &[],
         )
     }
 
@@ -146,7 +176,25 @@ impl PiClient {
         session_dir: Option<&Path>,
         extensions: &[PathBuf],
     ) -> Result<Self> {
-        Self::spawn_inner(bin, workspace_dir, session_dir, extensions, &[])
+        Self::spawn_with_bin_and_extensions_and_args(
+            bin,
+            workspace_dir,
+            session_dir,
+            extensions,
+            &[],
+        )
+    }
+
+    /// [`spawn_with_bin_and_extensions`](Self::spawn_with_bin_and_extensions)
+    /// plus extra startup flags. Test seam for the per-mode defaults.
+    pub fn spawn_with_bin_and_extensions_and_args(
+        bin: &str,
+        workspace_dir: &Path,
+        session_dir: Option<&Path>,
+        extensions: &[PathBuf],
+        args: &[String],
+    ) -> Result<Self> {
+        Self::spawn_inner(bin, workspace_dir, session_dir, extensions, &[], args)
     }
 
     /// Spawn a specific executable as the RPC server. [`spawn`](Self::spawn)
@@ -157,7 +205,17 @@ impl PiClient {
         workspace_dir: &Path,
         session_dir: Option<&Path>,
     ) -> Result<Self> {
-        Self::spawn_inner(bin, workspace_dir, session_dir, &[], &[])
+        Self::spawn_with_bin_and_args(bin, workspace_dir, session_dir, &[])
+    }
+
+    /// [`spawn_with_bin`](Self::spawn_with_bin) plus extra startup flags.
+    pub fn spawn_with_bin_and_args(
+        bin: &str,
+        workspace_dir: &Path,
+        session_dir: Option<&Path>,
+        args: &[String],
+    ) -> Result<Self> {
+        Self::spawn_inner(bin, workspace_dir, session_dir, &[], &[], args)
     }
 
     fn spawn_inner(
@@ -166,6 +224,7 @@ impl PiClient {
         session_dir: Option<&Path>,
         extensions: &[PathBuf],
         env: &[(&str, &str)],
+        extra_args: &[String],
     ) -> Result<Self> {
         let mut command = std::process::Command::new(bin);
         // `--approve` grants *project trust* (load project-local settings,
@@ -175,6 +234,10 @@ impl PiClient {
         // the access guard that confirms tool calls per the active mode.
         command
             .args(["--mode", "rpc", "--approve"])
+            // Per-mode session defaults land here (`--provider` / `--model` /
+            // `--thinking`). Empty for every existing caller, so argv is
+            // unchanged unless a default is configured.
+            .args(extra_args)
             .env("PI_SKIP_VERSION_CHECK", "1")
             // Augment PATH with Homebrew-style dirs so `node` (required by
             // pi's `#!/usr/bin/env node` shebang) resolves when launched from

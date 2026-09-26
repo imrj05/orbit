@@ -1548,9 +1548,7 @@ impl Transcript {
                 else {
                     return false;
                 };
-                let result = value
-                    .get("result")
-                    .or_else(|| value.get("partialResult"));
+                let result = value.get("result").or_else(|| value.get("partialResult"));
                 let before = (tool.output.clone(), tool.failed, tool.facts.clone());
                 tool.facts = result.map(ToolFacts::from_result).unwrap_or_default();
                 tool.output = result.map(normalize_tool_result);
@@ -3419,7 +3417,10 @@ mod tests {
         assert!(ToolFacts::from_result(&json!({"details": {"matchLimitReached": true}})).truncated);
         assert!(ToolFacts::from_result(&json!({"details": {"entryLimitReached": true}})).truncated);
         // No details is no facts — never invented.
-        assert_eq!(ToolFacts::from_result(&json!("plain")), ToolFacts::default());
+        assert_eq!(
+            ToolFacts::from_result(&json!("plain")),
+            ToolFacts::default()
+        );
         assert_eq!(
             ToolFacts::from_result(&json!({"content": [], "details": {}})),
             ToolFacts::default()
@@ -3850,5 +3851,4 @@ mod debug_tests {
             "load_from collapsed the trail to one message!"
         );
     }
-
 }

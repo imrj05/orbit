@@ -9,7 +9,7 @@
 use super::helpers::*;
 use super::*;
 use crate::skills::{self, Skill, SkillScope};
-use crate::theme::tokens::{Radius, TextSize, ButtonSize, DynamicSpacing, IconSize};
+use crate::theme::tokens::{input, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
 
 /// A Skills-page control, dispatched through one entry point.
 #[derive(Clone)]
@@ -64,7 +64,7 @@ impl OrbitApp {
             .mb(DynamicSpacing::Base08.px(&theme))
             .child(icon(
                 "icons/search.svg",
-                IconSize::Small.px(&theme),
+                input::ICON.px(&theme),
                 theme.text_3,
             ))
             .child(div().flex_1().min_w_0().child(self.skills_filter.clone()));
@@ -668,7 +668,11 @@ impl OrbitApp {
         };
         press(button)
             .when_some(icon_path, |button, path| {
-                button.child(icon(path, IconSize::XSmall.px(&theme), icon_color))
+                button.child(icon(
+                    path,
+                    ButtonSize::Medium.icon_size().px(&theme),
+                    icon_color,
+                ))
             })
             .child(div().child(label.to_string()))
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {

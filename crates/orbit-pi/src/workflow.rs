@@ -214,7 +214,10 @@ mod tests {
         let read = load_map_at(&path);
         assert_eq!(read.get("s1").map(String::as_str), Some("plan"));
         assert_eq!(read.get("s2").map(String::as_str), Some("build"));
-        assert_eq!(WorkflowMode::from_wire(read.get("s1").unwrap()), WorkflowMode::Plan);
+        assert_eq!(
+            WorkflowMode::from_wire(read.get("s1").unwrap()),
+            WorkflowMode::Plan
+        );
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 }

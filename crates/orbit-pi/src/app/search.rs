@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::app::{icon_button_frame, picker_search_frame, press, BUTTON_GROUP};
-use crate::theme::tokens::{ButtonSize, IconSize, StyledExt, TextSize};
+use crate::theme::tokens::{input, ButtonSize, StyledExt, TextSize};
 
 /// State for the open find bar. Dropping this closes the surface.
 pub(super) struct TranscriptSearch {
@@ -202,7 +202,7 @@ impl OrbitApp {
             .on_action(cx.listener(Self::on_search_close))
             .child(icon(
                 "icons/search.svg",
-                IconSize::Small.px(&theme),
+                input::ICON.px(&theme),
                 theme.text_3,
             ))
             .child(div().flex_1().min_w_0().child(search.input.clone()))
@@ -238,7 +238,11 @@ impl OrbitApp {
                             this.on_search_close(&crate::SearchClose, window, cx)
                         }),
                     )
-                    .child("×"),
+                    .child(icon(
+                        "icons/x.svg",
+                        ButtonSize::Compact.icon_size().px(&theme),
+                        theme.text_2,
+                    )),
             )
             .into_any_element(),
         )
@@ -260,6 +264,10 @@ fn search_nav_button(
                 .hover(|s| s.bg(theme.overlay))
                 .on_mouse_up(MouseButton::Left, listener)
         })
-        .child(icon(glyph, IconSize::XSmall.px(&theme), theme.text_2))
+        .child(icon(
+            glyph,
+            ButtonSize::Compact.icon_size().px(&theme),
+            theme.text_2,
+        ))
         .into_any_element()
 }

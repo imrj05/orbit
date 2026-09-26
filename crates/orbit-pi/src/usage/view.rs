@@ -65,7 +65,9 @@ use crate::app::{
     icon_button_frame, picker_search_frame, press, BUTTON_GROUP,
 };
 use crate::composer::ComposerInput;
-use crate::theme::tokens::{button, TextSize, popover, ButtonSize, DynamicSpacing, IconSize, Radius};
+use crate::theme::tokens::{
+    button, input, popover, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
+};
 use crate::theme::{self, Theme};
 
 /// Inner column width for a data surface (§58): wide enough for a full table,
@@ -186,7 +188,7 @@ impl UsagePage {
                 })
                 .child(icon(
                     "icons/arrow-left.svg",
-                    IconSize::Small.px(&theme),
+                    ButtonSize::Medium.icon_size().px(&theme),
                     theme.text_2,
                 ))
                 .child(div().text_color(theme.text_2).child(tr!("view.back"))),
@@ -907,12 +909,34 @@ impl UsagePage {
             .flex_col()
             .gap(DynamicSpacing::Base12.px(&theme))
             .child(bar(320., 26.))
-            .child(div().h(px(168.)).w_full().rounded(Radius::Large.px(&theme)).bg(theme.trough))
-            .child(div().h(px(96.)).w_full().rounded(Radius::Large.px(&theme)).bg(theme.trough))
-            .child(div().h(px(72.)).w_full().rounded(Radius::Large.px(&theme)).bg(theme.trough));
+            .child(
+                div()
+                    .h(px(168.))
+                    .w_full()
+                    .rounded(Radius::Large.px(&theme))
+                    .bg(theme.trough),
+            )
+            .child(
+                div()
+                    .h(px(96.))
+                    .w_full()
+                    .rounded(Radius::Large.px(&theme))
+                    .bg(theme.trough),
+            )
+            .child(
+                div()
+                    .h(px(72.))
+                    .w_full()
+                    .rounded(Radius::Large.px(&theme))
+                    .bg(theme.trough),
+            );
 
         // Records: a header rule and a handful of rows.
-        let mut records = div().w_full().pt(DynamicSpacing::Base12.px(&theme)).flex().flex_col();
+        let mut records = div()
+            .w_full()
+            .pt(DynamicSpacing::Base12.px(&theme))
+            .flex()
+            .flex_col();
         for ix in 0..6 {
             records = records.child(
                 div()
@@ -987,7 +1011,13 @@ impl UsagePage {
                         .flex_col()
                         .gap(DynamicSpacing::Base12.px(&theme))
                         .child(bar(220., 26.))
-                        .child(div().h(px(96.)).w_full().rounded(Radius::Large.px(&theme)).bg(theme.trough))
+                        .child(
+                            div()
+                                .h(px(96.))
+                                .w_full()
+                                .rounded(Radius::Large.px(&theme))
+                                .bg(theme.trough),
+                        )
                         .into_any_element(),
                 ))
                 .child(section_shell(records.into_any_element())),
@@ -1386,10 +1416,14 @@ impl UsagePage {
             let fail_entity = cx.entity();
             values.push(
                 press(
-                    button_frame(div().id("usage-summary-failures"), &theme, ButtonSize::Compact)
-                        .text_color(theme.crit)
-                        .cursor_pointer()
-                        .hover(|style| style.text_color(theme.text)),
+                    button_frame(
+                        div().id("usage-summary-failures"),
+                        &theme,
+                        ButtonSize::Compact,
+                    )
+                    .text_color(theme.crit)
+                    .cursor_pointer()
+                    .hover(|style| style.text_color(theme.text)),
                 )
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     fail_entity.update(cx, |page, cx| page.set_errors_only(true, cx));
@@ -1436,7 +1470,11 @@ impl UsagePage {
                     .items_start()
                     .gap(DynamicSpacing::Base08.px(&theme))
                     .text_size(TextSize::Small.px(&theme))
-                    .child(div().pt(DynamicSpacing::Base01.px(&theme)).child(icon(path, IconSize::XSmall.px(&theme), color)))
+                    .child(div().pt(DynamicSpacing::Base01.px(&theme)).child(icon(
+                        path,
+                        IconSize::XSmall.px(&theme),
+                        color,
+                    )))
                     .child(
                         div()
                             .flex_1()
@@ -2608,7 +2646,12 @@ impl UsagePage {
         theme: Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mut chart = div().w_full().pb(DynamicSpacing::Base12.px(&theme)).flex().flex_col().gap(DynamicSpacing::Base02.px(&theme));
+        let mut chart = div()
+            .w_full()
+            .pb(DynamicSpacing::Base12.px(&theme))
+            .flex()
+            .flex_col()
+            .gap(DynamicSpacing::Base02.px(&theme));
         if rows.is_empty() {
             chart = chart.child(empty_line(&tr!("usage.no_usage_in_range"), theme));
         }
@@ -2659,7 +2702,12 @@ impl UsagePage {
 
     /// The ranked bar chart above the Tools table: the busiest tools as bars.
     fn tools_chart(&self, rows: &[ToolRow], total: u64, theme: Theme) -> AnyElement {
-        let mut chart = div().w_full().pb(DynamicSpacing::Base12.px(&theme)).flex().flex_col().gap(DynamicSpacing::Base02.px(&theme));
+        let mut chart = div()
+            .w_full()
+            .pb(DynamicSpacing::Base12.px(&theme))
+            .flex()
+            .flex_col()
+            .gap(DynamicSpacing::Base02.px(&theme));
         if rows.is_empty() {
             chart = chart.child(empty_line(&tr!("usage.no_tool_calls_in_range"), theme));
         }
@@ -2863,7 +2911,11 @@ impl UsagePage {
             );
         }
 
-        let mut content = div().flex().flex_col().gap(DynamicSpacing::Base08.px(&theme)).child(stack);
+        let mut content = div()
+            .flex()
+            .flex_col()
+            .gap(DynamicSpacing::Base08.px(&theme))
+            .child(stack);
         for (label, value, color, metric) in slices.iter() {
             // Clicking a component points the main chart at it (§19); hover
             // surfaces the exact figure (§42).
@@ -2895,7 +2947,13 @@ impl UsagePage {
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         entity.update(cx, |page, cx| page.set_metric(metric, cx));
                     })
-                    .child(div().size(px(8.)).rounded(Radius::XSmall.px(&theme)).flex_none().bg(*color))
+                    .child(
+                        div()
+                            .size(px(8.))
+                            .rounded(Radius::XSmall.px(&theme))
+                            .flex_none()
+                            .bg(*color),
+                    )
                     .child(
                         div()
                             .flex_1()
@@ -2954,7 +3012,10 @@ impl UsagePage {
         let cache = &snapshot.cache;
         let available = cache.is_available();
         let hit = cache.hit_rate;
-        let mut content = div().flex().flex_col().gap(DynamicSpacing::Base08.px(&theme));
+        let mut content = div()
+            .flex()
+            .flex_col()
+            .gap(DynamicSpacing::Base08.px(&theme));
         if !available {
             content = content.child(empty_line(&tr!("usage.cache_unavailable_range"), theme));
             return div().w_full().child(content).into_any_element();
@@ -3004,29 +3065,33 @@ impl UsagePage {
         }
 
         content = content.child(
-            div().flex().flex_col().gap(DynamicSpacing::Base02.px(&theme)).children(
-                [
-                    (tr!("usage.cache_reads"), format::compact(cache.cache_read)),
-                    (
-                        tr!("usage.cache_writes"),
-                        format::compact(cache.cache_write),
-                    ),
-                    (
-                        tr!("usage.uncached_input"),
-                        format::compact(cache.uncached_input),
-                    ),
-                    (
-                        tr!("usage.requests_served_from_cache"),
-                        tr!(
-                            "usage.of_total",
-                            count = format::count(cache.cached_requests),
-                            total = format::count(snapshot.summary.totals.requests)
+            div()
+                .flex()
+                .flex_col()
+                .gap(DynamicSpacing::Base02.px(&theme))
+                .children(
+                    [
+                        (tr!("usage.cache_reads"), format::compact(cache.cache_read)),
+                        (
+                            tr!("usage.cache_writes"),
+                            format::compact(cache.cache_write),
                         ),
-                    ),
-                ]
-                .into_iter()
-                .map(|(label, value)| stat_row(&label, &value, theme)),
-            ),
+                        (
+                            tr!("usage.uncached_input"),
+                            format::compact(cache.uncached_input),
+                        ),
+                        (
+                            tr!("usage.requests_served_from_cache"),
+                            tr!(
+                                "usage.of_total",
+                                count = format::count(cache.cached_requests),
+                                total = format::count(snapshot.summary.totals.requests)
+                            ),
+                        ),
+                    ]
+                    .into_iter()
+                    .map(|(label, value)| stat_row(&label, &value, theme)),
+                ),
         );
 
         // Hit rate across the window: one bar per bucket, so a drop is visible.
@@ -3070,14 +3135,10 @@ impl UsagePage {
                 )
                 .child(
                     press(
-                        button_frame(
-                            div().id("usage-cache-toggle"),
-                            &theme,
-                            ButtonSize::Compact,
-                        )
-                        .text_color(theme.text_2)
-                        .cursor_pointer()
-                        .hover(|style| style.text_color(theme.accent)),
+                        button_frame(div().id("usage-cache-toggle"), &theme, ButtonSize::Compact)
+                            .text_color(theme.text_2)
+                            .cursor_pointer()
+                            .hover(|style| style.text_color(theme.accent)),
                     )
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         entity.update(cx, |page, cx| page.set_cached_only(!cached_only, cx));
@@ -4216,7 +4277,7 @@ fn open_session_cell(
                 })
                 .child(icon(
                     "icons/arrow-up-right.svg",
-                    IconSize::XSmall.px(&theme),
+                    ButtonSize::Default.icon_size().px(&theme),
                     theme.text_3,
                 )),
         )
@@ -4555,7 +4616,11 @@ where
     T: Copy + PartialEq + 'static,
 {
     let on_pick: SegmentPick<T> = Rc::new(on_pick);
-    let resting = if inset { theme.bg_main } else { theme.bg_raised };
+    let resting = if inset {
+        theme.bg_main
+    } else {
+        theme.bg_raised
+    };
     let radius = button::RADIUS.px(&theme);
     let many = options.len() > 1;
     let last = options.len().saturating_sub(1);
@@ -4610,7 +4675,11 @@ fn search_box(input: &Entity<ComposerInput>, theme: Theme) -> AnyElement {
     picker_search_frame(div(), &theme)
         .flex_1()
         .min_w(px(180.))
-        .child(icon("icons/search.svg", IconSize::Small.px(&theme), theme.text_3))
+        .child(icon(
+            "icons/search.svg",
+            input::ICON.px(&theme),
+            theme.text_3,
+        ))
         .child(div().flex_1().min_w_0().child(input.clone()))
         .into_any_element()
 }

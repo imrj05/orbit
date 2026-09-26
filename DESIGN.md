@@ -267,7 +267,8 @@ fade on the new-task page.
 
 ### Chips
 - **Style:** 28px tall, 8px radius, `bg_raised` + hairline, 12px ink, optional leading
-  12–13px icon and trailing chevron.
+  Small (14px) icon and XSmall (12px) trailing chevron — `ButtonSize::icon_size`
+  for the leading glyph, the chip-caret size for the chevron.
 - **State:** open/selected = `active` fill + `active_fg` text; hover = `bg_hover`.
 
 ### Metric cells
@@ -296,7 +297,7 @@ fade on the new-task page.
   shift-click extends — matching native text fields.
 
 ### Navigation
-- Sidebar rows: 28px tall, 6px radius, 13px icon in a fixed 20px slot, label in
+- Sidebar rows: 28px tall, 6px radius, 14px icon (Small) in a fixed 20px slot, label in
   `text_2`/`text_3`; hover fills `bg_hover`; the active destination is marked by
   `active` fill with `active_fg`, never by accent color alone.
 - A running session row leads with an 11px spinner in the accent and its title carries a

@@ -24,7 +24,7 @@ use gpui::{
 use super::aggregate::{ChartMetric, DailyCalendar};
 use super::format;
 use super::model::{local_datetime, stamp_label, Granularity};
-use crate::theme::tokens::{Radius, TextSize, DynamicSpacing, StyledExt};
+use crate::theme::tokens::{DynamicSpacing, Radius, StyledExt, TextSize};
 use crate::theme::Theme;
 
 /// The smallest cell edge, in points.
@@ -430,13 +430,17 @@ fn day_readout(
         rows.push((tr!("usage.metric_errors"), format::exact(totals.errors)));
     }
 
-    let mut body = div().flex().flex_col().gap(DynamicSpacing::Base02.px(&theme)).child(
-        div()
-            .text_size(TextSize::Small.px(&theme))
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(theme.text)
-            .child(stamp_label(day.start_ms, Granularity::Day)),
-    );
+    let mut body = div()
+        .flex()
+        .flex_col()
+        .gap(DynamicSpacing::Base02.px(&theme))
+        .child(
+            div()
+                .text_size(TextSize::Small.px(&theme))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text)
+                .child(stamp_label(day.start_ms, Granularity::Day)),
+        );
     for (label, value) in rows {
         body = body.child(
             div()
@@ -480,7 +484,10 @@ fn day_readout(
 
 /// "Less ▢▢▢▢▢ More", the shade key.
 fn legend(theme: Theme) -> AnyElement {
-    let mut swatches = div().flex().items_center().gap(DynamicSpacing::Base02.px(&theme));
+    let mut swatches = div()
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base02.px(&theme));
     for shade in 0..=4u8 {
         swatches = swatches.child(
             div()

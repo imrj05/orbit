@@ -36,8 +36,8 @@ use crate::favorites::Favorites;
 use crate::model_selector_match::is_model_selected;
 use crate::providers::provider_display_name;
 use crate::theme::tokens::{
-    context_menu, list, list_item, picker, BufferLineHeight, ButtonSize, DynamicSpacing, IconSize,
-    Radius, TextSize,
+    context_menu, input, list, list_item, picker, BufferLineHeight, ButtonSize, DynamicSpacing,
+    IconSize, Radius, TextSize,
 };
 use crate::theme::{self, Theme};
 
@@ -893,7 +893,7 @@ impl Render for ModelSelector {
                 picker_search_frame(div(), &theme)
                     .child(icon(
                         "icons/search.svg",
-                        IconSize::Small.px(&theme),
+                        input::ICON.px(&theme),
                         theme.text_3,
                     ))
                     .child(div().flex_1().min_w_0().child(self.filter.clone())),
@@ -1152,7 +1152,7 @@ fn favorite_button(
         })
         .child(icon(
             "icons/star.svg",
-            IconSize::Small.px(&theme),
+            ButtonSize::Default.icon_size().px(&theme),
             if favorited {
                 theme.accent
             } else {

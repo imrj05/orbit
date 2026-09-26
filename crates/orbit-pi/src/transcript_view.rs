@@ -25,12 +25,12 @@ use std::{
 
 use gpui::{
     anchored, canvas, deferred, div, img, linear_color_stop, linear_gradient, list, point,
-    prelude::*, px, Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem,
-    CursorStyle, DispatchPhase, Element, ElementId, Font, FontFeatures, FontStyle, FontWeight,
-    GlobalElementId, Hitbox, HitboxBehavior, Hsla, Image, ImageSource, InspectorElementId,
-    InteractiveText, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ObjectFit, Pixels, ScrollHandle, ScrollWheelEvent, SharedString, StrikethroughStyle,
-    StyledText, TextAlign, TextLayout, TextRun, UnderlineStyle, Window,
+    prelude::*, px, Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem, CursorStyle,
+    DispatchPhase, Element, ElementId, Font, FontFeatures, FontStyle, FontWeight, GlobalElementId,
+    Hitbox, HitboxBehavior, Hsla, Image, ImageSource, InspectorElementId, InteractiveText,
+    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels,
+    ScrollHandle, ScrollWheelEvent, SharedString, StrikethroughStyle, StyledText, TextAlign,
+    TextLayout, TextRun, UnderlineStyle, Window,
 };
 
 use std::ops::Range;
@@ -1622,7 +1622,9 @@ fn render_row(paint: RowPaint) -> AnyElement {
         .px(DynamicSpacing::Base20.px(&paint.theme))
         .py(DynamicSpacing::Base08.px(&paint.theme))
         .when(first, |row| row.pt(DynamicSpacing::Base24.px(&paint.theme)))
-        .when(followup, |row| row.pt(DynamicSpacing::Base32.px(&paint.theme)))
+        .when(followup, |row| {
+            row.pt(DynamicSpacing::Base32.px(&paint.theme))
+        })
         .when(last, |row| row.pb(DynamicSpacing::Base24.px(&paint.theme)))
         // In-transcript find: matched rows get a quiet wash; the selected
         // hit is stronger. Painted on the full-width row so it reads as a
@@ -1801,8 +1803,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
                 // and then works again must not hoist that work above the
                 // answer that preceded it.
                 let group_end = answer_start.map_or(message.steps.len(), |answer| answer + 1);
-                let group_live =
-                    activity_group_is_live(paint.live, group_end, &message.steps);
+                let group_live = activity_group_is_live(paint.live, group_end, &message.steps);
                 let open = paint
                     .expanded_activities
                     .borrow()
@@ -1874,8 +1875,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
                 group_end += 1;
             }
             covered_until = group_end;
-            let group_live =
-                activity_group_is_live(paint.live, group_end, &message.steps);
+            let group_live = activity_group_is_live(paint.live, group_end, &message.steps);
             let open = paint
                 .expanded_activities
                 .borrow()
@@ -1971,7 +1971,11 @@ fn render_assistant_error(error: &str, ix: usize, theme: Theme) -> AnyElement {
         .flex()
         .items_start()
         .gap_2p5()
-        .child(glyph("icons/info.svg", IconSize::Medium.px(&theme), theme.crit))
+        .child(glyph(
+            "icons/info.svg",
+            IconSize::Medium.px(&theme),
+            theme.crit,
+        ))
         .child(
             div()
                 .flex_1()
@@ -2027,8 +2031,9 @@ fn activity_title(steps: &[Step], live: bool) -> String {
         for tool in &step.tools {
             match tool.name.as_str() {
                 "bash" | "shell" | "terminal" | "exec" | "run" => commands += 1,
-                "read" | "view" | "grep" | "find" | "glob" | "search" | "list" | "ls"
-                | "tree" => reads += 1,
+                "read" | "view" | "grep" | "find" | "glob" | "search" | "list" | "ls" | "tree" => {
+                    reads += 1
+                }
                 "edit" | "write" => edits += 1,
                 _ => other += 1,
             }
@@ -2206,7 +2211,7 @@ fn render_activity_group(
                 } else {
                     "icons/chevron-right.svg"
                 },
-                IconSize::Indicator.px(&theme),
+                IconSize::XSmall.px(&theme),
                 theme.text_3,
             ))
             .on_click({
@@ -2245,11 +2250,8 @@ fn render_activity_group(
                 // The card also settles the moment its step moves on to
                 // answer text or a tool call — pi sends no `thinking_end`, so
                 // the turn's own end is too late to close it.
-                let thinking_live = thinking_is_live(
-                    live,
-                    range.start + step_ix + 1 == all_steps.len(),
-                    step,
-                );
+                let thinking_live =
+                    thinking_is_live(live, range.start + step_ix + 1 == all_steps.len(), step);
                 body = body.child(render_thinking_body(
                     &step.thinking,
                     thinking_live,
@@ -2381,7 +2383,11 @@ fn render_thinking_body(
     let thought_icon: AnyElement = if live && !theme.ui.reduce_motion {
         div()
             .flex_none()
-            .child(glyph("icons/tools/thinking.svg", IconSize::Small.px(&theme), theme.accent))
+            .child(glyph(
+                "icons/tools/thinking.svg",
+                IconSize::Small.px(&theme),
+                theme.accent,
+            ))
             .with_animation(
                 ElementId::NamedInteger("thought-icon".into(), id),
                 Animation::new(Duration::from_millis(1600)).repeat(),
@@ -2659,7 +2665,11 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
         .gap(DynamicSpacing::Base08.px(&theme))
         .text_size(TextSize::Default.px(&theme))
         .line_height(BufferLineHeight::Standard.relative())
-        .child(glyph("icons/task.svg", IconSize::Small.px(&theme), theme.text_3))
+        .child(glyph(
+            "icons/task.svg",
+            IconSize::Small.px(&theme),
+            theme.text_3,
+        ))
         .child(
             div()
                 .flex_none()
@@ -2768,7 +2778,11 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
                     .child(SharedString::from(option.label.clone())),
             );
             if chosen {
-                row = row.child(glyph("icons/check.svg", IconSize::XSmall.px(&theme), theme.accent));
+                row = row.child(glyph(
+                    "icons/check.svg",
+                    IconSize::XSmall.px(&theme),
+                    theme.accent,
+                ));
             }
             list = list.child(row);
         }
@@ -2958,10 +2972,18 @@ fn render_activity_card(
                     ))
                 })
                 .when(tool.failed, |row| {
-                    row.child(glyph("icons/stop.svg", IconSize::XSmall.px(&theme), theme.del_red))
+                    row.child(glyph(
+                        "icons/stop.svg",
+                        IconSize::XSmall.px(&theme),
+                        theme.del_red,
+                    ))
                 })
                 .when(complete && !tool.failed, |row| {
-                    row.child(glyph("icons/check.svg", IconSize::XSmall.px(&theme), theme.text_3))
+                    row.child(glyph(
+                        "icons/check.svg",
+                        IconSize::XSmall.px(&theme),
+                        theme.text_3,
+                    ))
                 })
                 .when_some(diff.clone(), |row, rows| {
                     let copied = copied_sections
@@ -2987,7 +3009,7 @@ fn render_activity_card(
                             } else {
                                 "icons/copy.svg"
                             },
-                            IconSize::XSmall.px(&theme),
+                            ButtonSize::Compact.icon_size().px(&theme),
                             if copied { theme.ok_green } else { theme.text_3 },
                         ))
                         .on_click(move |_, _, cx| {
@@ -3077,7 +3099,11 @@ fn truncation_chip(facts: &ToolFacts, theme: Theme) -> Option<AnyElement> {
             .text_size(TextSize::Small.px(&theme))
             .line_height(theme.ui_px(15.))
             .text_color(theme.warn)
-            .child(glyph("icons/tools/truncated.svg", IconSize::XSmall.px(&theme), theme.warn))
+            .child(glyph(
+                "icons/tools/truncated.svg",
+                IconSize::XSmall.px(&theme),
+                theme.warn,
+            ))
             .child(label)
             .into_any_element(),
     )
@@ -3117,7 +3143,11 @@ fn render_tool_error_strip(tool: &ToolCall, theme: Theme) -> impl IntoElement {
         .items_center()
         .gap(DynamicSpacing::Base06.px(&theme))
         .flex_none()
-        .child(glyph("icons/stop.svg", IconSize::XSmall.px(&theme), theme.del_red))
+        .child(glyph(
+            "icons/stop.svg",
+            IconSize::XSmall.px(&theme),
+            theme.del_red,
+        ))
         .child(
             div()
                 .min_w_0()
@@ -3311,7 +3341,7 @@ fn render_detail_section(
                         } else {
                             "icons/copy.svg"
                         },
-                        IconSize::XSmall.px(&theme),
+                        ButtonSize::Default.icon_size().px(&theme),
                         if copied { theme.ok_green } else { theme.text_3 },
                     ))
                     .on_click(move |_, _, cx| {
@@ -3375,7 +3405,7 @@ fn render_detail_section(
                 } else {
                     "icons/chevron-right.svg"
                 },
-                IconSize::Indicator.px(&theme),
+                IconSize::XSmall.px(&theme),
                 theme.text_3,
             ))
             .child(toggle_label)
@@ -3737,7 +3767,7 @@ fn render_edit_diff(
                 } else {
                     "icons/chevron-right.svg"
                 },
-                IconSize::Indicator.px(&theme),
+                IconSize::XSmall.px(&theme),
                 theme.text_3,
             ))
             .child(label)
@@ -3941,7 +3971,7 @@ fn render_message_footer(
         } else {
             "icons/copy.svg"
         },
-        IconSize::Medium.px(&theme),
+        FOOTER_BUTTON.icon_size().px(&theme),
         if copied { theme.ok_green } else { theme.text_3 },
     ))
     .on_click(move |_, _, cx| {
@@ -4326,7 +4356,11 @@ fn render_stopped_marker(theme: Theme) -> impl IntoElement {
         .flex()
         .items_center()
         .gap(px(8.))
-        .child(glyph("icons/stop.svg", IconSize::XSmall.px(&theme), theme.text_3))
+        .child(glyph(
+            "icons/stop.svg",
+            IconSize::XSmall.px(&theme),
+            theme.text_3,
+        ))
         .child(
             div()
                 .text_size(TextSize::Default.px(&theme))
@@ -5656,9 +5690,11 @@ fn task_checkbox(checked: bool, theme: Theme) -> AnyElement {
         .items_center()
         .justify_center();
     if checked {
-        box_ = box_
-            .bg(theme.accent)
-            .child(glyph("icons/check.svg", IconSize::Indicator.px(&theme), theme.send_fg));
+        box_ = box_.bg(theme.accent).child(glyph(
+            "icons/check.svg",
+            IconSize::Indicator.px(&theme),
+            theme.send_fg,
+        ));
     } else {
         box_ = box_.border_1().border_color(theme.border_strong);
     }
@@ -5721,7 +5757,7 @@ fn render_code_block(
         } else {
             "icons/copy.svg"
         },
-        IconSize::Small.px(&theme),
+        CODE_COPY_BUTTON.icon_size().px(&theme),
         if copied { theme.ok_green } else { theme.text_3 },
     ))
     .on_click(move |_, _, cx| {
@@ -6270,7 +6306,11 @@ pub(crate) fn render_changed_files(
         .font_weight(FontWeight::MEDIUM)
         .text_color(theme.text_2)
         .hover(|style| style.bg(theme.bg_hover).text_color(theme.text))
-        .child(glyph("icons/file-diff.svg", IconSize::XSmall.px(&theme), theme.text_3))
+        .child(glyph(
+            "icons/file-diff.svg",
+            ButtonSize::Medium.icon_size().px(&theme),
+            theme.text_3,
+        ))
         .child(tr!("transcript_view.review"))
         .on_click(move |_, window, cx| review(window, cx))
     });
@@ -6293,7 +6333,11 @@ pub(crate) fn render_changed_files(
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(glyph("icons/file-diff.svg", IconSize::Small.px(&theme), theme.text_2)),
+                .child(glyph(
+                    "icons/file-diff.svg",
+                    IconSize::Small.px(&theme),
+                    theme.text_2,
+                )),
         )
         .child(
             div()
@@ -6804,7 +6848,14 @@ mod tests {
         // separate by tone instead — callers paint ink.
         assert_eq!(accent_shifted(gpui::hsla(0.0, 0.0, 0.5, 1.0), 0.5), None);
         // Wrapping past 1.0 is modulo, not clamping.
-        assert!((accent_shifted(gpui::hsla(0.9, 0.6, 0.5, 1.0), 0.3).unwrap().h - 0.2).abs() < 1e-6);
+        assert!(
+            (accent_shifted(gpui::hsla(0.9, 0.6, 0.5, 1.0), 0.3)
+                .unwrap()
+                .h
+                - 0.2)
+                .abs()
+                < 1e-6
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use super::helpers::*;
 use super::*;
-use crate::theme::tokens::{TextSize, ButtonSize, IconSize, StyledExt};
+use crate::theme::tokens::{ButtonSize, IconSize, StyledExt, TextSize};
 use crate::toast::{Toast, ToastKind};
 
 /// Width of a toast card. A stack hugs the window's bottom-right corner, so
@@ -151,7 +151,7 @@ impl OrbitApp {
             .child(
                 icon_button_frame(div(), &theme, ButtonSize::Compact).child(icon(
                     "icons/x.svg",
-                    IconSize::XSmall.px(&theme),
+                    ButtonSize::Compact.icon_size().px(&theme),
                     theme.text_3,
                 )),
             );

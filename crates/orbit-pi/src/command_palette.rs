@@ -30,9 +30,9 @@ use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
 use gpui::{
-    deferred, div, point, prelude::*, px, App, Context, ElementId, Entity, FocusHandle,
-    Focusable, FontWeight, IntoElement, MouseButton, MouseDownEvent, ParentElement, Render,
-    ScrollHandle, SharedString, Styled, Window,
+    deferred, div, point, prelude::*, px, App, Context, ElementId, Entity, FocusHandle, Focusable,
+    FontWeight, IntoElement, MouseButton, MouseDownEvent, ParentElement, Render, ScrollHandle,
+    SharedString, Styled, Window,
 };
 
 use crate::app::{
@@ -41,7 +41,7 @@ use crate::app::{
 use crate::composer::ComposerInput;
 use crate::sessions::SessionInfo;
 use crate::theme::tokens::{
-    context_menu, list, list_item, picker, BufferLineHeight, ButtonSize, DynamicSpacing, IconSize,
+    context_menu, input, list, list_item, picker, BufferLineHeight, ButtonSize, DynamicSpacing,
     Radius, TextSize,
 };
 use crate::theme::{self, Theme};
@@ -776,32 +776,35 @@ impl Render for CommandPalette {
             .flex_col();
         if rows.is_empty() {
             // Zed's no-match state: one muted picker entry.
-            list = list.child(
-                picker_entry(div(), &theme)
-                    .h(picker::two_line_entry_height(&theme))
-                    .flex_none()
-                    .text_color(theme.text_3)
-                    .child(icon("icons/search.svg", context_menu::ICON.px(&theme), theme.text_3))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(tr!("command_palette.no_results")),
-                            )
-                            .child(
-                                div()
-                                    .text_size(picker::SECONDARY_TEXT.px(&theme))
-                                    .child(tr!(
+            list =
+                list.child(
+                    picker_entry(div(), &theme)
+                        .h(picker::two_line_entry_height(&theme))
+                        .flex_none()
+                        .text_color(theme.text_3)
+                        .child(icon(
+                            "icons/search.svg",
+                            context_menu::ICON.px(&theme),
+                            theme.text_3,
+                        ))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(tr!("command_palette.no_results")),
+                                )
+                                .child(div().text_size(picker::SECONDARY_TEXT.px(&theme)).child(
+                                    tr!(
                                         "command_palette.try_a_session_title_a_command_or_a_setting"
-                                    )),
-                            ),
-                    ),
-            );
+                                    ),
+                                )),
+                        ),
+                );
         } else {
             let mut prev_section = None;
             for ix in 0..rows.len() {
@@ -850,7 +853,11 @@ impl Render for CommandPalette {
             .child(
                 picker_search_frame(div(), &theme)
                     .text_color(theme.text)
-                    .child(icon("icons/search.svg", IconSize::Small.px(&theme), theme.text_3))
+                    .child(icon(
+                        "icons/search.svg",
+                        input::ICON.px(&theme),
+                        theme.text_3,
+                    ))
                     .child(div().flex_1().min_w_0().child(self.filter.clone())),
             )
             .child(list)
@@ -901,7 +908,10 @@ fn render_row(
     let item = rows[ix].clone();
     let this = this.clone();
     let row = picker_entry(
-        div().id(ElementId::NamedInteger("command-palette-row".into(), ix as u64)),
+        div().id(ElementId::NamedInteger(
+            "command-palette-row".into(),
+            ix as u64,
+        )),
         &theme,
     );
     row.h(picker::entry_height(&theme))
@@ -1051,7 +1061,10 @@ mod tests {
             item(Section::Commands, 2),
         ];
         let m = PaletteMetrics::new(&Theme::dark());
-        assert_eq!(CommandPalette::row_top(&rows, 0, &m), m.list_pad_y + m.header_h);
+        assert_eq!(
+            CommandPalette::row_top(&rows, 0, &m),
+            m.list_pad_y + m.header_h
+        );
         assert_eq!(
             CommandPalette::row_top(&rows, 1, &m),
             m.list_pad_y + m.header_h + m.row_h
@@ -1109,7 +1122,11 @@ mod tests {
 
         let metrics = PaletteMetrics::new(&Theme::dark());
         let rows = cx.update(|_, cx| palette.read(cx).results(""));
-        assert!(rows.len() > 12, "need enough rows to scroll: {}", rows.len());
+        assert!(
+            rows.len() > 12,
+            "need enough rows to scroll: {}",
+            rows.len()
+        );
 
         // The test window's viewport isn't capped by the draw size, so force a
         // short viewport (four rows) the way a short window would.
