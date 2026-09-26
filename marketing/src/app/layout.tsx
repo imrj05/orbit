@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Geist_Mono, Sora } from "next/font/google";
 import Script from "next/script";
 import { JsonLd } from "@/components/json-ld";
+import { LightboxProvider } from "@/components/lightbox";
 import { SITE } from "@/lib/site";
 import "./globals.css";
 
@@ -132,7 +133,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }}
         />
         <JsonLd data={JSON_LD} />
-        {children}
+        <LightboxProvider>{children}</LightboxProvider>
       </body>
     </html>
   );

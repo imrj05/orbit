@@ -330,12 +330,17 @@ impl Render for OrbitApp {
         // The top bar spans the whole main area, so the docks do not squeeze
         // it — compact only when the main area itself is tight.
         let compact_chrome = f32::from(main_width + explorer_width + pane_width) < 720.;
-        // While the Git card is open, its title moves up into the shared top
-        // bar (see `GitPanel::top_bar_leading`); the branch selector stays on
-        // the card's tab row, next to the view it scopes.
+        // While a feature card is open, its title moves up into the shared top
+        // bar (see `GitPanel::top_bar_leading` / `UsagePage::top_bar_leading`);
+        // the card's own chrome (branch selector, filters) stays with the view
+        // it scopes.
         let git_leading = self.git_open.then(|| {
             self.git_panel
                 .update(cx, |panel, cx| panel.top_bar_leading(theme, cx))
+        });
+        let usage_leading = self.usage_open.then(|| {
+            self.usage
+                .update(cx, |page, cx| page.top_bar_leading(theme, cx))
         });
         let mut top_controls = div().flex_none().flex().items_center().gap_2();
         // Provider quota — a compact, provider-independent headroom meter.
@@ -828,7 +833,7 @@ impl Render for OrbitApp {
                                     .flex()
                                     .items_center(),
                             );
-                            if let Some(leading) = git_leading {
+                            if let Some(leading) = git_leading.or(usage_leading) {
                                 left.child(leading)
                             } else {
                                 left.child(

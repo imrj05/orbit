@@ -19,17 +19,18 @@
 //! is pi's own session measurement; nothing is invented.
 //!
 //! **FIRST VIEWPORT.** 44px header + filter bar with Simple | Details. Simple
-//! is the scan: Summary, Usage over time, Signals, Daily activity, Token health.
+//! is the scan: Daily activity, Summary, Usage over time, Signals, Token health.
 //! Details is the audit: Breakdown and Records. The two never share a viewport.
 //!
 //! **FORM.** Established world. Simple is a stack of 12px raised cards; Details
 //! are two cards of tables. Title on a hairline header, content padded inside.
 //! Nested cards are forbidden: inner wells recess to the canvas, tables keep
-//! only a hairline frame. The trend is an area chart plus the same data table
-//! as Sessions (search, columns, sorting, totals, pagination).
+//! only a hairline frame. The trend is an area chart card plus a buckets table
+//! card below it — the chart shape, then the same data as Sessions (search,
+//! columns, sorting, totals, pagination).
 //!
-//! Sections: Summary · Usage over time · Signals · Daily activity · Token health
-//! · Breakdown · Records.
+//! Sections: Daily activity · Summary · Usage over time · Buckets · Signals ·
+//! Token health · Breakdown · Records.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -82,6 +83,9 @@ pub(super) const SECTION_PAD: f32 = 12.;
 /// Below this column width the paired panels stack into one column.
 const TWO_COLUMN_MIN: f32 = 820.;
 const FOUR_KPI_MIN: f32 = 880.;
+/// Height of the cache hit-rate trend. Tall enough to read a swing, short
+/// enough that the two Token-health panels above it stay the same height.
+const HIT_RATE_PLOT_H: f32 = 56.;
 
 /// Ranked bars the Breakdown chart shows; the table below carries the rest.
 const CHART_ROWS: usize = 8;
@@ -146,36 +150,18 @@ impl Render for UsagePage {
 impl UsagePage {
     // ── header ─────────────────────────────────────────────────────────────
 
-    /// 44px page header: back affordance, title, freshness, and the page's own
-    /// actions. Compact by design — the data starts on the next row.
-    fn header(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
-        let refresh_label = tr!("usage.refreshing");
-        let refresh_idle_label = tr!("common.refresh");
-        let status = if self.is_refreshing() {
-            Some(refresh_label.clone())
-        } else {
-            self.status().map(str::to_string).or_else(|| {
-                self.last_updated_ms()
-                    .map(|at| format::age_label(super::collect::now_ms() - at))
-            })
-        };
-        let has_data = self.snapshot().is_some_and(|snapshot| !snapshot.is_empty());
-
+    /// The Usage card's title controls, hosted by the shell's top bar: the Back
+    /// button and the "Usage" title, replacing the session title while the page
+    /// is open. Keeping them in the shared top bar means the card itself starts
+    /// at its filter row, mirroring the Git page.
+    pub fn top_bar_leading(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
         div()
-            .h(px(44.))
-            .flex_none()
-            // The page now sits in a card below the top bar, which owns the
-            // caption buttons; the header only needs the normal page inset.
-            .pl(px(self.header_leading()))
-            .pr(DynamicSpacing::Base12.px(&theme))
             .flex()
             .items_center()
             .gap(DynamicSpacing::Base08.px(&theme))
-            .border_b_1()
-            .border_color(theme.border)
             .child(
                 press(
-                    button_frame(div().id("usage-back"), &theme, ButtonSize::Medium)
+                    button_frame(div().id("usage-top-back"), &theme, ButtonSize::Medium)
                         .group(BUTTON_GROUP)
                         .cursor_pointer()
                         .hover(|style| style.bg(theme.bg_hover)),
@@ -207,9 +193,42 @@ impl UsagePage {
                         div()
                             .text_size(TextSize::Large.px(&theme))
                             .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text)
                             .child(tr!("view.usage")),
                     ),
             )
+            .into_any_element()
+    }
+
+    /// 44px page header: freshness and the page's own actions. The Back
+    /// affordance and title now live in the shared top bar (see
+    /// [`UsagePage::top_bar_leading`]). Compact by design — the data starts on
+    /// the next row.
+    fn header(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let refresh_label = tr!("usage.refreshing");
+        let refresh_idle_label = tr!("common.refresh");
+        let status = if self.is_refreshing() {
+            Some(refresh_label.clone())
+        } else {
+            self.status().map(str::to_string).or_else(|| {
+                self.last_updated_ms()
+                    .map(|at| format::age_label(super::collect::now_ms() - at))
+            })
+        };
+        let has_data = self.snapshot().is_some_and(|snapshot| !snapshot.is_empty());
+
+        div()
+            .h(px(44.))
+            .flex_none()
+            // The page now sits in a card below the top bar, which owns the
+            // caption buttons; the header only needs the normal page inset.
+            .pl(px(self.header_leading()))
+            .pr(DynamicSpacing::Base12.px(&theme))
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base08.px(&theme))
+            .border_b_1()
+            .border_color(theme.border)
             .children(status.map(|status| {
                 div()
                     .text_size(TextSize::Small.px(&theme))
@@ -679,12 +698,13 @@ impl UsagePage {
                     .flex()
                     .flex_col()
                     .gap(DynamicSpacing::Base20.px(&theme))
+                    .child(self.daily_section(snapshot, theme, cx))
                     .child(self.summary_card(snapshot, theme, kpi_cols, cx))
-                    .child(self.activity_section(snapshot, theme, cx));
+                    .child(self.activity_section(snapshot, theme, cx))
+                    .child(self.series_section(snapshot, theme, cx));
                 if !snapshot.insights.is_empty() {
                     cards = cards.child(self.signals_section(&snapshot.insights, theme));
                 }
-                cards = cards.child(self.daily_section(snapshot, theme, cx));
                 if snapshot.cache.is_available() || snapshot.summary.totals.tokens.total > 0 {
                     cards = cards.child(self.health_section(snapshot, theme, wide, cx));
                 }
@@ -748,6 +768,51 @@ impl UsagePage {
             Some(meta),
             None,
             self.trend_body(snapshot, theme, cx),
+            theme,
+        )
+    }
+
+    /// The trend's data as its own card: the same framed table as Sessions,
+    /// with search, column picker, sortable headers, totals, and pagination.
+    /// Split out of the chart card so the plot and the raw buckets each read
+    /// as their own surface instead of one tall card.
+    fn series_section(
+        &self,
+        snapshot: &UsageSnapshot,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let granularity = snapshot.series.granularity;
+        let all = snapshot.series.points.len();
+        let result = self.series_result(snapshot, cx);
+        let meta = if result.total == all {
+            tr!(
+                "usage.n_buckets_by",
+                buckets = format::count(all as u64),
+                by = granularity.label()
+            )
+        } else {
+            tr!(
+                "usage.n_of_n_buckets_by",
+                buckets = format::count(result.total as u64),
+                total = format::count(all as u64),
+                by = granularity.label()
+            )
+        };
+        section(
+            "usage-series",
+            &tr!("usage.buckets"),
+            Some(&tr!("usage.buckets_hint")),
+            Some(meta),
+            None,
+            self.chart_data_table(
+                snapshot,
+                &result,
+                self.metric(),
+                self.latency_metric(),
+                theme,
+                cx,
+            ),
             theme,
         )
     }
@@ -1617,7 +1682,6 @@ impl UsagePage {
                 on_hover,
                 on_select,
             ));
-        content = content.child(self.chart_data_table(snapshot, metric, latency_metric, theme, cx));
         if snapshot.latency.samples > 0 {
             content = content.child(self.latency_line(snapshot, theme));
         }
@@ -1707,12 +1771,12 @@ impl UsagePage {
     fn chart_data_table(
         &self,
         snapshot: &UsageSnapshot,
+        result: &SeriesQueryResult,
         metric: ChartMetric,
         latency_metric: LatencyMetric,
         theme: Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let result = self.series_result(snapshot, cx);
         let (columns, keys) = self.series_columns(metric);
         let total_w: f32 = columns.iter().map(|column| column.width).sum();
         let granularity = snapshot.series.granularity;
@@ -1805,8 +1869,8 @@ impl UsagePage {
             .gap(DynamicSpacing::Base12.px(&theme))
             .child(toolbar)
             .child(table)
-            .child(self.series_totals(snapshot, &result, theme))
-            .child(self.series_pagination_footer(&result, theme, cx))
+            .child(self.series_totals(snapshot, result, theme))
+            .child(self.series_pagination_footer(result, theme, cx))
             .into_any_element()
     }
 
@@ -3094,31 +3158,9 @@ impl UsagePage {
                 ),
         );
 
-        // Hit rate across the window: one bar per bucket, so a drop is visible.
-        // Each bar carries its own hover readout — the strip is a measurement,
-        // not decoration — and a bucket with no cache traffic draws as a stub.
-        let readable = snapshot
-            .series
-            .points
-            .iter()
-            .filter(|point| point.totals.tokens.input + point.totals.tokens.cache_read > 0)
-            .count();
-        if readable >= 2 {
-            content = content.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(DynamicSpacing::Base04.px(&theme))
-                    .child(
-                        div()
-                            .text_size(TextSize::XSmall.px(&theme))
-                            .text_color(theme.text_3)
-                            .child(tr!("view.hit_rate_over_time")),
-                    )
-                    .child(hit_rate_bars(&snapshot.series, theme)),
-            );
-        }
-
+        // Hit rate across the window lives in its own full-width strip below
+        // the two panels (see `hit_rate_trend`), so each well stays the same
+        // height and the trend gets the width it needs.
         let entity = cx.entity();
         let cached_only = self.filter().cached_only;
         content = content.child(
@@ -3154,11 +3196,34 @@ impl UsagePage {
         div().w_full().child(content).into_any_element()
     }
 
+    /// The cache hit rate across the window, full width under the two health
+    /// panels: one bar per bucket, so a drop is visible. Each bar carries its
+    /// own hover readout — the strip is a measurement, not decoration — and a
+    /// bucket with no cache traffic draws as a stub. `None` when there is too
+    /// little cache traffic to read a trend.
+    fn hit_rate_trend(&self, snapshot: &UsageSnapshot, theme: Theme) -> Option<AnyElement> {
+        let readable = snapshot
+            .series
+            .points
+            .iter()
+            .filter(|point| point.totals.tokens.input + point.totals.tokens.cache_read > 0)
+            .count();
+        (readable >= 2).then(|| {
+            subpanel(
+                &tr!("view.hit_rate_over_time"),
+                None,
+                hit_rate_bars(&snapshot.series, theme),
+                theme,
+            )
+        })
+    }
+
     // ── health ─────────────────────────────────────────────────────────────
 
-    /// Token composition beside cache performance. Each well recesses to the
-    /// canvas so the troughs keep contrast on the raised section card — not a
-    /// second card nested inside it.
+    /// Token composition beside cache performance, with the cache hit-rate
+    /// trend as a full-width strip beneath so the two wells stay the same
+    /// height. Each well recesses to the canvas so the troughs keep contrast
+    /// on the raised section card — not a second card nested inside it.
     fn health_body(
         &self,
         snapshot: &UsageSnapshot,
@@ -3191,7 +3256,8 @@ impl UsagePage {
             self.cache_body(snapshot, theme, cx),
             theme,
         );
-        if wide {
+        let trend = self.hit_rate_trend(snapshot, theme);
+        let panels: AnyElement = if wide {
             div()
                 .w_full()
                 .flex()
@@ -3209,7 +3275,15 @@ impl UsagePage {
                 .child(composition)
                 .child(cache)
                 .into_any_element()
-        }
+        };
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(DynamicSpacing::Base16.px(&theme))
+            .child(panels)
+            .children(trend)
+            .into_any_element()
     }
 
     // ── records ────────────────────────────────────────────────────────────
@@ -4875,7 +4949,7 @@ fn stat_row(label: &str, value: &str, theme: Theme) -> AnyElement {
 fn hit_rate_bars(series: &TimeSeries, theme: Theme) -> AnyElement {
     div()
         .w_full()
-        .h(px(40.))
+        .h(px(HIT_RATE_PLOT_H))
         .flex()
         .items_end()
         .gap(DynamicSpacing::Base02.px(&theme))
@@ -4916,6 +4990,7 @@ fn hit_rate_bars(series: &TimeSeries, theme: Theme) -> AnyElement {
                 .items_end()
                 .child(
                     div()
+                        .debug_selector(move || format!("usage-cache-bar-fill-{ix}"))
                         .w_full()
                         .rounded_t(Radius::XSmall.px(&theme))
                         .bg(color)
@@ -5360,4 +5435,94 @@ pub fn export_json(index: &UsageIndex, snapshot: &UsageSnapshot, search: &str) -
         "insights": snapshot.insights.iter().map(|insight| insight.text.clone()).collect::<Vec<_>>(),
     });
     serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".to_string())
+}
+
+#[cfg(test)]
+mod hit_rate_layout_tests {
+    use gpui::prelude::*;
+    use gpui::{point, px, AvailableSpace, Context, IntoElement, Render, TestAppContext, Window};
+
+    use super::{hit_rate_bars, HIT_RATE_PLOT_H};
+    use crate::theme::{Theme, ThemeId};
+    use crate::usage::aggregate::{SeriesPoint, TimeSeries, Totals};
+    use crate::usage::model::{Granularity, TokenCounts};
+
+    fn bar_point(input: u64, cache_read: u64) -> SeriesPoint {
+        SeriesPoint {
+            start_ms: 0,
+            label: String::new(),
+            stamp: "stamp".into(),
+            totals: Totals {
+                tokens: TokenCounts {
+                    input,
+                    cache_read,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            latency: Default::default(),
+        }
+    }
+
+    /// Draws the graph as a real view so `debug_bounds` can see the bars.
+    struct BarsProbe {
+        series: TimeSeries,
+        theme: Theme,
+    }
+
+    impl Render for BarsProbe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            gpui::div()
+                .w(px(300.))
+                .child(hit_rate_bars(&self.series, self.theme))
+        }
+    }
+
+    /// The hit-rate graph's bars must share one baseline and their heights must
+    /// track the rate: a no-traffic bucket is the 3% stub, 100% fills the plot,
+    /// and 50% is half of it. This guards the `relative` height against a
+    /// parent-height regression.
+    #[gpui::test]
+    fn cache_bars_are_bottom_aligned_and_proportional(cx: &mut TestAppContext) {
+        let theme = Theme::for_id(ThemeId::Orbit);
+        let series = TimeSeries {
+            granularity: Granularity::Day,
+            points: vec![
+                bar_point(0, 0),     // no cache traffic -> 3% stub
+                bar_point(0, 100),   // 100% hit rate
+                bar_point(100, 100), // 50% hit rate
+            ],
+        };
+        let cx = cx.add_empty_window();
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            AvailableSpace::min_size(),
+            |_, cx| cx.new(|_| BarsProbe { series, theme }),
+        );
+        let stub = cx
+            .debug_bounds("usage-cache-bar-fill-0")
+            .expect("stub bar laid out");
+        let full = cx
+            .debug_bounds("usage-cache-bar-fill-1")
+            .expect("full bar laid out");
+        let half = cx
+            .debug_bounds("usage-cache-bar-fill-2")
+            .expect("half bar laid out");
+
+        let plot = HIT_RATE_PLOT_H;
+        assert_eq!(stub.bottom(), full.bottom(), "bars must share a baseline");
+        assert_eq!(half.bottom(), full.bottom(), "bars must share a baseline");
+        assert!(
+            (f32::from(full.size.height) - plot).abs() < 0.5,
+            "100% must fill the plot: {full:?}"
+        );
+        assert!(
+            (f32::from(half.size.height) - plot / 2.).abs() < 0.5,
+            "50% must be half the plot: {half:?}"
+        );
+        assert!(
+            f32::from(stub.size.height) < plot * 0.1,
+            "a no-traffic bucket must be a stub: {stub:?}"
+        );
+    }
 }
