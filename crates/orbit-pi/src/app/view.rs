@@ -121,6 +121,12 @@ impl Render for OrbitApp {
             self.activate_window_pending = false;
             window.activate_window();
         }
+        // Model / thinking choices are fixed for the duration of a turn. A
+        // picker left open when a run begins is dropped so its list cannot
+        // still change the model mid-turn; the chips render disabled.
+        if self.is_running() {
+            self.close_model_selector(window, cx);
+        }
         let theme = *theme::get(cx);
         // `/`-command and `@`-file menu state derives from the composer text
         // every frame, so typing opens/closes/filters it without extra sync.
@@ -2003,6 +2009,9 @@ impl OrbitApp {
     /// windows keep Send reachable.
     pub(super) fn model_chip(&self, compact: bool, cx: &Context<Self>) -> impl IntoElement + use<> {
         let theme = *theme::get(cx);
+        // A run in flight dims the chip and swallows clicks until it settles.
+        let disabled = self.is_running();
+        let open = !disabled && self.picker_is_open(PickerKind::Model);
         div()
             .flex()
             .flex_col()
@@ -2010,12 +2019,18 @@ impl OrbitApp {
             .children(self.chip_popup(PickerKind::Model))
             .child(
                 button_frame(div().id("model-chip"), &theme, ButtonSize::Default)
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme.overlay))
-                    .when(self.picker_is_open(PickerKind::Model), |chip| {
-                        chip.bg(theme.active)
+                    .when(!disabled, |chip| {
+                        chip.cursor_pointer()
+                            .hover(|s| s.bg(theme.overlay))
+                            .when(open, |chip| chip.bg(theme.active))
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(Self::on_model_trigger_click),
+                            )
                     })
-                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_model_trigger_click))
+                    .when(disabled, |chip| {
+                        chip.cursor_not_allowed().opacity(0.5)
+                    })
                     .child(icon_dyn(
                         provider_icon(&self.model_provider),
                         ButtonSize::Default.icon_size().px(&theme),
@@ -2025,19 +2040,10 @@ impl OrbitApp {
                         div()
                             .max_w(px(if compact { 120. } else { 220. }))
                             .truncate()
-                            .text_color(if self.picker_is_open(PickerKind::Model) {
-                                theme.active_fg
-                            } else {
-                                theme.text_2
-                            })
+                            .text_color(if open { theme.active_fg } else { theme.text_2 })
                             .child(self.model_label.clone()),
                     )
-                    .child(Self::chip_caret(
-                        self.picker_is_open(PickerKind::Model),
-                        theme.active_fg,
-                        "model-caret-turn",
-                        cx,
-                    )),
+                    .child(Self::chip_caret(open, theme.active_fg, "model-caret-turn", cx)),
             )
     }
 
@@ -2045,6 +2051,9 @@ impl OrbitApp {
     /// style, same hierarchy as the model chip.
     pub(super) fn thinking_chip(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
         let theme = *theme::get(cx);
+        // A run in flight dims the chip and swallows clicks until it settles.
+        let disabled = self.is_running();
+        let open = !disabled && self.picker_is_open(PickerKind::Thinking);
         div()
             .flex()
             .flex_col()
@@ -2052,15 +2061,18 @@ impl OrbitApp {
             .children(self.chip_popup(PickerKind::Thinking))
             .child(
                 button_frame(div().id("thinking-chip"), &theme, ButtonSize::Default)
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme.overlay))
-                    .when(self.picker_is_open(PickerKind::Thinking), |chip| {
-                        chip.bg(theme.active)
+                    .when(!disabled, |chip| {
+                        chip.cursor_pointer()
+                            .hover(|s| s.bg(theme.overlay))
+                            .when(open, |chip| chip.bg(theme.active))
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(Self::on_thinking_trigger_click),
+                            )
                     })
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(Self::on_thinking_trigger_click),
-                    )
+                    .when(disabled, |chip| {
+                        chip.cursor_not_allowed().opacity(0.5)
+                    })
                     .child({
                         let (path, _) = thinking_icon(&self.thinking_label, &theme);
                         icon(
@@ -2071,15 +2083,11 @@ impl OrbitApp {
                     })
                     .child(
                         div()
-                            .text_color(if self.picker_is_open(PickerKind::Thinking) {
-                                theme.active_fg
-                            } else {
-                                theme.text_2
-                            })
+                            .text_color(if open { theme.active_fg } else { theme.text_2 })
                             .child(thinking_display(&self.thinking_label)),
                     )
                     .child(Self::chip_caret(
-                        self.picker_is_open(PickerKind::Thinking),
+                        open,
                         theme.active_fg,
                         "thinking-caret-turn",
                         cx,
@@ -2531,7 +2539,7 @@ impl OrbitApp {
                         .clone()
                         .or_else(|| std::env::current_dir().ok())
                         .unwrap_or_else(|| PathBuf::from("."));
-                    match app.extensions.spawn(&workspace, Some(app.workflow_mode)) {
+                    match app.extensions.spawn(&workspace, true) {
                         Ok(client) => {
                             app.client = Some(client);
                             app.send(CommandBody::GetState, "get_state");

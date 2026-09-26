@@ -433,6 +433,7 @@ fn model_picker_arrows_move_the_highlight(cx: &mut gpui::TestAppContext) {
                     name: format!("Model {ix}"),
                     provider: "opencode-go".into(),
                     context_window: Some(1_000_000),
+                    thinking_levels: Vec::new(),
                 })
                 .collect();
             app.model_id = "m0".into();
@@ -517,6 +518,7 @@ fn model_picker_arrows_work_after_the_palette_route(cx: &mut gpui::TestAppContex
                     name: format!("Model {ix}"),
                     provider: "opencode-go".into(),
                     context_window: Some(1_000_000),
+                    thinking_levels: Vec::new(),
                 })
                 .collect();
             app.model_id = "m0".into();
@@ -592,6 +594,7 @@ fn chip_click_does_not_let_the_composer_steal_picker_focus(cx: &mut gpui::TestAp
                     name: format!("Model {ix}"),
                     provider: "opencode-go".into(),
                     context_window: Some(1_000_000),
+                    thinking_levels: Vec::new(),
                 })
                 .collect();
             app.model_id = "m0".into();
@@ -759,5 +762,61 @@ fn quota_popup_scrolls_instead_of_clipping_its_last_card(cx: &mut gpui::TestAppC
     assert!(
         body.size.height < popup.size.height,
         "the card list did not leave room for the header: body {body:?}, popup {popup:?}"
+    );
+}
+
+// ── model / thinking pickers lock while a run is in flight ────────────
+
+/// A running turn fixes the model and thinking level, so the chips swallow
+/// clicks until it settles: neither picker may open while `is_running`.
+#[gpui::test]
+fn model_and_thinking_pickers_stay_shut_while_running(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+
+    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(1200.), px(820.)),
+        |_, _| app.clone(),
+    );
+
+    cx.update(|_, cx| {
+        app.update(cx, |app, _| {
+            app.available_models = vec![ModelEntry {
+                id: "m0".into(),
+                name: "Model 0".into(),
+                provider: "opencode-go".into(),
+                context_window: Some(1_000_000),
+                thinking_levels: Vec::new(),
+            }];
+            app.available_thinking_levels = vec!["low".into(), "high".into()];
+            app.busy = true;
+        });
+    });
+
+    // Both chip routes refuse while running.
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.on_chip_trigger_click(PickerKind::Model, window, cx);
+            app.on_chip_trigger_click(PickerKind::Thinking, window, cx);
+        });
+    });
+    assert!(
+        cx.update(|_, cx| app.read(cx).model_selector.is_none()),
+        "a running turn keeps both pickers shut"
+    );
+
+    // Once the turn settles the same click opens the model picker again.
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.busy = false;
+            app.on_chip_trigger_click(PickerKind::Model, window, cx);
+        });
+    });
+    assert!(
+        cx.update(|_, cx| app.read(cx).model_selector.is_some()),
+        "an idle turn opens the model picker"
     );
 }

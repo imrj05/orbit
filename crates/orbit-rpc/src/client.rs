@@ -119,8 +119,8 @@ impl PiClient {
     }
 
     /// Spawn with extra startup flags appended to the base `--mode rpc
-    /// --approve` argv. Orbit uses this for per-mode session defaults
-    /// (`--provider` / `--model` / `--thinking`).
+    /// --approve` argv. Orbit uses this for the default session model
+    /// (`--provider` / `--model`).
     pub fn spawn_with_args(
         workspace_dir: &Path,
         session_dir: Option<&Path>,
@@ -186,7 +186,7 @@ impl PiClient {
     }
 
     /// [`spawn_with_bin_and_extensions`](Self::spawn_with_bin_and_extensions)
-    /// plus extra startup flags. Test seam for the per-mode defaults.
+    /// plus extra startup flags. Test seam for the default session model.
     pub fn spawn_with_bin_and_extensions_and_args(
         bin: &str,
         workspace_dir: &Path,
@@ -234,9 +234,9 @@ impl PiClient {
         // the access guard that confirms tool calls per the active mode.
         command
             .args(["--mode", "rpc", "--approve"])
-            // Per-mode session defaults land here (`--provider` / `--model` /
-            // `--thinking`). Empty for every existing caller, so argv is
-            // unchanged unless a default is configured.
+            // The default session model lands here (`--provider` / `--model`).
+            // Empty for every existing caller, so argv is unchanged unless a
+            // default is configured.
             .args(extra_args)
             .env("PI_SKIP_VERSION_CHECK", "1")
             // Augment PATH with Homebrew-style dirs so `node` (required by

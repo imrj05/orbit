@@ -27,8 +27,7 @@ use std::path::{Path, PathBuf};
 
 use orbit_rpc::PiClient;
 
-use crate::session_defaults::SessionDefaults;
-use crate::workflow::WorkflowMode;
+use crate::session_defaults::SessionDefault;
 
 const QUOTA_INDEX_JS: &str = include_str!("../../../contrib/orbit-quota-extension/index.js");
 const QUOTA_ADAPTERS_JS: &str = include_str!("../../../contrib/orbit-quota-extension/adapters.js");
@@ -87,23 +86,25 @@ impl BundledExtensions {
     /// Spawn a pi session process with every available bundled extension
     /// loaded. Every session spawn in the app goes through here.
     ///
-    /// `mode` seeds the child's startup model/thinking from the user's
-    /// per-mode defaults (`~/.orbit-pi/session-defaults.json`). Pass `None`
-    /// for a process that is about to *resume* a session — a resumed session
+    /// `apply_default` seeds the child's startup model from the user's
+    /// default model (`~/.orbit-pi/session-defaults.json`). Pass `false` for
+    /// a process that is about to *resume* a session — a resumed session
     /// keeps the model recorded in its file, never Orbit's default.
     pub(crate) fn spawn(
         &self,
         workspace: &Path,
-        mode: Option<WorkflowMode>,
+        apply_default: bool,
     ) -> anyhow::Result<PiClient> {
         // A `pi update` can restore the pristine RPC bundle while Orbit is
         // running; re-check before every spawn so a session switch or Runtime
         // restart still gets custom UI, quota, and auth. The unchanged fast
         // path is a stat, so this costs nothing in the common case.
         crate::rpc_patches::apply_on_launch();
-        let args = mode
-            .map(|mode| SessionDefaults::load().for_mode(mode).cli_args())
-            .unwrap_or_default();
+        let args = if apply_default {
+            SessionDefault::load().cli_args()
+        } else {
+            Vec::new()
+        };
         let extensions = self.extension_paths();
         if extensions.is_empty() {
             return PiClient::spawn_with_args(workspace, None, &args);

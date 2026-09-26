@@ -4493,50 +4493,28 @@ impl OrbitApp {
             ],
         ));
 
-        // Per-mode session defaults: the model + thinking level a session
-        // starts on for each workflow mode. Applied to new sessions; existing
-        // sessions keep the model recorded in their file.
+        // The model every new session starts on, and its thinking level.
+        // Applied at session birth; existing sessions keep the model recorded
+        // in their file.
         sections.push(self.settings_section(
             theme,
             &tr!("settings.session_defaults"),
-            vec![self.setting_row(
-                theme,
-                &tr!("settings.session_defaults_hint"),
-                None,
-                None,
-                Some(self.runtime_button(
-                    "use-mode-default",
-                    &tr!("settings.use_mode_default"),
-                    false,
+            vec![
+                self.setting_row(
                     theme,
-                    this.clone(),
-                    Self::use_mode_default,
-                )),
-            )],
-        ));
-        sections.push(self.mode_default_section(
-            theme,
-            WorkflowMode::Plan,
-            &tr!("settings.plan_model"),
-            &tr!("settings.plan_thinking"),
-            this.clone(),
-            cx,
-        ));
-        sections.push(self.mode_default_section(
-            theme,
-            WorkflowMode::Build,
-            &tr!("settings.build_model"),
-            &tr!("settings.build_thinking"),
-            this.clone(),
-            cx,
-        ));
-        sections.push(self.mode_default_section(
-            theme,
-            WorkflowMode::Ask,
-            &tr!("settings.ask_model"),
-            &tr!("settings.ask_thinking"),
-            this.clone(),
-            cx,
+                    &tr!("settings.default_model"),
+                    Some(&tr!("settings.default_model_hint")),
+                    None,
+                    Some(self.default_model_select(theme, this.clone(), cx)),
+                ),
+                self.setting_row(
+                    theme,
+                    &tr!("settings.default_thinking"),
+                    Some(&tr!("settings.default_thinking_hint")),
+                    None,
+                    Some(self.default_thinking_select(theme, this.clone(), cx)),
+                ),
+            ],
         ));
         sections
     }
@@ -4587,62 +4565,10 @@ impl OrbitApp {
         )
     }
 
-    /// One workflow mode's default rows (model + thinking), as its own board.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn mode_default_section(
+    /// The model new sessions start on. The leading option clears the slot,
+    /// leaving pi's own startup model untouched.
+    pub(super) fn default_model_select(
         &self,
-        theme: Theme,
-        mode: WorkflowMode,
-        model_label: &str,
-        thinking_label: &str,
-        this: Entity<OrbitApp>,
-        cx: &Context<Self>,
-    ) -> AnyElement {
-        let (model_kind, thinking_kind) = match mode {
-            WorkflowMode::Plan => (SettingsSelect::PlanModel, SettingsSelect::PlanThinking),
-            WorkflowMode::Build => (SettingsSelect::BuildModel, SettingsSelect::BuildThinking),
-            WorkflowMode::Ask => (SettingsSelect::AskModel, SettingsSelect::AskThinking),
-        };
-        self.settings_section(
-            theme,
-            &mode.label(),
-            vec![
-                self.setting_row(
-                    theme,
-                    model_label,
-                    None,
-                    None,
-                    Some(self.mode_model_select(mode, model_kind, theme, this.clone(), cx)),
-                ),
-                self.setting_row(
-                    theme,
-                    thinking_label,
-                    None,
-                    None,
-                    Some(self.mode_thinking_select(mode, thinking_kind, theme, this, cx)),
-                ),
-            ],
-        )
-    }
-
-    fn mode_select_id(kind: SettingsSelect) -> &'static str {
-        match kind {
-            SettingsSelect::PlanModel => "plan-model-select",
-            SettingsSelect::PlanThinking => "plan-thinking-select",
-            SettingsSelect::BuildModel => "build-model-select",
-            SettingsSelect::BuildThinking => "build-thinking-select",
-            SettingsSelect::AskModel => "ask-model-select",
-            SettingsSelect::AskThinking => "ask-thinking-select",
-            _ => "mode-default-select",
-        }
-    }
-
-    /// A mode's default model. The leading option clears the slot, leaving
-    /// pi's own startup model untouched.
-    pub(super) fn mode_model_select(
-        &self,
-        mode: WorkflowMode,
-        kind: SettingsSelect,
         theme: Theme,
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
@@ -4655,7 +4581,7 @@ impl OrbitApp {
                 model.name
             )
         }));
-        let slot = self.session_defaults.for_mode(mode);
+        let slot = &self.session_default;
         let selected = slot
             .model_id
             .as_ref()
@@ -4671,8 +4597,8 @@ impl OrbitApp {
             .map(|ix| ix + 1)
             .unwrap_or(0);
         self.select_control(
-            Self::mode_select_id(kind),
-            kind,
+            "default-model-select",
+            SettingsSelect::DefaultModel,
             options[selected].clone(),
             options,
             selected,
@@ -4682,42 +4608,41 @@ impl OrbitApp {
         )
     }
 
-    /// A mode's default thinking level. Disabled until a model is chosen — a
-    /// bare level would land on pi's own startup model.
-    pub(super) fn mode_thinking_select(
+    /// The default model's thinking level. Options are the levels pi itself
+    /// derives for the selected model (see `catalog_thinking_levels`); until a
+    /// model is chosen the control is a disabled `pi default` chip.
+    pub(super) fn default_thinking_select(
         &self,
-        mode: WorkflowMode,
-        kind: SettingsSelect,
         theme: Theme,
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
     ) -> AnyElement {
-        let id = Self::mode_select_id(kind);
-        let slot = self.session_defaults.for_mode(mode);
-        if slot.model_id.is_none() {
-            return button_frame(div().id(id), &theme, SELECT_CHIP_SIZE)
+        let Some(model) = self.default_model_entry() else {
+            return button_frame(div().id("default-thinking-select"), &theme, SELECT_CHIP_SIZE)
                 .border_1()
                 .border_color(theme.border)
                 .bg(theme.bg_raised)
                 .text_color(theme.text_3)
                 .child(tr!("settings.pi_default"))
                 .into_any_element();
-        }
+        };
         let mut options: Vec<String> = vec![tr!("settings.pi_default")];
-        options.extend(self.available_thinking_levels.iter().cloned());
-        let selected = slot
+        options.extend(
+            model
+                .thinking_levels
+                .iter()
+                .map(|level| crate::model_selector::thinking_display(level)),
+        );
+        let selected = self
+            .session_default
             .thinking
             .as_ref()
-            .and_then(|level| {
-                self.available_thinking_levels
-                    .iter()
-                    .position(|candidate| candidate == level)
-            })
+            .and_then(|level| model.thinking_levels.iter().position(|l| l == level))
             .map(|ix| ix + 1)
             .unwrap_or(0);
         self.select_control(
-            id,
-            kind,
+            "default-thinking-select",
+            SettingsSelect::DefaultThinking,
             options[selected].clone(),
             options,
             selected,
@@ -5726,12 +5651,8 @@ impl OrbitApp {
             | SettingsSelect::BackdropCell
             | SettingsSelect::BackdropFade
             | SettingsSelect::TitleModel
-            | SettingsSelect::PlanModel
-            | SettingsSelect::PlanThinking
-            | SettingsSelect::BuildModel
-            | SettingsSelect::BuildThinking
-            | SettingsSelect::AskModel
-            | SettingsSelect::AskThinking => unreachable!(),
+            | SettingsSelect::DefaultModel
+            | SettingsSelect::DefaultThinking => unreachable!(),
         };
         let selected = values
             .iter()
@@ -6177,46 +6098,40 @@ impl OrbitApp {
                 cx.notify();
                 return;
             }
-            SettingsSelect::PlanModel | SettingsSelect::BuildModel | SettingsSelect::AskModel => {
-                let mode = match kind {
-                    SettingsSelect::PlanModel => WorkflowMode::Plan,
-                    SettingsSelect::BuildModel => WorkflowMode::Build,
-                    SettingsSelect::AskModel => WorkflowMode::Ask,
-                    _ => unreachable!(),
-                };
+            SettingsSelect::DefaultModel => {
                 let model = if ix == 0 {
                     None
                 } else {
-                    self.available_models.get(ix - 1).cloned()
+                    self.available_models.get(ix - 1)
                 };
-                let mut slot = self.session_defaults.for_mode(mode).clone();
-                slot.provider = model.as_ref().map(|model| model.provider.clone());
-                slot.model_id = model.map(|model| model.id);
-                // Clearing the model clears the thinking level with it: a bare
-                // level would land on pi's own startup model.
-                if slot.model_id.is_none() {
-                    slot.thinking = None;
-                }
-                self.set_mode_default(mode, slot, cx);
+                let slot = match model {
+                    Some(model) => crate::session_defaults::SessionDefault {
+                        provider: Some(model.provider.clone()),
+                        model_id: Some(model.id.clone()),
+                        // Keep the level only when the new model supports it;
+                        // a bare level must not land on an arbitrary model.
+                        thinking: self.session_default.thinking.clone().filter(|level| {
+                            model.thinking_levels.iter().any(|candidate| candidate == level)
+                        }),
+                    },
+                    None => crate::session_defaults::SessionDefault::default(),
+                };
+                self.set_default_model(slot);
+                cx.notify();
                 return;
             }
-            SettingsSelect::PlanThinking
-            | SettingsSelect::BuildThinking
-            | SettingsSelect::AskThinking => {
-                let mode = match kind {
-                    SettingsSelect::PlanThinking => WorkflowMode::Plan,
-                    SettingsSelect::BuildThinking => WorkflowMode::Build,
-                    SettingsSelect::AskThinking => WorkflowMode::Ask,
-                    _ => unreachable!(),
-                };
+            SettingsSelect::DefaultThinking => {
                 let level = if ix == 0 {
                     None
                 } else {
-                    self.available_thinking_levels.get(ix - 1).cloned()
+                    self.default_model_entry()
+                        .and_then(|model| model.thinking_levels.get(ix - 1))
+                        .cloned()
                 };
-                let mut slot = self.session_defaults.for_mode(mode).clone();
+                let mut slot = self.session_default.clone();
                 slot.thinking = level;
-                self.set_mode_default(mode, slot, cx);
+                self.set_default_model(slot);
+                cx.notify();
                 return;
             }
             SettingsSelect::BackdropBlur
@@ -6278,12 +6193,8 @@ impl OrbitApp {
             | SettingsSelect::BackdropCell
             | SettingsSelect::BackdropFade
             | SettingsSelect::TitleModel
-            | SettingsSelect::PlanModel
-            | SettingsSelect::PlanThinking
-            | SettingsSelect::BuildModel
-            | SettingsSelect::BuildThinking
-            | SettingsSelect::AskModel
-            | SettingsSelect::AskThinking => unreachable!(),
+            | SettingsSelect::DefaultModel
+            | SettingsSelect::DefaultThinking => unreachable!(),
         }
         theme::set_ui_prefs(cx, ui);
     }
@@ -7177,6 +7088,7 @@ mod model_filter_tests {
             name: name.into(),
             provider: provider.into(),
             context_window: None,
+            thinking_levels: Vec::new(),
         }
     }
 

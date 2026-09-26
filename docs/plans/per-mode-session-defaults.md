@@ -1,6 +1,11 @@
 # Plan — Per-mode session defaults (model + thinking level)
 
-**Status:** Proposed (not implemented)
+**Status:** Partly superseded. The per-mode defaults shipped in commit `89e6c8409`, then
+were simplified: the Plan/Build/Ask model slots were replaced by a single default model
+plus one thinking level (`SessionDefault`), with the thinking options derived from the
+selected model's catalog entry (`catalog_thinking_levels`) instead of the live session.
+Sections 4–6 below describe the superseded per-mode design. See INTENT.md D12 for the
+shipped behavior; the rest is kept as the design record.
 **Owner:** TBD
 **Scope:** Orbit desktop app (`crates/orbit-pi`, `crates/orbit-rpc`)
 **Related:** `workflow.rs` (Plan/Build/Ask), `auto_title.rs` (store pattern),

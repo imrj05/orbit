@@ -129,7 +129,11 @@ fn forwards_extension_paths_as_pi_flags() {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     let argv = loop {
         if let Ok(argv) = std::fs::read_to_string(&argv_file) {
-            break argv;
+            // The shell creates the file before writing; an empty or
+            // newline-less read is a partial write, keep waiting.
+            if !argv.is_empty() && argv.ends_with('\n') {
+                break argv;
+            }
         }
         assert!(
             std::time::Instant::now() < deadline,

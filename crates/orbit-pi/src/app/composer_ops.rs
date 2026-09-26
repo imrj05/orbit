@@ -640,6 +640,9 @@ impl OrbitApp {
     }
 
     pub(super) fn set_model(&mut self, id: String, provider: String, cx: &mut Context<Self>) {
+        // A manual choice supersedes the session-birth default push. The push
+        // itself sends `SetModel` directly so it doesn't disarm itself.
+        self.default_model_armed = false;
         self.send(
             CommandBody::SetModel {
                 model_id: id,
@@ -651,6 +654,8 @@ impl OrbitApp {
     }
 
     pub(super) fn set_thinking_level(&mut self, level: String, cx: &mut Context<Self>) {
+        // A manual level choice likewise supersedes the pending default.
+        self.default_model_armed = false;
         self.send(
             CommandBody::SetThinkingLevel { level },
             "set_thinking_level",
@@ -886,12 +891,6 @@ impl OrbitApp {
             Some(id) => crate::workflow::persist_for(&id, mode),
             None => self.workflow_pending = Some(mode),
         }
-        // Changing mode moves a live session onto that mode's default model
-        // and thinking level (a manual composer choice then wins again until
-        // the next switch).
-        if self.session_id.is_some() {
-            self.reapply_mode_defaults(cx);
-        }
         if self.extensions.workflow().is_none() {
             self.toast_warning(tr!("workflow.mode_set_unavailable", mode = mode.label()));
         } else {
@@ -908,9 +907,6 @@ impl OrbitApp {
         match self.session_id.clone() {
             Some(id) => crate::workflow::persist_for(&id, mode),
             None => self.workflow_pending = Some(mode),
-        }
-        if self.session_id.is_some() {
-            self.reapply_mode_defaults(cx);
         }
         cx.notify();
     }

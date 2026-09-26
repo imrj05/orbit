@@ -163,42 +163,42 @@ impl OrbitApp {
                 }
                 None => self.workflow_mode = crate::workflow::load_for(&id),
             }
-            // A different session is a different pushed-defaults record.
-            self.mode_defaults_pushed = ModeDefaultsPushed::default();
+            // A different session is a different pushed-default record.
+            self.default_model_pushed = DefaultModelPushed::default();
         }
     }
 
-    /// Resolve a mode slot's model against the live catalog. Only a model pi
-    /// actually reports is returned — a removed or renamed model must never
-    /// poison a session (D-E: fail soft). A slot without a provider matches by
-    /// id alone, mirroring pi's own fuzzy match.
-    fn resolve_mode_model(
-        &self,
-        def: &crate::session_defaults::ModeDefault,
-    ) -> Option<(String, String)> {
-        let id = def.model_id.as_deref()?;
-        self.available_models
-            .iter()
-            .find(|model| {
-                model.id == id
-                    && def
-                        .provider
-                        .as_deref()
-                        .is_none_or(|provider| model.provider == provider)
-            })
+    /// The catalog entry for the configured default model, if the catalog has
+    /// it. A removed or renamed model must never poison a session (fail soft);
+    /// a default without a provider matches by id alone, mirroring pi's own
+    /// fuzzy match.
+    pub(super) fn default_model_entry(&self) -> Option<&ModelEntry> {
+        let id = self.session_default.model_id.as_deref()?;
+        self.available_models.iter().find(|model| {
+            model.id == id
+                && self
+                    .session_default
+                    .provider
+                    .as_deref()
+                    .is_none_or(|provider| model.provider == provider)
+        })
+    }
+
+    /// The resolved default as `(provider, id)`.
+    fn resolve_default_model(&self) -> Option<(String, String)> {
+        self.default_model_entry()
             .map(|model| (model.provider.clone(), model.id.clone()))
     }
 
-    /// Push the active mode's default model + thinking level to the live
-    /// session. One-shot: armed by a `new_session` birth or a mode change, and
-    /// disarmed once there is nothing left that can be applied. Fields that are
-    /// unset, unknown, or already active are skipped silently.
+    /// Push the default model to the live session. One-shot: armed by a
+    /// `new_session` birth and disarmed once there is nothing left that can be
+    /// applied. An unset, unknown, or already-active model is skipped silently.
     ///
-    /// May be called again when the model catalog or thinking levels arrive
-    /// after the session (they are requested right after `get_state`); the
-    /// `mode_defaults_pushed` record keeps that from resending a command.
-    pub(super) fn apply_mode_defaults(&mut self, cx: &mut Context<Self>) {
-        if !self.mode_defaults_armed {
+    /// May be called again when the model catalog arrives after the session
+    /// (it is requested right after `get_state`); the `default_model_pushed`
+    /// record keeps that from resending `set_model`.
+    pub(super) fn apply_default_model(&mut self, cx: &mut Context<Self>) {
+        if !self.default_model_armed {
             return;
         }
         let Some(session) = self.session_id.clone() else {
@@ -207,89 +207,91 @@ impl OrbitApp {
         if self.client.is_none() {
             return;
         }
-        let def = self.session_defaults.for_mode(self.workflow_mode).clone();
-        if def.is_unset() {
+        if self.session_default.is_unset() {
             // Nothing to push; nothing to retry later.
-            self.mode_defaults_armed = false;
+            self.default_model_armed = false;
             return;
         }
-        if self.mode_defaults_pushed.session.as_deref() != Some(session.as_str()) {
-            self.mode_defaults_pushed = ModeDefaultsPushed {
+        if self.default_model_pushed.session.as_deref() != Some(session.as_str()) {
+            self.default_model_pushed = DefaultModelPushed {
                 session: Some(session),
-                ..ModeDefaultsPushed::default()
+                ..DefaultModelPushed::default()
             };
         }
-        // Only retry later if a default exists but the catalog that would let
-        // us honour it hasn't loaded yet.
-        let mut pending = false;
-
-        let model = self.resolve_mode_model(&def);
-        if def.model_id.is_some() && model.is_none() && self.available_models.is_empty() {
-            pending = true;
+        let model = self.resolve_default_model();
+        if model.is_none() && self.available_models.is_empty() {
+            // The catalog that would let us honour the default hasn't loaded
+            // yet; stay armed for the `get_available_models` response.
+            return;
         }
-        if let Some((provider, id)) = model {
-            let live = self.model_id == id && self.model_provider == provider;
-            let sent =
-                self.mode_defaults_pushed.model.as_ref() == Some(&(provider.clone(), id.clone()));
-            if !live && !sent {
-                self.set_model(id.clone(), provider.clone(), cx);
-                self.mode_defaults_pushed.model = Some((provider, id));
+        let model_live = model
+            .as_ref()
+            .is_some_and(|(provider, id)| self.model_id == *id && self.model_provider == *provider);
+        if let Some((provider, id)) = &model {
+            if !model_live {
+                let sent = self.default_model_pushed.model.as_ref()
+                    == Some(&(provider.clone(), id.clone()));
+                if !sent {
+                    // Sent directly, not through `set_model`: the public setter
+                    // disarms the session-birth default, which the push itself
+                    // must not do.
+                    self.send(
+                        CommandBody::SetModel {
+                            model_id: id.clone(),
+                            provider: provider.clone(),
+                        },
+                        "set_model",
+                    );
+                    self.default_model_pushed.model = Some((provider.clone(), id.clone()));
+                    cx.notify();
+                }
+                // pi applies the switch asynchronously and resets the level to
+                // the model's own default when it lands, so a thinking level
+                // sent now would be lost. Stay armed: the `get_state` that
+                // follows the `set_model` response calls us again with the new
+                // model live.
+                return;
             }
+        } else {
+            // A missing model disarms: a removed/renamed id must not make
+            // every later catalog refresh retry (fail soft).
+            self.default_model_armed = false;
+            return;
         }
-
-        let thinking = def
+        // Only once the default model is live: the supported levels come from
+        // its catalog entry, so a stale or unsupported level is skipped the
+        // same way a missing model is.
+        let levels = self
+            .default_model_entry()
+            .map(|model| model.thinking_levels.clone())
+            .unwrap_or_default();
+        let thinking = self
+            .session_default
             .thinking
             .clone()
-            .filter(|level| self.available_thinking_levels.iter().any(|l| l == level));
-        if def.thinking.is_some() && thinking.is_none() && self.available_thinking_levels.is_empty()
-        {
-            pending = true;
-        }
+            .filter(|level| levels.iter().any(|candidate| candidate == level));
         if let Some(level) = thinking {
             if self.thinking_label != level
-                && self.mode_defaults_pushed.thinking.as_deref() != Some(level.as_str())
+                && self.default_model_pushed.thinking.as_deref() != Some(level.as_str())
             {
-                self.set_thinking_level(level.clone(), cx);
-                self.mode_defaults_pushed.thinking = Some(level);
+                self.send(
+                    CommandBody::SetThinkingLevel {
+                        level: level.clone(),
+                    },
+                    "set_thinking_level",
+                );
+                self.default_model_pushed.thinking = Some(level);
+                cx.notify();
             }
         }
-
-        if !pending {
-            self.mode_defaults_armed = false;
-        }
+        self.default_model_armed = false;
     }
 
-    /// Write a mode's default slot and persist it. When the edited mode is the
-    /// active one, re-arm so the live session picks the change up now.
-    pub(super) fn set_mode_default(
-        &mut self,
-        mode: WorkflowMode,
-        slot: crate::session_defaults::ModeDefault,
-        cx: &mut Context<Self>,
-    ) {
-        self.session_defaults.set(mode, slot);
-        self.session_defaults.persist();
-        if self.workflow_mode == mode {
-            self.reapply_mode_defaults(cx);
-        }
-        cx.notify();
-    }
-
-    /// Manually move the active session onto its mode's default. The Settings
-    /// "Use mode default" action; also used after a default changes under the
-    /// active mode.
-    pub(super) fn reapply_mode_defaults(&mut self, cx: &mut Context<Self>) {
-        self.mode_defaults_armed = true;
-        self.mode_defaults_pushed = ModeDefaultsPushed::default();
-        self.apply_mode_defaults(cx);
-    }
-
-    /// The Settings → Agent "Use mode default" button.
-    pub(super) fn use_mode_default(&mut self, cx: &mut Context<Self>) {
-        self.reapply_mode_defaults(cx);
-        // The composer chip updates from the resulting `get_state`, so no toast
-        // is needed; nothing is faked if no session is live.
-        cx.notify();
+    /// Write the default model and persist it. It takes effect on the next
+    /// session; the composer chip can still change the live one.
+    pub(super) fn set_default_model(&mut self, slot: crate::session_defaults::SessionDefault) {
+        self.session_default = slot;
+        self.session_default.persist();
     }
 
     /// Poll the active process for new quota-bridge session entries, at most
@@ -468,7 +470,7 @@ impl OrbitApp {
             .clone()
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
-        match self.extensions.spawn(&cwd, Some(self.workflow_mode)) {
+        match self.extensions.spawn(&cwd, true) {
             Ok(client) => {
                 self.adopt_client(client);
                 self.send(CommandBody::GetState, "get_state");

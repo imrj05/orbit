@@ -587,7 +587,7 @@ impl OrbitApp {
         self.add_workspace(cwd.clone());
         self.set_current_workspace(cwd.clone());
 
-        match self.extensions.spawn(&cwd, Some(self.workflow_mode)) {
+        match self.extensions.spawn(&cwd, true) {
             Ok(client) => {
                 self.adopt_client(client);
                 self.send(CommandBody::NewSession, "new_session");
@@ -720,10 +720,10 @@ impl OrbitApp {
             self.preview_session_transcript(session.path.clone(), cx);
             // Spawn a dedicated pi process rooted at the session's workspace
             // and point it at the session file.
-            let spawned = self.extensions.spawn(&session.cwd, None).or_else(|_| {
+            let spawned = self.extensions.spawn(&session.cwd, false).or_else(|_| {
                 self.extensions.spawn(
                     &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-                    None,
+                    false,
                 )
             });
             match spawned {

@@ -196,6 +196,33 @@ panel's tab strip and branch row are on the tokens too (one shared `tab_bar` for
 History / Graph / Issues / Pulls). The transcript's inner content (activity bodies, thinking,
 edit diffs, detail sections) still carries bespoke layout px.
 
+### D12 — Default session model: Orbit-owned config, applied at spawn and session birth
+**Choice:** one optional default model (`provider` + `modelId`) and thinking level for new
+sessions, persisted to Orbit's own `~/.orbit-pi/session-defaults.json`. An empty slot means
+pi's own startup default is left alone. The choice is applied through both paths a session
+can be born on: `--provider` / `--model` / `--thinking` flags at process spawn
+(`BundledExtensions::spawn`), which cover the first session, and `set_model` /
+`set_thinking_level` RPC for every later `new_session` inside a live process.
+`switch_session` and `clone` deliberately do not override a resumed session. Settings →
+Agent exposes the model plus a thinking-level select whose options are derived from the
+catalog entry exactly like pi's `getSupportedThinkingLevels` (`reasoning` +
+`thinkingLevelMap`); a model or level pi's catalog does not support is skipped, and a
+malformed file loads as no default. Per-mode defaults were deliberately dropped: mode is a
+per-session scope (D8), not a reason for a different startup model, and the composer chip
+already changes model/thinking per session.
+**Rationale:** one pi process hosts many sessions and a `new_session` re-applies the
+spawn-time CLI flags to each one, but those flags are frozen at spawn: a default
+changed while the process is live would only reach a new session through the RPC
+path, and RPC alone would leave the first session on pi's global default. Orbit owns
+the file for the same reason themes do (D9):
+`~/.pi/agent/settings.json` is global to the machine, is rewritten by pi itself, and
+writing it would silently change terminal `pi` sessions. Deriving the thinking ladder from
+the catalog keeps the settings control honest for the selected model instead of showing
+the live session's levels; fail-soft keeps a stale id or level from poisoning a session.
+**Consequence:** new sessions only — a resumed session keeps the model and thinking level
+recorded in its file, and a manual composer choice wins until the next new session. The AI
+reviewer process never receives the default.
+
 ## The feature parity contract
 
 Everything below must behave identically in the GPUI app (against the pi CLI) as it does in the

@@ -1,5 +1,5 @@
 //! Transport coverage for the `extra_args` spawn seam that carries Orbit's
-//! per-mode session defaults (`--provider` / `--model` / `--thinking`).
+//! default session model (`--provider` / `--model`).
 //!
 //! A fake pi records its argv, so the test proves the flags reach the child
 //! process and that an empty slice leaves the base `--mode rpc --approve` argv
@@ -51,7 +51,12 @@ impl FakePi {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             if let Ok(raw) = std::fs::read_to_string(&self.argv) {
-                return raw.lines().map(str::to_string).collect();
+                // The shell creates the file before `printf` writes it; an
+                // empty or newline-less read is a partial write, keep waiting
+                // (`printf '%s\n' "$@"` always ends with a newline).
+                if !raw.is_empty() && raw.ends_with('\n') {
+                    return raw.lines().map(str::to_string).collect();
+                }
             }
             assert!(
                 Instant::now() < deadline,

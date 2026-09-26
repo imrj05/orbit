@@ -1556,6 +1556,7 @@ mod tests {
             name: name.into(),
             provider: provider.into(),
             context_window,
+            thinking_levels: Vec::new(),
         }
     }
 

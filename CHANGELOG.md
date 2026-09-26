@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Default session model** — Settings → Agent can pick the model and thinking level
+  every new session starts on, whichever workflow mode it runs in. The choice lives
+  in Orbit's own `~/.orbit-pi/session-defaults.json` (pi's global settings file is
+  untouched), rides the spawn flags for a session's first turn and
+  `set_model` / `set_thinking_level` RPC for every later session in a live process,
+  and leaves pi's own default alone when unset. The thinking options are the levels
+  pi itself derives for the selected model, so the control tracks the model rather
+  than the live session. Resumed sessions keep the model in their file; the
+  composer chip still changes model / thinking per session.
 - **Zed design tokens** — `theme/tokens.rs` ports Zed's sizing system: dynamic
   spacing with Compact / Default / Comfortable density, text / headline / icon /
   button sizes, list, popover, context-menu, modal, tooltip, input and scrollbar

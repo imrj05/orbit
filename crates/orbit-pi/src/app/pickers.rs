@@ -146,7 +146,7 @@ impl OrbitApp {
         self.reset_queue();
         match self.extensions.spawn(
             self.current_workspace.as_ref().unwrap(),
-            Some(self.workflow_mode),
+            true,
         ) {
             Ok(client) => {
                 self.adopt_client(client);
@@ -198,6 +198,10 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Model and thinking are locked while a run is in flight.
+        if self.is_running() {
+            return;
+        }
         self.refresh_catalogs();
         self.send(CommandBody::GetState, "get_state");
         // Mutually exclusive with the composer's add menu and the new-task
@@ -301,17 +305,20 @@ impl OrbitApp {
         self.session_menu = None;
         self.workspace_menu = None;
 
+        // Model and thinking choices are fixed for the duration of a turn, so
+        // the palette hides those two commands while a run is in flight.
+        let running = self.is_running();
         let snapshot = PaletteSnapshot {
             sessions: self.sidebar_sessions(),
             active_path: self.current_session_path.clone(),
-            busy: self.busy || self.transcript.is_streaming(),
+            busy: running,
             session_id: self.session_id.clone(),
             sidebar_visible: self.sidebar_visible,
             side_panel_visible: self.sidepane.read(cx).is_open(),
             terminal_visible: self.terminal_panel.read(cx).is_open(),
             project_panel_visible: self.project_panel.read(cx).is_open(),
-            can_choose_model: !self.available_models.is_empty(),
-            can_choose_thinking: !self.available_thinking_levels.is_empty(),
+            can_choose_model: !self.available_models.is_empty() && !running,
+            can_choose_thinking: !self.available_thinking_levels.is_empty() && !running,
         };
 
         let this = cx.weak_entity();
