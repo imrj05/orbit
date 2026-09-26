@@ -254,12 +254,16 @@ impl Render for OrbitApp {
         self.sidepane.update(cx, |pane, cx| {
             pane.set_turn_context(pane_session, pane_latest_turn, cx)
         });
-        let ai_action = self.ai_review_opener(cx);
-        let ai_snapshot = self.ai_review_snapshot();
-        self.sidepane.update(cx, |pane, cx| {
-            pane.set_ai_review_action(ai_action);
-            pane.set_ai_review(ai_snapshot, cx);
-        });
+        // The Review page mirrors the store and the workspace's Git facts. It
+        // is the app's only AI review surface; the pane stays a diff viewer.
+        if self.review_page.read(cx).is_open() {
+            let review_action = self.review_page_action(cx);
+            let review_snapshot = self.review_page_snapshot(cx);
+            self.review_page.update(cx, |page, cx| {
+                page.set_action(review_action);
+                page.set_snapshot(review_snapshot, cx);
+            });
+        }
         let git_workspace = self.current_workspace.clone();
         let git_provider = self.model_provider.clone();
         let git_model = self.model_id.clone();
@@ -348,6 +352,14 @@ impl Render for OrbitApp {
             self.usage
                 .update(cx, |page, cx| page.top_bar_leading(theme, cx))
         });
+        let review_leading = self
+            .review_page
+            .read(cx)
+            .is_open()
+            .then(|| {
+                self.review_page
+                    .update(cx, |page, cx| page.top_bar_leading(theme, cx))
+            });
         let mut top_controls = div().flex_none().flex().items_center().gap_2();
         // Provider quota — a compact, provider-independent headroom meter.
         // Hidden entirely on a pi without `quota.*` (or when no provider
@@ -621,7 +633,8 @@ impl Render for OrbitApp {
                                     .gap_1()
                                     .child(self.sidebar_new_task_button(theme, cx))
                                     .child(self.sidebar_search_row(theme, cx))
-                                    .child(self.sidebar_usage_row(theme, cx)),
+                                    .child(self.sidebar_usage_row(theme, cx))
+                                    .child(self.sidebar_review_row(theme, cx)),
                             )
                             // session list (scrolls), grouped by workspace — or
                             // the empty state when pi's store has no sessions
@@ -810,7 +823,9 @@ impl Render for OrbitApp {
                 // the chat fills the column itself.
                 let empty = self.transcript.is_empty();
                 let viewer_open = self.file_viewer.read(cx).is_open();
-                let feature_open = viewer_open || self.git_open || self.usage_open;
+                let review_page_open = self.review_page.read(cx).is_open();
+                let feature_open =
+                    viewer_open || self.git_open || self.usage_open || review_page_open;
                 // top bar — the window's left controls float over it in the
                 // titlebar overlay, so its leading clears them when the sidebar
                 // is collapsed. The drag spacer between the title and the right
@@ -839,7 +854,7 @@ impl Render for OrbitApp {
                                     .flex()
                                     .items_center(),
                             );
-                            if let Some(leading) = git_leading.or(usage_leading) {
+                            if let Some(leading) = git_leading.or(usage_leading).or(review_leading) {
                                 left.child(leading)
                             } else {
                                 left.child(
@@ -890,6 +905,8 @@ impl Render for OrbitApp {
                     self.git_panel.clone().into_any_element()
                 } else if self.usage_open {
                     self.usage.clone().into_any_element()
+                } else if review_page_open {
+                    self.review_page.clone().into_any_element()
                 } else {
                     // chat body — transcript/empty, composer, terminal
                     div()
@@ -3280,6 +3297,60 @@ impl OrbitApp {
     /// Sidebar nav row for the Usage page, in the same `ButtonSize::Large`
     /// frame as the New Task and Search rows; the open page is marked with an
     /// `active` fill rather than accent color alone.
+    /// Sidebar nav row for the Review page, in the same `ButtonSize::Large`
+    /// frame as the Usage row. The page is the app's only AI review surface;
+    /// the badge counts reviews that are queued or running right now.
+    pub(super) fn sidebar_review_row(
+        &self,
+        theme: Theme,
+        cx: &Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let active = self.review_page.read(cx).is_open();
+        let running = self.reviews.active_count();
+        button_frame(div().id("sidebar-review"), &theme, ButtonSize::Large)
+            .group(BUTTON_GROUP)
+            .w_full()
+            .when(active, |row| row.bg(theme.active))
+            .cursor_pointer()
+            .hover(|s| s.bg(if active { theme.active } else { theme.bg_hover }))
+            .active(|s| s.opacity(PRESS_DIM))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_review_nav_click))
+            .child(icon(
+                "icons/spark.svg",
+                ButtonSize::Large.icon_size().px(&theme),
+                if active {
+                    theme.active_fg
+                } else {
+                    theme.text_3
+                },
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(if active {
+                        theme.active_fg
+                    } else {
+                        theme.text_2
+                    })
+                    .child(tr!("review_page.title")),
+            )
+            .when(running > 0, |row| {
+                row.child(
+                    div()
+                        .flex_none()
+                        .px(DynamicSpacing::Base04.px(&theme))
+                        .rounded(Radius::Full.px(&theme))
+                        .bg(theme.accent.opacity(0.16))
+                        .text_size(TextSize::XSmall.px(&theme))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.accent)
+                        .child(running.to_string()),
+                )
+            })
+    }
+
     pub(super) fn sidebar_usage_row(
         &self,
         theme: Theme,

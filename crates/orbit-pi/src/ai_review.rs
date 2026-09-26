@@ -189,16 +189,6 @@ impl Finding {
     }
 }
 
-/// The reviewer run's lifecycle, for the pane's empty / spinner / result states.
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
-pub enum ReviewStatus {
-    #[default]
-    Idle,
-    Running,
-    Done,
-    Failed(String),
-}
-
 /// The reviewer's verdict for the change as a whole.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub enum Verdict {

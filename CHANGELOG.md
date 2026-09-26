@@ -7,8 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Review page** — AI review now has its own destination (sidebar → Review, or
+  command palette → Open AI Review) with four tabs: **New review** picks a target
+  (uncommitted changes, the current branch against a base, one commit, chosen files, or
+  the whole project) with live file counts and an inline commit list; **Running** shows
+  every live run with progress and Stop, and keeps finished runs in place under a
+  **Review completed** status with their verdict and findings; **Changes** lists the
+  selected target's changed files with per-file counts; **History** holds finished runs
+  including other workspaces. Runs are capped at two concurrent reviewer processes with
+  the rest queued.
+- **Reviewer prompts carry a shared review rubric** (what to flag and what not, silent
+  failure and duplication rules, how to phrase findings) and answers return a verdict
+  (`correct` / `needs attention`) alongside the findings.
+
 ### Changed
 
+- **The Review pane is a pure diff viewer.** It no longer starts reviewers, renders
+  findings, or owns any review state — the Review page is the app's only AI review
+  surface. The pane keeps its source selector, diff tree, and syntax-highlighted diff.
 - **AI reviews run in the background.** A review is now a first-class run pinned to the
   workspace it was started from, so it keeps going when you switch workspace, session,
   or page; at most two reviewer processes run at once and the rest wait in a queue.

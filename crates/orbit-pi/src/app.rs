@@ -530,6 +530,14 @@ pub struct OrbitApp {
     usage_open: bool,
     /// The Usage page: analytics over pi's own session store.
     usage: Entity<UsagePage>,
+    /// The Review page: the app's only AI review surface (targets, runs,
+    /// findings). The Review pane stays a pure diff viewer.
+    review_page: Entity<crate::review_page::ReviewPage>,
+    /// The page's Git facts (target counts, recent commits), collected off the
+    /// UI thread and cached; a workspace change invalidates them.
+    review_facts: review_page::ReviewPageFacts,
+    /// A facts refresh is in flight.
+    review_facts_inflight: bool,
     /// Custom providers read from `~/.pi/agent/models.json` (cached; reloaded
     /// when the Providers page opens, on Refresh, and after a save/remove).
     custom_providers: Vec<CustomProvider>,
@@ -979,6 +987,11 @@ impl OrbitApp {
         let git_panel = cx.new(GitPanel::new);
         // Usage analytics over pi's own session store.
         let usage = cx.new(UsagePage::new);
+        // The Review page — AI review has its own destination, separate from
+        // the Review pane's diff viewer.
+        // The page's own actions are wired each frame in `view.rs`, like the
+        // pane's review opener.
+        let review_page = cx.new(crate::review_page::ReviewPage::new);
         // Right dock — the workspace file tree. A row click routes to the app,
         // which opens the Files surface; the panel stays viewer-agnostic.
         let app_weak = cx.entity().downgrade();
@@ -1164,6 +1177,9 @@ impl OrbitApp {
             git_panel: git_panel.clone(),
             usage_open: false,
             usage: usage.clone(),
+            review_page: review_page.clone(),
+            review_facts: review_page::ReviewPageFacts::default(),
+            review_facts_inflight: false,
             custom_providers: Vec::new(),
             custom_providers_error: None,
             provider_auth: HashMap::new(),
@@ -1450,6 +1466,9 @@ impl OrbitApp {
         self.workspaces.retain(|w| w.as_path() != cwd);
         if self.workspaces.len() != before {
             persist_workspaces(&self.workspaces);
+            // Review runs and their history belonged to that project; drop
+            // them with it. Live reviewers for it are aborted first.
+            self.forget_reviews(cwd);
         }
     }
 
@@ -1967,10 +1986,11 @@ mod ask;
 mod composer_ops;
 mod dialogs;
 mod events;
-mod helpers;
+pub(crate) mod helpers;
 mod open_in;
 mod pi_update_ui;
 mod pickers;
+mod review_page;
 mod reviews;
 mod runtime;
 mod search;

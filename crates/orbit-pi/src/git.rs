@@ -716,6 +716,135 @@ pub fn discard_paths(cwd: &Path, paths: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// One recent commit with its churn, for the Review page's commit list. The
+/// whole list comes from a single `git log --numstat` pass — never one
+/// `commit_detail` call per row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitChurn {
+    pub hash: String,
+    pub short: String,
+    pub subject: String,
+    pub file_count: usize,
+    pub added: u64,
+    pub deleted: u64,
+}
+
+/// The newest `limit` commits with their file counts and line churn, newest
+/// first. Binary files count as files but contribute no lines.
+pub fn recent_commits_with_stats(cwd: &Path, limit: usize) -> Vec<CommitChurn> {
+    let format = "%H\u{1f}%h\u{1f}%s";
+    let out = run_git(
+        cwd,
+        &[
+            "-c",
+            "core.quotePath=false",
+            "log",
+            "--numstat",
+            &format!("--max-count={limit}"),
+            &format!("--format=COMMIT\u{1f}{format}"),
+        ],
+    )
+    .unwrap_or_default();
+    parse_commit_churn(&out)
+}
+
+fn parse_commit_churn(out: &str) -> Vec<CommitChurn> {
+    let mut commits = Vec::new();
+    let mut current: Option<CommitChurn> = None;
+    for line in out.lines() {
+        if let Some(rest) = line.strip_prefix("COMMIT\u{1f}") {
+            if let Some(commit) = current.take() {
+                commits.push(commit);
+            }
+            let mut fields = rest.split('\u{1f}');
+            current = Some(CommitChurn {
+                hash: fields.next().unwrap_or_default().to_string(),
+                short: fields.next().unwrap_or_default().to_string(),
+                subject: fields.next().unwrap_or_default().to_string(),
+                file_count: 0,
+                added: 0,
+                deleted: 0,
+            });
+            continue;
+        }
+        let Some(commit) = current.as_mut() else {
+            continue;
+        };
+        // `added\tdeleted\tpath`. Binary files use "-" for both counts.
+        let mut fields = line.split('\t');
+        let Some(added) = fields.next() else {
+            continue;
+        };
+        let Some(deleted) = fields.next() else {
+            continue;
+        };
+        if added.trim().is_empty() && deleted.trim().is_empty() {
+            continue;
+        }
+        commit.file_count += 1;
+        commit.added += added.trim().parse().unwrap_or(0);
+        commit.deleted += deleted.trim().parse().unwrap_or(0);
+    }
+    if let Some(commit) = current.take() {
+        commits.push(commit);
+    }
+    commits
+}
+
+/// How many files Git tracks in the workspace, for the whole-project target's
+/// count.
+pub fn tracked_file_count(cwd: &Path) -> Option<usize> {
+    let out = run_git(cwd, &["ls-files"]).ok()?;
+    Some(
+        out.lines()
+            .filter(|line| !line.trim().is_empty())
+            .count(),
+    )
+}
+
+/// One file in a diff's `--numstat` output: the Review page's Changes list
+/// and the per-target file count both read this.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffFile {
+    pub path: String,
+    pub added: u64,
+    pub deleted: u64,
+    /// Git's status letter (`M`, `A`, `D`, `R`). `--numstat` alone does not
+    /// carry it, so it defaults to `M` unless the caller knows better.
+    pub status: char,
+}
+
+/// The changed files a review target covers, with per-file line counts. The
+/// status letter is left `M` for every row: `numstat` has no status column,
+/// and the Changes tab shows counts, not the staging state.
+pub fn kind_diff_files(cwd: &Path, kind: &ReviewKind) -> Result<Vec<DiffFile>, String> {
+    let diff = collect_kind_diff(cwd, kind)?;
+    Ok(parse_numstat(&diff.numstat))
+}
+
+/// Parse `git diff --numstat` output. Binary files use `-` for both counts.
+fn parse_numstat(numstat: &str) -> Vec<DiffFile> {
+    numstat
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let added = fields.next()?;
+            let deleted = fields.next()?;
+            let path = fields.next()?.trim();
+            let path = path.strip_prefix("b/").unwrap_or(path);
+            if path.is_empty() {
+                return None;
+            }
+            Some(DiffFile {
+                path: path.to_string(),
+                added: added.trim().parse().unwrap_or(0),
+                deleted: deleted.trim().parse().unwrap_or(0),
+                status: 'M',
+            })
+        })
+        .collect()
+}
+
 /// Discard every change in the working tree: staged and unstaged edits to
 /// tracked files are reset to `HEAD`, and untracked files are removed. The UI
 /// confirms before calling this.
@@ -1584,6 +1713,34 @@ mod tests {
         assert_ne!(merge.parents[1], merge.parents[2]);
         assert_ne!(merge.parents[0], merge.parents[2]);
         assert!(merge.lane_count >= 3);
+    }
+
+    #[test]
+    fn numstat_parses_counts_and_strips_the_b_prefix() {
+        let rows = parse_numstat("12\t3\tb/src/a.rs\n-\t-\tb/asset.png\n");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].path, "src/a.rs");
+        assert_eq!((rows[0].added, rows[0].deleted), (12, 3));
+        assert_eq!(rows[1].path, "asset.png");
+        assert_eq!((rows[1].added, rows[1].deleted), (0, 0));
+        assert!(parse_numstat("").is_empty());
+    }
+
+    #[test]
+    fn commit_churn_parses_numstat_rows() {
+        let out = "COMMIT\u{1f}abc\u{1f}abc1234\u{1f}Fix parser\n\
+                    12\t3\tsrc/a.rs\n\
+                    0\t5\tsrc/b.rs\n\
+                    -\t-\tassets/logo.png\n\
+                    COMMIT\u{1f}def\u{1f}def5678\u{1f}Add tests\n\
+                    7\t0\ttests/a.rs\n";
+        let commits = parse_commit_churn(out);
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].subject, "Fix parser");
+        assert_eq!(commits[0].file_count, 3);
+        assert_eq!((commits[0].added, commits[0].deleted), (12, 8));
+        assert_eq!(commits[1].short, "def5678");
+        assert_eq!(commits[1].file_count, 1);
     }
 
     #[test]

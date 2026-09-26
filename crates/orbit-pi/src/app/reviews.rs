@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::*;
-use crate::ai_review::{self as model, Report, ReviewKind, ReviewStatus};
+use crate::ai_review::{self as model, Report, ReviewKind};
 use crate::git;
 use crate::reviews::{self, ReviewRun, ReviewRunConfig, RunStatus};
 
@@ -292,9 +292,9 @@ impl OrbitApp {
             // `Changes` follows the pane's selected Review source; the other
             // diff kinds resolve their range from the kind itself.
             let source = (kind == ReviewKind::Changes)
-                .then(|| self.sidepane.read(cx).ai_review_source().0);
+                .then(|| self.sidepane.read(cx).review_source().0);
             let session_id = self.session_id.clone();
-            cx.spawn(async move |this, cx| {
+            let _ = cx.spawn(async move |this, cx| {
                 let collected = cx
                     .background_executor()
                     .spawn(async move {
@@ -375,7 +375,7 @@ impl OrbitApp {
         };
         match kind {
             ReviewKind::Changes => {
-                let label = self.sidepane.read(cx).ai_review_source_label();
+                let label = self.sidepane.read(cx).review_source_label();
                 let (patch, truncated) = embedded(patch);
                 model::build_changes_prompt(&label, &patch, truncated)
             }
@@ -541,51 +541,11 @@ impl OrbitApp {
     /// Forget the review history for a workspace (the folder left the app).
     pub(super) fn forget_reviews(&mut self, workspace: &Path) {
         self.reviews.forget_workspace(workspace);
-        if self
-            .focused_review
-            .and_then(|id| self.reviews.get(id))
-            .is_none()
-        {
-            self.focused_review = None;
-        }
-    }
-
-    /// The snapshot the Review pane renders (synced each frame). Mirrors the
-    /// focused run; `None` when the workspace has no runs yet.
-    pub(super) fn ai_review_snapshot(&self) -> crate::sidepane::AiReviewSnapshot {
-        let Some(run) = self.focused_review_id().and_then(|id| self.reviews.get(id)) else {
-            return crate::sidepane::AiReviewSnapshot::default();
-        };
-        crate::sidepane::AiReviewSnapshot {
-            kind: Some(run.kind.clone()),
-            status: match &run.status {
-                RunStatus::Queued | RunStatus::Running => ReviewStatus::Running,
-                RunStatus::Completed => ReviewStatus::Done,
-                RunStatus::Failed(error) => ReviewStatus::Failed(error.clone()),
-                RunStatus::Cancelled => ReviewStatus::Idle,
-            },
-            report: run.report.clone(),
-        }
-    }
-
-    /// The pane's opener callback: starts or cancels a review on behalf of the
-    /// pane's sparkles menu without the pane reaching back into the app.
-    pub(super) fn ai_review_opener(&self, cx: &Context<Self>) -> crate::sidepane::AiReviewAction {
-        let this = cx.weak_entity();
-        Rc::new(move |request, _window, cx| {
-            this.update(cx, |app, cx| match request {
-                crate::sidepane::AiReviewRequest::Start(kind) => {
-                    app.start_review(kind, cx);
-                }
-                crate::sidepane::AiReviewRequest::Cancel => app.cancel_focused_review(cx),
-            })
-            .ok();
-        })
     }
 
     /// The model/thinking the next review starts on: the session default, so
     /// the common case needs no picker interaction.
-    fn review_config(&self) -> ReviewRunConfig {
+    pub(super) fn review_config(&self) -> ReviewRunConfig {
         ReviewRunConfig {
             provider: self.session_default.provider.clone(),
             model: self.session_default.model_id.clone(),

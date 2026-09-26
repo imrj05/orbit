@@ -1,6 +1,9 @@
 # Plan — Review page: a first-class, background AI review workspace
 
-**Status:** Proposed — design locked for discussion; no implementation started.
+**Status:** In progress. Phases 0–2 (model, git collection, background store) and the
+page shell + New review / Running / Changes / History tabs are implemented; the Review
+pane's AI section is removed. Remaining: per-file diff preview inside Changes, custom
+review guidelines (`REVIEW_GUIDELINES.md`), and the docs/INTENT pass.
 **Owner:** TBD
 **Scope:** Orbit desktop app (`crates/orbit-pi`). Touches `ai_review.rs`, `app/ai_review.rs`,
 `git.rs`, a new `review_page/` module, `app.rs` routing, `sidepane.rs`, i18n.
