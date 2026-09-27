@@ -1206,9 +1206,9 @@ pub fn draws_window_controls() -> bool {
 /// `Window::prevent_default` on every press inside the window. A prevented
 /// press is treated as handled, which makes GPUI drop the window-control
 /// path entirely — no move loop, and no caption-button commands. So the press
-/// hands the move to the OS itself (`WM_NCLBUTTONDOWN` + `HTCAPTION`), which
-/// is the standard way a custom titlebar drags a Windows window. That message
-/// is posted rather than sent so the move loop does not nest inside the
+/// hands the move to the OS itself (`WM_SYSCOMMAND` with `SC_MOVE | HTCAPTION`),
+/// the same command `DefWindowProc` runs for a caption drag. That message is
+/// posted rather than sent so the move loop does not nest inside the
 /// mouse-down update — see `windows_chrome::start_drag` for why that matters.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn start_window_drag(window: &Window) {
@@ -1242,8 +1242,8 @@ mod windows_chrome {
 
     use super::WindowCommand;
 
-    const WM_NCLBUTTONDOWN: u32 = 0x00A1;
     const WM_SYSCOMMAND: u32 = 0x0112;
+    const SC_MOVE: usize = 0xF010;
     const HTCAPTION: usize = 2;
     const SC_MINIMIZE: usize = 0xF020;
     const SC_MAXIMIZE: usize = 0xF030;
@@ -1273,10 +1273,11 @@ mod windows_chrome {
             return;
         };
         // SAFETY: `hwnd` is the window's own handle for as long as `window`
-        // lives, and both calls are the documented sequence for starting a
-        // system move loop (`ReleaseCapture` drops the current capture so the
-        // window can take it; a non-client left-button-down with `HTCAPTION`
-        // is what the OS reads as "the user grabbed the titlebar").
+        // lives. `ReleaseCapture` drops the current capture so the window can
+        // take it, and `WM_SYSCOMMAND` with `SC_MOVE | HTCAPTION` is how
+        // `DefWindowProc` starts a caption drag — including the restore of a
+        // maximized window — so the system performs the move and the app never
+        // reimplements window management.
         //
         // Posted, not sent. `SendMessageW` runs the move loop *synchronously*,
         // i.e. still inside the mouse-down event this handler is called from.
@@ -1290,9 +1291,17 @@ mod windows_chrome {
         // it runs *after* the update has put the window back and its resize
         // callbacks can land. `PostMessageW` returns immediately; the move
         // loop owns the mouse until the user releases it.
+        //
+        // `WM_NCLBUTTONDOWN` with `HTCAPTION` deliberately is not used here:
+        // GPUI dispatches a synthetic `MouseDown` for that message, and when
+        // its coordinates land back in a header drag region the handler posts
+        // another one. A window that covers the screen origin — every window
+        // maximized on the primary display — never drains that queue and the
+        // app spins forever (issue #26). `WM_SYSCOMMAND` starts the same move
+        // loop without re-entering the app's input dispatch.
         unsafe {
             ReleaseCapture();
-            PostMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+            PostMessageW(hwnd, WM_SYSCOMMAND, SC_MOVE | HTCAPTION, 0);
         }
     }
 

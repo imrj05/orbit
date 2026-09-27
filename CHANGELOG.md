@@ -35,6 +35,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Shift+Enter still inserts a new line. Steering and alternate-send shortcuts
   are scoped to the chat input so they cannot submit drafts from other fields.
 
+### Fixed
+
+- Dragging the header of a window that is maximized on the primary display no
+  longer locks the app up: the drag now starts the system's caption-move
+  command instead of posting a non-client left-button message, which GPUI
+  dispatches back into the drag region and the drag region answers with another
+  post. Restoring and moving at the start of the drag behave like a native
+  titlebar.
+- The Git page's Back button leaves the page again: the leading controls (Back
+  and the page title) now sit outside the window drag region, so pressing them
+  no longer starts a window move that swallows the click. The empty bar after
+  the controls still drags the window.
+
 ## [0.0.18] - 2026-09-26
 
 ### Added
