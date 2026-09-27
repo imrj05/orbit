@@ -2971,11 +2971,23 @@ fn render_activity_card(
                                 ))
                                 .flex_1()
                                 .min_w_0()
-                                .truncate()
-                                .text_color(theme.accent)
-                                .underline()
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
                                 .cursor_pointer()
-                                .child(display_url(&url).to_string())
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_color(theme.accent)
+                                        .underline()
+                                        .child(display_url(&url).to_string()),
+                                )
+                                .child(glyph(
+                                    "icons/arrow-up-right.svg",
+                                    IconSize::XSmall.px(&theme),
+                                    theme.accent,
+                                ))
                                 .on_click(move |_, _, cx| {
                                     cx.open_url(&url);
                                     cx.stop_propagation();
@@ -4637,6 +4649,9 @@ struct InlineSpan {
     strikethrough: bool,
     code: bool,
     link: Option<String>,
+    /// A bare URL the parser recognized, as opposed to a `[label](url)`
+    /// link. Autolinks get an external-link mark in the rendered text.
+    autolink: bool,
 }
 
 fn flush_span(spans: &mut Vec<InlineSpan>, current: &mut InlineSpan) {
@@ -4645,8 +4660,48 @@ fn flush_span(spans: &mut Vec<InlineSpan>, current: &mut InlineSpan) {
     }
 }
 
+/// The end index (exclusive) of a bare `http://` or `https://` URL starting
+/// at `start`, or `None` when the text there is not a URL. The scan stops at
+/// whitespace, `<`, and `>`; trailing sentence punctuation, emphasis markers,
+/// and closing brackets with no opener inside the URL are left for the prose.
+fn autolink_end(chars: &[char], start: usize) -> Option<usize> {
+    let tail = &chars[start..];
+    if !tail.starts_with(&['h', 't', 't', 'p', 's', ':', '/', '/'])
+        && !tail.starts_with(&['h', 't', 't', 'p', ':', '/', '/'])
+    {
+        return None;
+    }
+    let mut end = start;
+    while end < chars.len() && !chars[end].is_whitespace() && chars[end] != '<' && chars[end] != '>'
+    {
+        end += 1;
+    }
+    while end > start {
+        let last = chars[end - 1];
+        let trim = matches!(
+            last,
+            '.' | ',' | ';' | ':' | '!' | '?' | '\'' | '"' | '*' | '_' | '~'
+        ) || (matches!(last, ')' | ']' | '}') && {
+            let opener = match last {
+                ')' => '(',
+                ']' => '[',
+                _ => '{',
+            };
+            let opens = chars[start..end].iter().filter(|&&c| c == opener).count();
+            let closes = chars[start..end].iter().filter(|&&c| c == last).count();
+            closes > opens
+        });
+        if !trim {
+            break;
+        }
+        end -= 1;
+    }
+    (end > start).then_some(end)
+}
+
 /// Parse GFM inline syntax: `` `code` ``, `**bold**`, `*italic*`, `_italic_`,
-/// `~~strike~~`, `[links](url)`. `\*`-style escapes render literally.
+/// `~~strike~~`, `[links](url)`, and bare `http(s)://` URLs. `\*`-style
+/// escapes render literally.
 fn parse_inline(text: &str) -> Vec<InlineSpan> {
     let mut spans: Vec<InlineSpan> = Vec::new();
     let mut current = InlineSpan::default();
@@ -4749,6 +4804,23 @@ fn parse_inline(text: &str) -> Vec<InlineSpan> {
                     i += 1;
                 }
             }
+            'h' => {
+                // A bare URL is a link even without `[label](url)` syntax.
+                if let Some(end) = autolink_end(&chars, i) {
+                    // Capture the surrounding style before the flush resets
+                    // it, so a URL inside `**bold**` stays bold.
+                    let mut span = current.clone();
+                    flush_span(&mut spans, &mut current);
+                    span.text = chars[i..end].iter().collect();
+                    span.link = Some(span.text.clone());
+                    span.autolink = true;
+                    spans.push(span);
+                    i = end;
+                } else {
+                    current.text.push(ch);
+                    i += 1;
+                }
+            }
             other => {
                 current.text.push(other);
                 i += 1;
@@ -4776,6 +4848,12 @@ fn inline_runs(
         }
         let start = body.len();
         body.push_str(&span.text);
+        // A bare URL wears an external-link mark so it reads as a link at a
+        // glance. It rides the link run, so clicking it opens the URL too
+        // and the copied selection keeps a readable arrow (not a PUA glyph).
+        if span.autolink {
+            body.push_str(AUTOLINK_MARK);
+        }
         let len = body.len() - start;
         let mut font = ui_font();
         if span.code {
@@ -4822,6 +4900,11 @@ fn inline_runs(
     }
     (body.into(), runs, links)
 }
+
+/// The mark a bare URL wears in prose: a space and a north-east arrow, the
+/// standard "opens externally" affordance. Plain Unicode so a copied
+/// selection stays readable, unlike a private-use icon glyph.
+const AUTOLINK_MARK: &str = " \u{2197}";
 
 /// The window's default UI face (Zed's IBM Plex Sans), explicit for
 /// [`TextRun`] construction.
@@ -7676,6 +7759,53 @@ mod tests {
         assert_eq!(&body[links[0].0.clone()], "docs");
         // Underline style rides on the link run.
         assert!(runs.iter().any(|run| run.underline.is_some()));
+    }
+
+    #[test]
+    fn bare_urls_autolink_and_trim_trailing_punctuation() {
+        let spans = parse_inline("see https://pi.dev/docs. and http://a.b/(x) now");
+        let links: Vec<&str> = spans.iter().filter_map(|s| s.link.as_deref()).collect();
+        assert_eq!(links, vec!["https://pi.dev/docs", "http://a.b/(x)"]);
+        let autolinks: Vec<&str> = spans
+            .iter()
+            .filter(|s| s.autolink)
+            .map(|s| s.text.as_str())
+            .collect();
+        assert_eq!(autolinks, vec!["https://pi.dev/docs", "http://a.b/(x)"]);
+        // A closing bracket with no opener inside the URL is prose.
+        let spans = parse_inline("(see https://x.dev/a)");
+        assert_eq!(
+            spans
+                .iter()
+                .filter_map(|s| s.link.as_deref())
+                .collect::<Vec<_>>(),
+            vec!["https://x.dev/a"]
+        );
+        // Angle brackets stay prose; the URL itself is the link.
+        let spans = parse_inline("<https://x.dev>");
+        assert_eq!(
+            spans
+                .iter()
+                .filter_map(|s| s.link.as_deref())
+                .collect::<Vec<_>>(),
+            vec!["https://x.dev"]
+        );
+        // Markdown links are not autolinks, and code spans stay literal.
+        let spans = parse_inline("[docs](https://pi.dev)");
+        assert!(spans.iter().all(|s| !s.autolink));
+        let spans = parse_inline("`https://pi.dev`");
+        assert!(spans.iter().all(|s| s.link.is_none()));
+    }
+
+    #[test]
+    fn autolink_range_covers_the_rendered_url() {
+        let theme = Theme::dark();
+        let spans = parse_inline("go https://pi.dev/x now");
+        let (body, _runs, links) = inline_runs(&spans, FontWeight::NORMAL, theme.text, theme);
+        assert_eq!(body.as_ref(), "go https://pi.dev/x \u{2197} now");
+        assert_eq!(links.len(), 1);
+        // The range covers the URL and its external-link mark.
+        assert_eq!(&body[links[0].0.clone()], "https://pi.dev/x \u{2197}");
     }
 
     #[test]

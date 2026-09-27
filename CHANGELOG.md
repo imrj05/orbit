@@ -31,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `write` rows and on the changed-files summary. `web_fetch` rows show the URL
   as a clickable link with the scheme hidden, and `web_search` rows show the
   query instead of the raw arguments JSON.
+- Bare `http(s)://` URLs in user and assistant prose are links now: accent
+  colored, underlined, marked with a `↗`, and opened in the default browser on
+  click. Markdown `[label](url)` links keep their own label.
 
 ### Changed
 
