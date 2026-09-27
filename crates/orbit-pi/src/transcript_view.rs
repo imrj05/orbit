@@ -30,7 +30,7 @@ use gpui::{
     Hitbox, HitboxBehavior, Hsla, Image, ImageSource, InspectorElementId, InteractiveText,
     LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels,
     ScrollHandle, ScrollWheelEvent, SharedString, StrikethroughStyle, StyledText, TextAlign,
-    TextLayout, TextRun, UnderlineStyle, Window,
+    TextLayout, TextRun, TransformationMatrix, UnderlineStyle, Window,
 };
 
 use std::ops::Range;
@@ -647,6 +647,12 @@ struct SelectableText {
     /// Plain text this block contributes to the clipboard.
     plain: SharedString,
     links: Vec<(Range<usize>, String)>,
+    /// Byte ranges whose font glyph is blanked and replaced by a hugeicon
+    /// painted over the reserved space — the external-link arrow after a
+    /// bare URL in prose.
+    marks: Vec<Range<usize>>,
+    mark_color: Hsla,
+    mark_size: Pixels,
     scope: Option<TextScope>,
 }
 
@@ -663,9 +669,53 @@ impl SelectableText {
             text,
             plain,
             links,
+            marks: Vec::new(),
+            mark_color: Hsla::transparent_black(),
+            mark_size: px(0.),
             scope,
         }
     }
+
+    /// Paint the given byte ranges as hugeicon arrows in `color`; their font
+    /// glyphs must already be invisible (see [`hide_autolink_marks`]).
+    fn with_marks(mut self, marks: Vec<Range<usize>>, color: Hsla, size: Pixels) -> Self {
+        self.marks = marks;
+        self.mark_color = color;
+        self.mark_size = size;
+        self
+    }
+}
+
+/// Draw the hugeicon external-link arrow over the glyph space an autolink
+/// reserves. `range` covers just the arrow character: the runs keep its
+/// advance (so the mark stays part of the clickable link and the copied
+/// selection), while the icon centers on the box where the font glyph sat.
+fn paint_link_mark(
+    layout: &TextLayout,
+    range: &Range<usize>,
+    color: Hsla,
+    size: Pixels,
+    window: &mut Window,
+    cx: &App,
+) {
+    let Some(start) = layout.position_for_index(range.start) else {
+        return;
+    };
+    // A mark that wrapped alone still sits on its own line; the end position
+    // must share it for the box to be the arrow's, not a whole row's.
+    let center_x = match layout.position_for_index(range.end) {
+        Some(end) if end.y == start.y => (start.x + end.x) * 0.5,
+        _ => start.x + size * 0.5,
+    };
+    let top = start.y + (layout.line_height() - size) * 0.5;
+    let bounds = Bounds::new(point(center_x - size * 0.5, top), gpui::size(size, size));
+    let _ = window.paint_svg(
+        bounds,
+        "icons/arrow-up-right.svg".into(),
+        TransformationMatrix::unit(),
+        color,
+        cx,
+    );
 }
 
 impl Element for SelectableText {
@@ -718,6 +768,9 @@ impl Element for SelectableText {
     ) {
         self.text
             .paint(None, inspector_id, bounds, &mut (), &mut (), window, cx);
+        for mark in &self.marks {
+            paint_link_mark(layout, mark, self.mark_color, self.mark_size, window, cx);
+        }
         if let Some(scope) = self.scope.as_ref() {
             // The cursor rides this block's own hitbox: an I-beam over text,
             // a hand on links. A block's request wins only while the pointer
@@ -2898,6 +2951,15 @@ fn render_activity_card(
     // devicons palette follows the theme.
     let file_path = file_preview_path(tool);
     let dark = theme.mode == ThemeMode::Dark;
+    if matches!(tool.name.as_str(), "read" | "edit" | "write") {
+        eprintln!(
+            "[card-dbg] name={} nerd={:?} devicon={:?} path={:?}",
+            tool.name,
+            nerd,
+            file_path.and_then(|p| crate::app::helpers::dev_file_icon(p, dark)),
+            file_path
+        );
+    }
 
     let mut card = div()
         .id(ElementId::NamedInteger(
@@ -4636,9 +4698,15 @@ fn render_line_delta(added: u64, removed: u64, theme: Theme, size: f32) -> impl 
 // `border-l-2` blockquotes, mono inline-code chips, rounded pre blocks,
 // and clickable underlined links.
 
-/// Flattened inline runs: the body text, one [`TextRun`] per styled span,
-/// and the link `(byte range, url)` pairs.
-type InlineRuns = (SharedString, Vec<TextRun>, Vec<(Range<usize>, String)>);
+/// Flattened inline runs: `(text, runs, links, autolink marks)`. Each link
+/// is a `(byte range, url)` pair into the body; each mark is the byte range
+/// of an autolink's arrow glyph.
+type InlineRuns = (
+    SharedString,
+    Vec<TextRun>,
+    Vec<(Range<usize>, String)>,
+    Vec<Range<usize>>,
+);
 
 /// One styled inline span produced by [`parse_inline`].
 #[derive(Clone, Default)]
@@ -4842,6 +4910,7 @@ fn inline_runs(
     let mut body = String::new();
     let mut runs: Vec<TextRun> = Vec::new();
     let mut links: Vec<(Range<usize>, String)> = Vec::new();
+    let mut marks: Vec<Range<usize>> = Vec::new();
     for span in spans {
         if span.text.is_empty() {
             continue;
@@ -4849,10 +4918,12 @@ fn inline_runs(
         let start = body.len();
         body.push_str(&span.text);
         // A bare URL wears an external-link mark so it reads as a link at a
-        // glance. It rides the link run, so clicking it opens the URL too
-        // and the copied selection keeps a readable arrow (not a PUA glyph).
+        // glance: a gap, then the arrow the mark run carries. The whole mark
+        // rides the link run, so clicking it opens the URL too. The arrow
+        // gets its own run so the transcript can blank the font glyph and
+        // paint the hugeicon arrow over it.
         if span.autolink {
-            body.push_str(AUTOLINK_MARK);
+            body.push(' ');
         }
         let len = body.len() - start;
         let mut font = ui_font();
@@ -4879,7 +4950,7 @@ fn inline_runs(
         } else {
             base_color
         };
-        runs.push(TextRun {
+        let run = TextRun {
             len,
             font,
             color,
@@ -4893,18 +4964,55 @@ fn inline_runs(
                 thickness: px(1.),
                 color: None,
             }),
-        });
+        };
+        if span.autolink {
+            let mark_start = body.len();
+            body.push_str(AUTOLINK_ARROW);
+            marks.push(mark_start..body.len());
+            runs.push(run.clone());
+            runs.push(TextRun {
+                len: body.len() - mark_start,
+                ..run
+            });
+        } else {
+            runs.push(run);
+        }
         if let Some(url) = &span.link {
             links.push((start..body.len(), url.clone()));
         }
     }
-    (body.into(), runs, links)
+    (body.into(), runs, links, marks)
 }
 
-/// The mark a bare URL wears in prose: a space and a north-east arrow, the
-/// standard "opens externally" affordance. Plain Unicode so a copied
-/// selection stays readable, unlike a private-use icon glyph.
-const AUTOLINK_MARK: &str = " \u{2197}";
+/// Blank the font glyphs the autolink mark runs carry; [`paint_link_mark`]
+/// draws the hugeicon arrow over that space instead. The run stays in the
+/// text, so the click target and copied selection still cover the mark.
+fn hide_autolink_marks(runs: Vec<TextRun>, marks: &[Range<usize>]) -> Vec<TextRun> {
+    if marks.is_empty() {
+        return runs;
+    }
+    let mut offset = 0usize;
+    runs.into_iter()
+        .map(|mut run| {
+            let start = offset;
+            offset += run.len;
+            if marks
+                .iter()
+                .any(|mark| mark.start < offset && mark.end > start)
+            {
+                run.color = Hsla::transparent_black();
+                run.underline = None;
+            }
+            run
+        })
+        .collect()
+}
+
+/// The north-east arrow a bare URL reserves after its gap. Kept as plain
+/// Unicode in the text — the copied selection stays readable, unlike a
+/// private-use glyph — while the transcript blanks the font's glyph and
+/// paints the hugeicon arrow over it.
+const AUTOLINK_ARROW: &str = "\u{2197}";
 
 /// The window's default UI face (Zed's IBM Plex Sans), explicit for
 /// [`TextRun`] construction.
@@ -4934,7 +5042,7 @@ fn paragraph_text(
     theme: Theme,
 ) -> impl IntoElement {
     let spans = parse_inline(text);
-    let (body, runs, links) = inline_runs(&spans, weight, color, theme);
+    let (body, runs, links, marks) = inline_runs(&spans, weight, color, theme);
     let wrapper = div()
         .w_full()
         .min_w_0()
@@ -4943,17 +5051,23 @@ fn paragraph_text(
         .line_height(theme.ui_px(line_height))
         .text_color(color);
     if let Some(scope) = text_scope() {
+        // The font's arrow would pick a fallback/emoji face; the hugeicon
+        // paints crisper and on-theme (see `paint_link_mark`).
+        let runs = hide_autolink_marks(runs, &marks);
         let range = scope.state.borrow().range_for(&key, body.as_ref());
         let runs = highlight_runs(runs, range, selection_color(theme));
         let plain = body.clone();
         wrapper
-            .child(SelectableText::new(
-                key,
-                StyledText::new(body).with_runs(runs),
-                plain,
-                links,
-                Some(scope),
-            ))
+            .child(
+                SelectableText::new(
+                    key,
+                    StyledText::new(body).with_runs(runs),
+                    plain,
+                    links,
+                    Some(scope),
+                )
+                .with_marks(marks, theme.accent, IconSize::Small.px(&theme)),
+            )
             .into_any_element()
     } else {
         let ranges: Vec<Range<usize>> = links.iter().map(|(range, _)| range.clone()).collect();
@@ -7752,11 +7866,12 @@ mod tests {
     fn inline_runs_pairs_link_ranges_with_urls() {
         let theme = Theme::dark();
         let spans = parse_inline("see [docs](https://pi.dev) now");
-        let (body, runs, links) = inline_runs(&spans, FontWeight::NORMAL, theme.text, theme);
+        let (body, runs, links, marks) = inline_runs(&spans, FontWeight::NORMAL, theme.text, theme);
         assert_eq!(body.as_ref(), "see docs now");
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].1, "https://pi.dev");
         assert_eq!(&body[links[0].0.clone()], "docs");
+        assert!(marks.is_empty());
         // Underline style rides on the link run.
         assert!(runs.iter().any(|run| run.underline.is_some()));
     }
@@ -7801,11 +7916,70 @@ mod tests {
     fn autolink_range_covers_the_rendered_url() {
         let theme = Theme::dark();
         let spans = parse_inline("go https://pi.dev/x now");
-        let (body, _runs, links) = inline_runs(&spans, FontWeight::NORMAL, theme.text, theme);
+        let (body, runs, links, marks) = inline_runs(&spans, FontWeight::NORMAL, theme.text, theme);
         assert_eq!(body.as_ref(), "go https://pi.dev/x \u{2197} now");
         assert_eq!(links.len(), 1);
         // The range covers the URL and its external-link mark.
         assert_eq!(&body[links[0].0.clone()], "https://pi.dev/x \u{2197}");
+        // The mark is its own run, so the transcript can blank the font
+        // glyph and paint the hugeicon arrow over the space.
+        assert_eq!(marks.len(), 1);
+        assert_eq!(&body[marks[0].clone()], "\u{2197}");
+        let hidden = hide_autolink_marks(runs, &marks);
+        assert!(hidden.iter().any(|run| run.color.a == 0.0));
+    }
+
+    struct AutolinkParagraphView {
+        selection: TextSelectionState,
+    }
+
+    impl gpui::Render for AutolinkParagraphView {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            self.selection.borrow_mut().begin_frame();
+            let _scope = TextScopeGuard::enter(TextScope {
+                state: self.selection.clone(),
+                message_ix: 0,
+            });
+            let theme = theme::Theme::for_id(theme::ThemeId::Orbit);
+            div().w_full().child(paragraph_text(
+                "PR created: https://github.com/imrj05/orbit/pull/36",
+                14.,
+                26.,
+                FontWeight::NORMAL,
+                theme.assistant_text,
+                ElementId::Name("autolink-paragraph".into()),
+                theme,
+            ))
+        }
+    }
+
+    #[gpui::test]
+    fn autolink_mark_paints_the_hugeicon_over_its_glyph(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let selection = Rc::new(RefCell::new(TextSelection::new()));
+        let view = cx.update(|_, cx| {
+            cx.new(|_| AutolinkParagraphView {
+                selection: selection.clone(),
+            })
+        });
+        cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(600.), px(200.)),
+            |_, _| view.clone(),
+        );
+        let state = selection.borrow();
+        assert_eq!(state.blocks.len(), 1);
+        let block = &state.blocks[0];
+        // The mark stays in the copied text and inside the link target...
+        let arrow = block.text.find('\u{2197}').expect("mark in the copy text");
+        assert!(block.links[0].0.contains(&arrow));
+        // ...and keeps a box on the line, which is where the hugeicon draws.
+        let start = block.layout.position_for_index(arrow).expect("mark box");
+        let end = block
+            .layout
+            .position_for_index(arrow + '\u{2197}'.len_utf8())
+            .expect("mark box end");
+        assert!(end.x > start.x, "the mark reserves room for the icon");
     }
 
     #[test]
