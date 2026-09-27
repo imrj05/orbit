@@ -35,6 +35,7 @@ Usage — requests, tokens, cost, and cache, read from your own sessions:
 **Chat and transcript**
 
 - Chat-style agent sessions — composer with model selection, thinking effort, follow-up queueing, mid-run steering, cancel, and streaming replies
+- **Choose Enter’s behavior** in Settings → Agent → Behavior: queue a follow-up (default) or steer the running task. Alt/Option+Enter uses the other mode; ⌘⇧Enter / Ctrl+Shift+Enter always steers. Compact hints immediately left of the context-window indicator show both sending modes while the agent is working. Steering takes effect after the current response and tools finish; idle Enter sends normally, and Shift+Enter inserts a new line.
 - **Workflow modes** — scope a session to **Plan**, **Build**, or **Ask**: Plan and Ask are read-only (write tools disabled, bash gated), so you can explore and plan before switching to Build
 - GPU-rendered transcript — virtualized so cost is independent of message count, with stick-to-latest streaming and coalesced commits
 - GFM markdown and syntax-highlighted code; highlighting is paint-only so streaming code blocks never reflow, and Mermaid fences stay copyable code blocks

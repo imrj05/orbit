@@ -1318,6 +1318,7 @@ impl Render for OrbitApp {
             ))
             .on_action(cx.listener(Self::on_submit))
             .on_action(cx.listener(Self::on_steer))
+            .on_action(cx.listener(Self::on_send_alternate))
             .on_action(cx.listener(Self::on_autocomplete_accept))
             .on_action(cx.listener(Self::on_abort))
             .on_action(cx.listener(Self::on_new_session))
@@ -1862,6 +1863,45 @@ impl OrbitApp {
         )
     }
 
+    /// Quiet inline hints immediately left of the context meter, including
+    /// with an empty draft so running-send modes remain discoverable.
+    fn composer_send_hints(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
+        let theme = *theme::get(cx);
+        div()
+            .id("composer-send-hints")
+            .debug_selector(|| "composer-send-hints".to_string())
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base12.px(&theme))
+            .text_color(theme.text_3)
+            .children(
+                composer_send::shortcut_hints(theme.ui.composer_send_mode, self.is_running())
+                    .into_iter()
+                    .map(|(keys, action)| {
+                        // Match the adjacent footer controls without adding click behavior.
+                        button_frame(div(), &theme, ButtonSize::Default)
+                            .flex_shrink()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .debug_selector(|| "composer-hint-keys".to_string())
+                                    .flex_none()
+                                    .when(cfg!(target_os = "macos"), |keys| {
+                                        keys.text_size(ButtonSize::Default.icon_size().px(&theme))
+                                    })
+                                    .child(keys),
+                            )
+                            .child(
+                                div()
+                                    .debug_selector(|| "composer-hint-label".to_string())
+                                    .truncate()
+                                    .child(action),
+                            )
+                    }),
+            )
+    }
+
     /// While a run is in flight and the composer holds something to send, a
     /// quiet steer control sits beside Stop: it injects the text into the live
     /// turn (`steer`) rather than queuing a follow-up. Hidden when idle or
@@ -1888,6 +1928,15 @@ impl OrbitApp {
                     MouseButton::Left,
                     cx.listener(|this, _, _, cx| this.steer_current(cx)),
                 )
+                .tooltip({
+                    let keys = format!(
+                        "{}, {}",
+                        SendMode::Steer.shortcut(theme.ui.composer_send_mode),
+                        platform::shortcuts::STEER,
+                    );
+                    let label = tr!("composer.steer_tooltip", keys = keys);
+                    move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
+                })
                 .child(icon(
                     "icons/arrow-up-right.svg",
                     ButtonSize::Medium.icon_size().px(&theme),
@@ -2932,7 +2981,7 @@ impl OrbitApp {
     }
 
     /// Status bar under the composer: workspace / branch on the left,
-    /// used-context percent + ring on the right.
+    /// sending hints followed by used-context percent + ring on the right.
     pub(super) fn status_bar(
         &self,
         workspace_label: &str,
@@ -3047,7 +3096,13 @@ impl OrbitApp {
                             .child(self.status.clone())
                     }),
             )
-            .child(self.context_button(cx))
+            .child(self.composer_send_hints(cx))
+            .child(
+                div()
+                    .debug_selector(|| "composer-context-indicator".to_string())
+                    .flex_none()
+                    .child(self.context_button(cx)),
+            )
     }
 
     pub(super) fn context_button(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
@@ -3363,6 +3418,14 @@ impl OrbitApp {
                 .cursor_pointer()
                 .text_color(theme.send_fg)
                 .on_mouse_up(MouseButton::Left, cx.listener(Self::on_abort_mouse))
+                .tooltip({
+                    let label = tr!(
+                        "composer.shortcut_hint",
+                        keys = platform::shortcuts::STOP,
+                        action = tr!("shortcut.stop")
+                    );
+                    move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
+                })
                 .child(icon(
                     "icons/stop.svg",
                     ButtonSize::Medium.icon_size().px(&theme),
@@ -3382,6 +3445,14 @@ impl OrbitApp {
                         .cursor_pointer()
                 })
                 .on_mouse_up(MouseButton::Left, cx.listener(Self::on_send_click))
+                .tooltip({
+                    let label = tr!(
+                        "composer.shortcut_hint",
+                        keys = platform::shortcuts::SEND,
+                        action = tr!("composer.send")
+                    );
+                    move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
+                })
                 .child(icon(
                     "icons/send.svg",
                     ButtonSize::Medium.icon_size().px(&theme),

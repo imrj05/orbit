@@ -683,6 +683,7 @@ pub mod shortcuts {
     pub const CHECK_UPDATES: &str = "⌘⇧U";
     pub const QUIT: &str = "⌘Q";
     pub const SEND: &str = "↵";
+    pub const SEND_ALTERNATE: &str = "⌥↵";
     pub const STEER: &str = "⌘⇧↵";
     pub const NEWLINE: &str = "⇧↵";
     pub const ACCEPT: &str = "Tab";
@@ -707,6 +708,7 @@ pub mod shortcuts {
     pub const CHECK_UPDATES: &str = "Ctrl+Shift+U";
     pub const QUIT: &str = "Ctrl+Q";
     pub const SEND: &str = "Enter";
+    pub const SEND_ALTERNATE: &str = "Alt+Enter";
     pub const STEER: &str = "Ctrl+Shift+Enter";
     pub const NEWLINE: &str = "Shift+Enter";
     pub const ACCEPT: &str = "Tab";

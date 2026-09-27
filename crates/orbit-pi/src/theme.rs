@@ -408,7 +408,7 @@ impl Global for Theme {}
 /// `Language` name stays stable for the settings surface.
 pub use crate::i18n::AppLanguage as Language;
 
-/// General-settings customization: language, type sizes, and density.
+/// Orbit UI preferences: language, type sizes, density, and composer behavior.
 /// Every size is px with the built-in defaults (UI 14, terminal / editor 13);
 /// only spacing density remains a percentage.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -425,6 +425,8 @@ pub struct UiPrefs {
     /// Honor reduce-motion: perpetual/looping animations (spinners, the
     /// running-session shimmer, the drop-overlay fade) render static.
     pub reduce_motion: bool,
+    /// Enter's delivery mode while the agent is working (Orbit-only).
+    pub composer_send_mode: crate::composer_send::SendMode,
 }
 
 /// The interface text size authored against, px. Chrome sizes scale relative
@@ -444,6 +446,7 @@ impl Default for UiPrefs {
             editor_font_size: 13.,
             spacing_density: 100,
             reduce_motion: false,
+            composer_send_mode: crate::composer_send::SendMode::default(),
         }
     }
 }
@@ -516,6 +519,13 @@ impl UiPrefs {
         if let Some(reduce) = value.get("reduce_motion").and_then(Value::as_bool) {
             prefs.reduce_motion = reduce;
         }
+        if let Some(mode) = value
+            .get("composer_send_mode")
+            .and_then(Value::as_str)
+            .and_then(crate::composer_send::SendMode::parse)
+        {
+            prefs.composer_send_mode = mode;
+        }
         prefs
     }
 
@@ -524,18 +534,19 @@ impl UiPrefs {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let _ = std::fs::write(
-            path,
-            serde_json::json!({
-                "language": self.language.as_str(),
-                "ui_font_size": self.ui_font_size,
-                "terminal_font_size": self.terminal_font_size,
-                "editor_font_size": self.editor_font_size,
-                "spacing_density": self.spacing_density,
-                "reduce_motion": self.reduce_motion,
-            })
-            .to_string(),
-        );
+        let _ = std::fs::write(path, self.to_value().to_string());
+    }
+
+    fn to_value(self) -> Value {
+        serde_json::json!({
+            "language": self.language.as_str(),
+            "ui_font_size": self.ui_font_size,
+            "terminal_font_size": self.terminal_font_size,
+            "editor_font_size": self.editor_font_size,
+            "spacing_density": self.spacing_density,
+            "reduce_motion": self.reduce_motion,
+            "composer_send_mode": self.composer_send_mode.as_str(),
+        })
     }
 }
 
@@ -3269,6 +3280,40 @@ mod tests {
         }));
         assert_eq!(legacy.ui_font_size, 16.);
         assert_eq!(legacy.editor_font_size, 15.);
+    }
+
+    #[test]
+    fn composer_send_mode_round_trips_in_ui_prefs() {
+        use crate::composer_send::SendMode;
+        for mode in [SendMode::FollowUp, SendMode::Steer] {
+            let prefs = UiPrefs {
+                composer_send_mode: mode,
+                language: Language::French,
+                ui_font_size: 16.,
+                ..UiPrefs::default()
+            };
+            let json = prefs.to_value().to_string();
+            assert_eq!(
+                UiPrefs::from_value(&serde_json::from_str(&json).unwrap()),
+                prefs
+            );
+        }
+    }
+
+    #[test]
+    fn composer_send_mode_missing_or_invalid_keeps_legacy_default() {
+        use crate::composer_send::SendMode;
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"composer_send_mode": "unknown"}),
+            serde_json::json!({"composer_send_mode": 42}),
+            serde_json::json!({"composer_send_mode": null}),
+        ] {
+            assert_eq!(
+                UiPrefs::from_value(&value).composer_send_mode,
+                SendMode::FollowUp
+            );
+        }
     }
 
     #[test]

@@ -54,6 +54,7 @@ use crate::bundled_extensions::BundledExtensions;
 use crate::checkpoint;
 use crate::command_palette::{self, CommandPalette, PaletteCommand, PaletteSnapshot};
 use crate::composer::ComposerInput;
+use crate::composer_send::{self, SendMode};
 use crate::context_meter::{self, ContextMeterData, ContextPopup};
 use crate::custom_ui::{CustomCancel, CustomFrame, CustomInput, CustomUi, CustomUiSurfaces};
 use crate::dialog::{ApprovalRequest, Dialog, DialogRequest, DialogResponse};
@@ -824,7 +825,11 @@ impl OrbitApp {
         let autocomplete: SharedAutocomplete = Rc::new(std::cell::RefCell::new(
             mentions::AutocompleteState::default(),
         ));
-        let input = cx.new(|cx| ComposerInput::new(cx).with_autocomplete(autocomplete.clone()));
+        let input = cx.new(|cx| {
+            ComposerInput::new(cx)
+                .with_key_context("Composer ChatComposer")
+                .with_autocomplete(autocomplete.clone())
+        });
         // Filter fields for the settings dropdowns and the open-in menu.
         // `Composer Picker` keeps backspace/delete working while Enter/arrows
         // dispatch to the (unhandled) Picker actions rather than submitting.
@@ -1987,6 +1992,8 @@ mod view;
 
 #[cfg(test)]
 mod backdrop_layout_tests;
+#[cfg(test)]
+mod composer_layout_tests;
 #[cfg(test)]
 mod devicons_tests;
 #[cfg(test)]

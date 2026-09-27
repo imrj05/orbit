@@ -3876,8 +3876,23 @@ impl OrbitApp {
                 theme,
                 &tr!("shortcut.group_composer"),
                 vec![
-                    self.shortcut_row(theme, &tr!("shortcut.send"), &[keys::SEND]),
-                    self.shortcut_row(theme, &tr!("shortcut.steer"), &[keys::STEER]),
+                    self.shortcut_row(theme, &tr!("shortcut.send_idle"), &[keys::SEND]),
+                    self.shortcut_row(
+                        theme,
+                        &tr!(
+                            "shortcut.send_while_running",
+                            mode = SendMode::FollowUp.label()
+                        ),
+                        &[SendMode::FollowUp.shortcut(theme.ui.composer_send_mode)],
+                    ),
+                    self.shortcut_row(
+                        theme,
+                        &tr!("shortcut.send_while_running", mode = SendMode::Steer.label()),
+                        &[
+                            SendMode::Steer.shortcut(theme.ui.composer_send_mode),
+                            keys::STEER,
+                        ],
+                    ),
                     self.shortcut_row(theme, &tr!("shortcut.newline"), &[keys::NEWLINE]),
                     self.shortcut_row(theme, &tr!("shortcut.accept"), &[keys::ACCEPT]),
                     self.shortcut_row(theme, &tr!("shortcut.stop"), &[keys::STOP]),
@@ -4367,10 +4382,9 @@ impl OrbitApp {
 
     // ── Settings → Agent ───────────────────────────────────────────────
 
-    /// The Agent section: queue delivery modes, auto-compaction, and
-    /// auto-retry. Every control sends a real pi RPC command. Manual
-    /// compaction lives in the context-usage popover and the session rename
-    /// in the session-details popover, next to the state they act on.
+    /// Agent behavior: Orbit's composer preference plus pi's queue delivery,
+    /// compaction, and retry controls. The composer preference is local; it
+    /// chooses which existing RPC command the next send uses.
     pub(super) fn agent_rows(
         &self,
         theme: Theme,
@@ -4378,6 +4392,16 @@ impl OrbitApp {
         cx: &Context<Self>,
     ) -> Vec<AnyElement> {
         let behavior = vec![
+            self.setting_row(
+                theme,
+                &tr!("settings.enter_while_running"),
+                Some(&tr!(
+                    "settings.enter_while_running_hint",
+                    keys = platform::shortcuts::SEND_ALTERNATE
+                )),
+                None,
+                Some(self.composer_send_mode_toggle(theme, this.clone())),
+            ),
             self.setting_row(
                 theme,
                 &tr!("settings.follow_up_messages"),
@@ -4653,6 +4677,46 @@ impl OrbitApp {
             this,
             cx,
         )
+    }
+
+    /// Orbit-only preference; existing pi queues are left untouched.
+    fn composer_send_mode_toggle(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
+        let modes = [SendMode::FollowUp, SendMode::Steer];
+        div()
+            .flex()
+            .items_center()
+            .children(modes.into_iter().enumerate().map(|(index, mode)| {
+                let this = this.clone();
+                let active = mode == theme.ui.composer_send_mode;
+                segmented_segment(
+                    div().id(("composer-send-mode", index)),
+                    &theme,
+                    ButtonSize::Medium,
+                    SegmentPosition::at(index, modes.len()),
+                )
+                .font_weight(FontWeight::MEDIUM)
+                .cursor_pointer()
+                .when(active, |b| {
+                    b.bg(theme.active).text_color(theme.active_fg)
+                })
+                .when(!active, |b| {
+                    b.bg(theme.bg_raised)
+                        .text_color(theme.text_2)
+                        .hover(|s| s.bg(theme.bg_hover))
+                })
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    this.update(cx, |app, cx| app.set_composer_send_mode(mode, cx));
+                })
+                .child(mode.label())
+            }))
+            .into_any_element()
+    }
+
+    fn set_composer_send_mode(&mut self, mode: SendMode, cx: &mut Context<Self>) {
+        let mut ui = theme::get(cx).ui;
+        ui.composer_send_mode = mode;
+        theme::set_ui_prefs(cx, ui);
+        cx.notify();
     }
 
     /// Two-button segmented control for the follow-up delivery mode.

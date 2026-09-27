@@ -17,6 +17,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the sessions sidebar opens beside it — or minimize to a rail, returning to the
   docked side pane first. All icon toggles with tooltips.
 
+### Added
+
+- Settings → Agent → Behavior now lets Enter queue a follow-up (the existing
+  default) or steer the running task. The preference persists across launches
+  without changing pi’s settings or messages already queued.
+- Compact Send/Steer/Queue hints on the right side of the composer footer,
+  immediately left of the context-window indicator, plus send/steer/stop tooltips.
+  Settings → Shortcuts reflects the selected default. Hints remain visible with
+  an empty draft; the newline shortcut stays in Settings rather than adding
+  clutter below the composer.
+
+### Changed
+
+- Alt/Option+Enter uses the opposite sending mode; ⌘⇧Enter / Ctrl+Shift+Enter
+  remains an explicit steer. Idle sends still start a normal prompt, and
+  Shift+Enter still inserts a new line. Steering and alternate-send shortcuts
+  are scoped to the chat input so they cannot submit drafts from other fields.
+
 ## [0.0.18] - 2026-09-26
 
 ### Added

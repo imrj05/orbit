@@ -7,17 +7,6 @@ use crate::theme::tokens::{
 };
 use crate::usage::tooltip::Tooltip;
 
-/// How a composer message is delivered while the agent is running. Both fall
-/// back to a normal `prompt` when the agent is idle, so a send never no-ops.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum SendMode {
-    /// Queued and delivered only once the current task settles.
-    FollowUp,
-    /// Injected into the live turn after the current step, before the next
-    /// LLM call — a course correction.
-    Steer,
-}
-
 /// A workspace-relative `/`-separated path for the Files toolbar. Falls back
 /// to the absolute path when the file lies outside the workspace.
 fn relative_display(root: &std::path::Path, path: &std::path::Path) -> String {
@@ -48,17 +37,36 @@ impl OrbitApp {
     }
 
     pub(super) fn submit(&mut self, text: String, cx: &mut Context<Self>) {
-        self.submit_as(text, SendMode::FollowUp, cx);
+        self.submit_as(text, theme::get(cx).ui.composer_send_mode, cx);
     }
 
-    /// Keyboard path for steering: inject the composer text into the running
-    /// turn. With no run in flight this is just a normal submit.
-    pub(super) fn on_steer(&mut self, _: &crate::SteerRun, _: &mut Window, cx: &mut Context<Self>) {
-        if self.commit_autocomplete_if_open(cx) {
+    /// Keyboard path for explicit steering, independent of the Enter preference.
+    pub(super) fn on_steer(
+        &mut self,
+        _: &crate::SteerRun,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.submit_composer_as(SendMode::Steer, window, cx);
+    }
+
+    pub(super) fn on_send_alternate(
+        &mut self,
+        _: &crate::SendAlternate,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.submit_composer_as(theme::get(cx).ui.composer_send_mode.opposite(), window, cx);
+    }
+
+    fn submit_composer_as(&mut self, mode: SendMode, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.input.read(cx).focus_handle(cx).is_focused(window)
+            || self.commit_autocomplete_if_open(cx)
+        {
             return;
         }
         let text = self.input.read(cx).text();
-        self.submit_as(text, SendMode::Steer, cx);
+        self.submit_as(text, mode, cx);
     }
 
     /// Send the composer's current text/attachments as a steer; used by the
@@ -96,29 +104,15 @@ impl OrbitApp {
         // follow-up waits for it to settle. pi emits the user message into the
         // transcript when it is actually delivered; until then the queue bar
         // above the composer mirrors it.
-        if self.is_running() {
-            let (body, label) = match mode {
-                SendMode::Steer => (
-                    CommandBody::Steer {
-                        message: text.clone(),
-                        images: Self::prompt_images(&attachments),
-                    },
-                    "steer",
-                ),
-                SendMode::FollowUp => (
-                    CommandBody::FollowUp {
-                        message: text.clone(),
-                        images: Self::prompt_images(&attachments),
-                    },
-                    "follow_up",
-                ),
-            };
-            if !self.send(body, label) {
-                // Keep the prompt and attachments so nothing is lost.
-                self.attachments = attachments;
-                cx.notify();
-                return;
-            }
+        let running = self.is_running();
+        let (body, label) = mode.command(running, text.clone(), Self::prompt_images(&attachments));
+        if !self.send(body, label) {
+            // Keep the prompt and attachments so nothing is lost.
+            self.attachments = attachments;
+            cx.notify();
+            return;
+        }
+        if running {
             // Show it immediately; the next `queue_update` reconciles the list.
             match mode {
                 SendMode::Steer => self.queue.steering.push(text),
@@ -140,18 +134,6 @@ impl OrbitApp {
             .or_else(|| std::env::current_dir().ok())
         {
             self.add_workspace(cwd);
-        }
-        let body = CommandBody::Prompt {
-            message: text.clone(),
-            images: Self::prompt_images(&attachments),
-            streaming_behavior: None,
-        };
-        if !self.send(body, "prompt") {
-            // Keep the prompt and the queued attachments so the user can
-            // retry (pi offline, broken pipe, …) instead of losing work.
-            self.attachments = attachments;
-            cx.notify();
-            return;
         }
         self.begin_turn(cx);
         // Show the prompt immediately — pi does not echo it back in RPC mode.
@@ -335,13 +317,8 @@ impl OrbitApp {
             self.rename_session(cx);
             return;
         }
-        // Enter commits the highlighted autocomplete entry while the menu
-        // is open; a second Enter submits.
-        if self.commit_autocomplete_if_open(cx) {
-            return;
-        }
-        let text = self.input.read(cx).text();
-        self.submit(text, cx);
+        // Shared Composer fields must never submit the main chat draft.
+        self.submit_composer_as(theme::get(cx).ui.composer_send_mode, window, cx);
     }
 
     /// Tab accepts the highlighted autocomplete entry; with the menu closed

@@ -49,6 +49,7 @@ mod checkpoint;
 mod command_palette;
 mod commit_message;
 mod composer;
+mod composer_send;
 mod context_meter;
 mod custom_ui;
 mod dialog;
@@ -157,6 +158,7 @@ actions!(
         NextTurn,
         CheckForUpdates,
         SteerRun,
+        SendAlternate,
         ToggleSearch,
         SearchNext,
         SearchPrev,
@@ -307,10 +309,10 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-shift-z", Redo, Some("Composer")),
         KeyBinding::new("enter", Submit, Some("Composer")),
         KeyBinding::new("secondary-enter", Submit, Some("Composer")),
-        // Steer: inject the composer text into the running turn instead of
-        // queuing a follow-up. With no run in flight it behaves like submit.
-        KeyBinding::new("secondary-shift-enter", SteerRun, Some("Composer")),
-        KeyBinding::new("alt-enter", SteerRun, Some("Composer")),
+        // Only the main chat input owns these sends, never a dialog or picker.
+        // Alt+Enter uses the other mode; the explicit steering chord stays fixed.
+        KeyBinding::new("secondary-shift-enter", SteerRun, Some("ChatComposer")),
+        KeyBinding::new("alt-enter", SendAlternate, Some("ChatComposer")),
         // Tab accepts the highlighted `/`-command or `@`-file entry while
         // the autocomplete menu is open (Enter is the second way in).
         KeyBinding::new("tab", AutocompleteAccept, Some("Composer")),
