@@ -59,8 +59,6 @@ startup model from `~/.pi/agent/settings.json`. There is no per-mode control.
 - Not a per-session override UI (already exists in the composer chip).
 - Not syncing to pi's `settings.json` or to `defaultModel` /
   `defaultThinkingLevel` (that is the rejected "Option A").
-- Not model selection for the AI reviewer or commit-message helper — those
-  stay scoped/read-only as they are now.
 - Not changing `enabledModels` / cycling behaviour.
 
 ---
@@ -234,9 +232,6 @@ Call sites to update:
 - `app.rs` initial spawn (~line 876): pass the mode of the workspace's
   pending/stored session. For a brand-new app launch with no session yet, use
   the pending New-Task mode if present, else Build.
-- `BundledExtensions::spawn_reviewer` — **unchanged**, stays `ask` and
-  read-only; do **not** apply user defaults there (the reviewer is Orbit's own
-  helper).
 
 ### 6.3 Apply on every session birth / mode change (RPC)
 
@@ -305,7 +300,6 @@ impl OrbitApp {
 | Slot set, thinking unsupported by model | level filtered against `available_thinking_levels`, skipped if absent |
 | Resumed/opened historical session | not overridden (D-D) |
 | Composer chip changed by user mid-session | wins until next mode switch / new session |
-| AI reviewer process | never uses these defaults |
 
 ---
 
@@ -336,7 +330,7 @@ impl OrbitApp {
 | `crates/orbit-pi/src/app/settings.rs` | three model + three thinking `select_control` rows; `on_settings_select` arms; optional "Use mode default" action |
 | `crates/orbit-pi/src/app/runtime.rs` | call `apply_mode_defaults` after mode resolution in `reset_quota_entries` |
 | `crates/orbit-pi/src/app/events.rs` | apply defaults on session-birth responses where appropriate |
-| `crates/orbit-pi/src/bundled_extensions.rs` | `spawn(workspace, mode)` + build `cli_args`; leave `spawn_reviewer` alone |
+| `crates/orbit-pi/src/bundled_extensions.rs` | spawn the session with the resolved default args |
 | `crates/orbit-rpc/src/client.rs` | `extra_args` seam + `*_and_args` constructors; existing signatures delegate |
 | `crates/orbit-pi/src/i18n/*` (all locales) | new `settings.*` keys |
 | `INTENT.md` | record a `D#` decision for Orbit-owned per-mode defaults |

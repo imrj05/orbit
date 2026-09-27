@@ -3109,6 +3109,35 @@ mod tests {
                 c(p.syn_comment, p.code_bg) >= 3.0,
                 "{id:?}: comment on code wash"
             );
+            // Status and diff colors are painted on the dark work surfaces as
+            // badge dots and +/− counts. AA-large is the floor there; labels
+            // ride ink, so the hue is reinforcement, never the only signal.
+            if id.appearance() == ThemeMode::Dark {
+                for (label, token) in [
+                    ("success", p.ok_green),
+                    ("danger", p.crit),
+                    ("caution", p.warn),
+                    ("addition", p.add_green),
+                    ("deletion", p.del_red),
+                ] {
+                    assert!(
+                        c(token, p.bg_main) >= 3.0,
+                        "{id:?}: status {label} on canvas"
+                    );
+                    assert!(
+                        c(token, p.bg_raised) >= 2.5,
+                        "{id:?}: status {label} on raised"
+                    );
+                }
+            }
+            // A run's failed/cancelled badge and a deleted diff line both use
+            // red; the badge's dot + label is what separates them, never the
+            // hue alone. Guard the one collision that would erase that:
+            // `crit` (failure) must not equal `text_3` (cancel).
+            assert_ne!(
+                p.crit, p.text_3,
+                "{id:?}: failure red collides with the muted cancel ink"
+            );
         }
     }
 

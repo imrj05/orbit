@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use gpui::{
     div, prelude::*, px, AnyElement, ClickEvent, Context, CursorStyle, Entity, FontWeight,
     KeyDownEvent, ListAlignment, ListOffset, ListState, MouseDownEvent, Pixels, Render,
-    SharedString, Window,
+    ScrollHandle, StatefulInteractiveElement, Window,
 };
 
 use crate::app::{
@@ -28,10 +28,15 @@ use crate::app::{
     EmptyFill, BUTTON_GROUP, PRESS_DIM,
 };
 use crate::composer::ComposerInput;
+use crate::diff_view::{
+    diff_gutter_width, render_code_row, render_file_header, render_hunk_header, render_meta,
+    render_split_row, SplitPairing,
+};
 use crate::git;
 use crate::review::{self, ExpansionDirection, GapPosition, LineKind, Snapshot, Source};
 use crate::theme::tokens::{context_menu, input, popover, ButtonSize, IconSize, Radius, TextSize};
 use crate::theme::{self, Theme, ThemeMode};
+use crate::usage::tooltip::Tooltip;
 
 /// Pane width defaults / drag clamps.
 const PANE_DEFAULT_W: f32 = 460.;
@@ -43,12 +48,12 @@ const TREE_MIN_PANE_W: f32 = 440.;
 /// Directory tree column width range.
 const TREE_MIN_COL_W: f32 = 180.;
 const TREE_MAX_COL_W: f32 = 240.;
+/// The minimized pane's rail width: one icon column, still a resize handle's
+/// grab away from coming back.
+const PANE_RAIL_W: f32 = 44.;
 /// Review diff row metrics. The row painters live in [`crate::diff_view`], so
 /// the pane and the Review page's preview share them; only the gap height is
 /// the pane's alone (the page's preview lists whole files).
-use crate::diff_view::{
-    render_code_row, render_file_header, render_hunk_header, render_meta,
-};
 const REVIEW_GAP_HEIGHT: f32 = 32.;
 /// The pane's header and toolbar rows; the dropdowns hang off their buttons.
 const PANE_ROW_H: f32 = 40.;
@@ -94,6 +99,27 @@ pub struct SidePane {
     menu_dismissed_at: Option<Instant>,
     /// Virtualized diff rows.
     diff_list: ListState,
+    /// The unwrapped diff's horizontal scroller. The pane reads it while
+    /// rendering to keep the file header fixed at the viewport's edges.
+    h_scroll: ScrollHandle,
+    /// Diff presentation: wrap long rows and side-by-side layout.
+    wrap: bool,
+    split: bool,
+    /// Files whose diff rows are hidden; only their headers draw. Empty means
+    /// every changed file is expanded (the loaded state).
+    collapsed_files: HashSet<usize>,
+    /// Unified-line → side-by-side mapping, rebuilt whenever the line stream
+    /// changes (load, gap expansion, file collapse).
+    split_pairing: SplitPairing,
+    /// Widest row in monospace cells, for an unwrapped row's scroll range.
+    content_cells: usize,
+    /// The window width Full width expands to — set by the app every render,
+    /// so it tracks a sidebar toggle or a window resize.
+    available_width: Pixels,
+    /// The width Full width / Minimize return to.
+    restore_width: Pixels,
+    full_width: bool,
+    minimized: bool,
 
     // ── Changed-files tree ──
     /// User toggle (still auto-hidden on narrow panes).
@@ -124,11 +150,16 @@ impl SidePane {
                 .with_placeholder_key("sidepane.filter_files")
                 .with_key_context("Composer Picker")
         });
+        let width = px(crate::layout::sidepane_width()
+            .unwrap_or(PANE_DEFAULT_W)
+            .max(PANE_MIN_W));
         Self {
             open: false,
-            width: px(crate::layout::sidepane_width()
-                .unwrap_or(PANE_DEFAULT_W)
-                .max(PANE_MIN_W)),
+            width,
+            available_width: width,
+            restore_width: width,
+            full_width: false,
+            minimized: false,
             workspace: None,
             session: None,
             latest_turn: None,
@@ -142,6 +173,12 @@ impl SidePane {
             source_menu_open: false,
             menu_dismissed_at: None,
             diff_list: ListState::new(0, ListAlignment::Top, px(400.)),
+            h_scroll: ScrollHandle::new(),
+            wrap: true,
+            split: false,
+            collapsed_files: HashSet::new(),
+            split_pairing: SplitPairing::default(),
+            content_cells: 0,
             tree_open: true,
             tree_filter,
             tree_list: ListState::new(0, ListAlignment::Top, px(200.)),
@@ -173,6 +210,24 @@ impl SidePane {
         self.open
     }
 
+    /// Whether the pane has taken the window's full width (the chat column
+    /// and the sessions sidebar yield to it).
+    pub fn is_full_width(&self) -> bool {
+        self.full_width
+    }
+
+    /// Leave Full width and restore the docked width, without touching
+    /// Minimize. The app calls this when a feature page opens or the sessions
+    /// sidebar is toggled — both need the window back.
+    pub fn leave_full_width(&mut self, cx: &mut Context<Self>) {
+        if !self.full_width {
+            return;
+        }
+        self.full_width = false;
+        let width = self.restore_width.max(px(PANE_MIN_W));
+        self.apply_width(width, cx);
+    }
+
     pub fn width(&self) -> Pixels {
         self.width
     }
@@ -192,14 +247,173 @@ impl SidePane {
         }
     }
 
-    /// Drag-resize from the pane's left edge.
+    /// Drag-resize from the pane's left edge. A drag leaves Full width /
+    /// Minimize and becomes the width every later restore returns to.
     pub fn set_width(&mut self, width: Pixels, cx: &mut Context<Self>) {
+        self.full_width = false;
+        self.minimized = false;
         let clamped = width.max(px(PANE_MIN_W));
         if clamped != self.width {
             self.width = clamped;
+            self.restore_width = clamped;
             crate::layout::set_sidepane_width(f32::from(clamped));
             cx.notify();
         }
+    }
+
+    /// The window width the pane may fill — the app sets it every render, so
+    /// Full width tracks a sidebar toggle or a window resize live, and a
+    /// docked pane never outgrows the space left beside the sidebar.
+    pub fn set_available_width(&mut self, width: Pixels, cx: &mut Context<Self>) {
+        let width = width.max(px(PANE_MIN_W));
+        let changed = (self.available_width - width).abs() >= px(0.5);
+        if changed {
+            self.available_width = width;
+        }
+        if self.full_width {
+            // Full width fills the ceiling, so it follows a window resize.
+            if changed {
+                self.apply_width(width, cx);
+            }
+            return;
+        }
+        // A window that shrank under a docked pane tightens it to fit; the
+        // user's stored width is untouched and comes back with a wider window.
+        if !self.minimized && self.width > self.available_width {
+            self.apply_width(self.available_width, cx);
+        }
+    }
+
+    fn apply_width(&mut self, width: Pixels, cx: &mut Context<Self>) {
+        if width != self.width {
+            self.width = width;
+            cx.notify();
+        }
+    }
+
+    /// The width Full width / Minimize return to: the pane's width before the
+    /// first transient mode, not the transient width itself.
+    fn remember_restore_width(&mut self) {
+        if !self.full_width && !self.minimized {
+            self.restore_width = self.width;
+        }
+    }
+
+    /// Expand the pane to the window's full width (the chat column and the
+    /// sessions sidebar yield to it), or restore the width the reader had
+    /// dialed in.
+    pub(crate) fn toggle_full_width(&mut self, cx: &mut Context<Self>) {
+        if self.full_width {
+            self.leave_full_width(cx);
+            return;
+        }
+        self.remember_restore_width();
+        self.minimized = false;
+        self.full_width = true;
+        let width = self.available_width.max(px(PANE_MIN_W));
+        self.apply_width(width, cx);
+    }
+
+    /// Collapse the pane to a rail that keeps its restore control in reach.
+    /// From Full width the first step is back to the docked pane, not the
+    /// rail: minimizing a full-page diff means giving the window back, not
+    /// hiding the panel.
+    fn toggle_minimize(&mut self, cx: &mut Context<Self>) {
+        if self.minimized {
+            self.minimized = false;
+            let width = self.restore_width.max(px(PANE_MIN_W));
+            self.apply_width(width, cx);
+            return;
+        }
+        if self.full_width {
+            self.leave_full_width(cx);
+            return;
+        }
+        self.remember_restore_width();
+        self.minimized = true;
+        self.source_menu_open = false;
+        self.apply_width(px(PANE_RAIL_W), cx);
+    }
+
+    /// Toggle wrapped and unwrapped diff rows.
+    fn toggle_wrap(&mut self, cx: &mut Context<Self>) {
+        self.wrap = !self.wrap;
+        cx.notify();
+    }
+
+    /// Toggle unified and side-by-side rows. Heights change without a width
+    /// change, so the list must re-measure; the reader keeps their line.
+    fn toggle_split(&mut self, cx: &mut Context<Self>) {
+        self.split = !self.split;
+        self.remeasure_diff_rows();
+        cx.notify();
+    }
+
+    /// Collapse every changed file to its header, or expand them all back.
+    fn toggle_all_files(&mut self, cx: &mut Context<Self>) {
+        let Some(files) = self.review.as_ref().map(|review| review.files.len()) else {
+            return;
+        };
+        if files == 0 {
+            return;
+        }
+        if self.collapsed_files.is_empty() {
+            self.collapsed_files.extend(0..files);
+        } else {
+            self.collapsed_files.clear();
+        }
+        self.remeasure_diff_rows();
+        cx.notify();
+    }
+
+    /// Hide one file's diff rows, or bring them back.
+    fn toggle_file(&mut self, file_index: usize, cx: &mut Context<Self>) {
+        if !self.collapsed_files.remove(&file_index) {
+            self.collapsed_files.insert(file_index);
+        }
+        self.remeasure_diff_rows();
+        cx.notify();
+    }
+
+    /// Force the virtualized list to re-measure every row after a height-only
+    /// change (collapsing files, switching layouts), keeping the reader's row.
+    fn remeasure_diff_rows(&mut self) {
+        let top = self.diff_list.logical_scroll_top();
+        self.diff_list.reset(self.diff_list.item_count());
+        self.diff_list.scroll_to(top);
+    }
+
+    /// Keep the selected file's header in view across a line-count change.
+    fn scroll_to_selected_file(&mut self) {
+        if let Some(line) = self
+            .selected_file
+            .and_then(|index| self.review.as_ref()?.files.get(index)?.diff_line)
+        {
+            self.diff_list.scroll_to(ListOffset {
+                item_ix: line,
+                offset_in_item: px(0.),
+            });
+        }
+    }
+
+    /// Rebuild the split pairing after the line stream changes.
+    fn rebuild_split_pairing(&mut self) {
+        self.split_pairing = self
+            .review
+            .as_ref()
+            .map_or_else(SplitPairing::default, |review| {
+                SplitPairing::for_lines(&review.lines)
+            });
+    }
+
+    /// Refresh what a view toggle reads: how wide an unwrapped row is and how
+    /// unified rows pair into side-by-side ones.
+    fn rebuild_view_metrics(&mut self) {
+        match self.review.as_ref() {
+            Some(review) => self.content_cells = review.max_content_cells(),
+            None => self.content_cells = 0,
+        }
+        self.rebuild_split_pairing();
     }
 
     /// Keep the pane's workspace in sync with the app (called every frame;
@@ -260,6 +474,11 @@ impl SidePane {
         }
         self.open = false;
         self.source_menu_open = false;
+        // A pane that comes back later must not come back as a rail or a
+        // full-width sheet; restore the width the reader dialed in.
+        self.minimized = false;
+        self.full_width = false;
+        self.width = self.restore_width.max(px(PANE_MIN_W));
         cx.notify();
     }
 
@@ -301,51 +520,6 @@ impl SidePane {
         self.open = true;
         if self.review_stale && !self.review_loading {
             self.load_review(cx);
-        }
-        cx.notify();
-    }
-
-    // ── AI review ──────────────────────────────────────────────────────
-
-    /// The current Review source and its label, for the changes prompt.
-    /// The diff source the pane is showing (what a `Changes` review targets).
-    pub fn review_source(&self) -> (Source, String) {
-        (self.source, self.source_label(self.source))
-    }
-
-    /// The current source's human label, for the changes prompt.
-    /// The label of the diff source the pane is showing.
-    pub fn review_source_label(&self) -> String {
-        self.source_label(self.source)
-    }
-
-    /// Scroll the diff to a finding's file (exact path, then suffix match).
-    fn reveal_finding(&mut self, path: &str, cx: &mut Context<Self>) {
-        let ix = self.review.as_ref().and_then(|snapshot| {
-            snapshot
-                .files
-                .iter()
-                .position(|file| file.path == path)
-                .or_else(|| {
-                    snapshot
-                        .files
-                        .iter()
-                        .position(|file| file.path.ends_with(path))
-                })
-        });
-        if let Some(ix) = ix {
-            self.selected_file = Some(ix);
-            if let Some(line) = self
-                .review
-                .as_ref()
-                .and_then(|snapshot| snapshot.files.get(ix))
-                .and_then(|file| file.diff_line)
-            {
-                self.diff_list.scroll_to(ListOffset {
-                    item_ix: line,
-                    offset_in_item: px(0.),
-                });
-            }
         }
         cx.notify();
     }
@@ -443,6 +617,8 @@ impl SidePane {
         self.tree_cursor = None;
         self.diff_list.reset(snapshot.lines.len());
         self.review = Some(Arc::new(snapshot));
+        self.collapsed_files.clear();
+        self.rebuild_view_metrics();
         self.mark_tree_dirty();
     }
 
@@ -538,6 +714,8 @@ impl SidePane {
         self.review = None;
         self.review_error = None;
         self.expanded_paths.clear();
+        self.collapsed_files.clear();
+        self.rebuild_view_metrics();
         self.mark_tree_dirty();
         self.set_tree_rows(Vec::new());
         self.diff_list.reset(0);
@@ -614,17 +792,12 @@ impl SidePane {
 
     fn select_file(&mut self, file_index: usize, cx: &mut Context<Self>) {
         self.selected_file = Some(file_index);
-        if let Some(line) = self
-            .review
-            .as_ref()
-            .and_then(|snapshot| snapshot.files.get(file_index))
-            .and_then(|file| file.diff_line)
-        {
-            self.diff_list.scroll_to(ListOffset {
-                item_ix: line,
-                offset_in_item: px(0.),
-            });
+        // Picking a file is an ask to see it; a collapsed row would scroll to
+        // its header and show nothing.
+        if self.collapsed_files.remove(&file_index) {
+            self.remeasure_diff_rows();
         }
+        self.scroll_to_selected_file();
         cx.notify();
     }
 
@@ -680,7 +853,7 @@ impl SidePane {
 
     // ── rendering ──────────────────────────────────────────────────────
 
-    fn body(&mut self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn body(&mut self, window: &Window, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
         self.sync_tree_rows(cx);
         let truncated = self
             .review
@@ -695,7 +868,8 @@ impl SidePane {
         let tree_available = self.width >= px(TREE_MIN_PANE_W);
         let tree_visible = tree_available && self.tree_open;
 
-        // Header row: title + tree toggle + refresh + close.
+        // Header row: title + tree toggle + refresh + the panel-window
+        // controls (full width, minimize, close).
         let head = div()
             .h(px(PANE_ROW_H))
             .flex()
@@ -752,6 +926,34 @@ impl SidePane {
                         theme,
                     )),
             )
+            .child(self.view_toggle(
+                "review-full-width",
+                if self.full_width {
+                    "icons/arrow-shrink.svg"
+                } else {
+                    "icons/arrow-expand.svg"
+                },
+                self.full_width,
+                true,
+                if self.full_width {
+                    tr!("sidepane.restore_width")
+                } else {
+                    tr!("sidepane.full_width")
+                },
+                Self::toggle_full_width,
+                theme,
+                cx,
+            ))
+            .child(self.view_toggle(
+                "review-minimize",
+                "icons/chevrons-right.svg",
+                false,
+                true,
+                tr!("sidepane.minimize"),
+                Self::toggle_minimize,
+                theme,
+                cx,
+            ))
             .child(
                 icon_button_frame(div().id("pane-close"), &theme, ButtonSize::Default)
                     .group(BUTTON_GROUP)
@@ -766,7 +968,8 @@ impl SidePane {
                     )),
             );
 
-        // Toolbar: the source filter chip + live ±stats + refresh.
+        // Toolbar: the source filter chip, the diff view toggles, and the
+        // live ±stats.
         let toolbar = div()
             .h(px(PANE_ROW_H))
             .flex()
@@ -820,6 +1023,60 @@ impl SidePane {
                         .child(tr!("sidepane.partial")),
                 )
             })
+            .child(
+                self.view_toggle(
+                    "review-files-toggle",
+                    if self.collapsed_files.is_empty() {
+                        "icons/collapse-all.svg"
+                    } else {
+                        "icons/expand-all.svg"
+                    },
+                    false,
+                    self.review
+                        .as_ref()
+                        .is_some_and(|review| !review.files.is_empty()),
+                    if self.collapsed_files.is_empty() {
+                        tr!("sidepane.collapse_all")
+                    } else {
+                        tr!("sidepane.expand_all")
+                    },
+                    Self::toggle_all_files,
+                    theme,
+                    cx,
+                ),
+            )
+            .child(self.view_toggle(
+                "review-wrap",
+                "icons/text-wrap.svg",
+                self.wrap,
+                true,
+                if self.wrap {
+                    tr!("sidepane.unwrap_lines")
+                } else {
+                    tr!("sidepane.wrap_lines")
+                },
+                Self::toggle_wrap,
+                theme,
+                cx,
+            ))
+            .child(self.view_toggle(
+                "review-split",
+                if self.split {
+                    "icons/unified-view.svg"
+                } else {
+                    "icons/side-by-side.svg"
+                },
+                self.split,
+                true,
+                if self.split {
+                    tr!("sidepane.unified_view")
+                } else {
+                    tr!("sidepane.split_view")
+                },
+                Self::toggle_split,
+                theme,
+                cx,
+            ))
             .children((!compact).then(|| {
                 div()
                     .flex()
@@ -831,7 +1088,7 @@ impl SidePane {
                     .child(div().text_color(theme.del_red).child(format!("-{removed}")))
             }));
 
-        let content = self.render_content(theme, tree_visible, cx);
+        let content = self.render_content(window, theme, tree_visible, cx);
 
         div()
             .flex_1()
@@ -844,8 +1101,80 @@ impl SidePane {
             .into_any_element()
     }
 
+    /// One icon-only view toggle. The glyph and tooltip name the action, the
+    /// ink marks the active mode, and an inert toggle stays visible so the
+    /// toolbar never reflows around it.
+    #[allow(clippy::too_many_arguments)]
+    fn view_toggle(
+        &self,
+        id: &'static str,
+        icon_path: &'static str,
+        active: bool,
+        enabled: bool,
+        tooltip: String,
+        action: fn(&mut SidePane, &mut Context<SidePane>),
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let color = if !enabled {
+            theme.text_3.opacity(0.4)
+        } else if active {
+            theme.text
+        } else {
+            theme.text_3
+        };
+        let button = icon_button_frame(div().id(id), &theme, ButtonSize::Default)
+            .group(BUTTON_GROUP)
+            .child(icon(
+                icon_path,
+                ButtonSize::Default.icon_size().px(&theme),
+                color,
+            ));
+        if !enabled {
+            return button.into_any_element();
+        }
+        button
+            .cursor_pointer()
+            .hover(|style| style.bg(theme.bg_hover))
+            .active(|style| style.opacity(PRESS_DIM))
+            .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into())
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| action(this, cx)))
+            .into_any_element()
+    }
+
+    /// The minimized pane: a slim rail holding the one control that brings
+    /// the panel back — nothing else fits legibly at this width.
+    fn render_rail(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .pt(px(8.))
+            .gap(px(6.))
+            .child(self.view_toggle(
+                "review-restore",
+                "icons/chevrons-left.svg",
+                false,
+                true,
+                tr!("sidepane.restore_panel"),
+                Self::toggle_minimize,
+                theme,
+                cx,
+            ))
+            .child(icon(
+                "icons/file-diff.svg",
+                IconSize::Small.px(&theme),
+                theme.text_3,
+            ))
+            .into_any_element()
+    }
+
     fn render_content(
         &mut self,
+        window: &Window,
         theme: Theme,
         tree_visible: bool,
         cx: &mut Context<Self>,
@@ -874,7 +1203,7 @@ impl SidePane {
                     EmptyFill::Grow,
                 )
             } else {
-                self.render_diff(snapshot, theme, cx)
+                self.render_diff(window, snapshot, theme, cx)
             }
         } else {
             empty_state(theme, &tr!("sidepane.no_changes"), None, EmptyFill::Grow)
@@ -895,39 +1224,93 @@ impl SidePane {
 
     fn render_diff(
         &self,
+        window: &Window,
         snapshot: Arc<Snapshot>,
         theme: Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let entity = cx.entity().downgrade();
+        // Unwrapped rows want their natural width. The list gets a minimum
+        // equal to the widest row and a scroll container lets the pointer pan
+        // it; the file header is counter-shifted by the pan so its name and
+        // counts stay fixed at the viewport's edges (see `pinned_row`), and
+        // the sticky header sits outside the scroller and never pans.
+        let min_w = if self.wrap {
+            px(0.)
+        } else {
+            self.unwrapped_content_width(window, theme)
+        };
         let list_el = gpui::list(self.diff_list.clone(), move |index, _window, cx| {
             entity
                 .upgrade()
                 .map(|entity| entity.update(cx, |this, cx| this.render_diff_line(index, cx)))
                 .unwrap_or_else(|| div().into_any_element())
         })
-        .size_full();
+        .h_full()
+        .w_full()
+        .min_w(min_w);
+        let rows = if self.wrap {
+            list_el.into_any_element()
+        } else {
+            div()
+                .id("review-diff-scroll")
+                .size_full()
+                .overflow_scroll()
+                .track_scroll(&self.h_scroll)
+                .child(list_el)
+                .into_any_element()
+        };
 
-        let nerd = nerd_font_family(cx);
-        let dark = theme.mode == ThemeMode::Dark;
-        let sticky = self.render_sticky_header(&snapshot, theme, nerd.as_ref(), dark);
+        let sticky = self.render_sticky_header(&snapshot, theme, cx);
         div()
             .flex_1()
             .min_h_0()
             .min_w_0()
             .relative()
             .overflow_hidden()
-            .child(list_el)
+            .child(rows)
             .children(sticky)
             .into_any_element()
     }
 
+    /// A row that must not pan with unwrapped content. The file header keeps
+    /// its name and counts at the viewport's edges: the row is sized to the
+    /// scroller's visible width and counter-shifted by its horizontal offset.
+    /// The shift lives on an inner wrapper — the virtualized list paints item
+    /// roots at its own origins, so an inset on the root itself is ignored.
+    fn pinned_row(&self, row: AnyElement) -> AnyElement {
+        if self.wrap {
+            return row;
+        }
+        let offset = self.h_scroll.offset().x;
+        let viewport = self.h_scroll.bounds().size.width;
+        div()
+            .w_full()
+            .child(div().w(viewport).left(-offset).child(row))
+            .into_any_element()
+    }
+
+    /// The horizontal extent an unwrapped row needs: the widest row in
+    /// monospace cells at the diff font's advance, plus the row chrome. Split
+    /// view gives each half that extent, so it doubles.
+    fn unwrapped_content_width(&self, window: &Window, theme: Theme) -> Pixels {
+        let cell = crate::diff_view::code_cell_width(window, &theme);
+        let row = cell * self.content_cells.max(1) as f32 + px(diff_gutter_width() + 22.);
+        if self.split {
+            row * 2. + px(1.)
+        } else {
+            row
+        }
+    }
+
+    /// The pinned copy of the current file's header. It lives outside the
+    /// horizontal scroller, so it never pans: the name and counts stay fixed
+    /// at the viewport's edges while the code slides beneath.
     fn render_sticky_header(
         &self,
         snapshot: &Snapshot,
         theme: Theme,
-        nerd: Option<&SharedString>,
-        dark: bool,
+        cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let scroll_top = self.diff_list.logical_scroll_top();
         let (header_index, next_header_index) = snapshot.file_headers_around(scroll_top.item_ix)?;
@@ -937,7 +1320,6 @@ impl SidePane {
             return None;
         }
         let line = snapshot.lines.get(header_index)?;
-        let file = snapshot.files.get(line.file_index)?;
         let top_offset = next_header_index
             .and_then(|next_header_index| {
                 let bounds = self.diff_list.bounds_for_item(next_header_index)?;
@@ -952,9 +1334,55 @@ impl SidePane {
                 .top(top_offset)
                 .left_0()
                 .w_full()
-                .child(render_file_header(file, theme, nerd, dark))
+                .child(self.file_header_row(line.file_index, true, theme, cx))
                 .into_any_element(),
         )
+    }
+
+    /// One changed file's header, made actionable: its chevron says whether
+    /// the file's rows follow, and a click toggles them. `sticky` separates
+    /// the pinned copy's element id from the in-list row's, so a partially
+    /// scrolled header never registers two live handlers on one id.
+    fn file_header_row(
+        &self,
+        file_index: usize,
+        sticky: bool,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(file) = self
+            .review
+            .as_ref()
+            .and_then(|review| review.files.get(file_index))
+            .cloned()
+        else {
+            return div().into_any_element();
+        };
+        let collapsed = self.collapsed_files.contains(&file_index);
+        let nerd = nerd_font_family(cx);
+        let dark = theme.mode == ThemeMode::Dark;
+        render_file_header(&file, theme, nerd.as_ref(), dark, collapsed)
+            .id(gpui::ElementId::Name(
+                format!(
+                    "review-file-{}-{file_index}",
+                    if sticky { "sticky" } else { "row" }
+                )
+                .into(),
+            ))
+            .debug_selector(move || {
+                if sticky {
+                    "review-file-header-sticky"
+                } else {
+                    "review-file-header"
+                }
+                .to_string()
+            })
+            .cursor_pointer()
+            .hover(|style| style.bg(theme.bg_hover))
+            .on_click(
+                cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_file(file_index, cx)),
+            )
+            .into_any_element()
     }
 
     fn render_diff_line(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
@@ -964,21 +1392,48 @@ impl SidePane {
         let Some(line) = snapshot.lines.get(index) else {
             return div().into_any_element();
         };
-        let Some(file) = snapshot.files.get(line.file_index) else {
+        if snapshot.files.get(line.file_index).is_none() {
             return div().into_any_element();
-        };
+        }
         let theme = *theme::get(cx);
         match &line.kind {
             LineKind::FileHeader => {
-                let nerd = nerd_font_family(cx);
-                let dark = theme.mode == ThemeMode::Dark;
-                render_file_header(file, theme, nerd.as_ref(), dark)
+                self.pinned_row(self.file_header_row(line.file_index, false, theme, cx))
+            }
+            // A collapsed file keeps its header and nothing else.
+            _ if self.collapsed_files.contains(&line.file_index) => {
+                div().h(px(0.)).into_any_element()
             }
             LineKind::Gap(gap) => self.render_gap(index, gap.clone(), theme, cx),
-            LineKind::HunkHeader => render_hunk_header(&line.content, theme),
-            LineKind::Meta => render_meta(&line.content, theme),
+            LineKind::HunkHeader => render_hunk_header(&line.content, theme, self.wrap),
+            LineKind::Meta => render_meta(&line.content, theme, self.wrap),
             LineKind::Context | LineKind::Addition | LineKind::Deletion => {
-                render_code_row(line, theme)
+                if !self.split {
+                    return render_code_row(line, theme, self.wrap);
+                }
+                if self
+                    .split_pairing
+                    .secondary
+                    .get(index)
+                    .copied()
+                    .unwrap_or(false)
+                {
+                    // The paired deletion's row already draws this line; its
+                    // own row collapses so the pair reads as one row.
+                    return div().h(px(0.)).into_any_element();
+                }
+                let partner = self.split_pairing.partner.get(index).copied().flatten();
+                match (&line.kind, partner) {
+                    (LineKind::Addition, _) => render_split_row(None, Some(line), theme, self.wrap),
+                    (LineKind::Deletion, Some(partner)) => {
+                        render_split_row(Some(line), snapshot.lines.get(partner), theme, self.wrap)
+                    }
+                    (LineKind::Deletion, None) => {
+                        render_split_row(Some(line), None, theme, self.wrap)
+                    }
+                    // Context rides both halves, numbered per side.
+                    _ => render_split_row(Some(line), Some(line), theme, self.wrap),
+                }
             }
         }
     }
@@ -1099,6 +1554,9 @@ impl SidePane {
         if let Some(expansion) = expansion {
             self.diff_list
                 .splice(line_index..line_index + 1, expansion.replacement_count);
+            // The line stream shifted under the pairing, and a cap-limited
+            // reveal can leave another gap behind.
+            self.rebuild_view_metrics();
             cx.notify();
         }
     }
@@ -1309,8 +1767,6 @@ impl SidePane {
         }
     }
 
-
-
     /// The source filter dropdown, painted over the pane body.
     fn source_menu(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.source_menu_open {
@@ -1426,10 +1882,6 @@ fn source_row(
     row.into_any_element()
 }
 
-
-
-
-
 fn separator(theme: Theme) -> AnyElement {
     context_menu_separator(&theme).into_any_element()
 }
@@ -1442,7 +1894,6 @@ fn menu_top(row_top: f32, trigger: ButtonSize, theme: &Theme) -> Pixels {
 }
 
 // ── diff row rendering ─────────────────────────────────────────────────────
-
 
 fn gap_icon(direction: ExpansionDirection) -> &'static str {
     match direction {
@@ -1471,11 +1922,16 @@ impl Source {
 }
 
 impl Render for SidePane {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.open {
             return div().into_any_element();
         }
         let theme = *theme::get(cx);
+        let body = if self.minimized {
+            self.render_rail(theme, cx)
+        } else {
+            self.body(window, theme, cx)
+        };
         div()
             .id("side-pane")
             .relative()
@@ -1516,7 +1972,7 @@ impl Render for SidePane {
                     .overflow_hidden()
                     .flex()
                     .flex_col()
-                    .child(self.body(theme, cx)),
+                    .child(body),
             )
             .children(self.source_menu(theme, cx))
             .on_action(cx.listener(Self::on_filter_cancel))
@@ -1530,5 +1986,280 @@ struct DragGhost;
 impl Render for DragGhost {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::ThemeId;
+    use gpui::point;
+
+    fn pane(cx: &mut gpui::TestAppContext) -> Entity<SidePane> {
+        cx.update(|cx| {
+            cx.set_global(Theme::for_id(ThemeId::Orbit));
+            cx.new(SidePane::new)
+        })
+    }
+
+    /// A 10-line file with one change, so collapsing leaves a leading and a
+    /// trailing gap.
+    fn gap_patch() -> String {
+        let mut patch = String::from(
+            "diff --git a/src/lib.rs b/src/lib.rs\n\
+             index 1111111..2222222 100644\n\
+             --- a/src/lib.rs\n\
+             +++ b/src/lib.rs\n\
+             @@ -1,10 +1,10 @@\n",
+        );
+        for line in 1..=5 {
+            patch.push_str(&format!(" context line {line}\n"));
+        }
+        patch.push_str("-change();\n+changed();\n");
+        for line in 6..=10 {
+            patch.push_str(&format!(" context line {line}\n"));
+        }
+        patch
+    }
+
+    #[gpui::test]
+    fn full_width_minimize_and_dock_share_one_restore_point(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_available_width(px(1200.), cx);
+                pane.set_width(px(500.), cx);
+
+                pane.toggle_full_width(cx);
+                assert_eq!(pane.width(), px(1200.));
+                assert!(pane.full_width);
+
+                // From Full width, Minimize gives the window back to the
+                // docked pane rather than hiding the panel in a rail...
+                pane.toggle_minimize(cx);
+                assert_eq!(pane.width(), px(500.));
+                assert!(!pane.full_width);
+                assert!(!pane.minimized);
+
+                // ...and only a second Minimize, from the docked pane, does
+                // that.
+                pane.toggle_minimize(cx);
+                assert_eq!(pane.width(), px(PANE_RAIL_W));
+                assert!(pane.minimized);
+                pane.toggle_minimize(cx);
+                assert_eq!(pane.width(), px(500.));
+                assert!(!pane.minimized);
+
+                // `leave_full_width` — the app's feature-page and sidebar
+                // path — docks without touching Minimize.
+                pane.toggle_full_width(cx);
+                assert_eq!(pane.width(), px(1200.));
+                pane.leave_full_width(cx);
+                assert_eq!(pane.width(), px(500.));
+                assert!(!pane.full_width);
+
+                // While full width, the pane tracks a resized window.
+                pane.toggle_full_width(cx);
+                pane.set_available_width(px(900.), cx);
+                assert_eq!(pane.width(), px(900.));
+
+                // Docked, a window that shrinks tightens the pane to fit.
+                pane.leave_full_width(cx);
+                assert_eq!(pane.width(), px(500.));
+                pane.set_available_width(px(420.), cx);
+                assert_eq!(pane.width(), px(420.));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn collapse_all_hides_every_file_body_and_expand_all_restores_them(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let pane = pane(cx);
+        let snapshot = crate::review::parse_collected(
+            Source::Uncommitted,
+            "1\t1\tsrc/lib.rs\n",
+            &gap_patch(),
+            true,
+        );
+        let files = snapshot.files.len();
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.apply_snapshot(snapshot);
+                assert!(pane.collapsed_files.is_empty());
+
+                pane.toggle_all_files(cx);
+                assert_eq!(pane.collapsed_files.len(), files);
+
+                pane.toggle_all_files(cx);
+                assert!(pane.collapsed_files.is_empty());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn one_file_collapses_independently_and_selecting_it_expands_it(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        let snapshot = crate::review::parse_collected(
+            Source::Uncommitted,
+            "1\t1\tsrc/lib.rs\n",
+            &gap_patch(),
+            true,
+        );
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.apply_snapshot(snapshot);
+
+                pane.toggle_file(0, cx);
+                assert!(pane.collapsed_files.contains(&0));
+
+                // Picking the file in the tree is an ask to see its diff.
+                pane.select_file(0, cx);
+                assert!(pane.collapsed_files.is_empty());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn wrap_and_split_toggles_flip_their_state(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                assert!(pane.wrap);
+                pane.toggle_wrap(cx);
+                assert!(!pane.wrap);
+
+                assert!(!pane.split);
+                pane.toggle_split(cx);
+                assert!(pane.split);
+            });
+        });
+    }
+
+    /// Every view mode lays out its real element tree without panicking —
+    /// split rows, collapsed files, and the unwrapped scroller only exist at
+    /// render time.
+    #[gpui::test]
+    fn every_view_mode_draws(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let pane = cx.update(|_, cx| cx.new(SidePane::new));
+        cx.update(|_, cx| {
+            pane.update(cx, |pane, cx| {
+                pane.open = true;
+                pane.set_available_width(px(900.), cx);
+                pane.apply_snapshot(crate::review::parse_collected(
+                    Source::Uncommitted,
+                    "1\t1\tsrc/lib.rs\n",
+                    &gap_patch(),
+                    true,
+                ));
+            });
+        });
+        let viewport = || gpui::size(px(900.), px(800.));
+        for (wrap, split, collapse) in [
+            (true, false, false),
+            (false, false, false),
+            (true, true, false),
+            (false, true, false),
+            (true, true, true),
+            (false, true, true),
+        ] {
+            cx.update(|_, cx| {
+                pane.update(cx, |pane, cx| {
+                    pane.wrap = wrap;
+                    pane.split = split;
+                    let should_collapse = collapse && pane.collapsed_files.is_empty();
+                    if should_collapse || (!collapse && !pane.collapsed_files.is_empty()) {
+                        pane.toggle_all_files(cx);
+                    }
+                    cx.notify();
+                });
+            });
+            let _ = cx.draw(point(px(0.), px(0.)), viewport(), |_, _| pane.clone());
+        }
+        // The minimized rail draws too.
+        cx.update(|_, cx| {
+            pane.update(cx, |pane, cx| {
+                pane.toggle_minimize(cx);
+                assert!(pane.minimized);
+            });
+        });
+        let _ = cx.draw(point(px(0.), px(0.)), viewport(), |_, _| pane.clone());
+    }
+
+    /// Unwrapped text keeps the file header fixed: its name and change counts
+    /// stay at the viewport's edges while only the code pans sideways beneath.
+    #[gpui::test]
+    fn unwrapped_file_header_stays_fixed_while_code_pans(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let pane = cx.update(|_, cx| cx.new(SidePane::new));
+        let long = "x".repeat(200);
+        let patch = format!(
+            "diff --git a/src/lib.rs b/src/lib.rs\n\
+             index 1111111..2222222 100644\n\
+             --- a/src/lib.rs\n\
+             +++ b/src/lib.rs\n\
+             @@ -1,3 +1,3 @@\n\
+              context one\n\
+             -old line\n\
+             +{long}\n\
+              context two\n"
+        );
+        cx.update(|_, cx| {
+            pane.update(cx, |pane, cx| {
+                pane.open = true;
+                pane.set_width(px(460.), cx);
+                pane.wrap = false;
+                pane.apply_snapshot(crate::review::parse_collected(
+                    Source::Uncommitted,
+                    "1\t1\tsrc/lib.rs\n",
+                    &patch,
+                    false,
+                ));
+            });
+        });
+        let viewport = || gpui::size(px(900.), px(700.));
+        let _ = cx.draw(point(px(0.), px(0.)), viewport(), |_, _| pane.clone());
+
+        let scroller = cx.update(|_, cx| pane.read(cx).h_scroll.bounds());
+        assert!(
+            scroller.size.width < px(700.),
+            "the scroller is the pane-sized viewport, got {:?}",
+            scroller.size.width
+        );
+        let header = cx
+            .debug_bounds("review-file-header")
+            .expect("the in-list header is laid out");
+        assert!(
+            (header.size.width - scroller.size.width).abs() < px(1.),
+            "the header spans the visible pane, not the wide content: {:?} vs {:?}",
+            header.size.width,
+            scroller.size.width
+        );
+
+        // Pan the content right: the offset moves, the header must not.
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: point(px(200.), px(400.)),
+            delta: gpui::ScrollDelta::Pixels(point(px(-240.), px(0.))),
+            ..Default::default()
+        });
+        let _ = cx.draw(point(px(0.), px(0.)), viewport(), |_, _| pane.clone());
+        let offset = cx.update(|_, cx| pane.read(cx).h_scroll.offset().x);
+        assert!(
+            offset < px(0.),
+            "the scroller must pan right, got {offset:?}"
+        );
+        let after = cx
+            .debug_bounds("review-file-header")
+            .expect("the in-list header is still laid out");
+        assert!(
+            (after.origin.x - header.origin.x).abs() < px(1.),
+            "the header is fixed: {:?} -> {:?}",
+            header.origin.x,
+            after.origin.x
+        );
     }
 }

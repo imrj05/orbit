@@ -152,6 +152,27 @@ impl Snapshot {
         ))
     }
 
+    /// The widest scrolling row in monospace cells: code, metadata, and any
+    /// context still hidden in a gap. An unwrapped row multiplies this by one
+    /// glyph advance to size the pane's horizontal scroll range without
+    /// shaping every line. File headers are excluded: they are pinned to the
+    /// viewport, so their path never widens the scrollable content.
+    pub fn max_content_cells(&self) -> usize {
+        self.lines
+            .iter()
+            .map(|line| match &line.kind {
+                LineKind::Gap(gap) => gap
+                    .hidden
+                    .iter()
+                    .map(|line| content_cells(&line.content))
+                    .max()
+                    .unwrap_or(0),
+                _ => content_cells(&line.content),
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
     /// Reveal retained context without touching Git or the filesystem.
     pub fn expand_gap(
         &mut self,
@@ -255,6 +276,23 @@ impl Snapshot {
         }
         Some(GapExpansion { replacement_count })
     }
+}
+
+/// Monospace cells a row's text occupies: tabs advance four cells and any
+/// non-ASCII glyph is assumed double-width. Deliberately an estimate — the
+/// caller only uses it to overshoot the width of an unwrapped row.
+fn content_cells(text: &str) -> usize {
+    text.chars()
+        .map(|ch| {
+            if ch == '\t' {
+                4
+            } else if ch.is_ascii() {
+                1
+            } else {
+                2
+            }
+        })
+        .sum()
 }
 
 fn push_remaining_gap(replacement: &mut Vec<Line>, file_index: usize, mut gap: Gap) {
@@ -1136,6 +1174,41 @@ index 1111111..2222222 100644
         let files = parse_numstat("-\t-\timg.png\n2\t1\tsrc/lib.rs\n");
         assert_eq!(files[0].status, FileStatus::Binary);
         assert_eq!(files[1].status, FileStatus::Modified);
+    }
+
+    #[test]
+    fn max_content_cells_includes_context_still_hidden_in_gaps() {
+        let hidden = "this context line is the longest row in the file and stays hidden;";
+        let mut patch = String::from(
+            "diff --git a/src/lib.rs b/src/lib.rs\n\
+             index 1111111..2222222 100644\n\
+             --- a/src/lib.rs\n\
+             +++ b/src/lib.rs\n\
+             @@ -1,10 +1,10 @@\n",
+        );
+        for line in [hidden, "second();", "third();", "fourth();", "fifth();"] {
+            patch.push_str(&format!(" {line}\n"));
+        }
+        patch.push_str("-change();\n+changed();\n sixth();\n");
+        let mut snapshot = parse(Source::Uncommitted, "1\t1\tsrc/lib.rs\n", &patch, true);
+        let gap_index = snapshot
+            .lines
+            .iter()
+            .position(|line| matches!(line.kind, LineKind::Gap(_)))
+            .expect("the leading context leaves a gap");
+        assert_eq!(snapshot.max_content_cells(), content_cells(hidden));
+
+        // Revealing the gap moves the line out of the gap without changing
+        // how wide the widest row is.
+        snapshot.expand_gap(gap_index, ExpansionDirection::All);
+        assert_eq!(snapshot.max_content_cells(), content_cells(hidden));
+    }
+
+    #[test]
+    fn content_cells_counts_tabs_and_wide_glyphs() {
+        assert_eq!(content_cells("let x = 1;"), 10);
+        assert_eq!(content_cells("\tlet x = 1;"), 14);
+        assert_eq!(content_cells("你好"), 4);
     }
 
     fn file(path: &str) -> File {

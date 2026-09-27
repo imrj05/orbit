@@ -7,40 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- **Review page** — AI review now has its own destination (sidebar → Review, ⌘⇧R, or
-  command palette → Open AI Review). The form picks the **repository** (any tracked
-  project, not just the open one), the **review type** with its live file count
-  (uncommitted changes, the current branch against a chosen base, one commit, chosen
-  files, or the whole project), and the **model + thinking level** the run uses; one
-  accent button starts it. **Running** lists every live run with Stop and keeps finished
-  runs in place under a **Review completed** status; clicking a run opens its **detail
-  view** — status, target, model, duration, verdict, findings, and files changed.
-  **Changes** lists the selected target's files with per-file counts and shows the
-  selected file's diff. **History** holds finished runs across workspaces. Runs are
-  capped at two concurrent reviewer processes with the rest queued.
-- **Reviewer prompts carry a shared review rubric** (what to flag and what not, silent
-  failure and duplication rules, how to phrase findings) and answers return a verdict
-  (`correct` / `needs attention`) alongside the findings.
-
 ### Changed
 
-- **The Review pane is a pure diff viewer.** It no longer starts reviewers, renders
-  findings, or owns any review state — the Review page is the app's only AI review
-  surface. The pane keeps its source selector, diff tree, and syntax-highlighted diff.
-- **AI reviews run in the background.** A review is now a first-class run pinned to the
-  workspace it was started from, so it keeps going when you switch workspace, session,
-  or page; at most two reviewer processes run at once and the rest wait in a queue.
-  Finished runs persist to `~/.orbit-pi/reviews.json`, so findings survive a restart
-  (a run caught mid-flight by a quit reopens as "Interrupted by app restart").
-- **Review targets grew beyond the two pane actions.** Runs can target uncommitted
-  changes, a branch (merge-base against a chosen base), a single commit, chosen files
-  (snapshot), or the whole project, each with its own prompt. Reviewer prompts now carry
-  a shared review rubric (what to flag and what not to, silent-failure and duplication
-  rules, how to phrase findings) and answers carry a verdict alongside the findings.
-  The Review pane keeps its existing two actions for now; the Review page that exposes
-  the new targets is next.
+- **The Review pane gained view controls.** The changed files collapse to their
+  headers or expand back in one click (each header is its own toggle), long lines
+  wrap or unwrap (unwrapping pans only the diff body — the file name and change
+  counts stay fixed at the pane's edges), the diff switches between unified and
+  side-by-side rows, and the pane can own the page — the session view yields and
+  the sessions sidebar opens beside it — or minimize to a rail, returning to the
+  docked side pane first. All icon toggles with tooltips.
 
 ## [0.0.18] - 2026-09-26
 

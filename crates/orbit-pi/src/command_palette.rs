@@ -108,7 +108,6 @@ pub enum PaletteCommand {
     ToggleTerminal,
     ToggleProjectPanel,
     ReviewChanges,
-    OpenReview,
     OpenGit,
     ChooseModel,
     ChooseThinking,
@@ -452,14 +451,6 @@ impl CommandPalette {
                 None,
                 PaletteCommand::ReviewChanges,
                 "review git diff changes files panel",
-                next(),
-            ),
-            PaletteItem::command(
-                tr!("command_palette.open_review"),
-                "icons/spark.svg",
-                None,
-                PaletteCommand::OpenReview,
-                "ai review changes diff bug project run findings",
                 next(),
             ),
             PaletteItem::command(

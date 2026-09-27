@@ -220,33 +220,7 @@ writing it would silently change terminal `pi` sessions. Deriving the thinking l
 the catalog keeps the settings control honest for the selected model instead of showing
 the live session's levels; fail-soft keeps a stale id or level from poisoning a session.
 **Consequence:** new sessions only — a resumed session keeps the model and thinking level
-recorded in its file, and a manual composer choice wins until the next new session. The AI
-reviewer process never inherits the default as a session model: each run carries the
-model/thinking it was started with (D13).
-
-### D13 — AI review: a dedicated Review page over a background run store
-**Choice:** AI review is a first-class destination (the **Review page**, reachable from the
-sidebar and the palette), not a section of the Review pane. The pane stays a pure diff
-viewer. A review is a **run** pinned to the workspace it started from, owned by a store
-that keeps every run (live and finished) and persists finished ones to Orbit's own
-`~/.orbit-pi/reviews.json`. At most two reviewer processes run at once; the rest queue.
-Each run targets one of: uncommitted changes, the current branch against a chosen base
-(merge-base), one commit, chosen files (a snapshot), or the whole project. Runs keep their
-own read-only Ask-mode pi process (`ORBIT_WORKFLOW_MODE=ask` + `ORBIT_REVIEW=1`), and their
-findings parse from a fenced JSON block carrying a verdict plus findings.
-**Rationale:** the pane is where a user *reads a diff*, not where they *commission* work;
-mixing the two put run state, findings, and a model choice into a surface scoped to the
-selected diff. Pinning a run to its workspace is what makes review a background activity:
-switching project, session, or page must not cancel work already paid for. Persisting
-findings is the difference between a one-shot check and a review history worth returning
-to; capping concurrency keeps the promise that a reviewer is a full pi process from
-becoming a process-spawning footgun. The JSON findings contract is what lets the page
-render structured rows (severity, location, verdict) instead of chat prose.
-**Consequence:** a quit mid-run reopens the run as "Interrupted by app restart" rather
-than as live; findings are stamped with the workspace's `HEAD` at start so a moved `HEAD`
-can mark them stale. Runs are never a turn in the user's session and never change its
-model: the run-scoped model defaults to the session default (D12) but is chosen per run.
-Removing a workspace drops its runs and their history.
+recorded in its file, and a manual composer choice wins until the next new session.
 
 ## The feature parity contract
 
@@ -270,9 +244,9 @@ legacy app today:
 
 ### Implementation status (living)
 
-Done: streaming transcript + virtualization; markdown + highlighting; composer with steering, follow-ups, cancel, autocomplete, attachments; extension dialogs; diff/Review + Git page + GitHub issues/PRs (where `gh` is available); sessions (list/switch/new/delete/clone/cross-workspace) over an Orbit-owned project list (only folders the user added; removing one never touches pi) with a **warm process pool** so re-opening a recent session is a resume, not a Node spawn; Explorer project panel + editable Files surface; integrated terminal (⌘J); usage, skills, plugins, models, providers, settings pages; transcript find; image lightbox; theming (dark/light/system, 42 palettes) + reduce-motion; localization (ten locales + System, D9); in-app signed updater + Version History; notifications; open-in-editor; signed/notarizable macOS packaging + best-effort Windows/Linux bundles (D5); CI; AI review (the Review page: five targets, background runs pinned to their workspace with a two-process cap, live progress and Stop, finished runs kept in place with a verdict and structured findings, and a persisted run history in `~/.orbit-pi/reviews.json`; each run on its own read-only Ask-mode process, the Review pane left as a pure diff viewer, D13); access modes (a guard, not a sandbox), workflow modes (Plan/Build/Ask per D8), and the auto-title / quota extension bridges (D10); Zed design tokens (D11) with context menus, the tooltip, the extension dialog, the floating modal cards (provider usage / API-key / editor, update dialog, custom UI), the sidebar session / workspace rows, the transcript's message / card chrome, the settings section / group / row chrome, UI type on `TextSize` across every surface, corner radii on `Radius`, and one-shot motion on `AnimationDuration` migrated onto them.
+Done: streaming transcript + virtualization; markdown + highlighting; composer with steering, follow-ups, cancel, autocomplete, attachments; extension dialogs; diff/Review + Git page + GitHub issues/PRs (where `gh` is available); sessions (list/switch/new/delete/clone/cross-workspace) over an Orbit-owned project list (only folders the user added; removing one never touches pi) with a **warm process pool** so re-opening a recent session is a resume, not a Node spawn; Explorer project panel + editable Files surface; integrated terminal (⌘J); usage, skills, plugins, models, providers, settings pages; transcript find; image lightbox; theming (dark/light/system, 42 palettes) + reduce-motion; localization (ten locales + System, D9); in-app signed updater + Version History; notifications; open-in-editor; signed/notarizable macOS packaging + best-effort Windows/Linux bundles (D5); CI; access modes (a guard, not a sandbox), workflow modes (Plan/Build/Ask per D8), and the auto-title / quota extension bridges (D10); Zed design tokens (D11) with context menus, the tooltip, the extension dialog, the floating modal cards (provider usage / API-key / editor, update dialog, custom UI), the sidebar session / workspace rows, the transcript's message / card chrome, the settings section / group / row chrome, UI type on `TextSize` across every surface, corner radii on `Radius`, and one-shot motion on `AnimationDuration` migrated onto them.
 
-Open: migrating the remaining surfaces (the settings page's toolbars / cards / controls, transcript inner content, the modal bodies' inner text, the remaining sub-10px / 17px+ type, and off-scale radii) onto the D11 tokens; drawn scrollbars (gpui 0.2.2 draws none); conversation **fork/rewind** (clone exists; rewind needs entry ids); on-device scroll-perf measurement; stream veil + an explicit ≤8.3 Hz streaming commit pipeline; focus rings / screen-reader labeling; richer per-tool renderers (bash/thinking are dedicated, the rest generic). An "Auto" AI reviewer (the page's manual targets shipped in D13; auto-triggering on every turn still awaits a pi reviewer API).
+Open: migrating the remaining surfaces (the settings page's toolbars / cards / controls, transcript inner content, the modal bodies' inner text, the remaining sub-10px / 17px+ type, and off-scale radii) onto the D11 tokens; drawn scrollbars (gpui 0.2.2 draws none); conversation **fork/rewind** (clone exists; rewind needs entry ids); on-device scroll-perf measurement; stream veil + an explicit ≤8.3 Hz streaming commit pipeline; screen-reader labeling (gpui 0.2.2 exposes no accessibility tree); richer per-tool renderers (bash/thinking are dedicated, the rest generic).
 
 ## Non-goals (explicitly out of scope)
 
@@ -294,11 +268,11 @@ the product; the per-item detail lives in AGENT.md.
 | P2 | Data layer: serde models, sessions/catalog/workbench clients | ✅ Shipped |
 | P3 | Core chat: transcript, streaming, markdown, composer, tools, diff | ✅ Shipped (stream veil + explicit ≤8.3 Hz pipeline open) |
 | P4 | Workbench pages + settings persistence | ✅ Shipped (plus Explorer/Files, terminal, Git/GitHub, localization, updater) |
-| P5 | Mermaid fallback + a11y | ◐ Mermaid code-block fallback + reduce-motion shipped; focus rings / screen-reader labeling open |
+| P5 | Mermaid fallback + a11y | ◐ Mermaid code-block fallback + reduce-motion shipped; app-wide focus rings + screen-reader labeling open |
 | P6 | Tests, perf harness, packaging/notarization, CI | ◐ Unit/live tests, 10k perf test, signed `.app`/DMG, CI shipped; on-device scroll benchmark + streaming edge coverage open |
 
 Open backlog (detail in AGENT.md): conversation fork/rewind, on-device scroll-perf measurement,
-stream veil, explicit streaming commit pipeline, focus rings / screen-reader labeling, richer
+stream veil, explicit streaming commit pipeline, app-wide focus rings, screen-reader labeling, richer
 per-tool renderers, Windows/Linux native polish.
 
 ## Top risks (with mitigations)
@@ -306,7 +280,7 @@ per-tool renderers, Windows/Linux native polish.
 1. **P3 scope** — *resolved:* was the dominant estimate (25–40 days); it shipped by keeping the
    Waku pattern map (AGENT.md), one-StyledText-per-block markdown from day one, and tool
    renderers by spec.
-2. **Tool approval protocol gap (D1 residual)** — resolved: pi exposes no native per-tool permission in RPC mode, so Orbit enforces access modes through a bundled `tool_call` extension that prompts via `ctx.ui.select` (Allow once / Always allow this tool / Deny), rendered natively as an inline bar. The **Auto** reviewer (review-on-every-turn) stays open until pi exposes a reviewer API to extensions; the page's manual, on-demand review is D13.
+2. **Tool approval protocol gap (D1 residual)** — resolved: pi exposes no native per-tool permission in RPC mode, so Orbit enforces access modes through a bundled `tool_call` extension that prompts via `ctx.ui.select` (Allow once / Always allow this tool / Deny), rendered natively as an inline bar.
 3. **Composer editor** — *resolved:* the multi-line `ComposerInput` (`EntityInputHandler`) has
    shipped, wrapping, auto-growing, and scrolling. Reuse it for new text controls rather than
    introducing another editor abstraction.

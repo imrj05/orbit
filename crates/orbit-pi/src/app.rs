@@ -210,6 +210,15 @@ pub struct OrbitApp {
     /// would let the repeat skip) while the first frame — generation 0 — draws
     /// the settled state with no launch animation.
     sidebar_slide_gen: u64,
+    /// Whether a feature page (Files / Git / Usage / AI Review) was open on
+    /// the previous frame. A full-page Review pane yields only to a page that
+    /// *opens* under it, never to one that was already there when the reader
+    /// maximized.
+    feature_open_last: bool,
+    /// Whether the Review pane was full-page on the previous frame. The
+    /// rising edge opens the sessions sidebar, so a maximized review never
+    /// strands the reader without a way to switch sessions.
+    pane_full_last: bool,
     /// Keyboard cursor for the sessions sidebar: an index into the current
     /// sidebar rows. `None` until the sidebar takes keyboard focus (⌘⇧B);
     /// the row it names paints the focused surface in `render_side_row`.
@@ -506,16 +515,10 @@ pub struct OrbitApp {
     latest_turn: Option<usize>,
     /// Right side pane — Review (git diff).
     sidepane: Entity<SidePane>,
-    /// Every AI review run — live and finished, across all workspaces. Kept out
-    /// of `lives`: reviewers are not user sessions and must never appear in the
-    /// sidebar or its notifications.
-    reviews: reviews::ReviewStore,
-    /// The run the Review pane is currently mirroring, when the user picked one
-    /// explicitly. `None` falls back to the newest run for the current
-    /// workspace.
-    focused_review: Option<u64>,
-    /// A run-level failure with no run to attach to (no workspace open).
-    reviews_error: Option<String>,
+    /// Keeps the right pane's observer alive: the pane can change its own
+    /// width, full-page state, or collapse from its header, and the app's
+    /// layout (sidebar, main column, terminal) must follow immediately.
+    _sidepane_sub: Subscription,
     /// Right dock — the workspace file tree (cmd-shift-e).
     project_panel: Entity<crate::explorer::ProjectPanel>,
     /// Full-page read-only file viewer (the Files surface).
@@ -530,23 +533,6 @@ pub struct OrbitApp {
     usage_open: bool,
     /// The Usage page: analytics over pi's own session store.
     usage: Entity<UsagePage>,
-    /// The Review page: the app's only AI review surface (targets, runs,
-    /// findings). The Review pane stays a pure diff viewer.
-    review_page: Entity<crate::review_page::ReviewPage>,
-    /// The page's Git facts (target counts, recent commits), collected off the
-    /// UI thread and cached; a workspace change invalidates them.
-    review_facts: review_page::ReviewPageFacts,
-    /// A facts refresh is in flight.
-    review_facts_inflight: bool,
-    /// The repository the Review page's form is set to. Defaults to the
-    /// current workspace; the page can point a review at another project.
-    review_workspace: Option<PathBuf>,
-    /// The model the next review runs on (`id`, `provider`). `None` follows
-    /// the session default (D12).
-    review_model: Option<(String, String)>,
-    /// The thinking level the next review runs on. `None` follows the
-    /// session default.
-    review_thinking: Option<String>,
     /// Custom providers read from `~/.pi/agent/models.json` (cached; reloaded
     /// when the Providers page opens, on Refresh, and after a save/remove).
     custom_providers: Vec<CustomProvider>,
@@ -990,17 +976,13 @@ impl OrbitApp {
 
         // Right side pane: Review (git diff).
         let sidepane = cx.new(SidePane::new);
+        let sidepane_sub = cx.observe(&sidepane, |_, _, cx| cx.notify());
         // Bottom panel: an integrated shell.
         let terminal_panel = cx.new(TerminalPanel::new);
         // Full-page Git panel (Changes / History / Graph).
         let git_panel = cx.new(GitPanel::new);
         // Usage analytics over pi's own session store.
         let usage = cx.new(UsagePage::new);
-        // The Review page — AI review has its own destination, separate from
-        // the Review pane's diff viewer.
-        // The page's own actions are wired each frame in `view.rs`, like the
-        // pane's review opener.
-        let review_page = cx.new(crate::review_page::ReviewPage::new);
         // Right dock — the workspace file tree. A row click routes to the app,
         // which opens the Files surface; the panel stays viewer-agnostic.
         let app_weak = cx.entity().downgrade();
@@ -1060,6 +1042,8 @@ impl OrbitApp {
             sidebar_list: ListState::new(0, ListAlignment::Top, px(44.)),
             sidebar_visible: true,
             sidebar_slide_gen: 0,
+            feature_open_last: false,
+            pane_full_last: false,
             sidebar_cursor: None,
             sidebar_focus: cx.focus_handle(),
             input,
@@ -1176,9 +1160,7 @@ impl OrbitApp {
             turn_open: false,
             latest_turn: None,
             sidepane,
-            reviews: reviews::ReviewStore::load(),
-            focused_review: None,
-            reviews_error: None,
+            _sidepane_sub: sidepane_sub,
             project_panel,
             file_viewer,
             terminal_panel,
@@ -1186,12 +1168,6 @@ impl OrbitApp {
             git_panel: git_panel.clone(),
             usage_open: false,
             usage: usage.clone(),
-            review_page: review_page.clone(),
-            review_facts: review_page::ReviewPageFacts::default(),
-            review_facts_inflight: false,
-            review_workspace: None,
-            review_model: None,
-            review_thinking: None,
             custom_providers: Vec::new(),
             custom_providers_error: None,
             provider_auth: HashMap::new(),
@@ -1456,7 +1432,7 @@ impl OrbitApp {
     pub(super) fn set_current_workspace(&mut self, cwd: PathBuf) {
         persist_last_workspace(&cwd);
         self.workspace_logo = crate::workspace_logo::load(&cwd);
-        self.current_workspace = Some(cwd);
+        self.current_workspace = Some(cwd.clone());
     }
 
     /// Add `cwd` to Orbit's project list if it isn't already there. Called
@@ -1478,9 +1454,6 @@ impl OrbitApp {
         self.workspaces.retain(|w| w.as_path() != cwd);
         if self.workspaces.len() != before {
             persist_workspaces(&self.workspaces);
-            // Review runs and their history belonged to that project; drop
-            // them with it. Live reviewers for it are aborted first.
-            self.forget_reviews(cwd);
         }
     }
 
@@ -2002,8 +1975,6 @@ pub(crate) mod helpers;
 mod open_in;
 mod pi_update_ui;
 mod pickers;
-mod review_page;
-mod reviews;
 mod runtime;
 mod search;
 mod session;
@@ -2028,6 +1999,8 @@ mod session_default_apply_tests;
 mod sidebar_active_reveal_tests;
 #[cfg(test)]
 mod sidebar_placeholder_tests;
+#[cfg(test)]
+mod sidepane_full_width_tests;
 #[cfg(test)]
 mod titlebar_layout_tests;
 

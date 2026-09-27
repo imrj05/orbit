@@ -142,32 +142,31 @@ impl OrbitApp {
                             .pt(DynamicSpacing::Base04.px(&theme))
                             .pb(DynamicSpacing::Base12.px(&theme))
                             .child(
-                                div()
-                                    .id("settings-back")
-                                    .w_full()
-                                    .h(ButtonSize::Medium.height(&theme))
-                                    .px(DynamicSpacing::Base08.px(&theme))
-                                    .rounded(Radius::Large.px(&theme))
-                                    .flex()
-                                    .items_center()
-                                    .gap(DynamicSpacing::Base08.px(&theme))
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(theme.bg_hover))
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(Self::on_settings_back),
-                                    )
-                                    .child(icon(
-                                        "icons/arrow-left.svg",
-                                        IconSize::Small.px(&theme),
-                                        theme.text_3,
-                                    ))
-                                    .child(
-                                        div()
-                                            .text_size(TextSize::Default.px(&theme))
-                                            .text_color(theme.text_2)
-                                            .child(tr!("settings.back")),
-                                    ),
+                                press(
+                                    div()
+                                        .id("settings-back")
+                                        .w_full()
+                                        .h(ButtonSize::Medium.height(&theme))
+                                        .px(DynamicSpacing::Base08.px(&theme))
+                                        .rounded(Radius::Large.px(&theme))
+                                        .flex()
+                                        .items_center()
+                                        .gap(DynamicSpacing::Base08.px(&theme))
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(theme.bg_hover)),
+                                )
+                                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_settings_back))
+                                .child(icon(
+                                    "icons/arrow-left.svg",
+                                    IconSize::Small.px(&theme),
+                                    theme.text_3,
+                                ))
+                                .child(
+                                    div()
+                                        .text_size(TextSize::Default.px(&theme))
+                                        .text_color(theme.text_2)
+                                        .child(tr!("settings.back")),
+                                ),
                             ),
                     )
                     // Eyebrow: a small caps label gives the flat list a
@@ -4618,13 +4617,17 @@ impl OrbitApp {
         cx: &Context<Self>,
     ) -> AnyElement {
         let Some(model) = self.default_model_entry() else {
-            return button_frame(div().id("default-thinking-select"), &theme, SELECT_CHIP_SIZE)
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.bg_raised)
-                .text_color(theme.text_3)
-                .child(tr!("settings.pi_default"))
-                .into_any_element();
+            return button_frame(
+                div().id("default-thinking-select"),
+                &theme,
+                SELECT_CHIP_SIZE,
+            )
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.bg_raised)
+            .text_color(theme.text_3)
+            .child(tr!("settings.pi_default"))
+            .into_any_element();
         };
         let mut options: Vec<String> = vec![tr!("settings.pi_default")];
         options.extend(
@@ -6111,7 +6114,10 @@ impl OrbitApp {
                         // Keep the level only when the new model supports it;
                         // a bare level must not land on an arbitrary model.
                         thinking: self.session_default.thinking.clone().filter(|level| {
-                            model.thinking_levels.iter().any(|candidate| candidate == level)
+                            model
+                                .thinking_levels
+                                .iter()
+                                .any(|candidate| candidate == level)
                         }),
                     },
                     None => crate::session_defaults::SessionDefault::default(),

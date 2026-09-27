@@ -42,7 +42,6 @@ Orbit is not a generic AI chat frontend. The transcript is one surface of a broa
 - Thinking effort
 - Tools
 - Agent activity
-- Reviews
 - Usage
 - Extensions
 - Future terminals and parallel agents

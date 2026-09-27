@@ -637,9 +637,6 @@ Git surfaces should feel like workbench tools rather than dashboards.
 
 - Branch, status, changed-file count, and review state use compact metadata.
 - Changed files form a navigable list.
-- Review findings are severity-labeled and non-color-coded.
-- AI review findings must identify the affected file/line and remain actionable.
-- Never imply a review passed when the reviewer did not run or produced unavailable data.
 
 ## Data Visualization
 

@@ -124,7 +124,6 @@ issue before starting.
 | Workflow modes | Composer | Start a session scoped to **Plan Mode**, **Build Mode**, or **Ask Mode** instead of one undifferentiated chat. | Shipped | — |
 | Follow-up on settle | Transcript | Show a queued follow-up inline once a run ends, not only in the compose queue. | Planned | — |
 | Suggested follow-ups | Transcript | Propose 2–3 context-grounded next prompts as composer inserts after a run settles. | Proposed | [#10](https://github.com/imrj05/orbit/issues/10) |
-| AI review agent | Review | Run a read-only reviewer over current changes or the whole project; findings render in the Review pane. | Shipped | [#6](https://github.com/imrj05/orbit/issues/6) |
 | GitHub client | Workbench | Browse and manage remote commits, graph, issues, and pull requests in-app. | In progress — issues and PRs tabs ship today | [#8](https://github.com/imrj05/orbit/issues/8) |
 | Pi extension support | Workbench | First-class list / install / enable / configure / debug of pi extensions, including community ones. | Proposed | [#7](https://github.com/imrj05/orbit/issues/7) |
 | Global default model | Models | Pin pi's global default model and thinking effort from within Orbit. | Proposed | [#9](https://github.com/imrj05/orbit/issues/9) |
@@ -141,7 +140,6 @@ issue before starting.
 - [x] **Workflow modes** — Plan Mode / Build Mode / Ask Mode
 - [ ] **Follow-up on settle** — show a queued follow-up inline when a run ends
 - [ ] **Suggested follow-ups** — context-grounded next prompts ([#10](https://github.com/imrj05/orbit/issues/10))
-- [x] **AI review agent** — read-only review of changes or the whole project ([#6](https://github.com/imrj05/orbit/issues/6))
 - [ ] **GitHub client** — commits, graph, issues, and pull requests ([#8](https://github.com/imrj05/orbit/issues/8))
 - [ ] **Pi extension support** — install and manage extensions, including community ones ([#7](https://github.com/imrj05/orbit/issues/7))
 - [ ] **Global default model** — set pi's default model and thinking effort ([#9](https://github.com/imrj05/orbit/issues/9))

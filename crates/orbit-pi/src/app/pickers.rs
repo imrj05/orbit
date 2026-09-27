@@ -399,10 +399,6 @@ impl OrbitApp {
             PaletteCommand::ReviewChanges => {
                 self.sidepane.update(cx, |pane, cx| pane.show_review(cx));
             }
-            PaletteCommand::OpenReview => {
-                self.command_palette = None;
-                self.open_review_page(window, cx);
-            }
             PaletteCommand::OpenGit => {
                 self.command_palette = None;
                 self.open_git(cx);

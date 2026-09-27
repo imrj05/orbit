@@ -1867,8 +1867,6 @@ impl OrbitApp {
         }
     }
 
-    // ── Explorer (project panel + Files surface) ───────────────────────
-
     /// Flip the left project-panel dock (⌘⇧E / Ctrl+Shift+E).
     pub(super) fn on_toggle_project_panel(
         &mut self,

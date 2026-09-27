@@ -2071,25 +2071,27 @@ impl GitPanel {
             .items_center()
             .gap(DynamicSpacing::Base08.px(&theme))
             .child(
-                button_frame(div().id("git-back"), &theme, ButtonSize::Medium)
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme.bg_hover))
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                        // Close the panel here (we already hold it), then tell
-                        // the app to leave the Git page. Calling back into the
-                        // panel from that callback would double-borrow it.
-                        this.open = false;
-                        cx.notify();
-                        if let Some(on_close) = this.on_close.clone() {
-                            on_close(window, cx);
-                        }
-                    }))
-                    .child(icon(
-                        "icons/arrow-left.svg",
-                        ButtonSize::Medium.icon_size().px(&theme),
-                        theme.text_2,
-                    ))
-                    .child(div().text_color(theme.text_2).child(tr!("git_panel.back"))),
+                press(
+                    button_frame(div().id("git-back"), &theme, ButtonSize::Medium)
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme.bg_hover)),
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    // Close the panel here (we already hold it), then tell
+                    // the app to leave the Git page. Calling back into the
+                    // panel from that callback would double-borrow it.
+                    this.open = false;
+                    cx.notify();
+                    if let Some(on_close) = this.on_close.clone() {
+                        on_close(window, cx);
+                    }
+                }))
+                .child(icon(
+                    "icons/arrow-left.svg",
+                    ButtonSize::Medium.icon_size().px(&theme),
+                    theme.text_2,
+                ))
+                .child(div().text_color(theme.text_2).child(tr!("git_panel.back"))),
             )
             .child(
                 div()
@@ -2268,13 +2270,13 @@ impl GitPanel {
             .children(tabs.into_iter().map(|(tab, tab_icon, key)| {
                 let label = tr!(key);
                 let selected = self.tab == tab;
-                button_frame(
+                press(button_frame(
                     div().id(gpui::ElementId::Name(
                         format!("git-tab-{}", key.rsplit('.').next().unwrap_or(key)).into(),
                     )),
                     &theme,
                     ButtonSize::Medium,
-                )
+                ))
                 .cursor_pointer()
                 .font_weight(if selected {
                     FontWeight::MEDIUM

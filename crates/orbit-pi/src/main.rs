@@ -37,7 +37,6 @@ macro_rules! tr_cow {
 }
 
 mod access;
-mod ai_review;
 mod app;
 mod app_icon;
 mod ask;
@@ -78,8 +77,6 @@ mod plugins;
 mod providers;
 mod quota;
 mod review;
-mod review_page;
-mod reviews;
 mod rpc_patches;
 mod session_defaults;
 mod sessions;
@@ -152,7 +149,6 @@ actions!(
         OpenSettings,
         OpenAbout,
         ToggleUsage,
-        ToggleReview,
         ToggleCommandPalette,
         ToggleModelMenu,
         ToggleThinkingMenu,
@@ -357,8 +353,6 @@ fn bind_keys(cx: &mut App) {
         // The Usage page is a destination: the primary modifier + U matches
         // the sidebar row.
         KeyBinding::new("secondary-u", ToggleUsage, None),
-        // The Review page is the AI review destination: cmd-shift-r opens it.
-        KeyBinding::new("cmd-shift-r", ToggleReview, None),
         // Git page tabs: cmd-1..cmd-5 switch tabs while the page is open; the
         // handler is a no-op elsewhere, so they never surprise a chat session.
         KeyBinding::new("cmd-1", GitTabChanges, None),
@@ -548,7 +542,6 @@ pub(crate) fn app_menus() -> Vec<Menu> {
                 MenuItem::action(tr!("explorer.toggle"), ToggleProjectPanel),
                 MenuItem::separator(),
                 MenuItem::action(tr!("menu.usage"), ToggleUsage),
-                MenuItem::action(tr!("menu.review"), ToggleReview),
             ],
         },
     ]

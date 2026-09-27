@@ -22,32 +22,6 @@ impl OrbitApp {
             cx.notify();
         }
         self.tick_background(cx);
-        // Reviewers are their own processes with their own event streams; drain
-        // them regardless of the active session, workspace, or page.
-        self.tick_reviews(cx);
-        // While the Review page is open, keep its Git facts current. The
-        // collection runs off-thread; this only kicks it when the cache is
-        // stale or the workspace changed.
-        if self.review_page.read(cx).is_open() {
-            if self.review_page.update(cx, |page, _| page.take_close_request()) {
-                self.close_review_page(cx);
-            }
-        }
-        if self.review_page.read(cx).is_open() {
-            // Reads only: this block must not update the page, or the sync in
-            // `view.rs` would re-enter it.
-            let workspace = self
-                .review_workspace
-                .clone()
-                .or_else(|| self.current_workspace.clone());
-            let stale = workspace
-                .as_deref()
-                .is_some_and(|workspace| self.review_facts.workspace != *workspace)
-                || self.review_facts.workspace.as_os_str().is_empty();
-            if stale {
-                self.refresh_review_facts(None, cx);
-            }
-        }
         // Persist a settled panel layout (a drag writes once it stops).
         crate::layout::flush_if_settled();
         // Bound the warm-session pool: reap idle parked processes past the TTL.
@@ -266,7 +240,7 @@ impl OrbitApp {
                     // read it now instead of waiting for the slow poll.
                     self.quota_entries_next_poll = Instant::now();
                     self.poll_quota_entries();
-                    // Capture the turn's end checkpoint, then refresh Review.
+                    // Capture the turn's end checkpoint.
                     self.finish_turn(cx);
                     // The run ended: announce it if the user is elsewhere.
                     let path = self.current_session_path.clone();

@@ -148,10 +148,8 @@ impl PiClient {
     }
 
     /// Spawn with extra extension files **and** process-scoped environment
-    /// variables. Orbit uses this for the AI reviewer: `ORBIT_WORKFLOW_MODE=ask`
-    /// makes the workflow extension read-only from the first hook (before the
-    /// session id is known), and `ORBIT_REVIEW=1` tells the access guard not to
-    /// raise a dialog on a process nobody is routing.
+    /// variables. The variables apply to this child only; they never touch
+    /// persisted state or the active session.
     pub fn spawn_with_extensions_and_env(
         workspace_dir: &Path,
         session_dir: Option<&Path>,

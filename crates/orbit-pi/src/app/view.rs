@@ -226,11 +226,32 @@ impl Render for OrbitApp {
         let pane_open = self.sidepane.read(cx).is_open();
         let pane_visible =
             pane_open && !self.settings_open && !self.usage_open && self.dependencies_ready();
-        let pane_width = if pane_visible {
-            self.sidepane.read(cx).width()
-        } else {
-            px(0.)
-        };
+        // Feature pages (Files / Git / Usage) own the main column, so a
+        // full-page Review pane yields to the one that just opened rather
+        // than covering it.
+        let viewer_open = self.file_viewer.read(cx).is_open();
+        let feature_open = viewer_open || self.git_open || self.usage_open;
+        // A page that opens under a full-page Review pane gets the window
+        // back; one that was already open does not block maximizing over it.
+        if pane_visible
+            && feature_open
+            && !self.feature_open_last
+            && self.sidepane.read(cx).is_full_width()
+        {
+            self.sidepane
+                .update(cx, |pane, cx| pane.leave_full_width(cx));
+        }
+        self.feature_open_last = feature_open;
+        // Expanding the Review pane hides the session view, but it opens the
+        // sessions sidebar: switching sessions stays one click away while the
+        // review owns the page. The sidebar snaps open with the pane rather
+        // than sliding, so the session view never peeks through mid-slide.
+        let pane_full = pane_visible && self.sidepane.read(cx).is_full_width();
+        if pane_full && !self.pane_full_last && !self.sidebar_visible {
+            self.sidebar_visible = true;
+        }
+        self.pane_full_last = pane_full;
+        let sidebar_shown = self.sidebar_visible && !self.settings_open;
         // Keep the pane's workspace in sync with the app (cheap no-op when
         // unchanged; a change marks Review stale).
         let pane_workspace = self.current_workspace.clone();
@@ -240,10 +261,13 @@ impl Render for OrbitApp {
         // Bottom terminal panel. The chat branch is what renders it, so the
         // full-page surfaces (settings / Git / Usage) hide it by construction;
         // `terminal_visible` exists to stop a hidden shell requesting frames.
+        // A full-page Review pane collapses the chat column, terminal
+        // included, so it counts as hidden too.
         let terminal_visible = self.terminal_panel.read(cx).is_open()
             && !self.settings_open
             && !self.usage_open
-            && !self.git_open;
+            && !self.git_open
+            && !pane_full;
         let panel_workspace = review_workspace.clone();
         self.terminal_panel.update(cx, |panel, cx| {
             panel.set_workspace(panel_workspace, cx);
@@ -254,16 +278,6 @@ impl Render for OrbitApp {
         self.sidepane.update(cx, |pane, cx| {
             pane.set_turn_context(pane_session, pane_latest_turn, cx)
         });
-        // The Review page mirrors the store and the workspace's Git facts. It
-        // is the app's only AI review surface; the pane stays a diff viewer.
-        if self.review_page.read(cx).is_open() {
-            let review_action = self.review_page_action(cx);
-            let review_snapshot = self.review_page_snapshot(cx);
-            self.review_page.update(cx, |page, cx| {
-                page.set_action(review_action);
-                page.set_snapshot(review_snapshot, cx);
-            });
-        }
         let git_workspace = self.current_workspace.clone();
         let git_provider = self.model_provider.clone();
         let git_model = self.model_id.clone();
@@ -295,6 +309,26 @@ impl Render for OrbitApp {
         } else {
             px(0.)
         };
+        // The pane's ceiling is the window minus the sidebar and the Explorer;
+        // Full width expands to it and collapses the chat column. The Explorer
+        // is closed whenever the pane opens, so this is usually the sidebar's
+        // width alone.
+        let pane_ceiling = viewport.width
+            - if sidebar_shown {
+                self.sidebar_width
+            } else {
+                px(0.)
+            }
+            - explorer_width;
+        self.sidepane
+            .update(cx, |pane, cx| pane.set_available_width(pane_ceiling, cx));
+        // Read the pane's width after the ceiling update: a full-width pane
+        // has just grown and this frame's layout must see it.
+        let pane_width = if pane_visible {
+            self.sidepane.read(cx).width()
+        } else {
+            px(0.)
+        };
         let explorer_workspace = self
             .current_workspace
             .clone()
@@ -313,7 +347,7 @@ impl Render for OrbitApp {
             }
         });
         let main_width = viewport.width
-            - if self.sidebar_visible && !self.settings_open {
+            - if sidebar_shown {
                 self.sidebar_width
             } else {
                 px(0.)
@@ -352,14 +386,6 @@ impl Render for OrbitApp {
             self.usage
                 .update(cx, |page, cx| page.top_bar_leading(theme, cx))
         });
-        let review_leading = self
-            .review_page
-            .read(cx)
-            .is_open()
-            .then(|| {
-                self.review_page
-                    .update(cx, |page, cx| page.top_bar_leading(theme, cx))
-            });
         let mut top_controls = div().flex_none().flex().items_center().gap_2();
         // Provider quota — a compact, provider-independent headroom meter.
         // Hidden entirely on a pi without `quota.*` (or when no provider
@@ -557,7 +583,7 @@ impl Render for OrbitApp {
             // never reflows mid-slide. The titlebar row above is outside the
             // panel, so the controls hold their place while it moves.
             .children((!self.settings_open).then(|| {
-                let open = self.sidebar_visible;
+                let open = sidebar_shown;
                 let panel_w = f32::from(self.sidebar_width);
                 let panel = div()
                     .flex_none()
@@ -633,8 +659,7 @@ impl Render for OrbitApp {
                                     .gap_1()
                                     .child(self.sidebar_new_task_button(theme, cx))
                                     .child(self.sidebar_search_row(theme, cx))
-                                    .child(self.sidebar_usage_row(theme, cx))
-                                    .child(self.sidebar_review_row(theme, cx)),
+                                    .child(self.sidebar_usage_row(theme, cx)),
                             )
                             // session list (scrolls), grouped by workspace — or
                             // the empty state when pi's store has no sessions
@@ -822,10 +847,6 @@ impl Render for OrbitApp {
                 // feature page (Files / Git / Usage) opens as a card below it;
                 // the chat fills the column itself.
                 let empty = self.transcript.is_empty();
-                let viewer_open = self.file_viewer.read(cx).is_open();
-                let review_page_open = self.review_page.read(cx).is_open();
-                let feature_open =
-                    viewer_open || self.git_open || self.usage_open || review_page_open;
                 // top bar — the window's left controls float over it in the
                 // titlebar overlay, so its leading clears them when the sidebar
                 // is collapsed. The drag spacer between the title and the right
@@ -854,7 +875,7 @@ impl Render for OrbitApp {
                                     .flex()
                                     .items_center(),
                             );
-                            if let Some(leading) = git_leading.or(usage_leading).or(review_leading) {
+                            if let Some(leading) = git_leading.or(usage_leading) {
                                 left.child(leading)
                             } else {
                                 left.child(
@@ -875,14 +896,10 @@ impl Render for OrbitApp {
                         .child(top_controls);
                     let gen = self.sidebar_slide_gen;
                     if gen == 0 || theme::reduce_motion(cx) {
-                        bar.pl(px(if self.sidebar_visible {
-                            20.
-                        } else {
-                            TITLEBAR_LEADING
-                        }))
-                        .into_any_element()
+                        bar.pl(px(if sidebar_shown { 20. } else { TITLEBAR_LEADING }))
+                            .into_any_element()
                     } else {
-                        let expanding = self.sidebar_visible;
+                        let expanding = sidebar_shown;
                         bar.with_animation(
                             ElementId::Name(format!("topbar-lead-{gen}").into()),
                             Animation::new(Duration::from_millis(SIDEBAR_SLIDE_MS))
@@ -899,14 +916,16 @@ impl Render for OrbitApp {
                         .into_any_element()
                     }
                 };
-                let body: AnyElement = if viewer_open {
+                let body: AnyElement = if pane_full {
+                    // The expanded Review pane owns the page; the chat is not
+                    // just covered, it is skipped — same as a feature page.
+                    div().into_any_element()
+                } else if viewer_open {
                     self.file_viewer.clone().into_any_element()
                 } else if self.git_open {
                     self.git_panel.clone().into_any_element()
                 } else if self.usage_open {
                     self.usage.clone().into_any_element()
-                } else if review_page_open {
-                    self.review_page.clone().into_any_element()
                 } else {
                     // chat body — transcript/empty, composer, terminal
                     div()
@@ -1093,7 +1112,7 @@ impl Render for OrbitApp {
                     .min_w_0()
                     .min_h_0()
                     .relative()
-                    .children(if feature_open {
+                    .children(if feature_open || pane_full {
                         None
                     } else {
                         Self::new_task_backdrop(theme, empty)
@@ -1108,7 +1127,9 @@ impl Render for OrbitApp {
                             .w_full()
                             .flex()
                             .relative()
-                            .child(if feature_open {
+                            .child(if pane_full {
+                                div().into_any_element()
+                            } else if feature_open {
                                 feature_card(theme, body)
                             } else {
                                 body
@@ -1150,16 +1171,12 @@ impl Render for OrbitApp {
                 let gen = self.sidebar_slide_gen;
                 if gen == 0 || theme::reduce_motion(cx) {
                     controls
-                        .left(px(if self.sidebar_visible {
-                            hugging
-                        } else {
-                            pinned
-                        }))
+                        .left(px(if sidebar_shown { hugging } else { pinned }))
                         .into_any_element()
                 } else {
                     // Same easing and duration as the panel's own slide, so the
                     // chips ride the edge instead of snapping to it.
-                    let expanding = self.sidebar_visible;
+                    let expanding = sidebar_shown;
                     controls
                         .with_animation(
                             ElementId::Name(format!("titlebar-lead-{gen}").into()),
@@ -2045,9 +2062,7 @@ impl OrbitApp {
                                 cx.listener(Self::on_model_trigger_click),
                             )
                     })
-                    .when(disabled, |chip| {
-                        chip.cursor_not_allowed().opacity(0.5)
-                    })
+                    .when(disabled, |chip| chip.cursor_not_allowed().opacity(0.5))
                     .child(icon_dyn(
                         provider_icon(&self.model_provider),
                         ButtonSize::Default.icon_size().px(&theme),
@@ -2060,7 +2075,12 @@ impl OrbitApp {
                             .text_color(if open { theme.active_fg } else { theme.text_2 })
                             .child(self.model_label.clone()),
                     )
-                    .child(Self::chip_caret(open, theme.active_fg, "model-caret-turn", cx)),
+                    .child(Self::chip_caret(
+                        open,
+                        theme.active_fg,
+                        "model-caret-turn",
+                        cx,
+                    )),
             )
     }
 
@@ -2087,9 +2107,7 @@ impl OrbitApp {
                                 cx.listener(Self::on_thinking_trigger_click),
                             )
                     })
-                    .when(disabled, |chip| {
-                        chip.cursor_not_allowed().opacity(0.5)
-                    })
+                    .when(disabled, |chip| chip.cursor_not_allowed().opacity(0.5))
                     .child({
                         let (path, _) = thinking_icon(&self.thinking_label, &theme);
                         icon(
@@ -3297,60 +3315,6 @@ impl OrbitApp {
     /// Sidebar nav row for the Usage page, in the same `ButtonSize::Large`
     /// frame as the New Task and Search rows; the open page is marked with an
     /// `active` fill rather than accent color alone.
-    /// Sidebar nav row for the Review page, in the same `ButtonSize::Large`
-    /// frame as the Usage row. The page is the app's only AI review surface;
-    /// the badge counts reviews that are queued or running right now.
-    pub(super) fn sidebar_review_row(
-        &self,
-        theme: Theme,
-        cx: &Context<Self>,
-    ) -> impl IntoElement + use<> {
-        let active = self.review_page.read(cx).is_open();
-        let running = self.reviews.active_count();
-        button_frame(div().id("sidebar-review"), &theme, ButtonSize::Large)
-            .group(BUTTON_GROUP)
-            .w_full()
-            .when(active, |row| row.bg(theme.active))
-            .cursor_pointer()
-            .hover(|s| s.bg(if active { theme.active } else { theme.bg_hover }))
-            .active(|s| s.opacity(PRESS_DIM))
-            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_review_nav_click))
-            .child(icon(
-                "icons/spark.svg",
-                ButtonSize::Large.icon_size().px(&theme),
-                if active {
-                    theme.active_fg
-                } else {
-                    theme.text_3
-                },
-            ))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_color(if active {
-                        theme.active_fg
-                    } else {
-                        theme.text_2
-                    })
-                    .child(tr!("review_page.title")),
-            )
-            .when(running > 0, |row| {
-                row.child(
-                    div()
-                        .flex_none()
-                        .px(DynamicSpacing::Base04.px(&theme))
-                        .rounded(Radius::Full.px(&theme))
-                        .bg(theme.accent.opacity(0.16))
-                        .text_size(TextSize::XSmall.px(&theme))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme.accent)
-                        .child(running.to_string()),
-                )
-            })
-    }
-
     pub(super) fn sidebar_usage_row(
         &self,
         theme: Theme,

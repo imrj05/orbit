@@ -112,26 +112,6 @@ impl BundledExtensions {
         PiClient::spawn_with_extensions_and_args(workspace, None, &extensions, &args)
     }
 
-    /// Spawn the **AI reviewer** process. It loads the same bundled extensions
-    /// but is scoped read-only up front: `ORBIT_WORKFLOW_MODE=ask` makes the
-    /// workflow extension drop the write tools and gate bash from the first
-    /// hook (before the session id is known), and `ORBIT_REVIEW=1` tells the
-    /// access guard not to raise an approval dialog — the reviewer has no UI
-    /// surface to answer one, and the workflow extension is the stricter gate.
-    ///
-    /// Both variables are process-scoped, so they never touch
-    /// `~/.orbit-pi/access.json` and cannot widen the active session.
-    pub(crate) fn spawn_reviewer(&self, workspace: &Path) -> anyhow::Result<PiClient> {
-        crate::rpc_patches::apply_on_launch();
-        let extensions = self.extension_paths();
-        PiClient::spawn_with_extensions_and_env(
-            workspace,
-            None,
-            &extensions,
-            &[("ORBIT_WORKFLOW_MODE", "ask"), ("ORBIT_REVIEW", "1")],
-        )
-    }
-
     /// The installed bundled extension entry points, in load order.
     fn extension_paths(&self) -> Vec<PathBuf> {
         [&self.quota, &self.guard, &self.title, &self.workflow]

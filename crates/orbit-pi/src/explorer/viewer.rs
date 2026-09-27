@@ -25,7 +25,7 @@ use gpui::{
 
 use crate::app::{
     button_frame, empty_state, file_badge, file_glyph, icon, icon_button_frame, nerd_font_family,
-    EmptyFill,
+    press, EmptyFill,
 };
 use crate::composer::ComposerInput;
 use crate::highlight::{self, Lang, Token};
@@ -815,85 +815,87 @@ impl FileViewer {
                 fallback,
             );
             tabs = tabs.child(
-                div()
-                    .id(gpui::ElementId::Name(format!("viewer-tab-{index}").into()))
-                    .h(px(28.))
-                    .max_w(px(220.))
-                    // Never shrink below a readable width: past the strip's
-                    // edge the row scrolls instead of crushing every tab.
-                    .flex_none()
-                    .px(px(10.))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .rounded(Radius::Large.px(&theme))
-                    .cursor_pointer()
-                    .text_size(TextSize::Small.px(&theme))
-                    .when(active, |el| el.bg(theme.active))
-                    .when(!active, |el| {
-                        el.text_color(theme.text_3)
-                            .hover(|el| el.bg(theme.bg_hover).text_color(theme.text_2))
-                    })
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.activate(index, cx);
-                        // Reveal the tab the user just activated if the strip has
-                        // scrolled.
-                        this.tab_scroll.scroll_to_item(index);
-                    }))
-                    .child(glyph)
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .font_weight(if active {
-                                FontWeight::MEDIUM
-                            } else {
-                                FontWeight::NORMAL
-                            })
-                            .text_color(if active {
-                                theme.active_fg
-                            } else {
-                                theme.text_3
-                            })
-                            .child(name),
-                    )
-                    .when(tab.dirty, |el| {
-                        el.child(
-                            div()
-                                .size(px(6.))
-                                .flex_none()
-                                .rounded_full()
-                                .bg(theme.accent),
-                        )
-                    })
-                    .child(
-                        icon_button_frame(
-                            div().id(gpui::ElementId::Name(
-                                format!("viewer-tab-close-{index}").into(),
-                            )),
-                            &theme,
-                            ButtonSize::None,
-                        )
+                press(
+                    div()
+                        .id(gpui::ElementId::Name(format!("viewer-tab-{index}").into()))
+                        .h(ButtonSize::Medium.height(&theme))
+                        .max_w(px(220.))
+                        // Never shrink below a readable width: past the strip's
+                        // edge the row scrolls instead of crushing every tab.
+                        .flex_none()
+                        .px(DynamicSpacing::Base08.px(&theme))
+                        .flex()
+                        .items_center()
+                        .gap(DynamicSpacing::Base06.px(&theme))
+                        .rounded(Radius::Large.px(&theme))
                         .cursor_pointer()
-                        .hover(|el| el.bg(theme.overlay))
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.close_tab(index, cx);
-                            // Click handlers bubble: without this the tab's
-                            // own `on_click` below would also run with the
-                            // now-stale `index` and index past the shrunken
-                            // tab list (out-of-bounds panic).
-                            cx.stop_propagation();
-                        }))
-                        .child(icon(
-                            "icons/x.svg",
-                            ButtonSize::None.icon_size().px(&theme),
-                            if active {
-                                theme.active_fg
-                            } else {
-                                theme.text_3
-                            },
+                        .text_size(TextSize::Small.px(&theme))
+                        .when(active, |el| el.bg(theme.active))
+                        .when(!active, |el| {
+                            el.text_color(theme.text_3)
+                                .hover(|el| el.bg(theme.bg_hover).text_color(theme.text_2))
+                        }),
+                )
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.activate(index, cx);
+                    // Reveal the tab the user just activated if the strip has
+                    // scrolled.
+                    this.tab_scroll.scroll_to_item(index);
+                }))
+                .child(glyph)
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .font_weight(if active {
+                            FontWeight::MEDIUM
+                        } else {
+                            FontWeight::NORMAL
+                        })
+                        .text_color(if active {
+                            theme.active_fg
+                        } else {
+                            theme.text_3
+                        })
+                        .child(name),
+                )
+                .when(tab.dirty, |el| {
+                    el.child(
+                        div()
+                            .size(DynamicSpacing::Base06.px(&theme))
+                            .flex_none()
+                            .rounded_full()
+                            .bg(theme.accent),
+                    )
+                })
+                .child(
+                    icon_button_frame(
+                        div().id(gpui::ElementId::Name(
+                            format!("viewer-tab-close-{index}").into(),
                         )),
-                    ),
+                        &theme,
+                        ButtonSize::None,
+                    )
+                    .cursor_pointer()
+                    .hover(|el| el.bg(theme.overlay))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.close_tab(index, cx);
+                        // Click handlers bubble: without this the tab's
+                        // own `on_click` below would also run with the
+                        // now-stale `index` and index past the shrunken
+                        // tab list (out-of-bounds panic).
+                        cx.stop_propagation();
+                    }))
+                    .child(icon(
+                        "icons/x.svg",
+                        ButtonSize::None.icon_size().px(&theme),
+                        if active {
+                            theme.active_fg
+                        } else {
+                            theme.text_3
+                        },
+                    )),
+                ),
             );
         }
         div()
