@@ -588,6 +588,7 @@ fn main() {
         // Bundle Zed's UI/mono faces plus the curated font catalog so every
         // picker choice resolves to a real face without OS dependencies.
         assets::register_zed_fonts(cx).expect("failed to register Zed fonts");
+        assets::register_symbol_fonts(cx).expect("failed to register the symbols font");
         assets::register_bundled_fonts(cx).expect("failed to register bundled fonts");
         app_icon::set_dock_icon();
 

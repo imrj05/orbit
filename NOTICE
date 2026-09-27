@@ -14,6 +14,10 @@ third-party components under their own licenses, including:
 - Bundled font families, each under the SIL Open Font License 1.1
   (OFL.txt files ship alongside the fonts under
   crates/orbit-pi/assets/fonts/bundled/)
+- Nerd Fonts Symbols Only (MIT), by Ryan L McIntyre — the file icons.
+  Its glyph sets carry their own permissive licenses; see the upstream
+  "Symbols Only" README:
+  https://github.com/ryanoasis/nerd-fonts/tree/master/patched-fonts/NerdFontsSymbolsOnly
 
 The pi coding agent CLI is a separate program and is not distributed with
 Orbit. See https://github.com/earendil-works/pi.

@@ -42,7 +42,8 @@ use serde_json::Value;
 use orbit_rpc::MessageUsage;
 
 use crate::app::{
-    button_frame, context_menu_entry, context_menu_surface, icon_button_frame, BUTTON_GROUP,
+    button_frame, context_menu_entry, context_menu_surface, file_badge, file_glyph,
+    icon_button_frame, nerd_font_family, BUTTON_GROUP,
 };
 use crate::context_meter::{format_tokens, hit_percent_label};
 use crate::highlight::{self, Token};
@@ -921,6 +922,10 @@ struct RowPaint {
     ix: usize,
     row_count: usize,
     theme: Theme,
+    /// The Nerd Fonts family for devicons file glyphs, resolved once per
+    /// frame; `None` when no Nerd Font is available (extension badges fall
+    /// back).
+    nerd: Option<SharedString>,
     live: bool,
     live_elapsed: Option<Duration>,
     fold_open: bool,
@@ -1061,6 +1066,9 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
             .collect()
     };
 
+    // Devicons resolve once per frame: every file row in the list shares the
+    // same Nerd Fonts family (or falls back to extension badges).
+    let nerd = nerd_font_family(cx);
     let list_el = list(view.scroller.list_state(), move |ix, _window, cx| {
         let live = streaming.get() == Some(ix);
         let live_elapsed = if live {
@@ -1085,6 +1093,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
             let card = render_changed_files(
                 files,
                 theme,
+                nerd.as_ref(),
                 ix,
                 workspace.as_deref(),
                 expanded_files.borrow().contains(&ix),
@@ -1146,6 +1155,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
             ix,
             row_count,
             theme: *theme::get(cx),
+            nerd: nerd.clone(),
             live,
             live_elapsed,
             fold_open,
@@ -1821,6 +1831,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
                         open,
                         group_live,
                         theme,
+                        paint.nerd.as_ref(),
                         paint.expanded_activities.clone(),
                         paint.expanded_tools.clone(),
                         paint.copied_sections.clone(),
@@ -1889,6 +1900,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
                 open,
                 group_live,
                 theme,
+                paint.nerd.as_ref(),
                 paint.expanded_activities.clone(),
                 paint.expanded_tools.clone(),
                 paint.copied_sections.clone(),
@@ -2111,6 +2123,7 @@ fn render_activity_group(
     open: bool,
     live: bool,
     theme: Theme,
+    nerd: Option<&SharedString>,
     expanded_activities: ExpandedActivities,
     expanded_tools: ExpandedTools,
     copied_sections: CopiedSections,
@@ -2276,6 +2289,7 @@ fn render_activity_group(
                     pulse,
                     !pulse,
                     theme,
+                    nerd,
                     (ix, flat),
                     expanded_tools.borrow().contains(&(ix, flat)),
                     expanded_tools.clone(),
@@ -2842,6 +2856,7 @@ fn render_activity_card(
     pulse: bool,
     complete: bool,
     theme: Theme,
+    nerd: Option<&SharedString>,
     key: (usize, usize),
     tool_open: bool,
     expanded_tools: ExpandedTools,
@@ -2879,6 +2894,10 @@ fn render_activity_card(
     // An edit/write tool carries its own change; the header copy button and
     // the expanded body both read from it.
     let diff = edit_diff(tool);
+    // File-content tools get their file's devicon in the header; the
+    // devicons palette follows the theme.
+    let file_path = file_preview_path(tool);
+    let dark = theme.mode == ThemeMode::Dark;
 
     let mut card = div()
         .id(ElementId::NamedInteger(
@@ -2940,14 +2959,48 @@ fn render_activity_card(
                                     ),
                                 ),
                         )
-                    } else {
+                    } else if let Some(url) = tool_url(tool) {
+                        // A fetch tool's preview is the URL itself: a link
+                        // that opens the browser without toggling the card
+                        // (the row's own click expands the detail).
                         row.child(
                             div()
+                                .id(ElementId::NamedInteger(
+                                    "tool-link".into(),
+                                    (key.0 as u64) << 16 | key.1 as u64,
+                                ))
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .text_color(theme.tool_meta)
-                                .child(detail),
+                                .text_color(theme.accent)
+                                .underline()
+                                .cursor_pointer()
+                                .child(display_url(&url).to_string())
+                                .on_click(move |_, _, cx| {
+                                    cx.open_url(&url);
+                                    cx.stop_propagation();
+                                }),
+                        )
+                    } else {
+                        let mut preview =
+                            div().flex_1().min_w_0().flex().items_center().gap(px(6.));
+                        if let Some(path) = file_path {
+                            preview = preview.child(file_glyph(
+                                path,
+                                dark,
+                                nerd,
+                                IconSize::Small.px(&theme),
+                                file_badge(path, theme),
+                            ));
+                        }
+                        row.child(
+                            preview.child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_color(theme.tool_meta)
+                                    .child(detail),
+                            ),
                         )
                     }
                 })
@@ -4458,9 +4511,65 @@ fn format_working_elapsed(duration: Duration) -> String {
     }
 }
 
+/// The URL a fetch-style tool was invoked with. `None` for other tools.
+fn tool_url(tool: &ToolCall) -> Option<String> {
+    if !matches!(
+        tool.name.as_str(),
+        "web_fetch" | "webfetch" | "fetch" | "open_url" | "browse"
+    ) {
+        return None;
+    }
+    tool.args
+        .as_ref()?
+        .get("url")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// The query a web-search tool was invoked with. `None` for other tools.
+fn tool_search_query(tool: &ToolCall) -> Option<String> {
+    if !matches!(
+        tool.name.as_str(),
+        "web_search" | "websearch" | "search_web" | "browse"
+    ) {
+        return None;
+    }
+    tool.args
+        .as_ref()?
+        .get("query")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// A URL as it reads in a card header: scheme and a leading `www.` dropped.
+fn display_url(url: &str) -> &str {
+    let url = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    url.strip_prefix("www.").unwrap_or(url)
+}
+
+/// File-content tools whose header preview is one file path — the tools
+/// that get the file's devicon.
+fn file_preview_path(tool: &ToolCall) -> Option<&str> {
+    match tool.name.as_str() {
+        "read" | "view" | "edit" | "write" => tool.path.as_deref(),
+        _ => None,
+    }
+}
+
 fn activity_preview(tool: &ToolCall) -> String {
     if let Some(path) = &tool.path {
         return path.clone();
+    }
+    // A fetch tool's arguments JSON would show `{"url":"…"}` and a search
+    // tool's `{"query":"…"}`; the URL/query itself is the fact to show.
+    if let Some(url) = tool_url(tool) {
+        return display_url(&url).to_string();
+    }
+    if let Some(query) = tool_search_query(tool) {
+        return query;
     }
     // A command tool's pi summary is the raw JSON arguments; show the shell
     // command itself in the header instead of `{"command":"…"}`.
@@ -6227,6 +6336,7 @@ fn workspace_relative_path(path: &str, workspace: Option<&Path>) -> String {
 pub(crate) fn render_changed_files(
     files: &[(String, u64, u64)],
     theme: Theme,
+    nerd: Option<&SharedString>,
     message_ix: usize,
     workspace: Option<&Path>,
     expanded: bool,
@@ -6261,6 +6371,13 @@ pub(crate) fn render_changed_files(
                 .flex()
                 .items_center()
                 .gap(px(8.))
+                .child(file_glyph(
+                    path,
+                    theme.mode == ThemeMode::Dark,
+                    nerd,
+                    IconSize::Small.px(&theme),
+                    file_badge(path, theme),
+                ))
                 .child(
                     div()
                         .min_w_0()
@@ -7052,6 +7169,78 @@ mod tests {
             ..bash.clone()
         };
         assert_eq!(tool_command(&edit), None);
+    }
+
+    #[test]
+    fn fetch_tools_preview_the_url_not_json() {
+        let fetch = ToolCall {
+            name: "web_fetch".into(),
+            summary: r#"{"url":"https://example.com/docs/start"}"#.into(),
+            path: None,
+            added: 0,
+            removed: 0,
+            id: None,
+            args: Some(serde_json::json!({ "url": "https://example.com/docs/start" })),
+            output: None,
+            failed: false,
+            facts: Default::default(),
+        };
+        assert_eq!(
+            tool_url(&fetch).as_deref(),
+            Some("https://example.com/docs/start")
+        );
+        // The header drops the scheme so the host leads the line.
+        assert_eq!(activity_preview(&fetch), "example.com/docs/start");
+        assert_eq!(display_url("http://www.example.com/x"), "example.com/x");
+        assert_eq!(display_url("https://example.com"), "example.com");
+        assert_eq!(display_url("example.com"), "example.com");
+
+        let search = ToolCall {
+            name: "web_search".into(),
+            summary: r#"{"query":"rust async book"}"#.into(),
+            path: None,
+            added: 0,
+            removed: 0,
+            id: None,
+            args: Some(serde_json::json!({ "query": "rust async book" })),
+            output: None,
+            failed: false,
+            facts: Default::default(),
+        };
+        assert_eq!(
+            tool_search_query(&search).as_deref(),
+            Some("rust async book")
+        );
+        assert_eq!(activity_preview(&search), "rust async book");
+        // Other tools never fabricate a link or a query.
+        assert_eq!(tool_url(&search), None);
+        assert_eq!(tool_search_query(&fetch), None);
+    }
+
+    #[test]
+    fn only_file_tools_get_the_file_glyph() {
+        let read = ToolCall {
+            name: "read".into(),
+            summary: String::new(),
+            path: Some("src/main.rs".into()),
+            added: 0,
+            removed: 0,
+            id: None,
+            args: None,
+            output: None,
+            failed: false,
+            facts: Default::default(),
+        };
+        assert_eq!(file_preview_path(&read), Some("src/main.rs"));
+        // The preview still shows the path (unchanged behavior).
+        assert_eq!(activity_preview(&read), "src/main.rs");
+        // A search tool's `path` is a scope, not the thing it read; it keeps
+        // its generic icon instead of a file glyph.
+        let grep = ToolCall {
+            name: "grep".into(),
+            ..read.clone()
+        };
+        assert_eq!(file_preview_path(&grep), None);
     }
 
     #[test]

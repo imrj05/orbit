@@ -82,6 +82,23 @@ pub fn register_zed_fonts(cx: &mut gpui::App) -> anyhow::Result<()> {
     cx.text_system().add_fonts(fonts)
 }
 
+/// The Nerd Fonts symbols face backing the devicons file glyphs (see
+/// `app::helpers::file_glyph`). It carries only private-use glyphs, so it is
+/// loaded with the core faces rather than through the curated picker catalog.
+const SYMBOL_FONTS: [&str; 1] = ["fonts/SymbolsNerdFont-Regular.ttf"];
+
+/// Load the bundled Nerd Fonts symbols face so file glyphs resolve even when
+/// the machine has no Nerd Font installed. Call once at startup.
+pub fn register_symbol_fonts(cx: &mut gpui::App) -> anyhow::Result<()> {
+    let mut fonts = Vec::new();
+    for path in SYMBOL_FONTS {
+        if let Some(bytes) = cx.asset_source().load(path)? {
+            fonts.push(bytes);
+        }
+    }
+    cx.text_system().add_fonts(fonts)
+}
+
 /// Recursively collect every `.ttf` / `.otf` under an embedded directory.
 fn collect_fonts(dir: &Dir<'_>, out: &mut Vec<String>) {
     for entry in dir.entries() {
@@ -136,5 +153,23 @@ mod tests {
             .expect("embedded assets cannot fail to load")
             .expect("dev-assets/alpha-app-icon.png is embedded by the debug overlay");
         assert_eq!(&bytes[..4], b"\x89PNG");
+    }
+
+    /// The devicons face is the only source of file glyphs on machines
+    /// without a system Nerd Font; if the asset moves or is dropped, every
+    /// file icon silently falls back to a text badge.
+    #[test]
+    fn symbols_font_is_embedded() {
+        use gpui::AssetSource as _;
+
+        use super::Assets;
+
+        let bytes = Assets
+            .load("fonts/SymbolsNerdFont-Regular.ttf")
+            .expect("embedded assets cannot fail to load")
+            .expect("SymbolsNerdFont-Regular.ttf is embedded under assets/fonts/");
+        // TrueType sfnt version — a cheap sanity check that the file is a
+        // font, not an empty or placeholder asset.
+        assert_eq!(&bytes[..4], &[0x00, 0x01, 0x00, 0x00]);
     }
 }
