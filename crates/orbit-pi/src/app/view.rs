@@ -866,19 +866,23 @@ impl Render for OrbitApp {
                             12.
                         }))
                         .child({
-                            let left = window_drag_region(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .h_full()
-                                    .flex()
-                                    .items_center(),
-                            );
+                            let left = div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .h_full()
+                                .flex()
+                                .items_center();
                             if let Some(leading) = git_leading.or(usage_leading) {
+                                // A feature page's leading controls (Back and the
+                                // page title) are interactive, so they sit outside
+                                // the drag region — pressing them must not start a
+                                // window move. The bar after them still drags the
+                                // window.
                                 left.child(leading)
+                                    .child(window_drag_region(div().flex_1().min_w_0().h_full()))
                             } else {
-                                left.child(
+                                window_drag_region(left).child(
                                     div()
                                         .flex_1()
                                         .min_w_0()
