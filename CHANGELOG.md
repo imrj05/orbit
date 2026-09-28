@@ -50,6 +50,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   chip (glyph, value, chevron) and picker surface — list inset, rows, and search row for
   the branch list.
 
+- The **Issues** tab's **Label** picker — the list filter chip and the detail view's
+  **Edit labels** button — no longer opens at the page's top-right over the issue list.
+  It anchors to the button that opened it, opens directly beneath it, and uses the same
+  picker surface and rows as the branch selector.
+
 - The conversation rail's active tick now follows every navigation path, not
   just wheel and scrollbar gestures. Clicking a tick and pressing ⌘↑/⌘↓ scroll
   the list programmatically, which never fired gpui's scroll handler, so the

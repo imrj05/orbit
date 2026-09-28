@@ -4903,16 +4903,19 @@ impl GitPanel {
                 theme,
                 cx.listener(|this, _: &ClickEvent, _, cx| this.apply_issue_search(cx)),
             ))
-            .child(filter_chip(
-                "git-issue-label-filter",
-                &label_label,
-                "icons/chevron-down.svg",
-                theme,
-                cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.label_menu_open = !this.label_menu_open;
-                    cx.notify();
-                }),
-            ))
+            .child({
+                let trigger = filter_chip(
+                    "git-issue-label-filter",
+                    &label_label,
+                    "icons/chevron-down.svg",
+                    theme,
+                    cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.label_menu_open = !this.label_menu_open;
+                        cx.notify();
+                    }),
+                );
+                self.label_selector(theme, trigger, true, cx)
+            })
             .children(filter.is_active().then(|| {
                 filter_chip(
                     "git-issue-clear",
@@ -5249,25 +5252,28 @@ impl GitPanel {
             .flex()
             .flex_col()
             .gap(DynamicSpacing::Base08.px(&theme))
-            .child(action_button(
-                "git-issue-labels",
-                &tr!("git_panel.edit_labels"),
-                Some(
-                    icon(
-                        "icons/tag-01.svg",
-                        ButtonSize::Medium.icon_size().px(&theme),
-                        theme.text_2,
-                    )
-                    .into_any_element(),
-                ),
-                false,
-                self.issue_busy,
-                theme,
-                cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.label_menu_open = !this.label_menu_open;
-                    cx.notify();
-                }),
-            ));
+            .child({
+                let trigger = action_button(
+                    "git-issue-labels",
+                    &tr!("git_panel.edit_labels"),
+                    Some(
+                        icon(
+                            "icons/tag-01.svg",
+                            ButtonSize::Medium.icon_size().px(&theme),
+                            theme.text_2,
+                        )
+                        .into_any_element(),
+                    ),
+                    false,
+                    self.issue_busy,
+                    theme,
+                    cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.label_menu_open = !this.label_menu_open;
+                        cx.notify();
+                    }),
+                );
+                self.label_selector(theme, trigger, false, cx)
+            });
         let timeline = div()
             .flex()
             .flex_col()
@@ -5445,29 +5451,52 @@ impl GitPanel {
 
     /// The repo-label popover. On an open issue it toggles labels on that
     /// issue; otherwise it sets the list's label filter.
-    fn label_picker_popup(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+    /// Wrap a label trigger so its picker anchors to it and paints above the
+    /// page via `deferred`. `align_right` right-aligns the menu with the
+    /// trigger — the filter bar's chip sits near the right edge.
+    fn label_selector(
+        &self,
+        theme: Theme,
+        trigger: AnyElement,
+        align_right: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let popup = if self.label_menu_open {
+            self.label_popup(theme, align_right, cx)
+        } else {
+            None
+        };
+        div()
+            .relative()
+            .flex()
+            .child(trigger)
+            .children(popup)
+            .into_any_element()
+    }
+
+    /// The repository-label picker. On an open issue it toggles labels on that
+    /// issue; otherwise it sets the list's label filter.
+    fn label_popup(
+        &self,
+        theme: Theme,
+        align_right: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         if !self.label_menu_open {
             return None;
         }
         let detail = self.issue_detail.clone();
-        let mut menu = context_menu_surface(div().id("git-label-menu"), &theme)
-            .absolute()
-            .top(px(42.))
-            .right(px(12.))
-            .w(px(240.))
+        let mut list = div()
+            .id("git-label-scroll")
+            .w_full()
             .max_h(px(320.))
             .overflow_y_scroll()
+            .py(picker::list_padding_y(&theme))
             .flex()
-            .flex_col()
-            .occlude()
-            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                this.label_menu_open = false;
-                cx.notify();
-            }))
-            .child(menu_header(tr!("git_panel.labels"), &theme));
+            .flex_col();
         if self.issue_labels.is_empty() {
-            menu = menu.child(
-                context_menu_entry(div(), &theme)
+            list = list.child(
+                picker_entry(div(), &theme)
                     .text_color(theme.text_3)
                     .child(tr!("git_panel.no_labels")),
             );
@@ -5478,10 +5507,11 @@ impl GitPanel {
                 .as_ref()
                 .is_some_and(|issue| issue.labels.iter().any(|entry| entry.name == name));
             let id = gpui::ElementId::Name(format!("git-label-{name}").into());
-            menu = menu.child(
-                context_menu_entry(div().id(id), &theme)
+            list = list.child(
+                picker_entry(div().id(id), &theme)
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.overlay))
+                    .text_color(theme.text)
+                    .hover(|s| s.bg(theme.bg_hover))
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         if this.issue_detail.is_some() {
                             this.toggle_issue_label(name.clone(), cx);
@@ -5500,7 +5530,24 @@ impl GitPanel {
                     }),
             );
         }
-        Some(menu.into_any_element())
+        let menu = picker_surface(div().id("git-label-menu"), &theme)
+            .w(px(260.))
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .occlude()
+            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                this.label_menu_open = false;
+                cx.notify();
+            }))
+            .child(menu_header(tr!("git_panel.labels"), &theme))
+            .child(list);
+        let wrapper = if align_right {
+            div().absolute().right(px(0.)).top(px(30.))
+        } else {
+            div().absolute().left(px(0.)).top(px(30.))
+        };
+        Some(wrapper.child(deferred(menu)).into_any_element())
     }
 
     // ── pull request rendering ─────────────────────────────────────────
@@ -7175,7 +7222,6 @@ impl Render for GitPanel {
             .children(self.ref_picker_popup(theme, cx))
             .children(self.branch_menu(theme, cx))
             .children(self.file_actions_menu(theme, cx))
-            .children(self.label_picker_popup(theme, cx))
             .children(self.stage_prompt_popup(theme, cx))
             .children(self.confirm_popup(theme, cx))
             .children(self.branch_prompt_popup(theme, window, cx))
