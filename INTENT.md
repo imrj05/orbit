@@ -256,10 +256,15 @@ The Git page's **Issues** and **Pull requests** tabs gained a **Generate** actio
 **New issue** and **New pull request** forms take optional free-form notes, then draft a
 title and Markdown body with the same one-shot, tool-free `pi -p` call the commit-message
 button uses (`issue_message.rs`), falling back to a local heuristic built from the branch's
-commits and changed files when pi is unavailable. Those tabs were also tightened for
-scanning — labels collapse to `+N`, every row ends in a fixed relative-time column, and the
-PR list drops its duplicated state pill — and the PR detail now shares the issue detail's
-reading-column + metadata-rail layout (review, checks, changes, branches, timeline).
+commits and changed files when pi is unavailable. The forms also read the repository's own
+templates (`gh_templates.rs`): a lone issue/PR template applies automatically, several are
+chosen from a **Template** picker, the body is prefilled with the template's skeleton (YAML
+issue forms are flattened to Markdown), the template's title prefix and labels are applied,
+and the generator is told to fill the template faithfully. Those tabs were also tightened
+for scanning — labels collapse to `+N`, every row ends in a fixed relative-time column, and
+the PR list drops its duplicated state pill — and the PR detail now shares the issue
+detail's reading-column + metadata-rail layout (review, checks, changes, branches,
+timeline).
 
 Composer sending is configurable in Settings → Agent → Behavior: Enter queues a follow-up
 by default or steers the running task, with Alt/Option+Enter selecting the opposite mode.

@@ -58,6 +58,7 @@ mod dither;
 mod explorer;
 mod favorites;
 mod gh;
+mod gh_templates;
 mod git;
 mod git_ops;
 mod git_panel;

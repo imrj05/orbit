@@ -12,6 +12,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use crate::gh_templates::RepoTemplate;
 use crate::git;
 
 const MAX_CONTEXT_BYTES: usize = 24 * 1024;
@@ -30,13 +31,6 @@ impl DraftKind {
         match self {
             Self::Issue => "GitHub issue",
             Self::PullRequest => "GitHub pull request",
-        }
-    }
-
-    fn heading(self) -> &'static str {
-        match self {
-            Self::Issue => "issue",
-            Self::PullRequest => "pull request",
         }
     }
 }
@@ -67,7 +61,8 @@ struct RepoContext {
 
 /// Generate a draft for `kind`. Blocking; call on the background executor.
 /// `hint` is the user's free-form notes (may be empty); `base` is the PR's
-/// target branch when known.
+/// target branch when known; `template` is the repository template to fill,
+/// when one is selected.
 pub fn generate(
     cwd: &Path,
     provider: Option<&str>,
@@ -75,22 +70,32 @@ pub fn generate(
     kind: DraftKind,
     hint: &str,
     base: Option<&str>,
+    template: Option<&RepoTemplate>,
 ) -> Result<Draft, String> {
     let context = collect(cwd, base);
-    let system = system_prompt(kind);
-    let prompt = user_prompt(kind, hint, &context);
+    let system = system_prompt(kind, template.is_some());
+    let prompt = user_prompt(kind, hint, &context, template);
     let raw = run_pi(cwd, provider, model, &system, &prompt)?;
     process_response(&raw).ok_or_else(|| tr!("errors.no_draft"))
 }
 
-/// A no-model fallback: a title from the hint or branch, and a Markdown body
-/// built from the branch's commits and changed files. Always editable, never
-/// empty when there is anything to say.
-pub fn heuristic(cwd: &Path, kind: DraftKind, hint: &str, base: Option<&str>) -> Draft {
+/// A no-model fallback: a title from the hint or branch, and a Markdown body.
+/// With a repository template, the notes are dropped into its first section so
+/// the result still follows the template's shape.
+pub fn heuristic(
+    cwd: &Path,
+    kind: DraftKind,
+    hint: &str,
+    base: Option<&str>,
+    template: Option<&RepoTemplate>,
+) -> Draft {
     let context = collect(cwd, base);
     let hint = hint.trim();
     let title = heuristic_title(kind, hint, &context);
-    let body = heuristic_body(kind, hint, &context);
+    let body = match template {
+        Some(template) => fill_first_section(&template.body, &template_seed(hint, &context)),
+        None => heuristic_body(kind, hint, &context),
+    };
     Draft { title, body }
 }
 
@@ -154,9 +159,10 @@ fn collect(cwd: &Path, base: Option<&str>) -> RepoContext {
 }
 
 /// The system rules. Output shape mirrors [`crate::commit_message`]: a single
-/// fenced block so the parser is identical in spirit.
-fn system_prompt(kind: DraftKind) -> String {
-    format!(
+/// fenced block so the parser is identical in spirit. When a repository
+/// template is supplied, a rule is added to fill it faithfully.
+fn system_prompt(kind: DraftKind, has_template: bool) -> String {
+    let mut prompt = format!(
         "You are an AI assistant helping a software developer write a {noun}.\n\
          You excel at turning sparse notes and repository context into concise, concrete prose that a maintainer can act on.\n\n\
          # Rules:\n\
@@ -168,12 +174,23 @@ fn system_prompt(kind: DraftKind) -> String {
          6. Never mention that the text was generated, and never add meta-commentary.\n\
          7. Output EXACTLY one fenced ```text block: the title on the first line, a blank line, then the Markdown body. No other prose.\n",
         noun = kind.noun()
-    )
+    );
+    if has_template {
+        prompt.push_str(
+            "8. A REPOSITORY TEMPLATE is provided. Preserve its structure exactly: keep every heading and every `- [ ]` checkbox line as written, and write the content under the matching heading. Leave a checkbox unchecked unless the provided context proves it. Do not add, remove, or rename sections, and drop the template's guidance comments (`<!-- … -->`).\n",
+        );
+    }
+    prompt
 }
 
-/// The user message: repository context, the user's notes, and a closing
-/// reminder. `hint` is optional and only shapes the draft when present.
-fn user_prompt(kind: DraftKind, hint: &str, context: &RepoContext) -> String {
+/// The user message: repository context, the user's notes, the template (when
+/// one is selected), and a closing reminder.
+fn user_prompt(
+    kind: DraftKind,
+    hint: &str,
+    context: &RepoContext,
+    template: Option<&RepoTemplate>,
+) -> String {
     let mut prompt = String::new();
     prompt.push_str("<repository-context>\n");
     prompt.push_str(&format!("Repository name: {}\n", context.repo));
@@ -212,17 +229,31 @@ fn user_prompt(kind: DraftKind, hint: &str, context: &RepoContext) -> String {
         prompt.push_str("</changed-files>\n\n");
     }
 
+    if let Some(template) = template {
+        prompt.push_str(&format!(
+            "<template name=\"{}\">\n{}
+</template>\n\n",
+            template.label(),
+            truncate(template.body.trim(), MAX_CONTEXT_BYTES)
+        ));
+    }
+
+    let reminder_tail = if template.is_some() {
+        "Fill in the REPOSITORY TEMPLATE above: one title line, a blank line, then the completed Markdown body with the template's headings and checkboxes preserved.\n"
+    } else {
+        "Write the draft from the context above: one title line, a blank line, then the Markdown body.\n"
+    };
     prompt.push_str(&format!(
         "<reminder>\n\
-         Write a {heading} draft from the context above.\n\
-         Title first, then a blank line, then the Markdown body.\n\
+         {reminder_tail}\
+         The result is a {noun}.\n\
          ONLY return a single markdown code block, NO OTHER PROSE!\n\
          ```text\n\
          title goes here\n\n\
          body goes here\n\
          ```\n\
          </reminder>",
-        heading = kind.heading()
+        noun = kind.noun()
     ));
     prompt
 }
@@ -294,6 +325,58 @@ fn humanize(branch: &str) -> String {
         .replace(['-', '_'], " ")
         .trim()
         .to_string()
+}
+
+/// The text the heuristic drops into a template's first section: the user's
+/// notes when present, else the branch's commit subjects.
+fn template_seed(hint: &str, context: &RepoContext) -> String {
+    if !hint.is_empty() {
+        return hint.to_string();
+    }
+    context
+        .commits
+        .iter()
+        .take(10)
+        .map(|subject| format!("- {subject}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Insert `text` under a template's first Markdown heading, leaving the rest of
+/// the template intact. With no heading, the text is prepended.
+fn fill_first_section(template: &str, text: &str) -> String {
+    if text.trim().is_empty() || template.trim().is_empty() {
+        return template.trim().to_string();
+    }
+    let lines: Vec<&str> = template.lines().collect();
+    let Some(heading) = lines
+        .iter()
+        .position(|line| line.trim_start().starts_with('#'))
+    else {
+        return format!("{}\n\n{}", text.trim(), template.trim());
+    };
+    let mut insert_at = heading + 1;
+    while insert_at < lines.len() && lines[insert_at].trim().is_empty() {
+        insert_at += 1;
+    }
+    let mut out: Vec<String> = lines[..insert_at].iter().map(|line| line.to_string()).collect();
+    if out.last().map(|line| !line.trim().is_empty()).unwrap_or(true) {
+        out.push(String::new());
+    }
+    for line in text.trim().lines() {
+        out.push(line.to_string());
+    }
+    if lines
+        .get(insert_at)
+        .map(|line| !line.trim().is_empty())
+        .unwrap_or(false)
+    {
+        out.push(String::new());
+    }
+    for line in &lines[insert_at..] {
+        out.push(line.to_string());
+    }
+    out.join("\n").trim_end().to_string()
 }
 
 /// Strip a list marker, a leading type prefix, and trailing punctuation so a
@@ -566,7 +649,7 @@ mod tests {
             commits: vec!["feat: a".into()],
             changed: vec!["src/lib.rs | 2 +-".into()],
         };
-        let prompt = user_prompt(DraftKind::PullRequest, "notes here", &context);
+        let prompt = user_prompt(DraftKind::PullRequest, "notes here", &context, None);
         assert!(prompt.contains("Repository name: orbit"));
         assert!(prompt.contains("Target base branch: main"));
         assert!(prompt.contains("<user-notes>"));
@@ -575,8 +658,48 @@ mod tests {
         assert!(prompt.contains("src/lib.rs | 2 +-"));
         assert!(prompt.contains("ONLY return a single markdown code block"));
 
-        let system = system_prompt(DraftKind::Issue);
+        let system = system_prompt(DraftKind::Issue, false);
         assert!(system.contains("GitHub issue"));
         assert!(system.contains("EXACTLY one fenced"));
+        assert!(!system.contains("REPOSITORY TEMPLATE"));
+    }
+
+    #[test]
+    fn template_is_embedded_and_filled_faithfully() {
+        let template = RepoTemplate {
+            name: "Bug report".into(),
+            path: ".github/ISSUE_TEMPLATE/bug_report.yml".into(),
+            body: "### What happened?\n\n<!-- describe -->\n\n### Steps\n\n- [ ] searched\n".into(),
+            title_prefix: Some("bug: ".into()),
+            labels: vec!["bug".into()],
+        };
+        let context = RepoContext {
+            repo: "orbit".into(),
+            commits: vec!["fix: guard input".into()],
+            ..RepoContext::default()
+        };
+        let prompt = user_prompt(DraftKind::Issue, "the button is broken", &context, Some(&template));
+        assert!(prompt.contains("<template name=\"Bug report\">"), "{prompt}");
+        assert!(prompt.contains("### What happened?"));
+        assert!(prompt.contains("Fill in the REPOSITORY TEMPLATE"));
+
+        let system = system_prompt(DraftKind::Issue, true);
+        assert!(system.contains("REPOSITORY TEMPLATE"));
+        assert!(system.contains("checkbox"));
+
+        // The heuristic drops the notes under the first heading, keeping the
+        // rest of the template.
+        let filled = fill_first_section(&template.body, "the button is broken");
+        assert!(filled.starts_with("### What happened?\n\nthe button is broken"));
+        assert!(filled.contains("- [ ] searched"));
+    }
+
+    #[test]
+    fn fill_first_section_prepends_without_a_heading() {
+        assert_eq!(
+            fill_first_section("no headings here", "some notes"),
+            "some notes\n\nno headings here"
+        );
+        assert_eq!(fill_first_section("body", ""), "body");
     }
 }

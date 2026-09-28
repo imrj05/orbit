@@ -37,6 +37,24 @@ commits (against the chosen base for a PR), and its changed-file stat — never 
 the working tree or the active session. The model is asked for a single fenced block with
 the title on the first line and a Markdown body below it.
 
+### Repository templates
+
+Both forms discover the repository's own templates (`gh_templates.rs`, mirroring GitHub's
+lookup): the `.github/ISSUE_TEMPLATE/` directory (Markdown templates with YAML front
+matter, and the newer YAML issue forms, `config.yml` skipped) plus the legacy
+single-file locations, and `.github/PULL_REQUEST_TEMPLATE.md` plus its variants. A form
+with exactly one template applies it automatically; with several, a **Template** chip
+opens a picker (including a **Blank** choice). Choosing a template prefills the title
+prefix (`bug: `) and the body skeleton, and **Create** passes the template's `labels:` to
+`gh`. An issue form is flattened into Markdown — each field's label becomes a heading,
+its description a guidance comment, dropdown/checkbox options rendered as comments and
+checkboxes — since Orbit edits plain Markdown rather than GitHub's dynamic form.
+
+The **Generate** prompt hands the model the selected template and asks it to fill every
+heading faithfully, preserving the template's checkboxes and sections. Without pi, the
+heuristic drops the notes (or the branch's commit subjects) into the template's first
+section.
+
 When pi is missing, unauthenticated, or times out, the button falls back to a local
 heuristic: the title comes from the first note line, else the latest commit subject, else
 the branch name read as words; the body lists the branch's commits and changed files under

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The Git page's **Issues** and **Pull requests** forms now discover the repository's own
+  templates (`.github/ISSUE_TEMPLATE/` Markdown and YAML issue forms, plus
+  `.github/PULL_REQUEST_TEMPLATE.md` and its variants). A lone template applies
+  automatically; with several, a **Template** picker (including **Blank**) chooses one.
+  The choice prefills the title prefix and body skeleton — a YAML issue form is flattened
+  into Markdown — and its `labels:` ride along on **Create**.
+
 - The Git page's **Issues** and **Pull requests** forms can now draft their title and
   Markdown body with a **Generate** button. Add optional notes (or leave them blank) and
   Orbit makes the same one-shot, tool-free `pi -p` call the commit-message generator uses,

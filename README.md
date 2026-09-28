@@ -60,7 +60,7 @@ Usage — requests, tokens, cost, and cache, read from your own sessions:
 
 - Side pane with a live `git diff HEAD` of the workspace, refreshed when a run settles
 - Git page for Changes / History / Graph, staging, and commit
-- Git page's Issues and Pull requests tabs: browse and file issues and PRs through `gh`, with an AI **Generate** action that drafts a title and body from the branch, its commits, and optional notes
+- Git page's Issues and Pull requests tabs: browse and file issues and PRs through `gh`, with an AI **Generate** action that drafts a title and body from the branch, its commits, optional notes, and the repository's own issue/PR template
 
 **Workbench**
 

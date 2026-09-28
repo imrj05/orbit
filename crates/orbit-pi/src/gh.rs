@@ -746,6 +746,7 @@ pub fn create_pull(
     body: &str,
     base: &str,
     draft: bool,
+    labels: &[String],
 ) -> Result<String, String> {
     let mut args: Vec<String> = vec![
         "pr".into(),
@@ -761,6 +762,10 @@ pub fn create_pull(
     }
     if draft {
         args.push("--draft".into());
+    }
+    for label in labels {
+        args.push("--label".into());
+        args.push(label.clone());
     }
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     run(cwd, &refs)
