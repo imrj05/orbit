@@ -62,12 +62,12 @@ use super::table::{
 };
 use super::tooltip::Tooltip;
 use crate::app::{
-    button_frame, context_menu_entry, context_menu_separator, context_menu_surface, icon,
-    icon_button_frame, picker_search_frame, press, TipExt, BUTTON_GROUP,
+    button_frame, context_menu_separator, icon, icon_button_frame, picker_entry,
+    picker_search_frame, picker_surface, press, TipExt, BUTTON_GROUP,
 };
 use crate::composer::ComposerInput;
 use crate::theme::tokens::{
-    button, input, popover, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
+    button, input, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
 };
 use crate::theme::{self, Theme};
 
@@ -4438,12 +4438,14 @@ fn session_context_menu(row: &SessionRow, theme: Theme, page: Entity<UsagePage>)
         .into_any_element()
 }
 
-/// The menu shell, on Zed's context-menu metrics ([`context_menu_surface`]),
-/// dismissed by an outside click.
+/// The menu shell, on the branch selector's picker metrics
+/// ([`picker_surface`]), dismissed by an outside click.
 fn context_menu_shell(theme: Theme, page: Entity<UsagePage>, items: Vec<AnyElement>) -> AnyElement {
-    context_menu_surface(div().id("usage-row-menu"), &theme)
+    picker_surface(div().id("usage-row-menu"), &theme)
+        .py(picker::list_padding_y(&theme))
         .flex()
         .flex_col()
+        .gap(DynamicSpacing::Base01.px(&theme))
         .overflow_hidden()
         .occlude()
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -4454,16 +4456,18 @@ fn context_menu_shell(theme: Theme, page: Entity<UsagePage>, items: Vec<AnyEleme
         .into_any_element()
 }
 
-/// One row of a context menu ([`context_menu_entry`]).
+/// One row of a context menu ([`picker_entry`]).
 fn context_item(
     label: String,
     theme: Theme,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    context_menu_entry(div(), &theme)
-        .text_color(theme.text)
+    picker_entry(div(), &theme)
+        .h(picker::entry_height(&theme))
+        .flex_none()
+        .text_color(theme.text_2)
         .cursor_pointer()
-        .hover(|style| style.bg(theme.bg_hover))
+        .hover(|style| style.bg(theme.overlay).text_color(theme.text))
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
             cx.stop_propagation();
             on_click(window, cx);

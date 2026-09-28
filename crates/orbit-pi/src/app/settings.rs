@@ -5937,19 +5937,16 @@ impl OrbitApp {
                                     .h(row_h)
                                     .justify_between()
                                     .cursor_pointer()
-                                    // The keyboard cursor is a wash; the
-                                    // chosen option keeps the fill.
-                                    .when(highlighted_row, |row| row.bg(theme.overlay_strong))
-                                    .when(!highlighted_row && selected_row, |row| {
+                                    // The chosen option keeps the fill; the
+                                    // keyboard cursor rides the same wash.
+                                    .when(highlighted_row || selected_row, |row| {
                                         row.bg(theme.active)
                                     })
                                     .when(!highlighted_row && !selected_row, |row| {
                                         row.hover(|style| style.bg(theme.overlay))
                                     })
-                                    .text_color(if selected_row {
+                                    .text_color(if selected_row || highlighted_row {
                                         theme.active_fg
-                                    } else if highlighted_row {
-                                        theme.text
                                     } else {
                                         theme.text_2
                                     })

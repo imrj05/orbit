@@ -278,10 +278,12 @@ impl OrbitApp {
             );
         }
         // Full width of the chat box, so long paths are never cut.
-        let popup = context_menu_surface(div(), &theme)
+        let popup = picker_surface(div(), &theme)
             .w(px(CONTENT_MAX_W))
+            .py(picker::list_padding_y(&theme))
             .flex()
             .flex_col()
+            .gap(DynamicSpacing::Base01.px(&theme))
             .overflow_hidden()
             .occlude()
             .on_mouse_down_out(cx.listener(Self::on_autocomplete_outside_down))

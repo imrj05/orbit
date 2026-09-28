@@ -1036,6 +1036,8 @@ pub(crate) fn session_menu_popup(
             .w_full()
             .flex()
             .flex_col()
+            .py(picker::list_padding_y(&theme))
+            .gap(DynamicSpacing::Base01.px(&theme))
             .child(menu_item(
                 "menu-pin",
                 "icons/pin.svg",
@@ -1090,9 +1092,9 @@ pub(crate) fn session_menu_popup(
             .into_any_element()
     };
 
-    // Zed's context-menu shell sizes the action list to its entries from a
-    // 200px minimum; the delete confirmation keeps its own fixed card.
-    let popup = context_menu_surface(div(), &theme)
+    // The branch selector's picker shell sizes the action list to its
+    // entries; the delete confirmation keeps its own fixed card.
+    let popup = picker_surface(div(), &theme)
         .when(confirm, |pop| {
             pop.w(px(210.)).p(DynamicSpacing::Base12.px(&theme))
         })
@@ -1656,9 +1658,11 @@ where
     let (hover_bg, text_color, icon_color) = if danger {
         (theme.stop_red_hover, theme.send_fg, theme.send_fg)
     } else {
-        (theme.bg_hover, theme.text_2, theme.text_3)
+        (theme.overlay, theme.text_2, theme.text_3)
     };
-    context_menu_entry(div().id(id), &theme)
+    picker_entry(div().id(id), &theme)
+        .h(picker::entry_height(&theme))
+        .flex_none()
         .cursor_pointer()
         .when(danger, |s| s.bg(theme.stop_red))
         .hover(move |s| s.bg(hover_bg))
@@ -1668,7 +1672,13 @@ where
             this.update(cx, |app, cx| (on_click)(app, cx));
         })
         .child(icon(icon_path, context_menu::ICON.px(&theme), icon_color))
-        .child(label.to_string())
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .child(label.to_string()),
+        )
 }
 
 /// Reveal a session file in the OS file manager (macOS first, matching the

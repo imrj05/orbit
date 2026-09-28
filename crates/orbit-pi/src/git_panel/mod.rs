@@ -25,9 +25,9 @@ use gpui::{
 };
 
 use crate::app::{
-    button_frame, context_menu_entry, context_menu_separator, context_menu_surface, icon,
-    icon_button_frame, input_field_frame, menu_header, nerd_font_family, picker_entry,
-    picker_search_frame, picker_surface, press, refresh_glyph, spinner, TipExt, BUTTON_GROUP,
+    button_frame, context_menu_separator, icon, icon_button_frame, input_field_frame, menu_header,
+    nerd_font_family, picker_entry, picker_search_frame, picker_surface, press, refresh_glyph,
+    spinner, TipExt, BUTTON_GROUP,
 };
 use crate::commit_message;
 use crate::gh;
@@ -1274,8 +1274,8 @@ impl GitPanel {
         list = list.child(
             picker_entry(div().id("git-template-blank"), &theme)
                 .cursor_pointer()
-                .text_color(theme.text)
-                .hover(|s| s.bg(theme.bg_hover))
+                .text_color(theme.text_2)
+                .hover(|s| s.bg(theme.overlay))
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.set_template(target, None, cx)
                 }))
@@ -1308,8 +1308,8 @@ impl GitPanel {
                     &theme,
                 )
                 .cursor_pointer()
-                .text_color(theme.text)
-                .hover(|s| s.bg(theme.bg_hover))
+                .text_color(theme.text_2)
+                .hover(|s| s.bg(theme.overlay))
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.set_template(target, Some(index), cx)
                 }))
@@ -1464,7 +1464,7 @@ impl GitPanel {
                         .cursor_pointer()
                         .when(selected, |row| row.bg(theme.active).text_color(theme.active_fg))
                         .when(!selected, |row| {
-                            row.text_color(theme.text).hover(|s| s.bg(theme.bg_hover))
+                            row.text_color(theme.text_2).hover(|s| s.bg(theme.overlay))
                         })
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.pr_new_base = Some(branch.clone());
@@ -3141,10 +3141,12 @@ impl GitPanel {
         if !self.sync_menu_open {
             return None;
         }
-        let menu = context_menu_surface(div().id("git-sync-popup"), &theme)
+        let menu = picker_surface(div().id("git-sync-popup"), &theme)
             .w(px(200.))
+            .py(picker::list_padding_y(&theme))
             .flex()
             .flex_col()
+            .gap(DynamicSpacing::Base01.px(&theme))
             .occlude()
             .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                 this.sync_menu_open = false;
@@ -3259,10 +3261,12 @@ impl GitPanel {
         if !self.branch_more_open {
             return None;
         }
-        let mut menu = context_menu_surface(div().id("git-branch-more-popup"), &theme)
+        let mut menu = picker_surface(div().id("git-branch-more-popup"), &theme)
             .w(px(220.))
+            .py(picker::list_padding_y(&theme))
             .flex()
             .flex_col()
+            .gap(DynamicSpacing::Base01.px(&theme))
             .occlude()
             .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                 this.dismiss_branch_more(cx);
@@ -4622,13 +4626,15 @@ impl GitPanel {
     /// The per-file actions menu: open, reveal, copy path, file history.
     fn file_actions_menu(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (path, _hash) = self.file_menu.clone()?;
-        let menu = context_menu_surface(div().id("git-file-menu"), &theme)
+        let menu = picker_surface(div().id("git-file-menu"), &theme)
             .absolute()
             .top(px(42.))
             .right(px(12.))
             .w(px(220.))
+            .py(picker::list_padding_y(&theme))
             .flex()
             .flex_col()
+            .gap(DynamicSpacing::Base01.px(&theme))
             .occlude()
             .on_mouse_down_out(
                 cx.listener(|this, _: &MouseDownEvent, _, cx| this.close_file_menu(cx)),
@@ -5510,8 +5516,8 @@ impl GitPanel {
             list = list.child(
                 picker_entry(div().id(id), &theme)
                     .cursor_pointer()
-                    .text_color(theme.text)
-                    .hover(|s| s.bg(theme.bg_hover))
+                    .text_color(theme.text_2)
+                    .hover(|s| s.bg(theme.overlay))
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         if this.issue_detail.is_some() {
                             this.toggle_issue_label(name.clone(), cx);
@@ -6690,7 +6696,7 @@ impl GitPanel {
                 row.bg(theme.active).text_color(theme.active_fg)
             })
             .when(!selected, |row| {
-                row.text_color(theme.text).hover(|s| s.bg(theme.bg_hover))
+                row.text_color(theme.text_2).hover(|s| s.bg(theme.overlay))
             })
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 if selected {
@@ -6764,15 +6770,17 @@ impl GitPanel {
             RefTarget::Rebase => tr!("git_panel.rebase_onto"),
             RefTarget::PrBase => tr!("git_panel.base_branch"),
         };
-        let mut menu = context_menu_surface(div().id("git-ref-menu"), &theme)
+        let mut menu = picker_surface(div().id("git-ref-menu"), &theme)
             .absolute()
             .top(px(42.))
             .right(px(12.))
             .w(px(300.))
             .max_h(px(360.))
+            .py(picker::list_padding_y(&theme))
             .overflow_y_scroll()
             .flex()
             .flex_col()
+            .gap(DynamicSpacing::Base01.px(&theme))
             .occlude()
             .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                 this.close_ref_picker(cx);
@@ -6814,7 +6822,9 @@ impl GitPanel {
         }
         if self.refs.is_empty() {
             menu = menu.child(
-                context_menu_entry(div(), &theme)
+                picker_entry(div(), &theme)
+                    .h(picker::entry_height(&theme))
+                    .flex_none()
                     .text_color(theme.text_3)
                     .child(tr!("git_panel.no_refs")),
             );
@@ -6828,7 +6838,9 @@ impl GitPanel {
             let label = entry.name.clone();
             let id = gpui::ElementId::Name(format!("git-ref-{name}").into());
             menu = menu.child(
-                context_menu_entry(div().id(id), &theme)
+                picker_entry(div().id(id), &theme)
+                    .h(picker::entry_height(&theme))
+                    .flex_none()
                     .cursor_pointer()
                     .text_color(theme.text_2)
                     .hover(|s| s.bg(theme.overlay).text_color(theme.text))
@@ -7301,8 +7313,9 @@ fn recovery_button(action: RecoveryAction, theme: Theme, cx: &Context<GitPanel>)
     )
 }
 
-/// One entry of the Git page's context menus (sync, branch "…", file
-/// actions), on Zed's context menu metrics.
+/// One entry of the Git page's dropdown menus (sync, branch "…", file
+/// actions), on the branch selector's picker metrics: one `picker_entry`
+/// row, `overlay` hover, and the shared menu icon size.
 fn menu_row(
     id: &'static str,
     icon_path: &'static str,
@@ -7311,14 +7324,22 @@ fn menu_row(
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
     press(
-        context_menu_entry(div().id(id).group(BUTTON_GROUP), &theme)
+        picker_entry(div().id(id).group(BUTTON_GROUP), &theme)
+            .h(picker::entry_height(&theme))
+            .flex_none()
             .cursor_pointer()
             .text_color(theme.text_2)
             .hover(|s| s.bg(theme.overlay).text_color(theme.text)),
     )
     .on_click(listener)
     .child(icon(icon_path, context_menu::ICON.px(&theme), theme.text_3))
-    .child(label.to_string())
+    .child(
+        div()
+            .flex_1()
+            .min_w_0()
+            .truncate()
+            .child(label.to_string()),
+    )
     .into_any_element()
 }
 

@@ -23,9 +23,9 @@ use gpui::{
 };
 
 use crate::app::{
-    button_frame, context_menu_entry, context_menu_separator, context_menu_surface, empty_state,
-    file_glyph, icon, icon_button_frame, nerd_font_family, picker_search_frame, refresh_glyph,
-    EmptyFill, TipExt, BUTTON_GROUP, PRESS_DIM,
+    button_frame, context_menu_separator, empty_state, file_glyph, icon, icon_button_frame,
+    nerd_font_family, picker_entry, picker_search_frame, picker_surface, refresh_glyph, EmptyFill,
+    TipExt, BUTTON_GROUP, PRESS_DIM,
 };
 use crate::composer::ComposerInput;
 use crate::diff_view::{
@@ -34,7 +34,9 @@ use crate::diff_view::{
 };
 use crate::git;
 use crate::review::{self, ExpansionDirection, GapPosition, LineKind, Snapshot, Source};
-use crate::theme::tokens::{context_menu, input, popover, ButtonSize, IconSize, Radius, TextSize};
+use crate::theme::tokens::{
+    context_menu, input, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
+};
 use crate::theme::{self, Theme, ThemeMode};
 use crate::usage::tooltip::Tooltip;
 
@@ -1710,14 +1712,16 @@ impl SidePane {
         if !self.source_menu_open {
             return None;
         }
-        let mut menu = context_menu_surface(div().id("review-source-menu"), &theme)
+        let mut menu = picker_surface(div().id("review-source-menu"), &theme)
             .absolute()
             // Below the toolbar's source button.
             .top(menu_top(1. + PANE_ROW_H, ButtonSize::Medium, &theme))
             .left(px(10.))
             .w(px(200.))
+            .py(picker::list_padding_y(&theme))
             .flex()
             .flex_col()
+            .gap(DynamicSpacing::Base01.px(&theme))
             .occlude()
             .on_mouse_down_out(
                 cx.listener(|this, _: &MouseDownEvent, _, cx| this.dismiss_source_menu(cx)),
@@ -1766,12 +1770,14 @@ fn source_row(
     theme: Theme,
     cx: &mut Context<SidePane>,
 ) -> AnyElement {
-    let row = context_menu_entry(
+    let row = picker_entry(
         div().id(gpui::ElementId::Name(
             format!("review-source-{label}").into(),
         )),
         &theme,
     )
+    .h(picker::entry_height(&theme))
+    .flex_none()
     .when(enabled, |row| row.cursor_pointer())
     .when(selected, |row| row.bg(theme.active))
     .when(enabled && !selected, |row| {

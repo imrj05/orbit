@@ -1604,11 +1604,10 @@ impl OrbitApp {
             list = list.child(
                 picker_entry(entry, &theme)
                     .cursor_pointer()
-                    .when(highlighted, |row| row.bg(theme.overlay_strong))
-                    .when(selected && !highlighted, |row| {
-                        row.bg(theme.accent.opacity(0.1))
+                    .when(selected || highlighted, |row| row.bg(theme.active))
+                    .when(!selected && !highlighted, |row| {
+                        row.hover(|style| style.bg(theme.overlay))
                     })
-                    .hover(|style| style.bg(theme.overlay_strong))
                     .on_hover(move |hovered, _, cx| {
                         if *hovered {
                             this.update(cx, |app, cx| {
@@ -1635,8 +1634,8 @@ impl OrbitApp {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .bg(if selected {
-                                theme.accent.opacity(0.16)
+                            .bg(if selected || highlighted {
+                                theme.active_fg.opacity(0.14)
                             } else {
                                 theme.overlay
                             })
@@ -1655,7 +1654,11 @@ impl OrbitApp {
                             .child(
                                 div()
                                     .font_weight(FontWeight::MEDIUM)
-                                    .text_color(if selected { theme.text } else { theme.text_2 })
+                                    .text_color(if selected || highlighted {
+                                        theme.active_fg
+                                    } else {
+                                        theme.text_2
+                                    })
                                     .child(mode.label()),
                             )
                             .child(
@@ -1663,7 +1666,11 @@ impl OrbitApp {
                                     .mt(DynamicSpacing::Base02.px(&theme))
                                     .whitespace_normal()
                                     .text_size(picker::SECONDARY_TEXT.px(&theme))
-                                    .text_color(theme.text_3)
+                                    .text_color(if selected || highlighted {
+                                        theme.active_fg.opacity(0.75)
+                                    } else {
+                                        theme.text_3
+                                    })
                                     .child(mode.description()),
                             ),
                     )
@@ -1677,10 +1684,12 @@ impl OrbitApp {
             );
         }
 
-        let popup = context_menu_surface(div(), &theme)
+        let popup = picker_surface(div(), &theme)
             .w(px(300.))
+            .py(picker::list_padding_y(&theme))
             .flex()
             .flex_col()
+            .gap(DynamicSpacing::Base01.px(&theme))
             .overflow_hidden()
             .occlude()
             .key_context("AccessMenu")
@@ -1791,11 +1800,10 @@ impl OrbitApp {
             list = list.child(
                 picker_entry(entry, &theme)
                     .cursor_pointer()
-                    .when(highlighted, |row| row.bg(theme.overlay_strong))
-                    .when(selected && !highlighted, |row| {
-                        row.bg(theme.accent.opacity(0.1))
+                    .when(selected || highlighted, |row| row.bg(theme.active))
+                    .when(!selected && !highlighted, |row| {
+                        row.hover(|style| style.bg(theme.overlay))
                     })
-                    .hover(|style| style.bg(theme.overlay_strong))
                     .on_hover(move |hovered, _, cx| {
                         if *hovered {
                             this.update(cx, |app, cx| {
@@ -1822,8 +1830,8 @@ impl OrbitApp {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .bg(if selected {
-                                theme.accent.opacity(0.16)
+                            .bg(if selected || highlighted {
+                                theme.active_fg.opacity(0.14)
                             } else {
                                 theme.overlay
                             })
@@ -1842,7 +1850,11 @@ impl OrbitApp {
                             .child(
                                 div()
                                     .font_weight(FontWeight::MEDIUM)
-                                    .text_color(if selected { theme.text } else { theme.text_2 })
+                                    .text_color(if selected || highlighted {
+                                        theme.active_fg
+                                    } else {
+                                        theme.text_2
+                                    })
                                     .child(mode.label()),
                             )
                             .child(
@@ -1850,7 +1862,11 @@ impl OrbitApp {
                                     .mt(DynamicSpacing::Base02.px(&theme))
                                     .whitespace_normal()
                                     .text_size(picker::SECONDARY_TEXT.px(&theme))
-                                    .text_color(theme.text_3)
+                                    .text_color(if selected || highlighted {
+                                        theme.active_fg.opacity(0.75)
+                                    } else {
+                                        theme.text_3
+                                    })
                                     .child(mode.description()),
                             ),
                     )
@@ -1864,10 +1880,12 @@ impl OrbitApp {
             );
         }
 
-        let popup = context_menu_surface(div(), &theme)
+        let popup = picker_surface(div(), &theme)
             .w(px(300.))
+            .py(picker::list_padding_y(&theme))
             .flex()
             .flex_col()
+            .gap(DynamicSpacing::Base01.px(&theme))
             .overflow_hidden()
             .occlude()
             .key_context("WorkflowMenu")
@@ -2032,7 +2050,9 @@ impl OrbitApp {
             let this = this.clone();
             let entry = div().id(ElementId::NamedInteger("add-menu-row".into(), ix as u64));
             list = list.child(
-                context_menu_entry(entry, &theme)
+                picker_entry(entry, &theme)
+                    .h(picker::entry_height(&theme))
+                    .flex_none()
                     .cursor_pointer()
                     .when(highlighted, |row| row.bg(theme.active))
                     .hover(|style| style.bg(theme.overlay))
@@ -2079,9 +2099,11 @@ impl OrbitApp {
             );
         }
 
-        let popup = context_menu_surface(div(), &theme)
+        let popup = picker_surface(div(), &theme)
+            .py(picker::list_padding_y(&theme))
             .flex()
             .flex_col()
+            .gap(DynamicSpacing::Base01.px(&theme))
             .overflow_hidden()
             .occlude()
             // The menu owns the keyboard while open (`AddMenu` bindings in

@@ -10,9 +10,8 @@
 //! object drives every panel on the page (§10).
 
 use crate::app::{
-    button_frame, context_menu_entry, context_menu_separator, context_menu_surface,
-    icon_button_frame, menu_header, picker_search_frame, press, refresh_glyph, TipExt,
-    BUTTON_GROUP,
+    button_frame, context_menu_separator, icon_button_frame, menu_header, picker_entry,
+    picker_search_frame, picker_surface, press, refresh_glyph, TipExt, BUTTON_GROUP,
 };
 use chrono::Datelike;
 use gpui::{
@@ -29,7 +28,7 @@ use super::page::{
 };
 use super::table::FailureSort;
 use crate::theme::tokens::{
-    context_menu, input, list, popover, ButtonSize, DynamicSpacing, IconSize, TextSize,
+    context_menu, input, list, picker, popover, ButtonSize, DynamicSpacing, IconSize, TextSize,
 };
 use crate::theme::Theme;
 use crate::{app::icon, composer::ComposerInput};
@@ -157,8 +156,8 @@ pub fn chip(
     ))
 }
 
-/// The popover shell shared by every filter menu, on Zed's context-menu
-/// metrics ([`context_menu_surface`]). `width` pins menus whose content needs
+/// The popover shell shared by every filter menu, on the branch selector's
+/// picker metrics ([`picker_surface`]). `width` pins menus whose content needs
 /// a definite width (a truncating list, the calendar grid); `None` sizes the
 /// menu to its entries from the shell's minimum. A click outside closes it,
 /// and so does Escape — while a filter menu is open it owns that key, so it can
@@ -171,7 +170,7 @@ fn panel(
     page: Entity<UsagePage>,
 ) -> AnyElement {
     let dismiss_click = page.clone();
-    context_menu_surface(div().id(ElementId::Name(SharedString::from(id))), &theme)
+    picker_surface(div().id(ElementId::Name(SharedString::from(id))), &theme)
         .when_some(width, |menu, width| menu.w(px(width)))
         .flex()
         .flex_col()
@@ -220,10 +219,14 @@ fn row(
     on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
     on_hover: impl Fn(&bool, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    context_menu_entry(div().id(id), &theme)
+    picker_entry(div().id(id), &theme)
+        .h(picker::entry_height(&theme))
+        .flex_none()
         .cursor_pointer()
-        .when(highlighted, |row| row.bg(theme.active))
-        .hover(|style| style.bg(theme.overlay))
+        .when(highlighted || selected, |row| row.bg(theme.active))
+        .when(!highlighted && !selected, |row| {
+            row.hover(|style| style.bg(theme.overlay))
+        })
         .on_hover(on_hover)
         .on_mouse_down(MouseButton::Left, on_click)
         .child(
@@ -251,7 +254,7 @@ fn row(
                 .min_w_0()
                 .truncate()
                 .when(selected, |text| text.font_weight(FontWeight::MEDIUM))
-                .text_color(if highlighted {
+                .text_color(if highlighted || selected {
                     theme.active_fg
                 } else {
                     theme.text_2
@@ -391,7 +394,9 @@ pub fn multi_menu(
     );
     if rows.is_empty() && !query.trim().is_empty() {
         children.push(
-            context_menu_entry(div(), &theme)
+            picker_entry(div(), &theme)
+                .h(picker::entry_height(&theme))
+                .flex_none()
                 .text_color(theme.text_3)
                 .child(
                     div()
