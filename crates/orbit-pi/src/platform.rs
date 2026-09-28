@@ -62,23 +62,74 @@ const OPEN_IN_CATALOG: &[(&str, &str, &[&str])] = &[
     ),
 ];
 
+/// Side of the square app-icon PNG the "open in" menu embeds, in pixels.
+///
+/// The menu draws app icons in an 18px slot (`open_in::APP_ICON`), so 2× the
+/// slot matches what a Retina window blits 1:1. That matters because gpui
+/// paints a raster image with a single bilinear pass and no mipmaps, so the
+/// source has to arrive already downscaled — see [`app_icon_png`].
 #[cfg(target_os = "macos")]
-fn app_icon_for_application_path(
-    application_path: &objc2_foundation::NSString,
-) -> Option<Arc<Image>> {
-    use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSWorkspace};
-    use objc2_foundation::{NSDictionary, NSSize};
+const APP_ICON_PX: usize = 36;
+
+/// Rasterize an app bundle's icon to a `px`×`px` PNG.
+///
+/// `NSWorkspace`'s image carries one bitmap representation per icon size — up
+/// to 2048×2048 — while `-setSize:` only changes the logical size and
+/// `-TIFFRepresentation` hands back the *largest* rep (a 1024×1024 bitmap for
+/// every app in the catalog). Encoding that unchanged is what the menu used to
+/// embed, and a single bilinear tap then had to squeeze it into a 14px slot on
+/// the GPU. Redrawing into a bitmap of exactly `px` pixels instead resamples
+/// once with AppKit's high-quality filter, off the renderer's hot path — and
+/// shrinks each embedded icon from ~1 MB to ~2 KB.#[cfg(target_os = "macos")]
+fn app_icon_png(application_path: &objc2_foundation::NSString, px: usize) -> Option<Vec<u8>> {
+    use objc2::AllocAnyThread;
+    use objc2_app_kit::{
+        NSBitmapImageFileType, NSBitmapImageRep, NSDeviceRGBColorSpace, NSGraphicsContext,
+        NSImageInterpolation, NSWorkspace,
+    };
+    use objc2_foundation::{NSDictionary, NSPoint, NSRect, NSSize};
 
     let image = NSWorkspace::sharedWorkspace().iconForFile(application_path);
-    image.setSize(NSSize::new(32.0, 32.0));
-    let tiff = image.TIFFRepresentation()?;
-    let bitmap_rep = NSBitmapImageRep::imageRepWithData(&tiff)?;
-    let properties = NSDictionary::new();
-    let png_data = unsafe {
-        bitmap_rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &properties)
+
+    let side = px as isize;
+    // SAFETY: `planes` is null so AppKit allocates the buffer, and the rest
+    // describes a standard 8-bit RGBA, non-planar bitmap.
+    let bitmap = unsafe {
+        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+            NSBitmapImageRep::alloc(),
+            std::ptr::null_mut(),
+            side,
+            side,
+            8,
+            4,
+            true,
+            false,
+            NSDeviceRGBColorSpace,
+            0,
+            0,
+        )
     }?;
+    let context = NSGraphicsContext::graphicsContextWithBitmapImageRep(&bitmap)?;
+    // AppKit's own resampler beats the renderer's bilinear tap on icon art.
+    context.setImageInterpolation(NSImageInterpolation::High);
+    context.setShouldAntialias(true);
+
+    NSGraphicsContext::saveGraphicsState_class();
+    NSGraphicsContext::setCurrentContext(Some(&context));
+    image.drawInRect(NSRect::new(
+        NSPoint::ZERO,
+        NSSize::new(px as f64, px as f64),
+    ));
+    NSGraphicsContext::restoreGraphicsState_class();
+
+    let properties = NSDictionary::new();
+    // SAFETY: the properties dictionary is empty and `bitmap` is live.
+    let png_data = unsafe {
+        bitmap.representationUsingType_properties(NSBitmapImageFileType::PNG, &properties)
+    }?;
+    // SAFETY: `png_data` is a live `NSData`.
     let bytes = unsafe { png_data.as_bytes_unchecked() };
-    (!bytes.is_empty()).then(|| Arc::new(Image::from_bytes(gpui::ImageFormat::Png, bytes.to_vec())))
+    (!bytes.is_empty()).then(|| bytes.to_vec())
 }
 
 /// Resolve which catalog apps are installed, with their icons.
@@ -95,11 +146,12 @@ pub fn detect_open_in_apps() -> Vec<ExternalApp> {
                 let application_url = workspace
                     .URLForApplicationWithBundleIdentifier(&NSString::from_str(bundle_id))?;
                 let application_path = application_url.path()?;
+                let bytes = app_icon_png(&application_path, APP_ICON_PX)?;
                 Some(ExternalApp {
                     id,
                     label,
                     target: bundle_id.to_string(),
-                    icon: app_icon_for_application_path(&application_path)?,
+                    icon: Arc::new(Image::from_bytes(gpui::ImageFormat::Png, bytes)),
                 })
             })
         })
@@ -1397,6 +1449,21 @@ mod tests {
             .unwrap();
         assert_eq!(rider.1, "Rider");
         assert_eq!(rider.2, &["com.jetbrains.rider", "com.jetbrains.rider-EAP"]);
+    }
+
+    /// The icon the menu embeds must be exactly the pixel size the 18px slot
+    /// blits 1:1 on a Retina window — not whatever representation AppKit
+    /// happens to hold.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn open_in_app_icon_is_rasterized_at_the_menu_pixel_size() {
+        use objc2_foundation::NSString;
+
+        let path = NSString::from_str("/System/Library/CoreServices/Finder.app");
+        let png = app_icon_png(&path, APP_ICON_PX).expect("Finder always yields an icon");
+        let icon = image::load_from_memory(&png).expect("the rasterizer emits a decodable PNG");
+        assert_eq!(icon.width(), APP_ICON_PX as u32);
+        assert_eq!(icon.height(), APP_ICON_PX as u32);
     }
 
     #[test]

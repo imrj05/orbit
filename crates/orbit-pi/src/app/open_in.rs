@@ -1,6 +1,17 @@
 use super::helpers::*;
 use super::*;
-use crate::theme::tokens::{context_menu, input, picker, popover, ButtonSize, IconSize};
+use crate::theme::tokens::{
+    context_menu, input, picker, popover, ButtonSize, IconSize, BASE_REM_PX,
+};
+
+/// The slot an "open in" app icon draws in: 18px at the default UI scale.
+///
+/// Larger than the 14px [`context_menu::ICON`] a glyph entry uses. App artwork
+/// keeps a ~12% transparent margin and sits in a 31px picker row, so a
+/// glyph-sized slot read as "tiny" next to the 14px label; 18px leaves ~16px of
+/// visible mark. `platform` rasterizes each icon at 2× this slot so a Retina
+/// window blits it 1:1.
+const APP_ICON: IconSize = IconSize::Custom(18. / BASE_REM_PX);
 
 impl OrbitApp {
     /// Resolve installed folder-capable apps once, off-thread.
@@ -134,7 +145,7 @@ impl OrbitApp {
             .active(|s| s.bg(theme.active).text_color(theme.active_fg))
             .child(
                 img(ImageSource::Image(preferred_icon))
-                    .size(ButtonSize::Medium.icon_size().px(&theme))
+                    .size(APP_ICON.px(&theme))
                     .flex_none(),
             )
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_open_in_primary));
@@ -224,7 +235,7 @@ impl OrbitApp {
                 .hover(|style| style.bg(theme.overlay))
                 .child(
                     img(ImageSource::Image(app_icon))
-                        .size(context_menu::ICON.px(&theme))
+                        .size(APP_ICON.px(&theme))
                         .flex_none(),
                 )
                 .child(

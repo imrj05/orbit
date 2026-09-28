@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   choice persists in `~/.orbit-pi/workspaces.json` and each project now records
   when it was added.
 
+### Fixed
+
+- The "open in" menu's app icons are crisp and no longer tiny. macOS returns an
+  icon whose largest representation is 1024×1024, and the menu embedded that PNG
+  unchanged, so the renderer's single bilinear pass had to squeeze it into a
+  14px slot — the blur. Icons are now rasterized to exactly the pixel size the
+  menu draws (36×36 for the now-18px slot, matching a Retina blit 1:1), which
+  also drops each embedded icon from roughly 1 MB to 2 KB.
+
 ## [0.0.19] - 2026-09-28
 
 ### Changed

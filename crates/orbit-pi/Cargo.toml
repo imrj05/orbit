@@ -102,6 +102,10 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std",
     "NSBitmapImageRep",
+    # Rasterizing a detected app's icon into a bitmap rep of the exact pixel
+    # size the "open in" menu draws at (`platform::app_icon_png`).
+    "NSGraphics",
+    "NSGraphicsContext",
     "NSImage",
     "NSImageRep",
     "NSSound",
