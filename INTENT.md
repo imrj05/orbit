@@ -252,6 +252,15 @@ bar, sidebar, transcript copy / diff controls, composer add button, window capti
 buttons, Explorer, Review pane, Git, Usage, terminal, settings, and the picker / dialog
 controls, so no glyph is a guess.
 
+The Git page's **Issues** and **Pull requests** tabs gained a **Generate** action: the
+**New issue** and **New pull request** forms take optional free-form notes, then draft a
+title and Markdown body with the same one-shot, tool-free `pi -p` call the commit-message
+button uses (`issue_message.rs`), falling back to a local heuristic built from the branch's
+commits and changed files when pi is unavailable. Those tabs were also tightened for
+scanning — labels collapse to `+N`, every row ends in a fixed relative-time column, and the
+PR list drops its duplicated state pill — and the PR detail now shares the issue detail's
+reading-column + metadata-rail layout (review, checks, changes, branches, timeline).
+
 Composer sending is configurable in Settings → Agent → Behavior: Enter queues a follow-up
 by default or steers the running task, with Alt/Option+Enter selecting the opposite mode.
 The explicit ⌘⇧Enter / Ctrl+Shift+Enter steering shortcut stays fixed. The choice is a

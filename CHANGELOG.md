@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The Git page's **Issues** and **Pull requests** forms can now draft their title and
+  Markdown body with a **Generate** button. Add optional notes (or leave them blank) and
+  Orbit makes the same one-shot, tool-free `pi -p` call the commit-message generator uses,
+  reading the branch, its commits, and its changed files; when pi is missing or has no
+  credentials it falls back to a local heuristic built from those same facts. Nothing is
+  created until you review the draft and press **Create**.
+
 - Every icon-only button across the app now carries the same native tooltip the
   send / stop button has — a localized label, usually with its keyboard shortcut
   (e.g. `Toggle Terminal (⌘J)`). Covers the top bar, sidebar, transcript copy /

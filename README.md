@@ -60,6 +60,7 @@ Usage — requests, tokens, cost, and cache, read from your own sessions:
 
 - Side pane with a live `git diff HEAD` of the workspace, refreshed when a run settles
 - Git page for Changes / History / Graph, staging, and commit
+- Git page's Issues and Pull requests tabs: browse and file issues and PRs through `gh`, with an AI **Generate** action that drafts a title and body from the branch, its commits, and optional notes
 
 **Workbench**
 
@@ -126,7 +127,7 @@ issue before starting.
 | Workflow modes | Composer | Start a session scoped to **Plan Mode**, **Build Mode**, or **Ask Mode** instead of one undifferentiated chat. | Shipped | — |
 | Follow-up on settle | Transcript | Show a queued follow-up inline once a run ends, not only in the compose queue. | Planned | — |
 | Suggested follow-ups | Transcript | Propose 2–3 context-grounded next prompts as composer inserts after a run settles. | Proposed | [#10](https://github.com/imrj05/orbit/issues/10) |
-| GitHub client | Workbench | Browse and manage remote commits, graph, issues, and pull requests in-app. | In progress — issues and PRs tabs ship today | [#8](https://github.com/imrj05/orbit/issues/8) |
+| GitHub client | Workbench | Browse and manage remote commits, graph, issues, and pull requests in-app. | In progress — issues and PRs tabs ship today, with AI-drafted issue/PR bodies | [#8](https://github.com/imrj05/orbit/issues/8) |
 | Pi extension support | Workbench | First-class list / install / enable / configure / debug of pi extensions, including community ones. | Proposed | [#7](https://github.com/imrj05/orbit/issues/7) |
 | Global default model | Models | Pin pi's global default model and thinking effort from within Orbit. | Proposed | [#9](https://github.com/imrj05/orbit/issues/9) |
 | Voice dictation | Composer | Dictate prompts into the composer. | Planned | — |

@@ -64,6 +64,7 @@ mod git_panel;
 mod highlight;
 mod http;
 mod i18n;
+mod issue_message;
 mod layout;
 mod mentions;
 mod message_scroller;

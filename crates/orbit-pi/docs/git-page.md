@@ -11,8 +11,8 @@ push** row or the top-bar Git affordance; `escape` / **Back** returns.
 | **Changes** | `git status --porcelain` | Staged/unstaged lists with per-file stage/unstage and confirmed discard; Include-unstaged toggle; commit bar (branch menu, conventional-commit input, **Generate**); a collapsible **Stashes** section (stash all, pop, apply, drop). |
 | **History** | `git log` | Commit rows with ref badges, author, relative time, paged. Clicking a row expands it in place: full body, author/committer facts, **Open on GitHub**, copy hash, and the changed files with a per-file actions menu. |
 | **Graph** | `git log --branches HEAD` (plus `--remotes --tags` with **All refs**) | Lane graph laid out by `git::layout_graph`, with the same expandable commit detail as History. |
-| **Issues** | `gh issue …` | Open/Closed/All, search, label filter/picker, **New issue**, list, and a detail view with the rendered Markdown body, comments, a comment composer, **Close/Reopen**, **Edit labels**, and **Open on GitHub**. |
-| **Pull requests** | `gh pr …` | Open/Closed/Merged/All, search, **New pull request** (title, body, base picker, draft), list with CI rollup and review-decision chips, and a detail view with description, checks, commits, changed files, comments, reviews, **Approve** / **Request changes**, **Merge** (method + delete-branch confirm), **Close/Reopen**, and **Checkout branch**. |
+| **Issues** | `gh issue …` | Open/Closed/All, search, label filter/picker, **New issue** (with **Generate**), list, and a detail view with the rendered Markdown body, comments, a comment composer, **Close/Reopen**, **Edit labels**, and **Open on GitHub**. |
+| **Pull requests** | `gh pr …` | Open/Closed/Merged/All, search, **New pull request** (title, body, base picker, draft, **Generate**), list with CI rollup and review-decision chips, and a detail view with description, checks, commits, changed files, comments, reviews, **Approve** / **Request changes**, **Merge** (method + delete-branch confirm), **Close/Reopen**, and **Checkout branch**. |
 
 The Issues and Pull requests tabs only appear when `gh` is installed. A missing
 `gh` or a signed-out CLI renders an honest setup state instead of an empty tab.
@@ -26,6 +26,27 @@ otherwise a quiet "Up to date". Push/pull never touch the message. A blank
 Commit message auto-generates through `commit_message.rs`
 (`pi -p --no-tools --no-session --no-extensions --no-skills --no-context-files`,
 falling back to a local `type(scope): …` heuristic).
+
+## Issue and pull-request draft generation
+
+The **New issue** and **New pull request** forms have a **Generate** button beside their
+heading. An optional **Notes** field steers the draft; leave it blank to infer the subject
+from the repository context. Generation reuses the commit-message pattern: a one-shot,
+tool-free `pi -p` call (`issue_message.rs`) that reads the current branch, the branch's
+commits (against the chosen base for a PR), and its changed-file stat — never writing to
+the working tree or the active session. The model is asked for a single fenced block with
+the title on the first line and a Markdown body below it.
+
+When pi is missing, unauthenticated, or times out, the button falls back to a local
+heuristic: the title comes from the first note line, else the latest commit subject, else
+the branch name read as words; the body lists the branch's commits and changed files under
+`## Summary` / `## What happened`. Either way the result lands in the editable title and
+body fields, and **Create** is still a separate, deliberate press.
+
+The Issues and Pull requests lists are built to scan: labels collapse to a `+N` chip, each
+row ends in a fixed relative-time column, and closed items are de-emphasized. The issue
+detail's reading-column + metadata-rail layout is now shared by the pull-request detail,
+whose rail summarizes review, checks, changes, branches, and the timeline.
 
 The branch chip opens a menu with **Merge branch…**, **Rebase onto…**, every
 local branch (checkout; delete uses safe `-d` first, then a confirmed `-D`),
