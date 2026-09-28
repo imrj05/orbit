@@ -765,6 +765,63 @@ fn quota_popup_scrolls_instead_of_clipping_its_last_card(cx: &mut gpui::TestAppC
     );
 }
 
+/// Hiding a provider removes it from the popover's active list and parks it in
+/// the "Hidden" group, so it stays one click from coming back. The visible
+/// card and the restore card are distinct elements, never the same one.
+#[gpui::test]
+fn quota_popup_moves_hidden_providers_into_their_own_group(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+
+    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(1200.), px(820.)),
+        |_, _| app.clone(),
+    );
+
+    cx.update(|_, cx| {
+        app.update(cx, |app, _cx| {
+            let providers = serde_json::json!({
+                "providers": [
+                    {"provider": "alpha", "kind": "subscription",
+                     "windows": [{"id": "session", "label": "5-hour session", "usedPercent": 10.0, "resetsAt": 1}]},
+                    {"provider": "beta", "kind": "subscription",
+                     "windows": [{"id": "session", "label": "5-hour session", "usedPercent": 20.0, "resetsAt": 1}]}
+                ]
+            });
+            app.quota.on_response(true, Some(&providers), None);
+            app.hidden_quota_providers =
+                crate::quota_hidden::HiddenProviders::from_providers(&["beta"]);
+            app.quota_popup_open = true;
+            app.quota_hidden_open = true;
+        });
+    });
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(1200.), px(820.)),
+        |_, _| app.clone(),
+    );
+
+    assert!(
+        cx.debug_bounds("quota-card-visible-alpha").is_some(),
+        "the visible provider card is missing"
+    );
+    assert!(
+        cx.debug_bounds("quota-card-visible-beta").is_none(),
+        "a hidden provider still drew in the active list"
+    );
+    assert!(
+        cx.debug_bounds("quota-card-hidden-beta").is_some(),
+        "the hidden provider is missing from the Hidden group"
+    );
+    assert!(
+        cx.debug_bounds("quota-hidden-toggle").is_some(),
+        "the Hidden group toggle is missing"
+    );
+}
+
 // ── model / thinking pickers lock while a run is in flight ────────────
 
 /// A running turn fixes the model and thinking level, so the chips swallow

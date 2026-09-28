@@ -30,6 +30,10 @@ const QUOTA_POPOVER_W: f32 = 320.;
 /// Largest total height of the quota popover before its card list scrolls.
 const QUOTA_POPOVER_MAX_H: f32 = 460.;
 
+/// How much a hidden provider card is dimmed inside the popover's "Hidden"
+/// group: present and readable, but visibly out of the active list.
+const HIDDEN_CARD_DIM: f32 = 0.6;
+
 impl OrbitApp {
     /// True while a run is in flight (busy flag or a streaming transcript).
     pub(super) fn is_running(&self) -> bool {
@@ -1497,7 +1501,14 @@ impl OrbitApp {
         let this = cx.entity();
 
         let reports = self.quota.reports();
-        let count = reports.len();
+        // The user's hide list only shapes the popover; Settings still shows
+        // every connected provider. Split once so the header count and the
+        // "Hidden" group agree, and so a hidden provider is one click back.
+        let hidden = &self.hidden_quota_providers;
+        let (visible, hidden_reports): (Vec<&QuotaReport>, Vec<&QuotaReport>) = reports
+            .into_iter()
+            .partition(|report| !hidden.contains(&report.provider));
+        let count = visible.len();
         // One glyph that turns in place instead of swapping to a loader, so
         // the click never changes the control's shape. Active, it wears the
         // accent; idle, the shared hover group lifts its ink. Reduce Motion
@@ -1556,7 +1567,7 @@ impl OrbitApp {
         // same reason the model picker's list carries its own `max_h`).
         // Ordinary children keep it independent of measured-layout sizing.
         let header_h = ButtonSize::Medium.height(&theme) + px(21.);
-        let cards = div()
+        let mut cards = div()
             .id("quota-popup-body")
             .debug_selector(|| "quota-popup-body".to_string())
             .w_full()
@@ -1566,11 +1577,18 @@ impl OrbitApp {
             .flex()
             .flex_col()
             .gap(px(8.))
-            .children(
-                reports
-                    .iter()
-                    .map(|report| quota_provider_card(self, report, theme)),
-            );
+            .children(visible.iter().map(|report| {
+                quota_provider_card(
+                    self,
+                    report,
+                    theme,
+                    false,
+                    Some(self.quota_visibility_button(&report.provider, false, cx)),
+                )
+            }));
+        if !hidden_reports.is_empty() {
+            cards = cards.child(self.quota_hidden_section(&hidden_reports, theme, cx));
+        }
 
         let popup = div()
             .debug_selector(|| "quota-popup".to_string())
@@ -1620,6 +1638,120 @@ impl OrbitApp {
                 )
                 .into_any_element(),
         )
+    }
+
+    /// The eye toggle on a provider card in the top-bar quota popover: hides
+    /// the provider from the list, or restores one from the "Hidden" group.
+    /// A Compact glyph so it sits inside a card header without inflating the
+    /// row. The element id varies with the state so the visible and hidden
+    /// forms never collide.
+    fn quota_visibility_button(
+        &self,
+        provider: &str,
+        hidden: bool,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let theme = *theme::get(cx);
+        let (path, label) = if hidden {
+            ("icons/eye.svg", tr!("session.show_provider"))
+        } else {
+            ("icons/eye-off.svg", tr!("session.hide_provider"))
+        };
+        let id = SharedString::from(format!(
+            "quota-{}-{provider}",
+            if hidden { "show" } else { "hide" }
+        ));
+        let provider = provider.to_string();
+        icon_button_frame(div().id(id), &theme, ButtonSize::Compact)
+            .cursor_pointer()
+            .hover(|style| style.bg(theme.bg_hover))
+            .active(|style| style.opacity(PRESS_DIM))
+            .tooltip({
+                let label = label.clone();
+                move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
+            })
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(
+                    move |this: &mut Self,
+                          _: &MouseUpEvent,
+                          _: &mut Window,
+                          cx: &mut Context<Self>| {
+                        this.hidden_quota_providers.toggle(&provider);
+                        this.hidden_quota_providers.persist();
+                        cx.notify();
+                    },
+                ),
+            )
+            .child(icon(
+                path,
+                ButtonSize::Compact.icon_size().px(&theme),
+                theme.text_3,
+            ))
+            .into_any_element()
+    }
+
+    /// The folded "Hidden" group at the foot of the top-bar quota popover.
+    /// Lists the providers the user removed from the list, each with a restore
+    /// button, so hiding is a one-click round trip rather than a config hunt.
+    /// A header row carries the count and folds the group.
+    fn quota_hidden_section(
+        &self,
+        reports: &[&QuotaReport],
+        theme: Theme,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let open = self.quota_hidden_open;
+        let chevron = if open {
+            "icons/chevron-down.svg"
+        } else {
+            "icons/chevron-right.svg"
+        };
+        let mut group = div()
+            .debug_selector(|| "quota-hidden".to_string())
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(
+                div()
+                    .id("quota-hidden-toggle")
+                    .debug_selector(|| "quota-hidden-toggle".to_string())
+                    .w_full()
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .px(px(4.))
+                    .py(px(2.))
+                    .rounded(Radius::Small.px(&theme))
+                    .hover(|style| style.bg(theme.bg_hover))
+                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_quota_hidden_toggle))
+                    .child(icon(chevron, IconSize::XSmall.px(&theme), theme.text_3))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(TextSize::XSmall.px(&theme))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text_3)
+                            .child(tr!("session.hidden_providers", count = reports.len())),
+                    ),
+            );
+        if open {
+            group = group.children(reports.iter().map(|report| {
+                div()
+                    .w_full()
+                    .opacity(HIDDEN_CARD_DIM)
+                    .child(quota_provider_card(
+                        self,
+                        report,
+                        theme,
+                        true,
+                        Some(self.quota_visibility_button(&report.provider, true, cx)),
+                    ))
+            }));
+        }
+        group.into_any_element()
     }
 
     /// Re-fetch account quota on demand from the popover's refresh button.
@@ -1712,6 +1844,17 @@ impl OrbitApp {
         if self.quota_popup_open {
             self.session_details_open = false;
         }
+        cx.notify();
+    }
+
+    /// Fold or unfold the popover's "Hidden" provider group.
+    pub(super) fn on_quota_hidden_toggle(
+        &mut self,
+        _: &MouseUpEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.quota_hidden_open = !self.quota_hidden_open;
         cx.notify();
     }
 
@@ -2266,8 +2409,15 @@ fn quota_reset_hint(resets_at: i64, now_ms: i64) -> String {
 /// the provider's mark, plan, windows, and balances, with the meter and its
 /// countdown beside every window. Provider-independent: it renders whatever
 /// the normalized report carries (windows, balances, note, error) and names
-/// the provider by id only, never a bespoke label.
-fn quota_provider_card(app: &OrbitApp, report: &QuotaReport, theme: Theme) -> AnyElement {
+/// the provider by id only, never a bespoke label. `action` is the caller's
+/// hide/show toggle, dropped into the header's trailing edge.
+fn quota_provider_card(
+    app: &OrbitApp,
+    report: &QuotaReport,
+    theme: Theme,
+    hidden: bool,
+    action: Option<AnyElement>,
+) -> AnyElement {
     let name = providers::provider_display_name(&report.provider);
     let amount = quota_amount;
 
@@ -2294,11 +2444,20 @@ fn quota_provider_card(app: &OrbitApp, report: &QuotaReport, theme: Theme) -> An
         header =
             header.child(app.provider_badge(plan, theme.accent, theme.accent.opacity(0.12), theme));
     }
+    if let Some(action) = action {
+        header = header.child(action);
+    }
 
     // The card fill is the ink wash rather than `bg_raised`: most palettes
     // set `menu_bg == bg_raised`, where a raised fill would vanish inside
     // the popup. The wash steps off any surface in every palette.
+    let card_selector = format!(
+        "quota-card-{}-{}",
+        if hidden { "hidden" } else { "visible" },
+        report.provider
+    );
     let mut block = div()
+        .debug_selector(move || card_selector.clone())
         .w_full()
         .rounded(Radius::Large.px(&theme))
         .border_1()

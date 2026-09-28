@@ -77,6 +77,7 @@ mod platform;
 mod plugins;
 mod providers;
 mod quota;
+mod quota_hidden;
 mod review;
 mod rpc_patches;
 mod session_defaults;

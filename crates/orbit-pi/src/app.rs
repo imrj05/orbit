@@ -521,6 +521,14 @@ pub struct OrbitApp {
     /// When the in-flight manual refresh started, so its spin is kept visible
     /// for a minimum duration even if the reply is immediate.
     quota_refresh_started: Option<Instant>,
+    /// Whether the top-bar quota popover's "Hidden" group is expanded. The
+    /// group lists providers the user hid from the list, so a mistoggle is
+    /// one click to undo.
+    quota_hidden_open: bool,
+    /// Providers the user hid from the top-bar usage popover, from
+    /// `~/.orbit-pi/hidden-quota-providers.json`, loaded at launch. The
+    /// popover filters its cards against this; Settings still shows them.
+    hidden_quota_providers: crate::quota_hidden::HiddenProviders,
     /// The `sessionId` pi reports for the active session (its task id).
     session_id: Option<String>,
     /// Current agent turn number for this session (0 = none yet).
@@ -1180,6 +1188,8 @@ impl OrbitApp {
             quota_popup_open: false,
             quota_refreshing: false,
             quota_refresh_started: None,
+            quota_hidden_open: false,
+            hidden_quota_providers: crate::quota_hidden::HiddenProviders::load(),
             session_id: None,
             turn_count: 0,
             turn_open: false,
