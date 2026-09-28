@@ -1108,6 +1108,7 @@ impl GitPanel {
         self.pr_generating = false;
         self.pr_detail = None;
         self.template_menu = None;
+        self.ref_menu = None;
         if self.pr_templates.is_empty() {
             self.refresh_templates(cx);
         }
@@ -1232,6 +1233,9 @@ impl GitPanel {
             .into_any_element()
     }
 
+    /// The repository-template picker, styled like the top branch selector
+    /// (picker surface, list inset, one picker row per entry) and anchored to
+    /// the chip that opened it.
     fn template_picker_popup(
         &self,
         theme: Theme,
@@ -1249,38 +1253,33 @@ impl GitPanel {
             DraftForm::Issue => "git-issue-template-menu",
             DraftForm::PullRequest => "git-pr-template-menu",
         };
-        let mut menu = context_menu_surface(div().id(id), &theme)
-            .absolute()
-            .left(px(0.))
-            .w(px(300.))
-            .max_h(px(320.))
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .occlude()
-            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                this.template_menu = None;
-                cx.notify();
-            }))
-            .child(menu_header(tr!("git_panel.template"), &theme));
-
-        // Anchor to the chip: the issue form's chip sits near the top, so the
-        // menu opens downward; the PR form's chip sits at the bottom, so it
-        // opens upward instead of being clipped by the scroll container.
-        menu = match target {
-            DraftForm::Issue => menu.top(px(30.)),
-            DraftForm::PullRequest => menu.bottom(px(30.)),
+        let scroll_id = match target {
+            DraftForm::Issue => "git-issue-template-scroll",
+            DraftForm::PullRequest => "git-pr-template-scroll",
         };
 
-        menu = menu.child(
-            context_menu_entry(div().id("git-template-blank"), &theme)
+        let mut list = div()
+            .id(scroll_id)
+            .w_full()
+            .max_h(px(300.))
+            .overflow_y_scroll()
+            .py(picker::list_padding_y(&theme))
+            .flex()
+            .flex_col();
+        list = list.child(
+            picker_entry(div().id("git-template-blank"), &theme)
                 .cursor_pointer()
-                .hover(|s| s.bg(theme.overlay))
-                .on_click(
-                    cx.listener(move |this, _: &ClickEvent, _, cx| this.set_template(target, None, cx)),
-                )
-                .child(tr!("git_panel.template_blank"))
-                .child(div().flex_1())
+                .text_color(theme.text)
+                .hover(|s| s.bg(theme.bg_hover))
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.set_template(target, None, cx)
+                }))
+                .child(icon(
+                    "icons/file.svg",
+                    context_menu::ICON.px(&theme),
+                    theme.text_3,
+                ))
+                .child(div().flex_1().min_w_0().child(tr!("git_panel.template_blank")))
                 .when(current.is_none(), |row| {
                     row.child(icon(
                         "icons/check.svg",
@@ -1290,38 +1289,46 @@ impl GitPanel {
                 }),
         );
         if templates.is_empty() {
-            menu = menu.child(
-                context_menu_entry(div(), &theme)
+            list = list.child(
+                picker_entry(div(), &theme)
                     .text_color(theme.text_3)
                     .child(tr!("git_panel.template_none")),
             );
         }
         for (index, template) in templates.iter().enumerate() {
             let selected = current == Some(index);
-            menu = menu.child(
-                context_menu_entry(
+            list = list.child(
+                picker_entry(
                     div().id(gpui::ElementId::Name(format!("git-template-{index}").into())),
                     &theme,
                 )
                 .cursor_pointer()
-                .hover(|s| s.bg(theme.overlay))
+                .text_color(theme.text)
+                .hover(|s| s.bg(theme.bg_hover))
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.set_template(target, Some(index), cx)
                 }))
+                .child(icon(
+                    "icons/file.svg",
+                    context_menu::ICON.px(&theme),
+                    theme.text_3,
+                ))
                 .child(
                     div()
+                        .flex_1()
+                        .min_w_0()
                         .flex()
                         .flex_col()
-                        .gap(DynamicSpacing::Base03.px(&theme))
                         .child(template.label())
                         .child(
                             div()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
                                 .text_size(TextSize::XSmall.px(&theme))
                                 .text_color(theme.text_3)
                                 .child(template.path.clone()),
                         ),
                 )
-                .child(div().flex_1())
                 .when(selected, |row| {
                     row.child(icon(
                         "icons/check.svg",
@@ -1331,6 +1338,180 @@ impl GitPanel {
                 }),
             );
         }
+
+        let menu = picker_surface(div().id(id), &theme)
+            .absolute()
+            .left(px(0.))
+            .w(px(320.))
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .occlude()
+            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                this.template_menu = None;
+                cx.notify();
+            }))
+            .child(menu_header(tr!("git_panel.template"), &theme))
+            .child(list);
+        // Anchor to the chip: the issue form's chip sits near the top, so the
+        // menu opens downward; the PR form's chip sits at the bottom, so it
+        // opens upward instead of being clipped by the scroll container.
+        let menu = match target {
+            DraftForm::Issue => menu.top(px(30.)),
+            DraftForm::PullRequest => menu.bottom(px(30.)),
+        };
+        Some(menu.into_any_element())
+    }
+
+    /// A base-branch chip that owns its popover, mirroring [`Self::template_selector`]
+    /// so the picker anchors to the chip.
+    fn base_branch_selector(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let label = self
+            .pr_new_base
+            .clone()
+            .unwrap_or_else(|| tr!("git_panel.choose_base"));
+        let popup = if self.ref_menu == Some(RefTarget::PrBase) {
+            self.pr_base_popup(theme, cx)
+        } else {
+            None
+        };
+        div()
+            .relative()
+            .flex()
+            .child(filter_toggle_chip(
+                "git-pr-new-base",
+                &label,
+                Some("icons/branch.svg"),
+                false,
+                theme,
+                cx.listener(|this, _: &ClickEvent, window, cx| {
+                    // mouse-down-out closes the picker; the chip's mouse-up would
+                    // otherwise toggle it straight back open on the same gesture
+                    // (see AGENT.md popovers).
+                    const GESTURE: Duration = Duration::from_millis(200);
+                    if let Some(dismissed) = this.menu_dismissed_at.take() {
+                        if dismissed.elapsed() < GESTURE {
+                            return;
+                        }
+                    }
+                    let opening = this.ref_menu != Some(RefTarget::PrBase);
+                    this.ref_menu = if opening {
+                        Some(RefTarget::PrBase)
+                    } else {
+                        None
+                    };
+                    if opening {
+                        this.clear_branch_filter(cx);
+                        window.focus(&this.branch_filter.read(cx).focus_handle(cx));
+                    }
+                    cx.notify();
+                }),
+            ))
+            .children(popup)
+            .into_any_element()
+    }
+
+    /// The New-PR base picker, styled and anchored like the top branch
+    /// selector: a search row over the repository's local branches.
+    fn pr_base_popup(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.ref_menu != Some(RefTarget::PrBase) {
+            return None;
+        }
+        let needle = self.branch_filter.read(cx).text().trim().to_lowercase();
+        let matches = |name: &str| needle.is_empty() || name.to_lowercase().contains(&needle);
+        let current = self.pr_new_base.clone();
+        let mut locals: Vec<String> = self
+            .refs
+            .iter()
+            .filter(|entry| entry.kind == git::RefKind::Branch && matches(entry.name.as_str()))
+            .map(|entry| entry.name.clone())
+            .collect();
+        locals.sort_by_key(|name| name.to_lowercase());
+
+        let mut list = div()
+            .id("git-pr-base-scroll")
+            .w_full()
+            .max_h(px(320.))
+            .overflow_y_scroll()
+            .py(picker::list_padding_y(&theme))
+            .flex()
+            .flex_col();
+        if locals.is_empty() {
+            list = list.child(
+                picker_entry(div(), &theme)
+                    .text_color(theme.text_3)
+                    .child(tr!("git_panel.no_matching_branches")),
+            );
+        } else {
+            list = list.child(branch_section_label(
+                &tr!("git_panel.local_branches"),
+                theme,
+            ));
+            for name in locals {
+                let selected = current.as_deref() == Some(name.as_str());
+                let branch = name.clone();
+                let id = gpui::ElementId::Name(format!("git-pr-base-{name}").into());
+                list = list.child(
+                    picker_entry(div().id(id), &theme)
+                        .cursor_pointer()
+                        .when(selected, |row| row.bg(theme.active).text_color(theme.active_fg))
+                        .when(!selected, |row| {
+                            row.text_color(theme.text).hover(|s| s.bg(theme.bg_hover))
+                        })
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.pr_new_base = Some(branch.clone());
+                            this.close_ref_picker(cx);
+                        }))
+                        .child(icon(
+                            "icons/branch.svg",
+                            context_menu::ICON.px(&theme),
+                            if selected {
+                                theme.active_fg
+                            } else {
+                                theme.text_3
+                            },
+                        ))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .flex_1()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .child(name.clone()),
+                        )
+                        .when(selected, |row| {
+                            row.child(icon(
+                                "icons/check.svg",
+                                context_menu::ICON.px(&theme),
+                                theme.active_fg,
+                            ))
+                        }),
+                );
+            }
+        }
+
+        let menu = picker_surface(div().id("git-pr-base-menu"), &theme)
+            .absolute()
+            .bottom(px(30.))
+            .left(px(0.))
+            .w(px(320.))
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .occlude()
+            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                this.close_ref_picker(cx);
+            }))
+            .child(
+                picker_search_frame(div(), &theme)
+                    .child(icon(
+                        "icons/search.svg",
+                        input::ICON.px(&theme),
+                        theme.text_3,
+                    ))
+                    .child(div().flex_1().min_w_0().child(self.branch_filter.clone())),
+            )
+            .child(list);
         Some(menu.into_any_element())
     }
 
@@ -2068,6 +2249,7 @@ impl GitPanel {
             self.pr_generating = false;
             self.label_menu_open = false;
             self.template_menu = None;
+            self.ref_menu = None;
             cx.notify();
         }
         had
@@ -6122,10 +6304,6 @@ impl GitPanel {
     }
 
     fn pr_new_view(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
-        let base_label = self
-            .pr_new_base
-            .clone()
-            .unwrap_or_else(|| tr!("git_panel.choose_base"));
         let generate_leading = if self.pr_generating {
             spinner(
                 "git-pr-generate-spinner",
@@ -6192,17 +6370,7 @@ impl GitPanel {
                             .text_color(theme.text_3)
                             .child(tr!("git_panel.base_branch")),
                     )
-                    .child(filter_toggle_chip(
-                        "git-pr-new-base",
-                        &base_label,
-                        Some("icons/branch.svg"),
-                        false,
-                        theme,
-                        cx.listener(|this, _: &ClickEvent, _, cx| {
-                            this.ref_menu = Some(RefTarget::PrBase);
-                            cx.notify();
-                        }),
-                    ))
+                    .child(self.base_branch_selector(theme, cx))
                     .child(filter_toggle_chip(
                         "git-pr-new-draft",
                         &tr!("git_panel.pr_draft"),
@@ -6532,6 +6700,12 @@ impl GitPanel {
     /// The ref picker opened by "Merge branch…" / "Rebase onto…".
     fn ref_picker_popup(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let target = self.ref_menu?;
+        // The New-PR base picker is rendered inside the form, anchored to its
+        // chip (see [`Self::base_branch_selector`]); this page-level popup only
+        // serves the Merge / Rebase targets launched from the branch bar.
+        if target == RefTarget::PrBase {
+            return None;
+        }
         let title = match target {
             RefTarget::Merge => tr!("git_panel.merge_branch"),
             RefTarget::Rebase => tr!("git_panel.rebase_onto"),
