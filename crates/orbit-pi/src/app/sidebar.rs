@@ -6,7 +6,7 @@ use gpui::{point, Pixels};
 use crate::sessions::cap_chars;
 use crate::shimmer::ShimmerText;
 use crate::theme::tokens::{
-    context_menu, list_item, popover, BufferLineHeight, ButtonSize, DynamicSpacing, IconSize,
+    context_menu, list_item, picker, popover, BufferLineHeight, ButtonSize, DynamicSpacing, IconSize,
     TextSize,
 };
 
@@ -1284,15 +1284,20 @@ pub(crate) fn sidebar_sort_button(
         }))
 }
 
-/// The workspace-sort menu, anchored below the Projects sort button. Follows
-/// the same deferred + anchored convention as the row-action popups; an
-/// outside mouse-down dismisses it.
+/// Width of the workspace-sort popover. Matches the branch picker's compact
+/// picker width so the two dropdowns read as the same control.
+const SORT_POPOVER_W: f32 = 280.;
+
+/// The workspace-sort menu, anchored below the Projects sort button. Uses the
+/// picker surface (search-less) and `picker_entry` rows so it matches the
+/// branch selector; an outside mouse-down dismisses it.
 pub(crate) fn sidebar_sort_popup(
     sort: WorkspaceSort,
     this: Entity<OrbitApp>,
     theme: Theme,
 ) -> AnyElement {
-    let popup = context_menu_surface(div(), &theme)
+    let popup = picker_surface(div(), &theme)
+        .w(px(SORT_POPOVER_W))
         .flex()
         .flex_col()
         .overflow_hidden()
@@ -1309,10 +1314,18 @@ pub(crate) fn sidebar_sort_popup(
                 })
             }
         })
-        .children(
-            WorkspaceSort::ALL
-                .into_iter()
-                .map(|option| sidebar_sort_item(option, sort, this.clone(), theme)),
+        .child(menu_header(tr!("sidebar.sort"), &theme).pt(picker::list_padding_y(&theme)))
+        .child(
+            div()
+                .py(picker::list_padding_y(&theme))
+                .flex()
+                .flex_col()
+                .gap(DynamicSpacing::Base01.px(&theme))
+                .children(
+                    WorkspaceSort::ALL
+                        .into_iter()
+                        .map(|option| sidebar_sort_item(option, sort, this.clone(), theme)),
+                ),
         );
 
     anchored()
@@ -1327,9 +1340,10 @@ pub(crate) fn sidebar_sort_popup(
         .into_any_element()
 }
 
-/// One workspace-sort menu entry: a leading mode glyph, the label, and a
-/// trailing check when the mode is active. Selecting any entry switches the
-/// mode and closes the menu.
+/// One workspace-sort menu entry, on the picker row metrics the branch
+/// selector uses: a leading mode glyph, the label, and a trailing check when
+/// the mode is active. Selecting any entry switches the mode and closes the
+/// menu.
 fn sidebar_sort_item(
     option: WorkspaceSort,
     active: WorkspaceSort,
@@ -1337,23 +1351,39 @@ fn sidebar_sort_item(
     theme: Theme,
 ) -> impl IntoElement {
     let is_active = option == active;
-    context_menu_entry(div().id(option.as_str()), &theme)
+    picker_entry(div().id(option.as_str()), &theme)
+        .h(picker::entry_height(&theme))
+        .flex_none()
         .cursor_pointer()
-        .hover(|s| s.bg(theme.bg_hover))
-        .text_color(if is_active { theme.text } else { theme.text_2 })
-        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+        .when(is_active, |row| row.bg(theme.active))
+        .when(!is_active, |row| row.hover(|s| s.bg(theme.overlay)))
+        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
             cx.stop_propagation();
             this.update(cx, |app, cx| app.set_workspace_sort(option, cx));
         })
         .child(icon(
             option.icon_path(),
             context_menu::ICON.px(&theme),
-            theme.text_3,
+            if is_active {
+                theme.active_fg
+            } else {
+                theme.text_3
+            },
         ))
-        .child(tr!(option.label_key()))
-        .child(div().flex_1())
-        .when(is_active, |el| {
-            el.child(icon(
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_color(if is_active {
+                    theme.active_fg
+                } else {
+                    theme.text_2
+                })
+                .child(tr!(option.label_key())),
+        )
+        .when(is_active, |row| {
+            row.child(icon(
                 "icons/check.svg",
                 context_menu::ICON.px(&theme),
                 theme.accent,
