@@ -4916,6 +4916,15 @@ impl GitPanel {
                     "icons/chevron-down.svg",
                     theme,
                     cx.listener(|this, _: &ClickEvent, _, cx| {
+                        // mouse-down-out closes the popup; the chip's mouse-up
+                        // would otherwise toggle it straight back open on the
+                        // same gesture (see AGENT.md popovers).
+                        const GESTURE: Duration = Duration::from_millis(200);
+                        if let Some(dismissed) = this.menu_dismissed_at.take() {
+                            if dismissed.elapsed() < GESTURE {
+                                return;
+                            }
+                        }
                         this.label_menu_open = !this.label_menu_open;
                         cx.notify();
                     }),
@@ -5274,6 +5283,15 @@ impl GitPanel {
                     self.issue_busy,
                     theme,
                     cx.listener(|this, _: &ClickEvent, _, cx| {
+                        // mouse-down-out closes the popup; the button's mouse-up
+                        // would otherwise toggle it straight back open on the
+                        // same gesture (see AGENT.md popovers).
+                        const GESTURE: Duration = Duration::from_millis(200);
+                        if let Some(dismissed) = this.menu_dismissed_at.take() {
+                            if dismissed.elapsed() < GESTURE {
+                                return;
+                            }
+                        }
                         this.label_menu_open = !this.label_menu_open;
                         cx.notify();
                     }),
@@ -5544,6 +5562,9 @@ impl GitPanel {
             .occlude()
             .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
                 this.label_menu_open = false;
+                // Arm the gesture guard so the same click's mouse-up on the
+                // trigger cannot immediately re-open the popup.
+                this.menu_dismissed_at = Some(Instant::now());
                 cx.notify();
             }))
             .child(menu_header(tr!("git_panel.labels"), &theme))

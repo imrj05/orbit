@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Settings pickers now share the same row treatment. Right-click context
   menus stay compact.
 
+### Fixed
+
+- The Issue page's **Label** dropdown now closes when its trigger is clicked a
+  second time. The popup dismissed on mouse-down and the trigger's mouse-up
+  re-opened it on the same click; the trigger now honors the same gesture
+  guard every other dropdown uses.
+
 ## [0.2.0] - 2026-09-28
 
 ### Added
