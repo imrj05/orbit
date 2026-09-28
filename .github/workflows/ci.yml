@@ -9,6 +9,11 @@ on:
 # DXGI on Windows, X11/Wayland on Linux), so every change is built on all three
 # shipped platforms. Linux needs the same system libraries the release bundle
 # installs (`scripts/bundle-linux.sh`).
+#
+# The "Protect Main Branch" ruleset requires one status check named `build`.
+# The matrix legs report `build (<os>)`, so the `build` fan-in job below is
+# what reports the required context — and it succeeds only when every
+# platform leg did.
 jobs:
   check:
     name: build (${{ matrix.os }})
@@ -50,3 +55,22 @@ jobs:
       - name: Clippy
         if: runner.os == 'macOS'
         run: cargo clippy --workspace --all-targets
+
+  # The required `build` status check. `always()` keeps this context
+  # reporting even when a matrix leg fails or the matrix is cancelled, so
+  # branch protection can never hang on "Expected — Waiting for status to be
+  # reported"; the first step then turns a non-success into a red `build`.
+  build:
+    name: build
+    needs: check
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every platform build
+        if: needs.check.result != 'success'
+        run: |
+          echo "::error::the platform build matrix did not pass: ${{ needs.check.result }}"
+          exit 1
+
+      - name: All platforms built
+        run: echo "macOS, Linux, and Windows builds passed"
