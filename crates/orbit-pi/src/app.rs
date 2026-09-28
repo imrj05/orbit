@@ -1577,13 +1577,13 @@ enum SideRow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum WorkspaceSort {
     /// Insertion order — the order the user added projects to Orbit.
-    #[default]
     Manual,
     /// Group label, A→Z (case-insensitive).
     AlphabeticalAsc,
     /// Group label, Z→A (case-insensitive).
     AlphabeticalDesc,
     /// Most recent session activity first.
+    #[default]
     LastUpdated,
     /// Most recently added project first.
     DateAdded,
@@ -1594,12 +1594,12 @@ pub(crate) enum WorkspaceSort {
 impl WorkspaceSort {
     /// Every mode, in the order the sort menu lists them.
     pub(crate) const ALL: [WorkspaceSort; 6] = [
-        Self::Manual,
         Self::LastUpdated,
         Self::DateAdded,
         Self::AlphabeticalAsc,
         Self::AlphabeticalDesc,
         Self::SessionCount,
+        Self::Manual,
     ];
 
     /// Stable key written to disk. Renaming one needs a migration in
@@ -1615,16 +1615,18 @@ impl WorkspaceSort {
         }
     }
 
-    /// Parse a persisted key; unknown or legacy values fall back to
-    /// [`Self::Manual`].
+    /// Parse a persisted key. A missing key (a store written before the sort
+    /// control existed) and unknown values both fall back to the default,
+    /// [`Self::LastUpdated`], matching the sidebar's out-of-the-box order.
     pub(crate) fn from_key(key: &str) -> Self {
         match key {
+            "manual" => Self::Manual,
             "alphabetical" => Self::AlphabeticalAsc,
             "alphabetical_desc" => Self::AlphabeticalDesc,
             "last_updated" => Self::LastUpdated,
             "date_added" => Self::DateAdded,
             "session_count" => Self::SessionCount,
-            _ => Self::Manual,
+            _ => Self::default(),
         }
     }
 

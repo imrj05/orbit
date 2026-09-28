@@ -174,7 +174,13 @@ fn sort_keys_round_trip_through_disk() {
     for sort in WorkspaceSort::ALL {
         assert_eq!(WorkspaceSort::from_key(sort.as_str()), sort);
     }
-    // Unknown or legacy/missing values fall back to the added order.
-    assert_eq!(WorkspaceSort::from_key("nonsense"), WorkspaceSort::Manual);
-    assert_eq!(WorkspaceSort::from_key(""), WorkspaceSort::Manual);
+    // A missing key (a store predating the control) or an unknown one falls
+    // back to the out-of-the-box order: most recent activity first.
+    assert_eq!(WorkspaceSort::from_key("nonsense"), WorkspaceSort::LastUpdated);
+    assert_eq!(WorkspaceSort::from_key(""), WorkspaceSort::LastUpdated);
+}
+
+#[test]
+fn the_default_sort_is_last_updated() {
+    assert_eq!(WorkspaceSort::default(), WorkspaceSort::LastUpdated);
 }

@@ -9,10 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- The sidebar's Projects header gained a sort control: order workspace groups by
-  last activity, recently added, name (A–Z or Z–A), or session count, or keep the
-  manual added order. The choice persists in `~/.orbit-pi/workspaces.json` and
-  each project now records when it was added.
+- The sidebar's Projects list now defaults to most recent activity, with a
+  sort control on the header to order workspace groups by recently added, name
+  (A–Z or Z–A), or session count, or fall back to the manual added order. The
+  choice persists in `~/.orbit-pi/workspaces.json` and each project now records
+  when it was added.
 
 ## [0.0.19] - 2026-09-28
 
