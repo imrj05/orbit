@@ -1204,21 +1204,26 @@ impl GitPanel {
         theme: Theme,
         target: DraftForm,
         chip_id: &'static str,
-        active: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let label = match target {
             DraftForm::Issue => self.issue_template_label(),
             DraftForm::PullRequest => self.pr_template_label(),
         };
+        let open = self.template_menu == Some(target);
+        let popup = if open {
+            self.template_picker_popup(theme, target, cx)
+        } else {
+            None
+        };
         div()
             .relative()
             .flex()
-            .child(filter_toggle_chip(
+            .child(dropdown_chip(
                 chip_id,
                 &label,
-                Some("icons/file.svg"),
-                active,
+                "icons/file.svg",
+                open,
                 theme,
                 cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.template_menu = if this.template_menu == Some(target) {
@@ -1229,7 +1234,7 @@ impl GitPanel {
                     cx.notify();
                 }),
             ))
-            .children(self.template_picker_popup(theme, target, cx))
+            .children(popup)
             .into_any_element()
     }
 
@@ -1360,7 +1365,10 @@ impl GitPanel {
             DraftForm::Issue => menu.top(px(30.)),
             DraftForm::PullRequest => menu.bottom(px(30.)),
         };
-        Some(menu.into_any_element())
+        // `deferred` keeps the menu's layout in this subtree (so it anchors to
+        // the chip) but paints it after the form's other fields, which would
+        // otherwise draw over it.
+        Some(deferred(menu).into_any_element())
     }
 
     /// A base-branch chip that owns its popover, mirroring [`Self::template_selector`]
@@ -1378,11 +1386,11 @@ impl GitPanel {
         div()
             .relative()
             .flex()
-            .child(filter_toggle_chip(
+            .child(dropdown_chip(
                 "git-pr-new-base",
                 &label,
-                Some("icons/branch.svg"),
-                false,
+                "icons/branch.svg",
+                self.ref_menu == Some(RefTarget::PrBase),
                 theme,
                 cx.listener(|this, _: &ClickEvent, window, cx| {
                     // mouse-down-out closes the picker; the chip's mouse-up would
@@ -1512,7 +1520,7 @@ impl GitPanel {
                     .child(div().flex_1().min_w_0().child(self.branch_filter.clone())),
             )
             .child(list);
-        Some(menu.into_any_element())
+        Some(deferred(menu).into_any_element())
     }
 
     /// Ask pi for an issue draft (title + body) from the optional notes field
@@ -5392,7 +5400,6 @@ impl GitPanel {
                         theme,
                         DraftForm::Issue,
                         "git-issue-template",
-                        self.issue_template.is_some(),
                         cx,
                     )),
             )
@@ -6386,7 +6393,6 @@ impl GitPanel {
                         theme,
                         DraftForm::PullRequest,
                         "git-pr-template",
-                        self.pr_template.is_some(),
                         cx,
                     )),
             )
@@ -7411,6 +7417,46 @@ fn filter_toggle_chip(
             )
         }))
         .child(label.to_string())
+        .into_any_element()
+}
+
+/// A chip that opens a picker, styled like the top branch selector: the glyph,
+/// the current value, and a chevron, filling with the active color while its
+/// menu is open.
+fn dropdown_chip(
+    id: &'static str,
+    label: &str,
+    glyph: &'static str,
+    open: bool,
+    theme: Theme,
+    listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    button_frame(div().id(id), &theme, ButtonSize::Medium)
+        .border_1()
+        .border_color(theme.border)
+        .bg(if open { theme.active } else { theme.bg_raised })
+        .cursor_pointer()
+        .hover(|s| s.bg(theme.bg_hover))
+        .on_click(listener)
+        .child(icon(
+            glyph,
+            ButtonSize::Medium.icon_size().px(&theme),
+            if open { theme.active_fg } else { theme.text_2 },
+        ))
+        .child(
+            div()
+                .max_w(px(180.))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(if open { theme.active_fg } else { theme.text })
+                .child(label.to_string()),
+        )
+        .child(icon(
+            "icons/chevron-down.svg",
+            IconSize::XSmall.px(&theme),
+            if open { theme.active_fg } else { theme.text_3 },
+        ))
         .into_any_element()
 }
 

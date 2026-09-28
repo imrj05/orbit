@@ -44,9 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The **New pull request** form's **Base branch** picker, and the **Template** pickers on
-  both new-issue/new-PR forms, no longer float over the wrong part of the form. They are
-  anchored to the chip that opens them (opening upward at the bottom of the PR form) and
-  now share the top branch selector's picker surface, list inset, rows, and search row.
+  both new-issue/new-PR forms, no longer float over the wrong part of the form or paint
+  behind its fields. They are anchored to the chip that opens them (opening upward at the
+  bottom of the PR form), draw above the form, and use the top branch selector's dropdown
+  chip (glyph, value, chevron) and picker surface — list inset, rows, and search row for
+  the branch list.
 
 - The conversation rail's active tick now follows every navigation path, not
   just wheel and scrollbar gestures. Clicking a tick and pressing ⌘↑/⌘↓ scroll
