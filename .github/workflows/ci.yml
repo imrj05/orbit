@@ -5,12 +5,18 @@ on:
     branches: [main, "redesign/**"]
   pull_request:
 
-# The GPUI app links Metal and macOS APIs, so the build runs on macOS.
-# Windows/Linux support is out of scope until the macOS app ships (INTENT.md D5).
+# GPUI renders through each platform's native graphics API (Metal on macOS,
+# DXGI on Windows, X11/Wayland on Linux), so every change is built on all three
+# shipped platforms. Linux needs the same system libraries the release bundle
+# installs (`scripts/bundle-linux.sh`).
 jobs:
   check:
-    name: build
-    runs-on: macos-latest
+    name: build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -18,6 +24,16 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            clang cmake pkg-config \
+            libfontconfig-dev libvulkan1 \
+            libwayland-dev libx11-xcb-dev libxi-dev libxtst-dev \
+            libxkbcommon-x11-dev libssl-dev
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -29,6 +45,8 @@ jobs:
         run: cargo build --workspace
 
       # Informational: the repo carries pre-existing clippy lints, so this
-      # step reports rather than gates.
+      # step reports rather than gates. One all-targets pass is enough — the
+      # per-platform builds above are the check that the app ships everywhere.
       - name: Clippy
+        if: runner.os == 'macOS'
         run: cargo clippy --workspace --all-targets
