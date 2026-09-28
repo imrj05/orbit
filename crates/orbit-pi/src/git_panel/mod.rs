@@ -1196,6 +1196,42 @@ impl GitPanel {
     /// The repository-template picker for either New form. Rendered inside the
     /// form card (which is `relative`), so it tracks the chip without a global
     /// anchor.
+    /// A template chip that owns its popover, so the menu anchors to the chip
+    /// itself rather than the form card.
+    fn template_selector(
+        &self,
+        theme: Theme,
+        target: DraftForm,
+        chip_id: &'static str,
+        active: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let label = match target {
+            DraftForm::Issue => self.issue_template_label(),
+            DraftForm::PullRequest => self.pr_template_label(),
+        };
+        div()
+            .relative()
+            .flex()
+            .child(filter_toggle_chip(
+                chip_id,
+                &label,
+                Some("icons/file.svg"),
+                active,
+                theme,
+                cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.template_menu = if this.template_menu == Some(target) {
+                        None
+                    } else {
+                        Some(target)
+                    };
+                    cx.notify();
+                }),
+            ))
+            .children(self.template_picker_popup(theme, target, cx))
+            .into_any_element()
+    }
+
     fn template_picker_popup(
         &self,
         theme: Theme,
@@ -1215,8 +1251,7 @@ impl GitPanel {
         };
         let mut menu = context_menu_surface(div().id(id), &theme)
             .absolute()
-            .top(px(46.))
-            .left(px(20.))
+            .left(px(0.))
             .w(px(300.))
             .max_h(px(320.))
             .overflow_y_scroll()
@@ -1228,6 +1263,14 @@ impl GitPanel {
                 cx.notify();
             }))
             .child(menu_header(tr!("git_panel.template"), &theme));
+
+        // Anchor to the chip: the issue form's chip sits near the top, so the
+        // menu opens downward; the PR form's chip sits at the bottom, so it
+        // opens upward instead of being clipped by the scroll container.
+        menu = match target {
+            DraftForm::Issue => menu.top(px(30.)),
+            DraftForm::PullRequest => menu.bottom(px(30.)),
+        };
 
         menu = menu.child(
             context_menu_entry(div().id("git-template-blank"), &theme)
@@ -5163,16 +5206,12 @@ impl GitPanel {
                             .text_color(theme.text_3)
                             .child(tr!("git_panel.template")),
                     )
-                    .child(filter_toggle_chip(
-                        "git-issue-template",
-                        &self.issue_template_label(),
-                        Some("icons/file.svg"),
-                        self.issue_template.is_some(),
+                    .child(self.template_selector(
                         theme,
-                        cx.listener(|this, _: &ClickEvent, _, cx| {
-                            this.template_menu = Some(DraftForm::Issue);
-                            cx.notify();
-                        }),
+                        DraftForm::Issue,
+                        "git-issue-template",
+                        self.issue_template.is_some(),
+                        cx,
                     )),
             )
             .child(composer_field(theme, self.issue_new_hint.clone(), px(0.)))
@@ -5211,7 +5250,7 @@ impl GitPanel {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
-            .child(card.children(self.template_picker_popup(theme, DraftForm::Issue, cx)))
+            .child(card)
             .into_any_element()
     }
 
@@ -6175,16 +6214,12 @@ impl GitPanel {
                             cx.notify();
                         }),
                     ))
-                    .child(filter_toggle_chip(
-                        "git-pr-template",
-                        &self.pr_template_label(),
-                        Some("icons/file.svg"),
-                        self.pr_template.is_some(),
+                    .child(self.template_selector(
                         theme,
-                        cx.listener(|this, _: &ClickEvent, _, cx| {
-                            this.template_menu = Some(DraftForm::PullRequest);
-                            cx.notify();
-                        }),
+                        DraftForm::PullRequest,
+                        "git-pr-template",
+                        self.pr_template.is_some(),
+                        cx,
                     )),
             )
             .child(
@@ -6220,7 +6255,7 @@ impl GitPanel {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
-            .child(card.children(self.template_picker_popup(theme, DraftForm::PullRequest, cx)))
+            .child(card)
             .into_any_element()
     }
 
