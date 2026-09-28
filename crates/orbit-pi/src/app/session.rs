@@ -40,6 +40,15 @@ impl OrbitApp {
         self.busy || self.transcript.is_streaming()
     }
 
+    /// Whether New Task can reuse the active process in place with
+    /// `new_session`: only when no turn is in flight and the process is
+    /// alive. A run in flight must be parked so `new_session` cannot abort
+    /// it; a dead process must be replaced by a fresh spawn instead of
+    /// sending the command into a stdin nobody reads (issue #30).
+    pub(super) fn can_reuse_session(&self) -> bool {
+        !self.is_running() && self.runtime_is_live()
+    }
+
     pub(super) fn submit(&mut self, text: String, cx: &mut Context<Self>) {
         self.submit_as(text, theme::get(cx).ui.composer_send_mode, cx);
     }
@@ -487,8 +496,10 @@ impl OrbitApp {
         // turn (`agent-session-runtime.teardownCurrent`), which surfaces as
         // "This operation was aborted". Park the running session instead — its
         // process keeps going in the background — and start the new task on a
-        // fresh pi process. An idle session is cheap to reuse in place.
-        if self.is_running() {
+        // fresh pi process. An idle session is cheap to reuse in place, but
+        // only while its process is alive: a dead one (see issue #30) gets a
+        // fresh process too rather than a command into the void.
+        if !self.can_reuse_session() {
             let cwd = self
                 .current_workspace
                 .clone()
@@ -517,13 +528,10 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Same workspace with an idle process: reuse it in place. A run in
-        // flight is parked instead, so `new_session` never aborts it; a
-        // different workspace always needs its own process anyway.
-        if self.current_workspace.as_ref() == Some(&cwd)
-            && self.client.is_some()
-            && !self.is_running()
-        {
+        // Same workspace with a live idle process: reuse it in place. A run
+        // in flight is parked instead, so `new_session` never aborts it; a
+        // dead process (or a different workspace) always needs its own.
+        if self.current_workspace.as_ref() == Some(&cwd) && self.can_reuse_session() {
             self.send(CommandBody::NewSession, "new_session");
             self.input.read(cx).focus(window);
             cx.notify();
@@ -532,9 +540,10 @@ impl OrbitApp {
         self.begin_new_task(cwd, window, cx);
     }
 
-    /// Start a fresh task rooted at `cwd` on its own pi process, parking the
-    /// active session first so a running one keeps going in the background.
-    /// Shared by New Task and a workspace group's "+".
+    /// Start a fresh task rooted at `cwd` on its own pi process, parking a
+    /// live active session first so a running one keeps going in the
+    /// background (a dead one is dropped). Shared by New Task and a
+    /// workspace group's "+".
     pub(super) fn begin_new_task(
         &mut self,
         cwd: PathBuf,
@@ -544,7 +553,14 @@ impl OrbitApp {
         // Leaving this session: cancel any open blocking dialog first, so a
         // parked run never waits on a modal tied to the previous session.
         self.cancel_open_dialog(cx);
-        self.park_active_session();
+        // A live session is parked so a run in flight keeps going in the
+        // background. A dead one holds nothing worth keeping: drop it (its
+        // exit banner goes with it) instead of parking a corpse.
+        if self.runtime_is_live() {
+            self.park_active_session();
+        } else {
+            self.drop_client();
+        }
 
         self.busy = false;
         self.transcript.clear();

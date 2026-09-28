@@ -2224,6 +2224,8 @@ mod devicons_tests;
 #[cfg(test)]
 mod error_label_tests;
 #[cfg(test)]
+mod new_task_reconnect_tests;
+#[cfg(test)]
 mod popup_layout_tests;
 #[cfg(test)]
 mod session_default_apply_tests;
