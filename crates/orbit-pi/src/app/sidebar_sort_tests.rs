@@ -184,3 +184,34 @@ fn sort_keys_round_trip_through_disk() {
 fn the_default_sort_is_last_updated() {
     assert_eq!(WorkspaceSort::default(), WorkspaceSort::LastUpdated);
 }
+
+/// The workspace store keeps each project's mark (icon stem + tint key) across
+/// a load, omits it when unset, and still reads the legacy bare-path format.
+#[test]
+fn workspace_marks_round_trip_through_the_store() {
+    let value: Value = serde_json::from_str(
+        r#"{
+            "sort": "manual",
+            "workspaces": [
+                { "path": "/work/alpha", "added_at": 10, "icon": "rocket-01", "tint": "accent" },
+                { "path": "/work/beta", "added_at": 20 },
+                "/work/gamma"
+            ]
+        }"#,
+    )
+    .expect("valid store JSON");
+
+    let store = parse_workspace_store(&value);
+    assert_eq!(store.workspaces.len(), 3);
+    assert_eq!(store.sort, WorkspaceSort::Manual);
+    assert_eq!(
+        store.marks.get(&PathBuf::from("/work/alpha")),
+        Some(&WorkspaceMark {
+            icon: Some("rocket-01".into()),
+            tint: Some("accent".into()),
+        })
+    );
+    // No mark stored for beta or the legacy bare path.
+    assert!(!store.marks.contains_key(&PathBuf::from("/work/beta")));
+    assert!(!store.marks.contains_key(&PathBuf::from("/work/gamma")));
+}

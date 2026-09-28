@@ -477,46 +477,44 @@ fn sticky_rows() -> Vec<SideRow> {
 }
 
 /// Resolve the sticky header against a list scrolled to `(item_ix, offset)`.
-fn sticky_at(
-    rows: &[SideRow],
-    label: &str,
-    item_ix: usize,
-    offset: f32,
-) -> Option<(usize, Pixels)> {
+fn sticky_at(rows: &[SideRow], item_ix: usize, offset: f32) -> Option<(usize, Pixels)> {
     let list = ListState::new(rows.len(), ListAlignment::Top, px(0.));
     list.scroll_to(ListOffset {
         item_ix,
         offset_in_item: px(offset),
     });
-    sticky_sidebar_header(&list, rows, label).map(|s| (s.ix, s.top_offset))
+    sticky_sidebar_header(&list, rows).map(|s| (s.ix, s.top_offset))
 }
 
 #[test]
-fn sticky_header_pins_the_active_expanded_group() {
+fn sticky_header_pins_the_scrolled_group() {
     let rows = sticky_rows();
     // Scrolled into alpha's own sessions, its header pins at the top.
-    assert_eq!(sticky_at(&rows, "alpha", 0, 5.), Some((0, px(0.))));
-    assert_eq!(sticky_at(&rows, "alpha", 1, 0.), Some((0, px(0.))));
+    assert_eq!(sticky_at(&rows, 0, 5.), Some((0, px(0.))));
+    assert_eq!(sticky_at(&rows, 1, 0.), Some((0, px(0.))));
+    assert_eq!(sticky_at(&rows, 2, 0.), Some((0, px(0.))));
     // Exactly at the top the real header already sits there — no overlay.
-    assert_eq!(sticky_at(&rows, "alpha", 0, 0.), None);
-    // Once beta's header takes the top, alpha's header scrolls away.
-    assert_eq!(sticky_at(&rows, "alpha", 3, 0.), None);
-    assert_eq!(sticky_at(&rows, "alpha", 4, 0.), None);
+    assert_eq!(sticky_at(&rows, 0, 0.), None);
+    // Once beta's header takes the top, alpha's header scrolls away and
+    // beta's pins in its place.
+    assert_eq!(sticky_at(&rows, 3, 0.), None);
+    assert_eq!(sticky_at(&rows, 3, 2.), Some((3, px(0.))));
+    assert_eq!(sticky_at(&rows, 4, 0.), Some((3, px(0.))));
 }
 
 #[test]
-fn sticky_header_only_pins_the_active_group() {
+fn sticky_header_pins_a_non_active_expanded_group() {
+    // The working workspace is alpha, but the reader scrolled beta's long
+    // list open. Beta's header must pin too — the old lookup only pinned
+    // the active group, which made the first workspace look uniquely sticky.
     let rows = sticky_rows();
-    // Scrolling beta's sessions leaves alpha's header alone; only the
-    // active group pins.
-    assert_eq!(sticky_at(&rows, "beta", 1, 0.), None);
-    // With beta active, beta's own header pins.
-    assert_eq!(sticky_at(&rows, "beta", 4, 0.), Some((3, px(0.))));
+    assert_eq!(sticky_at(&rows, 4, 0.), Some((3, px(0.))));
 }
 
 #[test]
-fn sticky_header_skips_collapsed_and_unlisted_groups() {
-    // A collapsed active group has no sessions to scroll, so nothing pins.
+fn sticky_header_skips_collapsed_groups() {
+    // A collapsed group shows only its always-visible rows, so there is no
+    // long history to label and nothing pins.
     let sessions = vec![store_session("a1", "/work/alpha")];
     let collapsed = HashSet::from(["alpha".to_string()]);
     let rows = build_sidebar_rows(
@@ -532,7 +530,7 @@ fn sticky_header_skips_collapsed_and_unlisted_groups() {
         &None,
         &HashSet::new(),
     );
-    assert_eq!(sticky_at(&rows, "alpha", 0, 10.), None);
-    // A workspace that is not listed at all has no header to pin.
-    assert_eq!(sticky_at(&rows, "gamma", 0, 10.), None);
+    assert_eq!(sticky_at(&rows, 0, 10.), None);
+    // An empty list has no header to pin.
+    assert_eq!(sticky_at(&[], 0, 10.), None);
 }

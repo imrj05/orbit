@@ -14,6 +14,8 @@ GLOSSARY = {
         "clone failed: %{error}": "克隆失败：%{error}",
         "delete failed: %{error}": "删除失败：%{error}",
         "Removed %{name} from the sidebar": "已从侧边栏移除 %{name}",
+        "Icon & color": "图标和颜色",
+        "Reset": "重置",
     },
     "ja": {
         "Copy path": "パスをコピー",
@@ -28,6 +30,8 @@ GLOSSARY = {
         "clone failed: %{error}": "複製に失敗: %{error}",
         "delete failed: %{error}": "削除に失敗: %{error}",
         "Removed %{name} from the sidebar": "%{name} をサイドバーから削除しました",
+        "Icon & color": "アイコンと色",
+        "Reset": "リセット",
     },
     "ko": {
         "Copy path": "경로 복사",
@@ -42,6 +46,8 @@ GLOSSARY = {
         "clone failed: %{error}": "복제 실패: %{error}",
         "delete failed: %{error}": "삭제 실패: %{error}",
         "Removed %{name} from the sidebar": "사이드바에서 %{name}을(를) 제거했습니다",
+        "Icon & color": "아이콘 및 색상",
+        "Reset": "초기화",
     },
     "es": {
         "Copy path": "Copiar ruta",
@@ -56,6 +62,8 @@ GLOSSARY = {
         "clone failed: %{error}": "error al clonar: %{error}",
         "delete failed: %{error}": "error al eliminar: %{error}",
         "Removed %{name} from the sidebar": "Se quitó %{name} de la barra lateral",
+        "Icon & color": "Icono y color",
+        "Reset": "Restablecer",
     },
     "fr": {
         "Copy path": "Copier le chemin",
@@ -70,6 +78,8 @@ GLOSSARY = {
         "clone failed: %{error}": "échec du clonage : %{error}",
         "delete failed: %{error}": "échec de la suppression : %{error}",
         "Removed %{name} from the sidebar": "%{name} retiré de la barre latérale",
+        "Icon & color": "Icône et couleur",
+        "Reset": "Réinitialiser",
     },
     "de": {
         "Copy path": "Pfad kopieren",
@@ -84,6 +94,8 @@ GLOSSARY = {
         "clone failed: %{error}": "Duplizieren fehlgeschlagen: %{error}",
         "delete failed: %{error}": "Löschen fehlgeschlagen: %{error}",
         "Removed %{name} from the sidebar": "%{name} aus der Seitenleiste entfernt",
+        "Icon & color": "Symbol und Farbe",
+        "Reset": "Zurücksetzen",
     },
     "pt-BR": {
         "Copy path": "Copiar caminho",
@@ -98,6 +110,8 @@ GLOSSARY = {
         "clone failed: %{error}": "falha ao clonar: %{error}",
         "delete failed: %{error}": "falha ao excluir: %{error}",
         "Removed %{name} from the sidebar": "%{name} removido da barra lateral",
+        "Icon & color": "Ícone e cor",
+        "Reset": "Redefinir",
     },
     "ru": {
         "Copy path": "Копировать путь",
@@ -112,6 +126,8 @@ GLOSSARY = {
         "clone failed: %{error}": "не удалось клонировать: %{error}",
         "delete failed: %{error}": "не удалось удалить: %{error}",
         "Removed %{name} from the sidebar": "%{name} убран из боковой панели",
+        "Icon & color": "Значок и цвет",
+        "Reset": "Сбросить",
     },
     "it": {
         "Copy path": "Copia percorso",
@@ -126,5 +142,7 @@ GLOSSARY = {
         "clone failed: %{error}": "clonazione non riuscita: %{error}",
         "delete failed: %{error}": "eliminazione non riuscita: %{error}",
         "Removed %{name} from the sidebar": "%{name} rimosso dalla barra laterale",
+        "Icon & color": "Icona e colore",
+        "Reset": "Reimposta",
     },
 }

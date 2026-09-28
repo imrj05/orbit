@@ -80,6 +80,7 @@ use crate::usage::page::UsagePage;
 use crate::watch;
 use crate::widgets::{ExtensionWidget, WidgetPlacement};
 use crate::workflow::WorkflowMode;
+use crate::workspace_mark::WorkspaceMark;
 use crate::workspace_picker::{WorkspaceEntry, WorkspacePicker};
 
 const SIDEBAR_DEFAULT_W: f32 = 248.;
@@ -417,6 +418,10 @@ pub struct OrbitApp {
     /// `workspaces.json`; a workspace with no record falls back to the
     /// folder's creation time.
     workspace_added_at: HashMap<PathBuf, SystemTime>,
+    /// Per-workspace sidebar mark (icon stem + tint key), keyed by path and
+    /// persisted beside the project list. A workspace with no entry wears the
+    /// default folder mark in the muted ink.
+    workspace_marks: HashMap<PathBuf, WorkspaceMark>,
     /// How workspace groups are ordered in the sidebar. Persisted alongside
     /// the project list; changing it re-sorts the UI and never touches pi.
     workspace_sort: WorkspaceSort,
@@ -1134,6 +1139,7 @@ impl OrbitApp {
             expanded_session_groups: HashMap::new(),
             workspaces: workspace_store.workspaces,
             workspace_added_at: workspace_store.added_at,
+            workspace_marks: workspace_store.marks,
             workspace_sort: workspace_store.sort,
             sidebar_sort_menu: false,
             workspace_menu: None,
@@ -1467,14 +1473,27 @@ impl OrbitApp {
         self.persist_workspace_prefs();
     }
 
-    /// Write the sidebar's project list, each project's added-at stamp, and
-    /// the active sort mode back to `workspaces.json`.
+    /// Write the sidebar's project list, each project's added-at stamp, the
+    /// per-workspace marks, and the active sort mode back to
+    /// `workspaces.json`.
     fn persist_workspace_prefs(&self) {
         persist_workspace_store(&WorkspaceStore {
             workspaces: self.workspaces.clone(),
             added_at: self.workspace_added_at.clone(),
+            marks: self.workspace_marks.clone(),
             sort: self.workspace_sort,
         });
+    }
+
+    /// Set (or clear, with [`WorkspaceMark::default`]) a workspace's sidebar
+    /// icon and tint, then persist. Orbit-owned: never touches pi.
+    pub(super) fn set_workspace_mark(&mut self, cwd: PathBuf, mark: WorkspaceMark) {
+        if mark.is_default() {
+            self.workspace_marks.remove(&cwd);
+        } else {
+            self.workspace_marks.insert(cwd, mark);
+        }
+        self.persist_workspace_prefs();
     }
 
     /// Drop a project from Orbit's sidebar. pi's session files stay exactly
@@ -1484,6 +1503,7 @@ impl OrbitApp {
         self.workspaces.retain(|w| w.as_path() != cwd);
         if self.workspaces.len() != before {
             self.workspace_added_at.remove(cwd);
+            self.workspace_marks.remove(cwd);
             self.persist_workspace_prefs();
         }
     }
@@ -1670,6 +1690,7 @@ fn workspaces_path() -> PathBuf {
 struct WorkspaceStore {
     workspaces: Vec<PathBuf>,
     added_at: HashMap<PathBuf, SystemTime>,
+    marks: HashMap<PathBuf, WorkspaceMark>,
     sort: WorkspaceSort,
 }
 
@@ -1682,6 +1703,12 @@ fn load_workspace_store() -> WorkspaceStore {
     let Ok(value) = serde_json::from_str::<Value>(&raw) else {
         return WorkspaceStore::default();
     };
+    parse_workspace_store(&value)
+}
+
+/// Parse a workspaces store from JSON — the testable half of
+/// [`load_workspace_store`], with the file read factored out.
+fn parse_workspace_store(value: &Value) -> WorkspaceStore {
     let mut store = WorkspaceStore {
         sort: value
             .get("sort")
@@ -1694,10 +1721,11 @@ fn load_workspace_store() -> WorkspaceStore {
         return store;
     };
     for entry in entries {
-        let (path, added_at) = match entry {
+        let (path, added_at, mark) = match entry {
             // Legacy format: a bare path string.
-            Value::String(raw) => (normalize_workspace_path(raw), None),
-            // Current format: `{ "path": …, "added_at": <unix secs> }`.
+            Value::String(raw) => (normalize_workspace_path(raw), None, WorkspaceMark::default()),
+            // Current format: `{ "path": …, "added_at": <unix secs>,
+            // "icon": <stem>, "tint": <key> }`.
             Value::Object(map) => {
                 let Some(raw) = map.get("path").and_then(Value::as_str) else {
                     continue;
@@ -1706,7 +1734,11 @@ fn load_workspace_store() -> WorkspaceStore {
                     .get("added_at")
                     .and_then(Value::as_u64)
                     .map(|secs| UNIX_EPOCH + Duration::from_secs(secs));
-                (normalize_workspace_path(raw), added)
+                let mark = WorkspaceMark {
+                    icon: map.get("icon").and_then(Value::as_str).map(str::to_string),
+                    tint: map.get("tint").and_then(Value::as_str).map(str::to_string),
+                };
+                (normalize_workspace_path(raw), added, mark)
             }
             _ => continue,
         };
@@ -1715,6 +1747,9 @@ fn load_workspace_store() -> WorkspaceStore {
         }
         let added_at = added_at.unwrap_or_else(|| workspace_created_at(&path));
         store.added_at.insert(path.clone(), added_at);
+        if !mark.is_default() {
+            store.marks.insert(path.clone(), mark);
+        }
         store.workspaces.push(path);
     }
     store
@@ -1744,10 +1779,19 @@ fn persist_workspace_store(store: &WorkspaceStore) {
                 .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
-            serde_json::json!({
-                "path": p.to_string_lossy(),
-                "added_at": added_at,
-            })
+            let mark = store.marks.get(p).cloned().unwrap_or_default();
+            // Omit unset mark fields so projects without a custom look keep
+            // the store's original two-key shape.
+            let mut entry = serde_json::Map::new();
+            entry.insert("path".into(), serde_json::json!(p.to_string_lossy()));
+            entry.insert("added_at".into(), serde_json::json!(added_at));
+            if let Some(icon) = mark.icon {
+                entry.insert("icon".into(), serde_json::json!(icon));
+            }
+            if let Some(tint) = mark.tint {
+                entry.insert("tint".into(), serde_json::json!(tint));
+            }
+            Value::Object(entry)
         })
         .collect();
     let payload = serde_json::json!({
@@ -1825,6 +1869,8 @@ struct WorkspaceMenu {
     cwd: PathBuf,
     /// Right-click origin in window coordinates (see [`SessionMenu::at`]).
     at: Option<Point<Pixels>>,
+    /// The menu is showing the icon/tint picker instead of the action list.
+    picker: bool,
 }
 
 /// Sections of the settings surface.

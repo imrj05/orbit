@@ -95,6 +95,7 @@ mod watch;
 mod widgets;
 mod workflow;
 mod workspace_logo;
+mod workspace_mark;
 mod workspace_picker;
 
 use std::time::Duration;

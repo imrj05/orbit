@@ -63,6 +63,7 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/command_palette.rs  ⌘P / ⌘K command palette (sections, fuzzy match, modal scrim layer)
   src/workspace_picker.rs new-task folder selector (recent folders + native browse)
   src/workspace_logo.rs workspace logo lookup for the new-task folder field (conventional paths, `.orbit-pi/icon.*` override, folder glyph fallback)
+  src/workspace_mark.rs per-workspace sidebar mark: curated HugeIcons + semantic tints, persisted in workspaces.json
   src/sessions.rs       reads ~/.pi/agent/sessions (+ debounced session-store watcher)
   src/watch.rs          shared debounced fs watching (workspace tree for Review/Git)
   src/explorer/         workspace file tree + file editor

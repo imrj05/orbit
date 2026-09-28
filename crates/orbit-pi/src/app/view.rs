@@ -10,6 +10,7 @@ use crate::theme::tokens::{
 };
 use crate::usage::tooltip::Tooltip;
 use crate::widgets as ext_widgets;
+use crate::workspace_mark::WorkspaceMark;
 
 /// Height of a page's top bar (DESIGN.md: 44px header rows). The new-task
 /// backdrop is offset by it, so the picture starts below the title exactly
@@ -178,13 +179,17 @@ impl Render for OrbitApp {
         let agent_running = self.busy || self.transcript.is_streaming();
         // Every live process (running or warm-idle) — guards delete.
         let live_paths: Rc<HashSet<PathBuf>> = Rc::new(self.lives.keys().cloned().collect());
-        // Pinned header for the open, expanded workspace: it stays at the
-        // top of the session list while its own sessions scroll, and the
-        // next group's header pushes it away (see `sticky_sidebar_header`).
-        // Its row is rendered twice while pinned (the real one scrolls under
-        // the overlay), so the pinned index also tells the list to skip that
-        // row's workspace menu — the overlay owns the single open popup.
-        let sticky = sticky_sidebar_header(&self.sidebar_list, &side_rows, &working_label);
+        // Per-workspace sidebar marks (icon + tint), read by every header row.
+        let marks: Rc<HashMap<PathBuf, WorkspaceMark>> =
+            Rc::new(self.workspace_marks.clone());
+        // Pinned header for the expanded workspace group currently at the top
+        // of the session list: it stays there while that group's own sessions
+        // scroll, and the next group's header pushes it away (see
+        // `sticky_sidebar_header`). Its row is rendered twice while pinned (the
+        // real one scrolls under the overlay), so the pinned index also tells
+        // the list to skip that row's workspace menu — the overlay owns the
+        // single open popup.
+        let sticky = sticky_sidebar_header(&self.sidebar_list, &side_rows);
         let sticky_ix = sticky.as_ref().map(|sticky| sticky.ix);
         let sticky_header = sticky.map(|sticky| {
             div()
@@ -203,6 +208,7 @@ impl Render for OrbitApp {
                     &running_paths,
                     &pinned,
                     &live_paths,
+                    &marks,
                     session_menu.as_ref().as_ref(),
                     workspace_menu.as_ref().as_ref(),
                     sidebar_cursor == Some(sticky.ix),
@@ -737,6 +743,7 @@ impl Render for OrbitApp {
                                                                     &running_paths,
                                                                     &pinned,
                                                                     &live_paths,
+                                                                    &marks,
                                                                     session_menu.as_ref().as_ref(),
                                                                     row_workspace_menu,
                                                                     sidebar_cursor == Some(ix),
