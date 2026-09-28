@@ -133,6 +133,12 @@ impl OrbitApp {
 
     /// Tear down the active pi process (dropping `PiClient` kills the child).
     pub(super) fn drop_client(&mut self) {
+        // A process that exited on its own left its exit banner up; dropping
+        // it supersedes that failure — a fresh process follows in the task /
+        // restart paths, and an explicit stop acknowledges it.
+        if self.runtime.exited {
+            self.error = None;
+        }
         self.client = None;
         self.runtime = RuntimeStatus::default();
         // Extension widgets belonged to the departing process.
@@ -458,6 +464,13 @@ impl OrbitApp {
         } else {
             RuntimeState::Running
         }
+    }
+
+    /// Whether the active pi process is alive and has not exited — the only
+    /// state in which commands sent over its stdin can still be answered. A
+    /// never-started, stopped, or dead process all read as not live.
+    pub(super) fn runtime_is_live(&self) -> bool {
+        matches!(self.runtime_state(), RuntimeState::Running)
     }
 
     /// Spawn the pi process (Start button). No-op while one is running.

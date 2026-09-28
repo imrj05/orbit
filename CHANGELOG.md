@@ -25,6 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   re-opened it on the same click; the trigger now honors the same gesture
   guard every other dropdown uses.
 
+### Fixed
+
+- **New Task** now starts a fresh session when pi has exited instead of doing
+  nothing. With no turn in flight the button sent `new_session` to the live
+  process, so while the reconnect banner was up the command went into the dead
+  process's stdin and was never answered; it now spawns a replacement whenever
+  the process is not alive, dropping the corpse and its stale exit banner. The
+  sidebar's workspace **+** gets the same fix.
+
 ## [0.2.0] - 2026-09-28
 
 ### Added
