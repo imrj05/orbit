@@ -43,6 +43,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Images in issue/PR bodies, comments, and transcripts now render. The markdown image
+  element forced a definite `height: 0`, and gpui derives a missing width from a definite
+  height before the image decodes (0 × ratio), so a loaded screenshot collapsed to a 0×0
+  box with only its border visible. The height is left auto now: the image scales to the
+  reading column and taffy keeps its aspect ratio.
+
+- Screenshots in replies load again when GitHub stored them as signed
+  `private-user-images.githubusercontent.com/…?jwt=…` URLs. That JWT expires within
+  minutes, so the app got a 404 and showed the alt-text fallback; the renderer rewrites
+  the URL to the durable `github.com/user-attachments/assets/<uuid>` form encoded in the
+  filename, which serves the same image.
+
 - GitHub issue/PR bodies and comments now render screenshots that GitHub stored as raw
   HTML `<img src="…">` tags when the line is inside a blockquote or list item — a quoted
   bug report is a common case. Previously only a standalone top-level `<img>` line became
