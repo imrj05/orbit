@@ -489,6 +489,7 @@ pub(crate) fn render_side_row(
                                 &theme,
                                 ButtonSize::Compact,
                             )
+                            .tip(tr!("view.new_task"))
                             .cursor_pointer()
                             // Revealed on row hover — the quiet default
                             // keeps group headers to just label + count.
@@ -580,6 +581,7 @@ pub(crate) fn render_side_row(
             if can_collapse {
                 row = row.child(
                     icon_button_frame(div(), &theme, ButtonSize::Compact)
+                        .tip(tr!("sidebar.show_less"))
                         .cursor_pointer()
                         .hover(|s| s.bg(theme.overlay))
                         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
@@ -836,6 +838,7 @@ pub(crate) fn session_menu_button(
     )
     .group(BUTTON_GROUP)
     .relative()
+    .tip(tr!("sidebar.more_actions"))
     .cursor_pointer()
     // Hidden until the row (or the button itself) is hovered, or while
     // this row's menu is open. Icon-only, no background — a filled hover
@@ -1159,6 +1162,7 @@ pub(crate) fn workspace_menu_button(
     )
     .group(BUTTON_GROUP)
     .relative()
+    .tip(tr!("sidebar.more_actions"))
     .cursor_pointer()
     // Revealed on row hover, or while this header's menu is open.
     .opacity(if menu.is_some() { 1.0 } else { 0.0 })
@@ -1499,6 +1503,7 @@ pub(crate) fn sidebar_sort_button(
     let this_for_popup = this.clone();
     icon_button_frame(div().id("sidebar-sort"), &theme, ButtonSize::Compact)
         .relative()
+        .tip(tr!("sidebar.sort"))
         .cursor_pointer()
         // Revealed on the Projects row's hover, or while the menu is open.
         .opacity(if open { 1.0 } else { 0.0 })

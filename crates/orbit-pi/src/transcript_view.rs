@@ -43,7 +43,7 @@ use orbit_rpc::MessageUsage;
 
 use crate::app::{
     button_frame, context_menu_entry, context_menu_surface, file_badge, file_glyph,
-    icon_button_frame, nerd_font_family, BUTTON_GROUP,
+    icon_button_frame, nerd_font_family, TipExt, BUTTON_GROUP,
 };
 use crate::context_meter::{format_tokens, hit_percent_label};
 use crate::highlight::{self, Token};
@@ -3128,6 +3128,7 @@ fn render_activity_card(
                             &theme,
                             ButtonSize::Compact,
                         )
+                        .tip(tr!("transcript.copy_diff"))
                         .cursor_pointer()
                         .hover(|style| style.bg(theme.overlay_strong))
                         .child(glyph(
@@ -3460,6 +3461,7 @@ fn render_detail_section(
                         &theme,
                         ButtonSize::Default,
                     )
+                    .tip(tr!("transcript.copy_section"))
                     .cursor_pointer()
                     .hover(|style| style.bg(theme.overlay_strong))
                     .child(glyph(
@@ -4090,6 +4092,7 @@ fn render_message_footer(
         &theme,
         FOOTER_BUTTON,
     )
+    .tip(tr!("transcript.copy_message"))
     .cursor_pointer()
     .hover(|style| style.bg(theme.overlay_strong))
     .child(glyph(
@@ -6055,6 +6058,7 @@ fn render_code_block(
         &theme,
         CODE_COPY_BUTTON,
     )
+    .tip(tr!("transcript.copy_code"))
     .cursor_pointer()
     .hover(|style| style.bg(theme.overlay_strong))
     .child(glyph(
@@ -6946,19 +6950,19 @@ pub(crate) fn active_user_index(
     }
     // The reader scrolled away from the live edge: the active tick is the
     // turn the viewport is reading — the newest user turn at or above the
-    // first visible row — not the latest turn in the transcript.
-    if streaming.is_none() {
-        if let Some(first_visible) = viewport_hint {
-            let clamped = first_visible.min(messages.len() - 1);
-            if let Some(ix) = messages[..clamped + 1]
-                .iter()
-                .enumerate()
-                .rev()
-                .find(|(_, message)| message.user)
-                .map(|(ix, _)| ix)
-            {
-                return Some(ix);
-            }
+    // first visible row — not the latest turn in the transcript. This holds
+    // while a run streams too: scrolling up to read history must move the
+    // rail, and clicking a tick must be able to leave the streaming turn.
+    if let Some(first_visible) = viewport_hint {
+        let clamped = first_visible.min(messages.len() - 1);
+        if let Some(ix) = messages[..clamped + 1]
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, message)| message.user)
+            .map(|(ix, _)| ix)
+        {
+            return Some(ix);
         }
     }
     let end = streaming
@@ -7684,6 +7688,11 @@ mod tests {
         assert_eq!(active_user_index(&messages, None, Some(3)), Some(2));
         // Out-of-range hint clamps to the last row.
         assert_eq!(active_user_index(&messages, None, Some(99)), Some(2));
+        // The viewport wins while a run streams too: clicking a rail tick to
+        // read an earlier turn must leave the streaming turn's tick behind.
+        assert_eq!(active_user_index(&messages, Some(3), Some(0)), Some(0));
+        assert_eq!(active_user_index(&messages, Some(3), Some(1)), Some(0));
+        assert_eq!(active_user_index(&messages, Some(3), Some(2)), Some(2));
     }
 
     #[test]

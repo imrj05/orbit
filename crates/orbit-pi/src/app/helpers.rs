@@ -1,9 +1,28 @@
 use super::*;
+use gpui::InteractiveElement;
 use crate::platform::WindowCommand;
 use crate::theme::tokens::{
     self, button, context_menu, input, list, list_item, picker, ButtonSize, IconSize, Radius,
     StyledExt, TextSize,
 };
+use crate::usage::tooltip::Tooltip;
+
+/// Attach Orbit's native tooltip to any interactive element.
+///
+/// The send / stop button set the register: a localized label, usually with the
+/// keyboard shortcut appended (e.g. `Send (↵)`). This keeps every icon-only
+/// button's hover affordance one line at the call site instead of repeating the
+/// `Tooltip::new` closure.
+pub(crate) trait TipExt: InteractiveElement {
+    fn tip(mut self, label: impl Into<SharedString>) -> Self {
+        let label = label.into();
+        self.interactivity()
+            .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into());
+        self
+    }
+}
+
+impl<T: InteractiveElement> TipExt for T {}
 
 /// Turn a wire command name into a short human label, e.g. `set_model` →
 /// `Set model failed`.
@@ -601,6 +620,7 @@ pub(crate) fn window_controls(theme: Theme, maximized: bool) -> impl IntoElement
             "icons/minus.svg",
             WindowCommand::Minimize,
             false,
+            tr!("platform.minimize"),
         ))
         .child(caption_button(
             theme,
@@ -613,6 +633,11 @@ pub(crate) fn window_controls(theme: Theme, maximized: bool) -> impl IntoElement
             },
             WindowCommand::ToggleMaximize,
             false,
+            if maximized {
+                tr!("platform.restore")
+            } else {
+                tr!("platform.maximize")
+            },
         ))
         .child(caption_button(
             theme,
@@ -620,6 +645,7 @@ pub(crate) fn window_controls(theme: Theme, maximized: bool) -> impl IntoElement
             "icons/x.svg",
             WindowCommand::Close,
             true,
+            tr!("platform.close_window"),
         ))
 }
 
@@ -632,6 +658,7 @@ fn caption_button(
     glyph: &'static str,
     command: WindowCommand,
     close: bool,
+    label: String,
 ) -> impl IntoElement {
     let fill = if close {
         theme.stop_red
@@ -659,6 +686,7 @@ fn caption_button(
     .on_mouse_up(MouseButton::Left, move |_, window, _| {
         crate::platform::window_command(window, command)
     })
+    .tip(label)
     .child(glyph_el)
 }
 

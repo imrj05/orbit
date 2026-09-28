@@ -830,6 +830,11 @@ impl OrbitApp {
             &theme,
             ButtonSize::Default,
         )
+        .tip(if is_favorite {
+            tr!("settings.unfavorite")
+        } else {
+            tr!("settings.favorite")
+        })
         .cursor_pointer()
         .hover(|s| s.bg(theme.overlay))
         .on_mouse_up(MouseButton::Left, {

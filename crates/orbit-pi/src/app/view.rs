@@ -453,6 +453,7 @@ impl Render for OrbitApp {
                                 theme.text_2,
                             ),
                         )
+                        .tip(tr!("session.session_details"))
                         .on_mouse_up(MouseButton::Left, cx.listener(Self::on_info_click)),
                     ),
             )
@@ -472,6 +473,11 @@ impl Render for OrbitApp {
                         },
                     ),
                 )
+                .tip(format!(
+                    "{} ({})",
+                    tr!("explorer.toggle"),
+                    platform::shortcuts::PROJECT_PANEL
+                ))
                 .on_mouse_up(
                     MouseButton::Left,
                     cx.listener(Self::on_toggle_project_panel_click),
@@ -493,6 +499,7 @@ impl Render for OrbitApp {
                         },
                     ),
                 )
+                .tip(tr!("view.toggle_side_pane"))
                 .on_mouse_up(MouseButton::Left, cx.listener(Self::on_toggle_side_pane)),
             )
             // Terminal toggle — the bottom panel (cmd-j).
@@ -511,6 +518,11 @@ impl Render for OrbitApp {
                         },
                     ),
                 )
+                .tip(format!(
+                    "{} ({})",
+                    tr!("menu.toggle_terminal"),
+                    platform::shortcuts::TERMINAL
+                ))
                 .on_mouse_up(
                     MouseButton::Left,
                     cx.listener(|this, _, window, cx| {
@@ -534,6 +546,7 @@ impl Render for OrbitApp {
                         },
                     ),
                 )
+                .tip(tr!("view.open_git"))
                 .on_mouse_up(MouseButton::Left, cx.listener(Self::on_open_git_click)),
             );
 
@@ -959,6 +972,7 @@ impl Render for OrbitApp {
                     // chat body — transcript/empty, composer, terminal
                     div()
                         .flex_1()
+                        .min_w_0()
                         .min_h_0()
                         .w_full()
                         .flex()
@@ -1987,6 +2001,7 @@ impl OrbitApp {
             .children(self.add_menu_popup(cx))
             .child(
                 icon_button_frame(div().id("attach-chip"), &theme, ButtonSize::Default)
+                    .tip(tr!("composer.add"))
                     .group(BUTTON_GROUP)
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.overlay))
@@ -2994,6 +3009,7 @@ impl OrbitApp {
                     )
                     .child(
                         icon_button_frame(div().id(("copy", ix)), &theme, ButtonSize::Default)
+                            .tip(tr!("common.copy"))
                             .cursor_pointer()
                             .hover(|s| s.bg(theme.bg_hover))
                             .on_click(move |_, _window, cx| {
@@ -3668,6 +3684,7 @@ impl OrbitApp {
         // A visible dismiss affordance beside the keyboard hint.
         header = header.child(
             icon_button_frame(div().id("ask-close"), &theme, ButtonSize::Compact)
+                .tip(tr!("common.close"))
                 .cursor_pointer()
                 .hover(|style| style.bg(theme.overlay_strong))
                 .child(icon(
@@ -4218,6 +4235,7 @@ impl OrbitApp {
                 })
                 .child(
                     icon_button_frame(div().id("copy-error"), &theme, ButtonSize::Compact)
+                        .tip(tr!("common.copy"))
                         .cursor_pointer()
                         .text_color(theme.text_2)
                         .hover(|s| s.bg(theme.overlay).text_color(theme.text))
@@ -4235,6 +4253,7 @@ impl OrbitApp {
                 )
                 .child(
                     icon_button_frame(div().id("dismiss-error"), &theme, ButtonSize::Compact)
+                        .tip(tr!("common.dismiss"))
                         .cursor_pointer()
                         .text_size(TextSize::Default.px(&theme))
                         .text_color(theme.text_2)

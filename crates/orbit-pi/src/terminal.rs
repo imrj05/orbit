@@ -53,7 +53,7 @@ use gpui::{
 };
 
 use crate::app::{
-    button_frame, icon, icon_button_frame, nerd_font_family, refresh_glyph, BUTTON_GROUP,
+    button_frame, icon, icon_button_frame, nerd_font_family, refresh_glyph, TipExt, BUTTON_GROUP,
 };
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
 use crate::theme::{self, Theme};
@@ -1702,6 +1702,7 @@ impl TerminalPanel {
             .child(
                 icon_button_frame(div().id("terminal-restart"), &theme, ButtonSize::Default)
                     .group(BUTTON_GROUP)
+                    .tip(tr!("terminal.restart"))
                     .cursor_pointer()
                     .hover(|style| style.bg(theme.bg_hover))
                     .active(|style| style.bg(theme.active))
@@ -1720,6 +1721,7 @@ impl TerminalPanel {
             .child(
                 icon_button_frame(div().id("terminal-close"), &theme, ButtonSize::Default)
                     .group(BUTTON_GROUP)
+                    .tip(tr!("common.close"))
                     .cursor_pointer()
                     .hover(|style| style.bg(theme.bg_hover))
                     .on_mouse_up(

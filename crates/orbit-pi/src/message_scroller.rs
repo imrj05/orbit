@@ -16,7 +16,7 @@ use gpui::{
     ListOffset, ListScrollEvent, ListState, Pixels,
 };
 
-use crate::app::{button_frame, icon_button_frame, BUTTON_GROUP};
+use crate::app::{button_frame, icon_button_frame, TipExt, BUTTON_GROUP};
 use crate::theme::tokens::{ButtonSize, StyledExt};
 use crate::theme::Theme;
 
@@ -74,8 +74,21 @@ impl MessageScrollerState {
     }
 
     /// First row currently in view (viewport-top hint for the rail).
+    ///
+    /// Kept current by the wheel handler and by every programmatic scroll
+    /// ([`Self::scroll_to_item`], [`Self::scroll_by`], [`Self::scroll_to_end`],
+    /// [`Self::reset`]); gpui only fires the scroll handler for wheel and
+    /// scrollbar gestures, so those paths must refresh it by hand or the rail
+    /// keeps highlighting the turn the reader left behind.
     pub fn first_visible_index(&self) -> usize {
         self.visible_start.get()
+    }
+
+    /// Point the reader hint at `ix` without waiting for the list's scroll
+    /// handler — programmatic scrolls never invoke it.
+    fn note_visible_start(&self, ix: usize) {
+        self.visible_start
+            .set(ix.min(self.item_count().saturating_sub(1)));
     }
 
     pub fn list_state(&self) -> ListState {
@@ -215,6 +228,9 @@ impl MessageScrollerState {
             item_ix: index,
             offset_in_item: px(0.),
         });
+        // A programmatic scroll skips the list's handler; without this the
+        // rail (and repeated ⌘↑/⌘↓ jumps) would read a stale viewport top.
+        self.note_visible_start(index);
         true
     }
 
@@ -226,6 +242,9 @@ impl MessageScrollerState {
             item_ix: self.item_count(),
             offset_in_item: px(0.),
         });
+        // The live edge is the newest content; a follow-up jump uses the
+        // reader hint, so keep it pointing at the tail rather than a stale row.
+        self.note_visible_start(self.item_count());
     }
 
     /// Scroll the transcript by `distance` pixels — positive moves toward the
@@ -249,8 +268,7 @@ impl MessageScrollerState {
             self.list
                 .set_offset_from_scrollbar(gpui::point(px(0.), -target));
             // Programmatic scrolling does not invoke the list's scroll handler.
-            self.visible_start
-                .set(self.list.logical_scroll_top().item_ix);
+            self.note_visible_start(self.list.logical_scroll_top().item_ix);
         }
     }
 
@@ -339,6 +357,7 @@ fn render_jump_button(state: MessageScrollerState, theme: Theme) -> impl IntoEle
             button
                 .elevation_2(&theme)
                 .rounded_full()
+                .tip(tr!("message_scroller.jump_to_latest"))
                 .bg(theme.bg_composer)
                 .cursor_pointer()
                 .hover(|style| style.bg(theme.bg_raised))
@@ -634,6 +653,27 @@ mod tests {
         assert!(state.is_following_tail());
         assert!(!state.has_unread());
         assert_eq!(cx.debug_bounds("probe-row-2").unwrap().top(), bottom.top());
+    }
+
+    #[test]
+    fn programmatic_scroll_updates_the_viewport_hint() {
+        let state = MessageScrollerState::new(40);
+        assert_eq!(state.first_visible_index(), 0);
+        // A rail tick / ⌘↑ jump moves the reader hint without a wheel event.
+        assert!(state.scroll_to_item(12));
+        assert!(!state.is_following_tail());
+        assert_eq!(state.first_visible_index(), 12);
+        // A second jump from the same state must advance the hint, so
+        // repeated keyboard jumps keep walking instead of re-reading row 12.
+        assert!(state.scroll_to_item(30));
+        assert_eq!(state.first_visible_index(), 30);
+        // Resuming the tail repoints the hint at the newest content.
+        state.scroll_to_end();
+        assert!(state.is_following_tail());
+        assert_eq!(state.first_visible_index(), 39);
+        // A refused scroll must not move the hint.
+        assert!(!state.scroll_to_item(40));
+        assert_eq!(state.first_visible_index(), 39);
     }
 
     #[test]

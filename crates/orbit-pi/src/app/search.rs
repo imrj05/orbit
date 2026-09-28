@@ -216,6 +216,7 @@ impl OrbitApp {
             .child(search_nav_button(
                 "search-prev",
                 "icons/chevron-up.svg",
+                tr!("search.previous_match"),
                 !nav_enabled,
                 theme,
                 cx.listener(|this, _, _, cx| this.step_search(false, cx)),
@@ -223,12 +224,14 @@ impl OrbitApp {
             .child(search_nav_button(
                 "search-next",
                 "icons/chevron-down.svg",
+                tr!("search.next_match"),
                 !nav_enabled,
                 theme,
                 cx.listener(|this, _, _, cx| this.step_search(true, cx)),
             ))
             .child(
                 icon_button_frame(div().id("search-close-btn"), &theme, ButtonSize::Compact)
+                    .tip(tr!("common.close"))
                     .cursor_pointer()
                     .text_color(theme.text_2)
                     .hover(|s| s.bg(theme.overlay).text_color(theme.text))
@@ -252,12 +255,14 @@ impl OrbitApp {
 fn search_nav_button(
     id: &'static str,
     glyph: &'static str,
+    label: String,
     disabled: bool,
     theme: Theme,
     listener: impl Fn(&gpui::MouseUpEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     icon_button_frame(div().id(id), &theme, ButtonSize::Compact)
         .group(BUTTON_GROUP)
+        .tip(label)
         .when(!disabled, |button| {
             press(button)
                 .cursor_pointer()

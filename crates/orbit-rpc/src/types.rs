@@ -768,6 +768,20 @@ pub struct QuotaReport {
     pub error: Option<String>,
 }
 
+/// Present a provider-reported plan tier in its documented, canonical form
+/// (`Pro`, `Max`, `Plus`). Providers are inconsistent about casing — Ollama's
+/// `/api/usage` returns `pro` while its settings page returns `Pro` — so the
+/// first character is upper-cased and the rest is left untouched. That keeps
+/// the badge stable across providers without mangling an acronym or a
+/// provider-specific label such as `ChatGPT Plus`.
+fn plan_display_label(plan: &str) -> String {
+    let mut chars = plan.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
 impl QuotaReport {
     /// Parse one report object from a `quota.list` payload.
     pub fn from_value(value: &Value) -> Option<Self> {
@@ -781,7 +795,7 @@ impl QuotaReport {
             .get("plan")
             .and_then(Value::as_str)
             .filter(|plan| !plan.is_empty())
-            .map(str::to_owned);
+            .map(plan_display_label);
         let windows = value
             .get("windows")
             .and_then(Value::as_array)
@@ -2220,5 +2234,24 @@ mod tests {
 
         assert!(!reports[2].has_data());
         assert_eq!(reports[2].note.as_deref(), Some("no usage API"));
+    }
+
+    #[test]
+    fn canonicalizes_lowercase_plan_labels() {
+        // Ollama's API reports `pro`; its settings page reports `Pro`. The
+        // badge must read the same either way, and acronyms must survive.
+        for (raw, expected) in [
+            ("pro", "Pro"),
+            ("max", "Max"),
+            ("Pro", "Pro"),
+            ("ChatGPT Plus", "ChatGPT Plus"),
+        ] {
+            let value: Value = serde_json::from_str(&format!(
+                r#"{{"providers":[{{"provider":"ollama","kind":"subscription","plan":"{raw}","windows":[]}}]}}"#
+            ))
+            .unwrap();
+            let reports = parse_quota_reports(&value);
+            assert_eq!(reports[0].plan.as_deref(), Some(expected), "raw: {raw}");
+        }
     }
 }

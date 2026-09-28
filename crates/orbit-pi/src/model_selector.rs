@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 
 use crate::app::{
     button_frame, icon, icon_button_frame, icon_dyn, picker_entry, picker_search_frame,
-    picker_surface, ModelEntry,
+    picker_surface, ModelEntry, TipExt,
 };
 use crate::composer::ComposerInput;
 use crate::context_meter::format_tokens;
@@ -1141,6 +1141,11 @@ fn favorite_button(
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> gpui::AnyElement {
     icon_button_frame(div(), &theme, ButtonSize::Default)
+        .tip(if favorited {
+            tr!("model_selector.unfavorite")
+        } else {
+            tr!("model_selector.favorite")
+        })
         .cursor_pointer()
         .group_hover("picker-row", |s| s.opacity(1.))
         .when(!favorited, |button| button.opacity(0.))

@@ -25,7 +25,7 @@ use gpui::{
 use crate::app::{
     button_frame, context_menu_entry, context_menu_separator, context_menu_surface, empty_state,
     file_glyph, icon, icon_button_frame, nerd_font_family, picker_search_frame, refresh_glyph,
-    EmptyFill, BUTTON_GROUP, PRESS_DIM,
+    EmptyFill, TipExt, BUTTON_GROUP, PRESS_DIM,
 };
 use crate::composer::ComposerInput;
 use crate::diff_view::{
@@ -41,6 +41,9 @@ use crate::usage::tooltip::Tooltip;
 /// Pane width defaults / drag clamps.
 const PANE_DEFAULT_W: f32 = 460.;
 const PANE_MIN_W: f32 = 300.;
+/// Ceiling a left-edge drag can reach. Full width is exempt from this cap — it
+/// deliberately takes the whole column beside the sidebar.
+const PANE_MAX_W: f32 = 900.;
 /// Below this width the ±stats collapse out of the toolbar.
 const STATS_MIN_PANE_W: f32 = 380.;
 /// Below this width the changed-files tree is hidden (responsive).
@@ -48,9 +51,6 @@ const TREE_MIN_PANE_W: f32 = 440.;
 /// Directory tree column width range.
 const TREE_MIN_COL_W: f32 = 180.;
 const TREE_MAX_COL_W: f32 = 240.;
-/// The minimized pane's rail width: one icon column, still a resize handle's
-/// grab away from coming back.
-const PANE_RAIL_W: f32 = 44.;
 /// Review diff row metrics. The row painters live in [`crate::diff_view`], so
 /// the pane and the Review page's preview share them; only the gap height is
 /// the pane's alone (the page's preview lists whole files).
@@ -116,10 +116,9 @@ pub struct SidePane {
     /// The window width Full width expands to — set by the app every render,
     /// so it tracks a sidebar toggle or a window resize.
     available_width: Pixels,
-    /// The width Full width / Minimize return to.
+    /// The width Full width returns to.
     restore_width: Pixels,
     full_width: bool,
-    minimized: bool,
 
     // ── Changed-files tree ──
     /// User toggle (still auto-hidden on narrow panes).
@@ -159,7 +158,6 @@ impl SidePane {
             available_width: width,
             restore_width: width,
             full_width: false,
-            minimized: false,
             workspace: None,
             session: None,
             latest_turn: None,
@@ -216,9 +214,9 @@ impl SidePane {
         self.full_width
     }
 
-    /// Leave Full width and restore the docked width, without touching
-    /// Minimize. The app calls this when a feature page opens or the sessions
-    /// sidebar is toggled — both need the window back.
+    /// Leave Full width and restore the docked width. The app calls this when
+    /// a feature page opens or the sessions sidebar is toggled — both need the
+    /// window back.
     pub fn leave_full_width(&mut self, cx: &mut Context<Self>) {
         if !self.full_width {
             return;
@@ -247,12 +245,12 @@ impl SidePane {
         }
     }
 
-    /// Drag-resize from the pane's left edge. A drag leaves Full width /
-    /// Minimize and becomes the width every later restore returns to.
+    /// Drag-resize from the pane's left edge. A drag leaves Full width and
+    /// becomes the width every later restore returns to, clamped to the drag
+    /// range. Full width itself is not a drag and is not capped here.
     pub fn set_width(&mut self, width: Pixels, cx: &mut Context<Self>) {
         self.full_width = false;
-        self.minimized = false;
-        let clamped = width.max(px(PANE_MIN_W));
+        let clamped = width.clamp(px(PANE_MIN_W), px(PANE_MAX_W));
         if clamped != self.width {
             self.width = clamped;
             self.restore_width = clamped;
@@ -279,7 +277,7 @@ impl SidePane {
         }
         // A window that shrank under a docked pane tightens it to fit; the
         // user's stored width is untouched and comes back with a wider window.
-        if !self.minimized && self.width > self.available_width {
+        if self.width > self.available_width {
             self.apply_width(self.available_width, cx);
         }
     }
@@ -291,10 +289,10 @@ impl SidePane {
         }
     }
 
-    /// The width Full width / Minimize return to: the pane's width before the
-    /// first transient mode, not the transient width itself.
+    /// The width Full width returns to: the pane's width before the first
+    /// transient mode, not the transient width itself.
     fn remember_restore_width(&mut self) {
-        if !self.full_width && !self.minimized {
+        if !self.full_width {
             self.restore_width = self.width;
         }
     }
@@ -308,31 +306,9 @@ impl SidePane {
             return;
         }
         self.remember_restore_width();
-        self.minimized = false;
         self.full_width = true;
         let width = self.available_width.max(px(PANE_MIN_W));
         self.apply_width(width, cx);
-    }
-
-    /// Collapse the pane to a rail that keeps its restore control in reach.
-    /// From Full width the first step is back to the docked pane, not the
-    /// rail: minimizing a full-page diff means giving the window back, not
-    /// hiding the panel.
-    fn toggle_minimize(&mut self, cx: &mut Context<Self>) {
-        if self.minimized {
-            self.minimized = false;
-            let width = self.restore_width.max(px(PANE_MIN_W));
-            self.apply_width(width, cx);
-            return;
-        }
-        if self.full_width {
-            self.leave_full_width(cx);
-            return;
-        }
-        self.remember_restore_width();
-        self.minimized = true;
-        self.source_menu_open = false;
-        self.apply_width(px(PANE_RAIL_W), cx);
     }
 
     /// Toggle wrapped and unwrapped diff rows.
@@ -474,9 +450,8 @@ impl SidePane {
         }
         self.open = false;
         self.source_menu_open = false;
-        // A pane that comes back later must not come back as a rail or a
-        // full-width sheet; restore the width the reader dialed in.
-        self.minimized = false;
+        // A pane that comes back later must not come back as a full-width
+        // sheet; restore the width the reader dialed in.
         self.full_width = false;
         self.width = self.restore_width.max(px(PANE_MIN_W));
         cx.notify();
@@ -869,7 +844,7 @@ impl SidePane {
         let tree_visible = tree_available && self.tree_open;
 
         // Header row: title + tree toggle + refresh + the panel-window
-        // controls (full width, minimize, close).
+        // controls (full width, close).
         let head = div()
             .h(px(PANE_ROW_H))
             .flex()
@@ -895,6 +870,7 @@ impl SidePane {
             .children(tree_available.then(|| {
                 icon_button_frame(div().id("review-tree-toggle"), &theme, ButtonSize::Default)
                     .group(BUTTON_GROUP)
+                    .tip(tr!("sidepane.toggle_tree"))
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.bg_hover))
                     .active(|s| s.opacity(PRESS_DIM))
@@ -912,6 +888,7 @@ impl SidePane {
             .child(
                 icon_button_frame(div().id("review-refresh"), &theme, ButtonSize::Default)
                     .group(BUTTON_GROUP)
+                    .tip(tr!("common.refresh"))
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.bg_hover))
                     .active(|s| s.opacity(PRESS_DIM))
@@ -944,19 +921,10 @@ impl SidePane {
                 theme,
                 cx,
             ))
-            .child(self.view_toggle(
-                "review-minimize",
-                "icons/chevrons-right.svg",
-                false,
-                true,
-                tr!("sidepane.minimize"),
-                Self::toggle_minimize,
-                theme,
-                cx,
-            ))
             .child(
                 icon_button_frame(div().id("pane-close"), &theme, ButtonSize::Default)
                     .group(BUTTON_GROUP)
+                    .tip(tr!("common.close"))
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.bg_hover))
                     .active(|s| s.opacity(PRESS_DIM))
@@ -1139,36 +1107,6 @@ impl SidePane {
             .active(|style| style.opacity(PRESS_DIM))
             .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into())
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| action(this, cx)))
-            .into_any_element()
-    }
-
-    /// The minimized pane: a slim rail holding the one control that brings
-    /// the panel back — nothing else fits legibly at this width.
-    fn render_rail(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .flex_1()
-            .min_h_0()
-            .w_full()
-            .flex()
-            .flex_col()
-            .items_center()
-            .pt(px(8.))
-            .gap(px(6.))
-            .child(self.view_toggle(
-                "review-restore",
-                "icons/chevrons-left.svg",
-                false,
-                true,
-                tr!("sidepane.restore_panel"),
-                Self::toggle_minimize,
-                theme,
-                cx,
-            ))
-            .child(icon(
-                "icons/file-diff.svg",
-                IconSize::Small.px(&theme),
-                theme.text_3,
-            ))
             .into_any_element()
     }
 
@@ -1927,13 +1865,10 @@ impl Render for SidePane {
             return div().into_any_element();
         }
         let theme = *theme::get(cx);
-        let body = if self.minimized {
-            self.render_rail(theme, cx)
-        } else {
-            self.body(window, theme, cx)
-        };
+        let body = self.body(window, theme, cx);
         div()
             .id("side-pane")
+            .debug_selector(|| "side-pane".to_string())
             .relative()
             .flex_none()
             .w(self.width)
@@ -2023,7 +1958,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn full_width_minimize_and_dock_share_one_restore_point(cx: &mut gpui::TestAppContext) {
+    fn full_width_and_dock_share_one_restore_point(cx: &mut gpui::TestAppContext) {
         let pane = pane(cx);
         cx.update(|cx| {
             pane.update(cx, |pane, cx| {
@@ -2034,26 +1969,8 @@ mod tests {
                 assert_eq!(pane.width(), px(1200.));
                 assert!(pane.full_width);
 
-                // From Full width, Minimize gives the window back to the
-                // docked pane rather than hiding the panel in a rail...
-                pane.toggle_minimize(cx);
-                assert_eq!(pane.width(), px(500.));
-                assert!(!pane.full_width);
-                assert!(!pane.minimized);
-
-                // ...and only a second Minimize, from the docked pane, does
-                // that.
-                pane.toggle_minimize(cx);
-                assert_eq!(pane.width(), px(PANE_RAIL_W));
-                assert!(pane.minimized);
-                pane.toggle_minimize(cx);
-                assert_eq!(pane.width(), px(500.));
-                assert!(!pane.minimized);
-
                 // `leave_full_width` — the app's feature-page and sidebar
-                // path — docks without touching Minimize.
-                pane.toggle_full_width(cx);
-                assert_eq!(pane.width(), px(1200.));
+                // path — docks back to the width the reader dialed in.
                 pane.leave_full_width(cx);
                 assert_eq!(pane.width(), px(500.));
                 assert!(!pane.full_width);
@@ -2068,6 +1985,29 @@ mod tests {
                 assert_eq!(pane.width(), px(500.));
                 pane.set_available_width(px(420.), cx);
                 assert_eq!(pane.width(), px(420.));
+            });
+        });
+    }
+
+    /// A left-edge drag cannot grow past the drag ceiling. Full width is a
+    /// separate path with no such cap — it deliberately takes the whole
+    /// column beside the sidebar.
+    #[gpui::test]
+    fn a_drag_resize_is_capped_but_full_width_is_not(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_available_width(px(1400.), cx);
+                pane.set_width(px(1200.), cx);
+                assert_eq!(
+                    pane.width(),
+                    px(PANE_MAX_W),
+                    "a drag is capped at the drag ceiling"
+                );
+
+                pane.toggle_full_width(cx);
+                assert_eq!(pane.width(), px(1400.));
+                assert!(pane.full_width);
             });
         });
     }
@@ -2179,14 +2119,6 @@ mod tests {
             });
             let _ = cx.draw(point(px(0.), px(0.)), viewport(), |_, _| pane.clone());
         }
-        // The minimized rail draws too.
-        cx.update(|_, cx| {
-            pane.update(cx, |pane, cx| {
-                pane.toggle_minimize(cx);
-                assert!(pane.minimized);
-            });
-        });
-        let _ = cx.draw(point(px(0.), px(0.)), viewport(), |_, _| pane.clone());
     }
 
     /// Unwrapped text keeps the file header fixed: its name and change counts

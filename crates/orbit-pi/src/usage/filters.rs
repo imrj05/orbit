@@ -11,7 +11,8 @@
 
 use crate::app::{
     button_frame, context_menu_entry, context_menu_separator, context_menu_surface,
-    icon_button_frame, menu_header, picker_search_frame, press, refresh_glyph, BUTTON_GROUP,
+    icon_button_frame, menu_header, picker_search_frame, press, refresh_glyph, TipExt,
+    BUTTON_GROUP,
 };
 use chrono::Datelike;
 use gpui::{
@@ -925,6 +926,7 @@ fn calendar(page: &UsagePage, cx: &mut gpui::Context<UsagePage>, theme: Theme) -
         .items_center()
         .child(
             icon_button_frame(div().id("usage-cal-prev"), &theme, ButtonSize::Default)
+                .tip(tr!("usage.previous_month"))
                 .cursor_pointer()
                 .hover(|style| style.bg(theme.bg_hover))
                 .on_mouse_down(MouseButton::Left, {
@@ -952,6 +954,7 @@ fn calendar(page: &UsagePage, cx: &mut gpui::Context<UsagePage>, theme: Theme) -
         )
         .child(
             icon_button_frame(div().id("usage-cal-next"), &theme, ButtonSize::Default)
+                .tip(tr!("usage.next_month"))
                 .cursor_pointer()
                 .hover(|style| style.bg(theme.bg_hover))
                 .on_mouse_down(MouseButton::Left, {
@@ -1109,6 +1112,7 @@ pub fn toggle_chip(
             &theme,
             ButtonSize::None,
         )
+        .tip(tr!("usage.clear_filter"))
         .cursor_pointer()
         .hover(|style| style.bg(theme.overlay_strong))
         .on_mouse_down(MouseButton::Left, on_clear)

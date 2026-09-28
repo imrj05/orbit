@@ -1912,7 +1912,15 @@ impl Transcript {
             if user_turns.is_empty() {
                 return false;
             }
-            let current = self.scroller.first_visible_index();
+            // At the live edge the reader is on the newest turn; the
+            // viewport hint only anchors a reader who scrolled away. Without
+            // this, ⌘↑ from the tail compared against a stale row 0 and never
+            // moved.
+            let current = if self.scroller.is_following_tail() {
+                self.scroller.item_count()
+            } else {
+                self.scroller.first_visible_index()
+            };
             // The turn the viewport is reading: the newest user turn at or
             // above the first visible row (same rule the rail uses).
             let pos = user_turns
@@ -1924,7 +1932,7 @@ impl Transcript {
             } else {
                 (pos + 1).min(user_turns.len() - 1)
             };
-            if next_pos == pos && user_turns.len() > 1 {
+            if next_pos == pos {
                 return false;
             }
             user_turns[next_pos]
@@ -3246,10 +3254,17 @@ mod tests {
         });
         let mut t = Transcript::new();
         t.load_from(&payload);
-        // Viewport starts at the first row: previous has nowhere to go.
+        // The transcript opens at the live edge, so the reader is on the
+        // newest turn: previous jumps back to the first user turn.
+        assert!(t.jump_turn(-1));
+        assert_eq!(t.scroller.first_visible_index(), 0);
+        // Already on the first user turn: previous has nowhere to go.
         assert!(!t.jump_turn(-1));
-        // Next jumps to the second user turn.
+        // Next walks forward to the second user turn.
         assert!(t.jump_turn(1));
+        assert_eq!(t.scroller.first_visible_index(), 2);
+        // Past the last user turn: next has nowhere to go.
+        assert!(!t.jump_turn(1));
         // Empty transcripts have nothing to jump to.
         let t = Transcript::new();
         assert!(!t.jump_turn(1));

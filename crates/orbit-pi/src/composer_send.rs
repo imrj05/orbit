@@ -204,6 +204,30 @@ mod tests {
     }
 
     #[gpui::test]
+    fn turn_navigation_shortcuts_stay_live_from_the_composer(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            crate::bind_keys(cx);
+            let (prev, next) = if cfg!(target_os = "macos") {
+                ("cmd-up", "cmd-down")
+            } else {
+                ("ctrl-up", "ctrl-down")
+            };
+            // Global bindings (no key context): they must resolve while the
+            // composer owns focus, which is where the user presses them.
+            assert!(bound_action(cx, prev, "Composer")
+                .unwrap()
+                .as_any()
+                .is::<crate::PrevTurn>());
+            assert!(bound_action(cx, next, "Composer")
+                .unwrap()
+                .as_any()
+                .is::<crate::NextTurn>());
+        });
+    }
+
+    #[gpui::test]
     fn other_inputs_keep_their_enter_actions_and_cannot_use_chat_sends(
         cx: &mut gpui::TestAppContext,
     ) {

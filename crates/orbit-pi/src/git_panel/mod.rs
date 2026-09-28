@@ -27,7 +27,7 @@ use gpui::{
 use crate::app::{
     button_frame, context_menu_entry, context_menu_separator, context_menu_surface, icon,
     icon_button_frame, input_field_frame, menu_header, nerd_font_family, picker_entry,
-    picker_search_frame, picker_surface, press, refresh_glyph, spinner, BUTTON_GROUP,
+    picker_search_frame, picker_surface, press, refresh_glyph, spinner, TipExt, BUTTON_GROUP,
 };
 use crate::commit_message;
 use crate::gh;
@@ -2419,6 +2419,7 @@ impl GitPanel {
             .child(div().w(px(1.)).h(px(18.)).bg(theme.border))
             .child(
                 icon_button_frame(div().id("git-sync-more"), &theme, ButtonSize::Default)
+                    .tip(tr!("git_panel.tip_sync_more"))
                     .h_full()
                     .rounded_l_none()
                     .cursor_pointer()

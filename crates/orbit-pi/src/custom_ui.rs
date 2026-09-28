@@ -21,7 +21,7 @@ use gpui::{
 };
 use serde_json::Value;
 
-use crate::app::{icon, icon_button_frame};
+use crate::app::{icon, icon_button_frame, TipExt};
 use crate::terminal::encode_key;
 use crate::theme;
 use crate::theme::tokens::{ButtonSize, IconSize, StyledExt, TextSize};
@@ -366,6 +366,7 @@ impl Render for CustomUi {
             .child(
                 icon_button_frame(div().id("custom-ui-close"), &theme, ButtonSize::Default)
                     .debug_selector(|| "custom-ui-close".to_string())
+                    .tip(tr!("common.close"))
                     .cursor_pointer()
                     .hover(|style| style.bg(theme.bg_hover))
                     .on_click(cx.listener(Self::on_close_click))

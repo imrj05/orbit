@@ -25,7 +25,7 @@ use super::walk;
 use crate::app::{
     button_frame, context_menu_entry, context_menu_separator, context_menu_surface, empty_state,
     file_badge, file_glyph, icon, icon_button_frame, nerd_font_family, picker_search_frame, press,
-    refresh_glyph, EmptyFill, BUTTON_GROUP,
+    refresh_glyph, EmptyFill, TipExt, BUTTON_GROUP,
 };
 use crate::composer::ComposerInput;
 use crate::git;
@@ -796,6 +796,7 @@ impl ProjectPanel {
                 "explorer-new-file",
                 "icons/file-plus.svg",
                 theme.text_3,
+                tr!("explorer.new_file"),
                 cx.listener(|this, _: &ClickEvent, window, cx| {
                     this.start_new_file(window, cx);
                 }),
@@ -805,6 +806,7 @@ impl ProjectPanel {
                 "explorer-new-folder",
                 "icons/folder-plus.svg",
                 theme.text_3,
+                tr!("explorer.new_folder"),
                 cx.listener(|this, _: &ClickEvent, window, cx| {
                     this.start_new_folder(window, cx);
                 }),
@@ -816,6 +818,7 @@ impl ProjectPanel {
                         &theme,
                         ButtonSize::Default,
                     )
+                    .tip(tr!("common.refresh"))
                     .cursor_pointer()
                     .hover(|el| el.bg(theme.bg_hover)),
                 )
@@ -835,6 +838,7 @@ impl ProjectPanel {
                 "explorer-collapse",
                 "icons/chevron-up.svg",
                 theme.text_3,
+                tr!("explorer.collapse"),
                 cx.listener(|this, _: &ClickEvent, _, cx| this.collapse_all(cx)),
             ))
             .child(ghost_icon(
@@ -850,6 +854,11 @@ impl ProjectPanel {
                 } else {
                     theme.text_3
                 },
+                if self.show_hidden {
+                    tr!("explorer.hide_hidden")
+                } else {
+                    tr!("explorer.show_hidden")
+                },
                 cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.show_hidden = !this.show_hidden;
                     this.stale = true;
@@ -862,6 +871,7 @@ impl ProjectPanel {
                 "explorer-close",
                 "icons/x.svg",
                 theme.text_3,
+                tr!("explorer.hide"),
                 cx.listener(|this, _: &ClickEvent, _, cx| {
                     // Close here — this listener already holds the panel's
                     // lease, so the app callback must not re-enter `update`
@@ -889,6 +899,7 @@ impl ProjectPanel {
                     "explorer-filter-clear",
                     "icons/x.svg",
                     theme.text_3,
+                    tr!("view.clear_filters"),
                     cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.filter.update(cx, |input, cx| input.clear(cx));
                         this.refresh_rows(cx);
@@ -1512,10 +1523,12 @@ fn ghost_icon(
     id: &'static str,
     path: &'static str,
     color: Hsla,
+    label: String,
     listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     press(
         icon_button_frame(div().id(id).group(BUTTON_GROUP), theme, ButtonSize::Default)
+            .tip(label)
             .cursor_pointer()
             .hover(|el| el.bg(theme.bg_hover)),
     )

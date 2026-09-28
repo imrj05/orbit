@@ -111,3 +111,39 @@ fn expanding_fills_the_page_beside_the_sidebar(cx: &mut gpui::TestAppContext) {
         "docking restores the reader's width"
     );
 }
+
+/// A wide docked Review pane must never spill past the window's right edge.
+/// The pane is clamped to the space left beside the sidebar, and the chat
+/// column yields by shrinking rather than forcing the row to overflow: a body
+/// that refuses to shrink below its content pushes the pane (the last flex
+/// child) clean out of the viewport.
+#[gpui::test]
+fn a_wide_docked_review_stays_inside_the_window(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+
+    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    let viewport = cx.update(|window, _| window.viewport_size());
+
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            for dependency in &mut app.deps {
+                dependency.installed = true;
+            }
+            app.sidebar_visible = true;
+            app.sidepane.update(cx, |pane, cx| {
+                pane.toggle(cx);
+                // The widest a left-edge drag reaches at the reserve clamp.
+                pane.set_width(viewport.width - px(PANE_MAX_RESERVE), cx);
+            });
+        });
+    });
+    let _ = cx.draw(gpui::point(px(0.), px(0.)), viewport, |_, _| app.clone());
+
+    let pane = cx.debug_bounds("side-pane").expect("pane laid out");
+    assert!(
+        pane.right() <= viewport.width + px(1.),
+        "the docked review overflows the window: pane {pane:?}, viewport {viewport:?}"
+    );
+}

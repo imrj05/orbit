@@ -1903,6 +1903,7 @@ impl OrbitApp {
             )
             .child(
                 icon_button_frame(div().id(("sess-copy", ix)), &theme, ButtonSize::Compact)
+                    .tip(tr!("common.copy"))
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.bg_hover))
                     .on_click(move |_, _window, cx| {

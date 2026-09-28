@@ -333,6 +333,7 @@ impl OrbitApp {
                 };
                 let chip = div().id(ElementId::NamedInteger("attachment".into(), ix as u64));
                 button_frame(chip, &theme, ButtonSize::Medium)
+                    .tip(tr!("composer.remove_attachment"))
                     .border_1()
                     .border_color(theme.border)
                     .bg(theme.bg_raised)

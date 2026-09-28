@@ -63,7 +63,7 @@ use super::table::{
 use super::tooltip::Tooltip;
 use crate::app::{
     button_frame, context_menu_entry, context_menu_separator, context_menu_surface, icon,
-    icon_button_frame, picker_search_frame, press, BUTTON_GROUP,
+    icon_button_frame, picker_search_frame, press, TipExt, BUTTON_GROUP,
 };
 use crate::composer::ComposerInput;
 use crate::theme::tokens::{
@@ -4339,6 +4339,7 @@ fn open_session_cell(
         .child(
             icon_button_frame(div(), &theme, ButtonSize::Default)
                 .id(SharedString::from(format!("usage-open-{session}")))
+                .tip(tr!("usage.ctx_open_session"))
                 .cursor_pointer()
                 .opacity(0.)
                 .group_hover("usage-row", |style| style.opacity(1.))

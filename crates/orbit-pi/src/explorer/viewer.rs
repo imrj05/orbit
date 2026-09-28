@@ -25,7 +25,7 @@ use gpui::{
 
 use crate::app::{
     button_frame, empty_state, file_badge, file_glyph, icon, icon_button_frame, nerd_font_family,
-    press, EmptyFill,
+    press, EmptyFill, TipExt,
 };
 use crate::composer::ComposerInput;
 use crate::highlight::{self, Lang, Token};
@@ -876,6 +876,7 @@ impl FileViewer {
                         &theme,
                         ButtonSize::None,
                     )
+                    .tip(tr!("explorer.close_tab"))
                     .cursor_pointer()
                     .hover(|el| el.bg(theme.overlay))
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -919,6 +920,7 @@ impl FileViewer {
             .child(tabs.flex_1().min_w_0())
             .child(
                 icon_button_frame(div().id("viewer-close"), &theme, ButtonSize::Default)
+                    .tip(tr!("common.close"))
                     .cursor_pointer()
                     .hover(|el| el.bg(theme.bg_hover))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {

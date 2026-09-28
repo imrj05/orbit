@@ -131,12 +131,14 @@ impl OrbitApp {
 
         let theme = *theme::get(cx);
         let preferred_id = preferred.id;
+        let preferred_label = preferred.label;
         let preferred_icon = preferred.icon.clone();
         let this = cx.entity().clone();
         let path = Rc::from(path.as_path());
 
         let primary = icon_button_frame(div().id("header-open-in"), &theme, ButtonSize::Medium)
             .group(BUTTON_GROUP)
+            .tip(tr!("open_in.open_in_app", app = preferred_label))
             .h_full()
             .rounded(px(0.))
             .rounded_tl(px(HEADER_CTRL_R))
@@ -157,6 +159,7 @@ impl OrbitApp {
         )
         .group(BUTTON_GROUP)
         .relative()
+        .tip(tr!("open_in.choose_app"))
         .h_full()
         .rounded(px(0.))
         .rounded_tr(px(HEADER_CTRL_R))

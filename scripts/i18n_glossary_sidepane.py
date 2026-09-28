@@ -11,8 +11,6 @@ GLOSSARY = {
         "Side-by-side view": "并排视图",
         "Full width": "全宽",
         "Restore width": "恢复宽度",
-        "Minimize": "最小化",
-        "Restore panel": "恢复面板",
     },
     "ja": {
         "Expand all": "すべて展開",
@@ -23,8 +21,6 @@ GLOSSARY = {
         "Side-by-side view": "並べて表示",
         "Full width": "全幅",
         "Restore width": "幅を復元",
-        "Minimize": "最小化",
-        "Restore panel": "パネルを復元",
     },
     "ko": {
         "Expand all": "모두 펼치기",
@@ -35,8 +31,6 @@ GLOSSARY = {
         "Side-by-side view": "나란히 보기",
         "Full width": "전체 너비",
         "Restore width": "너비 복원",
-        "Minimize": "최소화",
-        "Restore panel": "패널 복원",
     },
     "es": {
         "Expand all": "Expandir todo",
@@ -47,8 +41,6 @@ GLOSSARY = {
         "Side-by-side view": "Vista en paralelo",
         "Full width": "Ancho completo",
         "Restore width": "Restaurar ancho",
-        "Minimize": "Minimizar",
-        "Restore panel": "Restaurar panel",
     },
     "fr": {
         "Expand all": "Tout développer",
@@ -59,8 +51,6 @@ GLOSSARY = {
         "Side-by-side view": "Vue côte à côte",
         "Full width": "Pleine largeur",
         "Restore width": "Restaurer la largeur",
-        "Minimize": "Réduire",
-        "Restore panel": "Restaurer le panneau",
     },
     "de": {
         "Expand all": "Alle erweitern",
@@ -71,8 +61,6 @@ GLOSSARY = {
         "Side-by-side view": "Nebeneinander-Ansicht",
         "Full width": "Volle Breite",
         "Restore width": "Breite wiederherstellen",
-        "Minimize": "Minimieren",
-        "Restore panel": "Bereich wiederherstellen",
     },
     "pt-BR": {
         "Expand all": "Expandir tudo",
@@ -83,8 +71,6 @@ GLOSSARY = {
         "Side-by-side view": "Visão lado a lado",
         "Full width": "Largura total",
         "Restore width": "Restaurar largura",
-        "Minimize": "Minimizar",
-        "Restore panel": "Restaurar painel",
     },
     "ru": {
         "Expand all": "Развернуть все",
@@ -95,8 +81,6 @@ GLOSSARY = {
         "Side-by-side view": "Вид рядом",
         "Full width": "Во всю ширину",
         "Restore width": "Восстановить ширину",
-        "Minimize": "Свернуть",
-        "Restore panel": "Восстановить панель",
     },
     "it": {
         "Expand all": "Espandi tutto",
@@ -107,7 +91,5 @@ GLOSSARY = {
         "Side-by-side view": "Vista affiancata",
         "Full width": "Larghezza intera",
         "Restore width": "Ripristina larghezza",
-        "Minimize": "Riduci",
-        "Restore panel": "Ripristina pannello",
     },
 }

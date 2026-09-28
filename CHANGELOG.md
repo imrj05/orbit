@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Every icon-only button across the app now carries the same native tooltip the
+  send / stop button has — a localized label, usually with its keyboard shortcut
+  (e.g. `Toggle Terminal (⌘J)`). Covers the top bar, sidebar, transcript copy /
+  diff controls, composer add button, window caption buttons, Explorer, Review
+  pane, Git, Usage, terminal, settings, and the picker / dialog controls.
+
 - The sidebar's Projects list now defaults to most recent activity, with a
   sort control on the header to order workspace groups by recently added, name
   (A–Z or Z–A), or session count, or fall back to the manual added order. The
@@ -22,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   persists in `~/.orbit-pi/workspaces.json` beside the project list.
 
 ### Fixed
+
+- The conversation rail's active tick now follows every navigation path, not
+  just wheel and scrollbar gestures. Clicking a tick and pressing ⌘↑/⌘↓ scroll
+  the list programmatically, which never fired gpui's scroll handler, so the
+  highlight stayed on the turn the reader left behind. Repeated ⌘↑/⌘↓ presses
+  also walked a single turn and stalled; they now step through the transcript,
+  and ⌘↑ from the live edge jumps back to the previous turn instead of doing
+  nothing. The viewport hint wins while a run streams too, so scrolling up to
+  read history moves the rail even mid-stream.
 
 - The sidebar's project headers now stay pinned as you scroll through *any*
   expanded group, not just the active workspace. Previously only the open

@@ -14,7 +14,7 @@ use gpui::{
 };
 use orbit_rpc::{ContextUsage, SessionUsage};
 
-use crate::app::{button_frame, icon_button_frame};
+use crate::app::{button_frame, icon_button_frame, TipExt};
 use crate::theme::tokens::{ButtonSize, IconSize, Radius, StyledExt, TextSize};
 use crate::theme::Theme;
 
@@ -367,6 +367,7 @@ pub fn details_card(
                 )
                 .child(
                     icon_button_frame(div().id("context-close"), &theme, ButtonSize::Compact)
+                        .tip(tr!("common.close"))
                         .cursor_pointer()
                         .hover(|s| s.bg(theme.overlay))
                         .on_click(on_close)
