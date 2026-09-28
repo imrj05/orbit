@@ -5779,14 +5779,8 @@ fn render_block(
             .flex_col()
             .gap(px(4.))
             .children(lines.iter().enumerate().map(move |(sub, line)| {
-                paragraph_text(
-                    line,
-                    14.,
-                    26.,
-                    FontWeight::NORMAL,
-                    theme.text_2,
-                    md_id(ix, salt, block_ix, sub),
-                    theme,
+                render_container_line(
+                    line, ix, salt, block_ix, sub, 14., 26., FontWeight::NORMAL, theme.text_2, theme,
                 )
             }))
             .into_any_element(),
@@ -5809,7 +5803,7 @@ fn render_block(
             aligns,
         } => render_table(header, rows, aligns, ix, salt, block_ix, theme).into_any_element(),
         Block::Image { alt, url } => {
-            render_markdown_image(alt, url, ix, salt, block_ix, theme).into_any_element()
+            render_markdown_image(alt, url, ix, salt, block_ix, 0, theme).into_any_element()
         }
     }
 }
@@ -5824,6 +5818,7 @@ fn render_markdown_image(
     ix: usize,
     salt: u64,
     block_ix: usize,
+    sub: usize,
     theme: Theme,
 ) -> impl IntoElement {
     let url = url.to_string();
@@ -5831,7 +5826,7 @@ fn render_markdown_image(
     let fallback_alt = alt.to_string();
     div().w_full().min_w_0().flex().child(
         img(url)
-            .id(md_id(ix, salt, block_ix, 0))
+            .id(md_id(ix, salt, block_ix, sub))
             // `min_w_0` is load-bearing: a replaced element's automatic minimum
             // width is its intrinsic width, so without it `max_w_full` loses
             // and a large screenshot overflows the column and the rail.
@@ -5911,16 +5906,50 @@ fn render_alert(
                 ),
         )
         .children(lines.iter().enumerate().map(move |(sub, line)| {
-            paragraph_text(
+            render_container_line(
                 line,
+                ix,
+                salt,
+                block_ix,
+                sub,
                 14.,
                 26.,
                 FontWeight::NORMAL,
                 theme.assistant_text,
-                md_id(ix, salt, block_ix, sub),
                 theme,
             )
         }))
+}
+
+/// Render one line inside a quote or alert. A standalone image line (GitHub
+/// quotes a bug report whose screenshot was pasted as a raw `<img>` tag) paints
+/// as an image instead of showing the tag as text.
+#[allow(clippy::too_many_arguments)]
+fn render_container_line(
+    line: &str,
+    ix: usize,
+    salt: u64,
+    block_ix: usize,
+    sub: usize,
+    size: f32,
+    line_height: f32,
+    weight: FontWeight,
+    color: Hsla,
+    theme: Theme,
+) -> AnyElement {
+    if let Some((alt, url)) = image_line(line) {
+        return render_markdown_image(&alt, &url, ix, salt, block_ix, sub, theme).into_any_element();
+    }
+    paragraph_text(
+        line,
+        size,
+        line_height,
+        weight,
+        color,
+        md_id(ix, salt, block_ix, sub),
+        theme,
+    )
+    .into_any_element()
 }
 
 /// `ml-5` bullet / numbered item with a hanging indent on wrap. GFM task
@@ -5974,13 +6003,16 @@ fn render_list_item(
                 .justify_start()
                 .child(marker),
         )
-        .child(div().min_w_0().flex_1().child(paragraph_text(
+        .child(div().min_w_0().flex_1().child(render_container_line(
             &item.text,
+            ix,
+            salt,
+            block_ix,
+            sub,
             14.,
             26.,
             FontWeight::NORMAL,
             text_color,
-            md_id(ix, salt, block_ix, sub),
             theme,
         )))
         .into_any_element()
@@ -7801,12 +7833,43 @@ mod tests {
     }
 
     #[test]
+    fn parse_blocks_handles_github_pasted_image_tags() {
+        // GitHub stores a pasted screenshot as a raw `<img>` whose attributes
+        // are ordered `alt width height src`, without a self-closing slash.
+        let tag = "<img alt=\"Image\" width=\"1450\" height=\"932\" src=\"https://private-user-images.githubusercontent.com/1/2-a.png?jwt=eyJ0eXAi.eyJpc3Mi.OiJnaXRodWI\">";
+        let blocks = parse_blocks(&format!("### What happened?\n\n{tag}\n\n### Steps\n\n1. Open\n"));
+        assert!(
+            matches!(&blocks[1], Block::Image { alt, url }
+                if alt == "Image"
+                    && url.starts_with("https://private-user-images.githubusercontent.com/1/2-a.png?jwt=")),
+            "expected an image block at index 1"
+        );
+    }
+
+    #[test]
     fn image_markdown_inside_prose_is_not_split() {
         // A line that only *contains* an image stays prose; only a standalone
         // image line becomes a block, so sentences are never cut in half.
         let blocks = parse_blocks("see ![inline](https://example.com/x.png) here");
         assert!(matches!(&blocks[0], Block::Paragraph(lines)
                 if lines.join(" ") == "see ![inline](https://example.com/x.png) here"));
+    }
+
+    #[test]
+    fn quoted_image_lines_are_recognized() {
+        // A quoted bug report keeps its `<img>` on a `> ` line; the block stays
+        // a Quote, but the line inside it must still parse as an image.
+        let blocks = parse_blocks(
+            "> ### What happened?\n> <img alt=\"Image\" width=\"1450\" height=\"932\" src=\"https://private-user-images.githubusercontent.com/1/2-a.png?jwt=eyJ0eXAi.eyJpc3Mi.OiJnaXRodWI\">\n> \n> ### Steps\n> 1. Open\n",
+        );
+        let Block::Quote(lines) = &blocks[0] else {
+            panic!("expected the blockquote to stay a Quote");
+        };
+        assert!(image_line(&lines[1]).is_some());
+        assert_eq!(
+            image_line(&lines[1]).unwrap().1,
+            "https://private-user-images.githubusercontent.com/1/2-a.png?jwt=eyJ0eXAi.eyJpc3Mi.OiJnaXRodWI"
+        );
     }
 
     #[test]

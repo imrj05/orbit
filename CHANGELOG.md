@@ -43,6 +43,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- GitHub issue/PR bodies and comments now render screenshots that GitHub stored as raw
+  HTML `<img src="…">` tags when the line is inside a blockquote or list item — a quoted
+  bug report is a common case. Previously only a standalone top-level `<img>` line became
+  an image, so these showed the tag as text; the whole tag/its URL rendered as a link.
+
 - The **New pull request** form's **Base branch** picker, and the **Template** pickers on
   both new-issue/new-PR forms, no longer float over the wrong part of the form or paint
   behind its fields. They are anchored to the chip that opens them (opening upward at the
