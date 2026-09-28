@@ -138,6 +138,10 @@ pub(crate) fn sessions_with_placeholder(
 pub(crate) fn build_sidebar_rows(
     sessions: &[SessionInfo],
     workspaces: &[PathBuf],
+    // Sidebar ordering for the workspace groups, plus the per-workspace
+    // added-at stamps used by [`WorkspaceSort::DateAdded`].
+    sort: WorkspaceSort,
+    added_at: &HashMap<PathBuf, SystemTime>,
     working_label: &str,
     collapsed_workspaces: &HashSet<String>,
     expanded_workspace_groups: &HashSet<String>,
@@ -170,6 +174,9 @@ pub(crate) fn build_sidebar_rows(
             ixs.push(ix);
         }
     }
+    // Order the groups for the active sort mode before any rows are laid out;
+    // a group's own session order is independent (pinned-first, then recency).
+    sort_workspace_groups(&mut groups, sessions, sort, added_at);
     // Pinned sessions lead their project group; recency order is preserved
     // within the pinned and unpinned partitions (the sort is stable). Doing
     // this here rather than in `load_sessions` keeps an Orbit-owned
@@ -233,6 +240,55 @@ pub(crate) fn build_sidebar_rows(
         }
     }
     side_rows
+}
+
+/// Reorder `(label, cwd, session indices)` groups for the active sidebar
+/// sort mode. `groups` is already deduped by label, so reordering never
+/// merges two projects.
+///
+/// `LastUpdated` keys on each group's newest session activity — the group is
+/// not necessarily in activity order after the pin sort, so it takes the max
+/// rather than the first row. `DateAdded` keys on the persisted added-at
+/// stamp. Ties break on the label so the order is stable across reloads, and
+/// unknown/empty keys sort last.
+fn sort_workspace_groups(
+    groups: &mut [(String, PathBuf, Vec<usize>)],
+    sessions: &[SessionInfo],
+    sort: WorkspaceSort,
+    added_at: &HashMap<PathBuf, SystemTime>,
+) {
+    if sort == WorkspaceSort::Manual {
+        return;
+    }
+    let label_key = |label: &str| label.to_lowercase();
+    let by_label = |a: &(String, PathBuf, Vec<usize>), b: &(String, PathBuf, Vec<usize>)| {
+        label_key(&a.0).cmp(&label_key(&b.0))
+    };
+    match sort {
+        WorkspaceSort::Manual => {}
+        WorkspaceSort::AlphabeticalAsc => groups.sort_by(|a, b| by_label(a, b)),
+        WorkspaceSort::AlphabeticalDesc => groups.sort_by(|a, b| by_label(b, a)),
+        WorkspaceSort::LastUpdated => groups.sort_by(|a, b| {
+            group_updated(&b.2, sessions)
+                .cmp(&group_updated(&a.2, sessions))
+                .then_with(|| by_label(a, b))
+        }),
+        WorkspaceSort::DateAdded => groups.sort_by(|a, b| {
+            added_at
+                .get(&b.1)
+                .cmp(&added_at.get(&a.1))
+                .then_with(|| by_label(a, b))
+        }),
+        WorkspaceSort::SessionCount => groups.sort_by(|a, b| {
+            b.2.len().cmp(&a.2.len()).then_with(|| by_label(a, b))
+        }),
+    }
+}
+
+/// Newest session activity in a group, or `None` for an empty project. Empty
+/// groups sort last under [`WorkspaceSort::LastUpdated`].
+fn group_updated(ixs: &[usize], sessions: &[SessionInfo]) -> Option<SystemTime> {
+    ixs.iter().map(|&ix| sessions[ix].modified).max()
 }
 
 /// The active workspace's header pinned over the session list, plus how far
@@ -1192,6 +1248,119 @@ pub(crate) fn workspace_menu_popup(
         .into_any_element()
 }
 
+/// The hover-revealed sort control on the sidebar's Projects header. Opens
+/// the workspace-sort menu anchored below; the active mode is checked.
+pub(crate) fn sidebar_sort_button(
+    sort: WorkspaceSort,
+    open: bool,
+    this: Entity<OrbitApp>,
+    theme: Theme,
+) -> impl IntoElement + use<> {
+    let this_for_popup = this.clone();
+    icon_button_frame(div().id("sidebar-sort"), &theme, ButtonSize::Compact)
+        .relative()
+        .cursor_pointer()
+        // Revealed on the Projects row's hover, or while the menu is open.
+        .opacity(if open { 1.0 } else { 0.0 })
+        .group_hover("sidebar-projects", |s| s.opacity(1.))
+        .hover(|s| s.bg(theme.overlay))
+        .active(|s| s.opacity(PRESS_DIM))
+        .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+            cx.stop_propagation();
+            this.update(cx, |app, cx| app.toggle_sidebar_sort_menu(window, cx));
+        })
+        .child(icon(
+            "icons/sort.svg",
+            ButtonSize::Compact.icon_size().px(&theme),
+            theme.text_3,
+        ))
+        .children(open.then(|| {
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size(px(0.))
+                .child(sidebar_sort_popup(sort, this_for_popup, theme))
+        }))
+}
+
+/// The workspace-sort menu, anchored below the Projects sort button. Follows
+/// the same deferred + anchored convention as the row-action popups; an
+/// outside mouse-down dismisses it.
+pub(crate) fn sidebar_sort_popup(
+    sort: WorkspaceSort,
+    this: Entity<OrbitApp>,
+    theme: Theme,
+) -> AnyElement {
+    let popup = context_menu_surface(div(), &theme)
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .occlude()
+        .on_mouse_down_out({
+            let this = this.clone();
+            move |_, _, cx| {
+                this.update(cx, |app, cx| {
+                    // Arm the gesture guard so this same click's mouse-up
+                    // cannot immediately re-open the menu.
+                    app.menu_dismissed_at = Some(Instant::now());
+                    app.sidebar_sort_menu = false;
+                    cx.notify();
+                })
+            }
+        })
+        .children(
+            WorkspaceSort::ALL
+                .into_iter()
+                .map(|option| sidebar_sort_item(option, sort, this.clone(), theme)),
+        );
+
+    anchored()
+        .position_mode(AnchoredPositionMode::Local)
+        .anchor(Corner::TopLeft)
+        .offset(point(
+            px(0.),
+            ButtonSize::Compact.height(&theme) + popover::MENU_OFFSET,
+        ))
+        .snap_to_window_with_margin(popover::WINDOW_MARGIN)
+        .child(deferred(popup))
+        .into_any_element()
+}
+
+/// One workspace-sort menu entry: a leading mode glyph, the label, and a
+/// trailing check when the mode is active. Selecting any entry switches the
+/// mode and closes the menu.
+fn sidebar_sort_item(
+    option: WorkspaceSort,
+    active: WorkspaceSort,
+    this: Entity<OrbitApp>,
+    theme: Theme,
+) -> impl IntoElement {
+    let is_active = option == active;
+    context_menu_entry(div().id(option.as_str()), &theme)
+        .cursor_pointer()
+        .hover(|s| s.bg(theme.bg_hover))
+        .text_color(if is_active { theme.text } else { theme.text_2 })
+        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+            cx.stop_propagation();
+            this.update(cx, |app, cx| app.set_workspace_sort(option, cx));
+        })
+        .child(icon(
+            option.icon_path(),
+            context_menu::ICON.px(&theme),
+            theme.text_3,
+        ))
+        .child(tr!(option.label_key()))
+        .child(div().flex_1())
+        .when(is_active, |el| {
+            el.child(icon(
+                "icons/check.svg",
+                context_menu::ICON.px(&theme),
+                theme.accent,
+            ))
+        })
+}
+
 /// One entry of the sidebar's session / workspace menus, on Zed's context
 /// menu metrics ([`context_menu_entry`]).
 pub(crate) fn menu_item<C, L>(
@@ -1348,6 +1517,7 @@ impl OrbitApp {
         if self.model_selector.is_some() {
             self.close_model_selector(window, cx);
         }
+        self.sidebar_sort_menu = false;
     }
 
     pub(super) fn on_menu_copy_path(&mut self, cx: &mut Context<Self>) {
@@ -1426,6 +1596,43 @@ impl OrbitApp {
 
     pub(super) fn on_menu_cancel(&mut self, cx: &mut Context<Self>) {
         self.session_menu = None;
+        cx.notify();
+    }
+
+    /// Open (or toggle closed) the sidebar's workspace-sort menu. Follows the
+    /// same gesture guard as the row menus, so the dismissing click cannot
+    /// immediately re-open it.
+    pub(super) fn toggle_sidebar_sort_menu(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        const GESTURE: Duration = Duration::from_millis(200);
+        if let Some(dismissed) = self.menu_dismissed_at.take() {
+            if dismissed.elapsed() < GESTURE {
+                return;
+            }
+        }
+        if self.sidebar_sort_menu {
+            self.sidebar_sort_menu = false;
+            cx.notify();
+            return;
+        }
+        self.dismiss_transient_popups(window, cx);
+        self.session_menu = None;
+        self.workspace_menu = None;
+        self.sidebar_sort_menu = true;
+        cx.notify();
+    }
+
+    /// Switch the workspace ordering and persist the choice with the project
+    /// list. Re-sorting is pure UI: pi's session files are never touched.
+    pub(super) fn set_workspace_sort(&mut self, sort: WorkspaceSort, cx: &mut Context<Self>) {
+        self.sidebar_sort_menu = false;
+        if self.workspace_sort != sort {
+            self.workspace_sort = sort;
+            self.persist_workspace_prefs();
+        }
         cx.notify();
     }
 
@@ -1523,6 +1730,8 @@ impl OrbitApp {
         build_sidebar_rows(
             &sessions,
             &self.workspaces,
+            self.workspace_sort,
+            &self.workspace_added_at,
             &working,
             &self.collapsed_workspaces,
             &self.expanded_workspace_groups,
@@ -1675,7 +1884,11 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.session_menu.take().is_some() || self.workspace_menu.take().is_some() {
+        if self.session_menu.take().is_some()
+            || self.workspace_menu.take().is_some()
+            || self.sidebar_sort_menu
+        {
+            self.sidebar_sort_menu = false;
             cx.notify();
             return;
         }

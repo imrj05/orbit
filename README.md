@@ -46,6 +46,7 @@ Usage — requests, tokens, cost, and cache, read from your own sessions:
 
 - Grouped by project, persistent, reopenable, and cross-workspace
 - Orbit-owned project list — remove a workspace from the sidebar without deleting pi's sessions
+- Sort projects by last activity, recently added, name, or session count
 - Clone a session to branch off it
 
 **Safeguards**

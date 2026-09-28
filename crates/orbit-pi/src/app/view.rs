@@ -153,6 +153,8 @@ impl Render for OrbitApp {
         let side_rows = Rc::new(build_sidebar_rows(
             &sidebar_sessions,
             &self.workspaces,
+            self.workspace_sort,
+            &self.workspace_added_at,
             &working_label,
             &self.collapsed_workspaces,
             &self.expanded_workspace_groups,
@@ -671,15 +673,31 @@ impl Render for OrbitApp {
                                     .min_h_0()
                                     .flex()
                                     .flex_col()
-                                    // section label — anchors the list below the nav
+                                    // section label — anchors the list below the nav;
+                                    // the hover-revealed sort control orders the groups
                                     .child(
                                         div()
                                             .px(px(14.))
                                             .pb(px(2.))
-                                            .text_size(TextSize::Small.px(&theme))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(theme.text_3)
-                                            .child(tr!("sidebar.projects")),
+                                            .group("sidebar-projects")
+                                            .flex()
+                                            .items_center()
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .truncate()
+                                                    .text_size(TextSize::Small.px(&theme))
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .text_color(theme.text_3)
+                                                    .child(tr!("sidebar.projects")),
+                                            )
+                                            .child(sidebar_sort_button(
+                                                self.workspace_sort,
+                                                self.sidebar_sort_menu,
+                                                cx.entity(),
+                                                theme,
+                                            )),
                                     )
                                     .child(
                                         div()

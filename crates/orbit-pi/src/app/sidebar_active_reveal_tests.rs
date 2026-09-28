@@ -42,6 +42,8 @@ fn collapsed_workspace_pins_the_open_session() {
     let rows = build_sidebar_rows(
         &sessions,
         &workspace_paths(&["/work/alpha", "/work/beta"]),
+        WorkspaceSort::Manual,
+        &HashMap::new(),
         "alpha",
         &HashSet::new(),
         &HashSet::new(),
@@ -86,6 +88,8 @@ fn collapsed_workspace_keeps_a_running_session_visible() {
     let rows = build_sidebar_rows(
         &sessions,
         &workspace_paths(&["/work/alpha", "/work/beta"]),
+        WorkspaceSort::Manual,
+        &HashMap::new(),
         "alpha",
         &HashSet::new(),
         &HashSet::new(),
@@ -115,6 +119,8 @@ fn collapsed_workspace_without_the_open_session_stays_closed() {
     let rows = build_sidebar_rows(
         &sessions,
         &workspace_paths(&["/work/alpha", "/work/beta"]),
+        WorkspaceSort::Manual,
+        &HashMap::new(),
         "alpha",
         &HashSet::new(),
         &HashSet::new(),
@@ -143,6 +149,8 @@ fn manually_collapsed_working_workspace_pins_the_open_session() {
     let rows = build_sidebar_rows(
         &sessions,
         &workspace_paths(&["/work/alpha"]),
+        WorkspaceSort::Manual,
+        &HashMap::new(),
         "alpha",
         &collapsed,
         &HashSet::new(),
@@ -173,6 +181,8 @@ fn unlisted_workspace_stays_out_of_the_sidebar() {
     let rows = build_sidebar_rows(
         &sessions,
         &workspace_paths(&["/work/alpha"]),
+        WorkspaceSort::Manual,
+        &HashMap::new(),
         "alpha",
         &HashSet::new(),
         &HashSet::new(),
@@ -201,6 +211,8 @@ fn listed_workspace_without_sessions_gets_a_header() {
     let rows = build_sidebar_rows(
         &sessions,
         &workspace_paths(&["/work/alpha", "/work/empty"]),
+        WorkspaceSort::Manual,
+        &HashMap::new(),
         "alpha",
         &HashSet::new(),
         &HashSet::new(),
@@ -230,6 +242,8 @@ fn groups_follow_the_project_list_order() {
     let rows = build_sidebar_rows(
         &sessions,
         &workspace_paths(&["/work/alpha", "/work/beta"]),
+        WorkspaceSort::Manual,
+        &HashMap::new(),
         "none",
         &HashSet::new(),
         &HashSet::new(),
@@ -262,6 +276,8 @@ fn pinned_sessions_lead_their_group_and_beat_truncation() {
     let rows = build_sidebar_rows(
         &sessions,
         &workspace_paths(&["/work/alpha"]),
+        WorkspaceSort::Manual,
+        &HashMap::new(),
         "alpha",
         &HashSet::new(),
         &HashSet::new(),
@@ -295,6 +311,8 @@ fn pinned_sessions_stay_visible_in_a_collapsed_workspace() {
     let rows = build_sidebar_rows(
         &sessions,
         &workspace_paths(&["/work/alpha", "/work/beta"]),
+        WorkspaceSort::Manual,
+        &HashMap::new(),
         "alpha",
         &HashSet::new(),
         &HashSet::new(),
@@ -337,6 +355,8 @@ fn show_more_reveals_one_step_at_a_time() {
     let rows = build_sidebar_rows(
         &sessions,
         &workspaces,
+        WorkspaceSort::Manual,
+        &HashMap::new(),
         "alpha",
         &HashSet::new(),
         &HashSet::new(),
@@ -361,6 +381,8 @@ fn show_more_reveals_one_step_at_a_time() {
     let rows = build_sidebar_rows(
         &sessions,
         &workspaces,
+        WorkspaceSort::Manual,
+        &HashMap::new(),
         "alpha",
         &HashSet::new(),
         &HashSet::new(),
@@ -387,6 +409,8 @@ fn show_more_reveals_one_step_at_a_time() {
     let rows = build_sidebar_rows(
         &sessions,
         &workspaces,
+        WorkspaceSort::Manual,
+        &HashMap::new(),
         "alpha",
         &HashSet::new(),
         &HashSet::new(),
@@ -411,6 +435,8 @@ fn show_more_step_never_overshoots_the_tail() {
     let rows = build_sidebar_rows(
         &sessions,
         &workspace_paths(&["/work/alpha"]),
+        WorkspaceSort::Manual,
+        &HashMap::new(),
         "alpha",
         &HashSet::new(),
         &HashSet::new(),
@@ -438,6 +464,8 @@ fn sticky_rows() -> Vec<SideRow> {
     build_sidebar_rows(
         &sessions,
         &workspace_paths(&["/work/alpha", "/work/beta"]),
+        WorkspaceSort::Manual,
+        &HashMap::new(),
         "alpha",
         &HashSet::new(),
         &HashSet::from(["beta".to_string()]),
@@ -494,6 +522,8 @@ fn sticky_header_skips_collapsed_and_unlisted_groups() {
     let rows = build_sidebar_rows(
         &sessions,
         &workspace_paths(&["/work/alpha"]),
+        WorkspaceSort::Manual,
+        &HashMap::new(),
         "alpha",
         &collapsed,
         &HashSet::new(),
