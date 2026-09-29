@@ -1074,7 +1074,7 @@ impl ProjectPanel {
             .h(px(ROW_H))
             .pl(px(indent))
             .pr(px(8.))
-            .rounded(Radius::Large.px(&theme))
+            .rounded(Radius::Medium.px(&theme))
             .flex()
             .items_center()
             .gap(px(6.));
@@ -1647,7 +1647,7 @@ impl Render for ProjectPanel {
                     .bg(theme.bg_sidebar)
                     .border_1()
                     .border_color(theme.border)
-                    .rounded(Radius::Large.px(&theme))
+                    .rounded(Radius::XLarge.px(&theme))
                     .overflow_hidden()
                     .flex()
                     .flex_col()

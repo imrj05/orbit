@@ -474,7 +474,7 @@ fn legend(slices: &[ContextSlice], theme: Theme) -> impl IntoElement + use<> {
                 .child(
                     div()
                         .size(px(8.))
-                        .rounded(Radius::XSmall.px(&theme))
+                        .rounded(Radius::Full.px(&theme))
                         .bg(slice.color),
                 )
                 .child(

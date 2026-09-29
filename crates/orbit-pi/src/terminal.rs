@@ -1759,7 +1759,7 @@ impl TerminalPanel {
                         .gap(DynamicSpacing::Base08.px(&theme))
                         .px(DynamicSpacing::Base16.px(&theme))
                         .py(DynamicSpacing::Base12.px(&theme))
-                        .rounded(Radius::Large.px(&theme))
+                        .rounded(Radius::XLarge.px(&theme))
                         .bg(theme.bg_raised)
                         .border_1()
                         .border_color(theme.border)

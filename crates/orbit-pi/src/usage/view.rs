@@ -978,21 +978,21 @@ impl UsagePage {
                 div()
                     .h(px(168.))
                     .w_full()
-                    .rounded(Radius::Large.px(&theme))
+                    .rounded(Radius::XLarge.px(&theme))
                     .bg(theme.trough),
             )
             .child(
                 div()
                     .h(px(96.))
                     .w_full()
-                    .rounded(Radius::Large.px(&theme))
+                    .rounded(Radius::XLarge.px(&theme))
                     .bg(theme.trough),
             )
             .child(
                 div()
                     .h(px(72.))
                     .w_full()
-                    .rounded(Radius::Large.px(&theme))
+                    .rounded(Radius::XLarge.px(&theme))
                     .bg(theme.trough),
             );
 
@@ -1080,7 +1080,7 @@ impl UsagePage {
                             div()
                                 .h(px(96.))
                                 .w_full()
-                                .rounded(Radius::Large.px(&theme))
+                                .rounded(Radius::XLarge.px(&theme))
                                 .bg(theme.trough),
                         )
                         .into_any_element(),
@@ -2959,7 +2959,7 @@ impl UsagePage {
         let mut stack = div()
             .w_full()
             .h(px(8.))
-            .rounded(Radius::Small.px(&theme))
+            .rounded(Radius::Full.px(&theme))
             .overflow_hidden()
             .flex()
             .bg(theme.trough);
@@ -3014,7 +3014,7 @@ impl UsagePage {
                     .child(
                         div()
                             .size(px(8.))
-                            .rounded(Radius::XSmall.px(&theme))
+                            .rounded(Radius::Full.px(&theme))
                             .flex_none()
                             .bg(*color),
                     )
@@ -4566,7 +4566,7 @@ fn subpanel(label: &str, meta: Option<String>, content: AnyElement, theme: Theme
         .flex_col()
         .gap(DynamicSpacing::Base08.px(&theme))
         .p(DynamicSpacing::Base12.px(&theme))
-        .rounded(Radius::Large.px(&theme))
+        .rounded(Radius::XLarge.px(&theme))
         .border_1()
         .border_color(theme.border)
         .bg(theme.bg_main)
@@ -4851,14 +4851,14 @@ fn bar_track(fraction: f64, theme: Theme) -> AnyElement {
         .flex_1()
         .min_w(px(48.))
         .h(px(8.))
-        .rounded(Radius::Small.px(&theme))
+        .rounded(Radius::Full.px(&theme))
         .bg(theme.trough)
         .overflow_hidden()
         .child(
             div()
                 .h_full()
                 .w(relative(fraction.clamp(0.0, 1.0) as f32))
-                .rounded(Radius::Small.px(&theme))
+                .rounded(Radius::Full.px(&theme))
                 .bg(theme.accent),
         )
         .into_any_element()
@@ -4997,7 +4997,7 @@ fn hit_rate_bars(series: &TimeSeries, theme: Theme) -> AnyElement {
                     div()
                         .debug_selector(move || format!("usage-cache-bar-fill-{ix}"))
                         .w_full()
-                        .rounded_t(Radius::XSmall.px(&theme))
+                        .rounded_t(Radius::Small.px(&theme))
                         .bg(color)
                         .h(relative(height))
                         .group_hover("usage-cache-bar", |style| style.bg(theme.accent)),

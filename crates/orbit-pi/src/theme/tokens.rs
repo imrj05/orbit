@@ -453,8 +453,18 @@ pub mod button {
         DynamicSpacing::Base06.px(theme)
     }
 
-    /// Per corner; a grouped button rounds only its outer corners.
-    pub const RADIUS: Radius = Radius::Small;
+    /// Per corner for a full-size button. Compact frames take
+    /// [`Radius::Medium`] instead — see [`radius`].
+    pub const RADIUS: Radius = Radius::Large;
+
+    /// Per corner by frame size: compact controls read tighter than the
+    /// normal button scale, whose corners match every other control's.
+    pub fn radius(size: ButtonSize) -> Radius {
+        match size {
+            ButtonSize::Compact | ButtonSize::None => Radius::Medium,
+            _ => Radius::Large,
+        }
+    }
 
     /// A button label's size. Zed's `Button` defaults to a Default label and
     /// its compact buttons pass `LabelSize::Small`; Orbit encodes that
@@ -525,8 +535,9 @@ pub mod list_item {
         DynamicSpacing::Base06.px(theme)
     }
 
-    /// `.rounded()` / `.outlined()` / inset items.
-    pub const RADIUS: Radius = Radius::Small;
+    /// `.rounded()` / `.outlined()` / inset items — the same corner as a
+    /// sidebar destination.
+    pub const RADIUS: Radius = Radius::Medium;
 }
 
 /// `List` and `ListSeparator` metrics.
@@ -860,7 +871,7 @@ pub mod input {
         theme.rems(0.25)
     }
 
-    pub const RADIUS: Radius = Radius::Medium;
+    pub const RADIUS: Radius = Radius::Large;
     pub const LABEL: TextSize = TextSize::Small;
     pub const ICON: IconSize = IconSize::Small;
 }
@@ -923,9 +934,10 @@ fn drop_shadow(offset_y: f32, blur: f32, alpha: f32) -> BoxShadow {
     }
 }
 
-/// Zed's `StyledExt::elevation_*`: the elevated fill, `rounded_lg`, a 1px
-/// hairline, and the layer's shadow. The hairline is Orbit's floating-surface
-/// stroke (`border_strong`), the role Zed's `border_variant` plays.
+/// Zed's `StyledExt::elevation_*`: the elevated fill, a 12px [`Radius::XLarge`]
+/// corner, a 1px hairline, and the layer's shadow. The hairline is Orbit's
+/// floating-surface stroke (`border_strong`), the role Zed's `border_variant`
+/// plays.
 pub trait StyledExt: Styled + Sized {
     /// Title bar, panels, tab bar.
     fn elevation_1(self, theme: &Theme) -> Self {
@@ -961,7 +973,7 @@ impl<E: Styled> StyledExt for E {}
 fn elevated<E: Styled>(el: E, theme: &Theme, index: ElevationIndex, bordered: bool) -> E {
     let el = el
         .bg(ElevationIndex::ElevatedSurface.bg(theme))
-        .rounded(Radius::Large.px(theme))
+        .rounded(Radius::XLarge.px(theme))
         .shadow(index.shadow(theme));
     if bordered {
         el.border_1().border_color(theme.border_strong)

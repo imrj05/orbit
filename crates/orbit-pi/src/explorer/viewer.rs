@@ -1027,7 +1027,7 @@ impl FileViewer {
             .flex_none()
             .h(px(20.))
             .px(px(6.))
-            .rounded(Radius::Medium.px(&theme))
+            .rounded(Radius::Small.px(&theme))
             .bg(theme.bg_raised)
             .border_1()
             .border_color(theme.border)

@@ -1,6 +1,6 @@
 use super::helpers::*;
 use super::*;
-use crate::theme::tokens::{ButtonSize, IconSize, StyledExt, TextSize};
+use crate::theme::tokens::{ButtonSize, IconSize, Radius, StyledExt, TextSize};
 use crate::toast::{Toast, ToastKind};
 
 /// Width of a toast card. A stack hugs the window's bottom-right corner, so
@@ -117,7 +117,7 @@ impl OrbitApp {
                     .flex_none()
                     .mt(px(1.))
                     .size(px(24.))
-                    .rounded(px(7.))
+                    .rounded(Radius::Medium.px(&theme))
                     .flex()
                     .items_center()
                     .justify_center()

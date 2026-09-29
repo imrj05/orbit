@@ -211,7 +211,7 @@ pub(crate) fn context_menu_surface<E: Styled>(el: E, theme: &Theme) -> E {
 }
 
 /// One context-menu entry, laid out like Zed's inset `ListItem`: Base04
-/// outside, Base06 inside, `rounded_sm`, one Comfortable line tall, and the
+/// outside, Base06 inside, 6px corners, one Comfortable line tall, and the
 /// entry label's `gap_1p5` between icon and label. Callers add the id,
 /// colors, hover, and click handling; icons take `context_menu::ICON`.
 pub(crate) fn context_menu_entry<E: Styled>(el: E, theme: &Theme) -> E {
@@ -286,7 +286,7 @@ pub(crate) fn picker_search_frame<E: Styled>(el: E, theme: &Theme) -> E {
 }
 
 /// One picker row, Zed's inset `ListItem` at `Sparse` spacing: Base04
-/// outside, Base06 inside, 4px above and below, `rounded_sm`, and at least
+/// outside, Base06 inside, 4px above and below, 6px corners, and at least
 /// one Comfortable line of Default text (31px). A row with a secondary line
 /// grows to fit it (see `picker::two_line_entry_height`). Callers add the id,
 /// colors, hover, selection, and click handling.
@@ -303,11 +303,12 @@ pub(crate) fn picker_entry<E: Styled>(el: E, theme: &Theme) -> E {
 }
 
 /// A labeled button's frame, Zed's `ButtonLike`: the size's height and
-/// horizontal padding, Base04 between icon and label, `rounded_sm`, and a
-/// one-line label at 1× line height (Zed's `UiLabel`) so it sits inside even
-/// a 22px button. The label size follows [`button::label_size`] and an icon
-/// inside it takes [`ButtonSize::icon_size`], so every button's glyph matches
-/// its frame. Callers keep colors, border, hover, press, and click handling.
+/// horizontal padding, Base04 between icon and label, [`button::radius`],
+/// and a one-line label at 1× line height (Zed's `UiLabel`) so it sits
+/// inside even a 22px button. The label size follows [`button::label_size`]
+/// and an icon inside it takes [`ButtonSize::icon_size`], so every button's
+/// glyph matches its frame. Callers keep colors, border, hover, press, and
+/// click handling.
 pub(crate) fn button_frame<E: Styled>(el: E, theme: &Theme, size: ButtonSize) -> E {
     el.flex_none()
         .h(size.height(theme))
@@ -316,7 +317,7 @@ pub(crate) fn button_frame<E: Styled>(el: E, theme: &Theme, size: ButtonSize) ->
         .items_center()
         .justify_center()
         .gap(button::gap(theme))
-        .rounded(button::RADIUS.px(theme))
+        .rounded(button::radius(size).px(theme))
         .whitespace_nowrap()
         .text_size(button::label_size(size).px(theme))
         .line_height(relative(1.))
@@ -357,7 +358,7 @@ pub(crate) fn segmented_segment<E: Styled>(
     size: ButtonSize,
     position: SegmentPosition,
 ) -> E {
-    let radius = button::RADIUS.px(theme);
+    let radius = button::radius(size).px(theme);
     let el = button_frame(el, theme, size).rounded_none().border_1();
     match position {
         SegmentPosition::Only => el.rounded(radius),
@@ -368,7 +369,7 @@ pub(crate) fn segmented_segment<E: Styled>(
 }
 
 /// An icon-only button's frame, Zed's `IconButton`: a square as tall as its
-/// [`ButtonSize`], `rounded_sm`, the icon centered at
+/// [`ButtonSize`], [`button::radius`], the icon centered at
 /// [`ButtonSize::icon_size`]. Callers keep colors, hover, press, tooltip, and
 /// click handling.
 pub(crate) fn icon_button_frame<E: Styled>(el: E, theme: &Theme, size: ButtonSize) -> E {
@@ -377,11 +378,11 @@ pub(crate) fn icon_button_frame<E: Styled>(el: E, theme: &Theme, size: ButtonSiz
         .flex()
         .items_center()
         .justify_center()
-        .rounded(button::RADIUS.px(theme))
+        .rounded(button::radius(size).px(theme))
 }
 
 /// A text field's box, Zed's `InputField`: at least 32px tall, `px_2`
-/// `py_1p5`, a 1px hairline, `rounded_md`, and Default-size text, which the
+/// `py_1p5`, a 1px hairline, [`input::RADIUS`], and Default-size text, which the
 /// `ComposerInput` inside inherits. Callers set the fill (and a focus border)
 /// and give the input a `flex_1` wrapper when an icon shares the row.
 pub(crate) fn input_field_frame<E: Styled>(el: E, theme: &Theme) -> E {
@@ -463,10 +464,10 @@ pub(crate) fn empty_state(
 /// (`view::TITLEBAR_CONTROLS_W`).
 pub(crate) const HEADER_CTRL_H: f32 = 28.;
 
-/// Corner radius of the rectangular header chips: a button's `rounded_sm`
-/// ([`button::RADIUS`]) at the default UI size, fixed like the height. The
-/// quota pill keeps a full round so it still reads as a meter.
-pub(crate) const HEADER_CTRL_R: f32 = 4.;
+/// Corner radius of the rectangular header chips: the full-size button
+/// radius ([`button::RADIUS`]) at the default UI size, fixed like the
+/// height. The quota pill keeps a full round so it still reads as a meter.
+pub(crate) const HEADER_CTRL_R: f32 = 8.;
 
 /// The glass fill every resting top-bar chip shares: the text-wash overlay
 /// with its alpha raised toward the top edge and eased off at the bottom,

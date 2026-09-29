@@ -368,7 +368,7 @@ fn day_cell(
         .w(w)
         .h(h)
         .flex_none()
-        .rounded(Radius::XSmall.px(&theme))
+        .rounded(Radius::Small.px(&theme))
         // Every in-range day is an outlined box, empty or not, so the calendar
         // reads as a grid even when a stretch has no activity; the ring
         // brightens for the hovered / selected day.
@@ -492,7 +492,7 @@ fn legend(theme: Theme) -> AnyElement {
         swatches = swatches.child(
             div()
                 .size(px(10.))
-                .rounded(Radius::XSmall.px(&theme))
+                .rounded(Radius::Small.px(&theme))
                 .border_1()
                 .border_color(theme.border)
                 .bg(level_color(shade, theme)),
