@@ -32,6 +32,7 @@ pi as a child process, no web, no webview, no Node daemon.
 Cargo.toml              workspace: orbit-pi, orbit-rpc
 crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/main.rs           bootstrap, assets, keybindings, heartbeat, native menu (localized)
+  src/commands.rs       command registry (D13): keymap rows, palette metadata, and the shortcut reference
   src/i18n.rs           AppLanguage + locale detection; the `tr!`/`tr_cow!` macros
   locales/              translations: en.yml is the source of truth, one file per locale
                         (generated from en.yml + scripts/i18n_glossary*.py)

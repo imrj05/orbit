@@ -72,7 +72,7 @@ Usage — requests, tokens, cost, and cache, read from your own sessions:
 
 **Native**
 
-- Keyboard operability, custom macOS window chrome, native dialogs, and reduce-motion
+- A command palette (⌘P / ⌘K) and a registry-driven shortcut layer: the keymap, palette chips, and the Settings → Shortcuts reference all read from one command table, with Tab focus traversal, context-aware keys (review tree, pickers, dialogs), custom macOS window chrome, native dialogs, and reduce-motion
 - Zed's design tokens (spacing and density, type, icon and button sizes, elevation, motion) in `theme/tokens.rs`, scaling with the UI font size and Spacing Density settings; context menus, tooltips, and extension dialogs use them today
 - A signed, notarizable `.app` bundle
 

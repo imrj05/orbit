@@ -356,7 +356,7 @@ pub(crate) fn render_side_row(
     rows: &Rc<Vec<SideRow>>,
     sessions_data: &Rc<Vec<SessionInfo>>,
     active_path: Option<&Path>,
-    ix: usize,
+    row_ix: usize,
     this: &Entity<OrbitApp>,
     agent_running: bool,
     running_paths: &Rc<HashSet<PathBuf>>,
@@ -375,7 +375,7 @@ pub(crate) fn render_side_row(
     cursor: bool,
     theme: Theme,
 ) -> impl IntoElement {
-    match &rows[ix] {
+    match &rows[row_ix] {
         SideRow::Workspace {
             label,
             count,
@@ -489,7 +489,10 @@ pub(crate) fn render_side_row(
                                 &theme,
                                 ButtonSize::Compact,
                             )
-                            .tip(tr!("view.new_task"))
+                            .tip(crate::commands::tooltip(
+                                crate::commands::CommandId::NewSession,
+                                false,
+                            ))
                             .cursor_pointer()
                             // Revealed on row hover — the quiet default
                             // keeps group headers to just label + count.
@@ -640,6 +643,19 @@ pub(crate) fn render_side_row(
             let session = sessions_data[*ix].clone();
             let session_for_click = session.clone();
             let active = active_path == Some(session.path.as_path());
+            // The row's place among the visible sessions is the number `⌘1…⌘9`
+            // opens it by — the same order `navigable_sessions` cycles.
+            let slot = rows[..row_ix]
+                .iter()
+                .filter(|row| matches!(row, SideRow::Session(_)))
+                .count()
+                + 1;
+            let shortcut_hint = (slot <= 9).then(|| {
+                tr!(
+                    "sidebar.open_with_shortcut",
+                    keys = crate::platform::shortcuts::label(&format!("secondary-{slot}"))
+                )
+            });
             // The open session runs live; parked (background) sessions run
             // in their own pi processes — both get the loader.
             let running = (active && agent_running) || running_paths.contains(&session.path);
@@ -670,6 +686,7 @@ pub(crate) fn render_side_row(
                 .w_full()
                 .py(DynamicSpacing::Base01.px(&theme))
                 .cursor_pointer()
+                .when_some(shortcut_hint, |row, hint| row.tip(hint))
                 // Right-click anywhere on the row opens its actions menu at
                 // the pointer, context-menu style (context menus are the
                 // secondary-action surface; the `…` button stays for
@@ -2070,6 +2087,80 @@ impl OrbitApp {
         cx.notify();
     }
 
+    /// Visible sessions in the order the sidebar navigates them — the
+    /// numbering `⌘1…⌘9` and session cycling share.
+    pub(super) fn navigable_sessions(&self) -> Vec<SessionInfo> {
+        let sessions = self.sidebar_sessions();
+        self.sidebar_rows_for_nav()
+            .iter()
+            .filter_map(|row| match row {
+                SideRow::Session(ix) => sessions.get(*ix).cloned(),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `⌘1…⌘9`: open the Nth session the sidebar shows. A slot past the end
+    /// is a no-op, so a stray number never switches the session by accident.
+    pub(super) fn open_session_slot(&mut self, slot: usize, cx: &mut Context<Self>) {
+        if slot == 0 {
+            return;
+        }
+        let Some(session) = self.navigable_sessions().into_iter().nth(slot - 1) else {
+            return;
+        };
+        self.on_open_session(session, cx);
+    }
+
+    /// Ctrl+Tab / Ctrl+Shift+Tab: cycle through the visible sessions, wrapping
+    /// at both ends. With a single session there is nowhere to go.
+    pub(super) fn cycle_session(&mut self, direction: isize, cx: &mut Context<Self>) {
+        let sessions = self.navigable_sessions();
+        if sessions.len() < 2 {
+            return;
+        }
+        let current = self
+            .current_session_path
+            .as_ref()
+            .and_then(|path| sessions.iter().position(|session| &session.path == path));
+        let next = match current {
+            Some(ix) => (ix as isize + direction).rem_euclid(sessions.len() as isize) as usize,
+            None if direction > 0 => 0,
+            None => sessions.len() - 1,
+        };
+        self.on_open_session(sessions[next].clone(), cx);
+    }
+
+    /// Action handler for ⌘1…⌘9.
+    pub(super) fn on_open_session_slot(
+        &mut self,
+        action: &crate::OpenSessionSlot,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_session_slot(action.slot, cx);
+    }
+
+    /// Action handler for Ctrl+Tab.
+    pub(super) fn on_next_session(
+        &mut self,
+        _: &crate::NextSession,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.cycle_session(1, cx);
+    }
+
+    /// Action handler for Ctrl+Shift+Tab.
+    pub(super) fn on_prev_session(
+        &mut self,
+        _: &crate::PrevSession,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.cycle_session(-1, cx);
+    }
+
     pub(super) fn on_sidebar_prev(
         &mut self,
         _: &crate::SidebarPrev,
@@ -2187,6 +2278,44 @@ impl OrbitApp {
         }
         self.sidebar_cursor = None;
         self.input.read(cx).focus(window);
+        cx.notify();
+    }
+
+    /// The command palette's Delete Session: reveal the sidebar on the active
+    /// session's row and arm the same confirmation the row menu shows, so the
+    /// destructive step still needs an explicit confirm.
+    pub(super) fn arm_active_session_delete(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(path) = self.current_session_path.clone() else {
+            return;
+        };
+        let sessions = self.sidebar_sessions();
+        let Some(session_ix) = sessions.iter().position(|session| session.path == path) else {
+            return;
+        };
+        let session = sessions[session_ix].clone();
+        if !self.sidebar_visible {
+            self.sidebar_visible = true;
+            self.sidebar_slide_gen = self.sidebar_slide_gen.wrapping_add(1);
+        }
+        let rows = self.sidebar_rows_for_nav();
+        self.sidebar_cursor = rows
+            .iter()
+            .position(|row| matches!(row, SideRow::Session(ix) if *ix == session_ix));
+        if let Some(ix) = self.sidebar_cursor {
+            self.sidebar_list.scroll_to_reveal_item(ix);
+        }
+        self.session_menu = Some(SessionMenu {
+            path: session.path.clone(),
+            title: session.title,
+            deletable: !self.lives.contains_key(&session.path),
+            confirm_delete: true,
+            at: None,
+        });
+        window.focus(&self.sidebar_focus);
         cx.notify();
     }
 

@@ -2,6 +2,7 @@ use super::helpers::*;
 use super::sidebar::*;
 use super::*;
 
+use crate::commands::{self, CommandId};
 use gpui::StyledText;
 
 use crate::theme::tokens::{
@@ -473,10 +474,9 @@ impl Render for OrbitApp {
                         },
                     ),
                 )
-                .tip(format!(
-                    "{} ({})",
-                    tr!("explorer.toggle"),
-                    platform::shortcuts::PROJECT_PANEL
+                .tip(commands::tooltip(
+                    CommandId::ToggleProjectPanel,
+                    explorer_visible,
                 ))
                 .on_mouse_up(
                     MouseButton::Left,
@@ -499,7 +499,7 @@ impl Render for OrbitApp {
                         },
                     ),
                 )
-                .tip(tr!("view.toggle_side_pane"))
+                .tip(commands::tooltip(CommandId::ToggleSidePanel, pane_visible))
                 .on_mouse_up(MouseButton::Left, cx.listener(Self::on_toggle_side_pane)),
             )
             // Terminal toggle — the bottom panel (cmd-j).
@@ -518,10 +518,9 @@ impl Render for OrbitApp {
                         },
                     ),
                 )
-                .tip(format!(
-                    "{} ({})",
-                    tr!("menu.toggle_terminal"),
-                    platform::shortcuts::TERMINAL
+                .tip(commands::tooltip(
+                    CommandId::ToggleTerminal,
+                    terminal_visible,
                 ))
                 .on_mouse_up(
                     MouseButton::Left,
@@ -546,7 +545,7 @@ impl Render for OrbitApp {
                         },
                     ),
                 )
-                .tip(tr!("view.open_git"))
+                .tip(commands::tooltip(CommandId::OpenGit, false))
                 .on_mouse_up(MouseButton::Left, cx.listener(Self::on_open_git_click)),
             );
 
@@ -1377,6 +1376,9 @@ impl Render for OrbitApp {
             .on_action(cx.listener(Self::on_toggle_terminal))
             .on_action(cx.listener(Self::on_toggle_sidebar_action))
             .on_action(cx.listener(Self::on_focus_sessions))
+            .on_action(cx.listener(Self::on_open_session_slot))
+            .on_action(cx.listener(Self::on_next_session))
+            .on_action(cx.listener(Self::on_prev_session))
             .on_action(cx.listener(Self::on_sidebar_prev))
             .on_action(cx.listener(Self::on_sidebar_next))
             .on_action(cx.listener(Self::on_sidebar_home))
@@ -1386,6 +1388,13 @@ impl Render for OrbitApp {
             .on_action(cx.listener(Self::on_toggle_command_palette))
             .on_action(cx.listener(Self::on_check_for_updates))
             .on_action(cx.listener(Self::on_toggle_search))
+            .on_action(cx.listener(Self::on_toggle_model_menu))
+            .on_action(cx.listener(Self::on_toggle_thinking_menu))
+            .on_action(cx.listener(Self::on_review_changes))
+            .on_action(cx.listener(Self::on_open_shortcut_help))
+            .on_action(cx.listener(Self::on_review_close))
+            .on_action(cx.listener(Self::on_focus_next))
+            .on_action(cx.listener(Self::on_focus_prev))
             .on_action(cx.listener(|this, _: &crate::GitTabChanges, window, cx| {
                 this.on_git_tab(0, window, cx)
             }))
@@ -1992,8 +2001,8 @@ impl OrbitApp {
                 .tooltip({
                     let keys = format!(
                         "{}, {}",
-                        SendMode::Steer.shortcut(theme.ui.composer_send_mode),
-                        platform::shortcuts::STEER,
+                        SendMode::Steer.shortcut_label(theme.ui.composer_send_mode),
+                        platform::shortcuts::label(platform::shortcuts::STEER),
                     );
                     let label = tr!("composer.steer_tooltip", keys = keys);
                     move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
@@ -2178,6 +2187,7 @@ impl OrbitApp {
                             )
                     })
                     .when(disabled, |chip| chip.cursor_not_allowed().opacity(0.5))
+                    .tip(commands::tooltip(CommandId::ChooseModel, false))
                     .child(icon_dyn(
                         provider_icon(&self.model_provider),
                         ButtonSize::Default.icon_size().px(&theme),
@@ -2223,6 +2233,7 @@ impl OrbitApp {
                             )
                     })
                     .when(disabled, |chip| chip.cursor_not_allowed().opacity(0.5))
+                    .tip(commands::tooltip(CommandId::ChooseThinking, false))
                     .child({
                         let (path, _) = thinking_icon(&self.thinking_label, &theme);
                         icon(
@@ -3265,11 +3276,7 @@ impl OrbitApp {
                 )
                 .block_mouse_except_scroll()
                 .tooltip({
-                    let label = format!(
-                        "{} ({})",
-                        tr!("menu.toggle_sidebar"),
-                        platform::shortcuts::SIDEBAR
-                    );
+                    let label = commands::tooltip(CommandId::ToggleSidebar, self.sidebar_visible);
                     move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
                 })
                 .on_mouse_up(MouseButton::Left, cx.listener(Self::on_toggle_sidebar)),
@@ -3343,6 +3350,7 @@ impl OrbitApp {
         button_frame(div().id("sidebar-new-session"), &theme, ButtonSize::Large)
             .group(BUTTON_GROUP)
             .w_full()
+            .tip(commands::tooltip(CommandId::NewSession, false))
             .bg(theme.bg_raised)
             .border_1()
             .border_color(theme.border)
@@ -3375,7 +3383,9 @@ impl OrbitApp {
                     .ml(button::keybinding_gap(&theme))
                     .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.text_3)
-                    .child(crate::platform::shortcuts::NEW_SESSION),
+                    .child(crate::platform::shortcuts::label(
+                        crate::platform::shortcuts::NEW_SESSION,
+                    )),
             )
     }
 
@@ -3390,6 +3400,7 @@ impl OrbitApp {
         button_frame(div().id("sidebar-search"), &theme, ButtonSize::Large)
             .group(BUTTON_GROUP)
             .w_full()
+            .tip(commands::tooltip(CommandId::ToggleCommandPalette, false))
             .cursor_pointer()
             .hover(|s| s.bg(theme.bg_hover))
             .active(|s| s.opacity(PRESS_DIM))
@@ -3416,7 +3427,9 @@ impl OrbitApp {
                     .ml(button::keybinding_gap(&theme))
                     .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.text_3)
-                    .child(crate::platform::shortcuts::PALETTE),
+                    .child(crate::platform::shortcuts::label(
+                        crate::platform::shortcuts::PALETTE,
+                    )),
             )
     }
 
@@ -3434,6 +3447,105 @@ impl OrbitApp {
         }
     }
 
+    /// The command palette's Choose Model (⌘⇧M): open the model popover.
+    pub(super) fn on_toggle_model_menu(
+        &mut self,
+        _: &crate::ToggleModelMenu,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_picker(PickerKind::Model, window, cx);
+    }
+
+    /// The command palette's Choose Thinking Level (⌘⇧T).
+    pub(super) fn on_toggle_thinking_menu(
+        &mut self,
+        _: &crate::ToggleThinkingMenu,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_picker(PickerKind::Thinking, window, cx);
+    }
+
+    /// ⌘⇧R: open the Review pane on the current diff. The pane owns the
+    /// reveal/toggle rules; the app only asks for it.
+    pub(super) fn on_review_changes(
+        &mut self,
+        _: &crate::ReviewChanges,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.sidepane.update(cx, |pane, cx| pane.show_review(cx));
+    }
+
+    /// ⌘/: open Settings → Shortcuts — the full keyboard reference.
+    pub(super) fn on_open_shortcut_help(
+        &mut self,
+        _: &crate::OpenShortcutHelp,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings_open = true;
+        self.set_settings_section(SettingsSection::Shortcuts, cx);
+    }
+
+    /// Escape from the Review tree: leave keyboard navigation and hand focus
+    /// back to the composer, matching the sidebar's Escape behavior.
+    pub(super) fn on_review_close(
+        &mut self,
+        _: &crate::ReviewClose,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.input.read(cx).focus(window);
+        cx.notify();
+    }
+
+    /// Tab: step to the next workbench surface (composer → sidebar → review
+    /// tree → terminal → Explorer → back).
+    pub(super) fn on_focus_next(
+        &mut self,
+        _: &crate::FocusNext,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.focus_traversal_blocked() {
+            return;
+        }
+        window.focus_next();
+        cx.notify();
+    }
+
+    /// Shift-Tab: step to the previous workbench surface.
+    pub(super) fn on_focus_prev(
+        &mut self,
+        _: &crate::FocusPrev,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.focus_traversal_blocked() {
+            return;
+        }
+        window.focus_prev();
+        cx.notify();
+    }
+
+    /// A keyboard-modal surface owns the input while it is open; Tab must not
+    /// walk the focus out from under it.
+    fn focus_traversal_blocked(&self) -> bool {
+        self.command_palette.is_some()
+            || self.model_selector.is_some()
+            || self.branch_picker.is_some()
+            || self.workspace_picker.is_some()
+            || self.dialog.is_some()
+            || self.lightbox.is_some()
+            || self.updater_dialog.is_some()
+            || self.session_menu.is_some()
+            || self.workspace_menu.is_some()
+            || self.sidebar_sort_menu
+            || self.settings_select.is_some()
+    }
+
     /// Sidebar nav row for the Usage page, in the same `ButtonSize::Large`
     /// frame as the New Task and Search rows; the open page is marked with an
     /// `active` fill rather than accent color alone.
@@ -3446,6 +3558,7 @@ impl OrbitApp {
         button_frame(div().id("sidebar-usage"), &theme, ButtonSize::Large)
             .group(BUTTON_GROUP)
             .w_full()
+            .tip(commands::tooltip(CommandId::ToggleUsage, false))
             .when(active, |row| row.bg(theme.active))
             .cursor_pointer()
             .hover(|s| s.bg(if active { theme.active } else { theme.bg_hover }))
@@ -3488,7 +3601,7 @@ impl OrbitApp {
                 .tooltip({
                     let label = tr!(
                         "composer.shortcut_hint",
-                        keys = platform::shortcuts::STOP,
+                        keys = platform::shortcuts::label(platform::shortcuts::STOP),
                         action = tr!("shortcut.stop")
                     );
                     move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
@@ -3515,7 +3628,7 @@ impl OrbitApp {
                 .tooltip({
                     let label = tr!(
                         "composer.shortcut_hint",
-                        keys = platform::shortcuts::SEND,
+                        keys = platform::shortcuts::label(platform::shortcuts::SEND),
                         action = tr!("composer.send")
                     );
                     move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()

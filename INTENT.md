@@ -222,6 +222,27 @@ the live session's levels; fail-soft keeps a stale id or level from poisoning a 
 **Consequence:** new sessions only — a resumed session keeps the model and thinking level
 recorded in its file, and a manual composer choice wins until the next new session.
 
+### D13 — Command registry is the source of truth for keys, palette, and help
+**Choice:** app commands live in one static table (`crates/orbit-pi/src/commands.rs`): id,
+category, title/detail i18n keys, icon, palette/help flags, and the advertised chord.
+`BINDINGS` rows name the chord, key context, and command, and `key_bindings()` turns them
+into the typed gpui bindings that `bind_keys` installs first. The command palette builds
+its rows from the registry; Settings → Shortcuts renders the same table; both label
+chords through `platform::shortcuts::label`, which formats canonical chords
+(`secondary-n`) per platform. Text-entry conventions and modal keymaps stay literal in
+`bind_keys` — they are conventions, not commands. Tests reject duplicate
+(chord, context) pairs, missing specs, missing keymap rows, and chords that do not parse.
+**Rationale:** the previous layout had four sources for one shortcut (the keymap literal,
+hand-typed glyph constants, palette items, and the settings reference) which had already
+drifted: `cmd-` bindings never fired on Windows/Linux, and `secondary-period` advertised
+a chord gpui never matches (the key is `.`). One table makes drift impossible at
+test time and is the only way “discoverable keyboard-first” stays true as commands are
+added.
+**Consequence:** a new app command is added once — spec, `BINDINGS` row, and a `CommandId`
+run arm — and appears in the palette, the shortcut reference, and the keymap together.
+Context actions (the review tree, Git tabs) are registry commands too, but never palette
+rows.
+
 ## The feature parity contract
 
 Everything below must behave identically in the GPUI app (against the pi CLI) as it does in the
@@ -276,6 +297,34 @@ footer, immediately left of the context-window indicator, without a newline hint
 These persistent hints, button tooltips, and the Shortcuts reference track the
 preference, with dedicated chat-only shortcut context to protect other fields.
 Non-blocking optional model questions remain outside this change.
+
+Compaction and branch summaries are visible in the transcript: pi's
+`compactionSummary` / `branchSummary` context messages now render as boundary
+cards ("Compaction — Compacted from N tokens", click to expand the summary
+markdown) instead of being filtered out, and a successful `compaction_end`
+re-reads `get_messages` so the live chat adopts pi's compacted projection
+(summary + kept entries) instead of holding the pre-compaction history until
+the session is reopened.
+
+The keyboard layer is command-registry driven (`commands.rs`, D13): every app
+command declares its chord once, and the command palette, Settings →
+Shortcuts, and tooltips all render from that table. The palette gained session
+rename/pin/clone/delete, model and thinking pickers (⌘⇧M / ⌘⇧T), Review
+(⌘⇧R), and the shortcut reference (⌘/). Session management is number- and
+cycle-addressable: ⌘1…⌘9 open the Nth session in the sidebar's visible order
+and Ctrl+Tab / Ctrl+Shift+Tab cycle sessions (the Git page tabs moved to
+⌘⌥1…⌘⌥5 to free the numbers). Hover hints come from the same registry
+(`commands::tooltip`), so the model/thinking chips, New Task, Search/Usage
+rows, top-bar toggles, and Git tabs name their chord on hover — and a session
+row shows its ⌘1…⌘9 slot. The Review pane is fully keyboard navigable —
+Tab / Shift-Tab traverse the workbench's focus stops (composer, sidebar,
+review tree, terminal, Explorer), the tree takes arrows and Enter, and
+`n`/`p` jump changed files, `[`/`]` hunks, `e`/`c` expand or collapse every
+file, Escape returns to the chat; the composer's autocomplete and the terminal
+keep Tab for themselves. `secondary` chords replaced the macOS-only `cmd-`
+bindings (Editor clipboard/undo/save, Files close, Git tabs), so Windows and
+Linux get the same shortcuts, and the dead ⌘. abort chord was fixed (gpui's key
+name is `.`, not `period`).
 
 Open: migrating the remaining surfaces (the settings page's toolbars / cards / controls, transcript inner content, the modal bodies' inner text, the remaining sub-10px / 17px+ type, and off-scale radii) onto the D11 tokens; drawn scrollbars (gpui 0.2.2 draws none); conversation **fork/rewind** (clone exists; rewind needs entry ids); on-device scroll-perf measurement; stream veil + an explicit ≤8.3 Hz streaming commit pipeline; screen-reader labeling (gpui 0.2.2 exposes no accessibility tree); richer per-tool renderers (bash/thinking are dedicated, the rest generic).
 

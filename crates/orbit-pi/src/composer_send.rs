@@ -59,6 +59,11 @@ impl SendMode {
         }
     }
 
+    /// [`Self::shortcut`] rendered for display (`↵` / `⌥↵` on macOS).
+    pub fn shortcut_label(self, default: Self) -> String {
+        keys::label(self.shortcut(default))
+    }
+
     pub fn command(
         self,
         running: bool,
@@ -84,14 +89,14 @@ impl SendMode {
 }
 
 /// Resolve labels at paint time so language and preference changes are live.
-pub fn shortcut_hints(default: SendMode, running: bool) -> Vec<(&'static str, String)> {
+pub fn shortcut_hints(default: SendMode, running: bool) -> Vec<(String, String)> {
     if running {
         [default, default.opposite()]
             .into_iter()
-            .map(|mode| (mode.shortcut(default), mode.hint_label()))
+            .map(|mode| (mode.shortcut_label(default), mode.hint_label()))
             .collect()
     } else {
-        vec![(keys::SEND, tr!("composer.send"))]
+        vec![(keys::label(keys::SEND), tr!("composer.send"))]
     }
 }
 
@@ -157,7 +162,10 @@ mod tests {
         ] {
             assert_eq!(
                 shortcut_hints(default, true),
-                vec![(keys::SEND, primary), (keys::SEND_ALTERNATE, alternate)]
+                vec![
+                    (keys::label(keys::SEND), primary),
+                    (keys::label(keys::SEND_ALTERNATE), alternate)
+                ]
             );
         }
     }
@@ -170,6 +178,107 @@ mod tests {
         bindings
             .first()
             .map(|binding| binding.action().boxed_clone())
+    }
+
+    #[gpui::test]
+    fn tab_traversal_is_guarded_in_text_and_terminal_contexts(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            crate::bind_keys(cx);
+            // Global traversal on every surface that does not own Tab.
+            assert!(bound_action(cx, "tab", "Sidebar")
+                .unwrap()
+                .as_any()
+                .is::<crate::FocusNext>());
+            assert!(bound_action(cx, "shift-tab", "Sidebar")
+                .unwrap()
+                .as_any()
+                .is::<crate::FocusPrev>());
+            // The composer accepts completions with Tab…
+            assert!(bound_action(cx, "tab", "Composer")
+                .unwrap()
+                .as_any()
+                .is::<crate::AutocompleteAccept>());
+            // …and the terminal keeps Tab for the shell.
+            assert!(bound_action(cx, "tab", "Terminal")
+                .unwrap()
+                .as_any()
+                .is::<crate::TerminalTab>());
+            assert!(bound_action(cx, "shift-tab", "Terminal")
+                .unwrap()
+                .as_any()
+                .is::<crate::TerminalTab>());
+            // Session cycling also yields to the shell's Ctrl+Tab.
+            assert!(bound_action(cx, "ctrl-tab", "Terminal")
+                .unwrap()
+                .as_any()
+                .is::<crate::TerminalTab>());
+        });
+    }
+
+    #[gpui::test]
+    fn registry_shortcuts_resolve_on_both_platform_modifiers(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            crate::bind_keys(cx);
+            // `secondary` parses as Cmd here and Ctrl elsewhere, so the same
+            // assertion covers both platforms.
+            assert!(bound_action(cx, "secondary-shift-m", "Composer")
+                .unwrap()
+                .as_any()
+                .is::<crate::ToggleModelMenu>());
+            assert!(bound_action(cx, "secondary-shift-t", "Composer")
+                .unwrap()
+                .as_any()
+                .is::<crate::ToggleThinkingMenu>());
+            assert!(bound_action(cx, "secondary-shift-r", "Composer")
+                .unwrap()
+                .as_any()
+                .is::<crate::ReviewChanges>());
+            assert!(bound_action(cx, "secondary-/", "Composer")
+                .unwrap()
+                .as_any()
+                .is::<crate::OpenShortcutHelp>());
+        });
+    }
+
+    #[gpui::test]
+    fn session_shortcuts_resolve_to_their_slots_and_cycles(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            crate::bind_keys(cx);
+            // ⌘1…⌘9 carry the slot in the action payload.
+            let action = bound_action(cx, "secondary-3", "Composer").unwrap();
+            let slot = action
+                .as_any()
+                .downcast_ref::<crate::OpenSessionSlot>()
+                .expect("⌘3 is a session slot");
+            assert_eq!(slot.slot, 3);
+            assert_eq!(
+                bound_action(cx, "secondary-9", "Composer")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<crate::OpenSessionSlot>()
+                    .unwrap()
+                    .slot,
+                9
+            );
+            // Ctrl+Tab / Ctrl+Shift+Tab cycle sessions on every platform.
+            assert!(bound_action(cx, "ctrl-tab", "Composer")
+                .unwrap()
+                .as_any()
+                .is::<crate::NextSession>());
+            assert!(bound_action(cx, "ctrl-shift-tab", "Composer")
+                .unwrap()
+                .as_any()
+                .is::<crate::PrevSession>());
+            // Git tabs moved off ⌘1–5 so numbering belongs to sessions.
+            assert!(bound_action(cx, "secondary-alt-1", "Composer")
+                .unwrap()
+                .as_any()
+                .is::<crate::GitTabChanges>());
+            assert!(!bound_action(cx, "secondary-1", "Composer")
+                .unwrap()
+                .as_any()
+                .is::<crate::GitTabChanges>());
+        });
     }
 
     #[gpui::test]
@@ -275,7 +384,7 @@ mod tests {
         for default in [SendMode::FollowUp, SendMode::Steer] {
             assert_eq!(
                 shortcut_hints(default, false),
-                vec![(keys::SEND, tr!("composer.send"))]
+                vec![(keys::label(keys::SEND), tr!("composer.send"))]
             );
         }
     }

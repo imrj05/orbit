@@ -29,6 +29,7 @@ use crate::app::{
     nerd_font_family, picker_entry, picker_search_frame, picker_surface, press, refresh_glyph,
     spinner, TipExt, BUTTON_GROUP,
 };
+use crate::commands::{self, CommandId};
 use crate::commit_message;
 use crate::gh;
 use crate::gh_templates::{self, RepoTemplate};
@@ -2958,6 +2959,13 @@ impl GitPanel {
             .children(tabs.into_iter().map(|(tab, tab_icon, key)| {
                 let label = tr!(key);
                 let selected = self.tab == tab;
+                let command = match tab {
+                    GitTab::Changes => CommandId::GitTabChanges,
+                    GitTab::History => CommandId::GitTabHistory,
+                    GitTab::Graph => CommandId::GitTabGraph,
+                    GitTab::Issues => CommandId::GitTabIssues,
+                    GitTab::Pulls => CommandId::GitTabPulls,
+                };
                 press(button_frame(
                     div().id(gpui::ElementId::Name(
                         format!("git-tab-{}", key.rsplit('.').next().unwrap_or(key)).into(),
@@ -2987,6 +2995,7 @@ impl GitPanel {
                     this.refresh_all(cx);
                     cx.notify();
                 }))
+                .tip(commands::tooltip(command, false))
                 .child(icon(
                     tab_icon,
                     ButtonSize::Medium.icon_size().px(&theme),

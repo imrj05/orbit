@@ -1,4 +1,5 @@
 use super::*;
+use crate::commands::CommandId;
 use crate::theme::tokens::popover;
 
 impl OrbitApp {
@@ -311,6 +312,10 @@ impl OrbitApp {
         let snapshot = PaletteSnapshot {
             sessions: self.sidebar_sessions(),
             active_path: self.current_session_path.clone(),
+            active_pinned: self
+                .current_session_path
+                .as_ref()
+                .is_some_and(|path| crate::pins::contains(path)),
             busy: running,
             session_id: self.session_id.clone(),
             sidebar_visible: self.sidebar_visible,
@@ -374,50 +379,120 @@ impl OrbitApp {
         cx: &mut Context<Self>,
     ) {
         match command {
-            PaletteCommand::NewSession => self.on_new_session(&crate::NewSession, window, cx),
-            PaletteCommand::RefreshSessions => self.on_refresh(&crate::RefreshSessions, window, cx),
-            PaletteCommand::FocusComposer => {
+            PaletteCommand::Run(id) => self.run_command(id, window, cx),
+            PaletteCommand::OpenSettings(section) => {
+                self.settings_open = true;
+                self.set_settings_section(section, cx);
+            }
+        }
+    }
+
+    /// Run one registry command by id. The palette is the first caller; the
+    /// keymap dispatches the same commands as typed actions, so both paths
+    /// meet in one place where the UI can also call them directly.
+    pub(super) fn run_command(
+        &mut self,
+        id: CommandId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match id {
+            CommandId::NewSession => self.on_new_session(&crate::NewSession, window, cx),
+            CommandId::RefreshSessions => self.on_refresh(&crate::RefreshSessions, window, cx),
+            CommandId::FocusComposer => {
                 self.input.read(cx).focus(window);
             }
-            PaletteCommand::FocusSessions => {
+            CommandId::FocusSessions => {
                 self.on_focus_sessions(&crate::FocusSessions, window, cx);
             }
-            PaletteCommand::ToggleSidebar => {
-                self.toggle_sidebar(window, cx);
-                cx.notify();
+            // A numbered slot needs its payload action; the palette never
+            // lists it, so there is nothing to run here.
+            CommandId::OpenSessionSlot => {}
+            CommandId::NextSession => self.cycle_session(1, cx),
+            CommandId::PrevSession => self.cycle_session(-1, cx),
+            CommandId::RenameSession => self.begin_session_rename(window, cx),
+            CommandId::PinSession => {
+                if let Some(path) = self.current_session_path.clone() {
+                    crate::pins::toggle(&path);
+                    self.toast_success(if crate::pins::contains(&path) {
+                        tr!("sidebar.pin_session")
+                    } else {
+                        tr!("sidebar.unpin_session")
+                    });
+                    cx.notify();
+                }
             }
-            PaletteCommand::ToggleSidePanel => {
-                self.sidepane.update(cx, |pane, cx| pane.toggle(cx));
-            }
-            PaletteCommand::ToggleTerminal => {
-                self.terminal_panel
-                    .update(cx, |panel, cx| panel.toggle(window, cx));
-            }
-            PaletteCommand::ToggleProjectPanel => {
-                self.project_panel.update(cx, |panel, cx| panel.toggle(cx));
-            }
-            PaletteCommand::ReviewChanges => {
-                self.sidepane.update(cx, |pane, cx| pane.show_review(cx));
-            }
-            PaletteCommand::OpenGit => {
-                self.command_palette = None;
-                self.open_git(cx);
-            }
-            PaletteCommand::ChooseModel => self.toggle_picker(PickerKind::Model, window, cx),
-            PaletteCommand::ChooseThinking => self.toggle_picker(PickerKind::Thinking, window, cx),
-            PaletteCommand::AbortRun => self.on_abort(&crate::AbortRun, window, cx),
-            PaletteCommand::CopySessionId => {
+            CommandId::CloneSession => self.clone_session(cx),
+            CommandId::CopySessionId => {
                 if let Some(id) = self.session_id.clone() {
                     cx.write_to_clipboard(ClipboardItem::new_string(id));
                     self.toast_success(tr!("pickers.session_id_copied"));
                     cx.notify();
                 }
             }
-            PaletteCommand::CloneSession => self.clone_session(cx),
-            PaletteCommand::OpenSettings(section) => {
-                self.settings_open = true;
-                self.set_settings_section(section, cx);
+            CommandId::DeleteSession => self.arm_active_session_delete(window, cx),
+            CommandId::ChooseModel => self.toggle_picker(PickerKind::Model, window, cx),
+            CommandId::ChooseThinking => self.toggle_picker(PickerKind::Thinking, window, cx),
+            CommandId::AbortRun => self.on_abort(&crate::AbortRun, window, cx),
+            CommandId::ToggleCommandPalette => {
+                self.on_toggle_command_palette(&crate::ToggleCommandPalette, window, cx)
             }
+            CommandId::ToggleSearch => self.on_toggle_search(&crate::ToggleSearch, window, cx),
+            CommandId::PrevTurn => self.on_prev_turn(&crate::PrevTurn, window, cx),
+            CommandId::NextTurn => self.on_next_turn(&crate::NextTurn, window, cx),
+            CommandId::CopyLastResponse => {
+                self.on_copy_last_response(&crate::CopyLastResponse, window, cx)
+            }
+            CommandId::ToggleUsage => self.on_toggle_usage(&crate::ToggleUsage, window, cx),
+            CommandId::ReviewChanges => {
+                self.sidepane.update(cx, |pane, cx| pane.show_review(cx));
+            }
+            CommandId::OpenGit => {
+                self.command_palette = None;
+                self.open_git(cx);
+            }
+            CommandId::ToggleSidebar => {
+                self.toggle_sidebar(window, cx);
+                cx.notify();
+            }
+            CommandId::ToggleSidePanel => {
+                self.sidepane.update(cx, |pane, cx| pane.toggle(cx));
+            }
+            CommandId::ToggleTerminal => {
+                self.terminal_panel
+                    .update(cx, |panel, cx| panel.toggle(window, cx));
+            }
+            CommandId::ToggleProjectPanel => {
+                self.project_panel.update(cx, |panel, cx| panel.toggle(cx));
+            }
+            CommandId::GitTabChanges => self.on_git_tab(0, window, cx),
+            CommandId::GitTabHistory => self.on_git_tab(1, window, cx),
+            CommandId::GitTabGraph => self.on_git_tab(2, window, cx),
+            CommandId::GitTabIssues => self.on_git_tab(3, window, cx),
+            CommandId::GitTabPulls => self.on_git_tab(4, window, cx),
+            CommandId::OpenSettings => {
+                self.on_open_settings(&crate::OpenSettings, window, cx);
+            }
+            CommandId::OpenShortcutHelp => {
+                self.settings_open = true;
+                self.set_settings_section(SettingsSection::Shortcuts, cx);
+            }
+            CommandId::CheckForUpdates => {
+                self.on_check_for_updates(&crate::CheckForUpdates, window, cx)
+            }
+            CommandId::Quit => cx.quit(),
+            // Context-only commands are dispatched by their own focus nodes
+            // (the review tree), never by the palette.
+            CommandId::ReviewTreeNext
+            | CommandId::ReviewTreePrev
+            | CommandId::ReviewTreeToggle
+            | CommandId::ReviewFileNext
+            | CommandId::ReviewFilePrev
+            | CommandId::ReviewHunkNext
+            | CommandId::ReviewHunkPrev
+            | CommandId::ReviewExpandAll
+            | CommandId::ReviewCollapseAll
+            | CommandId::ReviewClose => {}
         }
     }
 

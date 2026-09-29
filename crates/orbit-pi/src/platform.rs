@@ -718,54 +718,121 @@ pub fn home_dir_opt() -> Option<PathBuf> {
 /// Keybindings bind GPUI's `secondary` token (Cmd on macOS, Ctrl elsewhere),
 /// so UI hint chips must render the matching chord rather than a hardcoded
 /// `⌘`, which on Windows would advertise the Windows/Super key instead.
-#[cfg(target_os = "macos")]
+/// The app's canonical key chords, in the syntax `KeyBinding` parses:
+/// `secondary` resolves to Cmd on macOS and Ctrl elsewhere, so one table
+/// drives both platforms. Display strings come from [`label`], never from a
+/// hand-typed glyph, so a binding and its chip cannot drift apart.
 pub mod shortcuts {
-    pub const NEW_SESSION: &str = "⌘N";
-    pub const REFRESH: &str = "⌘R";
-    pub const TERMINAL: &str = "⌘J";
-    pub const SIDEBAR: &str = "⌘B";
-    pub const FOCUS_SESSIONS: &str = "⌘⇧B";
-    pub const PROJECT_PANEL: &str = "⌘⇧E";
-    pub const SETTINGS: &str = "⌘,";
-    pub const PALETTE: &str = "⌘P";
-    pub const FIND: &str = "⌘F";
-    pub const USAGE: &str = "⌘U";
-    pub const PREV_TURN: &str = "⌘↑";
-    pub const NEXT_TURN: &str = "⌘↓";
-    pub const COPY_LAST_RESPONSE: &str = "⌘⇧C";
-    pub const CHECK_UPDATES: &str = "⌘⇧U";
-    pub const QUIT: &str = "⌘Q";
-    pub const SEND: &str = "↵";
-    pub const SEND_ALTERNATE: &str = "⌥↵";
-    pub const STEER: &str = "⌘⇧↵";
-    pub const NEWLINE: &str = "⇧↵";
-    pub const ACCEPT: &str = "Tab";
-    pub const STOP: &str = "Esc";
-}
+    pub const NEW_SESSION: &str = "secondary-n";
+    pub const REFRESH: &str = "secondary-r";
+    pub const TERMINAL: &str = "secondary-j";
+    pub const SIDEBAR: &str = "secondary-b";
+    pub const FOCUS_SESSIONS: &str = "secondary-shift-b";
+    /// The session-number span; `⌘1…⌘9` bound by `commands::BINDINGS`.
+    pub const FIRST_SESSION_SLOT: &str = "secondary-1";
+    pub const LAST_SESSION_SLOT: &str = "secondary-9";
+    pub const PROJECT_PANEL: &str = "secondary-shift-e";
+    pub const SETTINGS: &str = "secondary-,";
+    pub const PALETTE: &str = "secondary-p";
+    pub const PALETTE_ALT: &str = "secondary-k";
+    pub const FIND: &str = "secondary-f";
+    pub const USAGE: &str = "secondary-u";
+    pub const PREV_TURN: &str = "secondary-up";
+    pub const NEXT_TURN: &str = "secondary-down";
+    pub const COPY_LAST_RESPONSE: &str = "secondary-shift-c";
+    pub const CHECK_UPDATES: &str = "secondary-shift-u";
+    pub const QUIT: &str = "secondary-q";
+    pub const CHOOSE_MODEL: &str = "secondary-shift-m";
+    pub const CHOOSE_THINKING: &str = "secondary-shift-t";
+    pub const REVIEW_CHANGES: &str = "secondary-shift-r";
+    pub const SHORTCUT_HELP: &str = "secondary-/";
+    pub const SEND: &str = "enter";
+    pub const SEND_ALTERNATE: &str = "alt-enter";
+    pub const STEER: &str = "secondary-shift-enter";
+    pub const NEWLINE: &str = "shift-enter";
+    pub const ACCEPT: &str = "tab";
+    pub const STOP: &str = "escape";
 
-#[cfg(not(target_os = "macos"))]
-pub mod shortcuts {
-    pub const NEW_SESSION: &str = "Ctrl+N";
-    pub const REFRESH: &str = "Ctrl+R";
-    pub const TERMINAL: &str = "Ctrl+J";
-    pub const SIDEBAR: &str = "Ctrl+B";
-    pub const FOCUS_SESSIONS: &str = "Ctrl+Shift+B";
-    pub const PROJECT_PANEL: &str = "Ctrl+Shift+E";
-    pub const SETTINGS: &str = "Ctrl+,";
-    pub const PALETTE: &str = "Ctrl+P";
-    pub const FIND: &str = "Ctrl+F";
-    pub const USAGE: &str = "Ctrl+U";
-    pub const PREV_TURN: &str = "Ctrl+↑";
-    pub const NEXT_TURN: &str = "Ctrl+↓";
-    pub const COPY_LAST_RESPONSE: &str = "Ctrl+Shift+C";
-    pub const CHECK_UPDATES: &str = "Ctrl+Shift+U";
-    pub const QUIT: &str = "Ctrl+Q";
-    pub const SEND: &str = "Enter";
-    pub const SEND_ALTERNATE: &str = "Alt+Enter";
-    pub const STEER: &str = "Ctrl+Shift+Enter";
-    pub const NEWLINE: &str = "Shift+Enter";
-    pub const ACCEPT: &str = "Tab";
-    pub const STOP: &str = "Esc";
+    /// Render one canonical chord the way this platform labels it: macOS
+    /// glyphs (`⌘⇧B`) or explicit names (`Ctrl+Shift+B`).
+    ///
+    /// Only the chord vocabulary `KeyBinding` accepts is handled; an unknown
+    /// key falls back to its raw spelling so a label is never blank.
+    pub fn label(chord: &str) -> String {
+        #[cfg(target_os = "macos")]
+        {
+            let mut out = String::new();
+            for part in chord.split('-') {
+                match part {
+                    "secondary" | "cmd" | "super" | "win" => out.push('⌘'),
+                    "shift" => out.push('⇧'),
+                    "alt" => out.push('⌥'),
+                    "ctrl" | "control" => out.push('⌃'),
+                    "fn" => out.push_str("fn"),
+                    key => out.push_str(&key_label_mac(key)),
+                }
+            }
+            out
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let mut parts: Vec<String> = Vec::new();
+            for part in chord.split('-') {
+                match part {
+                    "secondary" | "cmd" | "super" | "win" | "ctrl" | "control" => {
+                        parts.push("Ctrl".to_string())
+                    }
+                    "shift" => parts.push("Shift".to_string()),
+                    "alt" => parts.push("Alt".to_string()),
+                    "fn" => parts.push("Fn".to_string()),
+                    key => parts.push(key_label_other(key)),
+                }
+            }
+            parts.join("+")
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn key_label_mac(key: &str) -> String {
+        match key {
+            "enter" => "↵".to_string(),
+            "escape" => "Esc".to_string(),
+            "tab" => "Tab".to_string(),
+            "space" => "Space".to_string(),
+            "up" => "↑".to_string(),
+            "down" => "↓".to_string(),
+            "left" => "←".to_string(),
+            "right" => "→".to_string(),
+            "pageup" => "⇞".to_string(),
+            "pagedown" => "⇟".to_string(),
+            "home" => "↖".to_string(),
+            "end" => "↘".to_string(),
+            "backspace" => "⌫".to_string(),
+            "delete" => "⌦".to_string(),
+            other if other.chars().count() == 1 => other.to_uppercase(),
+            other => other.to_string(),
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn key_label_other(key: &str) -> String {
+        match key {
+            "enter" => "Enter".to_string(),
+            "escape" => "Esc".to_string(),
+            "tab" => "Tab".to_string(),
+            "space" => "Space".to_string(),
+            "up" => "↑".to_string(),
+            "down" => "↓".to_string(),
+            "left" => "←".to_string(),
+            "right" => "→".to_string(),
+            "pageup" => "PgUp".to_string(),
+            "pagedown" => "PgDn".to_string(),
+            "backspace" => "Backspace".to_string(),
+            "delete" => "Delete".to_string(),
+            other if other.chars().count() == 1 => other.to_uppercase(),
+            other => other.to_string(),
+        }
+    }
 }
 
 /// The catalog id of the platform's own file manager, preferred when the user
@@ -1428,6 +1495,36 @@ pub fn titlebar_options() -> TitlebarOptions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chord_labels_use_the_platform_vocabulary() {
+        assert_eq!(
+            shortcuts::label("secondary-n"),
+            if cfg!(target_os = "macos") {
+                "⌘N"
+            } else {
+                "Ctrl+N"
+            }
+        );
+        assert_eq!(shortcuts::label("escape"), "Esc");
+        assert_eq!(shortcuts::label("tab"), "Tab");
+        assert_eq!(
+            shortcuts::label("secondary-up"),
+            if cfg!(target_os = "macos") {
+                "⌘↑"
+            } else {
+                "Ctrl+↑"
+            }
+        );
+        assert_eq!(
+            shortcuts::label("secondary-shift-enter"),
+            if cfg!(target_os = "macos") {
+                "⌘⇧↵"
+            } else {
+                "Ctrl+Shift+Enter"
+            }
+        );
+    }
 
     fn open_in_test_apps() -> Vec<ExternalApp> {
         ["vscode", "rider", DEFAULT_OPEN_IN_FILE_MANAGER]

@@ -18,8 +18,8 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     div, prelude::*, px, AnyElement, ClickEvent, Context, CursorStyle, Entity, FontWeight,
-    KeyDownEvent, ListAlignment, ListOffset, ListState, MouseDownEvent, Pixels, Render,
-    ScrollHandle, StatefulInteractiveElement, Window,
+    ListAlignment, ListOffset, ListState, MouseDownEvent, Pixels, Render, ScrollHandle,
+    StatefulInteractiveElement, Window,
 };
 
 use crate::app::{
@@ -138,6 +138,10 @@ pub struct SidePane {
     tree_rows: Vec<review::TreeRow>,
     /// Keyboard cursor within the tree.
     tree_cursor: Option<usize>,
+    /// Keyboard cursor for hunk navigation (`]` / `[`) — the diff line the
+    /// next/previous hunk search starts from. `None` starts at the selected
+    /// file's header.
+    diff_cursor: Option<usize>,
     tree_focus: gpui::FocusHandle,
     /// Cached filter text + dirty flag so the tree rebuilds only on change.
     last_tree_filter: String,
@@ -187,7 +191,8 @@ impl SidePane {
             pending_select: None,
             tree_rows: Vec::new(),
             tree_cursor: None,
-            tree_focus: cx.focus_handle(),
+            diff_cursor: None,
+            tree_focus: cx.focus_handle().tab_stop(true),
             last_tree_filter: String::new(),
             tree_dirty: true,
         }
@@ -592,6 +597,7 @@ impl SidePane {
             }
         }
         self.tree_cursor = None;
+        self.diff_cursor = None;
         self.diff_list.reset(snapshot.lines.len());
         self.review = Some(Arc::new(snapshot));
         self.collapsed_files.clear();
@@ -769,6 +775,8 @@ impl SidePane {
 
     fn select_file(&mut self, file_index: usize, cx: &mut Context<Self>) {
         self.selected_file = Some(file_index);
+        // Hunk navigation restarts from the newly selected file.
+        self.diff_cursor = None;
         // Picking a file is an ask to see it; a collapsed row would scroll to
         // its header and show nothing.
         if self.collapsed_files.remove(&file_index) {
@@ -790,36 +798,94 @@ impl SidePane {
         cx.notify();
     }
 
-    fn on_tree_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        let key = event.keystroke.key.as_str();
+    /// Move the tree cursor one row (registry-bound ↑/↓).
+    pub(super) fn review_tree_move(&mut self, direction: isize, cx: &mut Context<Self>) {
         let rows_len = self.tree_rows.len();
         if rows_len == 0 {
             return;
         }
-        match key {
-            "down" => {
-                let next = self.tree_cursor.map_or(0, |ix| (ix + 1).min(rows_len - 1));
-                self.move_tree_cursor(next, cx);
+        let next = if direction > 0 {
+            self.tree_cursor.map_or(0, |ix| (ix + 1).min(rows_len - 1))
+        } else {
+            self.tree_cursor.map_or(0, |ix| ix.saturating_sub(1))
+        };
+        self.move_tree_cursor(next, cx);
+    }
+
+    /// Enter/Space on the cursor row: toggle a directory, open a file.
+    pub(super) fn review_tree_toggle(&mut self, cx: &mut Context<Self>) {
+        if let Some(index) = self.tree_cursor {
+            match self.tree_rows.get(index).cloned() {
+                Some(review::TreeRow::Directory { path, .. }) => self.toggle_dir(path, cx),
+                Some(review::TreeRow::File { file_index, .. }) => self.select_file(file_index, cx),
+                None => {}
             }
-            "up" => {
-                let next = self.tree_cursor.map_or(0, |ix| ix.saturating_sub(1));
-                self.move_tree_cursor(next, cx);
-            }
-            "enter" | "space" => {
-                if let Some(index) = self.tree_cursor {
-                    match self.tree_rows.get(index).cloned() {
-                        Some(review::TreeRow::Directory { path, .. }) => {
-                            self.toggle_dir(path, cx);
-                        }
-                        Some(review::TreeRow::File { file_index, .. }) => {
-                            self.select_file(file_index, cx);
-                        }
-                        None => {}
-                    }
-                }
-            }
-            _ => {}
         }
+    }
+
+    /// `n` / `p`: select the next or previous changed file.
+    pub(super) fn review_move_file(&mut self, direction: isize, cx: &mut Context<Self>) {
+        let count = self.review.as_ref().map_or(0, |review| review.files.len());
+        if count == 0 {
+            return;
+        }
+        let current = self.selected_file.unwrap_or(0).min(count - 1);
+        let next = if direction > 0 {
+            (current + 1).min(count - 1)
+        } else {
+            current.saturating_sub(1)
+        };
+        self.select_file(next, cx);
+    }
+
+    /// `]` / `[`: jump the diff to the next or previous hunk header. The
+    /// selection follows the hunk's file so the tree and the diff agree.
+    pub(super) fn review_move_hunk(&mut self, direction: isize, cx: &mut Context<Self>) {
+        let Some(snapshot) = self.review.as_ref() else {
+            return;
+        };
+        let start = self.diff_cursor.or_else(|| {
+            self.selected_file
+                .and_then(|ix| snapshot.files.get(ix))
+                .and_then(|file| file.diff_line)
+        });
+        let current = start.unwrap_or(0);
+        let target = if direction > 0 {
+            (current + 1..snapshot.lines.len()).find(|&ix| is_hunk_start(&snapshot.lines, ix))
+        } else {
+            (0..current).rev().find(|&ix| is_hunk_start(&snapshot.lines, ix))
+        };
+        let Some(ix) = target else {
+            return;
+        };
+        self.diff_cursor = Some(ix);
+        self.selected_file = snapshot.lines[ix].file_index.into();
+        self.diff_list.scroll_to(ListOffset {
+            item_ix: ix,
+            offset_in_item: px(0.),
+        });
+        cx.notify();
+    }
+
+    /// `e`: expand every changed file's diff.
+    pub(super) fn review_expand_all(&mut self, cx: &mut Context<Self>) {
+        if self.review.as_ref().map_or(0, |review| review.files.len()) == 0 {
+            return;
+        }
+        self.collapsed_files.clear();
+        self.remeasure_diff_rows();
+        cx.notify();
+    }
+
+    /// `c`: collapse every changed file to its header.
+    pub(super) fn review_collapse_all(&mut self, cx: &mut Context<Self>) {
+        let files = self.review.as_ref().map_or(0, |review| review.files.len());
+        if files == 0 {
+            return;
+        }
+        self.collapsed_files.extend(0..files);
+        self.remeasure_diff_rows();
+        cx.notify();
     }
 
     fn move_tree_cursor(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -1539,9 +1605,37 @@ impl SidePane {
                     .flex_1()
                     .min_h_0()
                     .relative()
-                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                        this.on_tree_key_down(event, cx)
+                    .on_action(cx.listener(|this, _: &crate::ReviewTreeNext, _, cx| {
+                        this.review_tree_move(1, cx)
                     }))
+                    .on_action(cx.listener(|this, _: &crate::ReviewTreePrev, _, cx| {
+                        this.review_tree_move(-1, cx)
+                    }))
+                    .on_action(
+                        cx.listener(|this, _: &crate::ReviewTreeToggle, _, cx| {
+                            this.review_tree_toggle(cx)
+                        }),
+                    )
+                    .on_action(cx.listener(|this, _: &crate::ReviewFileNext, _, cx| {
+                        this.review_move_file(1, cx)
+                    }))
+                    .on_action(cx.listener(|this, _: &crate::ReviewFilePrev, _, cx| {
+                        this.review_move_file(-1, cx)
+                    }))
+                    .on_action(cx.listener(|this, _: &crate::ReviewHunkNext, _, cx| {
+                        this.review_move_hunk(1, cx)
+                    }))
+                    .on_action(cx.listener(|this, _: &crate::ReviewHunkPrev, _, cx| {
+                        this.review_move_hunk(-1, cx)
+                    }))
+                    .on_action(cx.listener(|this, _: &crate::ReviewExpandAll, _, cx| {
+                        this.review_expand_all(cx)
+                    }))
+                    .on_action(
+                        cx.listener(|this, _: &crate::ReviewCollapseAll, _, cx| {
+                            this.review_collapse_all(cx)
+                        }),
+                    )
                     .child(tree_el),
             )
             .into_any_element()
@@ -1924,6 +2018,25 @@ impl Render for SidePane {
 /// An invisible drag ghost — resizing leaves no floating preview.
 struct DragGhost;
 
+/// Whether `ix` begins a hunk: an explicit hunk header, or the first
+/// addition/deletion of a change run. Full-context snapshots carry no
+/// `HunkHeader` rows, so the run boundary is the signal both shapes share.
+fn is_hunk_start(lines: &[review::Line], ix: usize) -> bool {
+    match lines[ix].kind {
+        LineKind::HunkHeader => true,
+        LineKind::Addition | LineKind::Deletion => {
+            let previous_is_change = ix > 0
+                && lines[ix - 1].file_index == lines[ix].file_index
+                && matches!(
+                    lines[ix - 1].kind,
+                    LineKind::Addition | LineKind::Deletion
+                );
+            !previous_is_change
+        }
+        _ => false,
+    }
+}
+
 impl Render for DragGhost {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
@@ -2040,6 +2153,52 @@ mod tests {
 
                 pane.toggle_all_files(cx);
                 assert!(pane.collapsed_files.is_empty());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn review_keyboard_navigation_moves_between_files(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        let patch = format!(
+            "{}\n\
+             diff --git a/src/other.rs b/src/other.rs\n\
+             index 3333333..4444444 100644\n\
+             --- a/src/other.rs\n\
+             +++ b/src/other.rs\n\
+             @@ -1,3 +1,3 @@\n\
+             -old();\n\
+             +new();\n",
+            gap_patch()
+        );
+        let snapshot = crate::review::parse_collected(
+            Source::Uncommitted,
+            "1\t1\tsrc/lib.rs\n1\t1\tsrc/other.rs\n",
+            &patch,
+            true,
+        );
+        assert_eq!(snapshot.files.len(), 2, "fixture must hold two changed files");
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.apply_snapshot(snapshot);
+                pane.review_move_file(1, cx);
+                assert_eq!(pane.selected_file, Some(1));
+                pane.review_move_file(1, cx);
+                assert_eq!(pane.selected_file, Some(1), "clamps at the last file");
+                pane.review_move_file(-1, cx);
+                assert_eq!(pane.selected_file, Some(0));
+
+                pane.review_collapse_all(cx);
+                assert_eq!(pane.collapsed_files.len(), 2);
+                pane.review_expand_all(cx);
+                assert!(pane.collapsed_files.is_empty());
+
+                // Hunk navigation follows the diff into the next file.
+                pane.select_file(0, cx);
+                pane.review_move_hunk(1, cx);
+                assert_eq!(pane.selected_file, Some(0));
+                pane.review_move_hunk(1, cx);
+                assert_eq!(pane.selected_file, Some(1));
             });
         });
     }

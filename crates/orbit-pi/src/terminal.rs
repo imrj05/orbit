@@ -1199,7 +1199,7 @@ impl TerminalView {
         Self {
             session: Some(session),
             error: None,
-            focus_handle: cx.focus_handle(),
+            focus_handle: cx.focus_handle().tab_stop(true),
             title: None,
             active: true,
             focused: false,

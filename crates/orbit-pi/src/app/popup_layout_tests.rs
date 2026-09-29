@@ -527,7 +527,11 @@ fn model_picker_arrows_work_after_the_palette_route(cx: &mut gpui::TestAppContex
             app.toggle_command_palette(window, cx);
             // Exactly what `CommandPalette`'s `on_command` does.
             app.command_palette = None;
-            app.run_palette_command(PaletteCommand::ChooseModel, window, cx);
+            app.run_palette_command(
+                PaletteCommand::Run(crate::commands::CommandId::ChooseModel),
+                window,
+                cx,
+            );
         });
     });
     let _ = cx.draw(

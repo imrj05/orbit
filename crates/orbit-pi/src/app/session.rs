@@ -347,7 +347,12 @@ impl OrbitApp {
         if !self.input.read(cx).focus_handle(cx).is_focused(window) {
             return;
         }
-        self.commit_autocomplete_if_open(cx);
+        // With the menu open, Tab accepts the highlighted entry; with it
+        // closed, Tab is the workbench's focus-traversal key and must not be
+        // swallowed by this binding.
+        if !self.commit_autocomplete_if_open(cx) {
+            window.focus_next();
+        }
     }
 
     pub(super) fn on_send_click(
@@ -1076,6 +1081,17 @@ impl OrbitApp {
             self.session_name_input
                 .update(cx, |input, cx| input.set_text(text, cx));
         }
+    }
+
+    /// The command palette's Rename Session: open the details popover (the
+    /// header's info control owns the rename field) and put the caret in it.
+    pub(super) fn begin_session_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.quota_popup_open = false;
+        self.session_details_open = true;
+        self.seed_session_name_input(cx);
+        let handle = self.session_name_input.read(cx).focus_handle(cx);
+        window.focus(&handle);
+        cx.notify();
     }
 
     /// The Update button's success glyph: a green check that scales and fades

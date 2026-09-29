@@ -53,7 +53,7 @@ use crate::theme::tokens::{
     popover, BufferLineHeight, ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize,
 };
 use crate::theme::{self, Theme, ThemeMode};
-use crate::transcript::{ChatMessage, Step, ToolCall, ToolFacts};
+use crate::transcript::{ChatMessage, Step, SummaryRow, ToolCall, ToolFacts};
 
 /// Opens the changed-files Review in the side pane (see `sidepane.rs`) —
 /// handed down from the app so the transcript's Review buttons can point
@@ -1163,7 +1163,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
             let copy_text = messages
                 .borrow()
                 .get(last_ix)
-                .filter(|message| !message.user)
+                .filter(|message| message.is_assistant())
                 .map(|message| message.text())
                 .unwrap_or_default();
             let copied_last = copied
@@ -1668,7 +1668,9 @@ fn render_row(paint: RowPaint) -> AnyElement {
     let first = paint.ix == 0;
     let last = paint.ix + 1 == paint.row_count;
 
-    let inner = if message.user {
+    let inner = if let Some(summary) = message.summary.as_ref() {
+        render_summary_card(summary, &paint)
+    } else if message.user {
         render_user_bubble(message, &paint).into_any_element()
     } else {
         render_assistant(message, &paint).into_any_element()
@@ -1709,6 +1711,114 @@ fn render_row(paint: RowPaint) -> AnyElement {
                 .child(inner),
         )
         .into_any_element()
+}
+
+/// A context-boundary card: pi compacted the conversation, or summarized an
+/// abandoned branch on `/tree` navigation. Collapsed by default (a summary
+/// can be long); clicking the header toggles the markdown body — the same
+/// per-row disclosure set the turn fold uses.
+fn render_summary_card(row: &SummaryRow, paint: &RowPaint) -> AnyElement {
+    let theme = paint.theme;
+    let ix = paint.ix;
+    let expanded = paint.fold_open;
+    let (icon, label) = if row.branch {
+        ("icons/branch.svg", tr!("transcript.branch_summary"))
+    } else {
+        ("icons/archive.svg", tr!("transcript.compaction"))
+    };
+    let detail = row
+        .tokens_before
+        .map(|tokens| {
+            tr!(
+                "transcript.compacted_from",
+                tokens = crate::context_meter::format_tokens(tokens)
+            )
+        })
+        .unwrap_or_default();
+    let has_detail = !detail.is_empty();
+
+    let header = div()
+        .id(ElementId::NamedInteger("summary-head".into(), ix as u64))
+        .h(DynamicSpacing::Base32.px(&theme))
+        .px(DynamicSpacing::Base08.px(&theme))
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base08.px(&theme))
+        .cursor_pointer()
+        .hover(|style| style.bg(theme.overlay_strong))
+        .on_click({
+            let expanded_turns = paint.expanded_turns.clone();
+            let scroller = paint.scroller.clone();
+            move |_, _, cx| {
+                toggle_index(&expanded_turns, ix);
+                scroller.remeasure_toggle(ix);
+                cx.refresh_windows();
+            }
+        })
+        .child(activity_badge(icon, theme.accent, theme))
+        .child(
+            div()
+                .flex_none()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.text)
+                .child(label),
+        )
+        .when(has_detail, |header| {
+            header.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_3)
+                    .child(detail),
+            )
+        })
+        .when(!has_detail, |header| header.child(div().flex_1()))
+        .child(glyph(
+            if expanded {
+                "icons/chevron-down.svg"
+            } else {
+                "icons/chevron-right.svg"
+            },
+            IconSize::XSmall.px(&theme),
+            theme.text_3,
+        ));
+
+    let mut card = div()
+        .id(ElementId::NamedInteger("summary-card".into(), ix as u64))
+        .w_full()
+        .min_w_0()
+        .overflow_hidden()
+        .rounded(Radius::Large.px(&theme))
+        .border_1()
+        .border_color(theme.border_strong)
+        .bg(theme.overlay)
+        .child(header);
+    if expanded {
+        card = card.child(
+            div()
+                .w_full()
+                .min_w_0()
+                .border_t_1()
+                .border_color(theme.border)
+                .px(DynamicSpacing::Base12.px(&theme))
+                .py(DynamicSpacing::Base08.px(&theme))
+                .child(render_prose(
+                    &row.summary,
+                    ix,
+                    4096,
+                    theme,
+                    paint.copied_sections.clone(),
+                    paint.expanded_blocks.clone(),
+                    true,
+                    paint.scroller.clone(),
+                    Some(paint.table_breakout),
+                )),
+        );
+    }
+    card.into_any_element()
 }
 
 /// End-aligned user row: neutral raised bubble, persistent quiet
@@ -7646,6 +7756,7 @@ mod tests {
         let messages = vec![
             ChatMessage {
                 user: true,
+                summary: None,
                 steps: vec![Step {
                     text: "a".into(),
                     ..Step::default()
@@ -7658,6 +7769,7 @@ mod tests {
             },
             ChatMessage {
                 user: false,
+                summary: None,
                 steps: vec![Step {
                     text: "b".into(),
                     ..Step::default()
@@ -7670,6 +7782,7 @@ mod tests {
             },
             ChatMessage {
                 user: true,
+                summary: None,
                 steps: vec![Step {
                     text: "c".into(),
                     ..Step::default()
@@ -7682,6 +7795,7 @@ mod tests {
             },
             ChatMessage {
                 user: false,
+                summary: None,
                 steps: vec![Step {
                     text: "d".into(),
                     ..Step::default()
@@ -7703,6 +7817,7 @@ mod tests {
         let messages = vec![
             ChatMessage {
                 user: true,
+                summary: None,
                 steps: vec![Step {
                     text: "a".into(),
                     ..Step::default()
@@ -7715,6 +7830,7 @@ mod tests {
             },
             ChatMessage {
                 user: false,
+                summary: None,
                 steps: vec![Step {
                     text: "b".into(),
                     ..Step::default()
@@ -7727,6 +7843,7 @@ mod tests {
             },
             ChatMessage {
                 user: true,
+                summary: None,
                 steps: vec![Step {
                     text: "c".into(),
                     ..Step::default()
@@ -7739,6 +7856,7 @@ mod tests {
             },
             ChatMessage {
                 user: false,
+                summary: None,
                 steps: vec![Step {
                     text: "d".into(),
                     ..Step::default()
@@ -8130,6 +8248,7 @@ mod tests {
         let messages = vec![
             ChatMessage {
                 user: true,
+                summary: None,
                 steps: vec![Step {
                     text: "a".into(),
                     ..Step::default()
@@ -8142,6 +8261,7 @@ mod tests {
             },
             ChatMessage {
                 user: false,
+                summary: None,
                 steps: vec![Step {
                     text: "b".into(),
                     ..Step::default()
@@ -8154,6 +8274,7 @@ mod tests {
             },
             ChatMessage {
                 user: true,
+                summary: None,
                 steps: vec![Step {
                     text: "c".into(),
                     ..Step::default()
@@ -8408,6 +8529,7 @@ mod tests {
         Rc::new(RefCell::new(vec![
             ChatMessage {
                 user: false,
+                summary: None,
                 steps: vec![Step {
                     text: "Alpha bravo charlie delta echo foxtrot golf hotel india juliet \
                            kilo lima mike november oscar papa quebec romeo sierra tango \
@@ -8423,6 +8545,7 @@ mod tests {
             },
             ChatMessage {
                 user: true,
+                summary: None,
                 steps: vec![Step {
                     text: "Second paragraph in a follow-up turn.".into(),
                     ..Step::default()
@@ -8660,6 +8783,51 @@ mod tests {
                 view.streaming.set(Some(0));
             }
             render_transcript(view, cx)
+        }
+    }
+
+    /// The compaction / branch-summary boundary cards must paint — collapsed
+    /// and expanded — with pi's summary content, never a blank row.
+    #[gpui::test]
+    fn summary_cards_render_collapsed_and_expanded(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let boundary = |branch: bool, summary: &str, tokens: Option<u64>| ChatMessage {
+            user: false,
+            summary: Some(SummaryRow {
+                branch,
+                summary: summary.to_string(),
+                tokens_before: tokens,
+            }),
+            steps: vec![Step::default()],
+            images: Vec::new(),
+            elapsed: None,
+            finished_at: None,
+            error: None,
+            aborted: false,
+        };
+        let messages: Rc<RefCell<Vec<ChatMessage>>> = Rc::new(RefCell::new(vec![
+            boundary(false, "## Goal\n\nShip the fix.", Some(150_700)),
+            boundary(true, "Explored approach A.", None),
+        ]));
+        // Collapsed paints the header alone; `open_work` expands row 0 (the
+        // disclosure state summaries share with the turn fold).
+        for open in [false, true] {
+            let state: TextSelectionState = Rc::new(RefCell::new(TextSelection::new()));
+            let scroller = MessageScrollerState::new(messages.borrow().len());
+            let view = cx.update(|_, cx| {
+                cx.new(|_| SelectTestView {
+                    messages: messages.clone(),
+                    state,
+                    scroller,
+                    main_width: px(900.),
+                    open_work: open,
+                    live: false,
+                })
+            });
+            cx.draw(point(px(0.), px(0.)), gpui::size(px(900.), px(800.)), |_, _| {
+                view.clone()
+            });
         }
     }
 

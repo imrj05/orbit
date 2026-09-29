@@ -31,6 +31,9 @@ const HOME_SEARCH_SUBDIRS: &[&str] = &[
     "Library/pnpm/bin",
     ".bun/bin",
     ".npm-global/bin",
+    // pi's own shim dir (it also carries `fd`); a recent pi may install its
+    // launcher here, and it is on the user's shell PATH but not a `.app`'s.
+    ".pi/agent/bin",
     ".yarn/bin",
 ];
 
@@ -422,6 +425,24 @@ mod tests {
         deps.iter_mut().find(|d| d.name == "git").unwrap().installed = false;
         assert!(all_required_installed(&deps));
         assert_eq!(missing_required_count(&deps), 0);
+    }
+
+    /// A `pi` shim under the npm global prefix (the one `~/.npmrc` can point
+    /// at) or pi's own `~/.pi/agent/bin` must be found without PATH — a
+    /// bundled `.app` never inherits the shell PATH that contains them.
+    #[test]
+    fn finds_pi_in_npm_global_and_pi_shim_dirs() {
+        let home = std::env::temp_dir().join("orbit-onboarding-pi-dirs-test");
+        let _ = std::fs::remove_dir_all(&home);
+        for sub in [".npm-global/bin", ".pi/agent/bin"] {
+            let dir = home.join(sub);
+            std::fs::create_dir_all(&dir).unwrap();
+            let pi = dir.join("pi");
+            std::fs::write(&pi, "#!/bin/sh\necho pi\n").unwrap();
+            assert_eq!(locate_in_home(&home, "pi"), Some(pi), "{sub}");
+            std::fs::remove_file(dir.join("pi")).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

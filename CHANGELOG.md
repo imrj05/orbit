@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Hover hints now carry the shortcut: the model and thinking chips, New Task,
+  the sidebar's Search/Usage rows, the top-bar panel toggles, the Git page
+  tabs, and the workspace **+** use registry-backed tooltips ("Choose Model
+  (⌘⇧M)"), and hovering a session row shows the **⌘1…⌘9** slot that opens it.
+
+- A single command registry now backs the keymap, the command palette, and
+  Settings → Shortcuts, so a chord, its chip, and the action it runs can never
+  drift apart. The palette gained **Rename Session**, **Pin / Unpin**, **Clone
+  Session**, **Delete Session**, **Choose Model** (⌘⇧M), **Choose Thinking
+  Level** (⌘⇧T), **Review Changes** (⌘⇧R), and **Keyboard Shortcuts** (⌘/).
+
+- Session management is number- and cycle-addressable: **⌘1…⌘9**
+  (**Ctrl+1…9**) open the Nth session in the sidebar's visible order, and
+  **Ctrl+Tab / Ctrl+Shift+Tab** cycle to the next or previous session. The
+  palette also lists **Next Session** and **Previous Session**.
+
+- The Review pane is fully keyboard operable: `Tab` / `Shift+Tab` move between
+  the workbench's focus stops, arrows walk the changed-files tree, `Enter`
+  opens a file or toggles a folder, `n` / `p` jump between changed files,
+  `[` / `]` jump between hunks, `e` / `c` expand or collapse every file, and
+  `Escape` returns to the chat. The composer's autocomplete and the terminal
+  keep `Tab` for their own use.
+
+### Changed
+
+- The Git page tabs moved from ⌘1…⌘5 to **⌘⌥1…⌘⌥5** (**Ctrl+Alt+1…5**) so
+  the number keys can address sessions directly.
+
+### Fixed
+
+- Orbit and `orbit-rpc` also probe `~/.pi/agent/bin` for the `pi` launcher,
+  alongside the npm/pnpm/bun home dirs they already checked. A bundled `.app`
+  never inherits the shell PATH that contains it, so a pi installed there used
+  to read as missing.
+
+- Shortcuts that were advertised but macOS-only (`cmd-` editor clipboard and
+  undo, Files close, Git page tabs) now use the platform modifier, so Windows
+  and Linux get the same keys. The ⌘. abort chord was dead — gpui names the key
+  `.`, not `period` — and now fires.
+
+- Compaction and branch summaries now appear in the transcript as boundary
+  cards: **Compaction — Compacted from 150K tokens** (click to expand the
+  summary) and **Branch summary**. A successful compaction also re-reads pi's
+  compacted context right away, so the summarized history is replaced by the
+  summary the moment it lands instead of lingering until the session is
+  reopened.
+
 ## [0.2.1] - 2026-09-29
 
 ### Changed

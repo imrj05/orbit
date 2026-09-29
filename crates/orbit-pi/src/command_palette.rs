@@ -38,7 +38,9 @@ use gpui::{
 use crate::app::{
     icon, menu_header, picker_entry, picker_search_frame, picker_surface, SettingsSection,
 };
+use crate::commands::{self, CommandId, CommandSpec};
 use crate::composer::ComposerInput;
+use crate::platform::shortcuts;
 use crate::sessions::SessionInfo;
 use crate::theme::tokens::{
     context_menu, input, list, list_item, picker, BufferLineHeight, ButtonSize, DynamicSpacing,
@@ -95,25 +97,11 @@ const EMPTY_SESSION_ROWS: usize = 6;
 /// Sessions listed for a non-empty query.
 const MAX_SESSION_RESULTS: usize = 12;
 
-/// A command the palette can ask the app to run. Session opening goes
-/// through its own callback; everything else is one of these.
+/// A palette row's action: run a registry command, or open a Settings
+/// destination (which has no keymap row and exists only in the palette).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaletteCommand {
-    NewSession,
-    RefreshSessions,
-    FocusComposer,
-    FocusSessions,
-    ToggleSidebar,
-    ToggleSidePanel,
-    ToggleTerminal,
-    ToggleProjectPanel,
-    ReviewChanges,
-    OpenGit,
-    ChooseModel,
-    ChooseThinking,
-    AbortRun,
-    CopySessionId,
-    CloneSession,
+    Run(CommandId),
     OpenSettings(SettingsSection),
 }
 
@@ -124,6 +112,8 @@ pub struct PaletteSnapshot {
     pub sessions: Vec<SessionInfo>,
     /// The open session's path, so its row can be emphasized.
     pub active_path: Option<PathBuf>,
+    /// The open session is pinned (drives the Pin/Unpin palette label).
+    pub active_pinned: bool,
     /// An agent run is in flight (gates the Abort command).
     pub busy: bool,
     /// pi's session id for the active session (gates Copy Session ID).
@@ -168,7 +158,8 @@ struct PaletteItem {
     icon: &'static str,
     label: String,
     detail: Option<String>,
-    shortcut: Option<&'static str>,
+    /// A display chip derived from the command's advertised chord.
+    shortcut: Option<String>,
     action: PaletteAction,
     /// Lowercased haystack for fuzzy matching (label + keywords + detail).
     search: String,
@@ -179,32 +170,74 @@ struct PaletteItem {
 }
 
 impl PaletteItem {
-    fn command(
-        label: impl Into<String>,
-        icon: &'static str,
-        shortcut: Option<&'static str>,
-        command: PaletteCommand,
-        keywords: &str,
-        order: usize,
-    ) -> Self {
-        let label: String = label.into();
+    /// A registry command row: every visible field comes from
+    /// [`crate::commands`], never from a hand-typed duplicate.
+    fn from_spec(spec: &'static CommandSpec, snapshot: &PaletteSnapshot, order: usize) -> Self {
+        let label = command_title(spec, snapshot);
         Self {
-            section: match command {
-                PaletteCommand::OpenSettings(_) => Section::Settings,
-                _ => Section::Commands,
-            },
-            icon,
-            detail: match command {
-                PaletteCommand::OpenSettings(_) => Some(tr!("command_palette.settings")),
-                _ => None,
-            },
-            shortcut,
-            action: PaletteAction::Run(command),
+            section: Section::Commands,
+            icon: spec.icon,
             label: label.clone(),
-            search: format!("{} {keywords}", label.to_lowercase()),
+            detail: None,
+            shortcut: spec.shortcut(),
+            action: PaletteAction::Run(PaletteCommand::Run(spec.id)),
+            search: format!("{} {}", label.to_lowercase(), spec.keywords),
             order,
             recency: 0,
         }
+    }
+
+    /// A Settings destination row (palette-only; no keymap entry).
+    fn settings(
+        section: SettingsSection,
+        icon: &'static str,
+        label: String,
+        keywords: &str,
+        order: usize,
+    ) -> Self {
+        Self {
+            section: Section::Settings,
+            icon,
+            search: format!("{} {keywords}", label.to_lowercase()),
+            label,
+            detail: Some(tr!("command_palette.settings")),
+            shortcut: (section == SettingsSection::General)
+                .then(|| shortcuts::label(crate::platform::shortcuts::SETTINGS)),
+            action: PaletteAction::Run(PaletteCommand::OpenSettings(section)),
+            order,
+            recency: 0,
+        }
+    }
+}
+
+/// The palette title for a command: the alternate key wins when the toggle
+/// it describes is on (a visible sidebar reads "Hide Sidebar").
+fn command_title(spec: &CommandSpec, snapshot: &PaletteSnapshot) -> String {
+    let alternate = match spec.id {
+        CommandId::ToggleSidebar => snapshot.sidebar_visible,
+        CommandId::ToggleSidePanel => snapshot.side_panel_visible,
+        CommandId::ToggleTerminal => snapshot.terminal_visible,
+        CommandId::ToggleProjectPanel => snapshot.project_panel_visible,
+        CommandId::PinSession => snapshot.active_pinned,
+        _ => false,
+    };
+    commands::title(spec.id, alternate)
+}
+
+/// Whether the snapshot gives a command enough state to be worth listing.
+fn command_enabled(id: CommandId, snapshot: &PaletteSnapshot) -> bool {
+    match id {
+        CommandId::ChooseModel => snapshot.can_choose_model,
+        CommandId::ChooseThinking => snapshot.can_choose_thinking,
+        CommandId::AbortRun => snapshot.busy,
+        CommandId::RenameSession
+        | CommandId::PinSession
+        | CommandId::CloneSession
+        | CommandId::DeleteSession => snapshot.active_path.is_some(),
+        CommandId::CopySessionId => snapshot.session_id.is_some(),
+        // Cycling needs somewhere to go.
+        CommandId::NextSession | CommandId::PrevSession => snapshot.sessions.len() > 1,
+        _ => true,
     }
 }
 
@@ -357,158 +390,17 @@ impl CommandPalette {
 
     /// Command + settings rows, gated by the snapshot's live facts so the
     /// palette never offers an action the app can't perform right now.
+    /// Rows for the registry commands the snapshot enables, then the
+    /// Settings destinations. Labels, icons, keywords, and shortcut chips
+    /// all come from the registry (`crate::commands`), so this list cannot
+    /// drift from the keymap or the Shortcuts page.
     fn command_items(&self) -> Vec<PaletteItem> {
-        let mut order = 0usize;
-        let mut next = || {
-            let current = order;
-            order += 1;
-            current
-        };
-        let mut items = vec![
-            PaletteItem::command(
-                tr!("command_palette.new_session"),
-                "icons/plus.svg",
-                Some(crate::platform::shortcuts::NEW_SESSION),
-                PaletteCommand::NewSession,
-                "new session chat conversation start task",
-                next(),
-            ),
-            PaletteItem::command(
-                tr!("command_palette.focus_composer"),
-                "icons/compose.svg",
-                None,
-                PaletteCommand::FocusComposer,
-                "focus composer prompt input message write",
-                next(),
-            ),
-            PaletteItem::command(
-                tr!("command_palette.refresh_sessions"),
-                "icons/refresh.svg",
-                Some(crate::platform::shortcuts::REFRESH),
-                PaletteCommand::RefreshSessions,
-                "refresh reload sessions list disk",
-                next(),
-            ),
-            PaletteItem::command(
-                if self.snapshot.sidebar_visible {
-                    tr!("command_palette.hide_sidebar")
-                } else {
-                    tr!("command_palette.show_sidebar")
-                },
-                "icons/layout-left.svg",
-                Some(crate::platform::shortcuts::SIDEBAR),
-                PaletteCommand::ToggleSidebar,
-                "toggle show hide left sidebar sessions history",
-                next(),
-            ),
-            PaletteItem::command(
-                tr!("command_palette.focus_sessions"),
-                "icons/layout-left.svg",
-                Some(crate::platform::shortcuts::FOCUS_SESSIONS),
-                PaletteCommand::FocusSessions,
-                "focus navigate keyboard sessions sidebar arrow keys",
-                next(),
-            ),
-            PaletteItem::command(
-                if self.snapshot.side_panel_visible {
-                    tr!("command_palette.hide_side_panel")
-                } else {
-                    tr!("command_palette.show_side_panel")
-                },
-                "icons/panel-right.svg",
-                None,
-                PaletteCommand::ToggleSidePanel,
-                "toggle show hide right panel review git diff",
-                next(),
-            ),
-            PaletteItem::command(
-                if self.snapshot.terminal_visible {
-                    tr!("command_palette.hide_terminal")
-                } else {
-                    tr!("command_palette.show_terminal")
-                },
-                "icons/terminal.svg",
-                Some(crate::platform::shortcuts::TERMINAL),
-                PaletteCommand::ToggleTerminal,
-                "toggle show hide terminal shell console command line pty",
-                next(),
-            ),
-            PaletteItem::command(
-                if self.snapshot.project_panel_visible {
-                    tr!("explorer.hide")
-                } else {
-                    tr!("explorer.show")
-                },
-                "icons/folder.svg",
-                Some(crate::platform::shortcuts::PROJECT_PANEL),
-                PaletteCommand::ToggleProjectPanel,
-                "explorer files project panel tree folders workspace toggle show hide",
-                next(),
-            ),
-            PaletteItem::command(
-                tr!("command_palette.review_changes"),
-                "icons/file-diff.svg",
-                None,
-                PaletteCommand::ReviewChanges,
-                "review git diff changes files panel",
-                next(),
-            ),
-            PaletteItem::command(
-                tr!("command_palette.open_git"),
-                "icons/git-commit.svg",
-                None,
-                PaletteCommand::OpenGit,
-                "git commit push branch history graph changes",
-                next(),
-            ),
-        ];
-        if self.snapshot.can_choose_model {
-            items.push(PaletteItem::command(
-                tr!("command_palette.choose_model"),
-                "icons/spark.svg",
-                None,
-                PaletteCommand::ChooseModel,
-                "choose change select model provider agent",
-                next(),
-            ));
-        }
-        if self.snapshot.can_choose_thinking {
-            items.push(PaletteItem::command(
-                tr!("command_palette.choose_thinking_level"),
-                "icons/thinking-medium.svg",
-                None,
-                PaletteCommand::ChooseThinking,
-                "choose change select thinking level reasoning effort",
-                next(),
-            ));
-        }
-        if self.snapshot.busy {
-            items.push(PaletteItem::command(
-                tr!("command_palette.abort_run"),
-                "icons/stop.svg",
-                Some("Esc"),
-                PaletteCommand::AbortRun,
-                "abort stop cancel run agent working",
-                next(),
-            ));
-        }
-        if self.snapshot.session_id.is_some() {
-            items.push(PaletteItem::command(
-                tr!("command_palette.copy_session_id"),
-                "icons/copy.svg",
-                None,
-                PaletteCommand::CopySessionId,
-                "copy session id uuid identifier debug",
-                next(),
-            ));
-            items.push(PaletteItem::command(
-                tr!("command_palette.clone_session"),
-                "icons/git-fork.svg",
-                None,
-                PaletteCommand::CloneSession,
-                "clone duplicate fork copy session branch conversation",
-                next(),
-            ));
+        let mut items: Vec<PaletteItem> = Vec::new();
+        for spec in commands::COMMANDS.iter().filter(|spec| spec.palette) {
+            if !command_enabled(spec.id, &self.snapshot) {
+                continue;
+            }
+            items.push(PaletteItem::from_spec(spec, &self.snapshot, items.len()));
         }
         for (section, icon, label, keywords) in [
             (
@@ -565,16 +457,15 @@ impl CommandPalette {
                 tr!("settings.about"),
                 "settings about version app",
             ),
+            (
+                SettingsSection::Shortcuts,
+                "icons/keyboard.svg",
+                tr!("settings.shortcuts"),
+                "settings keyboard shortcuts keys reference",
+            ),
         ] {
-            items.push(PaletteItem::command(
-                label,
-                icon,
-                (section == SettingsSection::General)
-                    .then_some(crate::platform::shortcuts::SETTINGS),
-                PaletteCommand::OpenSettings(section),
-                keywords,
-                next(),
-            ));
+            let order = items.len();
+            items.push(PaletteItem::settings(section, icon, label, keywords, order));
         }
         items
     }
@@ -1032,7 +923,7 @@ mod tests {
             label: format!("Item {order}"),
             detail: None,
             shortcut: None,
-            action: PaletteAction::Run(PaletteCommand::NewSession),
+            action: PaletteAction::Run(PaletteCommand::Run(crate::commands::CommandId::NewSession)),
             search: String::new(),
             order,
             recency: 0,
@@ -1157,6 +1048,7 @@ mod tests {
         let snapshot = PaletteSnapshot {
             sessions: Vec::new(),
             active_path: None,
+            active_pinned: false,
             busy: false,
             session_id: None,
             sidebar_visible: true,
@@ -1179,5 +1071,35 @@ mod tests {
             window.focus(&palette.read(cx).focus_handle(cx));
             palette
         })
+    }
+
+    /// The palette's command rows are exactly the registry specs the snapshot
+    /// enables — the palette never carries its own command list.
+    #[gpui::test]
+    fn palette_commands_come_from_the_registry(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let palette = open_test_palette(cx);
+        let (listed, expected) = cx.update(|_, cx| {
+            let palette = palette.read(cx);
+            let listed: Vec<crate::commands::CommandId> = palette
+                .command_items()
+                .into_iter()
+                .filter_map(|item| match item.action {
+                    PaletteAction::Run(PaletteCommand::Run(id)) => Some(id),
+                    _ => None,
+                })
+                .collect();
+            let expected: Vec<crate::commands::CommandId> = crate::commands::COMMANDS
+                .iter()
+                .filter(|spec| spec.palette && command_enabled(spec.id, &palette.snapshot))
+                .map(|spec| spec.id)
+                .collect();
+            (listed, expected)
+        });
+        assert!(!expected.is_empty());
+        assert_eq!(
+            listed, expected,
+            "palette commands must mirror the registry"
+        );
     }
 }

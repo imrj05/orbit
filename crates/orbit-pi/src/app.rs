@@ -853,6 +853,10 @@ impl OrbitApp {
                 .with_key_context("Composer ChatComposer")
                 .with_autocomplete(autocomplete.clone())
         });
+        // The chat input is the workbench's home tab stop; every other
+        // ComposerInput (filters, rename fields, pickers) stays out of the
+        // traversal order.
+        input.read(cx).focus_handle(cx).tab_stop(true);
         // Filter fields for the settings dropdowns and the open-in menu.
         // `Composer Picker` keeps backspace/delete working while Enter/arrows
         // dispatch to the (unhandled) Picker actions rather than submitting.
@@ -1074,7 +1078,7 @@ impl OrbitApp {
             feature_open_last: false,
             pane_full_last: false,
             sidebar_cursor: None,
-            sidebar_focus: cx.focus_handle(),
+            sidebar_focus: cx.focus_handle().tab_stop(true),
             input,
             model_label: "…".into(),
             model_id: String::new(),

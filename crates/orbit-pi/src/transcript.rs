@@ -41,8 +41,25 @@ pub struct Step {
     pub timestamp: Option<i64>,
 }
 
+/// A context-boundary summary row: pi compacted the conversation (or
+/// summarized an abandoned branch on `/tree` navigation). It sits where the
+/// summarized turns were — its own row, never merged into a user/assistant
+/// turn.
+#[derive(Clone)]
+pub struct SummaryRow {
+    /// `true` for a `/tree` branch summary, `false` for a compaction.
+    pub branch: bool,
+    /// The markdown summary pi generated.
+    pub summary: String,
+    /// Context tokens before compaction replaced them. Compaction only; pi
+    /// does not report a token count for branch summaries.
+    pub tokens_before: Option<u64>,
+}
+
 pub struct ChatMessage {
     pub user: bool,
+    /// A compaction/branch-summary boundary card instead of a turn.
+    pub summary: Option<SummaryRow>,
     /// A turn's steps in sequence — thinking/tools/text per step.
     pub steps: Vec<Step>,
     /// Images attached to a user message (live prompt or session reload).
@@ -62,6 +79,17 @@ pub struct ChatMessage {
 }
 
 impl ChatMessage {
+    /// A compaction/branch-summary boundary row.
+    pub fn is_summary(&self) -> bool {
+        self.summary.is_some()
+    }
+
+    /// A real assistant turn — the counterpart of [`Self::user`], and false
+    /// for summary rows (which are also not user messages).
+    pub fn is_assistant(&self) -> bool {
+        !self.user && self.summary.is_none()
+    }
+
     /// The concatenated answer text (steps in sequence).
     pub fn text(&self) -> String {
         self.steps
@@ -204,6 +232,7 @@ impl ChatMessage {
     fn empty_assistant() -> Self {
         Self {
             user: false,
+            summary: None,
             steps: vec![Step::default()],
             images: Vec::new(),
             elapsed: None,
@@ -219,12 +248,17 @@ impl ChatMessage {
     fn from_value(value: &Value) -> Option<ChatMessage> {
         let value = value.get("message").unwrap_or(value);
         let role = value.get("role")?.as_str()?;
-        // Only user and assistant messages are conversation rows. pi
+        // Compaction and branch summaries are real boundary rows (pi's TUI
+        // renders both): keep them visible in the conversation.
+        if role == "compactionSummary" || role == "branchSummary" {
+            return Some(Self::summary_row(role, value));
+        }
+        // Only user and assistant turns are conversational rows. pi
         // interleaves context-only entries — the `system` loadout/tool-change
-        // update it emits right before a prompt's user echo, extension
-        // `custom` messages, summaries. Parsed as rows they would land
-        // between the optimistic prompt and pi's echo, defeating the
-        // identical-echo dedupe and showing the prompt twice.
+        // update it emits right before a prompt's user echo, and extension
+        // `custom` messages. Parsed as rows they would land between the
+        // optimistic prompt and pi's echo, defeating the identical-echo
+        // dedupe and showing the prompt twice.
         if role != "user" && role != "assistant" {
             return None;
         }
@@ -233,6 +267,7 @@ impl ChatMessage {
         let aborted = !user && value.get("stopReason").and_then(Value::as_str) == Some("aborted");
         let mut message = ChatMessage {
             user,
+            summary: None,
             steps: vec![Step::default()],
             images: Vec::new(),
             elapsed: None,
@@ -307,6 +342,30 @@ impl ChatMessage {
         let timestamp = message.finished_at;
         message.steps[0].timestamp = timestamp;
         Some(message)
+    }
+
+    /// One compaction/branch-summary boundary row. The step stays empty: the
+    /// summary renders as its own card, and `text()` must stay clear of turn
+    /// navigation, search, and answer-copy paths.
+    fn summary_row(role: &str, value: &Value) -> Self {
+        Self {
+            user: false,
+            summary: Some(SummaryRow {
+                branch: role == "branchSummary",
+                summary: value
+                    .get("summary")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                tokens_before: value.get("tokensBefore").and_then(Value::as_u64),
+            }),
+            steps: vec![Step::default()],
+            images: Vec::new(),
+            elapsed: None,
+            finished_at: parse_timestamp(value.get("timestamp")),
+            error: None,
+            aborted: false,
+        }
     }
 }
 
@@ -908,8 +967,8 @@ impl Transcript {
                     // always begins a new turn — never merged into the run
                     // before it (the whole trail used to collapse into one
                     // assistant blob when prompts followed a tool-heavy run).
-                    let continues_run = !parsed_message.user
-                        && parsed.last().map(|last| !last.user).unwrap_or(false);
+                    let continues_run = parsed_message.is_assistant()
+                        && parsed.last().is_some_and(ChatMessage::is_assistant);
                     if continues_run {
                         merge_step(parsed.last_mut().expect("checked"), parsed_message);
                     } else {
@@ -1020,6 +1079,16 @@ impl Transcript {
         let Some(message) = ChatMessage::from_value(value) else {
             return false;
         };
+        // A summary boundary is not a streamed turn: land it as its own row
+        // (it cannot continue a run, and nothing may stream into it).
+        if message.is_summary() {
+            self.set_tail_row(false);
+            let mut messages = self.messages.borrow_mut();
+            messages.push(message);
+            drop(messages);
+            self.insert_row();
+            return true;
+        }
         let injected = injected_skill_message(value);
         if message.user {
             // A new turn begins: the previous run's end-of-task summary row
@@ -1067,7 +1136,7 @@ impl Transcript {
         if seed.is_some_and(|s| !s.thinking.is_empty()) {
             self.begin_thinking();
         }
-        let continues_run = messages.last().map(|m| !m.user).unwrap_or(false);
+        let continues_run = messages.last().is_some_and(ChatMessage::is_assistant);
         if continues_run {
             let ix = messages.len() - 1;
             let slot = &mut messages[ix];
@@ -1335,6 +1404,10 @@ impl Transcript {
         let Some(mut final_message) = ChatMessage::from_value(value) else {
             return false;
         };
+        // A summary boundary is never a streamed turn; land it as its own row.
+        if final_message.is_summary() {
+            return self.on_message_boundary(value);
+        }
         if final_message.user {
             // A new turn arriving as a settled message (no live boundary):
             // the previous run's summary row steps aside first.
@@ -1452,7 +1525,7 @@ impl Transcript {
             return true;
         }
         // Settled without a stream target — continue the run's last row.
-        let continues_run = messages.last().map(|m| !m.user).unwrap_or(false);
+        let continues_run = messages.last().is_some_and(ChatMessage::is_assistant);
         if continues_run {
             let ix = messages.len() - 1;
             merge_step(&mut messages[ix], final_message);
@@ -1577,7 +1650,7 @@ impl Transcript {
             None => {
                 // Execution starts after the assistant step settled — adopt
                 // the run's merged row instead of stacking a new one.
-                if messages.last().is_some_and(|m| !m.user) {
+                if messages.last().is_some_and(ChatMessage::is_assistant) {
                     let ix = messages.len() - 1;
                     self.step_mark.set(Some(StepMark {
                         step: messages[ix].steps.len().saturating_sub(1),
@@ -1700,7 +1773,7 @@ impl Transcript {
         let (ix, created) = match self.streaming.get() {
             Some(ix) => (ix, false),
             None => {
-                if messages.last().is_some_and(|m| !m.user) {
+                if messages.last().is_some_and(ChatMessage::is_assistant) {
                     // Continue the settled step's row with a fresh step.
                     let ix = messages.len() - 1;
                     self.step_mark.set(Some(StepMark {
@@ -1853,7 +1926,7 @@ impl Transcript {
         let messages = self.messages.borrow();
         let ix = messages
             .iter()
-            .rposition(|message| !message.user && !message.text().trim().is_empty())?;
+            .rposition(|message| message.is_assistant() && !message.text().trim().is_empty())?;
         Some((ix, messages[ix].text()))
     }
 
@@ -1864,7 +1937,7 @@ impl Transcript {
     /// rather than reporting the previous turn's text.
     pub fn latest_turn_summary(&self) -> Option<TurnSummary> {
         let messages = self.messages.borrow();
-        let Some(ix) = messages.iter().rposition(|message| !message.user) else {
+        let Some(ix) = messages.iter().rposition(ChatMessage::is_assistant) else {
             // A settle with no assistant message at all (the run failed
             // before any text); still worth a quiet "turn finished" ping.
             return Some(TurnSummary::default());
@@ -1956,6 +2029,7 @@ impl Transcript {
         }
         messages.push(ChatMessage {
             user: true,
+            summary: None,
             steps: vec![Step {
                 text: trimmed.to_string(),
                 ..Step::default()
@@ -2600,6 +2674,74 @@ mod tests {
     }
 
     #[test]
+    fn summary_roles_parse_as_boundary_rows() {
+        let compaction = json!({
+            "role": "compactionSummary",
+            "summary": "## Goal\nShip the fix",
+            "tokensBefore": 150_700,
+            "timestamp": 1_733_234_400_000i64
+        });
+        let parsed = ChatMessage::from_value(&compaction).expect("compaction row");
+        assert!(parsed.is_summary());
+        assert!(!parsed.is_assistant());
+        assert!(!parsed.user);
+        let row = parsed.summary.as_ref().expect("summary");
+        assert!(!row.branch);
+        assert_eq!(row.tokens_before, Some(150_700));
+        assert_eq!(row.summary, "## Goal\nShip the fix");
+        // The summary stays out of answer/navigation/search text paths.
+        assert!(parsed.text().is_empty());
+
+        let branch = json!({
+            "role": "branchSummary",
+            "summary": "Explored approach A",
+            "fromId": "abc123",
+            "timestamp": 1_733_234_500_000i64
+        });
+        let parsed = ChatMessage::from_value(&branch).expect("branch row");
+        let row = parsed.summary.as_ref().expect("summary");
+        assert!(row.branch);
+        assert_eq!(row.tokens_before, None);
+        assert!(parsed.text().is_empty());
+    }
+
+    #[test]
+    fn summaries_stay_their_own_rows_on_load() {
+        let payload = json!({"messages": [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
+            {"role": "compactionSummary", "summary": "earlier work", "tokensBefore": 90_000},
+            {"role": "user", "content": "kept prompt"},
+            {"role": "assistant", "content": [{"type": "text", "text": "kept answer"}]}
+        ]});
+        let mut t = Transcript::new();
+        t.load_from(&payload);
+        let messages = t.messages.borrow();
+        assert_eq!(messages.len(), 5);
+        // The summary is not merged into the assistant before it…
+        assert!(messages[1].is_assistant());
+        assert!(messages[2].is_summary());
+        // …and the settled turn after it is a fresh row, not a summary step.
+        assert!(messages[4].is_assistant());
+        assert!(messages[4].summary.is_none());
+        assert_eq!(messages[4].text(), "kept answer");
+    }
+
+    #[test]
+    fn assistant_after_summary_starts_a_new_row() {
+        let payload = json!({"messages": [
+            {"role": "compactionSummary", "summary": "boundary", "tokensBefore": 1_000},
+            {"role": "assistant", "content": [{"type": "text", "text": "resumed"}]}
+        ]});
+        let mut t = Transcript::new();
+        t.load_from(&payload);
+        let messages = t.messages.borrow();
+        assert_eq!(messages.len(), 2);
+        assert!(messages[1].is_assistant());
+        assert_eq!(messages[1].text(), "resumed");
+    }
+
+    #[test]
     fn live_thinking_duration_rides_the_step() {
         let mut t = Transcript::new();
         t.apply_event(&Event::MessageStart {
@@ -3104,6 +3246,7 @@ mod tests {
         ];
         let message = ChatMessage {
             user: false,
+            summary: None,
             steps: vec![Step {
                 tools,
                 ..Step::default()

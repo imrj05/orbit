@@ -194,7 +194,7 @@ impl ProjectPanel {
             cursor: None,
             filter,
             _filter_sub: filter_sub,
-            focus: cx.focus_handle(),
+            focus: cx.focus_handle().tab_stop(true),
             active: None,
             menu: None,
             menu_dismissed_at: None,

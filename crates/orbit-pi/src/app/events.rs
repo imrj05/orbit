@@ -258,11 +258,18 @@ impl OrbitApp {
                 }
                 Event::CompactionEnd { value } => {
                     self.is_compacting = false;
+                    let aborted = value.get("aborted").and_then(Value::as_bool) == Some(true);
                     // A failed compaction carries `errorMessage` (docs).
                     if let Some(error) = value.get("errorMessage").and_then(Value::as_str) {
                         self.set_error(tr!("events.compaction_failed", error = error));
-                    } else if value.get("aborted").and_then(Value::as_bool) == Some(true) {
+                    } else if aborted {
                         self.set_status(tr!("events.compaction_aborted"));
+                    } else {
+                        // Success: pi replaced the summarized span with a
+                        // compaction summary plus the kept entries. Re-read
+                        // the projection so the boundary card lands in the
+                        // transcript (and pre-compaction rows drop).
+                        self.send(CommandBody::GetMessages, "get_messages");
                     }
                     // Post-compaction usage is unknown until the next turn;
                     // refresh so the meter can show an empty/unknown state.

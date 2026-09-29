@@ -383,7 +383,7 @@ impl FileViewer {
             chrome_leading: 12.,
             reserve_controls: false,
             tab_scroll: ScrollHandle::new(),
-            focus: cx.focus_handle(),
+            focus: cx.focus_handle().tab_stop(true),
             focus_pending: false,
             next_id: 0,
             save_epoch: 0,

@@ -59,6 +59,9 @@ const HOME_SEARCH_DIRS: &[&str] = &[
     "Library/pnpm/bin",
     ".bun/bin",
     ".npm-global/bin",
+    // pi's own shim dir; a launcher installed there is on the shell PATH but
+    // not a bundled app's.
+    ".pi/agent/bin",
     ".yarn/bin",
 ];
 /// Dirs prepended to the child's PATH so `node` (and `pi`) resolve from a
