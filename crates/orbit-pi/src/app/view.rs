@@ -772,10 +772,18 @@ impl Render for OrbitApp {
                                     )
                                     .into_any_element()
                             })
+                            // star the project — a quiet GitHub call to action
+                            // set just above the footer, until dismissed
+                            .children(
+                                (!self.star_banner_dismissed)
+                                    .then(|| self.sidebar_star_banner(theme, cx)),
+                            )
                             // footer — Settings row + connection status, set off
                             // from the session list by a hairline
                             .child(
                                 div()
+                                    .id("sidebar-footer")
+                                    .debug_selector(|| "sidebar-footer".to_string())
                                     .h(px(44.))
                                     .px_3()
                                     .border_t_1()
@@ -3585,6 +3593,55 @@ impl OrbitApp {
                     })
                     .child(tr!("view.usage")),
             )
+    }
+
+    /// The sidebar's "star the project" banner. It sits directly above the
+    /// Settings/status footer, so the last thing in the column is the GitHub
+    /// link. Same card as Settings → About, plus a close button that remembers
+    /// the dismissal.
+    pub(super) fn sidebar_star_banner(&self, theme: Theme, cx: &Context<Self>) -> AnyElement {
+        let dismiss = icon_button_frame(
+            div()
+                .id("sidebar-star-dismiss")
+                .debug_selector(|| "sidebar-star-dismiss".to_string())
+                .cursor_pointer()
+                .hover(|s| s.bg(theme.bg_hover)),
+            &theme,
+            ButtonSize::Compact,
+        )
+        .tooltip({
+            let label = tr!("common.dismiss");
+            move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
+        })
+        // The banner itself opens the repo on mouse-up: swallow this click so
+        // dismissing never also opens GitHub.
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(|this, _, _, cx| {
+                cx.stop_propagation();
+                this.dismiss_star_banner(cx);
+            }),
+        )
+        .child(icon(
+            "icons/x.svg",
+            ButtonSize::Compact.icon_size().px(&theme),
+            theme.text_3,
+        ))
+        .into_any_element();
+
+        div()
+            .mx_3()
+            .mt_2()
+            .mb_2()
+            .child(star_project_banner(theme, "sidebar-star", Some(dismiss)))
+            .into_any_element()
+    }
+
+    /// Hide the sidebar's star banner and remember it across relaunches.
+    pub(super) fn dismiss_star_banner(&mut self, cx: &mut Context<Self>) {
+        self.star_banner_dismissed = true;
+        crate::transcript::persist_hint(crate::transcript::STAR_BANNER_HINT_KEY);
+        cx.notify();
     }
 
     pub(super) fn send_button(&self, cx: &Context<Self>) -> impl IntoElement + use<> {

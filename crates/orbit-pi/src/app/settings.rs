@@ -555,7 +555,10 @@ impl OrbitApp {
                     None,
                     Some(self.about_github_button(theme)),
                 ));
-                vec![self.settings_section(theme, &tr!("settings.about"), about)]
+                vec![
+                    star_project_banner(theme, "about-star-banner", None),
+                    self.settings_section(theme, &tr!("settings.about"), about),
+                ]
             }
         }
     }
@@ -7361,6 +7364,43 @@ mod model_filter_tests {
         assert_eq!(
             model_count_label(3, 3, 1, false),
             "3 models · 1 favorite(s)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod about_banner_tests {
+    use super::*;
+
+    /// Settings → About mounts the star banner permanently: it is the same
+    /// card as the sidebar's, but carries no dismiss button. (The sidebar's
+    /// dismiss id is absent from the About tree.)
+    #[gpui::test]
+    fn about_page_mounts_the_star_banner_without_a_dismiss(cx: &mut gpui::TestAppContext) {
+        use crate::theme::{Theme, ThemeId};
+
+        cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+        let _ = cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.open_settings(cx);
+                app.set_settings_section(SettingsSection::About, cx);
+            })
+        });
+        let viewport = cx.update(|window, _| window.viewport_size());
+        let _ = cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
+
+        let banner = cx
+            .debug_bounds("about-star-banner")
+            .expect("Settings → About must show the star banner");
+        assert!(
+            f32::from(banner.size.width) > 300.,
+            "the About banner spans the content column: {banner:?}"
+        );
+        assert!(
+            cx.debug_bounds("sidebar-star-dismiss").is_none(),
+            "the About banner is permanent — it carries no dismiss button"
         );
     }
 }

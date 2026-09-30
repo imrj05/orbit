@@ -534,3 +534,46 @@ fn sticky_header_skips_collapsed_groups() {
     // An empty list has no header to pin.
     assert_eq!(sticky_at(&[], 0, 10.), None);
 }
+
+/// The "star the project" banner is pinned at the bottom of the sidebar,
+/// directly above the Settings/status footer — the placement the product
+/// asks for, and the last thing in the column before the chrome. Its close
+/// button hides it for good.
+#[gpui::test]
+fn star_banner_sits_above_the_settings_footer(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+
+    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    // A previous run may have persisted a dismissal; pin the banner on so the
+    // placement assertion is deterministic.
+    let _ = cx.update(|_, cx| app.update(cx, |app, _| app.star_banner_dismissed = false));
+    let viewport = cx.update(|window, _| window.viewport_size());
+    let _ = cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
+
+    let banner = cx
+        .debug_bounds("sidebar-star")
+        .expect("star banner laid out");
+    let footer = cx.debug_bounds("sidebar-footer").expect("footer laid out");
+    assert!(
+        banner.size.height > px(0.),
+        "the banner must have a real height: {banner:?}"
+    );
+    assert!(
+        banner.origin.y + banner.size.height <= footer.origin.y,
+        "the banner must sit above the footer: {banner:?} vs {footer:?}"
+    );
+    assert!(
+        cx.debug_bounds("sidebar-star-dismiss").is_some(),
+        "the banner must own a close button"
+    );
+
+    // Dismissed: the banner and its close button leave the column.
+    let _ = cx.update(|_, cx| app.update(cx, |app, _| app.star_banner_dismissed = true));
+    let _ = cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
+    assert!(
+        cx.debug_bounds("sidebar-star").is_none(),
+        "a dismissed banner stays hidden"
+    );
+}

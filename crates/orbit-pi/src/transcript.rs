@@ -793,38 +793,54 @@ type ToolPositions = Rc<RefCell<HashMap<String, (usize, usize, usize)>>>;
 /// How long the one-time rail hint stays up before dismissing itself.
 const RAIL_HINT_TTL: Duration = Duration::from_secs(10);
 
-/// `~/.orbit-pi/hints.json` — one-time affordance hints, per install. The
-/// rail hint shows once the conversation rail first appears, then never
-/// again (dismissed by use or timeout).
+/// `~/.orbit-pi/hints.json` — one-time affordance hints, per install. Each
+/// hint is a named boolean; the rail hint shows once the conversation rail
+/// first appears, the sidebar star banner until it is dismissed.
 fn hints_path() -> PathBuf {
     crate::platform::home_dir()
         .join(".orbit-pi")
         .join("hints.json")
 }
 
-fn load_rail_hint_seen() -> bool {
-    let Ok(raw) = std::fs::read_to_string(hints_path()) else {
+/// The rail hint's key in `hints.json`.
+const RAIL_HINT_KEY: &str = "rail_hint_seen";
+/// The sidebar star banner's key in `hints.json`.
+pub(crate) const STAR_BANNER_HINT_KEY: &str = "star_banner_dismissed";
+
+/// Read one named hint. A missing file or key reads as false (not yet seen).
+pub(crate) fn hint_seen(key: &str) -> bool {
+    hint_seen_at(&hints_path(), key)
+}
+
+fn hint_seen_at(path: &Path, key: &str) -> bool {
+    let Ok(raw) = std::fs::read_to_string(path) else {
         return false;
     };
     serde_json::from_str::<serde_json::Value>(&raw)
         .ok()
-        .and_then(|value| {
-            value
-                .get("rail_hint_seen")
-                .and_then(serde_json::Value::as_bool)
-        })
+        .and_then(|value| value.get(key).and_then(serde_json::Value::as_bool))
         .unwrap_or(false)
 }
 
-fn persist_rail_hint_seen() {
-    let path = hints_path();
+/// Persist one named hint as seen, preserving every other key in the file.
+/// The whole file is a single JSON object shared by every affordance hint, so
+/// dismissing one must never wipe another.
+pub(crate) fn persist_hint(key: &str) {
+    persist_hint_at(&hints_path(), key);
+}
+
+fn persist_hint_at(path: &Path, key: &str) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(
-        &path,
-        serde_json::json!({ "rail_hint_seen": true }).to_string(),
-    );
+    let mut map = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| {
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&raw).ok()
+        })
+        .unwrap_or_default();
+    map.insert(key.to_string(), serde_json::Value::Bool(true));
+    let _ = std::fs::write(path, serde_json::Value::Object(map).to_string());
 }
 
 /// Shared rail-hint dismissal for the model and the view layer (the view
@@ -837,7 +853,7 @@ pub(crate) fn dismiss_rail_hint_state(
         return false;
     }
     shown_at.set(None);
-    persist_rail_hint_seen();
+    persist_hint(RAIL_HINT_KEY);
     true
 }
 
@@ -939,7 +955,7 @@ impl Transcript {
             tool_positions: Rc::new(RefCell::new(HashMap::new())),
             hovered_turn: Rc::new(Cell::new(None)),
             hovered_usage: Rc::new(Cell::new(None)),
-            rail_hint_dismissed: Rc::new(Cell::new(load_rail_hint_seen())),
+            rail_hint_dismissed: Rc::new(Cell::new(hint_seen(RAIL_HINT_KEY))),
             rail_hint_shown_at: Rc::new(Cell::new(None)),
             rail_scroll: ScrollHandle::new(),
             rail_autoscroll: Rc::new(Cell::new(None)),
@@ -3417,6 +3433,31 @@ mod tests {
         assert!(shown_at.get().is_none());
         // Second dismissal is a no-op (already persisted).
         assert!(!dismiss_rail_hint_state(&dismissed, &shown_at));
+    }
+
+    /// `hints.json` is one JSON object shared by every affordance hint:
+    /// persisting one must preserve the others, and a missing file reads as
+    /// "not seen".
+    #[test]
+    fn hints_round_trip_without_clobbering_siblings() {
+        let dir = std::env::temp_dir().join(format!(
+            "orbit-hints-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = dir.join("hints.json");
+        assert!(!hint_seen_at(&path, RAIL_HINT_KEY));
+        persist_hint_at(&path, RAIL_HINT_KEY);
+        assert!(hint_seen_at(&path, RAIL_HINT_KEY));
+        persist_hint_at(&path, STAR_BANNER_HINT_KEY);
+        assert!(hint_seen_at(&path, STAR_BANNER_HINT_KEY));
+        assert!(
+            hint_seen_at(&path, RAIL_HINT_KEY),
+            "persisting the star banner must not wipe the rail hint"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

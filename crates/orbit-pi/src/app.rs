@@ -212,6 +212,9 @@ pub struct OrbitApp {
     /// would let the repeat skip) while the first frame — generation 0 — draws
     /// the settled state with no launch animation.
     sidebar_slide_gen: u64,
+    /// Whether the sidebar's "star the project" banner has been dismissed.
+    /// Persisted in `hints.json`, so a dismissal survives a relaunch.
+    star_banner_dismissed: bool,
     /// Whether a feature page (Files / Git / Usage / AI Review) was open on
     /// the previous frame. A full-page Review pane yields only to a page that
     /// *opens* under it, never to one that was already there when the reader
@@ -1083,6 +1086,9 @@ impl OrbitApp {
             sidebar_list: ListState::new(0, ListAlignment::Top, px(44.)),
             sidebar_visible: true,
             sidebar_slide_gen: 0,
+            star_banner_dismissed: crate::transcript::hint_seen(
+                crate::transcript::STAR_BANNER_HINT_KEY,
+            ),
             feature_open_last: false,
             pane_full_last: false,
             sidebar_cursor: None,
