@@ -97,7 +97,33 @@ test("before_agent_start injects guidance and re-arms the mode live", async () =
   writeStore({ s1: "build" });
   const next = await pi.fire("before_agent_start", {}, fakeCtx());
   assert.equal(next, undefined); // build with no plan adds nothing
-  assert.deepEqual(pi.state.tools, ["read", "bash", "edit", "write", "grep"]);
+  assert.deepEqual(pi.state.tools, ["read", "bash", "grep", "edit", "write"]);
+});
+
+test("a tool activated after session start survives a mode change", async () => {
+  // The MCP extension activates `codemode` after `session_start`, once a
+  // server with that exposure connects. A later workflow-mode change used to
+  // rebuild from a session-start snapshot and drop it silently.
+  writeStore({ s1: "build" });
+  const pi = fakePi();
+  activate(pi);
+  await pi.fire("session_start", {}, fakeCtx());
+  pi.state.tools.push("codemode");
+
+  writeStore({ s1: "plan" });
+  await pi.fire("before_agent_start", {}, fakeCtx());
+  assert.deepEqual(pi.state.tools, ["read", "bash", "grep", "codemode"]);
+
+  writeStore({ s1: "build" });
+  await pi.fire("before_agent_start", {}, fakeCtx());
+  assert.deepEqual(pi.state.tools, [
+    "read",
+    "bash",
+    "grep",
+    "codemode",
+    "edit",
+    "write",
+  ]);
 });
 
 test("tool_call blocks writes in read-only modes and passes in build", async () => {

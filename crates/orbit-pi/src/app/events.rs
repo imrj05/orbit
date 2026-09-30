@@ -22,6 +22,10 @@ impl OrbitApp {
             cx.notify();
         }
         self.tick_background(cx);
+        // MCP: external-change detection, the debounced `pi mcp list` probe,
+        // and a deferred restart that applies new server configuration while
+        // preserving the session.
+        self.tick_mcp(cx);
         // Persist a settled panel layout (a drag writes once it stops).
         crate::layout::flush_if_settled();
         // Bound the warm-session pool: reap idle parked processes past the TTL.
@@ -242,6 +246,9 @@ impl OrbitApp {
                     self.poll_quota_entries();
                     // Capture the turn's end checkpoint.
                     self.finish_turn(cx);
+                    // An MCP configuration change deferred during the run
+                    // applies now, with the session preserved.
+                    self.mcp_after_settle(cx);
                     // The run ended: announce it if the user is elsewhere.
                     let path = self.current_session_path.clone();
                     let title = self

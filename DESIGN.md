@@ -112,7 +112,7 @@ rationed: selection, focus, the caret, the active series. Everything else is ink
 canvas at three weights of emphasis.
 
 The system is monochrome-by-default with semantic color reserved for state, so a
-screenshot in any of the forty-two palettes still reads as Orbit. Depth is delivered by
+screenshot in any of the forty-three palettes still reads as Orbit. Depth is delivered by
 hairlines and tonal steps rather than shadows; shadows exist only for surfaces that
 genuinely float above the page (composer, popovers, modals).
 
@@ -173,7 +173,7 @@ The composer paints two inline token roles. They are read as content — sibling
   a command. Chroma-less palettes (Ashwood, Mono) stay monochrome and split the two by
   ink instead of hue.
 
-Both are derived in `Theme`, so all forty-two palettes stay legible without per-palette tuning.
+Both are derived in `Theme`, so all forty-three palettes stay legible without per-palette tuning.
 
 ## Typography
 
@@ -847,7 +847,7 @@ performance, and visual restraint make long agent sessions feel natural.
 
 ### Do:
 - **Do** read every color, size, and radius from `theme::get(cx)`; add a role to
-  `Palette` when a new semantic need appears so all forty-two palettes stay legible.
+  `Palette` when a new semantic need appears so all forty-three palettes stay legible.
 - **Do** use hairlines and whitespace to separate sections; reserve rounded bordered
   surfaces for objects that are conceptually singular (composer, metric board, popover).
 - **Do** keep controls at 28px (compact) / 34px (primary) so a 900px-tall window shows

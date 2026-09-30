@@ -36,6 +36,10 @@ test("classify buckets built-in tools by effect", () => {
   assert.equal(classify("powershell"), "exec");
   assert.equal(classify("some_extension_tool"), "other");
   assert.equal(classify(undefined), "other");
+  // MCP tools keep their own kind so they can never be mistaken for a
+  // read-only built-in.
+  assert.equal(classify("mcp__github__search_repositories"), "mcp");
+  assert.equal(classify("MCP__GITHUB__GET_ISSUE"), "mcp");
 });
 
 test("normalizeMode falls back for unknown or missing values", () => {
@@ -51,6 +55,7 @@ test("supervised allows reads and asks for mutations", () => {
   assert.equal(decide("supervised", "write"), "ask");
   assert.equal(decide("supervised", "bash"), "ask");
   assert.equal(decide("supervised", "mcp__x"), "ask");
+  assert.equal(decide("supervised", "mcp__github__create_issue"), "ask");
 });
 
 test("auto-accept-edits allows edits and asks for exec/other", () => {

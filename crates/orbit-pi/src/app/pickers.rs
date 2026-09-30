@@ -148,9 +148,11 @@ impl OrbitApp {
         match self.extensions.spawn(
             self.current_workspace.as_ref().unwrap(),
             true,
+            &self.mcp.secret_env(),
         ) {
             Ok(client) => {
                 self.adopt_client(client);
+                self.mcp_stamp = self.mcp.fingerprint();
                 self.send(CommandBody::GetState, "get_state");
                 self.refresh_catalogs();
                 // Capability probes queue after the state request.
@@ -324,6 +326,15 @@ impl OrbitApp {
             project_panel_visible: self.project_panel.read(cx).is_open(),
             can_choose_model: !self.available_models.is_empty() && !running,
             can_choose_thinking: !self.available_thinking_levels.is_empty() && !running,
+            mcp_servers: self
+                .mcp
+                .servers()
+                .iter()
+                .map(|server| command_palette::PaletteMcpServer {
+                    name: server.name.clone(),
+                    enabled: server.def.enabled,
+                })
+                .collect(),
         };
 
         let this = cx.weak_entity();
@@ -384,6 +395,15 @@ impl OrbitApp {
                 self.settings_open = true;
                 self.set_settings_section(section, cx);
             }
+            PaletteCommand::Mcp { name, action } => match action {
+                crate::command_palette::McpPaletteAction::Toggle => {
+                    self.mcp_toggle_server(name, cx)
+                }
+                crate::command_palette::McpPaletteAction::Reconnect => {
+                    self.mcp_reconnect_server(name, cx)
+                }
+                crate::command_palette::McpPaletteAction::Test => self.mcp_test_server(name, cx),
+            },
         }
     }
 
@@ -472,6 +492,25 @@ impl OrbitApp {
             CommandId::GitTabPulls => self.on_git_tab(4, window, cx),
             CommandId::OpenSettings => {
                 self.on_open_settings(&crate::OpenSettings, window, cx);
+            }
+            CommandId::OpenMcpSettings => {
+                self.command_palette = None;
+                self.settings_open = true;
+                self.set_settings_section(SettingsSection::Mcp, cx);
+            }
+            CommandId::AddMcpServer => {
+                self.command_palette = None;
+                self.settings_open = true;
+                self.set_settings_section(SettingsSection::Mcp, cx);
+                self.mcp_add(window, cx);
+            }
+            CommandId::RefreshMcpServers => {
+                self.command_palette = None;
+                self.mcp_refresh(cx);
+            }
+            CommandId::ReconnectMcpServers => {
+                self.command_palette = None;
+                self.mcp_reconnect_all(cx);
             }
             CommandId::OpenShortcutHelp => {
                 self.settings_open = true;

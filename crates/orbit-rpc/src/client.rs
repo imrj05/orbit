@@ -169,6 +169,27 @@ impl PiClient {
         )
     }
 
+    /// [`spawn_with_extensions_and_env`](Self::spawn_with_extensions_and_env)
+    /// plus extra startup flags — the seam Orbit uses to inject MCP secret
+    /// values (`${NAME}` references in `mcp.json`) together with the default
+    /// session model.
+    pub fn spawn_with_extensions_and_env_and_args(
+        workspace_dir: &Path,
+        session_dir: Option<&Path>,
+        extensions: &[PathBuf],
+        env: &[(&str, &str)],
+        args: &[String],
+    ) -> Result<Self> {
+        Self::spawn_inner(
+            &resolve_pi_bin(),
+            workspace_dir,
+            session_dir,
+            extensions,
+            env,
+            args,
+        )
+    }
+
     /// [`spawn_with_extensions`](Self::spawn_with_extensions) against a
     /// specific executable — the seam the transport tests drive.
     pub fn spawn_with_bin_and_extensions(

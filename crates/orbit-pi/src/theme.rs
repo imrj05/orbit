@@ -36,6 +36,7 @@ pub enum ThemeId {
     OrbitLight,
     OrbitPaper,
     OrbitContrast,
+    OrbitDarker,
     /// Ported Zed community themes (all dark).
     Vague,
     Batsignal,
@@ -83,11 +84,12 @@ impl ThemeId {
     /// Selectable themes, in the order shown in the settings dropdown: the
     /// Orbit family first, then the ported/curated dark themes, then their
     /// curated light counterparts.
-    pub const ALL: [ThemeId; 42] = [
+    pub const ALL: [ThemeId; 43] = [
         Self::Orbit,
         Self::OrbitLight,
         Self::OrbitPaper,
         Self::OrbitContrast,
+        Self::OrbitDarker,
         Self::Vague,
         Self::Batsignal,
         Self::Ashwood,
@@ -135,6 +137,7 @@ impl ThemeId {
             Self::OrbitLight => "orbit-light",
             Self::OrbitPaper => "orbit-paper",
             Self::OrbitContrast => "orbit-contrast",
+            Self::OrbitDarker => "orbit-darker",
             Self::Vague => "vague",
             Self::Batsignal => "batsignal-dark",
             Self::Ashwood => "ashwood",
@@ -193,6 +196,7 @@ impl ThemeId {
             "orbit-light" | "light" => Some(Self::OrbitLight),
             "orbit-paper" => Some(Self::OrbitPaper),
             "orbit-contrast" | "orbit-high-contrast" => Some(Self::OrbitContrast),
+            "orbit-darker" => Some(Self::OrbitDarker),
             // Ported Zed community themes (aliases included).
             "vague" => Some(Self::Vague),
             "batsignal-dark" | "batsignal" => Some(Self::Batsignal),
@@ -247,6 +251,7 @@ impl ThemeId {
             Self::OrbitLight => "Orbit Light",
             Self::OrbitPaper => "Orbit Paper",
             Self::OrbitContrast => "Orbit Contrast",
+            Self::OrbitDarker => "Orbit Darker",
             Self::Vague => "Vague",
             Self::Batsignal => "Batsignal (Dark)",
             Self::Ashwood => "Ashwood",
@@ -302,6 +307,7 @@ impl ThemeId {
             | Self::TokyoNightLight
             | Self::AyuLight => ThemeMode::Light,
             Self::Orbit
+            | Self::OrbitDarker
             | Self::Vague
             | Self::Batsignal
             | Self::Ashwood
@@ -865,6 +871,51 @@ const ORBIT: Palette = Palette {
     warn: 0xE0B36A,
     crit: 0xE2726A,
     trough: 0x232323,
+};
+
+/// Orbit Darker ("Premium Graphite"): a deeper cut of Orbit — near-black
+/// graphite surfaces, lighter hairlines, restrained ember accent, and the
+/// same light primary buttons. Mapped from the full token set onto Orbit's
+/// semantic roles.
+const ORBIT_DARKER: Palette = Palette {
+    bg_main: 0x111111,
+    bg_sidebar: 0x0D0D0D,
+    bg_raised: 0x191919,
+    bg_hover: 0x1E1E1E,
+    active: 0x232323,
+    active_fg: 0xF0F0F0,
+    border: 0x252525,
+    text: 0xE8E8E8,
+    text_2: 0xA1A1A1,
+    text_3: 0x6F6F6F,
+    ok_green: 0x69C58A,
+    stop_red: 0xE16F68,
+    stop_red_hover: 0xEB827A,
+    add_green: 0x69C58A,
+    del_red: 0xE16F68,
+    accent: 0xE07A5F,
+    menu_bg: 0x191919,
+    send_bg: 0xE9EAEC,
+    send_bg_hover: 0xFFFFFF,
+    send_fg: 0x111214,
+    assistant_text: 0xE4E4E4,
+    code_bg: 0x0C0C0C,
+    code_text: 0xE4E4E4,
+    syn_string: 0x69C58A,
+    syn_number: 0xDDB56A,
+    syn_function: 0xE4E4E4,
+    syn_type: 0xD7D7D7,
+    syn_comment: 0x707070,
+    syn_literal: 0xE07A5F,
+    syn_meta: 0xE16F68,
+    syn_operator: 0x777777,
+    tool_border: 0x252525,
+    tool_meta: 0x8D8D8D,
+    ring_track: 0x252525,
+    ring_fill: 0xE4E4E4,
+    warn: 0xDDB56A,
+    crit: 0xE16F68,
+    trough: 0x1B1B1B,
 };
 
 /// Orbit light: warm off-white canvas, dark primary buttons, orange accent.
@@ -2614,6 +2665,7 @@ fn palette(id: ThemeId) -> Palette {
         ThemeId::OrbitLight => ORBIT_LIGHT,
         ThemeId::OrbitPaper => ORBIT_PAPER,
         ThemeId::OrbitContrast => ORBIT_CONTRAST,
+        ThemeId::OrbitDarker => ORBIT_DARKER,
         ThemeId::Vague => VAGUE,
         ThemeId::Batsignal => BATSIGNAL,
         ThemeId::Ashwood => ASHWOOD,
@@ -2925,6 +2977,9 @@ mod tests {
             ThemeId::parse("orbit-contrast"),
             Some(ThemeId::OrbitContrast)
         );
+        assert_eq!(ThemeId::parse("orbit-darker"), Some(ThemeId::OrbitDarker));
+        assert_eq!(ThemeId::OrbitDarker.as_str(), "orbit-darker");
+        assert_eq!(ThemeId::OrbitDarker.appearance(), ThemeMode::Dark);
         assert_eq!(
             ThemeId::parse("catppuccin-latte"),
             Some(ThemeId::CatppuccinLatte)
@@ -3052,6 +3107,7 @@ mod tests {
             "Vitesse",
             "Orbit Paper",
             "Orbit Contrast",
+            "Orbit Darker",
             "Catppuccin Latte",
             "Solarized Light",
             "One Light",
@@ -3152,7 +3208,7 @@ mod tests {
         }
     }
 
-    /// One surface grammar for all forty-two palettes: on dark, each step up
+    /// One surface grammar for all forty-three palettes: on dark, each step up
     /// the ramp is lighter than the one below (canvas → raised → hover →
     /// active); on light it is the inverse. Menu surfaces float at `raised`,
     /// and the send button always answers a hover with a visible step.
@@ -3234,11 +3290,13 @@ mod tests {
         assert_eq!(ThemeId::OrbitLight.appearance(), ThemeMode::Light);
         assert_eq!(ThemeId::OrbitPaper.appearance(), ThemeMode::Light);
         assert_eq!(ThemeId::OrbitContrast.appearance(), ThemeMode::Light);
+        assert_eq!(ThemeId::OrbitDarker.appearance(), ThemeMode::Dark);
         assert_eq!(ThemeId::CatppuccinLatte.appearance(), ThemeMode::Light);
         assert_eq!(ThemeId::Orbit.label(), "Orbit");
         assert_eq!(ThemeId::OrbitLight.label(), "Orbit Light");
         assert_eq!(ThemeId::OrbitPaper.label(), "Orbit Paper");
         assert_eq!(ThemeId::OrbitContrast.label(), "Orbit Contrast");
+        assert_eq!(ThemeId::OrbitDarker.label(), "Orbit Darker");
         assert_eq!(ThemeId::CatppuccinLatte.label(), "Catppuccin Latte");
     }
 

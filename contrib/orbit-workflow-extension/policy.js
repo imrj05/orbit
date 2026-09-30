@@ -65,6 +65,36 @@ export function allowedTools(mode, baseTools = []) {
   return out;
 }
 
+/**
+ * The next active set for `mode`, derived read-modify-write from the tools
+ * active *now* plus the names this extension previously removed.
+ *
+ * A session-start snapshot is not a safe base: other extensions activate
+ * tools after `session_start` — the MCP extension turns on `codemode` (or
+ * `tool_search`) when a server with that exposure connects — and a cached
+ * snapshot would silently drop them on the next mode change.
+ *
+ * Returns the new tool list and the updated set of names this extension has
+ * removed, so switching to a mode that allows them restores exactly what it
+ * took away (and never re-adds a tool another extension removed).
+ */
+export function applyToolScoping(mode, current = [], removedByUs = []) {
+  const disabled = new Set(DISABLED_TOOLS[normalizeMode(mode)] ?? []);
+  const removed = new Set(removedByUs);
+  const restore = [];
+  for (const name of removed) {
+    if (disabled.has(name)) continue;
+    restore.push(name);
+    removed.delete(name);
+  }
+  const base = [...new Set([...current, ...restore])];
+  const tools = allowedTools(mode, base);
+  for (const name of base) {
+    if (!tools.includes(name)) removed.add(name);
+  }
+  return { tools, removed: [...removed] };
+}
+
 // Destructive shell operations. A conservative backstop to the allowlist: if
 // any matches, the command is blocked even when it also looks safe.
 const DESTRUCTIVE_PATTERNS = [

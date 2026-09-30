@@ -97,12 +97,33 @@ const EMPTY_SESSION_ROWS: usize = 6;
 /// Sessions listed for a non-empty query.
 const MAX_SESSION_RESULTS: usize = 12;
 
-/// A palette row's action: run a registry command, or open a Settings
-/// destination (which has no keymap row and exists only in the palette).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A palette row's action: run a registry command, open a Settings
+/// destination (which has no keymap row and exists only in the palette), or
+/// act on one configured MCP server.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaletteCommand {
     Run(CommandId),
     OpenSettings(SettingsSection),
+    Mcp {
+        name: String,
+        action: McpPaletteAction,
+    },
+}
+
+/// A per-server MCP action offered by the palette.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpPaletteAction {
+    Toggle,
+    Reconnect,
+    Test,
+}
+
+/// One configured server as the palette sees it: enough to label a row, no
+/// live state (the row's command re-reads the manager).
+#[derive(Debug, Clone)]
+pub struct PaletteMcpServer {
+    pub name: String,
+    pub enabled: bool,
 }
 
 /// Everything the palette needs to build its items, captured by the app at
@@ -124,6 +145,8 @@ pub struct PaletteSnapshot {
     pub project_panel_visible: bool,
     pub can_choose_model: bool,
     pub can_choose_thinking: bool,
+    /// Configured MCP servers, for the per-server rows.
+    pub mcp_servers: Vec<PaletteMcpServer>,
 }
 
 /// Result sections, in display order.
@@ -149,6 +172,11 @@ impl Section {
 enum PaletteAction {
     OpenSession(SessionInfo),
     Run(PaletteCommand),
+    /// Act on one configured MCP server (name carried per row).
+    Mcp {
+        name: String,
+        action: McpPaletteAction,
+    },
 }
 
 /// One row in the results list.
@@ -402,6 +430,42 @@ impl CommandPalette {
             }
             items.push(PaletteItem::from_spec(spec, &self.snapshot, items.len()));
         }
+        // Per-server MCP rows: enable/disable and reconnect, labelled with the
+        // server they act on. The page remains the place for details.
+        for server in &self.snapshot.mcp_servers {
+            for action in [
+                McpPaletteAction::Toggle,
+                McpPaletteAction::Reconnect,
+                McpPaletteAction::Test,
+            ] {
+                let order = items.len();
+                let (label_key, keywords) = match action {
+                    McpPaletteAction::Toggle if server.enabled => {
+                        ("mcp.palette_disable", "mcp disable server")
+                    }
+                    McpPaletteAction::Toggle => ("mcp.palette_enable", "mcp enable server"),
+                    McpPaletteAction::Reconnect => {
+                        ("mcp.palette_reconnect", "mcp reconnect restart server")
+                    }
+                    McpPaletteAction::Test => ("mcp.palette_test", "mcp test connection server"),
+                };
+                let label = tr!(label_key, name = server.name.clone());
+                items.push(PaletteItem {
+                    section: Section::Commands,
+                    icon: "icons/tools/mcp.svg",
+                    search: format!("{} {keywords} mcp", label.to_lowercase()),
+                    label,
+                    detail: Some(tr!("mcp.palette_group")),
+                    shortcut: None,
+                    action: PaletteAction::Mcp {
+                        name: server.name.clone(),
+                        action,
+                    },
+                    order,
+                    recency: 0,
+                });
+            }
+        }
         for (section, icon, label, keywords) in [
             (
                 SettingsSection::General,
@@ -432,6 +496,12 @@ impl CommandPalette {
                 "icons/extensions.svg",
                 tr!("settings.plugins"),
                 "settings preferences plugins extensions packages install npm git",
+            ),
+            (
+                SettingsSection::Mcp,
+                "icons/tools/mcp.svg",
+                tr!("settings.mcp"),
+                "settings preferences mcp model context protocol servers tools",
             ),
             (
                 SettingsSection::Models,
@@ -592,7 +662,18 @@ impl CommandPalette {
             Some(PaletteItem {
                 action: PaletteAction::Run(command),
                 ..
-            }) => (self.on_command)(*command, window, cx),
+            }) => (self.on_command)(command.clone(), window, cx),
+            Some(PaletteItem {
+                action: PaletteAction::Mcp { name, action },
+                ..
+            }) => (self.on_command)(
+                PaletteCommand::Mcp {
+                    name: name.clone(),
+                    action: *action,
+                },
+                window,
+                cx,
+            ),
             None => {}
         }
     }
@@ -694,7 +775,7 @@ impl Render for CommandPalette {
                     PaletteAction::OpenSession(session) => {
                         self.snapshot.active_path.as_ref() == Some(&session.path)
                     }
-                    PaletteAction::Run(_) => false,
+                    PaletteAction::Run(_) | PaletteAction::Mcp { .. } => false,
                 };
                 list = list.child(render_row(
                     &rows,
@@ -1045,6 +1126,14 @@ mod tests {
 
     /// A palette with no sessions, its filter focused, ready to draw.
     fn open_test_palette(cx: &mut gpui::VisualTestContext) -> Entity<CommandPalette> {
+        open_test_palette_with(cx, Vec::new())
+    }
+
+    /// A palette over an explicit MCP server list, its filter focused.
+    fn open_test_palette_with(
+        cx: &mut gpui::VisualTestContext,
+        mcp_servers: Vec<PaletteMcpServer>,
+    ) -> Entity<CommandPalette> {
         let snapshot = PaletteSnapshot {
             sessions: Vec::new(),
             active_path: None,
@@ -1057,6 +1146,7 @@ mod tests {
             project_panel_visible: false,
             can_choose_model: false,
             can_choose_thinking: false,
+            mcp_servers,
         };
         cx.update(|window, cx| {
             let palette = cx.new(|cx| {
@@ -1101,5 +1191,41 @@ mod tests {
             listed, expected,
             "palette commands must mirror the registry"
         );
+    }
+
+    /// Configured MCP servers get per-server rows: enable/disable (labelled
+    /// from the current state), reconnect, and test.
+    #[gpui::test]
+    fn mcp_servers_get_palette_rows(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let palette = open_test_palette_with(
+            cx,
+            vec![
+                PaletteMcpServer {
+                    name: "github".into(),
+                    enabled: true,
+                },
+                PaletteMcpServer {
+                    name: "sentry".into(),
+                    enabled: false,
+                },
+            ],
+        );
+        let rows: Vec<(String, McpPaletteAction)> = cx.update(|_, cx| {
+            palette
+                .read(cx)
+                .command_items()
+                .into_iter()
+                .filter_map(|item| match item.action {
+                    PaletteAction::Mcp { name, action } => Some((name, action)),
+                    _ => None,
+                })
+                .collect()
+        });
+        assert_eq!(rows.len(), 6, "two servers × enable/reconnect/test");
+        assert!(rows.contains(&("github".into(), McpPaletteAction::Toggle)));
+        assert!(rows.contains(&("sentry".into(), McpPaletteAction::Toggle)));
+        assert!(rows.contains(&("github".into(), McpPaletteAction::Reconnect)));
+        assert!(rows.contains(&("sentry".into(), McpPaletteAction::Test)));
     }
 }

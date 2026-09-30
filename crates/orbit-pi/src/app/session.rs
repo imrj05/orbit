@@ -1,5 +1,7 @@
 use super::helpers::*;
+use super::mcp_ui::QuotaPopupTab;
 use super::*;
+use crate::app::helpers::{segmented_segment, SegmentPosition};
 use crate::context_meter::context_ring;
 use crate::quota::{is_five_hour_window, note_should_render, QuotaHeadline};
 use crate::theme::tokens::{
@@ -272,6 +274,7 @@ impl OrbitApp {
                 busy,
                 added: self.added,
                 removed: self.removed,
+                mcp_stamp: self.mcp_stamp,
                 widgets,
                 parked_at: Instant::now(),
             },
@@ -586,9 +589,10 @@ impl OrbitApp {
         self.add_workspace(cwd.clone());
         self.set_current_workspace(cwd.clone());
 
-        match self.extensions.spawn(&cwd, true) {
+        match self.extensions.spawn(&cwd, true, &self.mcp.secret_env()) {
             Ok(client) => {
                 self.adopt_client(client);
+                self.mcp_stamp = self.mcp.fingerprint();
                 self.send(CommandBody::NewSession, "new_session");
                 self.refresh_catalogs();
                 // Capability probes queue after the new-session request.
@@ -695,7 +699,14 @@ impl OrbitApp {
         self.reset_queue();
 
         // ── activate the target ──
-        if let Some(parked) = self.lives.remove(&session.path) {
+        // A parked process spawned before the latest MCP configuration change
+        // is stale: drop it and cold-start so it loads the current servers.
+        let mcp_stamp = self.mcp.fingerprint();
+        if let Some(parked) = self
+            .lives
+            .remove(&session.path)
+            .filter(|parked| parked.mcp_stamp == mcp_stamp)
+        {
             // Resume a background run. The parked transcript is already up
             // to date (its events drain every tick); anything buffered in
             // the process channel streams in from the next tick on.
@@ -718,15 +729,21 @@ impl OrbitApp {
             self.preview_session_transcript(session.path.clone(), cx);
             // Spawn a dedicated pi process rooted at the session's workspace
             // and point it at the session file.
-            let spawned = self.extensions.spawn(&session.cwd, false).or_else(|_| {
-                self.extensions.spawn(
-                    &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-                    false,
-                )
-            });
+            let secret_env = self.mcp.secret_env();
+            let spawned = self
+                .extensions
+                .spawn(&session.cwd, false, &secret_env)
+                .or_else(|_| {
+                    self.extensions.spawn(
+                        &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                        false,
+                        &secret_env,
+                    )
+                });
             match spawned {
                 Ok(client) => {
                     self.adopt_client(client);
+                    self.mcp_stamp = mcp_stamp;
                     self.send(
                         CommandBody::SwitchSession {
                             session_path: session.path.to_string_lossy().into_owned(),
@@ -1387,7 +1404,13 @@ impl OrbitApp {
         compact: bool,
         cx: &Context<Self>,
     ) -> Option<AnyElement> {
-        if self.quota.reports().is_empty() {
+        // The pill is the only way into the usage popover, and the popover now
+        // carries the MCP status pane too. Render it when either side has
+        // something to show, so an MCP-only setup is not left without the
+        // control. `None` (hidden) when pi lacks `quota.*` and no MCP server
+        // is configured.
+        let mcp_chip = self.mcp_chip_parts(*theme::get(cx));
+        if self.quota.reports().is_empty() && mcp_chip.is_none() {
             return None;
         }
         let theme = *theme::get(cx);
@@ -1501,22 +1524,41 @@ impl OrbitApp {
                         .child(text),
                 );
             }
-            // Nothing metered anywhere (notes, errors): a quiet label keeps
-            // the popover reachable.
-            QuotaHeadline::Quiet => {
-                pill = pill
-                    .child(icon(
-                        "icons/spark.svg",
-                        IconSize::Small.px(&theme),
-                        theme.text_2,
-                    ))
-                    .child(
-                        div()
-                            .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_2)
-                            .child(tr!("session.usage")),
-                    );
-            }
+            // Nothing metered anywhere (notes, errors): the pill keeps the
+            // popover reachable. With MCP servers configured it becomes the
+            // MCP status chip — the pane behind it is now the only place
+            // their state is visible from the top bar.
+            QuotaHeadline::Quiet => match mcp_chip {
+                Some((dot, label)) => {
+                    pill = pill
+                        .child(icon(
+                            "icons/tools/mcp.svg",
+                            IconSize::Small.px(&theme),
+                            theme.text_2,
+                        ))
+                        .child(div().size(px(6.)).rounded_full().bg(dot))
+                        .child(
+                            div()
+                                .text_size(TextSize::Small.px(&theme))
+                                .text_color(theme.text_2)
+                                .child(label),
+                        );
+                }
+                None => {
+                    pill = pill
+                        .child(icon(
+                            "icons/spark.svg",
+                            IconSize::Small.px(&theme),
+                            theme.text_2,
+                        ))
+                        .child(
+                            div()
+                                .text_size(TextSize::Small.px(&theme))
+                                .text_color(theme.text_2)
+                                .child(tr!("session.usage")),
+                        );
+                }
+            },
         }
 
         Some(pill.into_any_element())
@@ -1565,6 +1607,52 @@ impl OrbitApp {
                 .on_mouse_up(MouseButton::Left, cx.listener(Self::on_quota_refresh))
                 .child(refresh_icon);
 
+        // Two panes in one popover: the original provider quotas and the MCP
+        // server list. A segmented control keeps the switch in the header
+        // without adding a row (the body cap math below depends on this
+        // header's height).
+        let tab = self.quota_popup_tab;
+        let mut tabs = div()
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base02.px(&theme));
+        for (index, candidate) in QuotaPopupTab::ALL.into_iter().enumerate() {
+            let selected = tab == candidate;
+            tabs = tabs.child(
+                segmented_segment(
+                    div()
+                        .id(ElementId::Name(
+                            format!("quota-tab-{}", candidate.as_str()).into(),
+                        ))
+                        .debug_selector({
+                            let tab = candidate.as_str().to_string();
+                            move || format!("quota-tab-chip-{tab}")
+                        }),
+                    &theme,
+                    ButtonSize::Default,
+                    SegmentPosition::at(index, QuotaPopupTab::ALL.len()),
+                )
+                .font_weight(FontWeight::MEDIUM)
+                .cursor_pointer()
+                .border_color(theme.border)
+                .when(selected, |chip| {
+                    chip.bg(theme.active).text_color(theme.active_fg)
+                })
+                .when(!selected, |chip| {
+                    chip.bg(theme.bg_raised)
+                        .text_color(theme.text_2)
+                        .hover(|style| style.bg(theme.bg_hover))
+                })
+                .on_mouse_up(MouseButton::Left, {
+                    let this = this.clone();
+                    move |_, _, cx| {
+                        this.update(cx, |app, cx| app.mcp_popup_tab(candidate, cx));
+                    }
+                })
+                .child(tr!(candidate.label_key())),
+            );
+        }
+
         let header = div()
             .flex_none()
             .px(px(12.))
@@ -1574,21 +1662,23 @@ impl OrbitApp {
             .flex()
             .items_center()
             .gap(px(8.))
-            .child(
-                div()
-                    .flex_1()
-                    .text_size(TextSize::Small.px(&theme))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text)
-                    .child(tr!("session.provider_usage")),
-            )
-            .child(
-                div()
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.text_2)
-                    .child(tr!("session.provider_count", count = count)),
-            )
-            .child(refresh_button);
+            .child(tabs)
+            .child(div().flex_1())
+            .child(match tab {
+                QuotaPopupTab::Providers => div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_2)
+                            .child(tr!("session.provider_count", count = count)),
+                    )
+                    .child(refresh_button)
+                    .into_any_element(),
+                QuotaPopupTab::Mcp => self.mcp_popup_summary(theme, this.clone(), cx),
+            });
 
         // One card per provider, 8 px apart: the boundary between accounts
         // is what tells a glance which numbers belong together. The list is
@@ -1599,28 +1689,38 @@ impl OrbitApp {
         // same reason the model picker's list carries its own `max_h`).
         // Ordinary children keep it independent of measured-layout sizing.
         let header_h = ButtonSize::Medium.height(&theme) + px(21.);
-        let mut cards = div()
-            .id("quota-popup-body")
-            .debug_selector(|| "quota-popup-body".to_string())
-            .w_full()
-            .max_h(px(QUOTA_POPOVER_MAX_H) - header_h)
-            .overflow_y_scroll()
-            .p(px(8.))
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .children(visible.iter().map(|report| {
-                quota_provider_card(
-                    self,
-                    report,
-                    theme,
-                    false,
-                    Some(self.quota_visibility_button(&report.provider, false, cx)),
-                )
-            }));
-        if !hidden_reports.is_empty() {
-            cards = cards.child(self.quota_hidden_section(&hidden_reports, theme, cx));
-        }
+        let body_max_h = px(QUOTA_POPOVER_MAX_H) - header_h;
+        let body: AnyElement = match tab {
+            QuotaPopupTab::Providers => {
+                let mut cards = div()
+                    .id("quota-popup-body")
+                    .debug_selector(|| "quota-popup-body".to_string())
+                    .w_full()
+                    .max_h(body_max_h)
+                    .overflow_y_scroll()
+                    .p(px(8.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .children(visible.iter().map(|report| {
+                        quota_provider_card(
+                            self,
+                            report,
+                            theme,
+                            false,
+                            Some(self.quota_visibility_button(&report.provider, false, cx)),
+                        )
+                    }));
+                if !hidden_reports.is_empty() {
+                    cards = cards.child(self.quota_hidden_section(&hidden_reports, theme, cx));
+                }
+                if visible.is_empty() && hidden_reports.is_empty() {
+                    cards = cards.child(self.quota_popup_empty(theme, this.clone()));
+                }
+                cards.into_any_element()
+            }
+            QuotaPopupTab::Mcp => self.mcp_popup_panel(theme, body_max_h, this.clone(), cx),
+        };
 
         let popup = div()
             .debug_selector(|| "quota-popup".to_string())
@@ -1652,7 +1752,7 @@ impl OrbitApp {
                 }
             })
             .child(header)
-            .child(cards);
+            .child(body);
 
         Some(
             div()
@@ -1720,6 +1820,47 @@ impl OrbitApp {
                 ButtonSize::Compact.icon_size().px(&theme),
                 theme.text_3,
             ))
+            .into_any_element()
+    }
+
+    /// The Providers pane with nothing to show (no quota reports yet, or a
+    /// pi without `quota.*`). Points at the other pane rather than sitting
+    /// empty — the pill that opened it is the MCP status chip in that case.
+    fn quota_popup_empty(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
+        div()
+            .w_full()
+            .py(DynamicSpacing::Base16.px(&theme))
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(DynamicSpacing::Base06.px(&theme))
+            .child(icon(
+                "icons/spark.svg",
+                IconSize::Medium.px(&theme),
+                theme.text_3,
+            ))
+            .child(
+                div()
+                    .text_size(TextSize::Small.px(&theme))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text)
+                    .child(tr!("session.no_provider_usage")),
+            )
+            .child(
+                button_frame(div().id("quota-empty-mcp"), &theme, ButtonSize::Compact)
+                    .debug_selector(|| "quota-empty-mcp".to_string())
+                    .cursor_pointer()
+                    .font_weight(FontWeight::MEDIUM)
+                    .bg(theme.send_bg)
+                    .text_color(theme.send_fg)
+                    .hover(|style| style.bg(theme.send_bg_hover))
+                    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                        this.update(cx, |app, cx| {
+                            app.mcp_popup_tab(QuotaPopupTab::Mcp, cx);
+                        });
+                    })
+                    .child(tr!("session.show_mcp_servers")),
+            )
             .into_any_element()
     }
 
@@ -1852,7 +1993,13 @@ impl OrbitApp {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.quota_refresh(cx);
+        // The header's control is contextual: it probes MCP while the MCP
+        // tab is showing, and re-reads provider quotas otherwise.
+        if self.quota_popup_tab == QuotaPopupTab::Mcp {
+            self.mcp_refresh(cx);
+        } else {
+            self.quota_refresh(cx);
+        }
     }
 
     /// Toggle the top-bar quota popover.
@@ -1870,11 +2017,27 @@ impl OrbitApp {
                 return;
             }
         }
+        self.toggle_quota_popup(cx);
+    }
+
+    /// Open or close the top-bar usage popover. Opening picks the pane that
+    /// matches the pill the user clicked: when the pill is showing the MCP
+    /// status chip (nothing metered), the popover opens on the MCP pane
+    /// instead of an empty provider list.
+    pub(super) fn toggle_quota_popup(&mut self, cx: &mut Context<Self>) {
         self.quota_popup_open = !self.quota_popup_open;
         // The quota popover and the session-details popover share the top
         // bar; only one is meaningful at a time.
         if self.quota_popup_open {
             self.session_details_open = false;
+            let theme = *theme::get(cx);
+            let quiet = matches!(
+                self.quota.headline(&self.model_provider),
+                QuotaHeadline::Quiet
+            );
+            if quiet && self.mcp_chip_parts(theme).is_some() {
+                self.quota_popup_tab = QuotaPopupTab::Mcp;
+            }
         }
         cx.notify();
     }

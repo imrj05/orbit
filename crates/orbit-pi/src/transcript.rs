@@ -3529,6 +3529,69 @@ mod tests {
     }
 
     #[test]
+    fn mcp_tool_execution_keeps_the_wire_name_and_attaches_the_result() {
+        // Pi names MCP tools `mcp__<server>__<tool>`; the transcript must
+        // preserve the exact wire name (the card parses it) and still attach
+        // the result by call id like any other tool.
+        let mut transcript = Transcript::new();
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": ""}),
+        });
+        transcript.apply_event(&Event::ToolExecutionStart {
+            value: json!({
+                "toolCallId": "m1",
+                "toolName": "mcp__github__search_repositories",
+                "args": {"query": "rust gpui"}
+            }),
+        });
+        transcript.apply_event(&Event::ToolExecutionEnd {
+            value: json!({
+                "toolCallId": "m1",
+                "toolName": "mcp__github__search_repositories",
+                "result": {"content": [{"type": "text", "text": "3 results"}]},
+                "isError": false
+            }),
+        });
+        let messages = transcript.messages.borrow();
+        let tool = messages[0].tools().next().unwrap();
+        assert_eq!(tool.name, "mcp__github__search_repositories");
+        assert!(!tool.failed);
+        assert!(tool.output.is_some());
+        assert_eq!(
+            crate::transcript_view::mcp_tool_parts(&tool.name),
+            Some(("github", "search_repositories"))
+        );
+        drop(messages);
+
+        // A failed MCP call keeps the same wire name and marks the row.
+        transcript.apply_event(&Event::ToolExecutionStart {
+            value: json!({
+                "toolCallId": "m2",
+                "toolName": "mcp__sentry__create_issue",
+                "args": {"title": "boom"}
+            }),
+        });
+        transcript.apply_event(&Event::ToolExecutionEnd {
+            value: json!({
+                "toolCallId": "m2",
+                "toolName": "mcp__sentry__create_issue",
+                "result": {"content": [{"type": "text", "text": "401 Unauthorized"}]},
+                "isError": true
+            }),
+        });
+        let messages = transcript.messages.borrow();
+        let failed = messages[0]
+            .tools()
+            .find(|tool| tool.name == "mcp__sentry__create_issue")
+            .unwrap();
+        assert!(failed.failed);
+        assert_eq!(
+            crate::transcript_view::mcp_tool_parts(&failed.name),
+            Some(("sentry", "create_issue"))
+        );
+    }
+
+    #[test]
     fn tool_execution_events_attach_results_by_id() {
         let mut transcript = Transcript::new();
         assert!(transcript.apply_event(&Event::MessageStart {

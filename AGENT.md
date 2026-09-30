@@ -45,6 +45,13 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/app/sidebar.rs    sidebar rows + session/workspace row menus; project-list prefs
   src/app/settings.rs   Settings surface: General/Runtime/Agent/Skills/Plugins/Models/Appearance/Providers/About (+ provider CRUD, plugin install, model list)
   src/app/skills_ui.rs  Settings → Skills master-detail page and its controllers
+  src/app/mcp_ui.rs     Settings → MCP: server list, add/edit modal, probe/apply lifecycle
+  src/mcp.rs            MCP domain model: servers, transports, exposure, status, typed errors,
+                        secret-reference parsing and error redaction (no MCP protocol code)
+  src/mcp/config.rs     reads/writes/validates/merges pi's own mcp.json files (atomic, surgical)
+  src/mcp/secrets.rs    MCP `${NAME}` secret store (~/.orbit-pi/mcp-secrets.json, 0600)
+  src/mcp/manager.rs    McpManager: one source of truth + `pi mcp list --json` probe + fingerprints
+  docs/mcp.md           MCP architecture, configuration, secrets, lifecycle, troubleshooting
   src/app/updater_ui.rs signed-updater modal (search/Version History/Update now), rows, pill, event drain
   src/app/search.rs     in-transcript find (⌘F): matches, counts, prev/next, row wash
   src/app/toast_ui.rs   in-app toast stack: push/dismiss helpers + the bottom-right layer

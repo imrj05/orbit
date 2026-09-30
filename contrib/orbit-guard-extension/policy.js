@@ -51,6 +51,15 @@ const EDIT_TOOLS = new Set(["edit", "write", "multiedit", "apply_patch", "str_re
 const EXEC_TOOLS = new Set(["bash", "powershell", "shell", "exec", "terminal"]);
 
 /**
+ * Pi names every MCP tool `mcp__<server>__<tool>`. They are treated as their
+ * own kind so the confirmation can name the server, and they are always asked
+ * about in the confined modes: an MCP call can run a local process or change
+ * an external service, so nothing about it is auto-approved except through
+ * the user's explicit "Always allow this tool" entry.
+ */
+const MCP_PREFIX = "mcp__";
+
+/**
  * Coerce an arbitrary value to a known mode, falling back to
  * [`DEFAULT_MODE`]. Unknown values never allow more than intended.
  */
@@ -59,14 +68,16 @@ export function normalizeMode(raw) {
 }
 
 /**
- * Classify a pi tool name into a risk kind: `"read"`, `"edit"`, `"exec"`, or
- * `"other"` (extension / custom tools, which are treated conservatively).
+ * Classify a pi tool name into a risk kind: `"read"`, `"edit"`, `"exec"`,
+ * `"mcp"`, or `"other"` (extension / custom tools, which are treated
+ * conservatively).
  */
 export function classify(toolName) {
   const name = String(toolName ?? "").toLowerCase();
   if (READ_TOOLS.has(name)) return "read";
   if (EDIT_TOOLS.has(name)) return "edit";
   if (EXEC_TOOLS.has(name)) return "exec";
+  if (name.startsWith(MCP_PREFIX)) return "mcp";
   return "other";
 }
 

@@ -60,7 +60,7 @@ impl OrbitApp {
     pub(super) fn render_settings(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
         let this = cx.entity();
         let theme = *theme::get(cx);
-        let sections: [(SettingsSection, &'static str, String); 10] = [
+        let sections: [(SettingsSection, &'static str, String); 11] = [
             (
                 SettingsSection::General,
                 "icons/settings.svg",
@@ -85,6 +85,11 @@ impl OrbitApp {
                 SettingsSection::Plugins,
                 "icons/extensions.svg",
                 tr!("settings.plugins"),
+            ),
+            (
+                SettingsSection::Mcp,
+                "icons/tools/mcp.svg",
+                tr!("settings.mcp"),
             ),
             (
                 SettingsSection::Models,
@@ -315,6 +320,8 @@ impl OrbitApp {
             // ── provider editor modals (models.json + API key) ──
             .children(self.provider_editor_layer(theme, this.clone(), cx))
             .children(self.provider_usage_layer(theme, this.clone(), cx))
+            // ── MCP add/edit modal ──
+            .children(self.mcp_editor_layer(theme, this.clone(), cx))
             .children(self.provider_key_layer(theme, this, cx))
     }
 
@@ -400,6 +407,7 @@ impl OrbitApp {
             SettingsSection::Plugins => {
                 (tr!("settings.plugins"), tr!("settings.plugins_description"))
             }
+            SettingsSection::Mcp => (tr!("settings.mcp"), tr!("settings.mcp_description")),
             SettingsSection::Models => (tr!("settings.models"), tr!("settings.models_description")),
             SettingsSection::Appearance => (
                 tr!("settings.appearance"),
@@ -499,6 +507,9 @@ impl OrbitApp {
             // Rendered by `skills_ui::render_skills_page`, not the card body.
             SettingsSection::Skills => Vec::new(),
             SettingsSection::Plugins => self.plugin_rows(theme, this.clone(), cx),
+            // The MCP page's rows are owned by `mcp_ui`; it needs the cursor
+            // and filter state that lives beside the manager.
+            SettingsSection::Mcp => self.mcp_rows(theme, this.clone(), cx),
             SettingsSection::Models => self.model_rows(theme, this.clone(), cx),
             SettingsSection::Appearance => self.appearance_rows(theme, this.clone(), cx),
             SettingsSection::Providers => self.provider_rows(theme, this.clone(), cx),
@@ -574,6 +585,7 @@ impl OrbitApp {
         match self.settings_section {
             SettingsSection::Providers => Some(self.provider_toolbar(theme, this, cx)),
             SettingsSection::Plugins => Some(self.plugin_toolbar(theme, this, cx)),
+            SettingsSection::Mcp => Some(self.mcp_toolbar(theme, this, cx)),
             SettingsSection::Models => Some(self.model_toolbar(theme, this, cx)),
             _ => None,
         }
@@ -4713,9 +4725,7 @@ impl OrbitApp {
                 )
                 .font_weight(FontWeight::MEDIUM)
                 .cursor_pointer()
-                .when(active, |b| {
-                    b.bg(theme.active).text_color(theme.active_fg)
-                })
+                .when(active, |b| b.bg(theme.active).text_color(theme.active_fg))
                 .when(!active, |b| {
                     b.bg(theme.bg_raised)
                         .text_color(theme.text_2)
@@ -6431,6 +6441,10 @@ impl OrbitApp {
         self.provider_editor = None;
         self.provider_key_editor = None;
         self.plugin_remove_confirm = None;
+        // The MCP add/edit modal belongs to the MCP page; leaving the page
+        // discards it like the provider editors above.
+        self.mcp_editor = None;
+        self.mcp_remove_confirm = None;
         match section {
             SettingsSection::General => self.refresh_notification_auth(cx),
             SettingsSection::Providers => {
@@ -6441,6 +6455,7 @@ impl OrbitApp {
             }
             SettingsSection::Skills => self.refresh_skills(cx),
             SettingsSection::Plugins => self.refresh_plugins(cx),
+            SettingsSection::Mcp => self.mcp_section_opened(cx),
             _ => {}
         }
         cx.notify();

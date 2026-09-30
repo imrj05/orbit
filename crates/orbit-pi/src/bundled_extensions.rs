@@ -90,10 +90,15 @@ impl BundledExtensions {
     /// default model (`~/.orbit-pi/session-defaults.json`). Pass `false` for
     /// a process that is about to *resume* a session — a resumed session
     /// keeps the model recorded in its file, never Orbit's default.
+    ///
+    /// `env` carries Orbit's MCP secret values, so Pi can expand the
+    /// `${NAME}` references in `mcp.json` without the config ever holding a
+    /// raw credential. It applies to this child only.
     pub(crate) fn spawn(
         &self,
         workspace: &Path,
         apply_default: bool,
+        env: &[(String, String)],
     ) -> anyhow::Result<PiClient> {
         // A `pi update` can restore the pristine RPC bundle while Orbit is
         // running; re-check before every spawn so a session switch or Runtime
@@ -105,11 +110,18 @@ impl BundledExtensions {
         } else {
             Vec::new()
         };
+        let env_refs: Vec<(&str, &str)> = env
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect();
         let extensions = self.extension_paths();
-        if extensions.is_empty() {
-            return PiClient::spawn_with_args(workspace, None, &args);
-        }
-        PiClient::spawn_with_extensions_and_args(workspace, None, &extensions, &args)
+        PiClient::spawn_with_extensions_and_env_and_args(
+            workspace,
+            None,
+            &extensions,
+            &env_refs,
+            &args,
+        )
     }
 
     /// The installed bundled extension entry points, in load order.

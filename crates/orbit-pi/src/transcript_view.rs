@@ -3034,8 +3034,15 @@ fn render_activity_card(
     {
         return render_ask_card(tool, theme, key);
     }
-    let action = activity_action_label(&tool.name);
-    let detail = activity_preview(tool);
+    let mcp = mcp_tool_parts(&tool.name);
+    let action = match mcp {
+        Some((server, _)) => tr!("mcp.card_action", server = server),
+        None => activity_action_label(&tool.name),
+    };
+    let detail = match mcp {
+        Some((_, tool_name)) => tool_name.to_string(),
+        None => activity_preview(tool),
+    };
     let icon = activity_icon(&tool.name);
     // The glyph tone: strong state color while the call runs or once it
     // failed; otherwise the work kind's soft tint (see `work_tint`).
@@ -4757,6 +4764,22 @@ fn activity_preview(tool: &ToolCall) -> String {
     }
     if let Some(query) = tool_search_query(tool) {
         return query;
+    }
+    // The codemode tool takes a JavaScript source string; show its first
+    // non-empty line like a command preview instead of the raw JSON args.
+    if tool.name == "codemode" {
+        if let Some(code) = tool
+            .args
+            .as_ref()
+            .and_then(|args| args.get("code"))
+            .and_then(Value::as_str)
+        {
+            let first = code
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or("");
+            return snippet(first.trim(), 72);
+        }
     }
     // A command tool's pi summary is the raw JSON arguments; show the shell
     // command itself in the header instead of `{"command":"…"}`.
@@ -6982,8 +7005,9 @@ pub(crate) fn activity_icon(name: &str) -> &'static str {
         "skill" => "icons/tools/skill.svg",
         "ask" | "ask_user" | "question" | "elicit" => "icons/tools/ask.svg",
         "todo" | "todo_write" | "plan" | "update_plan" => "icons/tools/todo.svg",
-        "notebook" | "eval" | "execute_code" => "icons/tools/code.svg",
-        name if name.starts_with("mcp") => "icons/tools/mcp.svg",
+        "notebook" | "eval" | "execute_code" | "codemode" => "icons/tools/code.svg",
+        "tool_search" => "icons/tools/search.svg",
+        name if name.starts_with("mcp") || name.contains("mcp_resource") => "icons/tools/mcp.svg",
         _ => "icons/tools/tool.svg",
     }
 }
@@ -7088,6 +7112,20 @@ fn activity_badge(icon: &'static str, tone: Hsla, theme: Theme) -> impl IntoElem
         .child(glyph(icon, IconSize::Small.px(&theme), tone))
 }
 
+/// Split a Pi MCP tool name (`mcp__<server>__<tool>`) into `(server, tool)`
+/// for the card header. Pi sanitizes both halves to `[A-Za-z0-9_-]` and joins
+/// them with `__`; a server name that itself contains `__` would split early,
+/// which is the one lossy case — the full name still reaches the model and the
+/// expanded args.
+pub(crate) fn mcp_tool_parts(name: &str) -> Option<(&str, &str)> {
+    let rest = name.strip_prefix("mcp__")?;
+    let (server, tool) = rest.split_once("__")?;
+    if server.is_empty() || tool.is_empty() {
+        return None;
+    }
+    Some((server, tool))
+}
+
 /// Human label for a tool card header. Known pi tools get a short, scannable
 /// verb ("Run", "Read", "Find files"); anything else falls back to the
 /// capitalized tool name so an unknown tool never renders blank.
@@ -7106,7 +7144,10 @@ fn activity_action_label(name: &str) -> String {
         "skill" => Some("Skill"),
         "ask" | "ask_user" | "question" | "elicit" => Some("Ask"),
         "todo" | "todo_write" | "plan" | "update_plan" => Some("Plan"),
-        "notebook" | "eval" | "execute_code" => Some("Run code"),
+        "notebook" | "eval" | "execute_code" | "codemode" => Some("Run code"),
+        "tool_search" => Some("Find tools"),
+        "list_mcp_resources" | "list_mcp_resource_templates" => Some("List resources"),
+        "read_mcp_resource" => Some("Read resource"),
         _ => None,
     };
     if let Some(label) = known {
@@ -7489,6 +7530,10 @@ mod tests {
         assert_eq!(activity_icon("glob"), "icons/tools/find.svg");
         assert_eq!(activity_icon("mcp"), "icons/tools/mcp.svg");
         assert_eq!(activity_icon("mcp__filesystem"), "icons/tools/mcp.svg");
+        assert_eq!(activity_icon("codemode"), "icons/tools/code.svg");
+        assert_eq!(activity_icon("tool_search"), "icons/tools/search.svg");
+        assert_eq!(activity_icon("read_mcp_resource"), "icons/tools/mcp.svg");
+        assert_eq!(activity_icon("list_mcp_resources"), "icons/tools/mcp.svg");
         // An unknown tool keeps a real mark instead of a blank slot.
         assert_eq!(activity_icon("frobnicate"), "icons/tools/tool.svg");
     }
@@ -7499,9 +7544,29 @@ mod tests {
         assert_eq!(activity_action_label("read"), "Read");
         assert_eq!(activity_action_label("glob"), "Find files");
         assert_eq!(activity_action_label("mcp__github"), "MCP");
+        assert_eq!(activity_action_label("codemode"), "Run code");
+        assert_eq!(activity_action_label("tool_search"), "Find tools");
+        assert_eq!(activity_action_label("read_mcp_resource"), "Read resource");
         // Unknown tools still get a readable, never-blank label.
         assert_eq!(activity_action_label("frobnicate"), "Frobnicate");
         assert_eq!(activity_action_label(""), "Tool");
+    }
+
+    #[test]
+    fn mcp_tool_names_split_into_server_and_tool() {
+        assert_eq!(
+            mcp_tool_parts("mcp__github__search_repositories"),
+            Some(("github", "search_repositories"))
+        );
+        assert_eq!(
+            mcp_tool_parts("mcp__my_server__get_issue"),
+            Some(("my_server", "get_issue"))
+        );
+        // Non-MCP names and malformed shapes never produce a fake split.
+        assert_eq!(mcp_tool_parts("bash"), None);
+        assert_eq!(mcp_tool_parts("mcp__github"), None);
+        assert_eq!(mcp_tool_parts("mcp____tool"), None);
+        assert_eq!(mcp_tool_parts("mcp__server__"), None);
     }
 
     #[test]
@@ -7552,6 +7617,28 @@ mod tests {
             ..bash.clone()
         };
         assert_eq!(tool_command(&edit), None);
+    }
+
+    #[test]
+    fn codemode_previews_the_first_script_line() {
+        let codemode = ToolCall {
+            name: "codemode".into(),
+            summary: r#"{"code":"..."}"#.into(),
+            path: None,
+            added: 0,
+            removed: 0,
+            id: None,
+            args: Some(serde_json::json!({
+                "code": "\n\nconst repos = await tools.search_repositories({ q: \"rust gpui\" });\nreturn repos;"
+            })),
+            output: None,
+            failed: false,
+            facts: Default::default(),
+        };
+        assert_eq!(
+            activity_preview(&codemode),
+            "const repos = await tools.search_repositories({ q: \"rust gpui\" });"
+        );
     }
 
     #[test]

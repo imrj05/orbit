@@ -153,6 +153,10 @@ struct ParkedSession {
     busy: bool,
     added: u64,
     removed: u64,
+    /// MCP config fingerprint this parked process was spawned with. A stale
+    /// process is dropped when the session is next opened, so it reloads the
+    /// current servers instead of running the old ones.
+    mcp_stamp: u64,
     /// Extension `setWidget` blocks live at park time, so switching back to a
     /// warm session restores them (a parked process never re-emits).
     widgets: Vec<ExtensionWidget>,
@@ -518,6 +522,9 @@ pub struct OrbitApp {
     rename_saved_at: Option<Instant>,
     /// Whether the top-bar provider-quota popover is open.
     quota_popup_open: bool,
+    /// Which pane the top-bar usage popover shows: provider quotas or MCP
+    /// server status.
+    quota_popup_tab: mcp_ui::QuotaPopupTab,
     /// A manual quota refresh is in flight: the popover's refresh button spins
     /// until the `quota.list` reply lands, or a short timeout clears it.
     quota_refreshing: bool,
@@ -744,6 +751,47 @@ pub struct OrbitApp {
     /// Mirror of the persisted automatic-check preference, refreshed when the
     /// updater reports and on toggle, so frames never read the file.
     automatic_updates_enabled: bool,
+    /// MCP management: config, secrets, and per-server runtime state for the
+    /// Settings → MCP page. One source of truth; no MCP view state is
+    /// duplicated elsewhere.
+    mcp: crate::mcp::McpManager,
+    /// Search filter for the MCP server list.
+    mcp_filter: Entity<ComposerInput>,
+    /// Re-render the list as the filter is typed.
+    _mcp_filter_sub: Subscription,
+    /// The MCP add/edit modal, if open.
+    mcp_editor: Option<mcp_ui::McpEditor>,
+    /// Focus handle carrying the `McpList` key context while the MCP page is
+    /// open (↑/↓ move the row cursor, Enter edits, Space toggles).
+    mcp_list_focus: FocusHandle,
+    /// Focus the MCP list on the next paint (`set_settings_section` has no
+    /// window to focus with).
+    mcp_focus_pending: bool,
+    /// Server name awaiting inline remove confirmation.
+    mcp_remove_confirm: Option<String>,
+    /// Keyboard cursor in the MCP list (server name; `None` until the page
+    /// takes focus).
+    mcp_cursor: Option<String>,
+    /// Debounced probe due time.
+    mcp_probe_at: Option<Instant>,
+    /// Debounced Pi apply due time.
+    mcp_apply_at: Option<Instant>,
+    /// A configuration change arrived while a run was in flight; apply once
+    /// the run settles.
+    mcp_apply_pending: bool,
+    /// The next apply must restart even when the config fingerprint is
+    /// unchanged — used after sign-out, so a live session's access is dropped.
+    mcp_apply_forced: bool,
+    /// MCP config fingerprint the active Pi process was spawned with.
+    mcp_stamp: u64,
+    /// The server a "Test connection" result should toast for.
+    mcp_test_target: Option<String>,
+    /// The in-flight OAuth sign-in (server + its cancel flag), if any.
+    mcp_auth: Option<mcp_ui::McpAuthJob>,
+    /// The config files changed on disk outside Orbit (page notice).
+    mcp_external_change: bool,
+    /// Next external-change poll while the MCP section is open.
+    mcp_external_check_at: Option<Instant>,
 }
 
 /// An image queued to ride along with the next prompt.
@@ -934,6 +982,17 @@ impl OrbitApp {
         });
         let skills_filter_sub = cx.observe(&skills_filter, |_, _, cx| cx.notify());
 
+        // Settings → MCP: the server-list filter.
+        let mcp_filter = cx.new(|cx| {
+            ComposerInput::new(cx)
+                .with_element_id("mcp-filter")
+                .with_placeholder_key("mcp.search_servers")
+                .with_key_context("Composer Picker")
+                .with_max_lines(1)
+                .with_wrap(false)
+        });
+        let mcp_filter_sub = cx.observe(&mcp_filter, |_, _, cx| cx.notify());
+
         // Session-details popover: rename field. Default `Composer` key context
         // keeps real text editing (selection, clipboard, arrows); Enter routes
         // to Submit, which commits the name instead of the composer while this
@@ -963,10 +1022,20 @@ impl OrbitApp {
         // the file on the very first tool call of the session.
         let access_mode = AccessMode::load();
         access_mode.persist();
-        let (client, connect_error) = match extensions.spawn(&workspace, true) {
+        // MCP configuration and secrets must be loaded before the first spawn
+        // so the child's environment carries every `${NAME}` reference the
+        // config uses, and so the process can be stamped with the config it
+        // was spawned from.
+        let mcp = crate::mcp::McpManager::load(Some(&workspace));
+        // Status/tool data comes from Pi itself; with servers configured, run
+        // one deferred probe at launch so the status-bar chip and the MCP page
+        // start from real state instead of "not checked".
+        let mcp_probe_at = (!mcp.is_empty()).then(|| Instant::now() + Duration::from_secs(3));
+        let (client, connect_error) = match extensions.spawn(&workspace, true, &mcp.secret_env()) {
             Ok(client) => (Some(client), String::new()),
             Err(err) => (None, tr!("runtime.pi_spawn_failed", error = err)),
         };
+        let mcp_stamp = mcp.fingerprint();
         let runtime = RuntimeStatus {
             started_at: client.as_ref().map(|_| Instant::now()),
             alive: client.is_some(),
@@ -1204,6 +1273,7 @@ impl OrbitApp {
             title_generating: false,
             rename_saved_at: None,
             quota_popup_open: false,
+            quota_popup_tab: mcp_ui::QuotaPopupTab::default(),
             quota_refreshing: false,
             quota_refresh_started: None,
             quota_hidden_open: false,
@@ -1278,6 +1348,23 @@ impl OrbitApp {
             skill_content: None,
             skill_delete_confirm: None,
             _skills_filter_sub: skills_filter_sub,
+            mcp,
+            mcp_filter: mcp_filter.clone(),
+            _mcp_filter_sub: mcp_filter_sub,
+            mcp_editor: None,
+            mcp_list_focus: cx.focus_handle(),
+            mcp_focus_pending: false,
+            mcp_remove_confirm: None,
+            mcp_cursor: None,
+            mcp_probe_at,
+            mcp_apply_at: None,
+            mcp_apply_pending: false,
+            mcp_apply_forced: false,
+            mcp_stamp,
+            mcp_test_target: None,
+            mcp_auth: None,
+            mcp_external_change: false,
+            mcp_external_check_at: None,
             updater_status: cx
                 .try_global::<crate::updater::UpdaterState>()
                 .and_then(|state| state.0.as_ref())
@@ -1914,6 +2001,7 @@ pub(crate) enum SettingsSection {
     Agent,
     Skills,
     Plugins,
+    Mcp,
     Models,
     Appearance,
     Providers,
@@ -2224,6 +2312,7 @@ mod composer_ops;
 mod dialogs;
 mod events;
 pub(crate) mod helpers;
+mod mcp_ui;
 mod open_in;
 mod pi_update_ui;
 mod pickers;

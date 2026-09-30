@@ -68,6 +68,7 @@ mod http;
 mod i18n;
 mod issue_message;
 mod layout;
+mod mcp;
 mod mentions;
 mod message_scroller;
 mod model_selector;

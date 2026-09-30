@@ -74,6 +74,11 @@ pub enum CommandId {
     OpenShortcutHelp,
     CheckForUpdates,
     Quit,
+    // MCP (Settings → MCP; palette-only, plus dynamic per-server rows)
+    OpenMcpSettings,
+    AddMcpServer,
+    RefreshMcpServers,
+    ReconnectMcpServers,
 }
 
 /// Palette group and Settings → Shortcuts section.
@@ -661,6 +666,35 @@ pub static COMMANDS: &[CommandSpec] = &[
         )),
         shortcuts::QUIT,
     ),
+    // ── MCP ────────────────────────────────────────────────────────────
+    command(
+        CommandId::OpenMcpSettings,
+        Agent,
+        "icons/tools/mcp.svg",
+        "mcp.command_open",
+        "mcp model context protocol servers tools settings",
+    ),
+    command(
+        CommandId::AddMcpServer,
+        Agent,
+        "icons/plus.svg",
+        "mcp.add_server",
+        "mcp add server model context protocol tools",
+    ),
+    command(
+        CommandId::RefreshMcpServers,
+        Agent,
+        "icons/refresh.svg",
+        "mcp.command_refresh",
+        "mcp refresh reload servers status tools",
+    ),
+    command(
+        CommandId::ReconnectMcpServers,
+        Agent,
+        "icons/rotate-ccw.svg",
+        "mcp.command_reconnect",
+        "mcp reconnect restart servers apply configuration",
+    ),
 ];
 
 /// The command table's keymap rows, in registration order.
@@ -1020,7 +1054,11 @@ fn action_binding(binding: &Binding) -> Option<KeyBinding> {
         | CommandId::DeleteSession
         | CommandId::FocusComposer
         | CommandId::OpenGit
-        | CommandId::ToggleSidePanel => return None,
+        | CommandId::ToggleSidePanel
+        | CommandId::OpenMcpSettings
+        | CommandId::AddMcpServer
+        | CommandId::RefreshMcpServers
+        | CommandId::ReconnectMcpServers => return None,
     })
 }
 

@@ -181,8 +181,7 @@ impl Render for OrbitApp {
         // Every live process (running or warm-idle) — guards delete.
         let live_paths: Rc<HashSet<PathBuf>> = Rc::new(self.lives.keys().cloned().collect());
         // Per-workspace sidebar marks (icon + tint), read by every header row.
-        let marks: Rc<HashMap<PathBuf, WorkspaceMark>> =
-            Rc::new(self.workspace_marks.clone());
+        let marks: Rc<HashMap<PathBuf, WorkspaceMark>> = Rc::new(self.workspace_marks.clone());
         // Pinned header for the expanded workspace group currently at the top
         // of the session list: it stays there while that group's own sessions
         // scroll, and the next group's header pushes it away (see
@@ -584,6 +583,14 @@ impl Render for OrbitApp {
             self.ask_focus_pending = false;
             let focus = self.ask_focus.clone();
             window.focus(&focus);
+        }
+        // Settings → MCP hands the keyboard to the server list so ↑/↓ walk
+        // the rows without a mouse.
+        if self.mcp_focus_pending {
+            self.mcp_focus_pending = false;
+            if self.settings_open && self.settings_section == SettingsSection::Mcp {
+                window.focus(&self.mcp_list_focus);
+            }
         }
 
         div()
@@ -2708,9 +2715,13 @@ impl OrbitApp {
                         .clone()
                         .or_else(|| std::env::current_dir().ok())
                         .unwrap_or_else(|| PathBuf::from("."));
-                    match app.extensions.spawn(&workspace, true) {
+                    match app
+                        .extensions
+                        .spawn(&workspace, true, &app.mcp.secret_env())
+                    {
                         Ok(client) => {
                             app.client = Some(client);
+                            app.mcp_stamp = app.mcp.fingerprint();
                             app.send(CommandBody::GetState, "get_state");
                             app.refresh_catalogs();
                             app.toast_success(tr!("view.connected"));
@@ -3168,6 +3179,10 @@ impl OrbitApp {
                     }))
                     .into_any_element()
             }))
+            // A quiet MCP indicator: only when servers are configured, and
+            // only a dot + count — clicking opens Settings → MCP. Color is
+            // never the only signal (the label names the state).
+            .children(self.mcp_status_chip(theme, cx))
             .child(div().flex_1())
             // Transient status (send failures, attachment limits, branch
             // results): fresh messages only — the tick lets them lapse.
@@ -4185,11 +4200,16 @@ impl OrbitApp {
 
         let request = self.approval.as_ref()?;
         let theme = *theme::get(cx);
-        let heading = if request.tool.trim().is_empty() {
-            tr!("approval.permission_needed")
-        } else {
-            tr!("approval.allow_tool", tool = request.tool)
-        };
+        // An MCP tool's raw name is `mcp__server__tool`; the bar names the
+        // server and tool instead so a permission decision is readable.
+        let heading =
+            if let Some((server, tool)) = crate::transcript_view::mcp_tool_parts(&request.tool) {
+                tr!("mcp.allow_tool", server = server, tool = tool)
+            } else if request.tool.trim().is_empty() {
+                tr!("approval.permission_needed")
+            } else {
+                tr!("approval.allow_tool", tool = request.tool)
+            };
         let detail = request.detail.clone();
 
         let mut buttons = div().flex().items_center().gap(px(6.));

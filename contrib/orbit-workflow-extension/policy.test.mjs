@@ -11,6 +11,7 @@ import test from "node:test";
 import {
   DEFAULT_MODE,
   allowedTools,
+  applyToolScoping,
   blockReason,
   guidance,
   isSafeCommand,
@@ -31,6 +32,33 @@ test("allowedTools subtracts the disabled write tools", () => {
   assert.deepEqual(allowedTools("build", base), base);
   // Unknown names are ignored, duplicates collapse.
   assert.deepEqual(allowedTools("plan", ["read", "read", "nope", "edit"]), ["read", "nope"]);
+});
+
+test("applyToolScoping keeps tools activated after session start", () => {
+  // Session start: no codemode yet.
+  let state = applyToolScoping("build", ["read", "edit", "write", "bash"], []);
+  assert.deepEqual(state.tools, ["read", "edit", "write", "bash"]);
+  // Pi's MCP extension activates `codemode` once a codemode server connects.
+  const active = [...state.tools, "codemode"];
+  // A mode change must not drop a tool this extension does not own.
+  state = applyToolScoping("plan", active, state.removed);
+  assert.deepEqual(state.tools, ["read", "bash", "codemode"]);
+  // Switching back restores the writes and still keeps codemode.
+  state = applyToolScoping("build", state.tools, state.removed);
+  assert.deepEqual(state.tools, ["read", "bash", "codemode", "edit", "write"]);
+  // Nothing is left to restore once the mode allows everything.
+  assert.deepEqual(state.removed, []);
+});
+
+test("applyToolScoping restores only what it removed", () => {
+  const state = applyToolScoping("plan", ["read", "edit"], []);
+  assert.deepEqual(state.tools, ["read"]);
+  assert.deepEqual(state.removed.sort(), ["edit"]);
+  // `grep` was never active (another extension removed it); this extension
+  // must not resurrect it when the mode changes.
+  const next = applyToolScoping("build", ["read", "codemode"], state.removed);
+  assert.deepEqual(next.tools, ["read", "codemode", "edit"]);
+  assert.deepEqual(next.removed, []);
 });
 
 test("build never blocks", () => {

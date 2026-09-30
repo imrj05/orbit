@@ -826,6 +826,127 @@ fn quota_popup_moves_hidden_providers_into_their_own_group(cx: &mut gpui::TestAp
     );
 }
 
+/// The usage popover carries a second pane for MCP server status. The tab
+/// switch must swap the body — never draw both — and an MCP-only setup (no
+/// provider quota reports) must still get the pill, so the popover and the
+/// pane stay reachable.
+#[gpui::test]
+fn quota_popup_mcp_tab_swaps_the_pane(cx: &mut gpui::TestAppContext) {
+    use crate::app::mcp_ui::QuotaPopupTab;
+    use crate::mcp::McpManager;
+    use crate::theme::{Theme, ThemeId};
+    use std::fs;
+
+    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(1200.), px(820.)),
+        |_, _| app.clone(),
+    );
+
+    // A throwaway MCP configuration with one server, and no quota reports:
+    // the quiet pill must still render so the popover is reachable.
+    let root = std::env::temp_dir().join(format!(
+        "orbit-quota-mcp-popup-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let home = root.join("home");
+    let workspace = root.join("project");
+    fs::create_dir_all(home.join(".pi").join("agent")).unwrap();
+    fs::create_dir_all(&workspace).unwrap();
+    fs::write(
+        home.join(".pi").join("agent").join("mcp.json"),
+        r#"{"mcpServers":{"echo":{"command":"node","args":["--version"]}}}"#,
+    )
+    .unwrap();
+
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.mcp = McpManager::load_in(&home, Some(&workspace));
+            // The exact user flow: click the top-bar pill. With no quota
+            // reports and MCP configured, the pill IS the MCP chip, so the
+            // popover must open on the MCP pane — otherwise the server
+            // names are hidden behind an empty Providers tab.
+            app.toggle_quota_popup(cx);
+        });
+    });
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(1200.), px(820.)),
+        |_, _| app.clone(),
+    );
+
+    assert!(
+        cx.debug_bounds("quota-popup").is_some(),
+        "the popover is missing (the MCP-only pill must still render it)"
+    );
+    let mcp_body = cx
+        .debug_bounds("quota-mcp-body")
+        .expect("the MCP pane laid out");
+    assert!(
+        cx.debug_bounds("quota-mcp-row-echo").is_some(),
+        "the configured server row is missing"
+    );
+    // The tab chip and the server name must have real painted width — a
+    // zero-width row would read as "the MCP name is not showing".
+    let tab = cx
+        .debug_bounds("quota-tab-chip-mcp")
+        .expect("the MCP tab chip laid out");
+    assert!(tab.size.width > px(10.), "the MCP tab is invisible: {tab:?}");
+    // This selector sits on a content-sized line, so its width is the
+    // shaped text's width rather than the cell's. A name latched as "…"
+    // measures ~9px here; "echo" is ~26px at Small.
+    let name = cx
+        .debug_bounds("quota-mcp-name-echo")
+        .expect("the server name laid out");
+    assert!(
+        name.size.width > px(18.) && name.size.height > px(8.),
+        "the server name rendered without its text: {name:?}"
+    );
+    let row = cx.debug_bounds("quota-mcp-row-echo").unwrap();
+    assert!(
+        name.right() <= row.right() && name.left() >= row.left(),
+        "the name is clipped outside its row: name {name:?}, row {row:?}"
+    );
+    assert!(
+        cx.debug_bounds("quota-popup-body").is_none(),
+        "the providers pane still drew under the MCP tab"
+    );
+    let popup = cx.debug_bounds("quota-popup").unwrap();
+    assert!(
+        mcp_body.bottom() <= popup.bottom(),
+        "the MCP list overflows the popover: body {mcp_body:?}, popup {popup:?}"
+    );
+
+    // Switching back restores the providers pane.
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.mcp_popup_tab(QuotaPopupTab::Providers, cx)
+        });
+    });
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(1200.), px(820.)),
+        |_, _| app.clone(),
+    );
+    assert!(cx.debug_bounds("quota-popup-body").is_some());
+    assert!(cx.debug_bounds("quota-mcp-body").is_none());
+    // With no quota reports the Providers pane is an empty state that points
+    // back at the MCP pane, never a blank card.
+    assert!(
+        cx.debug_bounds("quota-empty-mcp").is_some(),
+        "the providers empty state is missing"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
 // ── model / thinking pickers lock while a run is in flight ────────────
 
 /// A running turn fixes the model and thinking level, so the chips swallow

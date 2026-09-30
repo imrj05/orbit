@@ -28,7 +28,7 @@ import {
   CONTEXT_TYPE,
   DEFAULT_MODE,
   WORKFLOW_ENTRY_TYPE,
-  allowedTools,
+  applyToolScoping,
   blockReason,
   guidance,
   normalizeMode,
@@ -82,20 +82,32 @@ export function resolveMode(ctx, entries) {
 }
 
 export default function activate(pi) {
-  let baseTools = null;
   let appliedMode = null;
+  /**
+   * Tool names this extension removed from the active set. Tracked across
+   * mode changes so Build restores exactly what Plan/Ask took away, while
+   * tools another extension owns (MCP's `codemode` / `tool_search`) are
+   * never touched.
+   */
+  let removedByUs = [];
 
-  /** Apply a mode: keep the full tool set as the base, subtract per mode. */
+  /**
+   * Apply a mode by read-modify-write on the *current* active set. The
+   * active set grows after session start (MCP activates `codemode` when a
+   * server connects), so the base is always what is live now — never a
+   * cached session-start snapshot.
+   */
   function applyMode(mode) {
-    if (baseTools === null) {
-      try {
-        baseTools = pi.getActiveTools();
-      } catch {
-        baseTools = [];
-      }
-    }
+    let current;
     try {
-      pi.setActiveTools(allowedTools(mode, baseTools));
+      current = pi.getActiveTools();
+    } catch {
+      current = [];
+    }
+    const next = applyToolScoping(mode, current, removedByUs);
+    removedByUs = next.removed;
+    try {
+      pi.setActiveTools(next.tools);
     } catch {
       // A tool-set change is best-effort; the tool_call hook still blocks.
     }
