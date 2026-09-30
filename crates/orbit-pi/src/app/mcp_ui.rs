@@ -555,6 +555,10 @@ impl OrbitApp {
         let oauth_scope = editor.oauth_scope.read(cx).text().trim().to_string();
 
         let mut new_secrets: Vec<SecretUpdate> = Vec::new();
+        // Namespace generated secret names by the scope they are saved under
+        // (and, for project scope, the manager's workspace) so two projects —
+        // or a project and the global scope — can never share one entry.
+        let workspace = self.mcp.workspace().map(Path::to_path_buf);
         let mut resolve_map = |typed: BTreeMap<String, String>| {
             let mut resolved = BTreeMap::new();
             for (key, value) in typed {
@@ -562,7 +566,8 @@ impl OrbitApp {
                     .as_ref()
                     .and_then(|server| server.def.transport.secret_values().get(&key))
                     .map(String::as_str);
-                let generated = mcp_config::generated_secret_name(&name, &key);
+                let generated =
+                    mcp_config::generated_secret_name(&name, &key, scope, workspace.as_deref());
                 let resolution =
                     mcp_config::resolve_typed_secret(&value, original_value, &generated);
                 if let Some(update) = resolution.store {
@@ -632,7 +637,12 @@ impl OrbitApp {
                 .as_ref()
                 .and_then(|server| server.def.oauth.as_ref())
                 .and_then(|oauth| oauth.client_secret.as_deref());
-            let generated = mcp_config::generated_secret_name(&name, "OAuthClientSecret");
+            let generated = mcp_config::generated_secret_name(
+                &name,
+                "OAuthClientSecret",
+                scope,
+                workspace.as_deref(),
+            );
             let secret = mcp_config::resolve_typed_secret(
                 &oauth_client_secret_typed,
                 original_secret,

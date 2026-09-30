@@ -142,6 +142,10 @@ impl McpManager {
     /// Re-read both config files and refresh the domain state. Cheap (two
     /// small files) and safe to call from the UI thread.
     pub(crate) fn refresh(&mut self) {
+        // A fixed or externally edited secret store should be picked up by the
+        // same Refresh the page exposes for its config files.
+        self.secrets.reload();
+        self.metadata.reload();
         let load = config::load(&self.home, self.workspace.as_deref());
         self.global_path = load.global_path;
         self.project_path = load.project_path;
@@ -154,6 +158,16 @@ impl McpManager {
             );
         }
         self.errors = load.errors;
+        // A sidecar file the page could not read is a first-class error, not
+        // a silent empty default: writes are refused until it is fixed.
+        if let Some(detail) = self.secrets.error() {
+            self.errors
+                .push(McpError::Io(detail.to_string()).user_message());
+        }
+        if let Some(detail) = self.metadata.error() {
+            self.errors
+                .push(McpError::Io(detail.to_string()).user_message());
+        }
         self.auto_enable_codemode = load.auto_enable_codemode;
         self.fingerprint = config::fingerprint(&self.home, self.workspace.as_deref());
         self.servers = servers;
@@ -170,6 +184,9 @@ impl McpManager {
             if !server.def.enabled {
                 runtime.status = McpServerStatus::Disabled;
                 runtime.tools.clear();
+                runtime.tool_exposure.clear();
+                runtime.resources = 0;
+                runtime.resource_templates = 0;
                 runtime.error = None;
             }
         }
@@ -401,14 +418,22 @@ impl McpManager {
         // Re-read even when the metadata write failed so the UI matches disk.
         self.refresh();
         // Prune after the refresh so the remaining servers are authoritative.
-        // Any Orbit-generated secret no remaining server references is stale —
-        // whether the removed server referenced it or an earlier edit already
-        // orphaned it.
+        // Any Orbit-generated secret in this workspace's namespaces that no
+        // remaining server references is stale — whether the removed server
+        // referenced it or an earlier edit already orphaned it. Secrets from
+        // other projects (and user-provided names) are never touched.
         let mut referenced: BTreeSet<String> = BTreeSet::new();
         for remaining in &self.servers {
             referenced.extend(config::definition_references(&remaining.def));
         }
-        self.secrets.prune_unreferenced(&referenced)?;
+        let mut namespaces = vec![config::secret_namespace(McpScope::Global, None)];
+        if self.workspace.is_some() {
+            namespaces.push(config::secret_namespace(
+                McpScope::Project,
+                self.workspace.as_deref(),
+            ));
+        }
+        self.secrets.prune_unreferenced(&referenced, &namespaces)?;
         self.log_event("server_removed", &format!("server=\"{name}\""));
         outcome
     }
@@ -727,57 +752,59 @@ fn parse_probe_json(
     text: &str,
 ) -> Result<(Vec<McpProbeServer>, Vec<String>, Option<String>), String> {
     let doc: Value = serde_json::from_str(text).map_err(|err| err.to_string())?;
+    let entries = doc
+        .get("servers")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "the probe did not report a `servers` array".to_string())?;
     let mut servers = Vec::new();
-    if let Some(entries) = doc.get("servers").and_then(Value::as_array) {
-        for entry in entries {
-            let Some(name) = entry.get("name").and_then(Value::as_str) else {
-                continue;
-            };
-            let state = entry
-                .get("state")
+    for entry in entries {
+        let Some(name) = entry.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let state = entry
+            .get("state")
+            .and_then(Value::as_str)
+            .map(McpServerStatus::parse)
+            .unwrap_or_default();
+        let tools = entry
+            .get("tools")
+            .and_then(Value::as_array)
+            .map(|tools| {
+                tools
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let tool_exposure = entry
+            .get("toolExposure")
+            .and_then(Value::as_object)
+            .map(|map| {
+                map.iter()
+                    .filter_map(|(tool, mode)| {
+                        mode.as_str()
+                            .and_then(McpExposure::parse)
+                            .map(|mode| (tool.clone(), mode))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        servers.push(McpProbeServer {
+            name: name.to_string(),
+            state,
+            tools,
+            tool_exposure,
+            resources: entry.get("resources").and_then(Value::as_u64).unwrap_or(0),
+            resource_templates: entry
+                .get("resourceTemplates")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            error: entry
+                .get("error")
                 .and_then(Value::as_str)
-                .map(McpServerStatus::parse)
-                .unwrap_or_default();
-            let tools = entry
-                .get("tools")
-                .and_then(Value::as_array)
-                .map(|tools| {
-                    tools
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_string)
-                        .collect()
-                })
-                .unwrap_or_default();
-            let tool_exposure = entry
-                .get("toolExposure")
-                .and_then(Value::as_object)
-                .map(|map| {
-                    map.iter()
-                        .filter_map(|(tool, mode)| {
-                            mode.as_str()
-                                .and_then(McpExposure::parse)
-                                .map(|mode| (tool.clone(), mode))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            servers.push(McpProbeServer {
-                name: name.to_string(),
-                state,
-                tools,
-                tool_exposure,
-                resources: entry.get("resources").and_then(Value::as_u64).unwrap_or(0),
-                resource_templates: entry
-                    .get("resourceTemplates")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0),
-                error: entry
-                    .get("error")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-            });
-        }
+                .map(str::to_string),
+        });
     }
     let errors = doc
         .get("errors")
@@ -829,21 +856,73 @@ fn terminate_child(child: &mut Child) {
 struct McpMetadata {
     path: PathBuf,
     descriptions: BTreeMap<String, String>,
+    /// Why the file could not be read; writes are refused while set.
+    load_error: Option<String>,
 }
 
 impl McpMetadata {
     fn load(path: PathBuf) -> Self {
-        let descriptions = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-            .and_then(|doc| doc.get("descriptions").and_then(Value::as_object).cloned())
-            .map(|map| {
-                map.into_iter()
-                    .filter_map(|(key, value)| value.as_str().map(|value| (key, value.to_string())))
-                    .collect()
-            })
-            .unwrap_or_default();
-        Self { path, descriptions }
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Self {
+                    path,
+                    descriptions: BTreeMap::new(),
+                    load_error: None,
+                }
+            }
+            Err(err) => {
+                let load_error = format!("{}: {err}", path.display());
+                return Self {
+                    path,
+                    descriptions: BTreeMap::new(),
+                    load_error: Some(load_error),
+                };
+            }
+        };
+        if text.trim().is_empty() {
+            return Self {
+                path,
+                descriptions: BTreeMap::new(),
+                load_error: None,
+            };
+        }
+        let parsed = serde_json::from_str::<Value>(&text).map_err(|err| err.to_string());
+        let descriptions = parsed.and_then(|doc| match doc.get("descriptions") {
+            None => Ok(BTreeMap::new()),
+            Some(Value::Object(map)) => Ok(map
+                .iter()
+                .filter_map(|(key, value)| {
+                    value.as_str().map(|value| (key.clone(), value.to_string()))
+                })
+                .collect()),
+            Some(other) => Err(format!("`descriptions` must be an object, got {other}")),
+        });
+        match descriptions {
+            Ok(descriptions) => Self {
+                path,
+                descriptions,
+                load_error: None,
+            },
+            Err(err) => {
+                let load_error = format!("{}: {err}", path.display());
+                Self {
+                    path,
+                    descriptions: BTreeMap::new(),
+                    load_error: Some(load_error),
+                }
+            }
+        }
+    }
+
+    fn error(&self) -> Option<&str> {
+        self.load_error.as_deref()
+    }
+
+    /// Re-read the file from disk, so a fixed or externally edited metadata
+    /// file is picked up by the same Refresh that re-reads the config.
+    fn reload(&mut self) {
+        *self = Self::load(self.path.clone());
     }
 
     fn key(scope: McpScope, workspace: Option<&Path>, name: &str) -> String {
@@ -906,6 +985,9 @@ impl McpMetadata {
     }
 
     fn persist(&self) -> Result<(), McpError> {
+        if let Some(detail) = &self.load_error {
+            return Err(McpError::Io(detail.clone()));
+        }
         let mut descriptions = serde_json::Map::new();
         for (key, value) in &self.descriptions {
             descriptions.insert(key.clone(), Value::String(value.clone()));
@@ -1060,33 +1142,149 @@ mod tests {
     #[test]
     fn removing_a_server_prunes_only_its_generated_secrets() {
         let (_home, _workspace, mut manager) = test_manager("prune");
+        let first_secret = config::generated_secret_name("first", "TOKEN", McpScope::Global, None);
+        let shared_secret =
+            config::generated_secret_name("first", "SHARED", McpScope::Global, None);
         let mut first = draft("first", McpScope::Global, "a");
         first
             .def
             .transport
             .secret_values_mut()
-            .insert("TOKEN".into(), "${MCP_FIRST_TOKEN}".into());
+            .insert("TOKEN".into(), format!("${{{first_secret}}}"));
         first.new_secrets.push(SecretUpdate {
-            name: "MCP_FIRST_TOKEN".into(),
+            name: first_secret.clone(),
             value: "one".into(),
         });
         manager.define(&first).unwrap();
-        // `MCP_SHARED` is referenced by both servers.
+        // The shared secret is referenced by both servers.
         for name in ["first", "second"] {
             let mut d = draft(name, McpScope::Global, name);
             d.original = manager.server(name).map(|s| (name.to_string(), s.scope));
             d.def
                 .transport
                 .secret_values_mut()
-                .insert("SHARED".into(), "${MCP_SHARED}".into());
+                .insert("SHARED".into(), format!("${{{shared_secret}}}"));
             manager.define(&d).unwrap();
         }
-        manager.secrets.set("MCP_SHARED", "shared").unwrap();
+        manager.secrets.set(&shared_secret, "shared").unwrap();
 
         manager.remove("first").unwrap();
-        assert!(!manager.secrets.contains("MCP_FIRST_TOKEN"));
-        assert!(manager.secrets.contains("MCP_SHARED"));
-        assert_eq!(manager.secrets.get("MCP_SHARED"), Some("shared"));
+        assert!(!manager.secrets.contains(&first_secret));
+        assert!(manager.secrets.contains(&shared_secret));
+        assert_eq!(manager.secrets.get(&shared_secret), Some("shared"));
+    }
+
+    #[test]
+    fn removing_in_one_project_keeps_another_projects_secrets() {
+        let root = temp_root("cross-workspace");
+        let home = root.join("home");
+        let project_a = root.join("a");
+        let project_b = root.join("b");
+        fs::create_dir_all(&project_a).unwrap();
+        fs::create_dir_all(&project_b).unwrap();
+
+        // Project B stores a generated secret for its server.
+        let secret_b =
+            config::generated_secret_name("tool", "TOKEN", McpScope::Project, Some(&project_b));
+        let mut manager_b = McpManager::load_in(&home, Some(&project_b));
+        let mut b = draft("tool", McpScope::Project, "node");
+        b.def
+            .transport
+            .secret_values_mut()
+            .insert("TOKEN".into(), format!("${{{secret_b}}}"));
+        b.new_secrets.push(SecretUpdate {
+            name: secret_b.clone(),
+            value: "b-secret".into(),
+        });
+        manager_b.define(&b).unwrap();
+
+        // Project A removes one of its servers. Its prune must not reach
+        // into project B's namespace.
+        let mut manager_a = McpManager::load_in(&home, Some(&project_a));
+        manager_a
+            .define(&draft("other", McpScope::Project, "node"))
+            .unwrap();
+        manager_a.remove("other").unwrap();
+
+        assert!(manager_a.secrets.contains(&secret_b));
+        assert_eq!(manager_a.secrets.get(&secret_b), Some("b-secret"));
+    }
+
+    #[test]
+    fn an_unreadable_secrets_store_is_reported_not_clobbered() {
+        let root = temp_root("broken-secrets");
+        let home = root.join("home");
+        fs::create_dir_all(home.join(".orbit-pi")).unwrap();
+        let path = crate::mcp::secrets::default_path_for(&home);
+        fs::write(&path, "not json").unwrap();
+
+        let mut manager = McpManager::load_in(&home, None);
+        assert!(
+            manager
+                .errors()
+                .iter()
+                .any(|error| error.contains("mcp-secrets.json")),
+            "the unreadable store must surface: {:?}",
+            manager.errors()
+        );
+
+        // A save that would store a literal secret is refused rather than
+        // overwriting the unreadable file.
+        let secret_name = config::generated_secret_name("github", "TOKEN", McpScope::Global, None);
+        let mut d = draft("github", McpScope::Global, "npx");
+        d.def
+            .transport
+            .secret_values_mut()
+            .insert("TOKEN".into(), format!("${{{secret_name}}}"));
+        d.new_secrets.push(SecretUpdate {
+            name: secret_name,
+            value: "ghp_secret".into(),
+        });
+        let error = manager.define(&d).unwrap_err();
+        assert!(matches!(error, McpError::Io(_)));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "not json");
+
+        // Fixing the file and refreshing clears the error and allows saves.
+        fs::write(&path, "{\"version\":1,\"secrets\":{}}").unwrap();
+        manager.refresh();
+        assert!(
+            !manager
+                .errors()
+                .iter()
+                .any(|error| error.contains("mcp-secrets.json")),
+            "a fixed store must clear the error: {:?}",
+            manager.errors()
+        );
+        manager.define(&d).unwrap();
+    }
+
+    #[test]
+    fn an_unreadable_metadata_file_is_reported_and_clears_on_refresh() {
+        let root = temp_root("broken-metadata");
+        let home = root.join("home");
+        fs::create_dir_all(home.join(".orbit-pi")).unwrap();
+        let path = home.join(".orbit-pi").join("mcp-metadata.json");
+        fs::write(&path, "not json").unwrap();
+
+        let mut manager = McpManager::load_in(&home, None);
+        assert!(
+            manager
+                .errors()
+                .iter()
+                .any(|error| error.contains("mcp-metadata.json")),
+            "the unreadable metadata must surface: {:?}",
+            manager.errors()
+        );
+
+        fs::write(&path, "{\"version\":1,\"descriptions\":{}}").unwrap();
+        manager.refresh();
+        assert!(!manager
+            .errors()
+            .iter()
+            .any(|error| error.contains("mcp-metadata.json")));
+        manager
+            .define(&draft("github", McpScope::Global, "npx"))
+            .unwrap();
     }
 
     #[test]
@@ -1235,6 +1433,15 @@ mod tests {
         let (servers, errors, note) = parse_probe_json(r#"{"servers":[]}"#).unwrap();
         assert!(servers.is_empty() && errors.is_empty() && note.is_none());
         assert!(parse_probe_json("not json").is_err());
+    }
+
+    #[test]
+    fn probe_json_requires_a_servers_array() {
+        // A different shape from a changed or failing pi must be a probe
+        // error, not an empty success that leaves stale status on screen.
+        assert!(parse_probe_json("{}").is_err());
+        assert!(parse_probe_json(r#"{"servers": {}}"#).is_err());
+        assert!(parse_probe_json(r#"{"servers": null}"#).is_err());
     }
 
     /// A minimal stdio MCP server: `initialize`, `tools/list`, `tools/call`.

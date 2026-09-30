@@ -690,6 +690,18 @@ fn detect_indent(text: &str) -> Vec<u8> {
 /// replace an existing file) the destination is parked as `.bak` for the
 /// swap and restored if the rename fails.
 pub(crate) fn write_atomic(path: &Path, contents: &str) -> Result<(), McpError> {
+    write_atomic_with_mode(path, contents, None)
+}
+
+/// [`write_atomic`] for files that hold credentials: the temp file is made
+/// owner-only *before* it is renamed into place, so a secret is never briefly
+/// readable under the process umask while the write is in flight (the same
+/// ordering as `providers::write_json_secure`).
+pub(crate) fn write_atomic_secure(path: &Path, contents: &str) -> Result<(), McpError> {
+    write_atomic_with_mode(path, contents, Some(0o600))
+}
+
+fn write_atomic_with_mode(path: &Path, contents: &str, mode: Option<u32>) -> Result<(), McpError> {
     /// Distinguishes concurrent writers inside one process (tests run in
     /// parallel); the name is still scoped to the target file's directory.
     static TEMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -708,6 +720,20 @@ pub(crate) fn write_atomic(path: &Path, contents: &str) -> Result<(), McpError> 
         let _ = fs::remove_file(&temp);
         McpError::Io(err.to_string())
     })?;
+    #[cfg(unix)]
+    {
+        if let Some(mode) = mode {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&temp, fs::Permissions::from_mode(mode)).map_err(|err| {
+                let _ = fs::remove_file(&temp);
+                McpError::Io(err.to_string())
+            })?;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = mode;
+    }
 
     #[cfg(windows)]
     {
@@ -837,10 +863,33 @@ pub(crate) fn display_secret_value(value: &str) -> Cow<'_, str> {
     }
 }
 
-/// The secret-store name generated for one server field. Always prefixed with
-/// the server so two servers using `TOKEN` cannot collide.
-pub(crate) fn generated_secret_name(server: &str, field: &str) -> String {
-    let mut name = String::from("MCP_");
+/// The prefix Orbit-generated secret names use for one scope/workspace,
+/// including the `_` that joins it to the sanitized server name. Global
+/// secrets share one namespace; project secrets embed a stable hash of the
+/// workspace path, so two projects — or a project and the global scope — with
+/// the same server and field can never share one store entry.
+pub(crate) fn secret_namespace(scope: McpScope, workspace: Option<&Path>) -> String {
+    match scope {
+        McpScope::Global => "MCP_GLOBAL_".to_string(),
+        McpScope::Project => {
+            let path = workspace
+                .map(|path| path.display().to_string())
+                .unwrap_or_default();
+            format!("MCP_P{:016X}_", stable_hash(&path))
+        }
+    }
+}
+
+/// The secret-store name generated for one server field. Namespaced by scope
+/// and workspace and suffixed with the sanitized server and field, so two
+/// servers using `TOKEN` — even in different projects — cannot collide.
+pub(crate) fn generated_secret_name(
+    server: &str,
+    field: &str,
+    scope: McpScope,
+    workspace: Option<&Path>,
+) -> String {
+    let mut name = secret_namespace(scope, workspace);
     for ch in server.chars() {
         name.push(if ch.is_ascii_alphanumeric() { ch } else { '_' });
     }
@@ -849,6 +898,18 @@ pub(crate) fn generated_secret_name(server: &str, field: &str) -> String {
         name.push(if ch.is_ascii_alphanumeric() { ch } else { '_' });
     }
     name.to_ascii_uppercase()
+}
+
+/// FNV-1a over the string's bytes. Stable across builds (unlike
+/// `DefaultHasher`), because the hash is embedded in persisted `${NAME}`
+/// references and a toolchain upgrade must not orphan them.
+fn stable_hash(input: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in input.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 /// Parse `KEY=value` lines. Blank lines and `#` comments are skipped; a line
@@ -1129,9 +1190,10 @@ mod tests {
         let dir = temp_dir("roundtrip");
         let path = dir.join("mcp.json");
         let mut def = stdio_def("npx");
-        def.transport
-            .secret_values_mut()
-            .insert("GITHUB_TOKEN".into(), "${MCP_GITHUB_GITHUB_TOKEN}".into());
+        def.transport.secret_values_mut().insert(
+            "GITHUB_TOKEN".into(),
+            "${MCP_GLOBAL_GITHUB_GITHUB_TOKEN}".into(),
+        );
         def.exposure = McpExposure::Deferred;
         def.timeout = Some(45);
         write_add(&path, "github", &def).unwrap();
@@ -1331,10 +1393,48 @@ mod tests {
 
     #[test]
     fn generated_names_are_scoped_to_server_and_field() {
-        assert_eq!(generated_secret_name("github", "TOKEN"), "MCP_GITHUB_TOKEN");
         assert_eq!(
-            generated_secret_name("my-server", "Authorization"),
-            "MCP_MY_SERVER_AUTHORIZATION"
+            generated_secret_name("github", "TOKEN", McpScope::Global, None),
+            "MCP_GLOBAL_GITHUB_TOKEN"
+        );
+        assert_eq!(
+            generated_secret_name("my-server", "Authorization", McpScope::Global, None),
+            "MCP_GLOBAL_MY_SERVER_AUTHORIZATION"
+        );
+    }
+
+    #[test]
+    fn generated_names_separate_scopes_and_workspaces() {
+        let project_a = generated_secret_name(
+            "github",
+            "TOKEN",
+            McpScope::Project,
+            Some(Path::new("/work/a")),
+        );
+        let project_b = generated_secret_name(
+            "github",
+            "TOKEN",
+            McpScope::Project,
+            Some(Path::new("/work/b")),
+        );
+        let global = generated_secret_name("github", "TOKEN", McpScope::Global, None);
+        assert_ne!(project_a, global);
+        assert_ne!(project_a, project_b);
+        assert!(project_a.starts_with("MCP_P"));
+        assert!(project_a.ends_with("_GITHUB_TOKEN"));
+        // Deterministic, so a persisted `${NAME}` keeps resolving across runs.
+        assert_eq!(
+            project_a,
+            generated_secret_name(
+                "github",
+                "TOKEN",
+                McpScope::Project,
+                Some(Path::new("/work/a")),
+            )
+        );
+        assert_eq!(
+            secret_namespace(McpScope::Global, Some(Path::new("/work/a"))),
+            "MCP_GLOBAL_"
         );
     }
 
@@ -1394,5 +1494,16 @@ mod tests {
             .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp"))
             .collect();
         assert!(leftovers.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_secure_makes_the_file_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("atomic-secure");
+        let path = dir.join("mcp-secrets.json");
+        write_atomic_secure(&path, "{\"secrets\":{}}").unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 }

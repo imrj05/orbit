@@ -56,7 +56,7 @@ The format is the shared `mcpServers` shape:
     "github": {
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": { "GITHUB_TOKEN": "${MCP_GITHUB_GITHUB_TOKEN}" }
+      "env": { "GITHUB_TOKEN": "${MCP_GLOBAL_GITHUB_GITHUB_TOKEN}" }
     },
     "docs": {
       "url": "https://example.com/mcp",
@@ -126,14 +126,18 @@ applies them to the running session only when the user asks — it never overwri
 and keeps the values in `~/.orbit-pi/mcp-secrets.json`:
 
 1. A literal value typed into the Environment or Headers field is stored under a generated
-   name (`MCP_<SERVER>_<FIELD>`) and the field is written as `${MCP_<SERVER>_<FIELD>}`.
+   name and the field is written as a `${NAME}` reference. Global secrets use
+   `MCP_GLOBAL_<SERVER>_<FIELD>`; project secrets use
+   `MCP_P<WORKSPACE_HASH>_<SERVER>_<FIELD>`, so two projects — or a project and the global
+   scope — with the same server and field never share one stored value.
 2. A value that already contains a `${NAME}` reference (or a `!command`) is written verbatim.
 3. Every Pi spawn and every `pi mcp list` probe receives the store's values as environment
    variables, so Pi expands the references exactly as it would for a shell export.
 4. Values are masked in the UI (`••••••••`); an untouched mask round-trips to the value it
    hides, and an untouched literal is migrated into the store on save.
-5. Removing a server prunes the Orbit-generated (`MCP_…`) secrets no remaining server
-   references. Names outside that namespace are never deleted.
+5. Removing a server prunes the Orbit-generated secrets in the current workspace's
+   namespaces (`MCP_GLOBAL_…` and the active project's `MCP_P…_`) that no remaining server
+   references. Other projects' secrets and names outside those namespaces are never deleted.
 6. Every error string that reaches the UI passes through redaction: known secret values and
    `Bearer` credentials are masked first.
 

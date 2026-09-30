@@ -23,13 +23,35 @@ use super::{config, McpError};
 pub(crate) struct McpSecrets {
     path: PathBuf,
     values: BTreeMap<String, String>,
+    /// Why the store could not be read, if it could not. Writes are refused
+    /// while this is set, so an unreadable file is never overwritten with an
+    /// empty store.
+    load_error: Option<String>,
 }
 
 impl McpSecrets {
     /// Load from an explicit path — the seam the manager and tests drive.
     pub(crate) fn load_from(path: PathBuf) -> Self {
-        let values = read(&path);
-        Self { path, values }
+        let (values, load_error) = read(&path);
+        Self {
+            path,
+            values,
+            load_error,
+        }
+    }
+
+    /// The reason the store could not be read, for the MCP page's error list.
+    pub(crate) fn error(&self) -> Option<&str> {
+        self.load_error.as_deref()
+    }
+
+    /// Re-read the store from disk. The manager calls this on refresh so a
+    /// fixed or externally edited file is picked up without restarting the
+    /// app.
+    pub(crate) fn reload(&mut self) {
+        let (values, load_error) = read(&self.path);
+        self.values = values;
+        self.load_error = load_error;
     }
 
     #[cfg(test)]
@@ -83,16 +105,25 @@ impl McpSecrets {
     }
 
     /// Drop Orbit-generated secrets that no configured server references
-    /// anymore. Names outside Orbit's `MCP_` namespace are left alone even
-    /// when unreferenced — they may belong to the user's shell environment.
+    /// anymore — but only those in `namespaces`, the generated-name prefixes
+    /// the current workspace owns. Secrets belonging to other workspaces (or
+    /// names outside Orbit's generated prefixes) are never touched, so
+    /// removing a server in one project cannot delete another project's
+    /// credentials.
     pub(crate) fn prune_unreferenced(
         &mut self,
         referenced: &std::collections::BTreeSet<String>,
+        namespaces: &[String],
     ) -> Result<(), McpError> {
         let stale: Vec<String> = self
             .values
             .keys()
-            .filter(|name| name.starts_with("MCP_") && !referenced.contains(*name))
+            .filter(|name| {
+                namespaces
+                    .iter()
+                    .any(|namespace| name.starts_with(namespace.as_str()))
+                    && !referenced.contains(*name)
+            })
             .cloned()
             .collect();
         if stale.is_empty() {
@@ -105,6 +136,11 @@ impl McpSecrets {
     }
 
     fn persist(&self) -> Result<(), McpError> {
+        // Never clobber a file this instance could not read: the in-memory
+        // values do not include whatever it held.
+        if let Some(detail) = &self.load_error {
+            return Err(McpError::Io(detail.clone()));
+        }
         let mut secrets = Map::new();
         for (name, value) in &self.values {
             secrets.insert(name.clone(), Value::String(value.clone()));
@@ -114,8 +150,7 @@ impl McpSecrets {
         root.insert("secrets".into(), Value::Object(secrets));
         let doc = Value::Object(root);
         let text = config::serialize(&doc, b"  ")?;
-        config::write_atomic(&self.path, &text)?;
-        restrict_permissions(&self.path);
+        config::write_atomic_secure(&self.path, &text)?;
         Ok(())
     }
 }
@@ -125,40 +160,47 @@ pub(crate) fn default_path_for(home: &Path) -> PathBuf {
     home.join(".orbit-pi").join("mcp-secrets.json")
 }
 
-/// Read the store; any failure (missing, malformed, wrong shape) degrades to
-/// an empty store rather than blocking the MCP page.
-fn read(path: &Path) -> BTreeMap<String, String> {
-    let Ok(text) = fs::read_to_string(path) else {
-        return BTreeMap::new();
+/// Read the store. A missing or empty file is an empty store; an unreadable or
+/// malformed file is reported (and kept from being overwritten) rather than
+/// silently degraded to empty.
+fn read(path: &Path) -> (BTreeMap<String, String>, Option<String>) {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return (BTreeMap::new(), None),
+        Err(err) => return (BTreeMap::new(), Some(store_error(path, err))),
     };
-    let Ok(doc) = serde_json::from_str::<Value>(&text) else {
-        return BTreeMap::new();
+    if text.trim().is_empty() {
+        return (BTreeMap::new(), None);
+    }
+    let doc: Value = match serde_json::from_str(&text) {
+        Ok(doc) => doc,
+        Err(err) => return (BTreeMap::new(), Some(store_error(path, err))),
     };
-    let Some(secrets) = doc.get("secrets").and_then(Value::as_object) else {
-        return BTreeMap::new();
+    let values = match doc.get("secrets") {
+        None => BTreeMap::new(),
+        Some(Value::Object(secrets)) => secrets
+            .iter()
+            .filter_map(|(name, value)| {
+                value
+                    .as_str()
+                    .map(|value| (name.clone(), value.to_string()))
+            })
+            .collect(),
+        Some(other) => {
+            return (
+                BTreeMap::new(),
+                Some(store_error(
+                    path,
+                    format!("`secrets` must be an object, got {other}"),
+                )),
+            )
+        }
     };
-    secrets
-        .iter()
-        .filter_map(|(name, value)| {
-            value
-                .as_str()
-                .map(|value| (name.clone(), value.to_string()))
-        })
-        .collect()
+    (values, None)
 }
 
-/// Owner-only read/write on Unix. On Windows the file lives in the user
-/// profile, which inherits the user's ACLs.
-fn restrict_permissions(path: &Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-    }
+fn store_error(path: &Path, reason: impl std::fmt::Display) -> String {
+    format!("{}: {reason}", path.display())
 }
 
 #[cfg(test)]
@@ -210,22 +252,42 @@ mod tests {
     }
 
     #[test]
-    fn pruning_only_touches_orbit_names() {
+    fn pruning_only_touches_the_given_namespaces() {
         let (path, mut secrets) = temp_store("prune");
-        secrets.set("MCP_GENERATED", "a").unwrap();
-        secrets.set("USER_PROVIDED", "b").unwrap();
+        secrets.set("MCP_GLOBAL_OWNED", "a").unwrap();
+        secrets.set("MCP_P0000000000000001_OTHER", "b").unwrap();
+        secrets.set("USER_PROVIDED", "c").unwrap();
         let referenced = BTreeSet::new();
-        secrets.prune_unreferenced(&referenced).unwrap();
+        secrets
+            .prune_unreferenced(&referenced, &["MCP_GLOBAL_".to_string()])
+            .unwrap();
         let reloaded = McpSecrets::load_from(path);
-        assert!(!reloaded.contains("MCP_GENERATED"));
+        // Only the current workspace's global namespace is pruned; another
+        // project's secret and user-provided names are untouched.
+        assert!(!reloaded.contains("MCP_GLOBAL_OWNED"));
+        assert!(reloaded.contains("MCP_P0000000000000001_OTHER"));
         assert!(reloaded.contains("USER_PROVIDED"));
     }
 
     #[test]
-    fn a_malformed_store_degrades_to_empty() {
+    fn a_malformed_store_is_reported_and_never_overwritten() {
         let (path, _) = temp_store("malformed");
         fs::write(&path, "not json").unwrap();
-        assert!(McpSecrets::load_from(path).is_empty());
+        let mut store = McpSecrets::load_from(path.clone());
+        assert!(store.error().is_some());
+        // A write is refused rather than clobbering the unreadable file.
+        assert!(store.set("A", "1").is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "not json");
+    }
+
+    #[test]
+    fn a_missing_store_is_empty_and_writable() {
+        let (path, store) = temp_store("missing");
+        assert!(store.error().is_none());
+        assert!(store.is_empty());
+        let mut store = McpSecrets::load_from(path);
+        store.set("A", "1").unwrap();
+        assert_eq!(store.get("A"), Some("1"));
     }
 
     #[cfg(unix)]
