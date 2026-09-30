@@ -37,7 +37,7 @@
 
 use std::time::Duration;
 
-use gpui::{hsla, point, px, relative, BoxShadow, DefiniteLength, Hsla, Pixels, Styled};
+use gpui::{BoxShadow, DefiniteLength, Hsla, Pixels, Styled, hsla, point, px, relative};
 
 use super::{Theme, ThemeMode};
 
@@ -721,6 +721,96 @@ pub mod context_menu {
     /// Window width from which the aside sits beside the menu, not above it.
     pub fn wide_window_min_width(theme: &Theme) -> Pixels {
         theme.ui_px(800.)
+    }
+}
+
+// ── Toasts + notifications ─────────────────────────────────────────────
+
+/// Metrics shared by transient notifications and actionable update notices.
+pub mod toast {
+    use super::*;
+
+    /// One width keeps every toast in a stack aligned to the same edge.
+    pub const WIDTH: Pixels = px(360.);
+    pub const BADGE_RADIUS: Radius = Radius::Small;
+    pub const ENTER: Duration = AnimationDuration::Fast.duration();
+    pub const TITLE: TextSize = TextSize::Default;
+    pub const BODY: TextSize = TextSize::Small;
+    pub const ICON: IconSize = IconSize::Small;
+    pub const CLOSE_BUTTON: ButtonSize = ButtonSize::Default;
+    pub const ACTION_BUTTON: ButtonSize = ButtonSize::Medium;
+    pub const ICON_RADIUS: Radius = Radius::Large;
+
+    pub fn surface<E: Styled>(element: E, theme: &Theme) -> E {
+        element.elevation_2(theme)
+    }
+
+    pub fn stack_inset(theme: &Theme) -> Pixels {
+        DynamicSpacing::Base16.px(theme)
+    }
+
+    pub fn stack_gap(theme: &Theme) -> Pixels {
+        DynamicSpacing::Base08.px(theme)
+    }
+
+    pub fn padding_x(theme: &Theme) -> Pixels {
+        DynamicSpacing::Base12.px(theme)
+    }
+
+    pub fn padding_y(theme: &Theme) -> Pixels {
+        DynamicSpacing::Base08.px(theme)
+    }
+
+    pub fn content_gap(theme: &Theme) -> Pixels {
+        DynamicSpacing::Base08.px(theme)
+    }
+
+    pub fn icon_tile_size(theme: &Theme) -> Pixels {
+        ACTION_BUTTON.height(theme)
+    }
+
+    pub fn title_body_gap(theme: &Theme) -> Pixels {
+        DynamicSpacing::Base02.px(theme)
+    }
+
+    pub fn header_gap(theme: &Theme) -> Pixels {
+        DynamicSpacing::Base08.px(theme)
+    }
+
+    pub fn package_row_padding_y(theme: &Theme) -> Pixels {
+        DynamicSpacing::Base06.px(theme)
+    }
+
+    pub fn package_row_gap(theme: &Theme) -> Pixels {
+        DynamicSpacing::Base08.px(theme)
+    }
+
+    pub fn version_gap(theme: &Theme) -> Pixels {
+        DynamicSpacing::Base04.px(theme)
+    }
+
+    pub fn version_text_size(theme: &Theme) -> Pixels {
+        theme.code_px(11.)
+    }
+
+    pub fn badge_height(theme: &Theme) -> Pixels {
+        ButtonSize::Default.height(theme)
+    }
+
+    pub fn badge_min_width(theme: &Theme) -> Pixels {
+        badge_height(theme)
+    }
+
+    pub fn badge_padding_x(theme: &Theme) -> Pixels {
+        DynamicSpacing::Base04.px(theme)
+    }
+
+    pub fn separator_size() -> Pixels {
+        BORDER_WIDTH
+    }
+
+    pub fn action_gap(theme: &Theme) -> Pixels {
+        DynamicSpacing::Base06.px(theme)
     }
 }
 

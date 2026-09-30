@@ -9,12 +9,14 @@
 //! work. The view adds the dim + bottom fade that drops it into the page.
 //!
 //! Three tuning values ride beside the source name in `background.json`, all
-//! exposed in Settings → Appearance: the blur applied before the pass, the
-//! dither cell edge (the pixelation size), and the bottom fade. Every one is a
-//! named preset rather than a free number, so a tuned backdrop stays a look
-//! instead of a parameter dump. The defaults reproduce the original hardcoded
-//! pass exactly, except the fade: it now washes rather than curtains, so the
-//! picture stays visible behind and below the floating composer.
+//! exposed in Settings → Appearance: the blur applied after the pass, the
+//! dither cell edge (the pixelation size), and the bottom fade. Blur is a
+//! continuous slider ([`BLUR_MAX`], snapped to [`BLUR_STEP`]); the cell edge
+//! and fade are named presets, so the pixelation and the drop stay looks
+//! rather than a parameter dump. The defaults reproduce the original
+//! hardcoded pass exactly, except the fade: it now washes rather than
+//! curtains, so the picture stays visible behind and below the floating
+//! composer.
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -48,7 +50,7 @@ const BAYER: [[u8; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 
 /// Backdrop tuning, persisted beside the source name in `background.json`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Tuning {
-    /// Gaussian sigma applied before the dither pass; 0 disables blur.
+    /// Gaussian sigma applied *after* the dither pass; 0 disables blur.
     pub blur: f32,
     /// Dither cell edge, in source pixels — the pixelation size.
     pub cell: u32,
@@ -56,11 +58,15 @@ pub struct Tuning {
     pub fade: f32,
 }
 
-/// Blur presets, gaussian sigma. `fast_blur` is a box-blur approximation,
-/// which is indistinguishable once the picture is quantized into 4 px cells.
-pub const BLUR_SIGMAS: [f32; 5] = [0., 2., 4., 8., 16.];
-/// Blur preset names, read as a look rather than a number.
-pub const BLUR_LABELS: [&str; 5] = ["Off", "Soft", "Medium", "Strong", "Heavy"];
+/// Highest gaussian sigma the blur slider reaches. The blur runs *after* the
+/// dither, so it softens the ordered pattern into a glow rather than being
+/// re-hardened by quantization — the value stays modest because a little
+/// goes a long way once the cells are blended.
+pub const BLUR_MAX: f32 = 6.;
+/// Blur quantization step, in sigma. The slider scrubs continuously but the
+/// dither pass only rebuilds when the value crosses a step, so a drag stays
+/// cheap and a persisted value can never land between two painted ones.
+pub const BLUR_STEP: f32 = 0.5;
 /// Dither cell edges, in source pixels. Small reads as halftone, large as
 /// chunky pixels.
 pub const CELL_SIZES: [u32; 5] = [2, 3, 4, 6, 8];
@@ -80,7 +86,7 @@ pub const FADE_LABELS: [&str; 5] = ["None", "Subtle", "Medium", "Deep", "Full"];
 impl Default for Tuning {
     fn default() -> Self {
         Self {
-            blur: BLUR_SIGMAS[0],
+            blur: 0.,
             cell: GRID,
             fade: FADE_HEIGHTS[DEFAULT_FADE],
         }
@@ -88,11 +94,6 @@ impl Default for Tuning {
 }
 
 impl Tuning {
-    /// Index of the active blur preset, for the dropdown chip.
-    pub fn blur_index(self) -> usize {
-        index_of_f32(&BLUR_SIGMAS, self.blur)
-    }
-
     /// Index of the active pixel-size preset, for the dropdown chip.
     pub fn cell_index(self) -> usize {
         index_of_u32(&CELL_SIZES, self.cell)
@@ -109,6 +110,18 @@ impl Tuning {
     pub fn fade_peak(self) -> f32 {
         FADE_PEAKS[self.fade_index()]
     }
+}
+
+/// Normalized slider position (0..1) for a blur sigma, for the Settings
+/// slider's handle and fill.
+pub fn blur_norm(sigma: f32) -> f32 {
+    (sigma / BLUR_MAX).clamp(0., 1.)
+}
+
+/// Blur sigma for a normalized slider position, snapped to [`BLUR_STEP`].
+/// This is the single mapping the slider, the config, and the pass share.
+pub fn blur_from_norm(norm: f32) -> f32 {
+    ((norm.clamp(0., 1.) * BLUR_MAX) / BLUR_STEP).round() * BLUR_STEP
 }
 
 fn index_of_f32(values: &[f32], value: f32) -> usize {
@@ -165,8 +178,11 @@ fn read_config(dir: &Path) -> Config {
     };
     if let Some(blur) = value.get("blur").and_then(serde_json::Value::as_f64) {
         let blur = blur as f32;
-        if BLUR_SIGMAS.contains(&blur) {
-            config.tuning.blur = blur;
+        // Blur is continuous, so a value outside the slider's range (an older
+        // config that ran to 16, say) clamps to the nearest end rather than
+        // snapping the user back to Off.
+        if blur.is_finite() {
+            config.tuning.blur = blur_from_norm(blur_norm(blur));
         }
     }
     if let Some(cell) = value.get("cell").and_then(serde_json::Value::as_u64) {
@@ -285,12 +301,16 @@ struct Cached {
     image: Option<Arc<RenderImage>>,
 }
 
+/// Only the inputs the dither pass actually reads: the source file's
+/// identity plus its blur and cell edge. The bottom fade is painted by the
+/// view, not baked here, so changing it must not rebuild the pass.
 #[derive(PartialEq)]
 struct Key {
     path: PathBuf,
     modified: u64,
     len: u64,
-    tuning: Tuning,
+    blur: f32,
+    cell: u32,
 }
 
 static CACHE: RwLock<Option<Cached>> = RwLock::new(None);
@@ -316,7 +336,8 @@ fn cached(dir: &Path) -> Option<Arc<RenderImage>> {
         path: path.clone(),
         modified,
         len,
-        tuning,
+        blur: tuning.blur,
+        cell: tuning.cell,
     };
 
     let cache = CACHE.read().expect("dither cache");
@@ -328,10 +349,10 @@ fn cached(dir: &Path) -> Option<Arc<RenderImage>> {
     drop(cache);
 
     let image = load(&path).map(|source| {
-        let prepared = prepared(&source, tuning.blur);
-        let dithered = dither(prepared.as_ref(), tuning.cell);
+        let dithered = dither(&source, tuning.cell);
+        let softened = soften(&dithered, tuning.blur);
         // GPUI's sprite atlas samples BGRA, not RGBA.
-        let mut bgra = dithered;
+        let mut bgra = softened.into_owned();
         for pixel in bgra.as_chunks_mut::<4>().0 {
             pixel.swap(0, 2);
         }
@@ -348,10 +369,15 @@ fn load(path: &Path) -> Option<RgbaImage> {
     image::open(path).ok().map(|image| image.into_rgba8())
 }
 
-/// Blur the fitted source before the dither pass, or borrow it untouched when
-/// blur is off. `image::imageops::blur` clamps sigma 0 to 0.8, so "Off" must
-/// skip the pass entirely to stay a true no-op.
-fn prepared(source: &RgbaImage, sigma: f32) -> Cow<'_, RgbaImage> {
+/// Soften the dithered result, or borrow it untouched when blur is off.
+/// `image::imageops::blur` clamps sigma 0 to 0.8, so "Off" must skip the
+/// pass entirely to stay a true no-op.
+///
+/// The blur is applied *after* the dither, not before it: a pre-pass only
+/// smooths the source, and the ordered threshold then re-introduces the
+/// high-frequency pattern, which reads as noise. Blurring the posterized
+/// cells is what actually softens the backdrop into a glow.
+fn soften(source: &RgbaImage, sigma: f32) -> Cow<'_, RgbaImage> {
     if sigma > 0. {
         Cow::Owned(image::imageops::fast_blur(source, sigma))
     } else {
@@ -541,22 +567,74 @@ mod tests {
         let source = RgbaImage::from_fn(32, 32, |x, _| {
             image::Rgba([if x < 16 { 20 } else { 240 }, 0, 0, 255])
         });
-        let prepared = prepared(&source, BLUR_SIGMAS[0]);
-        assert!(matches!(prepared, Cow::Borrowed(_)));
-        assert_eq!(prepared.as_ref(), &source);
-        assert_eq!(BLUR_SIGMAS[0], 0.);
+        let dithered = dither(&source, 4);
+        let softened = soften(&dithered, 0.);
+        assert!(matches!(softened, Cow::Borrowed(_)));
+        assert_eq!(softened.as_ref(), &dithered);
     }
 
-    /// Blur softens the edge before it is posterized, so the transition
-    /// between the two plateaus widens and no single adjacent step can jump
-    /// the full range any more.
+    /// The slider's normalized position and the stored sigma are one mapping:
+    /// the ends hit 0 and [`BLUR_MAX`] exactly, and every value lands on the
+    /// [`BLUR_STEP`] grid so the dropdown-free control can never persist a
+    /// value the pass would round differently.
+    #[test]
+    fn blur_slider_mapping_is_a_rounded_round_trip() {
+        assert_eq!(blur_from_norm(0.), 0.);
+        assert_eq!(blur_from_norm(1.), BLUR_MAX);
+        assert_eq!(blur_norm(0.), 0.);
+        assert_eq!(blur_norm(BLUR_MAX), 1.);
+        // Out-of-range norms clamp rather than extrapolate.
+        assert_eq!(blur_from_norm(-1.), 0.);
+        assert_eq!(blur_from_norm(2.), BLUR_MAX);
+        for step in 0..=((BLUR_MAX / BLUR_STEP) as u32) {
+            let norm = step as f32 / (BLUR_MAX / BLUR_STEP);
+            let sigma = blur_from_norm(norm);
+            assert_eq!(sigma / BLUR_STEP, (sigma / BLUR_STEP).round());
+            assert_eq!(blur_norm(sigma), norm);
+        }
+    }
+
+    /// A hand-edited config can never land between steps: the slider, the
+    /// stored value, and the painted pass agree. Out-of-range values clamp to
+    /// an end, so an older 0–16 config keeps its blur instead of resetting.
+    #[test]
+    fn blur_config_value_is_snapped_to_the_step() {
+        let dir = temp_dir("blur-snap");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            config_path(&dir),
+            r#"{"source":"x.png","blur":3.31,"cell":4,"fade":0}"#,
+        )
+        .unwrap();
+        assert_eq!(read_config(&dir).tuning.blur, 3.5);
+
+        std::fs::write(
+            config_path(&dir),
+            r#"{"source":"x.png","blur":99.9,"cell":4,"fade":0}"#,
+        )
+        .unwrap();
+        assert_eq!(read_config(&dir).tuning.blur, BLUR_MAX);
+
+        std::fs::write(
+            config_path(&dir),
+            r#"{"source":"x.png","blur":-4,"cell":4,"fade":0}"#,
+        )
+        .unwrap();
+        assert_eq!(read_config(&dir).tuning.blur, 0.);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Blur softens the dithered edge, so the transition between the two
+    /// posterized plateaus widens and no single adjacent step can jump the
+    /// full range any more. Applying it after the pass is what makes the
+    /// backdrop read as a glow instead of a hard halftone.
     #[test]
     fn blur_softens_the_edge() {
         let source = RgbaImage::from_fn(64, 64, |x, _| {
             image::Rgba([if x < 32 { 20 } else { 240 }, 0, 0, 255])
         });
         let sharp = dither(&source, 4);
-        let soft = dither(prepared(&source, 8.).as_ref(), 4);
+        let soft = soften(&sharp, 4.).into_owned();
         // Largest jump between horizontally adjacent pixels.
         let max_step = |image: &RgbaImage| {
             (0..image.width() - 1)
@@ -580,10 +658,10 @@ mod tests {
     /// dropdowns and the painted result can never disagree.
     #[test]
     fn presets_cover_the_defaults() {
-        assert!(BLUR_SIGMAS.contains(&Tuning::default().blur));
+        assert!((0. ..=BLUR_MAX).contains(&Tuning::default().blur));
+        assert_eq!(Tuning::default().blur, 0.);
         assert!(CELL_SIZES.contains(&Tuning::default().cell));
         assert!(FADE_HEIGHTS.contains(&Tuning::default().fade));
-        assert_eq!(BLUR_LABELS.len(), BLUR_SIGMAS.len());
         assert_eq!(CELL_LABELS.len(), CELL_SIZES.len());
         assert_eq!(FADE_LABELS.len(), FADE_HEIGHTS.len());
         assert_eq!(FADE_PEAKS.len(), FADE_HEIGHTS.len());
@@ -594,14 +672,14 @@ mod tests {
             assert!((0. ..=1.).contains(&peak), "peak {peak} is not an alpha");
         }
         // Ascending, so the dropdown reads as a scale on both axes.
-        assert!(BLUR_SIGMAS.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(BLUR_MAX > 0.);
+        assert!(BLUR_STEP > 0. && BLUR_STEP < BLUR_MAX);
         assert!(CELL_SIZES.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(FADE_HEIGHTS.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(FADE_PEAKS.windows(2).all(|pair| pair[0] < pair[1]));
         // The chip resolves the default to its own preset index, and a fresh
         // install washes rather than curtains — the picture stays visible
         // below the floating composer.
-        assert_eq!(index_of_f32(&BLUR_SIGMAS, Tuning::default().blur), 0);
         assert_eq!(index_of_u32(&CELL_SIZES, Tuning::default().cell), 2);
         assert_eq!(
             index_of_f32(&FADE_HEIGHTS, Tuning::default().fade),
@@ -641,7 +719,7 @@ mod tests {
         assert_eq!(read_config(&dir).tuning, Tuning::default());
 
         let tuned = Tuning {
-            blur: BLUR_SIGMAS[4],
+            blur: BLUR_MAX,
             cell: CELL_SIZES[4],
             fade: FADE_HEIGHTS[1],
         };
@@ -668,7 +746,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             config_path(&dir),
-            r#"{"source":"x.png","blur":7.5,"cell":5,"fade":0.333}"#,
+            r#"{"source":"x.png","blur":0,"cell":5,"fade":0.333}"#,
         )
         .unwrap();
         let config = read_config(&dir);
@@ -725,8 +803,9 @@ mod tests {
     /// composer region can be judged without launching the app. Dark palette
     /// only (`#1A1A1A`); it exists to eyeball the fade, not to be a screenshot.
     fn page_mock(source: &RgbaImage, tuning: Tuning, width: u32, height: u32) -> RgbaImage {
-        let prepared = prepared(source, tuning.blur);
-        let dithered = dither(prepared.as_ref(), tuning.cell);
+        let dithered = dither(source, tuning.cell);
+        let dithered = soften(&dithered, tuning.blur);
+        let dithered = dithered.as_ref();
 
         // `ObjectFit::Cover`: scale to fill both axes, then centre-crop.
         let scale = f32::max(
@@ -734,7 +813,7 @@ mod tests {
             height as f32 / dithered.height() as f32,
         );
         let scaled = image::imageops::resize(
-            &dithered,
+            dithered,
             (dithered.width() as f32 * scale).round().max(1.) as u32,
             (dithered.height() as f32 * scale).round().max(1.) as u32,
             image::imageops::FilterType::Triangle,
@@ -777,8 +856,8 @@ mod tests {
     fn debug_render_to_tmp() {
         let source = debug_scene(480, 270);
         let write = |name: &str, tuning: Tuning| {
-            let prepared = prepared(&source, tuning.blur);
-            let out = dither(prepared.as_ref(), tuning.cell);
+            let dithered = dither(&source, tuning.cell);
+            let out = soften(&dithered, tuning.blur).into_owned();
             let path = format!("/tmp/orbit-dither-{name}.png");
             out.save(&path).unwrap();
             println!("{path} blur={} cell={}", tuning.blur, tuning.cell);
@@ -794,14 +873,14 @@ mod tests {
         write(
             "blur-heavy",
             Tuning {
-                blur: BLUR_SIGMAS[4],
+                blur: BLUR_MAX,
                 ..Tuning::default()
             },
         );
         write(
             "blur-heavy-coarse",
             Tuning {
-                blur: BLUR_SIGMAS[4],
+                blur: BLUR_MAX,
                 cell: CELL_SIZES[4],
                 ..Tuning::default()
             },

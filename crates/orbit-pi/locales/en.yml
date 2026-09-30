@@ -268,7 +268,7 @@ settings.show_a_system_banner_when_a_run_finishes_while_o: "Show a system banner
 settings.show_a_toast_in_the_window_when_a_run_finishes_o: "Show a toast in the window when a run finishes, or when pi is waiting for your answer, while Orbit is frontmost."
 settings.show_sidebar: "Show sidebar"
 settings.show_the_sessions_sidebar_also_toggleable_from_t: "Show the sessions sidebar. Toggle it from the top bar or with %{shortcut}."
-settings.softens_the_picture_before_the_dither_pass_so_a_: "Softens the picture before the dither pass, so a busy photo sits further behind the text."
+settings.softens_the_picture_before_the_dither_pass_so_a_: "Softens the dithered picture, so a busy photo sits further behind the text."
 settings.source: "Source"
 settings.spacing_density: "Spacing density"
 settings.spawned_as_a_child_process_newline_delimited_jso: "Spawned as a child process — newline-delimited JSON over stdio."

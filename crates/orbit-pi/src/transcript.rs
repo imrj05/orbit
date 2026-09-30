@@ -16,7 +16,7 @@ use std::{
 };
 
 use base64::Engine as _;
-use gpui::{point, prelude::*, px, Image, Pixels, ScrollHandle};
+use gpui::{Image, Pixels, ScrollHandle, point, prelude::*, px};
 
 use crate::message_scroller::MessageScrollerState;
 use crate::transcript_view::{self, TranscriptView};
@@ -641,9 +641,18 @@ fn message_role(value: &Value) -> Option<&str> {
 /// pi sets `stopReason: "error"` and `errorMessage` when the LLM call fails
 /// (e.g. an unsupported model). The app raises the error banner from this and
 /// the transcript renders the same text inline.
+///
+/// A user abort is not an agent failure: pi's `createAbortedMessage` marks the
+/// message `stopReason: "aborted"` but still carries `errorMessage`
+/// ("Request was aborted"). Treating that as an error would render both the
+/// inline error card and the app banner on top of the transcript's own quiet
+/// "Stopped" marker. An aborted turn therefore reports no error here.
 pub fn message_error(value: &Value) -> Option<String> {
     let value = value.get("message").unwrap_or(value);
     if value.get("role").and_then(Value::as_str) != Some("assistant") {
+        return None;
+    }
+    if value.get("stopReason").and_then(Value::as_str) == Some("aborted") {
         return None;
     }
     value
@@ -2247,6 +2256,26 @@ mod tests {
     }
 
     #[test]
+    fn aborted_message_carries_no_agent_error() {
+        // pi's `createAbortedMessage`: a user stop marks the message aborted
+        // but still carries `errorMessage`. The transcript must show only its
+        // "Stopped" marker, never an error card or the app banner.
+        let value = json!({
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "partial"}],
+                "stopReason": "aborted",
+                "errorMessage": "Request was aborted"
+            }
+        });
+        assert!(message_error(&value).is_none());
+        let parsed = ChatMessage::from_value(&value).expect("assistant message");
+        assert!(parsed.aborted);
+        assert!(parsed.error.is_none());
+    }
+
+    #[test]
     fn real_session_payload_renders_changed_files_card() {
         // Ground-truth check against the live pi session when present:
         // `get_messages` snapshots must yield edit/write tools with paths and
@@ -3154,16 +3183,20 @@ mod tests {
     #[test]
     fn usage_is_absent_without_provider_report() {
         let user = json!({"role": "user", "content": "hi"});
-        assert!(ChatMessage::from_value(&user)
-            .expect("message")
-            .usage()
-            .is_none());
+        assert!(
+            ChatMessage::from_value(&user)
+                .expect("message")
+                .usage()
+                .is_none()
+        );
 
         let no_usage = json!({"role": "assistant", "content": [{"type": "text", "text": "hi"}]});
-        assert!(ChatMessage::from_value(&no_usage)
-            .expect("message")
-            .usage()
-            .is_none());
+        assert!(
+            ChatMessage::from_value(&no_usage)
+                .expect("message")
+                .usage()
+                .is_none()
+        );
     }
 
     #[test]

@@ -68,6 +68,95 @@ fn backdrop_wrapper_stays_inside_the_main_area(cx: &mut gpui::TestAppContext) {
     assert_eq!(main.size.width, px(1000.));
 }
 
+/// Renders just the blur slider so its geometry can be read off the painted
+/// tree. The real `OrbitApp` is the value holder, exactly as in Settings.
+struct BlurSliderProbe {
+    app: Entity<OrbitApp>,
+    sigma: f32,
+}
+
+impl Render for BlurSliderProbe {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = *theme::get(cx);
+        let this = self.app.clone();
+        let sigma = self.sigma;
+        self.app
+            .update(cx, |app, _| app.blur_slider(theme, this, sigma))
+    }
+}
+
+/// The `Img` element sets its own `aspect_ratio` from the source. Inside a
+/// `size_full()` backdrop that must not win over the definite size the
+/// wrapper gives it — if it does, `ObjectFit::Cover` scales relative to the
+/// wrong box and the picture is placed/cropped wrong.
+#[gpui::test]
+fn backdrop_img_box_matches_its_wrapper(cx: &mut gpui::TestAppContext) {
+    use gpui::{point, size};
+
+    let cx = cx.add_empty_window();
+    let _ = cx.draw(point(px(0.), px(0.)), size(px(1075.), px(740.)), |_, _| {
+        div()
+            .id("backdrop-img-wrap")
+            .debug_selector(|| "backdrop-img-wrap".to_string())
+            .absolute()
+            .inset_0()
+            .overflow_hidden()
+            .child(
+                img(ImageSource::Render(solid_image(1600, 900)))
+                    .id("backdrop-img")
+                    .debug_selector(|| "backdrop-img".to_string())
+                    .size_full()
+                    .object_fit(ObjectFit::Cover),
+            )
+    });
+    let wrap = cx.debug_bounds("backdrop-img-wrap").expect("wrapper");
+    let image = cx.debug_bounds("backdrop-img").expect("image");
+    assert_eq!(
+        image.size, wrap.size,
+        "the image box must be the wrapper's box, not the source aspect ratio"
+    );
+}
+
+/// The blur slider's handle and fill are driven by the tuning's sigma: the
+/// handle's left edge is the normalized position across the usable track
+/// (track minus the knob), so 0 % is flush left and 100 % is flush right, and
+/// the accent fill always ends at the handle's centre. Pin the geometry so a
+/// future restyle cannot silently desync the control from the value it scrubs.
+#[gpui::test]
+fn blur_slider_handle_tracks_sigma(cx: &mut gpui::TestAppContext) {
+    use crate::dither::BLUR_MAX;
+    use crate::theme::{Theme, ThemeId};
+
+    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+
+    for (sigma, expected) in [(0., 0.), (BLUR_MAX / 2., 0.5), (BLUR_MAX, 1.)] {
+        let _ = cx.draw(point(px(0.), px(0.)), size(px(320.), px(60.)), |_, cx| {
+            cx.new(|_| BlurSliderProbe {
+                app: app.clone(),
+                sigma,
+            })
+        });
+        let track = cx.debug_bounds("backdrop-blur-slider").expect("track");
+        let knob = cx.debug_bounds("backdrop-blur-knob").expect("knob");
+        let fill = cx.debug_bounds("backdrop-blur-fill").expect("fill");
+        let usable = f32::from(track.size.width) - f32::from(knob.size.width);
+        let offset = f32::from(knob.origin.x) - f32::from(track.origin.x);
+        assert!(
+            (offset - usable * expected).abs() < 1.,
+            "sigma {sigma} put the knob at {offset}px, expected {}px",
+            usable * expected
+        );
+        let centre = offset + f32::from(knob.size.width) / 2.;
+        assert!(
+            (f32::from(fill.size.width) - centre).abs() < 1.,
+            "the accent fill must end at the knob centre: {} vs {centre}",
+            f32::from(fill.size.width)
+        );
+    }
+}
+
 /// The bottom fade is how the picture drops into the page, and its height is
 /// exactly what the Settings → Appearance control writes. Pin the wiring:
 /// 0.22 of a 700 px column is 154 px, anchored to the bottom edge.

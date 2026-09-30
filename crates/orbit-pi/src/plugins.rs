@@ -12,8 +12,10 @@
 //! where `<base>` is `~/.pi/agent` for user scope and `<workspace>/.pi` for
 //! project scope. Orbit reads those settings files and the install dirs, and
 //! installs / removes / updates through the `pi` CLI itself — pi owns the
-//! network fetch, lockfile, and settings write, so nothing is reimplemented.
+//! network fetch, lockfile, and settings write. Update checks inspect npm
+//! registry metadata or a Git remote without changing installed package files.
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -24,6 +26,10 @@ use serde_json::Value;
 
 /// How long an install / update may run before it is killed.
 const TIMEOUT: Duration = Duration::from_secs(240);
+/// Update probes must not keep startup busy when a registry or Git host stalls.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(12);
+const MAX_PARALLEL_PROBES: usize = 4;
+const SKIPPED_UPDATES_FILE: &str = "plugin-update-skips.json";
 
 /// Where a package is recorded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +82,15 @@ pub(crate) struct PluginPackage {
     pub installed: bool,
     /// `version` from the installed package's `package.json`, when readable.
     pub version: Option<String>,
+}
+
+/// One installed npm or Git package whose upstream has moved ahead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PluginUpdate {
+    pub source: String,
+    pub name: String,
+    pub current: String,
+    pub latest: String,
 }
 
 /// Read every configured package for `workspace`. The optional error string
@@ -144,6 +159,268 @@ pub(crate) fn update(source: &str, workspace: &Path) -> Result<String, String> {
     run_pi(&args, workspace)
 }
 
+/// Check installed npm and Git packages for newer upstream versions. Local
+/// paths and explicitly pinned sources have no unambiguous "latest". Probes
+/// are bounded in parallel so one slow registry cannot delay every package.
+pub(crate) fn find_updates(
+    workspace: &Path,
+    skipped: &HashMap<String, String>,
+) -> Vec<PluginUpdate> {
+    let (packages, _) = discover(workspace);
+    let packages: Vec<_> = packages
+        .into_iter()
+        .filter(|package| package.installed && package.kind != PackageKind::Local)
+        .collect();
+    let mut updates = Vec::new();
+    for batch in packages.chunks(MAX_PARALLEL_PROBES) {
+        let checked = std::thread::scope(|scope| {
+            batch
+                .iter()
+                .map(|package| {
+                    scope.spawn(move || find_package_update(package, workspace, skipped))
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .filter_map(|task| task.join().ok().flatten())
+                .collect::<Vec<_>>()
+        });
+        updates.extend(checked);
+    }
+    updates
+}
+
+fn find_package_update(
+    package: &PluginPackage,
+    workspace: &Path,
+    skipped: &HashMap<String, String>,
+) -> Option<PluginUpdate> {
+    let (current, latest) = match package.kind {
+        PackageKind::Npm => {
+            let current = package.version.clone()?;
+            let latest = latest_npm_version(&package.source, workspace)?;
+            if !crate::pi_update::is_newer(&latest, &current) {
+                return None;
+            }
+            (current, latest)
+        }
+        PackageKind::Git => git_revisions(&package.source, &package.install_path)?,
+        PackageKind::Local => return None,
+    };
+    if current == latest || skipped.get(&package.source) == Some(&latest) {
+        return None;
+    }
+    Some(PluginUpdate {
+        source: package.source.clone(),
+        name: package.name.clone(),
+        current,
+        latest,
+    })
+}
+
+/// Read versions pi has already been offered and the user chose to skip.
+pub(crate) fn load_skipped_updates() -> HashMap<String, String> {
+    let Some(path) = skipped_updates_path() else {
+        return HashMap::new();
+    };
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+/// Persist skips by source and upstream version, so the same update is not
+/// offered again on every launch. A new version naturally appears again.
+pub(crate) fn save_skipped_updates(skipped: &HashMap<String, String>) -> Result<(), String> {
+    let path =
+        skipped_updates_path().ok_or_else(|| "Could not locate the home directory".to_string())?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Could not locate the Orbit settings directory".to_string())?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let raw = serde_json::to_vec_pretty(skipped).map_err(|error| error.to_string())?;
+    let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    fs::write(&temporary, raw).map_err(|error| error.to_string())?;
+    fs::rename(&temporary, &path).map_err(|error| error.to_string())
+}
+
+fn skipped_updates_path() -> Option<PathBuf> {
+    Some(
+        crate::platform::home_dir_opt()?
+            .join(".orbit-pi")
+            .join(SKIPPED_UPDATES_FILE),
+    )
+}
+
+fn latest_npm_version(source: &str, workspace: &Path) -> Option<String> {
+    let name = npm_update_name(source)?;
+    let package_spec = format!("{name}@latest");
+    let mut command = npm_view_command(&package_spec);
+    command
+        .env("PATH", probe_path())
+        .env("NO_COLOR", "1")
+        .env("CI", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .current_dir(workspace);
+    let (success, stdout, _) = run_probe(command)?;
+    if !success {
+        return None;
+    }
+    npm_version_from_output(&stdout)
+}
+
+#[cfg(windows)]
+fn npm_view_command(package_spec: &str) -> Command {
+    // Windows npm installs expose npm.cmd rather than an executable. This is
+    // safe to pass through cmd because npm_update_name restricts the spec to
+    // package-name characters (no shell operators, quotes, or whitespace).
+    let mut command = Command::new("cmd.exe");
+    command
+        .arg("/D")
+        .arg("/S")
+        .arg("/C")
+        .arg(format!("npm view --json {package_spec} version"));
+    command
+}
+
+#[cfg(not(windows))]
+fn npm_view_command(package_spec: &str) -> Command {
+    let mut command = Command::new("npm");
+    command
+        .args(["view", "--json"])
+        .arg(package_spec)
+        .arg("version");
+    command
+}
+
+fn npm_version_from_output(output: &str) -> Option<String> {
+    let version = serde_json::from_str::<Value>(output)
+        .ok()
+        .and_then(|value| match value {
+            Value::String(version) => Some(version),
+            Value::Array(versions) => versions
+                .into_iter()
+                .find_map(|value| value.as_str().map(str::to_string)),
+            Value::Object(object) => object
+                .get("version")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            _ => None,
+        })
+        .or_else(|| Some(output.trim().trim_matches('"').to_string()))?;
+    version
+        .chars()
+        .next()
+        .is_some_and(|first| first.is_ascii_digit())
+        .then_some(version)
+}
+
+/// Only unpinned npm sources have a registry-defined update target. Restrict
+/// the name alphabet before passing it to npm, even though no shell is used.
+fn npm_update_name(source: &str) -> Option<String> {
+    let spec = source.strip_prefix("npm:")?.trim();
+    let name = npm_name(spec);
+    if spec != name
+        || name.is_empty()
+        || name.starts_with('-')
+        || !name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "@/._-".contains(character))
+    {
+        return None;
+    }
+    Some(name)
+}
+
+/// Compare the installed Git checkout with the default branch's advertised
+/// HEAD. Repositories without a remote checkout are left alone.
+fn git_revisions(source: &str, install_path: &Path) -> Option<(String, String)> {
+    if source.contains('#') {
+        return None;
+    }
+    let current = git_output(install_path, &["rev-parse", "HEAD"])?;
+    let remote = git_output(install_path, &["remote", "get-url", "origin"])?;
+    let mut command = Command::new("git");
+    command
+        .args(["ls-remote", "--symref", "--"])
+        .arg(remote)
+        .arg("HEAD")
+        .env("PATH", probe_path())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .current_dir(install_path);
+    let (success, stdout, _) = run_probe(command)?;
+    if !success {
+        return None;
+    }
+    let latest = git_head_revision(&stdout)?;
+    Some((current, latest))
+}
+
+fn git_output(install_path: &Path, args: &[&str]) -> Option<String> {
+    let mut command = Command::new("git");
+    command
+        .args(args)
+        .env("PATH", probe_path())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .current_dir(install_path);
+    let (success, stdout, _) = run_probe(command)?;
+    success
+        .then(|| stdout.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn git_head_revision(output: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        let revision = fields.next()?;
+        (fields.next()? == "HEAD" && is_git_revision(revision)).then(|| revision.to_string())
+    })
+}
+
+fn is_git_revision(value: &str) -> bool {
+    matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn probe_path() -> std::ffi::OsString {
+    let pi_bin = orbit_rpc::pi_binary();
+    orbit_rpc::augmented_path(Path::new(&pi_bin).parent())
+}
+
+/// Run a metadata-only command with bounded execution time and drain both
+/// pipes concurrently so a stalled registry cannot block the UI or deadlock.
+fn run_probe(mut command: Command) -> Option<(bool, String, String)> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    orbit_rpc::hide_console(&mut command);
+    let mut child = command.spawn().ok()?;
+    let stdout = child.stdout.take()?;
+    let stderr = child.stderr.take()?;
+    let out_handle = std::thread::spawn(move || read_to_end(stdout));
+    let err_handle = std::thread::spawn(move || read_to_end(stderr));
+    let deadline = Instant::now() + PROBE_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Ok(None) | Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = out_handle.join();
+                let _ = err_handle.join();
+                return None;
+            }
+        }
+    };
+    Some((
+        status.success(),
+        out_handle.join().ok()?,
+        err_handle.join().ok()?,
+    ))
+}
+
 fn read_packages(
     path: &Path,
     scope: PackageScope,
@@ -157,7 +434,7 @@ fn read_packages(
                 "errors.could_not_read",
                 path = path.display().to_string(),
                 error = err
-            ))
+            ));
         }
     };
     if raw.trim().is_empty() {
@@ -436,6 +713,39 @@ mod tests {
                 name: "@scope/pkg".into()
             }
         );
+    }
+
+    #[test]
+    fn reads_npm_view_version_shapes() {
+        assert_eq!(
+            npm_version_from_output(r#"["1.2.3"]"#),
+            Some("1.2.3".into())
+        );
+        assert_eq!(npm_version_from_output(r#""2.3.4""#), Some("2.3.4".into()));
+        assert_eq!(npm_version_from_output("not a version"), None);
+    }
+
+    #[test]
+    fn only_unpinned_npm_sources_are_checked() {
+        assert_eq!(
+            npm_update_name("npm:pi-web-search"),
+            Some("pi-web-search".into())
+        );
+        assert_eq!(
+            npm_update_name("npm:@scope/pi-ext"),
+            Some("@scope/pi-ext".into())
+        );
+        assert_eq!(npm_update_name("npm:pi-web-search@1.2.3"), None);
+        assert_eq!(npm_update_name("npm:--help"), None);
+    }
+
+    #[test]
+    fn extracts_a_valid_git_head_from_ls_remote_output() {
+        let hash = "0123456789abcdef0123456789abcdef01234567";
+        let output = format!("ref: refs/heads/main\tHEAD\n{hash}\tHEAD\n");
+        assert_eq!(git_head_revision(&output).as_deref(), Some(hash));
+        assert_eq!(git_head_revision("bad\tHEAD\n"), None);
+        assert!(!is_git_revision("not-a-hash"));
     }
 
     #[test]

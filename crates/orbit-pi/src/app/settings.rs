@@ -5,6 +5,7 @@ use crate::theme::tokens::{
     context_menu, input, modal, picker, popover, BufferLineHeight, ButtonSize, DynamicSpacing,
     IconSize, Radius, StyledExt, TextSize, BORDER_WIDTH,
 };
+use gpui::{canvas, Bounds, DispatchPhase, Hitbox, HitboxBehavior, MouseMoveEvent};
 
 /// A Plugins-page button action, dispatched through one entry point.
 #[derive(Clone)]
@@ -34,6 +35,12 @@ const PLUGIN_REFRESH_FEEDBACK: Duration = Duration::from_millis(650);
 /// The settings select chip's size. Its dropdown is offset by this height
 /// plus `popover::MENU_OFFSET`, so the two must move together.
 const SELECT_CHIP_SIZE: ButtonSize = ButtonSize::Medium;
+
+/// Backdrop blur slider geometry: the painted track width and handle
+/// diameter. The drag math reads the same pair, so the handle always lands
+/// under the pointer rather than a few pixels off it.
+const BLUR_TRACK_W: f32 = 184.;
+const BLUR_KNOB: f32 = 14.;
 
 /// The operation a background plugin task runs.
 #[derive(Clone, Copy)]
@@ -5158,11 +5165,10 @@ impl OrbitApp {
                                 "settings.softens_the_picture_before_the_dither_pass_so_a_"
                             )),
                             None,
-                            Some(self.tuning_select(
-                                SettingsSelect::BackdropBlur,
+                            Some(self.blur_slider(
                                 theme,
                                 this.clone(),
-                                cx,
+                                crate::dither::tuning().blur,
                             )),
                         ),
                         self.setting_row(
@@ -5536,9 +5542,96 @@ impl OrbitApp {
             .into_any_element()
     }
 
-    /// The background-tuning dropdowns (blur / pixel size / bottom fade).
+    /// Appearance → the backdrop blur: a continuous scrubber over
+    /// `0..=dither::BLUR_MAX` sigma. It replaces the old preset dropdown so
+    /// the wash under the picture can be dialled in rather than chosen from
+    /// five looks. The value snaps to `dither::BLUR_STEP`, so a drag rebuilds
+    /// the dither pass once per step instead of once per pixel.
+    pub(super) fn blur_slider(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        sigma: f32,
+    ) -> AnyElement {
+        let norm = crate::dither::blur_norm(sigma);
+        let track_w = px(BLUR_TRACK_W);
+        let knob = px(BLUR_KNOB);
+        let usable = track_w - knob;
+        let knob_left = usable * norm;
+        let center_x = knob_left + knob / 2.;
+
+        let events = canvas(
+            // One hitbox over the painted track; `is_hovered` respects the
+            // occluding select popups this board can anchor under it.
+            |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+            move |bounds, hitbox, window, _cx| {
+                register_blur_slider(this, bounds, hitbox, window);
+            },
+        )
+        .absolute()
+        .inset_0()
+        .cursor_pointer();
+
+        div()
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base08.px(&theme))
+            .child(
+                div()
+                    .id("backdrop-blur-slider")
+                    .debug_selector(|| "backdrop-blur-slider".to_string())
+                    .relative()
+                    .w(track_w)
+                    .h(DynamicSpacing::Base20.px(&theme))
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .h(px(4.))
+                            .rounded_full()
+                            .bg(theme.border),
+                    )
+                    .child(
+                        div()
+                            .id("backdrop-blur-fill")
+                            .debug_selector(|| "backdrop-blur-fill".to_string())
+                            .absolute()
+                            .left_0()
+                            .h(px(4.))
+                            .w(center_x)
+                            .rounded_full()
+                            .bg(theme.accent),
+                    )
+                    .child(
+                        div()
+                            .id("backdrop-blur-knob")
+                            .debug_selector(|| "backdrop-blur-knob".to_string())
+                            .absolute()
+                            .left(knob_left)
+                            .size(knob)
+                            .rounded_full()
+                            .border_1()
+                            .border_color(theme.border_strong)
+                            .bg(theme.toggle_knob),
+                    )
+                    .child(events),
+            )
+            .child(
+                div()
+                    .w(px(40.))
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_2)
+                    .child(format!("{}%", (norm * 100.).round() as u32)),
+            )
+            .into_any_element()
+    }
+
+    /// The background-tuning dropdowns (pixel size / bottom fade).
     /// Each option is a named preset, never a raw number, so the chip reads
-    /// as a look — "Heavy", "Coarse", "Deep" — rather than a parameter.
+    /// as a look — "Coarse", "Deep" — rather than a parameter.
     pub(super) fn tuning_select(
         &self,
         kind: SettingsSelect,
@@ -5546,14 +5639,9 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
     ) -> AnyElement {
-        use crate::dither::{BLUR_LABELS, CELL_LABELS, FADE_LABELS};
+        use crate::dither::{CELL_LABELS, FADE_LABELS};
         let tuning = crate::dither::tuning();
         let (id, selected, labels): (&'static str, usize, &[&str]) = match kind {
-            SettingsSelect::BackdropBlur => (
-                "backdrop-blur-select",
-                tuning.blur_index(),
-                &BLUR_LABELS[..],
-            ),
             SettingsSelect::BackdropCell => (
                 "backdrop-cell-select",
                 tuning.cell_index(),
@@ -5723,7 +5811,6 @@ impl OrbitApp {
             | SettingsSelect::Theme(_)
             | SettingsSelect::UiFontFamily
             | SettingsSelect::CodeFontFamily
-            | SettingsSelect::BackdropBlur
             | SettingsSelect::BackdropCell
             | SettingsSelect::BackdropFade
             | SettingsSelect::TitleModel
@@ -6210,17 +6297,9 @@ impl OrbitApp {
                 cx.notify();
                 return;
             }
-            SettingsSelect::BackdropBlur
-            | SettingsSelect::BackdropCell
-            | SettingsSelect::BackdropFade => {
+            SettingsSelect::BackdropCell | SettingsSelect::BackdropFade => {
                 let mut tuning = crate::dither::tuning();
                 match kind {
-                    SettingsSelect::BackdropBlur => {
-                        tuning.blur = crate::dither::BLUR_SIGMAS
-                            .get(ix)
-                            .copied()
-                            .unwrap_or(tuning.blur);
-                    }
                     SettingsSelect::BackdropCell => {
                         tuning.cell = crate::dither::CELL_SIZES
                             .get(ix)
@@ -6265,7 +6344,6 @@ impl OrbitApp {
             SettingsSelect::Theme(_)
             | SettingsSelect::UiFontFamily
             | SettingsSelect::CodeFontFamily
-            | SettingsSelect::BackdropBlur
             | SettingsSelect::BackdropCell
             | SettingsSelect::BackdropFade
             | SettingsSelect::TitleModel
@@ -6476,6 +6554,7 @@ impl OrbitApp {
             }
             PluginAction::Refresh => {
                 self.refresh_plugins(cx);
+                self.check_plugin_updates_now(cx);
                 self.toast_info(tr!("settings.reloaded_installed_plugins"));
                 self.plugin_refresh_spin_until = Some(Instant::now() + PLUGIN_REFRESH_FEEDBACK);
                 cx.spawn(async move |this, cx| {
@@ -7034,6 +7113,80 @@ impl OrbitApp {
             }
         }
         cx.notify();
+    }
+}
+
+/// Wire the backdrop blur slider's pointer handling. A press inside the
+/// track jumps the value to that point and begins a scrub; moves keep
+/// updating even outside the track (a scrub that overshoots still clamps to
+/// an end); release ends it. The handlers ride the slider canvas's prepaint
+/// (see `OrbitApp::blur_slider`), so `bounds` and `hitbox` are exactly the
+/// painted track's — not the window's or the settings column's.
+fn register_blur_slider(
+    this: Entity<OrbitApp>,
+    bounds: Bounds<Pixels>,
+    hitbox: Hitbox,
+    window: &mut Window,
+) {
+    let scrubbing = Rc::new(Cell::new(false));
+    window.on_mouse_event({
+        let scrubbing = scrubbing.clone();
+        let this = this.clone();
+        move |event: &MouseDownEvent, phase, window, cx| {
+            if phase != DispatchPhase::Capture
+                || event.button != MouseButton::Left
+                || !hitbox.is_hovered(window)
+            {
+                return;
+            }
+            scrubbing.set(true);
+            apply_blur_at(&this, bounds, event.position.x, cx);
+        }
+    });
+    window.on_mouse_event({
+        let scrubbing = scrubbing.clone();
+        let this = this.clone();
+        move |event: &MouseMoveEvent, phase, _window, cx| {
+            if phase != DispatchPhase::Capture || !scrubbing.get() {
+                return;
+            }
+            apply_blur_at(&this, bounds, event.position.x, cx);
+        }
+    });
+    window.on_mouse_event({
+        move |event: &MouseUpEvent, phase, window, _cx| {
+            if phase != DispatchPhase::Capture
+                || event.button != MouseButton::Left
+                || !scrubbing.replace(false)
+            {
+                return;
+            }
+            window.refresh();
+        }
+    });
+}
+
+/// Set the backdrop blur from a pointer x in window coordinates, clamped to
+/// the track and snapped to `dither::BLUR_STEP`. A no-op when the snapped
+/// value is unchanged, so a scrub across one step rebuilds the dither pass
+/// once rather than on every mouse move.
+fn apply_blur_at(this: &Entity<OrbitApp>, bounds: Bounds<Pixels>, x: Pixels, cx: &mut App) {
+    // The pointer tracks the handle's centre, which travels across the track
+    // minus the handle — the same span the painted knob uses.
+    let usable = (f32::from(bounds.size.width) - BLUR_KNOB).max(1.);
+    let norm =
+        ((f32::from(x) - f32::from(bounds.origin.x) - BLUR_KNOB / 2.) / usable).clamp(0., 1.);
+    let sigma = crate::dither::blur_from_norm(norm);
+    let mut tuning = crate::dither::tuning();
+    if (tuning.blur - sigma).abs() < f32::EPSILON {
+        return;
+    }
+    tuning.blur = sigma;
+    if crate::dither::set_tuning(tuning) {
+        // Rebuild now so this frame's preview is the newly tuned pass; the
+        // cache key's blur field makes the next new-task paint hit it warm.
+        crate::dither::background();
+        this.update(cx, |_, cx| cx.notify());
     }
 }
 

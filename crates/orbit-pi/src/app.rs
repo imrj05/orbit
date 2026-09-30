@@ -66,7 +66,7 @@ use crate::model_selector::{
 use crate::notifications;
 use crate::onboarding::{self, Dependency};
 use crate::platform::{self, ExternalApp};
-use crate::plugins::{PackageScope, PluginPackage};
+use crate::plugins::{PackageScope, PluginPackage, PluginUpdate};
 use crate::providers::{self, CustomProvider};
 use crate::quota::{QuotaManager, QuotaSupport};
 use crate::sessions::{self, SessionInfo};
@@ -670,6 +670,14 @@ pub struct OrbitApp {
     plugin_install_project: bool,
     /// Description of the plugin operation in flight, if any.
     plugin_action: Option<String>,
+    /// Actionable update notice for installed npm/Git packages.
+    plugin_update_prompt: Option<Vec<PluginUpdate>>,
+    /// Workspace whose project-scoped packages were checked.
+    plugin_update_workspace: Option<PathBuf>,
+    /// One registry/Git probe in flight at a time.
+    plugin_updates_checking: bool,
+    /// Versions the user chose to skip, persisted between launches.
+    plugin_update_skips: HashMap<String, String>,
     /// Manual-refresh feedback: the toolbar button turns until this instant,
     /// so an instant reload still acknowledges the click.
     plugin_refresh_spin_until: Option<Instant>,
@@ -1250,6 +1258,10 @@ impl OrbitApp {
             plugin_source_input: plugin_source_input.clone(),
             plugin_install_project: false,
             plugin_action: None,
+            plugin_update_prompt: None,
+            plugin_update_workspace: None,
+            plugin_updates_checking: false,
+            plugin_update_skips: crate::plugins::load_skipped_updates(),
             plugin_refresh_spin_until: None,
             plugin_remove_confirm: None,
             _plugin_source_sub: plugin_source_sub,
@@ -1382,6 +1394,7 @@ impl OrbitApp {
         // Check for a newer pi in the background; a newer release installs
         // itself through pi's own updater (see `pi_update_ui`).
         app.check_pi_update_on_launch(cx);
+        app.check_plugin_updates_on_launch(cx);
         // Route banner clicks back to their session (bundle builds only).
         notifications::init();
         // A first launch with notifications on shows macOS's permission
@@ -2186,7 +2199,6 @@ enum SettingsSelect {
     SpacingDensity,
     UiFontFamily,
     CodeFontFamily,
-    BackdropBlur,
     BackdropCell,
     BackdropFade,
     /// The model the auto-title extension asks (Settings → Agent).
@@ -2209,6 +2221,7 @@ pub(crate) mod helpers;
 mod open_in;
 mod pi_update_ui;
 mod pickers;
+mod plugin_update_ui;
 mod runtime;
 mod search;
 mod session;
