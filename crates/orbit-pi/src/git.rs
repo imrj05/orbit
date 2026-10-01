@@ -675,13 +675,14 @@ pub fn discard_paths(cwd: &Path, paths: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// Discard every change in the working tree: staged and unstaged edits to
-/// tracked files are reset to `HEAD`, and untracked files are removed. The UI
+/// Discard every unstaged change: tracked files restore from the index and
+/// untracked files are removed. Staged changes are left untouched. The UI
 /// confirms before calling this.
-pub fn discard_all(cwd: &Path) -> Result<(), String> {
-    // An unborn branch has no `HEAD` to reset to; only its untracked files
-    // need removing, so the failed reset is not an error here.
-    let _ = run_git(cwd, &["reset", "-q", "--hard", "HEAD"]);
+pub fn discard_unstaged(cwd: &Path) -> Result<(), String> {
+    // Restore the working tree from the index (so an unborn branch, whose
+    // tracked files have no committed copy, simply fails harmlessly) and drop
+    // the untracked files the working tree added.
+    let _ = run_git(cwd, &["checkout", "--", "."]);
     run_git(cwd, &["clean", "-fdq"]).map(|_| ())
 }
 

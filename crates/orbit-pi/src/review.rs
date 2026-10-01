@@ -98,10 +98,11 @@ impl Gap {
 pub enum LineKind {
     FileHeader,
     /// A group divider in a grouped diff list ("Staged" / "Changes"). Carries
-    /// the group's label, file count, and line deltas so the row paints
-    /// without reaching back into the snapshot.
+    /// the group's label, a leading icon, file count, and line deltas so the row
+    /// paints without reaching back into the snapshot.
     SectionHeader {
         label: String,
+        icon: Option<&'static str>,
         count: usize,
         additions: u64,
         deletions: u64,
@@ -363,6 +364,8 @@ pub fn parse_collected(
 /// for it (e.g. the staged diff, then the unstaged diff).
 pub struct SectionInput<'a> {
     pub label: String,
+    /// Glyph shown before the section's label (the stage / unstage icon).
+    pub icon: Option<&'static str>,
     pub numstat: &'a str,
     pub patch: &'a str,
     pub complete_context: bool,
@@ -398,6 +401,7 @@ pub fn parse_sections(source: Source, sections: &[SectionInput<'_>]) -> Snapshot
             new_line: None,
             kind: LineKind::SectionHeader {
                 label: section.label.clone(),
+                icon: section.icon,
                 count,
                 additions,
                 deletions,
@@ -1034,12 +1038,14 @@ index 3333333..4444444 100644
         let sections = [
             SectionInput {
                 label: "Staged".to_string(),
+                icon: None,
                 numstat: "2\t1\tsrc/lib.rs\n",
                 patch: SAMPLE,
                 complete_context: true,
             },
             SectionInput {
                 label: "Changes".to_string(),
+                icon: None,
                 numstat: "1\t1\tsrc/main.rs\n",
                 patch: unstaged_patch,
                 complete_context: true,

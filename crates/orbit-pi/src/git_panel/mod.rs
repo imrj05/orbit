@@ -36,7 +36,7 @@ use crate::gh_templates::{self, RepoTemplate};
 use crate::git::{self, CommitEntry, StatusRow};
 use crate::git_ops::{self, InProgress};
 use crate::issue_message::{self, DraftKind};
-use crate::sidepane::{FileActions, SidePane, ToolbarActions};
+use crate::sidepane::{FileActions, SectionActions, SidePane};
 use crate::theme::tokens::{
     button, context_menu, input, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius,
     StyledExt, TextSize,
@@ -111,8 +111,8 @@ enum PendingConfirm {
         method: gh::MergeMethod,
         delete_branch: bool,
     },
-    /// Discard every staged and unstaged change in the working tree.
-    RevertAll,
+    /// Discard every unstaged change in the working tree.
+    DiscardAll,
     /// Discard one changed file's unstaged edits.
     DiscardPath(String),
 }
@@ -633,9 +633,10 @@ impl GitPanel {
                 .update(cx, |pane, cx| pane.set_workspace(review_workspace, cx));
             self.staged.clear();
             self.unstaged.clear();
-            // The old tree's bulk actions must not linger on the new one.
+            // The old tree's per-section actions must not linger on the new
+            // one.
             self.review
-                .update(cx, |pane, cx| pane.set_toolbar_actions(None, cx));
+                .update(cx, |pane, cx| pane.set_section_actions(None, cx));
             self.history.clear();
             self.graph.clear();
             self.remote_web = None;
@@ -780,42 +781,77 @@ impl GitPanel {
             .update(cx, |pane, cx| pane.set_file_actions(actions, cx));
     }
 
-    /// Install the bulk stage / unstage / discard-all controls the embedded
-    /// review shows in its toolbar, beside the view toggles. Rebuilt alongside
-    /// the per-file rows so the buttons always match the latest status, and
-    /// cleared on a clean tree.
-    fn install_review_toolbar_actions(&mut self, cx: &mut Context<Self>) {
+    /// Install the per-section bulk actions the embedded review attaches to
+    /// its grouped strips: Stage all plus the whole-tree discard on the
+    /// Changes section, and Unstage all on the Staged section. Rebuilt
+    /// alongside the per-file rows so each strip's buttons always match the
+    /// latest status, and cleared on a clean tree.
+    fn install_review_section_actions(&mut self, cx: &mut Context<Self>) {
         if self.staged.is_empty() && self.unstaged.is_empty() {
             self.review
-                .update(cx, |pane, cx| pane.set_toolbar_actions(None, cx));
+                .update(cx, |pane, cx| pane.set_section_actions(None, cx));
             return;
         }
         let weak = cx.entity().downgrade();
         let has_staged = !self.staged.is_empty();
         let has_unstaged = !self.unstaged.is_empty();
-        let actions: ToolbarActions = std::rc::Rc::new(move |theme| {
-            let mut row = div()
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap(DynamicSpacing::Base04.px(&theme));
-            if has_unstaged {
-                let weak = weak.clone();
-                row = row.child(review_toolbar_button(
-                    "review-stage-all",
-                    "icons/plus.svg",
-                    tr!("git_panel.stage_all"),
-                    theme.text_2,
-                    theme,
-                    move |_, _, cx| {
-                        let _ = weak.update(cx, |panel, cx| panel.stage_all(cx));
-                    },
-                ));
+        // The strips carry the localized label the parser was fed, so the host
+        // matches on the same strings to route each section its own action.
+        let staged_label = tr!("git_panel.section_staged");
+        let changes_label = tr!("git_panel.section_changes");
+        let actions: SectionActions = std::rc::Rc::new(move |label, sticky, theme| {
+            let id = |slug: &str| {
+                gpui::ElementId::Name(
+                    format!(
+                        "review-section-{slug}-{}",
+                        if sticky { "sticky" } else { "row" }
+                    )
+                    .into(),
+                )
+            };
+            if label == changes_label.as_str() {
+                let mut row = div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(DynamicSpacing::Base04.px(&theme));
+                if has_unstaged {
+                    let weak = weak.clone();
+                    row = row.child(review_toolbar_button(
+                        id("stage-all"),
+                        "icons/plus.svg",
+                        tr!("git_panel.stage_all"),
+                        theme.text_2,
+                        theme,
+                        move |_, _, cx| {
+                            let _ = weak.update(cx, |panel, cx| panel.stage_all(cx));
+                        },
+                    ));
+                }
+                // Discard every unstaged change behind a confirmation; the
+                // Staged section is a deliberate state and stays untouched.
+                if has_unstaged {
+                    let weak = weak.clone();
+                    row = row.child(review_toolbar_button(
+                        id("discard-all"),
+                        "icons/trash.svg",
+                        tr!("git_panel.discard_all"),
+                        theme.crit,
+                        theme,
+                        move |_, _, cx| {
+                            let _ = weak.update(cx, |panel, cx| {
+                                panel.pending_confirm = Some(PendingConfirm::DiscardAll);
+                                cx.notify();
+                            });
+                        },
+                    ));
+                }
+                return (has_unstaged || !has_staged).then(|| row.into_any_element());
             }
-            if has_staged {
+            if has_staged && label == staged_label.as_str() {
                 let weak = weak.clone();
-                row = row.child(review_toolbar_button(
-                    "review-unstage-all",
+                return Some(review_toolbar_button(
+                    id("unstage-all"),
                     "icons/minus.svg",
                     tr!("git_panel.unstage_all"),
                     theme.text_2,
@@ -825,29 +861,10 @@ impl GitPanel {
                     },
                 ));
             }
-            // Discarding the whole tree is only offered while nothing is
-            // staged: once changes are staged, the working tree is a deliberate
-            // state to build a commit on, not something to wipe out.
-            if !has_staged {
-                let weak = weak.clone();
-                row = row.child(review_toolbar_button(
-                    "review-revert-all",
-                    "icons/rotate-ccw.svg",
-                    tr!("git_panel.revert_all"),
-                    theme.crit,
-                    theme,
-                    move |_, _, cx| {
-                        let _ = weak.update(cx, |panel, cx| {
-                            panel.pending_confirm = Some(PendingConfirm::RevertAll);
-                            cx.notify();
-                        });
-                    },
-                ));
-            }
-            Some(row.into_any_element())
+            None
         });
         self.review
-            .update(cx, |pane, cx| pane.set_toolbar_actions(Some(actions), cx));
+            .update(cx, |pane, cx| pane.set_section_actions(Some(actions), cx));
     }
 
     /// Set by `OrbitApp` on every render: how far the header's leading edge sits
@@ -958,7 +975,7 @@ impl GitPanel {
                         panel.git_operation = operation;
                         panel.conflicts = conflicts;
                         panel.install_review_actions(cx);
-                        panel.install_review_toolbar_actions(cx);
+                        panel.install_review_section_actions(cx);
                     }
                     Err(err) => {
                         panel.changes_error = Some(err);
@@ -2336,8 +2353,8 @@ impl GitPanel {
         );
     }
 
-    /// Discard every staged and unstaged change in the working tree.
-    fn revert_all(&mut self, cx: &mut Context<Self>) {
+    /// Discard every unstaged change in the working tree; staged changes stay.
+    fn discard_all_changes(&mut self, cx: &mut Context<Self>) {
         if self.pending.is_some() || self.operation_busy {
             return;
         }
@@ -2345,8 +2362,8 @@ impl GitPanel {
         self.pending_discard = None;
         self.spawn_data(
             cx,
-            move || git::discard_all(&cwd),
-            |panel, result, cx| panel.after_git(result, &tr!("git_panel.reverted_all"), cx),
+            move || git::discard_unstaged(&cwd),
+            |panel, result, cx| panel.after_git(result, &tr!("git_panel.discarded_changes"), cx),
         );
     }
 
@@ -2768,7 +2785,7 @@ impl GitPanel {
                     cx,
                 );
             }
-            PendingConfirm::RevertAll => self.revert_all(cx),
+            PendingConfirm::DiscardAll => self.discard_all_changes(cx),
             PendingConfirm::DiscardPath(path) => self.discard(path, cx),
         }
     }
@@ -7032,10 +7049,10 @@ impl GitPanel {
                     tr!("git_panel.merge_pull"),
                 )
             }
-            PendingConfirm::RevertAll => (
-                tr!("git_panel.confirm_revert_title"),
-                tr!("git_panel.confirm_revert_body"),
-                tr!("git_panel.revert_all"),
+            PendingConfirm::DiscardAll => (
+                tr!("git_panel.confirm_discard_all_title"),
+                tr!("git_panel.confirm_discard_all_body"),
+                tr!("git_panel.discard_all"),
             ),
             PendingConfirm::DiscardPath(path) => (
                 tr!("git_panel.confirm_discard_title", name = path),
@@ -8637,31 +8654,28 @@ fn review_action_icon(
     .into_any_element()
 }
 
-/// A labeled bulk action in the embedded review toolbar — stage / unstage /
-/// discard all — wearing the same bordered button the Git page uses elsewhere.
+/// An icon-only bulk action on the embedded review's grouped strips — Stage
+/// all / Unstage all / Revert all — wearing the same bare icon frame as the
+/// strip's view toggles, with its label moved to the tooltip.
 fn review_toolbar_button(
-    id: &'static str,
+    id: impl Into<gpui::ElementId>,
     icon_path: &'static str,
     label: String,
     color: Hsla,
     theme: Theme,
     listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
-    button_frame(div().id(id), &theme, ButtonSize::Medium)
-        .border_1()
-        .border_color(theme.border)
-        .bg(theme.bg_raised)
+    icon_button_frame(div().id(id), &theme, ButtonSize::Medium)
+        .group(BUTTON_GROUP)
         .cursor_pointer()
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(color)
-        .hover(|s| s.bg(theme.bg_hover).border_color(theme.border_strong))
+        .hover(|s| s.bg(theme.bg_hover))
+        .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into())
         .on_click(listener)
         .child(icon(
             icon_path,
             ButtonSize::Medium.icon_size().px(&theme),
             color,
         ))
-        .child(label)
         .into_any_element()
 }
 

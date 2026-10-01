@@ -20,8 +20,9 @@ use crate::theme::{self, Theme, ThemeMode};
 pub const DIFF_TEXT_SIZE: f32 = 12.5;
 /// File headers are one fixed row.
 pub const REVIEW_FILE_HEADER_HEIGHT: f32 = 36.;
-/// A grouped list's section divider is one fixed row.
-pub const REVIEW_SECTION_HEADER_HEIGHT: f32 = 30.;
+/// A grouped list's section divider is one fixed row — tall enough to seat a
+/// 28px bulk action button beside its label and counts.
+pub const REVIEW_SECTION_HEADER_HEIGHT: f32 = 40.;
 /// Hunk and meta rows are one fixed row.
 pub const REVIEW_HUNK_HEIGHT: f32 = 24.;
 
@@ -93,10 +94,12 @@ pub fn render_file_header(
         )
 }
 
-/// A group divider in a grouped list ("Staged" / "Changes"): the label with
-/// the section's file count inline and its line deltas at the far edge.
+/// A group divider in a grouped list ("Staged" / "Changes"): a leading
+/// stage / unstage glyph, the label, its file count in a quiet pill, the
+/// section's actions, and its line deltas at the far edge.
 pub fn render_section_header(
     label: &str,
+    icon_path: Option<&'static str>,
     count: usize,
     additions: u64,
     deletions: u64,
@@ -106,13 +109,18 @@ pub fn render_section_header(
     div()
         .w_full()
         .h(px(REVIEW_SECTION_HEADER_HEIGHT))
-        .px(px(12.))
+        .px(px(16.))
         .flex()
         .items_center()
-        .gap(px(8.))
+        .gap(px(10.))
         .border_b_1()
         .border_color(theme.border)
-        .bg(theme.bg_raised)
+        // The section head sits on the page's own black canvas — the raised
+        // surface is reserved for the file rows below it.
+        .bg(theme.bg_main)
+        .when_some(icon_path, |row, icon_path| {
+            row.child(icon(icon_path, IconSize::Small.px(&theme), theme.text_2))
+        })
         .child(
             div()
                 .text_size(TextSize::Small.px(&theme))
@@ -122,15 +130,28 @@ pub fn render_section_header(
         )
         .child(
             div()
-                .text_size(TextSize::Small.px(&theme))
-                .text_color(theme.text_3)
+                .min_w(px(22.))
+                .h(px(18.))
+                .px(px(7.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .bg(theme.overlay)
+                .text_size(TextSize::XSmall.px(&theme))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text_2)
                 .child(count.to_string()),
         )
         .child(div().flex_1())
         .when_some(actions, |row, actions| row.child(actions))
+        .child(div().w(px(1.)).h(px(14.)).flex_none().bg(theme.border))
         .child(
             div()
+                .min_w(px(42.))
+                .text_align(gpui::TextAlign::Right)
                 .text_size(TextSize::Small.px(&theme))
+                .font_weight(FontWeight::MEDIUM)
                 .text_color(if additions > 0 {
                     theme.add_green
                 } else {
@@ -140,7 +161,10 @@ pub fn render_section_header(
         )
         .child(
             div()
+                .min_w(px(36.))
+                .text_align(gpui::TextAlign::Right)
                 .text_size(TextSize::Small.px(&theme))
+                .font_weight(FontWeight::MEDIUM)
                 .text_color(if deletions > 0 {
                     theme.del_red
                 } else {

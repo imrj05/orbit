@@ -73,11 +73,11 @@ pub struct SidePaneResize;
 /// actions.
 pub type FileActions = std::rc::Rc<dyn Fn(&review::File, Theme) -> Option<AnyElement>>;
 
-/// Callback an embedded host installs so the review toolbar carries bulk
-/// actions beside its view toggles (the Git page's stage / unstage / discard
-/// all). It is called during render and returns the controls, or `None` when
-/// the host has nothing to offer.
-pub type ToolbarActions = std::rc::Rc<dyn Fn(Theme) -> Option<AnyElement>>;
+/// Callback an embedded host installs so a grouped section's strip carries
+/// its own bulk action (the Git page's Stage all on Changes, Unstage all on
+/// Staged). It is called during render with the section's label and whether
+/// the row is the sticky copy, so the host can mint unique element ids.
+pub type SectionActions = std::rc::Rc<dyn Fn(&str, bool, Theme) -> Option<AnyElement>>;
 
 pub struct SidePane {
     /// Whether the pane is shown at all (toggled from the top bar).
@@ -137,9 +137,9 @@ pub struct SidePane {
     available_width: Pixels,
     /// Per-file actions (stage / unstage / discard) an embedded host installs.
     file_actions: Option<FileActions>,
-    /// Bulk actions (stage / unstage / discard all) an embedded host installs
-    /// in the toolbar, beside the view toggles.
-    toolbar_actions: Option<ToolbarActions>,
+    /// Bulk actions an embedded host installs on each grouped section strip
+    /// (Stage all on Changes, Unstage all on Staged).
+    section_actions: Option<SectionActions>,
     /// The width Full width returns to.
     restore_width: Pixels,
     full_width: bool,
@@ -186,7 +186,7 @@ impl SidePane {
             width,
             available_width: width,
             file_actions: None,
-            toolbar_actions: None,
+            section_actions: None,
             restore_width: width,
             full_width: false,
             workspace: None,
@@ -266,11 +266,11 @@ impl SidePane {
         cx.notify();
     }
 
-    /// Install the bulk action controls an embedded host wants in the review
-    /// toolbar (the Git page's stage / unstage / discard all). Pass `None` to
-    /// clear them when the host has no changes to act on.
-    pub fn set_toolbar_actions(&mut self, actions: Option<ToolbarActions>, cx: &mut Context<Self>) {
-        self.toolbar_actions = actions;
+    /// Install the per-section bulk actions an embedded host wants on the
+    /// grouped strips (the Git page's stage-all / unstage-all). Pass `None`
+    /// to clear them when the host has no changes to act on.
+    pub fn set_section_actions(&mut self, actions: Option<SectionActions>, cx: &mut Context<Self>) {
+        self.section_actions = actions;
         cx.notify();
     }
 
@@ -607,12 +607,14 @@ impl SidePane {
                         let sections = [
                             review::SectionInput {
                                 label: tr!("git_panel.section_staged"),
+                                icon: Some("icons/minus.svg"),
                                 numstat: &staged.numstat,
                                 patch: &staged.patch,
                                 complete_context: staged.complete_context,
                             },
                             review::SectionInput {
                                 label: tr!("git_panel.section_changes"),
+                                icon: Some("icons/plus.svg"),
                                 numstat: &unstaged.numstat,
                                 patch: &unstaged.patch,
                                 complete_context: unstaged.complete_context,
@@ -1087,6 +1089,7 @@ impl SidePane {
             head = head
                 .child(self.view_toggle(
                     "review-full-width",
+                    ButtonSize::Default,
                     if self.full_width {
                         "icons/arrow-shrink.svg"
                     } else {
@@ -1170,12 +1173,6 @@ impl SidePane {
             .border_color(theme.border)
             .children(source_chip)
             .child(div().flex_1())
-            // Bulk actions an embedded host contributes (the Git page's stage /
-            // unstage / discard all), sitting just left of the view toggles.
-            .when_some(
-                self.toolbar_actions.as_ref().and_then(|build| build(theme)),
-                |row, actions| row.child(actions),
-            )
             .when(truncated, |row| {
                 row.child(
                     div()
@@ -1184,9 +1181,110 @@ impl SidePane {
                         .child(tr!("sidepane.partial")),
                 )
             })
+            // An embedded browser gives every grouped section strip its own
+            // copy of the view toggles, so its toolbar drops them.
+            .children(
+                (!self.embedded)
+                    .then(|| self.view_toggle_group("review", ButtonSize::Default, theme, cx)),
+            )
+            .children((!compact).then(|| {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_size(TextSize::Small.px(&theme))
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(div().text_color(theme.add_green).child(format!("+{added}")))
+                    .child(div().text_color(theme.del_red).child(format!("-{removed}")))
+            }));
+
+        let content = self.render_content(window, theme, tree_visible, cx);
+
+        // Embedded drops the dock title row and the toolbar: the host surface
+        // already names the view, and every grouped section strip carries the
+        // browser controls. Only a truncation warning still needs its own row.
+        let mut column = div().flex_1().min_h_0().flex().flex_col();
+        if self.embedded {
+            if truncated {
+                column = column.child(
+                    div()
+                        .h(px(PANE_ROW_H))
+                        .flex()
+                        .items_center()
+                        .px(px(12.))
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.warn)
+                        .child(tr!("sidepane.partial")),
+                );
+            }
+        } else {
+            column = column.child(head).child(toolbar);
+        }
+        column.child(content).into_any_element()
+    }
+
+    /// One icon-only view toggle. The glyph and tooltip name the action, the
+    /// ink marks the active mode, and an inert toggle stays visible so the
+    /// toolbar never reflows around it.
+    #[allow(clippy::too_many_arguments)]
+    fn view_toggle(
+        &self,
+        id: impl Into<gpui::ElementId>,
+        size: ButtonSize,
+        icon_path: &'static str,
+        active: bool,
+        enabled: bool,
+        tooltip: String,
+        action: fn(&mut SidePane, &mut Context<SidePane>),
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let color = if !enabled {
+            theme.text_3.opacity(0.4)
+        } else if active {
+            theme.text
+        } else {
+            theme.text_3
+        };
+        let button = icon_button_frame(div().id(id), &theme, size)
+            .group(BUTTON_GROUP)
+            .child(icon(icon_path, size.icon_size().px(&theme), color));
+        if !enabled {
+            return button.into_any_element();
+        }
+        button
+            .cursor_pointer()
+            .hover(|style| style.bg(theme.bg_hover))
+            .active(|style| style.opacity(PRESS_DIM))
+            .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into())
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| action(this, cx)))
+            .into_any_element()
+    }
+
+    /// The three view toggles — expand/collapse all, wrap, and split — as one
+    /// row. The toolbar hosts them, and an embedded browser's grouped section
+    /// strips each carry a copy so both sections offer the same options;
+    /// `prefix` keeps every copy's element ids unique, and `size` lets the
+    /// strips line their toggles up with the taller labeled actions.
+    fn view_toggle_group(
+        &self,
+        prefix: &str,
+        size: ButtonSize,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = |slug: &str| gpui::ElementId::Name(format!("{prefix}-{slug}").into());
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_2()
             .child(
                 self.view_toggle(
-                    "review-files-toggle",
+                    id("files"),
+                    size,
                     if self.collapsed_files.is_empty() {
                         "icons/collapse-all.svg"
                     } else {
@@ -1207,7 +1305,8 @@ impl SidePane {
                 ),
             )
             .child(self.view_toggle(
-                "review-wrap",
+                id("wrap"),
+                size,
                 "icons/text-wrap.svg",
                 self.wrap,
                 true,
@@ -1221,7 +1320,8 @@ impl SidePane {
                 cx,
             ))
             .child(self.view_toggle(
-                "review-split",
+                id("split"),
+                size,
                 if self.split {
                     "icons/unified-view.svg"
                 } else {
@@ -1238,66 +1338,6 @@ impl SidePane {
                 theme,
                 cx,
             ))
-            .children((!compact).then(|| {
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .text_size(TextSize::Small.px(&theme))
-                    .font_weight(FontWeight::MEDIUM)
-                    .child(div().text_color(theme.add_green).child(format!("+{added}")))
-                    .child(div().text_color(theme.del_red).child(format!("-{removed}")))
-            }));
-
-        let content = self.render_content(window, theme, tree_visible, cx);
-
-        let mut column = div().flex_1().min_h_0().flex().flex_col();
-        // Embedded drops the dock title row entirely: the host surface already
-        // names the view, and the toolbar below carries the browser controls.
-        if !self.embedded {
-            column = column.child(head);
-        }
-        column.child(toolbar).child(content).into_any_element()
-    }
-
-    /// One icon-only view toggle. The glyph and tooltip name the action, the
-    /// ink marks the active mode, and an inert toggle stays visible so the
-    /// toolbar never reflows around it.
-    #[allow(clippy::too_many_arguments)]
-    fn view_toggle(
-        &self,
-        id: &'static str,
-        icon_path: &'static str,
-        active: bool,
-        enabled: bool,
-        tooltip: String,
-        action: fn(&mut SidePane, &mut Context<SidePane>),
-        theme: Theme,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let color = if !enabled {
-            theme.text_3.opacity(0.4)
-        } else if active {
-            theme.text
-        } else {
-            theme.text_3
-        };
-        let button = icon_button_frame(div().id(id), &theme, ButtonSize::Default)
-            .group(BUTTON_GROUP)
-            .child(icon(
-                icon_path,
-                ButtonSize::Default.icon_size().px(&theme),
-                color,
-            ));
-        if !enabled {
-            return button.into_any_element();
-        }
-        button
-            .cursor_pointer()
-            .hover(|style| style.bg(theme.bg_hover))
-            .active(|style| style.opacity(PRESS_DIM))
-            .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into())
-            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| action(this, cx)))
             .into_any_element()
     }
 
@@ -1454,75 +1494,116 @@ impl SidePane {
         let mut layers = div().absolute().top_0().left_0().w_full();
         let mut has_layer = false;
 
-        // A grouped list pins its current section divider first; the file
-        // header then stacks directly beneath it. An ungrouped list keeps only
-        // the file header, as before.
+        // A grouped list pins its current section divider; the file header
+        // then stacks directly beneath it. An ungrouped list keeps only the
+        // file header, as before.
         let section = if snapshot.is_grouped() {
             snapshot.section_headers_around(scroll_top.item_ix)
         } else {
             None
         };
-        let mut section_pinned = false;
-        if let Some((section_index, next_section)) = section {
-            let section_needs = section_index < scroll_top.item_ix
-                || (section_index == scroll_top.item_ix && scroll_top.offset_in_item > px(0.));
-            if section_needs {
+        let section_needs = section.is_some_and(|(section_index, _)| {
+            section_index < scroll_top.item_ix
+                || (section_index == scroll_top.item_ix && scroll_top.offset_in_item > px(0.))
+        });
+        let section_push = section
+            .map(|(_, next_section)| self.sticky_push_offset(next_section))
+            .unwrap_or(px(0.));
+        // Once the next divider starts pushing this section off, its file
+        // header goes with it — pinning one would leave it hovering over the
+        // incoming divider and the rows that belong to it.
+        let section_leaving = section_push < px(0.);
+
+        // The file header layer is added first so the section divider, added
+        // after it, always stays on top while the two overlap mid-transition.
+        if !section_leaving {
+            if let Some((header_index, next_header_index)) =
+                snapshot.file_headers_around(scroll_top.item_ix)
+            {
+                // Once the section divider is pinned the file header beneath it
+                // is covered, so it must pin too even when it sits exactly at
+                // the top.
+                let file_needs = section_needs
+                    || header_index < scroll_top.item_ix
+                    || (header_index == scroll_top.item_ix && scroll_top.offset_in_item > px(0.));
+                if file_needs {
+                    if let Some(line) = snapshot.lines.get(header_index) {
+                        let push = self.sticky_push_offset(next_header_index).min(section_push);
+                        let section_height = if snapshot.is_grouped() {
+                            px(crate::diff_view::REVIEW_SECTION_HEADER_HEIGHT)
+                        } else {
+                            px(0.)
+                        };
+                        layers = layers.child(
+                            div()
+                                .absolute()
+                                .top(section_height + push)
+                                .left_0()
+                                .w_full()
+                                .child(self.file_header_row(line.file_index, true, theme, cx)),
+                        );
+                        has_layer = true;
+                    }
+                }
+            }
+        }
+
+        if section_needs {
+            if let Some((section_index, _)) = section {
                 if let Some(LineKind::SectionHeader {
                     label,
+                    icon,
                     count,
                     additions,
                     deletions,
                 }) = snapshot.lines.get(section_index).map(|line| &line.kind)
                 {
-                    layers = layers.child(
-                        div()
-                            .absolute()
-                            .top(self.sticky_push_offset(next_section))
-                            .left_0()
-                            .w_full()
-                            .child(render_section_header(
-                                label, *count, *additions, *deletions, None, theme,
-                            )),
-                    );
-                    has_layer = true;
-                    section_pinned = true;
-                }
-            }
-        }
-
-        if let Some((header_index, next_header_index)) =
-            snapshot.file_headers_around(scroll_top.item_ix)
-        {
-            // Once the section divider is pinned the file header beneath it is
-            // covered, so it must pin too even when it sits exactly at the top.
-            let file_needs = section_pinned
-                || header_index < scroll_top.item_ix
-                || (header_index == scroll_top.item_ix && scroll_top.offset_in_item > px(0.));
-            if file_needs {
-                if let Some(line) = snapshot.lines.get(header_index) {
-                    let mut push = self.sticky_push_offset(next_header_index);
-                    if let Some((_, next_section)) = section {
-                        push = push.min(self.sticky_push_offset(next_section));
-                    }
-                    let section_height = if snapshot.is_grouped() {
-                        px(crate::diff_view::REVIEW_SECTION_HEADER_HEIGHT)
-                    } else {
-                        px(0.)
-                    };
-                    layers = layers.child(
-                        div()
-                            .absolute()
-                            .top(section_height + push)
-                            .left_0()
-                            .w_full()
-                            .child(self.file_header_row(line.file_index, true, theme, cx)),
-                    );
+                    let actions = self.section_strip_actions(label, true, theme, cx);
+                    layers =
+                        layers.child(div().absolute().top(section_push).left_0().w_full().child(
+                            render_section_header(
+                                label, *icon, *count, *additions, *deletions, actions, theme,
+                            ),
+                        ));
                     has_layer = true;
                 }
             }
         }
 
         has_layer.then(|| layers.into_any_element())
+    }
+
+    /// The action row an embedded host hangs off a grouped section strip.
+    /// `sticky` tells the host whether this is the pinned copy, so its
+    /// element ids stay unique against the in-list row.
+    fn section_action_row(&self, label: &str, sticky: bool, theme: Theme) -> Option<AnyElement> {
+        self.section_actions
+            .as_ref()
+            .and_then(|build| build(label, sticky, theme))
+    }
+
+    /// The full action row a grouped section strip carries: the host's bulk
+    /// action (stage / unstage all) followed by the same view toggles the
+    /// toolbar shows, so both sections offer every option.
+    fn section_strip_actions(
+        &self,
+        label: &str,
+        sticky: bool,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let mut row = div().flex().flex_none().items_center().gap_2();
+        if let Some(action) = self.section_action_row(label, sticky, theme) {
+            row = row.child(action);
+        }
+        let prefix = format!(
+            "review-section-{label}-{}",
+            if sticky { "sticky" } else { "row" }
+        );
+        Some(
+            row.child(self.view_toggle_group(&prefix, ButtonSize::Medium, theme, cx))
+                .into_any_element(),
+        )
     }
 
     /// How far a sticky row `next_index` pushes the current one up as it
@@ -1615,13 +1696,19 @@ impl SidePane {
             // collapsed, so it is handled before the collapse gate.
             LineKind::SectionHeader {
                 label,
+                icon,
                 count,
                 additions,
                 deletions,
-            } => self.pinned_row(
-                render_section_header(label, *count, *additions, *deletions, None, theme)
+            } => {
+                let actions = self.section_strip_actions(label, false, theme, cx);
+                self.pinned_row(
+                    render_section_header(
+                        label, *icon, *count, *additions, *deletions, actions, theme,
+                    )
                     .into_any_element(),
-            ),
+                )
+            }
             // A collapsed file keeps its header and nothing else.
             _ if self.collapsed_files.contains(&line.file_index) => {
                 div().h(px(0.)).into_any_element()
