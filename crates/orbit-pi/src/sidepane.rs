@@ -1188,6 +1188,7 @@ impl SidePane {
         let diff = if self.review_loading && self.review.is_none() {
             empty_state(
                 theme,
+                "icons/loader.svg",
                 &tr!("sidepane.loading_changes"),
                 None,
                 EmptyFill::Grow,
@@ -1195,6 +1196,7 @@ impl SidePane {
         } else if let Some(error) = self.review_error.as_deref() {
             empty_state(
                 theme,
+                "icons/stop.svg",
                 &tr!("sidepane.changes_unavailable"),
                 Some(error),
                 EmptyFill::Grow,
@@ -1204,6 +1206,7 @@ impl SidePane {
                 let empty = self.source.empty_description();
                 empty_state(
                     theme,
+                    "icons/file-diff.svg",
                     &tr!("sidepane.no_changes"),
                     Some(&empty),
                     EmptyFill::Grow,
@@ -1212,7 +1215,13 @@ impl SidePane {
                 self.render_diff(window, snapshot, theme, cx)
             }
         } else {
-            empty_state(theme, &tr!("sidepane.no_changes"), None, EmptyFill::Grow)
+            empty_state(
+                theme,
+                "icons/file-diff.svg",
+                &tr!("sidepane.no_changes"),
+                None,
+                EmptyFill::Grow,
+            )
         };
 
         let mut content = div()

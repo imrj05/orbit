@@ -474,6 +474,18 @@ impl CommandPalette {
                 "settings preferences general language font",
             ),
             (
+                SettingsSection::Appearance,
+                "icons/contrast.svg",
+                tr!("settings.appearance"),
+                "settings preferences appearance theme light dark",
+            ),
+            (
+                SettingsSection::Shortcuts,
+                "icons/keyboard.svg",
+                tr!("settings.shortcuts"),
+                "settings keyboard shortcuts keys reference",
+            ),
+            (
                 SettingsSection::Runtime,
                 "icons/server-stack.svg",
                 tr!("settings.runtime"),
@@ -484,6 +496,18 @@ impl CommandPalette {
                 "icons/spark.svg",
                 tr!("settings.agent"),
                 "settings preferences agent steer follow-up compaction retry",
+            ),
+            (
+                SettingsSection::Providers,
+                "icons/cloud.svg",
+                tr!("settings.providers"),
+                "settings preferences providers models api",
+            ),
+            (
+                SettingsSection::Models,
+                "icons/tag-01.svg",
+                tr!("settings.models"),
+                "settings preferences models catalog favorites providers",
             ),
             (
                 SettingsSection::Skills,
@@ -504,34 +528,10 @@ impl CommandPalette {
                 "settings preferences mcp model context protocol servers tools",
             ),
             (
-                SettingsSection::Models,
-                "icons/tag-01.svg",
-                tr!("settings.models"),
-                "settings preferences models catalog favorites providers",
-            ),
-            (
-                SettingsSection::Appearance,
-                "icons/contrast.svg",
-                tr!("settings.appearance"),
-                "settings preferences appearance theme light dark",
-            ),
-            (
-                SettingsSection::Providers,
-                "icons/cloud.svg",
-                tr!("settings.providers"),
-                "settings preferences providers models api",
-            ),
-            (
                 SettingsSection::About,
                 "icons/info.svg",
                 tr!("settings.about"),
                 "settings about version app",
-            ),
-            (
-                SettingsSection::Shortcuts,
-                "icons/keyboard.svg",
-                tr!("settings.shortcuts"),
-                "settings keyboard shortcuts keys reference",
             ),
         ] {
             let order = items.len();

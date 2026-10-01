@@ -1054,6 +1054,7 @@ impl FileViewer {
             let detail = tr!("explorer.select_file_detail");
             return empty_state(
                 theme,
+                "icons/file.svg",
                 &tr!("explorer.select_file"),
                 Some(detail.as_str()),
                 EmptyFill::Grow,
@@ -1063,6 +1064,7 @@ impl FileViewer {
             let detail = tr!("explorer.select_file_detail");
             return empty_state(
                 theme,
+                "icons/file.svg",
                 &tr!("explorer.select_file"),
                 Some(detail.as_str()),
                 EmptyFill::Grow,
@@ -1071,6 +1073,7 @@ impl FileViewer {
         if let Some(error) = &content.error {
             return empty_state(
                 theme,
+                "icons/stop.svg",
                 &tr!("explorer.read_error"),
                 Some(error.as_str()),
                 EmptyFill::Grow,
@@ -1126,12 +1129,19 @@ impl FileViewer {
                             .object_fit(ObjectFit::Contain),
                     )
                     .into_any_element(),
-                None => empty_state(theme, &tr!("explorer.binary"), None, EmptyFill::Grow),
+                None => empty_state(
+                    theme,
+                    "icons/file.svg",
+                    &tr!("explorer.binary"),
+                    None,
+                    EmptyFill::Grow,
+                ),
             },
             Mode::Binary => {
                 let detail = tr!("explorer.binary_detail");
                 empty_state(
                     theme,
+                    "icons/file.svg",
                     &tr!("explorer.binary"),
                     Some(detail.as_str()),
                     EmptyFill::Grow,
@@ -1141,6 +1151,7 @@ impl FileViewer {
                 let detail = tr!("explorer.too_large", size = format_bytes(content.bytes));
                 empty_state(
                     theme,
+                    "icons/file.svg",
                     &tr!("explorer.too_large_title"),
                     Some(detail.as_str()),
                     EmptyFill::Grow,

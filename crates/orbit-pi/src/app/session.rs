@@ -853,31 +853,52 @@ impl OrbitApp {
         cx.notify();
     }
 
-    pub(super) fn on_info_click(
+    /// Open the top-bar session-details popover. The chip that used to own
+    /// this toggle is now a row in the overflow menu, so the open is a plain
+    /// action; the popover still dismisses on an outside click.
+    pub(super) fn open_session_details(&mut self, cx: &mut Context<Self>) {
+        self.session_details_open = true;
+        // Only one top-bar popover is meaningful at a time.
+        self.header_more_open = false;
+        self.quota_popup_open = false;
+        // Seed the rename field from the live title so the input isn't empty
+        // when pi auto-titled via `session_info_changed` and hasn't echoed
+        // `sessionName` yet.
+        self.seed_session_name_input(cx);
+        cx.notify();
+    }
+
+    /// Flip the top bar's overflow menu. Mirrors the old info chip's guard so
+    /// the click that closes the menu cannot reopen it on mouse-up.
+    pub(super) fn on_header_more_click(
         &mut self,
         _: &MouseUpEvent,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // The open popover dismisses on this same click's mouse-down; without
-        // this guard the mouse-up would toggle it straight back open.
         const GESTURE: Duration = Duration::from_millis(200);
         if let Some(dismissed) = self.menu_dismissed_at.take() {
             if dismissed.elapsed() < GESTURE {
                 return;
             }
         }
-        // The top-bar info affordance shows the active session's details.
-        self.session_details_open = !self.session_details_open;
-        // Only one top-bar popover is meaningful at a time.
-        if self.session_details_open {
+        self.header_more_open = !self.header_more_open;
+        if self.header_more_open {
+            // Only one top-bar popover is meaningful at a time.
             self.quota_popup_open = false;
-            // Seed the rename field from the live title so the input isn't
-            // empty when pi auto-titled via `session_info_changed` and hasn't
-            // echoed `sessionName` yet.
-            self.seed_session_name_input(cx);
+            self.session_details_open = false;
+            self.open_in_menu_open = false;
         }
         cx.notify();
+    }
+
+    /// Dismiss the top bar's overflow menu from a click outside it.
+    pub(super) fn dismiss_header_more(&mut self, cx: &mut Context<Self>) {
+        if self.header_more_open {
+            self.menu_dismissed_at = Some(Instant::now());
+            self.header_more_open = false;
+            cx.notify();
+        }
     }
 
     /// The rename row's **Generate title** control: a magic-wand button
@@ -973,15 +994,20 @@ impl OrbitApp {
         self.session_details_open = false;
         // Files is another main-area feature; leave it for the Git card.
         self.close_files(cx);
+        // Review owns the right dock and would otherwise show beside the Git
+        // page; opening Git replaces it. Opening Review closes Git in turn
+        // (see `close_git_for_review`).
+        self.sidepane.update(cx, |pane, cx| pane.close(cx));
         self.git_panel.update(cx, |panel, cx| panel.show(cx));
         cx.notify();
     }
 
-    /// Top-bar GitHub affordance: opens the Git card below the top bar, and
-    /// closes it again when it is already open (accordion).
-    pub(super) fn on_open_git_click(
+    /// ⌘⇧G: open the Git page, or leave it when it is already open. The
+    /// top-bar affordance lives in the overflow menu; this keeps the GitHub
+    /// surface one chord away.
+    pub(super) fn on_open_git(
         &mut self,
-        _: &MouseUpEvent,
+        _: &crate::OpenGit,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -997,6 +1023,23 @@ impl OrbitApp {
         self.git_open = false;
         self.git_panel.update(cx, |panel, cx| panel.hide(cx));
         cx.notify();
+    }
+
+    /// Leave the Git page when the Review dock takes the window. The Git page
+    /// is a main-area surface and Review owns the right dock, so leaving both
+    /// mounted shows them side by side; opening either replaces the other.
+    pub(super) fn close_git_for_review(&mut self, cx: &mut Context<Self>) {
+        if self.git_open {
+            self.git_open = false;
+            self.git_panel.update(cx, |panel, cx| panel.hide(cx));
+            cx.notify();
+        }
+    }
+
+    /// Open Review (⌘⇧R and the palette), replacing the Git page.
+    pub(super) fn open_review(&mut self, cx: &mut Context<Self>) {
+        self.close_git_for_review(cx);
+        self.sidepane.update(cx, |pane, cx| pane.show_review(cx));
     }
 
     /// Open the Usage card and let it load (or refresh) the session store.
@@ -2151,13 +2194,36 @@ impl OrbitApp {
         }
     }
 
+    /// The top-bar Review control: one chip for the right dock and the
+    /// working tree's `+N −N` counts. With a dirty tree and the pane closed it
+    /// opens Review on the **Uncommitted** diff, so the counts the chip shows
+    /// are what it reveals; otherwise it is a plain toggle.
     pub(super) fn on_toggle_side_pane(
         &mut self,
         _: &MouseUpEvent,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.sidepane.update(cx, |pane, cx| pane.toggle(cx));
+        self.toggle_side_pane(cx);
+    }
+
+    /// Flip the right dock, opening Review on the working tree's Uncommitted
+    /// diff when it is dirty and the pane is closed. Split from the click
+    /// handler so the overflow menu can call it without synthesizing an event.
+    pub(super) fn toggle_side_pane(&mut self, cx: &mut Context<Self>) {
+        let pane_open = self.sidepane.read(cx).is_open();
+        if !pane_open {
+            // Opening Review replaces the Git page, which shares the window.
+            self.close_git_for_review(cx);
+        }
+        let dirty = self.added > 0 || self.removed > 0;
+        self.sidepane.update(cx, |pane, cx| {
+            if pane_open || !dirty {
+                pane.toggle(cx);
+            } else {
+                pane.show_uncommitted(cx);
+            }
+        });
         cx.notify();
     }
 
@@ -2187,16 +2253,6 @@ impl OrbitApp {
     pub(super) fn on_toggle_project_panel(
         &mut self,
         _: &crate::ToggleProjectPanel,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.toggle_project_panel(cx);
-    }
-
-    /// The top-bar Files button.
-    pub(super) fn on_toggle_project_panel_click(
-        &mut self,
-        _: &MouseUpEvent,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -2412,27 +2468,17 @@ impl OrbitApp {
         self.close_files(cx);
     }
 
-    /// The top-bar `+N -M` chip opens Review on the working tree's
-    /// **Uncommitted** changes.
-    pub(super) fn on_open_uncommitted_review(
-        &mut self,
-        _: &MouseUpEvent,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.sidepane
-            .update(cx, |pane, cx| pane.show_uncommitted(cx));
-        cx.notify();
-    }
-
     /// Hands the transcript's changed-files cards a way to open the side
     /// pane's Review tab on that run's **Last Turn** git diff (the pane lives
     /// in the app, the cards don't know that). Cheap to build per frame — an
     /// `Rc` closure over the entity and the latest captured turn.
-    pub(super) fn review_opener(&self, _: &Context<Self>) -> crate::transcript_view::ReviewOpener {
+    pub(super) fn review_opener(&self, cx: &Context<Self>) -> crate::transcript_view::ReviewOpener {
         let pane = self.sidepane.clone();
+        let app = cx.entity().downgrade();
         let latest = self.latest_turn;
         Rc::new(move |_window, cx| {
+            // Opening Review replaces the Git page, which shares the window.
+            let _ = app.update(cx, |app, cx| app.close_git_for_review(cx));
             pane.update(cx, |pane, cx| pane.show_review_turn(latest, cx));
         })
     }

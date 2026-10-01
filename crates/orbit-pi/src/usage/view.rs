@@ -62,8 +62,8 @@ use super::table::{
 };
 use super::tooltip::Tooltip;
 use crate::app::{
-    button_frame, context_menu_separator, icon, icon_button_frame, picker_entry,
-    picker_search_frame, picker_surface, press, TipExt, BUTTON_GROUP,
+    button_frame, context_menu_separator, helpers::empty_state_glyph, icon, icon_button_frame,
+    picker_entry, picker_search_frame, picker_surface, press, TipExt, BUTTON_GROUP,
 };
 use crate::composer::ComposerInput;
 use crate::theme::tokens::{
@@ -1149,20 +1149,7 @@ impl UsagePage {
             .items_center()
             .justify_center()
             .gap(DynamicSpacing::Base08.px(&theme))
-            .child(
-                div()
-                    .size(px(44.))
-                    .rounded_full()
-                    .bg(theme.bg_raised)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(icon(
-                        icon_path,
-                        IconSize::Custom(20. / 16.).px(&theme),
-                        theme.text_3,
-                    )),
-            )
+            .child(empty_state_glyph(theme, icon_path))
             .child(
                 div()
                     .text_size(TextSize::Large.px(&theme))

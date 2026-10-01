@@ -7,6 +7,7 @@
 
 use gpui::{div, prelude::*, px, AnyElement, ClickEvent, FontWeight, Hsla, Window};
 
+use crate::app::helpers::empty_state_glyph;
 use crate::app::{button_frame, icon, icon_button_frame, press, BUTTON_GROUP};
 use crate::git::RefKind;
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
@@ -196,21 +197,10 @@ pub fn empty_note(
         .justify_center()
         .px(px(16.))
         .py(px(60.))
+        .child(empty_state_glyph(theme, glyph))
         .child(
             div()
-                .size(px(32.))
-                .rounded(Radius::Large.px(&theme))
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.bg_raised)
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(icon(glyph, IconSize::Medium.px(&theme), theme.text_2)),
-        )
-        .child(
-            div()
-                .mt(px(12.))
+                .mt(px(16.))
                 .text_size(TextSize::Default.px(&theme))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text)
@@ -220,7 +210,7 @@ pub fn empty_note(
         column = column.child(
             div()
                 .mt(px(6.))
-                .max_w(px(320.))
+                .max_w(px(360.))
                 .text_align(gpui::TextAlign::Center)
                 .text_size(TextSize::Small.px(&theme))
                 .line_height(theme.ui_px(17.))

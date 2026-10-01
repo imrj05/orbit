@@ -42,6 +42,330 @@ const SELECT_CHIP_SIZE: ButtonSize = ButtonSize::Medium;
 const BLUR_TRACK_W: f32 = 184.;
 const BLUR_KNOB: f32 = 14.;
 
+/// The settings nav in display order: section, nav icon, and label key.
+/// Grouped so the app's own preferences lead (General / Appearance /
+/// Shortcuts), the agent and its resources follow (Runtime / Agent /
+/// Providers / Models), the extensions pi loads close the list (Skills /
+/// Plugins / MCP), and About sits alone at the end.
+const SETTINGS_SECTIONS: &[(SettingsSection, &str, &str)] = &[
+    (
+        SettingsSection::General,
+        "icons/settings.svg",
+        "settings.general",
+    ),
+    (
+        SettingsSection::Appearance,
+        "icons/contrast.svg",
+        "settings.appearance",
+    ),
+    (
+        SettingsSection::Shortcuts,
+        "icons/keyboard.svg",
+        "settings.shortcuts",
+    ),
+    (
+        SettingsSection::Runtime,
+        "icons/server-stack.svg",
+        "settings.runtime",
+    ),
+    (SettingsSection::Agent, "icons/spark.svg", "settings.agent"),
+    (
+        SettingsSection::Providers,
+        "icons/cloud.svg",
+        "settings.providers",
+    ),
+    (
+        SettingsSection::Models,
+        "icons/tag-01.svg",
+        "settings.models",
+    ),
+    (
+        SettingsSection::Skills,
+        "icons/magic-wand.svg",
+        "settings.skills",
+    ),
+    (
+        SettingsSection::Plugins,
+        "icons/extensions.svg",
+        "settings.plugins",
+    ),
+    (SettingsSection::Mcp, "icons/tools/mcp.svg", "settings.mcp"),
+    (SettingsSection::About, "icons/info.svg", "settings.about"),
+];
+
+/// Every searchable setting, flattened: section, label key, and the extra
+/// terms a query can match. The label is translated when rendered; the
+/// keywords are the synonyms people type that the label does not spell out.
+/// It lives beside the nav so a new section has one obvious place to
+/// register its searchable rows.
+const SETTINGS_SEARCH_INDEX: &[(SettingsSection, &str, &str)] = &[
+    // General
+    (
+        SettingsSection::General,
+        "settings.pi_agent",
+        "pi agent process stdio connection child spawn",
+    ),
+    (
+        SettingsSection::General,
+        "settings.local_by_default",
+        "local data store sessions disk offline",
+    ),
+    (
+        SettingsSection::General,
+        "settings.workspace",
+        "workspace directory folder path project",
+    ),
+    (
+        SettingsSection::General,
+        "updater_ui.automatic_updates",
+        "updates update automatic release",
+    ),
+    (
+        SettingsSection::General,
+        "updater_ui.check_for_updates",
+        "updates update check release version",
+    ),
+    (
+        SettingsSection::General,
+        "settings.desktop_notifications",
+        "notifications banner desktop system",
+    ),
+    (
+        SettingsSection::General,
+        "settings.in_app_toasts",
+        "notifications toast in-app",
+    ),
+    (
+        SettingsSection::General,
+        "settings.notification_sound",
+        "notifications sound alert audio",
+    ),
+    // Runtime
+    (
+        SettingsSection::Runtime,
+        "settings.status",
+        "runtime process status start stop restart",
+    ),
+    (
+        SettingsSection::Runtime,
+        "settings.process_id",
+        "runtime process id pid",
+    ),
+    (
+        SettingsSection::Runtime,
+        "settings.binary",
+        "runtime binary executable pi",
+    ),
+    (
+        SettingsSection::Runtime,
+        "settings.uptime",
+        "runtime uptime elapsed",
+    ),
+    (
+        SettingsSection::Runtime,
+        "settings.transport",
+        "runtime transport stdio",
+    ),
+    (
+        SettingsSection::Runtime,
+        "settings.last_error",
+        "runtime error stderr last",
+    ),
+    (
+        SettingsSection::Runtime,
+        "settings.parked_processes",
+        "runtime background parked sessions",
+    ),
+    (
+        SettingsSection::Runtime,
+        "settings.recent_stderr",
+        "runtime stderr log output console",
+    ),
+    // Agent
+    (
+        SettingsSection::Agent,
+        "settings.enter_while_running",
+        "enter send submit queue steer behavior",
+    ),
+    (
+        SettingsSection::Agent,
+        "settings.follow_up_messages",
+        "follow-up queue messages behavior",
+    ),
+    (
+        SettingsSection::Agent,
+        "settings.auto_compaction",
+        "compaction compact context auto",
+    ),
+    (
+        SettingsSection::Agent,
+        "settings.auto_retry",
+        "retry auto error transient",
+    ),
+    (
+        SettingsSection::Agent,
+        "settings.auto_session_titles",
+        "titles session name auto",
+    ),
+    (
+        SettingsSection::Agent,
+        "settings.title_model",
+        "title model session names",
+    ),
+    (
+        SettingsSection::Agent,
+        "settings.default_model",
+        "default model session new",
+    ),
+    (
+        SettingsSection::Agent,
+        "settings.default_thinking",
+        "thinking level default session reasoning",
+    ),
+    // Appearance
+    (
+        SettingsSection::Appearance,
+        "settings.appearance",
+        "appearance mode light dark system theme",
+    ),
+    (
+        SettingsSection::Appearance,
+        "settings.light_theme",
+        "theme light palette color",
+    ),
+    (
+        SettingsSection::Appearance,
+        "settings.dark_theme",
+        "theme dark palette color",
+    ),
+    (
+        SettingsSection::Appearance,
+        "settings.background_image",
+        "background image backdrop dither picture",
+    ),
+    (
+        SettingsSection::Appearance,
+        "settings.blur",
+        "background blur backdrop soft",
+    ),
+    (
+        SettingsSection::Appearance,
+        "settings.pixel_size",
+        "background pixel size backdrop dither cell",
+    ),
+    (
+        SettingsSection::Appearance,
+        "settings.bottom_fade",
+        "background fade backdrop gradient",
+    ),
+    (
+        SettingsSection::Appearance,
+        "language.title",
+        "language locale translation interface",
+    ),
+    (
+        SettingsSection::Appearance,
+        "settings.interface_font",
+        "font interface ui typeface",
+    ),
+    (
+        SettingsSection::Appearance,
+        "settings.code_font",
+        "font code mono typeface",
+    ),
+    (
+        SettingsSection::Appearance,
+        "settings.ui_font_size",
+        "font size ui text scale",
+    ),
+    (
+        SettingsSection::Appearance,
+        "settings.terminal_size",
+        "font size terminal",
+    ),
+    (
+        SettingsSection::Appearance,
+        "settings.editor_size",
+        "font size editor",
+    ),
+    (
+        SettingsSection::Appearance,
+        "settings.spacing_density",
+        "spacing density compact comfortable",
+    ),
+    (
+        SettingsSection::Appearance,
+        "settings.show_sidebar",
+        "sidebar show layout navigation",
+    ),
+    (
+        SettingsSection::Appearance,
+        "settings.reduce_motion",
+        "motion animation reduce layout",
+    ),
+    // Resources and extensions
+    (
+        SettingsSection::Skills,
+        "settings.skills",
+        "skills skill.md instructions agent",
+    ),
+    (
+        SettingsSection::Plugins,
+        "settings.plugins",
+        "plugins packages extensions install npm git",
+    ),
+    (
+        SettingsSection::Mcp,
+        "settings.mcp",
+        "mcp model context protocol servers tools",
+    ),
+    (
+        SettingsSection::Models,
+        "settings.models",
+        "models catalog favorites providers",
+    ),
+    (
+        SettingsSection::Providers,
+        "settings.providers",
+        "providers api key auth credentials",
+    ),
+    (
+        SettingsSection::Shortcuts,
+        "settings.shortcuts",
+        "shortcuts keyboard keys chords",
+    ),
+    (
+        SettingsSection::About,
+        "settings.about",
+        "about version updates source github",
+    ),
+];
+
+/// The nav icon and label key for a section, from [`SETTINGS_SECTIONS`].
+fn settings_section_meta(section: SettingsSection) -> (&'static str, &'static str) {
+    SETTINGS_SECTIONS
+        .iter()
+        .find(|(candidate, _, _)| *candidate == section)
+        .map(|&(_, icon, label_key)| (icon, label_key))
+        .unwrap_or(("icons/settings.svg", "settings.general"))
+}
+
+/// Settings whose translated label or keyword list contains the already
+/// lowercased `needle`, in index order. An empty needle matches nothing —
+/// callers only mount results while a query is active.
+fn settings_search_hits(needle: &str) -> Vec<(SettingsSection, &'static str, &'static str)> {
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    SETTINGS_SEARCH_INDEX
+        .iter()
+        .filter(|(_, label_key, keywords)| {
+            tr!(*label_key).to_lowercase().contains(needle) || keywords.contains(needle)
+        })
+        .copied()
+        .collect()
+}
+
 /// The operation a background plugin task runs.
 #[derive(Clone, Copy)]
 enum PluginOp {
@@ -60,63 +384,7 @@ impl OrbitApp {
     pub(super) fn render_settings(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
         let this = cx.entity();
         let theme = *theme::get(cx);
-        let sections: [(SettingsSection, &'static str, String); 11] = [
-            (
-                SettingsSection::General,
-                "icons/settings.svg",
-                tr!("settings.general"),
-            ),
-            (
-                SettingsSection::Runtime,
-                "icons/server-stack.svg",
-                tr!("settings.runtime"),
-            ),
-            (
-                SettingsSection::Agent,
-                "icons/spark.svg",
-                tr!("settings.agent"),
-            ),
-            (
-                SettingsSection::Skills,
-                "icons/magic-wand.svg",
-                tr!("settings.skills"),
-            ),
-            (
-                SettingsSection::Plugins,
-                "icons/extensions.svg",
-                tr!("settings.plugins"),
-            ),
-            (
-                SettingsSection::Mcp,
-                "icons/tools/mcp.svg",
-                tr!("settings.mcp"),
-            ),
-            (
-                SettingsSection::Models,
-                "icons/tag-01.svg",
-                tr!("settings.models"),
-            ),
-            (
-                SettingsSection::Appearance,
-                "icons/contrast.svg",
-                tr!("settings.appearance"),
-            ),
-            (
-                SettingsSection::Providers,
-                "icons/cloud.svg",
-                tr!("settings.providers"),
-            ),
-            (
-                SettingsSection::Shortcuts,
-                "icons/keyboard.svg",
-                tr!("settings.shortcuts"),
-            ),
-            (
-                SettingsSection::About,
-                "icons/info.svg",
-                tr!("settings.about"),
-            ),
-        ];
+        let sections = SETTINGS_SECTIONS;
 
         div()
             .flex_1()
@@ -181,6 +449,10 @@ impl OrbitApp {
                                 ),
                             ),
                     )
+                    // Search — the first control in the column, just above
+                    // the list it reaches into, so a query is one click from
+                    // any setting in any section.
+                    .child(self.settings_search_bar(theme))
                     // Eyebrow: a small caps label gives the flat list a
                     // heading to read under, the way a sidebar in a
                     // crafted app does. No accent marker — the accent is
@@ -200,14 +472,16 @@ impl OrbitApp {
                     )
                     // Section rows — 28px pills with a 2px rhythm (the
                     // density Linear uses for flat nav lists), grouped by
-                    // what they belong to (app / pi resources /
-                    // personalisation). Groups are set off by a hairline
-                    // with 8px of air on each side — 16px of separation
-                    // total, so the groups read as set-off but related.
-                    // Selection is a single low-opacity accent wash — no
-                    // bar, no weight change — with the icon and ink
-                    // stepping toward the accent so the row reads as one
-                    // quiet highlight, never a button that took over.
+                    // what they belong to: the app (General / Appearance /
+                    // Shortcuts), the agent and its resources (Runtime /
+                    // Agent / Providers / Models), the extensions it loads
+                    // (Skills / Plugins / MCP), and About on its own. Groups
+                    // are set off by a hairline with 8px of air on each side
+                    // — 16px of separation total, so the groups read as
+                    // set-off but related. Selection is a single low-opacity
+                    // accent wash — no bar, no weight change — with the icon
+                    // and ink stepping toward the accent so the row reads as
+                    // one quiet highlight, never a button that took over.
                     .child(
                         div()
                             .px(DynamicSpacing::Base08.px(&theme))
@@ -215,15 +489,18 @@ impl OrbitApp {
                             .flex_col()
                             .gap(DynamicSpacing::Base02.px(&theme))
                             .children(sections.iter().map(
-                                |&(section, section_icon, ref label)| {
+                                |&(section, section_icon, label_key)| {
                                     let this = this.clone();
+                                    let label = tr!(label_key).to_string();
                                     let selected = self.settings_section == section;
-                                    // Group starts: Skills opens the pi
-                                    // resources block, Appearance opens
-                                    // personalisation + About.
+                                    // Group starts: Runtime opens the agent
+                                    // block, Skills opens the extensions
+                                    // block, and About closes the list alone.
                                     let group_start = matches!(
                                         section,
-                                        SettingsSection::Skills | SettingsSection::Appearance
+                                        SettingsSection::Runtime
+                                            | SettingsSection::Skills
+                                            | SettingsSection::About
                                     );
                                     let row = div()
                                         .id(ElementId::Name(format!("settings-nav-{label}").into()))
@@ -310,12 +587,19 @@ impl OrbitApp {
                     ),
             )
             // ── content column ──
-            // Skills owns a full-bleed master-detail surface; every other
-            // section is a fixed header + a scrolling column of cards.
-            .child(if self.settings_section == SettingsSection::Skills {
-                self.render_skills_page(theme, this.clone(), cx)
-            } else {
-                self.settings_body(theme, this.clone(), cx)
+            // While the sidebar search carries a query the column shows
+            // matches instead of the active section. Skills owns a full-bleed
+            // master-detail surface; every other section is a fixed header + a
+            // scrolling column of cards.
+            .child({
+                let searching = !self.settings_search.read(cx).text().trim().is_empty();
+                if searching {
+                    self.settings_search_results(theme, this.clone(), cx)
+                } else if self.settings_section == SettingsSection::Skills {
+                    self.render_skills_page(theme, this.clone(), cx)
+                } else {
+                    self.settings_body(theme, this.clone(), cx)
+                }
             })
             // ── provider editor modals (models.json + API key) ──
             .children(self.provider_editor_layer(theme, this.clone(), cx))
@@ -392,6 +676,122 @@ impl OrbitApp {
                     ),
             )
             .into_any_element()
+    }
+
+    /// The global settings search, at the top of the nav column so a query
+    /// can reach any setting without hunting through the section list.
+    fn settings_search_bar(&self, theme: Theme) -> AnyElement {
+        let search = picker_search_frame(div(), &theme)
+            .w_full()
+            .child(icon(
+                "icons/search.svg",
+                input::ICON.px(&theme),
+                theme.text_3,
+            ))
+            .child(div().flex_1().min_w_0().child(self.settings_search.clone()));
+        div()
+            .w_full()
+            .flex_shrink_0()
+            .px(DynamicSpacing::Base08.px(&theme))
+            .pb(DynamicSpacing::Base12.px(&theme))
+            .child(search)
+            .into_any_element()
+    }
+
+    /// The search results: every setting whose label or keywords match,
+    /// grouped as one board. A row opens its section and clears the query, so
+    /// the section it points at is visible immediately.
+    fn settings_search_results(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let needle = self.settings_search.read(cx).text().trim().to_lowercase();
+        let hits = settings_search_hits(&needle);
+        let body: AnyElement = if hits.is_empty() {
+            self.empty_resource_card(
+                theme,
+                "icons/search.svg",
+                &tr!("settings.no_matches"),
+                &tr!("settings.try_a_different_search"),
+            )
+        } else {
+            let rows = hits
+                .into_iter()
+                .map(|(section, label_key, _)| {
+                    self.settings_search_row(section, label_key, theme, this.clone())
+                })
+                .collect();
+            self.settings_group(theme, rows)
+        };
+        div()
+            .id("settings-search-results")
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .max_w(px(CONTENT_MAX_W))
+            .mx_auto()
+            .overflow_y_scroll()
+            .child(
+                div()
+                    .w_full()
+                    .px(DynamicSpacing::Base24.px(&theme))
+                    .pt(DynamicSpacing::Base20.px(&theme))
+                    .pb(DynamicSpacing::Base24.px(&theme))
+                    .child(body),
+            )
+            .into_any_element()
+    }
+
+    /// One search result: the setting's label leading, its section trailing,
+    /// with the section's nav icon at the start of the row.
+    fn settings_search_row(
+        &self,
+        section: SettingsSection,
+        label_key: &'static str,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+    ) -> AnyElement {
+        let (section_icon, section_key) = settings_section_meta(section);
+        press(
+            div()
+                .id(ElementId::Name(
+                    format!("settings-result-{label_key}").into(),
+                ))
+                .w_full()
+                .px(DynamicSpacing::Base16.px(&theme))
+                .py(DynamicSpacing::Base12.px(&theme))
+                .flex()
+                .items_center()
+                .gap(DynamicSpacing::Base12.px(&theme))
+                .cursor_pointer()
+                .hover(|s| s.bg(theme.bg_hover)),
+        )
+        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+            this.update(cx, |app, cx| {
+                app.settings_search.update(cx, |input, cx| input.clear(cx));
+                app.set_settings_section(section, cx);
+            });
+        })
+        .child(icon(section_icon, IconSize::Small.px(&theme), theme.text_3))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_size(TextSize::Default.px(&theme))
+                .text_color(theme.text)
+                .child(tr!(label_key).to_string()),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_3)
+                .child(tr!(section_key).to_string()),
+        )
+        .into_any_element()
     }
 
     pub(super) fn settings_header(&self, theme: Theme) -> impl IntoElement + use<> {
@@ -566,9 +966,12 @@ impl OrbitApp {
                     None,
                     Some(self.about_github_button(theme)),
                 ));
+                // The page header already reads "About"; a board header of
+                // the same name would just repeat it, so the group is
+                // headerless.
                 vec![
                     star_project_banner(theme, "about-star-banner", None),
-                    self.settings_section(theme, &tr!("settings.about"), about),
+                    self.settings_group(theme, about),
                 ]
             }
         }
@@ -1522,12 +1925,8 @@ impl OrbitApp {
             .flex()
             .flex_col()
             .items_center()
-            .gap(DynamicSpacing::Base08.px(&theme))
-            .child(icon(
-                icon_path,
-                IconSize::Custom(26. / 16.).px(&theme),
-                theme.text_3,
-            ))
+            .gap(DynamicSpacing::Base12.px(&theme))
+            .child(empty_state_glyph(theme, icon_path))
             .child(
                 div()
                     .text_size(TextSize::Default.px(&theme))
@@ -4205,13 +4604,6 @@ impl OrbitApp {
         } else {
             "—".to_string()
         };
-        let workspace = self
-            .current_workspace
-            .clone()
-            .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
 
         let status = div()
             .flex()
@@ -4280,23 +4672,6 @@ impl OrbitApp {
                 theme,
                 this.clone(),
                 OrbitApp::toggle_rpc_patches,
-            )),
-        ));
-        process.push(self.setting_row(
-            theme,
-            &tr!("settings.workspace"),
-            None,
-            None,
-            Some(runtime_path(theme, workspace)),
-        ));
-        process.push(self.setting_row(
-            theme,
-            &tr!("settings.session_store"),
-            None,
-            None,
-            Some(runtime_path(
-                theme,
-                sessions::sessions_dir().to_string_lossy().into_owned(),
             )),
         ));
         if let Some(error) = &self.runtime.error {
@@ -7417,5 +7792,37 @@ mod about_banner_tests {
             cx.debug_bounds("sidebar-star-dismiss").is_none(),
             "the About banner is permanent — it carries no dismiss button"
         );
+    }
+}
+
+#[cfg(test)]
+mod settings_search_tests {
+    use super::{settings_search_hits, SettingsSection};
+
+    #[test]
+    fn empty_query_matches_nothing() {
+        assert!(settings_search_hits("").is_empty());
+    }
+
+    #[test]
+    fn label_and_keyword_matches_span_sections() {
+        // A translated label match (Auto-compaction contains "compaction").
+        assert!(settings_search_hits("compaction")
+            .iter()
+            .any(|(section, key, _)| *section == SettingsSection::Agent
+                && *key == "settings.auto_compaction"));
+        // A keyword synonym the label does not spell out.
+        assert!(settings_search_hits("banner")
+            .iter()
+            .any(|(section, _, _)| *section == SettingsSection::General));
+        // A section-level keyword resolves to its page.
+        assert!(settings_search_hits("protocol")
+            .iter()
+            .any(|(section, _, _)| *section == SettingsSection::Mcp));
+    }
+
+    #[test]
+    fn no_match_is_empty() {
+        assert!(settings_search_hits("zzzzzz").is_empty());
     }
 }

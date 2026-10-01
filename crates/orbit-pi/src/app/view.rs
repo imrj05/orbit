@@ -106,6 +106,47 @@ fn feature_card(theme: Theme, body: AnyElement) -> AnyElement {
         .into_any_element()
 }
 
+/// One row in the top bar's overflow menu: a picker entry with a leading
+/// icon, a label, the command's platform chord, and a trailing check when its
+/// surface is open. Reuses the picker's row metrics so it lines up with the
+/// app's other dropdowns.
+fn header_menu_row(
+    id: &'static str,
+    icon_path: &'static str,
+    label: String,
+    shortcut: Option<String>,
+    active: bool,
+    theme: Theme,
+    listener: impl Fn(&MouseUpEvent, &mut Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    press(
+        picker_entry(div().id(id).group(BUTTON_GROUP), &theme)
+            .h(picker::entry_height(&theme))
+            .flex_none()
+            .cursor_pointer()
+            .text_color(theme.text_2)
+            .hover(|s| s.bg(theme.overlay).text_color(theme.text)),
+    )
+    .on_mouse_up(MouseButton::Left, listener)
+    .child(icon(icon_path, context_menu::ICON.px(&theme), theme.text_3))
+    .child(div().flex_1().min_w_0().truncate().child(label))
+    .children(shortcut.map(|chord| {
+        div()
+            .flex_none()
+            .text_size(TextSize::XSmall.px(&theme))
+            .text_color(theme.text_3)
+            .child(chord)
+    }))
+    .when(active, |row| {
+        row.child(icon(
+            "icons/check.svg",
+            context_menu::ICON.px(&theme),
+            theme.accent,
+        ))
+    })
+    .into_any_element()
+}
+
 /// Duration of the sidebar collapse/expand slide.
 const SIDEBAR_SLIDE_MS: u64 = 180;
 
@@ -400,153 +441,15 @@ impl Render for OrbitApp {
         // reports anything), so the bar never shows a fabricated value.
         top_controls = top_controls.children(self.render_quota_pill(compact_chrome, cx));
         top_controls = top_controls.children(self.render_open_in_control(cx));
-        if (self.added > 0 || self.removed > 0) && !pane_visible && !self.git_open {
-            top_controls = top_controls.child(
-                header_chip(
-                    div()
-                        .id("top-diff-stats")
-                        // The titlebar's fixed chip height and radius, with a
-                        // Medium button's padding.
-                        .h(px(HEADER_CTRL_H))
-                        .px(ButtonSize::Medium.padding_x(&theme))
-                        .rounded(px(HEADER_CTRL_R))
-                        .flex()
-                        .items_center()
-                        .gap(DynamicSpacing::Base06.px(&theme))
-                        .cursor_pointer(),
-                    &theme,
-                )
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(Self::on_open_uncommitted_review),
-                )
-                .child(
-                    div()
-                        .text_size(TextSize::Small.px(&theme))
-                        .text_color(theme.add_green)
-                        .child(format!("+{}", self.added)),
-                )
-                .child(
-                    div()
-                        .text_size(TextSize::Small.px(&theme))
-                        .text_color(theme.del_red)
-                        .child(format!("-{}", self.removed)),
-                ),
-            );
-        }
         top_controls = top_controls
-            .child(
-                // Popup is a sibling of the info chip, not a child: clicks
-                // inside the rename field must not bubble to the chip's
-                // toggle (which would close the popover before Update runs).
-                div()
-                    .relative()
-                    .children(self.render_session_details_popup(cx))
-                    .child(
-                        header_icon_button(
-                            "info",
-                            &theme,
-                            self.session_details_open,
-                            icon(
-                                "icons/info.svg",
-                                ButtonSize::Medium.icon_size().px(&theme),
-                                theme.text_2,
-                            ),
-                        )
-                        .tip(tr!("session.session_details"))
-                        .on_mouse_up(MouseButton::Left, cx.listener(Self::on_info_click)),
-                    ),
-            )
-            // Explorer (project panel) toggle — the right file tree.
-            .child(
-                header_icon_button(
-                    "toggle-project-panel",
-                    &theme,
-                    explorer_visible,
-                    icon(
-                        "icons/folder.svg",
-                        ButtonSize::Medium.icon_size().px(&theme),
-                        if explorer_visible {
-                            theme.text
-                        } else {
-                            theme.text_2
-                        },
-                    ),
-                )
-                .tip(commands::tooltip(
-                    CommandId::ToggleProjectPanel,
-                    explorer_visible,
-                ))
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(Self::on_toggle_project_panel_click),
-                ),
-            )
-            // side-pane toggle sits right after the about (info) button
-            .child(
-                header_icon_button(
-                    "toggle-side-pane",
-                    &theme,
-                    pane_visible,
-                    icon(
-                        "icons/panel-right.svg",
-                        ButtonSize::Medium.icon_size().px(&theme),
-                        if pane_visible {
-                            theme.text
-                        } else {
-                            theme.text_2
-                        },
-                    ),
-                )
-                .tip(commands::tooltip(CommandId::ToggleSidePanel, pane_visible))
-                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_toggle_side_pane)),
-            )
-            // Terminal toggle — the bottom panel (cmd-j).
-            .child(
-                header_icon_button(
-                    "toggle-terminal",
-                    &theme,
-                    terminal_visible,
-                    icon(
-                        "icons/terminal.svg",
-                        ButtonSize::Medium.icon_size().px(&theme),
-                        if terminal_visible {
-                            theme.text
-                        } else {
-                            theme.text_2
-                        },
-                    ),
-                )
-                .tip(commands::tooltip(
-                    CommandId::ToggleTerminal,
-                    terminal_visible,
-                ))
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(|this, _, window, cx| {
-                        this.on_toggle_terminal(&crate::ToggleTerminal, window, cx)
-                    }),
-                ),
-            )
-            // GitHub affordance: opens the full-page Git surface.
-            .child(
-                header_icon_button(
-                    "open-git-github",
-                    &theme,
-                    self.git_open,
-                    icon(
-                        "icons/github.svg",
-                        ButtonSize::Medium.icon_size().px(&theme),
-                        if self.git_open {
-                            theme.text
-                        } else {
-                            theme.text_2
-                        },
-                    ),
-                )
-                .tip(commands::tooltip(CommandId::OpenGit, false))
-                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_open_git_click)),
-            );
+            // Review dock — the side-panel toggle and the working tree's
+            // change counts folded into one chip
+            // (see `render_review_panel_control`).
+            .child(self.render_review_panel_control(theme, pane_visible, cx))
+            // The remaining surfaces (Session details, Explorer, Terminal, Git)
+            // sit behind one "…" menu so the bar keeps only what shows live
+            // state: the quota, open-in, and Review. See `render_header_more`.
+            .child(self.render_header_more(theme, explorer_visible, terminal_visible, cx));
 
         // A blocking extension dialog owns the keyboard while it is open. Focus
         // it (or its text field) once, on the first frame it appears — `tick`
@@ -1406,6 +1309,7 @@ impl Render for OrbitApp {
             .on_action(cx.listener(Self::on_toggle_model_menu))
             .on_action(cx.listener(Self::on_toggle_thinking_menu))
             .on_action(cx.listener(Self::on_review_changes))
+            .on_action(cx.listener(Self::on_open_git))
             .on_action(cx.listener(Self::on_open_shortcut_help))
             .on_action(cx.listener(Self::on_review_close))
             .on_action(cx.listener(Self::on_focus_next))
@@ -3362,6 +3266,206 @@ impl OrbitApp {
             )
     }
 
+    /// The right dock's single top-bar affordance: the side-panel toggle and
+    /// the working tree's `+N −N` change counts, folded into one chip. The
+    /// counts already opened Review on the uncommitted diff, so a separate
+    /// panel toggle beside them was the same job twice. Dirty — and with the
+    /// pane and the Git page closed — the chip wears the counts instead of the
+    /// glyph; clean, it falls back to the `panel-right` icon. Either way it
+    /// flips the pane and stays lifted while the pane is visible.
+    pub(super) fn render_review_panel_control(
+        &self,
+        theme: Theme,
+        pane_visible: bool,
+        cx: &Context<Self>,
+    ) -> impl IntoElement + use<> {
+        // The counts stay off while the pane or the Git page already shows the
+        // same diff, matching the standalone chip's old visibility rule.
+        let dirty = (self.added > 0 || self.removed > 0) && !pane_visible && !self.git_open;
+        let chip = press(header_chip(
+            div()
+                .id("toggle-side-pane")
+                .group(BUTTON_GROUP)
+                .h(px(HEADER_CTRL_H))
+                .min_w(px(HEADER_CTRL_H))
+                .px(if dirty {
+                    ButtonSize::Medium.padding_x(&theme)
+                } else {
+                    px(0.)
+                })
+                .rounded(px(HEADER_CTRL_R))
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(DynamicSpacing::Base06.px(&theme))
+                .cursor_pointer(),
+            &theme,
+        ))
+        // One or the other, never both: the counts stand in for the glyph
+        // while the tree is dirty, so the chip cannot grow two things wide.
+        .children((!dirty).then(|| {
+            icon(
+                "icons/panel-right.svg",
+                ButtonSize::Medium.icon_size().px(&theme),
+                if pane_visible {
+                    theme.text
+                } else {
+                    theme.text_2
+                },
+            )
+        }))
+        .children(dirty.then(|| {
+            div()
+                .flex()
+                .items_center()
+                .gap(DynamicSpacing::Base06.px(&theme))
+                .child(
+                    div()
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.add_green)
+                        .child(format!("+{}", self.added)),
+                )
+                .child(
+                    div()
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.del_red)
+                        .child(format!("-{}", self.removed)),
+                )
+        }));
+        let chip = if pane_visible {
+            header_lift(chip, &theme)
+        } else {
+            chip
+        };
+        chip.tip(commands::tooltip(CommandId::ToggleSidePanel, pane_visible))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_toggle_side_pane))
+    }
+
+    /// The top bar's overflow menu: one "…" control holding the surfaces that
+    /// no longer earn a permanent chip — Session details, Explorer, the
+    /// Terminal, and the Git page. It keeps the bar to the controls that carry
+    /// live state (quota, open-in, Review, this), with the rest one click away
+    /// and still on their shortcuts. Session details' popover is mounted here
+    /// so it keeps its top-right anchor now that its info chip is gone.
+    pub(super) fn render_header_more(
+        &self,
+        theme: Theme,
+        explorer_visible: bool,
+        terminal_visible: bool,
+        cx: &Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let open = self.header_more_open;
+        let lifted = open || self.session_details_open;
+        div()
+            .relative()
+            .children(self.render_session_details_popup(cx))
+            .children(self.render_header_more_popup(theme, explorer_visible, terminal_visible, cx))
+            .child(
+                header_icon_button(
+                    "header-more",
+                    &theme,
+                    lifted,
+                    icon(
+                        "icons/more.svg",
+                        ButtonSize::Medium.icon_size().px(&theme),
+                        if lifted { theme.text } else { theme.text_2 },
+                    ),
+                )
+                .tip(tr!("sidebar.more_actions"))
+                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_header_more_click)),
+            )
+    }
+
+    /// The overflow menu itself, anchored under the "…" chip. Rows mirror the
+    /// command registry's titles, so the menu, the palette, and the shortcut
+    /// help can never drift apart.
+    pub(super) fn render_header_more_popup(
+        &self,
+        theme: Theme,
+        explorer_visible: bool,
+        terminal_visible: bool,
+        cx: &Context<Self>,
+    ) -> Option<AnyElement> {
+        if !self.header_more_open {
+            return None;
+        }
+        let menu = picker_surface(div().id("header-more-popup"), &theme)
+            .w(px(220.))
+            .py(picker::list_padding_y(&theme))
+            .flex()
+            .flex_col()
+            .gap(DynamicSpacing::Base01.px(&theme))
+            .occlude()
+            .on_mouse_down_out(
+                cx.listener(|this, _: &MouseDownEvent, _, cx| this.dismiss_header_more(cx)),
+            )
+            .child(header_menu_row(
+                "header-more-session",
+                "icons/info.svg",
+                tr!("session.session_details"),
+                None,
+                self.session_details_open,
+                theme,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| this.open_session_details(cx)),
+            ))
+            .child(header_menu_row(
+                "header-more-explorer",
+                "icons/folder.svg",
+                commands::title(CommandId::ToggleProjectPanel, explorer_visible),
+                commands::spec(CommandId::ToggleProjectPanel).shortcut(),
+                explorer_visible,
+                theme,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    this.header_more_open = false;
+                    this.toggle_project_panel(cx);
+                }),
+            ))
+            .child(header_menu_row(
+                "header-more-terminal",
+                "icons/terminal.svg",
+                commands::title(CommandId::ToggleTerminal, terminal_visible),
+                commands::spec(CommandId::ToggleTerminal).shortcut(),
+                terminal_visible,
+                theme,
+                cx.listener(|this, _: &MouseUpEvent, window, cx| {
+                    this.header_more_open = false;
+                    this.on_toggle_terminal(&crate::ToggleTerminal, window, cx);
+                }),
+            ))
+            .child(header_menu_row(
+                "header-more-git",
+                "icons/github.svg",
+                commands::title(CommandId::OpenGit, false),
+                commands::spec(CommandId::OpenGit).shortcut(),
+                self.git_open,
+                theme,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    this.header_more_open = false;
+                    if this.git_open {
+                        this.close_git(cx);
+                    } else {
+                        this.open_git(cx);
+                    }
+                }),
+            ));
+        Some(
+            div()
+                .absolute()
+                .bottom_0()
+                .right_0()
+                .size(px(0.))
+                .child(
+                    anchored()
+                        .position_mode(AnchoredPositionMode::Local)
+                        .anchor(Corner::TopRight)
+                        .offset(point(px(0.), popover::MENU_OFFSET))
+                        .snap_to_window_with_margin(popover::WINDOW_MARGIN)
+                        .child(deferred(menu)),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// The sidebar's primary action: a raised New Task button in the same
     /// `ButtonSize::Large` frame as the Search and Usage rows, marked by its
     /// accent icon and the ⌘N shortcut hint.
@@ -3498,7 +3602,7 @@ impl OrbitApp {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.sidepane.update(cx, |pane, cx| pane.show_review(cx));
+        self.open_review(cx);
     }
 
     /// ⌘/: open Settings → Shortcuts — the full keyboard reference.

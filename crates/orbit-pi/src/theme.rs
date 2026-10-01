@@ -37,6 +37,7 @@ pub enum ThemeId {
     OrbitPaper,
     OrbitContrast,
     OrbitDarker,
+    OrbitMinimal,
     /// Ported Zed community themes (all dark).
     Vague,
     Batsignal,
@@ -84,12 +85,13 @@ impl ThemeId {
     /// Selectable themes, in the order shown in the settings dropdown: the
     /// Orbit family first, then the ported/curated dark themes, then their
     /// curated light counterparts.
-    pub const ALL: [ThemeId; 43] = [
+    pub const ALL: [ThemeId; 44] = [
         Self::Orbit,
         Self::OrbitLight,
         Self::OrbitPaper,
         Self::OrbitContrast,
         Self::OrbitDarker,
+        Self::OrbitMinimal,
         Self::Vague,
         Self::Batsignal,
         Self::Ashwood,
@@ -138,6 +140,7 @@ impl ThemeId {
             Self::OrbitPaper => "orbit-paper",
             Self::OrbitContrast => "orbit-contrast",
             Self::OrbitDarker => "orbit-darker",
+            Self::OrbitMinimal => "orbit-minimal",
             Self::Vague => "vague",
             Self::Batsignal => "batsignal-dark",
             Self::Ashwood => "ashwood",
@@ -197,6 +200,8 @@ impl ThemeId {
             "orbit-paper" => Some(Self::OrbitPaper),
             "orbit-contrast" | "orbit-high-contrast" => Some(Self::OrbitContrast),
             "orbit-darker" => Some(Self::OrbitDarker),
+            // Codex-inspired minimal dark; aliases name its origin.
+            "orbit-minimal" | "codex" | "codex-dark" => Some(Self::OrbitMinimal),
             // Ported Zed community themes (aliases included).
             "vague" => Some(Self::Vague),
             "batsignal-dark" | "batsignal" => Some(Self::Batsignal),
@@ -252,6 +257,7 @@ impl ThemeId {
             Self::OrbitPaper => "Orbit Paper",
             Self::OrbitContrast => "Orbit Contrast",
             Self::OrbitDarker => "Orbit Darker",
+            Self::OrbitMinimal => "Orbit Minimal",
             Self::Vague => "Vague",
             Self::Batsignal => "Batsignal (Dark)",
             Self::Ashwood => "Ashwood",
@@ -308,6 +314,7 @@ impl ThemeId {
             | Self::AyuLight => ThemeMode::Light,
             Self::Orbit
             | Self::OrbitDarker
+            | Self::OrbitMinimal
             | Self::Vague
             | Self::Batsignal
             | Self::Ashwood
@@ -916,6 +923,51 @@ const ORBIT_DARKER: Palette = Palette {
     warn: 0xDDB56A,
     crit: 0xE16F68,
     trough: 0x1B1B1B,
+};
+
+/// Orbit Minimal (codex-inspired): a deep graphite canvas with cool-gray ink
+/// and an electric-blue interaction accent — the Codex desktop app's grammar,
+/// mapped onto Orbit's semantic roles.
+const ORBIT_MINIMAL: Palette = Palette {
+    bg_main: 0x181818,
+    bg_sidebar: 0x121212,
+    bg_raised: 0x1E1E1E,
+    bg_hover: 0x242424,
+    active: 0x292929,
+    active_fg: 0xFFFFFF,
+    border: 0x2A2A2A,
+    text: 0xF1F1F1,
+    text_2: 0xA7A7A7,
+    text_3: 0x777777,
+    ok_green: 0x40C977,
+    stop_red: 0xFA423E,
+    stop_red_hover: 0xFF625E,
+    add_green: 0x40C977,
+    del_red: 0xFA423E,
+    accent: 0x339CFF,
+    menu_bg: 0x1E1E1E,
+    send_bg: 0xF1F1F1,
+    send_bg_hover: 0xFFFFFF,
+    send_fg: 0x111111,
+    assistant_text: 0xE8E8E8,
+    code_bg: 0x101010,
+    code_text: 0xE7E7E7,
+    // Syntax keeps the editor's cool-blue keywords with semantic green/amber.
+    syn_string: 0x40C977,
+    syn_number: 0xD9B45D,
+    syn_function: 0xFFFFFF,
+    syn_type: 0xD7D7D7,
+    syn_comment: 0x707070,
+    syn_literal: 0x5EAEFF,
+    syn_meta: 0xF06A6A,
+    syn_operator: 0x858585,
+    tool_border: 0x292929,
+    tool_meta: 0x888888,
+    ring_track: 0x292929,
+    ring_fill: 0xF1F1F1,
+    warn: 0xD9B45D,
+    crit: 0xFA423E,
+    trough: 0x202020,
 };
 
 /// Orbit light: warm off-white canvas, dark primary buttons, orange accent.
@@ -2666,6 +2718,7 @@ fn palette(id: ThemeId) -> Palette {
         ThemeId::OrbitPaper => ORBIT_PAPER,
         ThemeId::OrbitContrast => ORBIT_CONTRAST,
         ThemeId::OrbitDarker => ORBIT_DARKER,
+        ThemeId::OrbitMinimal => ORBIT_MINIMAL,
         ThemeId::Vague => VAGUE,
         ThemeId::Batsignal => BATSIGNAL,
         ThemeId::Ashwood => ASHWOOD,
@@ -2980,6 +3033,10 @@ mod tests {
         assert_eq!(ThemeId::parse("orbit-darker"), Some(ThemeId::OrbitDarker));
         assert_eq!(ThemeId::OrbitDarker.as_str(), "orbit-darker");
         assert_eq!(ThemeId::OrbitDarker.appearance(), ThemeMode::Dark);
+        assert_eq!(ThemeId::parse("orbit-minimal"), Some(ThemeId::OrbitMinimal));
+        assert_eq!(ThemeId::parse("codex"), Some(ThemeId::OrbitMinimal));
+        assert_eq!(ThemeId::OrbitMinimal.as_str(), "orbit-minimal");
+        assert_eq!(ThemeId::OrbitMinimal.appearance(), ThemeMode::Dark);
         assert_eq!(
             ThemeId::parse("catppuccin-latte"),
             Some(ThemeId::CatppuccinLatte)
@@ -3208,7 +3265,7 @@ mod tests {
         }
     }
 
-    /// One surface grammar for all forty-three palettes: on dark, each step up
+    /// One surface grammar for all forty-four palettes: on dark, each step up
     /// the ramp is lighter than the one below (canvas → raised → hover →
     /// active); on light it is the inverse. Menu surfaces float at `raised`,
     /// and the send button always answers a hover with a visible step.
@@ -3291,12 +3348,14 @@ mod tests {
         assert_eq!(ThemeId::OrbitPaper.appearance(), ThemeMode::Light);
         assert_eq!(ThemeId::OrbitContrast.appearance(), ThemeMode::Light);
         assert_eq!(ThemeId::OrbitDarker.appearance(), ThemeMode::Dark);
+        assert_eq!(ThemeId::OrbitMinimal.appearance(), ThemeMode::Dark);
         assert_eq!(ThemeId::CatppuccinLatte.appearance(), ThemeMode::Light);
         assert_eq!(ThemeId::Orbit.label(), "Orbit");
         assert_eq!(ThemeId::OrbitLight.label(), "Orbit Light");
         assert_eq!(ThemeId::OrbitPaper.label(), "Orbit Paper");
         assert_eq!(ThemeId::OrbitContrast.label(), "Orbit Contrast");
         assert_eq!(ThemeId::OrbitDarker.label(), "Orbit Darker");
+        assert_eq!(ThemeId::OrbitMinimal.label(), "Orbit Minimal");
         assert_eq!(ThemeId::CatppuccinLatte.label(), "Catppuccin Latte");
     }
 

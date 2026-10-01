@@ -411,12 +411,13 @@ pub(crate) enum EmptyFill {
     Grow,
 }
 
-/// A centered empty/error state: a medium title over an optional tertiary
-/// detail line. Shared by the Explorer panel, the file viewer, and the Review
-/// pane so their empty/error copy sits identically; the Git page's iconed
-/// variant is `git_panel::widgets::empty_note`.
+/// A centered empty/error state: a large glyph, a medium title, and an
+/// optional tertiary detail line. Shared by the Explorer panel, the file
+/// viewer, and the Review pane so their empty/error states sit identically;
+/// the Git page's variant is `git_panel::widgets::empty_note`.
 pub(crate) fn empty_state(
     theme: Theme,
+    glyph: &'static str,
     title: &str,
     detail: Option<&str>,
     fill: EmptyFill,
@@ -432,8 +433,10 @@ pub(crate) fn empty_state(
         .justify_center()
         .px(px(16.))
         .pb(px(24.))
+        .child(empty_state_glyph(theme, glyph))
         .child(
             div()
+                .mt(px(16.))
                 .text_size(TextSize::Default.px(&theme))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text)
@@ -443,7 +446,7 @@ pub(crate) fn empty_state(
         column = column.child(
             div()
                 .mt(px(6.))
-                .max_w(px(320.))
+                .max_w(px(360.))
                 .text_align(TextAlign::Center)
                 .text_size(TextSize::Small.px(&theme))
                 .line_height(theme.ui_px(17.))
@@ -452,6 +455,29 @@ pub(crate) fn empty_state(
         );
     }
     column.into_any_element()
+}
+
+/// The glyph plate every empty state shares: a large, soft raised square with
+/// the state's icon centered. Sized so the glyph reads as the subject of the
+/// state rather than a stray toolbar icon — monochrome and functional, since
+/// DESIGN.md rules out decorative illustration in the workbench.
+pub(crate) fn empty_state_glyph(theme: Theme, glyph: &'static str) -> AnyElement {
+    div()
+        .size(px(64.))
+        .flex_none()
+        .rounded(Radius::XLarge.px(&theme))
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.bg_raised)
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(icon(
+            glyph,
+            IconSize::Custom(32. / 16.).px(&theme),
+            theme.text_2,
+        ))
+        .into_any_element()
 }
 
 // ── top-bar chip primitives ──

@@ -926,6 +926,7 @@ impl ProjectPanel {
         } else if let Some(error) = &self.error {
             empty_state(
                 theme,
+                "icons/stop.svg",
                 &tr!("explorer.load_error"),
                 Some(error.as_str()),
                 EmptyFill::Full,
@@ -933,6 +934,7 @@ impl ProjectPanel {
         } else if self.rows.is_empty() {
             empty_state(
                 theme,
+                "icons/folder.svg",
                 &tr!("explorer.no_files"),
                 Some(no_files_detail.as_str()),
                 EmptyFill::Full,

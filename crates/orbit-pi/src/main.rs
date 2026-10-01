@@ -176,6 +176,7 @@ actions!(
         NextSession,
         PrevSession,
         ReviewChanges,
+        OpenGit,
         OpenShortcutHelp,
         CloseFiles,
         CloseFileTab,

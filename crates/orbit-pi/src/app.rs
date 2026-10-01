@@ -384,6 +384,11 @@ pub struct OrbitApp {
     settings_select_highlight: Option<usize>,
     /// Scroll handle for the settings dropdown's option list.
     settings_select_scroll: UniformListScrollHandle,
+    /// Global settings search. Typing filters the section list down to the
+    /// settings whose label or keywords match, across every section.
+    settings_search: Entity<ComposerInput>,
+    /// Re-render the settings surface as the search is typed.
+    _settings_search_sub: Subscription,
     /// Settings → General: which notification channels are on (persisted to
     /// `~/.orbit-pi/notifications.json`), plus the last macOS permission
     /// read. The read drives the honest "blocked" / "unbundled" rows — a
@@ -513,6 +518,10 @@ pub struct OrbitApp {
     refreshing: bool,
     /// Whether the top-bar session-details popover is open.
     session_details_open: bool,
+    /// Whether the top bar's overflow ("more") menu is open. Holds the
+    /// surfaces that no longer earn a permanent chip: Session details,
+    /// Explorer, the Terminal, and the Git page.
+    header_more_open: bool,
     /// A popover-triggered title generation is in flight; the next
     /// `session_info_changed` seeds the rename field from its result.
     title_generating: bool,
@@ -924,6 +933,17 @@ impl OrbitApp {
                 .with_placeholder_key("app.filter")
                 .with_key_context("Composer Picker")
         });
+        // The settings surface's own search: one field over every section's
+        // rows, not the select popup's filter above.
+        let settings_search = cx.new(|cx| {
+            ComposerInput::new(cx)
+                .with_element_id("settings-search")
+                .with_placeholder_key("app.search_settings")
+                .with_key_context("Composer Picker")
+                .with_max_lines(1)
+                .with_wrap(false)
+        });
+        let settings_search_sub = cx.observe(&settings_search, |_, _, cx| cx.notify());
         let open_in_filter = cx.new(|cx| {
             ComposerInput::new(cx)
                 .with_placeholder_key("app.filter")
@@ -1219,6 +1239,8 @@ impl OrbitApp {
             settings_section: SettingsSection::General,
             settings_select: None,
             settings_filter,
+            settings_search: settings_search.clone(),
+            _settings_search_sub: settings_search_sub,
             settings_select_highlight: None,
             settings_select_scroll: UniformListScrollHandle::new(),
             notification_prefs: notifications::Prefs::load(),
@@ -1270,6 +1292,7 @@ impl OrbitApp {
             host,
             refreshing: false,
             session_details_open: false,
+            header_more_open: false,
             title_generating: false,
             rename_saved_at: None,
             quota_popup_open: false,
@@ -1997,15 +2020,15 @@ struct WorkspaceMenu {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SettingsSection {
     General,
+    Appearance,
+    Shortcuts,
     Runtime,
     Agent,
+    Providers,
+    Models,
     Skills,
     Plugins,
     Mcp,
-    Models,
-    Appearance,
-    Providers,
-    Shortcuts,
     About,
 }
 

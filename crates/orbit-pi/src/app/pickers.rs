@@ -465,7 +465,7 @@ impl OrbitApp {
             }
             CommandId::ToggleUsage => self.on_toggle_usage(&crate::ToggleUsage, window, cx),
             CommandId::ReviewChanges => {
-                self.sidepane.update(cx, |pane, cx| pane.show_review(cx));
+                self.open_review(cx);
             }
             CommandId::OpenGit => {
                 self.command_palette = None;
@@ -476,6 +476,10 @@ impl OrbitApp {
                 cx.notify();
             }
             CommandId::ToggleSidePanel => {
+                // Opening Review replaces the Git page, which shares the window.
+                if !self.sidepane.read(cx).is_open() {
+                    self.close_git_for_review(cx);
+                }
                 self.sidepane.update(cx, |pane, cx| pane.toggle(cx));
             }
             CommandId::ToggleTerminal => {

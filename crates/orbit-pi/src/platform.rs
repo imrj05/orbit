@@ -745,6 +745,7 @@ pub mod shortcuts {
     pub const CHOOSE_MODEL: &str = "secondary-shift-m";
     pub const CHOOSE_THINKING: &str = "secondary-shift-t";
     pub const REVIEW_CHANGES: &str = "secondary-shift-r";
+    pub const OPEN_GIT: &str = "secondary-shift-g";
     pub const SHORTCUT_HELP: &str = "secondary-/";
     pub const SEND: &str = "enter";
     pub const SEND_ALTERNATE: &str = "alt-enter";

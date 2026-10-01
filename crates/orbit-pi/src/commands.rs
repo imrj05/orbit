@@ -416,12 +416,15 @@ pub static COMMANDS: &[CommandSpec] = &[
         ),
         shortcuts::REVIEW_CHANGES,
     ),
-    command(
-        CommandId::OpenGit,
-        Navigation,
-        "icons/git-commit.svg",
-        "command_palette.open_git",
-        "git commit push branch history graph changes",
+    with_chord(
+        command(
+            CommandId::OpenGit,
+            Navigation,
+            "icons/git-commit.svg",
+            "command_palette.open_git",
+            "git commit push branch history graph changes",
+        ),
+        shortcuts::OPEN_GIT,
     ),
     // ── Panels ─────────────────────────────────────────────────────────
     with_alt_title(
@@ -816,6 +819,11 @@ pub static BINDINGS: &[Binding] = &[
         id: CommandId::ReviewChanges,
     },
     Binding {
+        chord: shortcuts::OPEN_GIT,
+        context: None,
+        id: CommandId::OpenGit,
+    },
+    Binding {
         chord: shortcuts::SHORTCUT_HELP,
         context: None,
         id: CommandId::OpenShortcutHelp,
@@ -989,7 +997,7 @@ pub fn tooltip(id: CommandId, alternate: bool) -> String {
 fn action_binding(binding: &Binding) -> Option<KeyBinding> {
     use crate::{
         AbortRun, CheckForUpdates, CopyLastResponse, FocusSessions, GitTabChanges, GitTabGraph,
-        GitTabHistory, GitTabIssues, GitTabPulls, NewSession, NextSession, NextTurn,
+        GitTabHistory, GitTabIssues, GitTabPulls, NewSession, NextSession, NextTurn, OpenGit,
         OpenSessionSlot, OpenSettings, OpenShortcutHelp, PrevSession, PrevTurn, Quit,
         RefreshSessions, ReviewChanges, ReviewClose, ReviewCollapseAll, ReviewExpandAll,
         ReviewFileNext, ReviewFilePrev, ReviewHunkNext, ReviewHunkPrev, ReviewTreeNext,
@@ -1021,6 +1029,7 @@ fn action_binding(binding: &Binding) -> Option<KeyBinding> {
         CommandId::ChooseModel => KeyBinding::new(chord, ToggleModelMenu, context),
         CommandId::ChooseThinking => KeyBinding::new(chord, ToggleThinkingMenu, context),
         CommandId::ReviewChanges => KeyBinding::new(chord, ReviewChanges, context),
+        CommandId::OpenGit => KeyBinding::new(chord, OpenGit, context),
         CommandId::OpenShortcutHelp => KeyBinding::new(chord, OpenShortcutHelp, context),
         CommandId::ToggleCommandPalette => KeyBinding::new(chord, ToggleCommandPalette, context),
         CommandId::ToggleSearch => KeyBinding::new(chord, ToggleSearch, context),
@@ -1053,7 +1062,6 @@ fn action_binding(binding: &Binding) -> Option<KeyBinding> {
         | CommandId::CopySessionId
         | CommandId::DeleteSession
         | CommandId::FocusComposer
-        | CommandId::OpenGit
         | CommandId::ToggleSidePanel
         | CommandId::OpenMcpSettings
         | CommandId::AddMcpServer
@@ -1142,8 +1150,8 @@ mod tests {
         );
         // A chord-less command shows its bare title.
         assert_eq!(
-            tooltip(CommandId::OpenGit, false),
-            tr!("command_palette.open_git")
+            tooltip(CommandId::ToggleSidePanel, false),
+            tr!("command_palette.show_side_panel")
         );
         // A toggle's alternate face is what the hint names.
         assert_eq!(

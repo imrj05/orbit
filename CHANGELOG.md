@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **⌘⇧G** opens the Git/GitHub page (and closes it again), and the **…**
+  overflow menu now shows each row's shortcut — the Git row reads **⌘⇧G**.
+
+### Changed
+
+- The top bar's right side now carries only what shows live state: the
+  provider quota, **Open in**, the Review chip, and a single **…** menu. The
+  Review chip folds together the side-panel toggle and the working tree's
+  `+N −N` counts (one or the other); the new **…** menu holds **Session
+  details**, **Explorer**, **Terminal**, and **Git**, each still on its
+  shortcut and one click away.
+
 ## [0.2.3] - 2026-10-01
 
 ### Added
