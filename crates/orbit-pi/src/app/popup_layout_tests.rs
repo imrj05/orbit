@@ -898,7 +898,10 @@ fn quota_popup_mcp_tab_swaps_the_pane(cx: &mut gpui::TestAppContext) {
     let tab = cx
         .debug_bounds("quota-tab-chip-mcp")
         .expect("the MCP tab chip laid out");
-    assert!(tab.size.width > px(10.), "the MCP tab is invisible: {tab:?}");
+    assert!(
+        tab.size.width > px(10.),
+        "the MCP tab is invisible: {tab:?}"
+    );
     // This selector sits on a content-sized line, so its width is the
     // shaped text's width rather than the cell's. A name latched as "…"
     // measures ~9px here; "echo" is ~26px at Small.

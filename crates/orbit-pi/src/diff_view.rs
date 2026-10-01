@@ -20,6 +20,8 @@ use crate::theme::{self, Theme, ThemeMode};
 pub const DIFF_TEXT_SIZE: f32 = 12.5;
 /// File headers are one fixed row.
 pub const REVIEW_FILE_HEADER_HEIGHT: f32 = 36.;
+/// A grouped list's section divider is one fixed row.
+pub const REVIEW_SECTION_HEADER_HEIGHT: f32 = 30.;
 /// Hunk and meta rows are one fixed row.
 pub const REVIEW_HUNK_HEIGHT: f32 = 24.;
 
@@ -72,14 +74,79 @@ pub fn render_file_header(
         .child(
             div()
                 .text_size(TextSize::Small.px(&theme))
-                .text_color(theme.add_green)
+                .text_color(if file.additions > 0 {
+                    theme.add_green
+                } else {
+                    theme.text_3
+                })
                 .child(format!("+{}", file.additions)),
         )
         .child(
             div()
                 .text_size(TextSize::Small.px(&theme))
-                .text_color(theme.del_red)
+                .text_color(if file.deletions > 0 {
+                    theme.del_red
+                } else {
+                    theme.text_3
+                })
                 .child(format!("-{}", file.deletions)),
+        )
+}
+
+/// A group divider in a grouped list ("Staged" / "Changes"): the label with
+/// the section's file count inline and its line deltas at the far edge.
+pub fn render_section_header(
+    label: &str,
+    count: usize,
+    additions: u64,
+    deletions: u64,
+    actions: Option<AnyElement>,
+    theme: Theme,
+) -> Div {
+    div()
+        .w_full()
+        .h(px(REVIEW_SECTION_HEADER_HEIGHT))
+        .px(px(12.))
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .border_b_1()
+        .border_color(theme.border)
+        .bg(theme.bg_raised)
+        .child(
+            div()
+                .text_size(TextSize::Small.px(&theme))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.text)
+                .child(label.to_string()),
+        )
+        .child(
+            div()
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_3)
+                .child(count.to_string()),
+        )
+        .child(div().flex_1())
+        .when_some(actions, |row, actions| row.child(actions))
+        .child(
+            div()
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(if additions > 0 {
+                    theme.add_green
+                } else {
+                    theme.text_3
+                })
+                .child(format!("+{additions}")),
+        )
+        .child(
+            div()
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(if deletions > 0 {
+                    theme.del_red
+                } else {
+                    theme.text_3
+                })
+                .child(format!("-{deletions}")),
         )
 }
 

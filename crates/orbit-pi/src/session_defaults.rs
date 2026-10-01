@@ -245,7 +245,10 @@ mod tests {
             SessionDefault::default()
         );
         assert_eq!(SessionDefault::from_json("{}"), SessionDefault::default());
-        assert_eq!(SessionDefault::from_json("[1,2]"), SessionDefault::default());
+        assert_eq!(
+            SessionDefault::from_json("[1,2]"),
+            SessionDefault::default()
+        );
         // A stray provider without a model is not a default.
         assert_eq!(
             SessionDefault::from_json(r#"{"provider":"anthropic"}"#),

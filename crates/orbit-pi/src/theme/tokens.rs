@@ -37,7 +37,7 @@
 
 use std::time::Duration;
 
-use gpui::{BoxShadow, DefiniteLength, Hsla, Pixels, Styled, hsla, point, px, relative};
+use gpui::{hsla, point, px, relative, BoxShadow, DefiniteLength, Hsla, Pixels, Styled};
 
 use super::{Theme, ThemeMode};
 

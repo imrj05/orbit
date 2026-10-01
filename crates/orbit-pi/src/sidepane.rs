@@ -30,7 +30,7 @@ use crate::app::{
 use crate::composer::ComposerInput;
 use crate::diff_view::{
     diff_gutter_width, render_code_row, render_file_header, render_hunk_header, render_meta,
-    render_split_row, SplitPairing,
+    render_section_header, render_split_row, SplitPairing,
 };
 use crate::git;
 use crate::review::{self, ExpansionDirection, GapPosition, LineKind, Snapshot, Source};
@@ -67,9 +67,26 @@ const REFRESH_FEEDBACK: Duration = Duration::from_millis(650);
 /// Drag marker for the side-pane resize handle (gpui typed drag state).
 pub struct SidePaneResize;
 
+/// Callback an embedded host installs so a review file header carries
+/// per-file actions (stage / unstage / discard) beside the path. It is called
+/// during render and returns the action row, or `None` for a file with no
+/// actions.
+pub type FileActions = std::rc::Rc<dyn Fn(&review::File, Theme) -> Option<AnyElement>>;
+
+/// Callback an embedded host installs so the review toolbar carries bulk
+/// actions beside its view toggles (the Git page's stage / unstage / discard
+/// all). It is called during render and returns the controls, or `None` when
+/// the host has nothing to offer.
+pub type ToolbarActions = std::rc::Rc<dyn Fn(Theme) -> Option<AnyElement>>;
+
 pub struct SidePane {
     /// Whether the pane is shown at all (toggled from the top bar).
     open: bool,
+    /// Render as an embedded review browser instead of a docked pane: the
+    /// chrome (width, resize handle, and the full-width/close controls) is
+    /// dropped and width decisions use [`SidePane::available_width`], so the
+    /// same view can fill another surface (the Git page's Changes tab).
+    embedded: bool,
     /// Pane width in pixels — adjusted by dragging its left edge.
     width: Pixels,
 
@@ -118,6 +135,11 @@ pub struct SidePane {
     /// The window width Full width expands to — set by the app every render,
     /// so it tracks a sidebar toggle or a window resize.
     available_width: Pixels,
+    /// Per-file actions (stage / unstage / discard) an embedded host installs.
+    file_actions: Option<FileActions>,
+    /// Bulk actions (stage / unstage / discard all) an embedded host installs
+    /// in the toolbar, beside the view toggles.
+    toolbar_actions: Option<ToolbarActions>,
     /// The width Full width returns to.
     restore_width: Pixels,
     full_width: bool,
@@ -160,8 +182,11 @@ impl SidePane {
             .max(PANE_MIN_W));
         Self {
             open: false,
+            embedded: false,
             width,
             available_width: width,
+            file_actions: None,
+            toolbar_actions: None,
             restore_width: width,
             full_width: false,
             workspace: None,
@@ -215,6 +240,40 @@ impl SidePane {
         self.open
     }
 
+    /// Mark this instance as an embedded review browser rather than the docked
+    /// pane. The caller (the Git page) owns its lifecycle; embedded mode keeps
+    /// itself open so `set_workspace` / `mark_review_stale` still load the
+    /// diff.
+    pub fn set_embedded(&mut self, embedded: bool, cx: &mut Context<Self>) {
+        if self.embedded == embedded {
+            return;
+        }
+        self.embedded = embedded;
+        if embedded {
+            self.source = Source::Uncommitted;
+        }
+        // The diff loads lazily through the normal `show_review` /
+        // `set_workspace` path, not here.
+        self.review_stale = true;
+        cx.notify();
+    }
+
+    /// Install the per-file action row an embedded host wants beside each
+    /// changed file's header (stage / unstage / discard). Called whenever the
+    /// host's status changes, so the row it builds reflects the latest state.
+    pub fn set_file_actions(&mut self, actions: FileActions, cx: &mut Context<Self>) {
+        self.file_actions = Some(actions);
+        cx.notify();
+    }
+
+    /// Install the bulk action controls an embedded host wants in the review
+    /// toolbar (the Git page's stage / unstage / discard all). Pass `None` to
+    /// clear them when the host has no changes to act on.
+    pub fn set_toolbar_actions(&mut self, actions: Option<ToolbarActions>, cx: &mut Context<Self>) {
+        self.toolbar_actions = actions;
+        cx.notify();
+    }
+
     /// Whether the pane has taken the window's full width (the chat column
     /// and the sessions sidebar yield to it).
     pub fn is_full_width(&self) -> bool {
@@ -235,6 +294,16 @@ impl SidePane {
 
     pub fn width(&self) -> Pixels {
         self.width
+    }
+
+    /// The width the pane's responsive decisions (stats, tree) use: its docked
+    /// width, or the host's available width when embedded.
+    fn pane_width(&self) -> Pixels {
+        if self.embedded {
+            self.available_width
+        } else {
+            self.width
+        }
     }
 
     /// Whether the source filter dropdown is open (Escape closes it before
@@ -517,6 +586,10 @@ impl SidePane {
             .unwrap_or_default();
         let source = self.source;
         let session = self.session.clone();
+        // The embedded Git browser groups the working tree into a Staged
+        // section and a Changes (unstaged) section; picking a specific source
+        // from the filter narrows it to that one capture instead.
+        let grouped = self.embedded && source == Source::Uncommitted;
         self.load_generation = self.load_generation.wrapping_add(1);
         let generation = self.load_generation;
         self.review_loading = true;
@@ -528,8 +601,30 @@ impl SidePane {
             let parsed = cx
                 .background_executor()
                 .spawn(async move {
+                    if grouped {
+                        let staged = git::collect_review_diff(&cwd, Source::Staged, None)?;
+                        let unstaged = git::collect_review_diff(&cwd, Source::Unstaged, None)?;
+                        let sections = [
+                            review::SectionInput {
+                                label: tr!("git_panel.section_staged"),
+                                numstat: &staged.numstat,
+                                patch: &staged.patch,
+                                complete_context: staged.complete_context,
+                            },
+                            review::SectionInput {
+                                label: tr!("git_panel.section_changes"),
+                                numstat: &unstaged.numstat,
+                                patch: &unstaged.patch,
+                                complete_context: unstaged.complete_context,
+                            },
+                        ];
+                        return Ok::<_, String>(review::parse_sections(
+                            Source::Uncommitted,
+                            &sections,
+                        ));
+                    }
                     let data = git::collect_review_diff(&cwd, source, session.as_deref())?;
-                    Ok::<_, String>(review::parse_collected(
+                    Ok(review::parse_collected(
                         source,
                         &data.numstat,
                         &data.patch,
@@ -599,8 +694,16 @@ impl SidePane {
         self.tree_cursor = None;
         self.diff_cursor = None;
         self.diff_list.reset(snapshot.lines.len());
+        let file_count = snapshot.files.len();
         self.review = Some(Arc::new(snapshot));
-        self.collapsed_files.clear();
+        // The Git page's Changes tab opens collapsed — every file starts as a
+        // header row, so the list reads as an overview first. The docked
+        // Review pane still opens fully expanded.
+        if self.embedded {
+            self.collapsed_files = (0..file_count).collect();
+        } else {
+            self.collapsed_files.clear();
+        }
         self.rebuild_view_metrics();
         self.mark_tree_dirty();
     }
@@ -853,7 +956,9 @@ impl SidePane {
         let target = if direction > 0 {
             (current + 1..snapshot.lines.len()).find(|&ix| is_hunk_start(&snapshot.lines, ix))
         } else {
-            (0..current).rev().find(|&ix| is_hunk_start(&snapshot.lines, ix))
+            (0..current)
+                .rev()
+                .find(|&ix| is_hunk_start(&snapshot.lines, ix))
         };
         let Some(ix) = target else {
             return;
@@ -897,7 +1002,12 @@ impl SidePane {
     // ── rendering ──────────────────────────────────────────────────────
 
     fn body(&mut self, window: &Window, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
-        self.sync_tree_rows(cx);
+        // Embedded drops the header row (there is no tree toggle or refresh
+        // there) and the changed-files tree: the host surface shows the source
+        // toolbar and the diff list, exactly like the Review pane's flat view.
+        if !self.embedded {
+            self.sync_tree_rows(cx);
+        }
         let truncated = self
             .review
             .as_ref()
@@ -907,13 +1017,14 @@ impl SidePane {
             .as_ref()
             .map(|snapshot| (snapshot.additions, snapshot.deletions))
             .unwrap_or((0, 0));
-        let compact = self.width < px(STATS_MIN_PANE_W);
-        let tree_available = self.width >= px(TREE_MIN_PANE_W);
+        let compact = self.pane_width() < px(STATS_MIN_PANE_W);
+        let tree_available = !self.embedded && self.pane_width() >= px(TREE_MIN_PANE_W);
         let tree_visible = tree_available && self.tree_open;
 
         // Header row: title + tree toggle + refresh + the panel-window
-        // controls (full width, close).
-        let head = div()
+        // controls (full width, close). Embedded drops the panel-window
+        // controls — they belong to the dock, not the host surface.
+        let mut head = div()
             .h(px(PANE_ROW_H))
             .flex()
             .items_center()
@@ -970,39 +1081,82 @@ impl SidePane {
                         theme.text_3,
                         theme,
                     )),
-            )
-            .child(self.view_toggle(
-                "review-full-width",
-                if self.full_width {
-                    "icons/arrow-shrink.svg"
-                } else {
-                    "icons/arrow-expand.svg"
-                },
-                self.full_width,
-                true,
-                if self.full_width {
-                    tr!("sidepane.restore_width")
-                } else {
-                    tr!("sidepane.full_width")
-                },
-                Self::toggle_full_width,
-                theme,
-                cx,
-            ))
-            .child(
-                icon_button_frame(div().id("pane-close"), &theme, ButtonSize::Default)
-                    .group(BUTTON_GROUP)
-                    .tip(tr!("common.close"))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme.bg_hover))
-                    .active(|s| s.opacity(PRESS_DIM))
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close(cx)))
-                    .child(icon(
-                        "icons/x.svg",
-                        ButtonSize::Default.icon_size().px(&theme),
-                        theme.text_3,
-                    )),
             );
+
+        if !self.embedded {
+            head = head
+                .child(self.view_toggle(
+                    "review-full-width",
+                    if self.full_width {
+                        "icons/arrow-shrink.svg"
+                    } else {
+                        "icons/arrow-expand.svg"
+                    },
+                    self.full_width,
+                    true,
+                    if self.full_width {
+                        tr!("sidepane.restore_width")
+                    } else {
+                        tr!("sidepane.full_width")
+                    },
+                    Self::toggle_full_width,
+                    theme,
+                    cx,
+                ))
+                .child(
+                    icon_button_frame(div().id("pane-close"), &theme, ButtonSize::Default)
+                        .group(BUTTON_GROUP)
+                        .tip(tr!("common.close"))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme.bg_hover))
+                        .active(|s| s.opacity(PRESS_DIM))
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close(cx)))
+                        .child(icon(
+                            "icons/x.svg",
+                            ButtonSize::Default.icon_size().px(&theme),
+                            theme.text_3,
+                        )),
+                );
+        }
+
+        // The source filter belongs to the docked Review pane. The Git page's
+        // embedded browser always shows the working tree split into Staged and
+        // Changes sections, so its chip is dropped.
+        let source_chip = (!self.embedded).then(|| {
+            button_frame(div().id("review-source"), &theme, ButtonSize::Medium)
+                .group(BUTTON_GROUP)
+                .border_1()
+                .border_color(if self.source_menu_open {
+                    theme.border_strong
+                } else {
+                    theme.border
+                })
+                .bg(theme.bg_raised)
+                .cursor_pointer()
+                .hover(|s| s.bg(theme.bg_hover))
+                .active(|s| s.opacity(PRESS_DIM))
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_source_menu(cx)))
+                .child(icon(
+                    "icons/file-diff.svg",
+                    ButtonSize::Medium.icon_size().px(&theme),
+                    theme.text_3,
+                ))
+                .child(
+                    div()
+                        .max_w(px(120.))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.text)
+                        .child(self.source_label(self.source)),
+                )
+                .child(icon(
+                    "icons/chevron-down.svg",
+                    IconSize::XSmall.px(&theme),
+                    theme.text_3,
+                ))
+                .into_any_element()
+        });
 
         // Toolbar: the source filter chip, the diff view toggles, and the
         // live ±stats.
@@ -1014,43 +1168,14 @@ impl SidePane {
             .px(px(10.))
             .border_b_1()
             .border_color(theme.border)
-            .child(
-                button_frame(div().id("review-source"), &theme, ButtonSize::Medium)
-                    .group(BUTTON_GROUP)
-                    .border_1()
-                    .border_color(if self.source_menu_open {
-                        theme.border_strong
-                    } else {
-                        theme.border
-                    })
-                    .bg(theme.bg_raised)
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme.bg_hover))
-                    .active(|s| s.opacity(PRESS_DIM))
-                    .on_click(
-                        cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_source_menu(cx)),
-                    )
-                    .child(icon(
-                        "icons/file-diff.svg",
-                        ButtonSize::Medium.icon_size().px(&theme),
-                        theme.text_3,
-                    ))
-                    .child(
-                        div()
-                            .max_w(px(120.))
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text)
-                            .child(self.source_label(self.source)),
-                    )
-                    .child(icon(
-                        "icons/chevron-down.svg",
-                        IconSize::XSmall.px(&theme),
-                        theme.text_3,
-                    )),
-            )
+            .children(source_chip)
             .child(div().flex_1())
+            // Bulk actions an embedded host contributes (the Git page's stage /
+            // unstage / discard all), sitting just left of the view toggles.
+            .when_some(
+                self.toolbar_actions.as_ref().and_then(|build| build(theme)),
+                |row, actions| row.child(actions),
+            )
             .when(truncated, |row| {
                 row.child(
                     div()
@@ -1126,15 +1251,13 @@ impl SidePane {
 
         let content = self.render_content(window, theme, tree_visible, cx);
 
-        div()
-            .flex_1()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            .child(head)
-            .child(toolbar)
-            .child(content)
-            .into_any_element()
+        let mut column = div().flex_1().min_h_0().flex().flex_col();
+        // Embedded drops the dock title row entirely: the host surface already
+        // names the view, and the toolbar below carries the browser controls.
+        if !self.embedded {
+            column = column.child(head);
+        }
+        column.child(toolbar).child(content).into_any_element()
     }
 
     /// One icon-only view toggle. The glyph and tooltip name the action, the
@@ -1328,30 +1451,92 @@ impl SidePane {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let scroll_top = self.diff_list.logical_scroll_top();
-        let (header_index, next_header_index) = snapshot.file_headers_around(scroll_top.item_ix)?;
-        let needs_sticky = header_index < scroll_top.item_ix
-            || (header_index == scroll_top.item_ix && scroll_top.offset_in_item > px(0.));
-        if !needs_sticky {
-            return None;
+        let mut layers = div().absolute().top_0().left_0().w_full();
+        let mut has_layer = false;
+
+        // A grouped list pins its current section divider first; the file
+        // header then stacks directly beneath it. An ungrouped list keeps only
+        // the file header, as before.
+        let section = if snapshot.is_grouped() {
+            snapshot.section_headers_around(scroll_top.item_ix)
+        } else {
+            None
+        };
+        let mut section_pinned = false;
+        if let Some((section_index, next_section)) = section {
+            let section_needs = section_index < scroll_top.item_ix
+                || (section_index == scroll_top.item_ix && scroll_top.offset_in_item > px(0.));
+            if section_needs {
+                if let Some(LineKind::SectionHeader {
+                    label,
+                    count,
+                    additions,
+                    deletions,
+                }) = snapshot.lines.get(section_index).map(|line| &line.kind)
+                {
+                    layers = layers.child(
+                        div()
+                            .absolute()
+                            .top(self.sticky_push_offset(next_section))
+                            .left_0()
+                            .w_full()
+                            .child(render_section_header(
+                                label, *count, *additions, *deletions, None, theme,
+                            )),
+                    );
+                    has_layer = true;
+                    section_pinned = true;
+                }
+            }
         }
-        let line = snapshot.lines.get(header_index)?;
-        let top_offset = next_header_index
-            .and_then(|next_header_index| {
-                let bounds = self.diff_list.bounds_for_item(next_header_index)?;
+
+        if let Some((header_index, next_header_index)) =
+            snapshot.file_headers_around(scroll_top.item_ix)
+        {
+            // Once the section divider is pinned the file header beneath it is
+            // covered, so it must pin too even when it sits exactly at the top.
+            let file_needs = section_pinned
+                || header_index < scroll_top.item_ix
+                || (header_index == scroll_top.item_ix && scroll_top.offset_in_item > px(0.));
+            if file_needs {
+                if let Some(line) = snapshot.lines.get(header_index) {
+                    let mut push = self.sticky_push_offset(next_header_index);
+                    if let Some((_, next_section)) = section {
+                        push = push.min(self.sticky_push_offset(next_section));
+                    }
+                    let section_height = if snapshot.is_grouped() {
+                        px(crate::diff_view::REVIEW_SECTION_HEADER_HEIGHT)
+                    } else {
+                        px(0.)
+                    };
+                    layers = layers.child(
+                        div()
+                            .absolute()
+                            .top(section_height + push)
+                            .left_0()
+                            .w_full()
+                            .child(self.file_header_row(line.file_index, true, theme, cx)),
+                    );
+                    has_layer = true;
+                }
+            }
+        }
+
+        has_layer.then(|| layers.into_any_element())
+    }
+
+    /// How far a sticky row `next_index` pushes the current one up as it
+    /// enters the viewport: zero until it overlaps, then negative by the
+    /// overlap. `None` when there is no following row.
+    fn sticky_push_offset(&self, next_index: Option<usize>) -> Pixels {
+        next_index
+            .and_then(|next_index| {
+                let bounds = self.diff_list.bounds_for_item(next_index)?;
                 let viewport = self.diff_list.viewport_bounds();
                 let y_in_viewport = bounds.origin.y - viewport.origin.y;
                 (y_in_viewport < bounds.size.height).then_some(y_in_viewport - bounds.size.height)
             })
-            .unwrap_or(px(0.));
-        Some(
-            div()
-                .absolute()
-                .top(top_offset)
-                .left_0()
-                .w_full()
-                .child(self.file_header_row(line.file_index, true, theme, cx))
-                .into_any_element(),
-        )
+            .unwrap_or(px(0.))
     }
 
     /// One changed file's header, made actionable: its chevron says whether
@@ -1376,7 +1561,7 @@ impl SidePane {
         let collapsed = self.collapsed_files.contains(&file_index);
         let nerd = nerd_font_family(cx);
         let dark = theme.mode == ThemeMode::Dark;
-        render_file_header(&file, theme, nerd.as_ref(), dark, collapsed)
+        let mut row = render_file_header(&file, theme, nerd.as_ref(), dark, collapsed)
             .id(gpui::ElementId::Name(
                 format!(
                     "review-file-{}-{file_index}",
@@ -1396,8 +1581,19 @@ impl SidePane {
             .hover(|style| style.bg(theme.bg_hover))
             .on_click(
                 cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_file(file_index, cx)),
-            )
-            .into_any_element()
+            );
+        // An embedded host (the Git page) can hang stage / unstage / discard
+        // actions off the header; they reveal on hover so the row stays clean.
+        if self.embedded {
+            if let Some(actions) = self
+                .file_actions
+                .as_ref()
+                .and_then(|build| build(&file, theme))
+            {
+                row = row.group("review-file-header").child(actions);
+            }
+        }
+        row.into_any_element()
     }
 
     fn render_diff_line(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
@@ -1415,6 +1611,17 @@ impl SidePane {
             LineKind::FileHeader => {
                 self.pinned_row(self.file_header_row(line.file_index, false, theme, cx))
             }
+            // The group divider stays put even while every file beneath it is
+            // collapsed, so it is handled before the collapse gate.
+            LineKind::SectionHeader {
+                label,
+                count,
+                additions,
+                deletions,
+            } => self.pinned_row(
+                render_section_header(label, *count, *additions, *deletions, None, theme)
+                    .into_any_element(),
+            ),
             // A collapsed file keeps its header and nothing else.
             _ if self.collapsed_files.contains(&line.file_index) => {
                 div().h(px(0.)).into_any_element()
@@ -1620,11 +1827,9 @@ impl SidePane {
                     .on_action(cx.listener(|this, _: &crate::ReviewTreePrev, _, cx| {
                         this.review_tree_move(-1, cx)
                     }))
-                    .on_action(
-                        cx.listener(|this, _: &crate::ReviewTreeToggle, _, cx| {
-                            this.review_tree_toggle(cx)
-                        }),
-                    )
+                    .on_action(cx.listener(|this, _: &crate::ReviewTreeToggle, _, cx| {
+                        this.review_tree_toggle(cx)
+                    }))
                     .on_action(cx.listener(|this, _: &crate::ReviewFileNext, _, cx| {
                         this.review_move_file(1, cx)
                     }))
@@ -1640,11 +1845,9 @@ impl SidePane {
                     .on_action(cx.listener(|this, _: &crate::ReviewExpandAll, _, cx| {
                         this.review_expand_all(cx)
                     }))
-                    .on_action(
-                        cx.listener(|this, _: &crate::ReviewCollapseAll, _, cx| {
-                            this.review_collapse_all(cx)
-                        }),
-                    )
+                    .on_action(cx.listener(|this, _: &crate::ReviewCollapseAll, _, cx| {
+                        this.review_collapse_all(cx)
+                    }))
                     .child(tree_el),
             )
             .into_any_element()
@@ -1812,13 +2015,20 @@ impl SidePane {
 
     /// The source filter dropdown, painted over the pane body.
     fn source_menu(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !self.source_menu_open {
+        if !self.source_menu_open || self.embedded {
             return None;
         }
         let mut menu = picker_surface(div().id("review-source-menu"), &theme)
             .absolute()
             // Below the toolbar's source button.
-            .top(menu_top(1. + PANE_ROW_H, ButtonSize::Medium, &theme))
+            .top(menu_top(
+                // Embedded drops the head row, so the toolbar is flush with the
+                // pane top; docked panes push it down by the head row's height
+                // plus its 1px bottom border.
+                if self.embedded { 0. } else { 1. + PANE_ROW_H },
+                ButtonSize::Medium,
+                &theme,
+            ))
             .left(px(10.))
             .w(px(200.))
             .py(picker::list_padding_y(&theme))
@@ -1970,6 +2180,26 @@ impl Source {
 
 impl Render for SidePane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Embedded: paint the browser directly, filling its host surface.
+        if self.embedded {
+            let theme = *theme::get(cx);
+            let body = self.body(window, theme, cx);
+            return div()
+                .id("embedded-review")
+                .debug_selector(|| "embedded-review".to_string())
+                .relative()
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .w_full()
+                .bg(theme.bg_main)
+                .flex()
+                .flex_col()
+                .child(body)
+                .children(self.source_menu(theme, cx))
+                .on_action(cx.listener(Self::on_filter_cancel))
+                .into_any_element();
+        }
         if !self.open {
             return div().into_any_element();
         }
@@ -2036,10 +2266,7 @@ fn is_hunk_start(lines: &[review::Line], ix: usize) -> bool {
         LineKind::Addition | LineKind::Deletion => {
             let previous_is_change = ix > 0
                 && lines[ix - 1].file_index == lines[ix].file_index
-                && matches!(
-                    lines[ix - 1].kind,
-                    LineKind::Addition | LineKind::Deletion
-                );
+                && matches!(lines[ix - 1].kind, LineKind::Addition | LineKind::Deletion);
             !previous_is_change
         }
         _ => false,
@@ -2186,7 +2413,11 @@ mod tests {
             &patch,
             true,
         );
-        assert_eq!(snapshot.files.len(), 2, "fixture must hold two changed files");
+        assert_eq!(
+            snapshot.files.len(),
+            2,
+            "fixture must hold two changed files"
+        );
         cx.update(|cx| {
             pane.update(cx, |pane, cx| {
                 pane.apply_snapshot(snapshot);

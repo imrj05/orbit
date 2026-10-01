@@ -114,10 +114,7 @@ fn collect(cwd: &Path, base: Option<&str>) -> RepoContext {
             cwd,
             &["log", "--no-decorate", "--format=%s", "-n", "30", range],
         ),
-        None => git::run_git(
-            cwd,
-            &["log", "--no-decorate", "--format=%s", "-n", "20"],
-        ),
+        None => git::run_git(cwd, &["log", "--no-decorate", "--format=%s", "-n", "20"]),
     }
     .map(|out| {
         out.lines()
@@ -359,8 +356,15 @@ fn fill_first_section(template: &str, text: &str) -> String {
     while insert_at < lines.len() && lines[insert_at].trim().is_empty() {
         insert_at += 1;
     }
-    let mut out: Vec<String> = lines[..insert_at].iter().map(|line| line.to_string()).collect();
-    if out.last().map(|line| !line.trim().is_empty()).unwrap_or(true) {
+    let mut out: Vec<String> = lines[..insert_at]
+        .iter()
+        .map(|line| line.to_string())
+        .collect();
+    if out
+        .last()
+        .map(|line| !line.trim().is_empty())
+        .unwrap_or(true)
+    {
         out.push(String::new());
     }
     for line in text.trim().lines() {
@@ -559,8 +563,10 @@ mod tests {
 
     #[test]
     fn parses_title_and_body_from_a_text_fence() {
-        let draft = process_response("```text\nfeat: add issue generator\n\n## Summary\n\n- drafts a title\n```")
-            .unwrap();
+        let draft = process_response(
+            "```text\nfeat: add issue generator\n\n## Summary\n\n- drafts a title\n```",
+        )
+        .unwrap();
         assert_eq!(draft.title, "feat: add issue generator");
         assert!(draft.body.contains("## Summary"));
         assert!(draft.body.contains("- drafts a title"));
@@ -576,11 +582,14 @@ mod tests {
 
     #[test]
     fn accepts_markdown_fence_and_title_first_prose() {
-        let fenced = process_response("```markdown\nAdd retry to the uploader\n\n## Summary\n\nRetries twice.\n```")
-            .unwrap();
+        let fenced = process_response(
+            "```markdown\nAdd retry to the uploader\n\n## Summary\n\nRetries twice.\n```",
+        )
+        .unwrap();
         assert_eq!(fenced.title, "Add retry to the uploader");
 
-        let prose = process_response("Add retry to the uploader\n\n## Summary\n\nRetries twice.").unwrap();
+        let prose =
+            process_response("Add retry to the uploader\n\n## Summary\n\nRetries twice.").unwrap();
         assert_eq!(prose.title, "Add retry to the uploader");
         assert!(prose.body.contains("## Summary"));
     }
@@ -608,10 +617,18 @@ mod tests {
             changed: vec!["git_panel/mod.rs | 20 +++++".into()],
         };
         assert_eq!(
-            heuristic_title(DraftKind::PullRequest, "Improve the pages\n\nMore.", &context),
+            heuristic_title(
+                DraftKind::PullRequest,
+                "Improve the pages\n\nMore.",
+                &context
+            ),
             "Improve the pages"
         );
-        let body = heuristic_body(DraftKind::PullRequest, "Improve the pages\n\nMore.", &context);
+        let body = heuristic_body(
+            DraftKind::PullRequest,
+            "Improve the pages\n\nMore.",
+            &context,
+        );
         assert!(body.contains("More."));
         assert!(body.contains("## Summary"));
         assert!(body.contains("- feat(git): tidy the issue list"));
@@ -678,8 +695,16 @@ mod tests {
             commits: vec!["fix: guard input".into()],
             ..RepoContext::default()
         };
-        let prompt = user_prompt(DraftKind::Issue, "the button is broken", &context, Some(&template));
-        assert!(prompt.contains("<template name=\"Bug report\">"), "{prompt}");
+        let prompt = user_prompt(
+            DraftKind::Issue,
+            "the button is broken",
+            &context,
+            Some(&template),
+        );
+        assert!(
+            prompt.contains("<template name=\"Bug report\">"),
+            "{prompt}"
+        );
         assert!(prompt.contains("### What happened?"));
         assert!(prompt.contains("Fill in the REPOSITORY TEMPLATE"));
 

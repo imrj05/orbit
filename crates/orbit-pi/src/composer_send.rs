@@ -313,9 +313,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn turn_navigation_shortcuts_stay_live_from_the_composer(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn turn_navigation_shortcuts_stay_live_from_the_composer(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             crate::bind_keys(cx);
             let (prev, next) = if cfg!(target_os = "macos") {

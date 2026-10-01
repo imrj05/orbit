@@ -1,11 +1,11 @@
 use super::*;
-use gpui::InteractiveElement;
 use crate::platform::WindowCommand;
 use crate::theme::tokens::{
     self, button, context_menu, input, list, list_item, picker, ButtonSize, DynamicSpacing,
     IconSize, Radius, StyledExt, TextSize,
 };
 use crate::usage::tooltip::Tooltip;
+use gpui::InteractiveElement;
 
 /// Attach Orbit's native tooltip to any interactive element.
 ///

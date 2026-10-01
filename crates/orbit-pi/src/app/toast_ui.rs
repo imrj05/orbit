@@ -1,6 +1,6 @@
 use super::helpers::*;
 use super::*;
-use crate::theme::tokens::{IconSize, toast as toast_tokens};
+use crate::theme::tokens::{toast as toast_tokens, IconSize};
 use crate::toast::{Toast, ToastKind};
 
 fn short_revision(revision: &str) -> &str {

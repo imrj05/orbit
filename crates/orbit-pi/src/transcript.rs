@@ -16,7 +16,7 @@ use std::{
 };
 
 use base64::Engine as _;
-use gpui::{Image, Pixels, ScrollHandle, point, prelude::*, px};
+use gpui::{point, prelude::*, px, Image, Pixels, ScrollHandle};
 
 use crate::message_scroller::MessageScrollerState;
 use crate::transcript_view::{self, TranscriptView};
@@ -3199,20 +3199,16 @@ mod tests {
     #[test]
     fn usage_is_absent_without_provider_report() {
         let user = json!({"role": "user", "content": "hi"});
-        assert!(
-            ChatMessage::from_value(&user)
-                .expect("message")
-                .usage()
-                .is_none()
-        );
+        assert!(ChatMessage::from_value(&user)
+            .expect("message")
+            .usage()
+            .is_none());
 
         let no_usage = json!({"role": "assistant", "content": [{"type": "text", "text": "hi"}]});
-        assert!(
-            ChatMessage::from_value(&no_usage)
-                .expect("message")
-                .usage()
-                .is_none()
-        );
+        assert!(ChatMessage::from_value(&no_usage)
+            .expect("message")
+            .usage()
+            .is_none());
     }
 
     #[test]

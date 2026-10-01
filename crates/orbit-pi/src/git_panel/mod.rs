@@ -12,7 +12,7 @@
 //! All Git I/O runs on the background executor; the page paints cached state
 //! and is owned by [`crate::app::OrbitApp`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -36,6 +36,7 @@ use crate::gh_templates::{self, RepoTemplate};
 use crate::git::{self, CommitEntry, StatusRow};
 use crate::git_ops::{self, InProgress};
 use crate::issue_message::{self, DraftKind};
+use crate::sidepane::{FileActions, SidePane, ToolbarActions};
 use crate::theme::tokens::{
     button, context_menu, input, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius,
     StyledExt, TextSize,
@@ -112,6 +113,8 @@ enum PendingConfirm {
     },
     /// Discard every staged and unstaged change in the working tree.
     RevertAll,
+    /// Discard one changed file's unstaged edits.
+    DiscardPath(String),
 }
 
 /// Which ref picker is open.
@@ -186,6 +189,10 @@ pub struct GitPanel {
     git_operation: Option<InProgress>,
     /// Files with unresolved conflicts while `git_operation` is active.
     conflicts: Vec<String>,
+    /// The Changes tab's review browser — the same view as the Review pane,
+    /// embedded so the Git page shows the identical diff UI (source filter,
+    /// wrap/split toggles, changed-files tree, inline diffs).
+    review: Entity<SidePane>,
 
     // ── history ──
     history: Vec<CommitEntry>,
@@ -439,6 +446,13 @@ impl GitPanel {
                 .with_wrap(false)
         });
         let branch_filter_sub = cx.observe(&branch_filter, |_, _, cx| cx.notify());
+        // The embedded review browser shares the Review pane's rendering, so
+        // the Git page's Changes tab is exactly the Review UI.
+        let review = cx.new(|cx| {
+            let mut pane = SidePane::new(cx);
+            pane.set_embedded(true, cx);
+            pane
+        });
         Self {
             open: false,
             tab: GitTab::Changes,
@@ -461,6 +475,7 @@ impl GitPanel {
             pending_discard: None,
             git_operation: None,
             conflicts: Vec::new(),
+            review,
             history: Vec::new(),
             history_loading: false,
             history_error: None,
@@ -550,12 +565,17 @@ impl GitPanel {
 
     pub fn show(&mut self, cx: &mut Context<Self>) {
         self.open = true;
+        // Wake the embedded review browser; it loads the diff on demand.
+        self.review.update(cx, |pane, cx| pane.show_review(cx));
         self.refresh_all(cx);
         cx.notify();
     }
 
     pub fn hide(&mut self, cx: &mut Context<Self>) {
         self.open = false;
+        // Park the embedded review browser so it stops reloading while the
+        // Git page is off screen.
+        self.review.update(cx, |pane, cx| pane.close(cx));
         self.branch_menu_open = false;
         self.branch_more_open = false;
         cx.notify();
@@ -606,8 +626,16 @@ impl GitPanel {
     ) {
         if workspace != self.workspace {
             self.workspace = workspace;
+            // The embedded review browser follows the workspace too, so its
+            // diff reloads for the new repository.
+            let review_workspace = self.workspace.clone();
+            self.review
+                .update(cx, |pane, cx| pane.set_workspace(review_workspace, cx));
             self.staged.clear();
             self.unstaged.clear();
+            // The old tree's bulk actions must not linger on the new one.
+            self.review
+                .update(cx, |pane, cx| pane.set_toolbar_actions(None, cx));
             self.history.clear();
             self.graph.clear();
             self.remote_web = None;
@@ -648,6 +676,178 @@ impl GitPanel {
     /// Install the callback that opens a workspace file in the Files editor.
     pub fn set_open_path(&mut self, open: OpenPath) {
         self.on_open_path = Some(open);
+    }
+
+    /// Keep the embedded review browser's session context in sync so its
+    /// `Last Turn` source can resolve.
+    pub fn set_review_turn_context(
+        &mut self,
+        session: Option<String>,
+        latest_turn: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        self.review.update(cx, |pane, cx| {
+            pane.set_turn_context(session, latest_turn, cx)
+        });
+    }
+
+    /// Feed the embedded review browser the width of the surface hosting it,
+    /// so its responsive toolbar and changed-files tree match the page.
+    pub fn set_review_width(&mut self, width: Pixels, cx: &mut Context<Self>) {
+        self.review
+            .update(cx, |pane, cx| pane.set_available_width(width, cx));
+    }
+
+    /// Mark the embedded review browser stale so its diff reloads on the next
+    /// paint. Skipped while the Git page is closed, so a settled run does not
+    /// read a diff nobody is looking at.
+    pub fn mark_review_stale(&mut self, cx: &mut Context<Self>) {
+        if self.open {
+            self.review
+                .update(cx, |pane, cx| pane.mark_review_stale(cx));
+        }
+    }
+
+    /// Rebuild the per-file action rows the embedded review shows beside each
+    /// changed file (stage / unstage / discard), reflecting the latest status.
+    /// Called whenever `git status` lands so the rows never go stale.
+    fn install_review_actions(&mut self, cx: &mut Context<Self>) {
+        let weak = cx.entity().downgrade();
+        let staged: HashSet<String> = self.staged.iter().map(|row| row.path.clone()).collect();
+        let unstaged: HashSet<String> = self.unstaged.iter().map(|row| row.path.clone()).collect();
+        let actions: FileActions = std::rc::Rc::new(move |file, theme| {
+            let path = file.path.clone();
+            let is_staged = staged.contains(path.as_str());
+            let is_unstaged = unstaged.contains(path.as_str());
+            if !is_staged && !is_unstaged {
+                return None;
+            }
+            let mut row = div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(DynamicSpacing::Base02.px(&theme))
+                .opacity(0.)
+                .group_hover("review-file-header", |s| s.opacity(1.));
+            if is_unstaged {
+                let stage_path = path.clone();
+                let weak_stage = weak.clone();
+                row = row.child(review_action_icon(
+                    format!("review-stage-{path}"),
+                    "icons/plus.svg",
+                    "git_panel.tip_stage",
+                    theme,
+                    move |_, _, cx| {
+                        let _ =
+                            weak_stage.update(cx, |panel, cx| panel.stage(stage_path.clone(), cx));
+                    },
+                ));
+            }
+            if is_staged {
+                let unstage_path = path.clone();
+                let weak_unstage = weak.clone();
+                row = row.child(review_action_icon(
+                    format!("review-unstage-{path}"),
+                    "icons/minus.svg",
+                    "git_panel.tip_unstage",
+                    theme,
+                    move |_, _, cx| {
+                        let _ = weak_unstage
+                            .update(cx, |panel, cx| panel.unstage(unstage_path.clone(), cx));
+                    },
+                ));
+            }
+            if is_unstaged {
+                let discard_path = path.clone();
+                let weak_discard = weak.clone();
+                row = row.child(review_action_icon(
+                    format!("review-discard-{path}"),
+                    "icons/trash.svg",
+                    "git_panel.tip_discard",
+                    theme,
+                    move |_, _, cx| {
+                        let _ = weak_discard.update(cx, |panel, cx| {
+                            panel.pending_confirm =
+                                Some(PendingConfirm::DiscardPath(discard_path.clone()));
+                            cx.notify();
+                        });
+                    },
+                ));
+            }
+            Some(row.into_any_element())
+        });
+        self.review
+            .update(cx, |pane, cx| pane.set_file_actions(actions, cx));
+    }
+
+    /// Install the bulk stage / unstage / discard-all controls the embedded
+    /// review shows in its toolbar, beside the view toggles. Rebuilt alongside
+    /// the per-file rows so the buttons always match the latest status, and
+    /// cleared on a clean tree.
+    fn install_review_toolbar_actions(&mut self, cx: &mut Context<Self>) {
+        if self.staged.is_empty() && self.unstaged.is_empty() {
+            self.review
+                .update(cx, |pane, cx| pane.set_toolbar_actions(None, cx));
+            return;
+        }
+        let weak = cx.entity().downgrade();
+        let has_staged = !self.staged.is_empty();
+        let has_unstaged = !self.unstaged.is_empty();
+        let actions: ToolbarActions = std::rc::Rc::new(move |theme| {
+            let mut row = div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(DynamicSpacing::Base04.px(&theme));
+            if has_unstaged {
+                let weak = weak.clone();
+                row = row.child(review_toolbar_button(
+                    "review-stage-all",
+                    "icons/plus.svg",
+                    tr!("git_panel.stage_all"),
+                    theme.text_2,
+                    theme,
+                    move |_, _, cx| {
+                        let _ = weak.update(cx, |panel, cx| panel.stage_all(cx));
+                    },
+                ));
+            }
+            if has_staged {
+                let weak = weak.clone();
+                row = row.child(review_toolbar_button(
+                    "review-unstage-all",
+                    "icons/minus.svg",
+                    tr!("git_panel.unstage_all"),
+                    theme.text_2,
+                    theme,
+                    move |_, _, cx| {
+                        let _ = weak.update(cx, |panel, cx| panel.unstage_all(cx));
+                    },
+                ));
+            }
+            // Discarding the whole tree is only offered while nothing is
+            // staged: once changes are staged, the working tree is a deliberate
+            // state to build a commit on, not something to wipe out.
+            if !has_staged {
+                let weak = weak.clone();
+                row = row.child(review_toolbar_button(
+                    "review-revert-all",
+                    "icons/rotate-ccw.svg",
+                    tr!("git_panel.revert_all"),
+                    theme.crit,
+                    theme,
+                    move |_, _, cx| {
+                        let _ = weak.update(cx, |panel, cx| {
+                            panel.pending_confirm = Some(PendingConfirm::RevertAll);
+                            cx.notify();
+                        });
+                    },
+                ));
+            }
+            Some(row.into_any_element())
+        });
+        self.review
+            .update(cx, |pane, cx| pane.set_toolbar_actions(Some(actions), cx));
     }
 
     /// Set by `OrbitApp` on every render: how far the header's leading edge sits
@@ -730,6 +930,13 @@ impl GitPanel {
         };
         self.changes_loading = true;
         self.changes_error = None;
+        // The embedded review browser owns the diff read; marking it stale
+        // here reloads it in step with `git status`. Only the Changes tab
+        // mounts it, so the reload waits for a tab that shows it.
+        if self.tab == GitTab::Changes {
+            self.review
+                .update(cx, |pane, cx| pane.mark_review_stale(cx));
+        }
         self.spawn_data(
             cx,
             move || {
@@ -750,6 +957,8 @@ impl GitPanel {
                             rows.iter().filter(|row| row.unstaged()).cloned().collect();
                         panel.git_operation = operation;
                         panel.conflicts = conflicts;
+                        panel.install_review_actions(cx);
+                        panel.install_review_toolbar_actions(cx);
                     }
                     Err(err) => {
                         panel.changes_error = Some(err);
@@ -1073,7 +1282,10 @@ impl GitPanel {
 
     /// The label for the issue form's template chip.
     fn issue_template_label(&self) -> String {
-        match self.issue_template.and_then(|index| self.issue_templates.get(index)) {
+        match self
+            .issue_template
+            .and_then(|index| self.issue_templates.get(index))
+        {
             Some(template) => template.label(),
             None => tr!("git_panel.template_blank"),
         }
@@ -1081,7 +1293,10 @@ impl GitPanel {
 
     /// The label for the pull-request form's template chip.
     fn pr_template_label(&self) -> String {
-        match self.pr_template.and_then(|index| self.pr_templates.get(index)) {
+        match self
+            .pr_template
+            .and_then(|index| self.pr_templates.get(index))
+        {
             Some(template) => template.label(),
             None => tr!("git_panel.template_blank"),
         }
@@ -1129,7 +1344,11 @@ impl GitPanel {
             .cloned()
         {
             Some(template) => {
-                self.prefill_title(&self.issue_new_title.clone(), template.title_prefix.as_deref(), cx);
+                self.prefill_title(
+                    &self.issue_new_title.clone(),
+                    template.title_prefix.as_deref(),
+                    cx,
+                );
                 set_composer_text(&self.issue_new_body, &template.body, cx);
             }
             None => self.clear_template_body(&self.issue_new_body.clone(), cx),
@@ -1147,7 +1366,11 @@ impl GitPanel {
             .cloned()
         {
             Some(template) => {
-                self.prefill_title(&self.pr_new_title.clone(), template.title_prefix.as_deref(), cx);
+                self.prefill_title(
+                    &self.pr_new_title.clone(),
+                    template.title_prefix.as_deref(),
+                    cx,
+                );
                 set_composer_text(&self.pr_new_body, &template.body, cx);
             }
             None => self.clear_template_body(&self.pr_new_body.clone(), cx),
@@ -1285,7 +1508,12 @@ impl GitPanel {
                     context_menu::ICON.px(&theme),
                     theme.text_3,
                 ))
-                .child(div().flex_1().min_w_0().child(tr!("git_panel.template_blank")))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(tr!("git_panel.template_blank")),
+                )
                 .when(current.is_none(), |row| {
                     row.child(icon(
                         "icons/check.svg",
@@ -1305,7 +1533,9 @@ impl GitPanel {
             let selected = current == Some(index);
             list = list.child(
                 picker_entry(
-                    div().id(gpui::ElementId::Name(format!("git-template-{index}").into())),
+                    div().id(gpui::ElementId::Name(
+                        format!("git-template-{index}").into(),
+                    )),
                     &theme,
                 )
                 .cursor_pointer()
@@ -1463,7 +1693,9 @@ impl GitPanel {
                 list = list.child(
                     picker_entry(div().id(id), &theme)
                         .cursor_pointer()
-                        .when(selected, |row| row.bg(theme.active).text_color(theme.active_fg))
+                        .when(selected, |row| {
+                            row.bg(theme.active).text_color(theme.active_fg)
+                        })
                         .when(!selected, |row| {
                             row.text_color(theme.text_2).hover(|s| s.bg(theme.overlay))
                         })
@@ -1536,7 +1768,9 @@ impl GitPanel {
             .issue_template
             .and_then(|index| self.issue_templates.get(index))
             .cloned();
-        let title_prefix = template.as_ref().and_then(|entry| entry.title_prefix.clone());
+        let title_prefix = template
+            .as_ref()
+            .and_then(|entry| entry.title_prefix.clone());
         let provider = self.provider.clone();
         let model = self.model.clone();
         self.issue_generating = true;
@@ -1570,7 +1804,11 @@ impl GitPanel {
                 .await;
             let _ = this.update(cx, |panel, cx| {
                 panel.issue_generating = false;
-                set_composer_text(&panel.issue_new_title, &with_title_prefix(&title_prefix, &result.title), cx);
+                set_composer_text(
+                    &panel.issue_new_title,
+                    &with_title_prefix(&title_prefix, &result.title),
+                    cx,
+                );
                 set_composer_text(&panel.issue_new_body, &result.body, cx);
                 panel.set_status(tr!("git_panel.draft_ready"));
                 cx.notify();
@@ -1811,7 +2049,9 @@ impl GitPanel {
             .pr_template
             .and_then(|index| self.pr_templates.get(index))
             .cloned();
-        let title_prefix = template.as_ref().and_then(|entry| entry.title_prefix.clone());
+        let title_prefix = template
+            .as_ref()
+            .and_then(|entry| entry.title_prefix.clone());
         let provider = self.provider.clone();
         let model = self.model.clone();
         self.pr_generating = true;
@@ -1845,7 +2085,11 @@ impl GitPanel {
                 .await;
             let _ = this.update(cx, |panel, cx| {
                 panel.pr_generating = false;
-                set_composer_text(&panel.pr_new_title, &with_title_prefix(&title_prefix, &result.title), cx);
+                set_composer_text(
+                    &panel.pr_new_title,
+                    &with_title_prefix(&title_prefix, &result.title),
+                    cx,
+                );
                 set_composer_text(&panel.pr_new_body, &result.body, cx);
                 panel.set_status(tr!("git_panel.draft_ready"));
                 cx.notify();
@@ -2525,6 +2769,7 @@ impl GitPanel {
                 );
             }
             PendingConfirm::RevertAll => self.revert_all(cx),
+            PendingConfirm::DiscardPath(path) => self.discard(path, cx),
         }
     }
 
@@ -3596,24 +3841,15 @@ impl GitPanel {
     }
 
     fn changes_tab(&self, theme: Theme, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .flex_1()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            // The list comes first and the composer sits at the bottom, next
-            // to the changes it commits (the reference's arrangement).
-            .child(
-                div()
-                    .id("git-changes-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .flex()
-                    .flex_col()
-                    .pb(DynamicSpacing::Base08.px(&theme))
-                    .children(self.changes_body(theme, cx)),
-            )
+        let has_changes = !self.staged.is_empty() || !self.unstaged.is_empty();
+        let mut column = div().flex_1().min_h_0().flex().flex_col();
+        // Stashes stay reachable at the top; the diff browser below is the
+        // same view the Review pane shows.
+        if has_changes || !self.stashes.is_empty() {
+            column = column.child(self.stash_section(theme, cx));
+        }
+        column = column.child(self.review.clone());
+        column
             .child(self.commit_bar(theme, window, cx))
             .into_any_element()
     }
@@ -3907,117 +4143,12 @@ impl GitPanel {
             .into_any_element()
     }
 
+    /// The unstaged section's aggregate `+N -M`, shown beside the commit
+    /// bar's "Include unstaged changes" toggle.
     fn unstaged_stats(&self) -> (u64, u64) {
         let additions = self.unstaged.iter().map(|row| row.unstaged_additions).sum();
         let deletions = self.unstaged.iter().map(|row| row.unstaged_deletions).sum();
         (additions, deletions)
-    }
-
-    fn changes_body(&self, theme: Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        if let Some(error) = &self.changes_error {
-            return vec![empty_note(
-                theme,
-                "icons/stop.svg",
-                &tr!("git_panel.git_unavailable"),
-                Some(error),
-            )];
-        }
-        if self.changes_loading && self.staged.is_empty() && self.unstaged.is_empty() {
-            return vec![empty_note(
-                theme,
-                "icons/git-compare.svg",
-                &tr!("git_panel.reading_working_tree"),
-                None,
-            )];
-        }
-        let has_changes = !self.staged.is_empty() || !self.unstaged.is_empty();
-        if !has_changes && self.stashes.is_empty() {
-            return vec![empty_note(
-                theme,
-                "icons/check.svg",
-                &tr!("git_panel.working_tree_clean"),
-                Some(&tr!("git_panel.nothing_to_commit")),
-            )];
-        }
-        let mut out = Vec::new();
-        // Stashes (and the changes that could become one) always render first,
-        // so a stash-only working tree still has something to show.
-        if has_changes || !self.stashes.is_empty() {
-            out.push(self.stash_section(theme, cx));
-        }
-        if !self.staged.is_empty() {
-            out.push(
-                self.section_header(
-                    theme,
-                    cx,
-                    &tr!("git_panel.section_staged"),
-                    "staged",
-                    self.staged.len(),
-                    self.staged
-                        .iter()
-                        .map(|row| row.staged_additions)
-                        .sum::<u64>(),
-                    self.staged
-                        .iter()
-                        .map(|row| row.staged_deletions)
-                        .sum::<u64>(),
-                    true,
-                    Some(cx.listener(|this, _: &ClickEvent, _, cx| this.unstage_all(cx))),
-                ),
-            );
-            out.push(self.change_rows(self.staged.clone(), true, theme, cx));
-        }
-        if !self.unstaged.is_empty() {
-            out.push(
-                self.section_header(
-                    theme,
-                    cx,
-                    &tr!("git_panel.section_changes"),
-                    "changes",
-                    self.unstaged.len(),
-                    self.unstaged
-                        .iter()
-                        .map(|row| row.unstaged_additions)
-                        .sum::<u64>(),
-                    self.unstaged
-                        .iter()
-                        .map(|row| row.unstaged_deletions)
-                        .sum::<u64>(),
-                    false,
-                    Some(cx.listener(|this, _: &ClickEvent, _, cx| this.stage_all(cx))),
-                ),
-            );
-            out.push(self.change_rows(self.unstaged.clone(), false, theme, cx));
-        }
-        if has_changes {
-            out.push(
-                div()
-                    .px(DynamicSpacing::Base20.px(&theme))
-                    .pt(DynamicSpacing::Base06.px(&theme))
-                    .pb(DynamicSpacing::Base02.px(&theme))
-                    .flex()
-                    .justify_end()
-                    .child(
-                        button_frame(div().id("git-revert-all"), &theme, ButtonSize::Medium)
-                            .cursor_pointer()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.crit)
-                            .hover(|s| s.bg(theme.crit.opacity(0.1)))
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.pending_confirm = Some(PendingConfirm::RevertAll);
-                                cx.notify();
-                            }))
-                            .child(icon(
-                                "icons/rotate-ccw.svg",
-                                ButtonSize::Medium.icon_size().px(&theme),
-                                theme.crit,
-                            ))
-                            .child(tr!("git_panel.revert_all")),
-                    )
-                    .into_any_element(),
-            );
-        }
-        out
     }
 
     /// The collapsible Stashes section at the top of the Changes tab.
@@ -4094,243 +4225,6 @@ impl GitPanel {
             }
         }
         section.into_any_element()
-    }
-
-    fn change_rows(
-        &self,
-        files: Vec<StatusRow>,
-        staged: bool,
-        theme: Theme,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let mut rows = div()
-            .flex()
-            .flex_col()
-            .pt(DynamicSpacing::Base04.px(&theme))
-            .pb(DynamicSpacing::Base04.px(&theme));
-        for (ix, row) in files.into_iter().enumerate() {
-            if ix > 0 {
-                rows = rows.child(changes_separator(theme));
-            }
-            rows = rows.child(self.change_row(row, staged, theme, cx));
-        }
-        rows.into_any_element()
-    }
-
-    fn section_header(
-        &self,
-        theme: Theme,
-        _cx: &Context<Self>,
-        label: &str,
-        slug: &str,
-        count: usize,
-        additions: u64,
-        deletions: u64,
-        staged_section: bool,
-        action: Option<impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static>,
-    ) -> AnyElement {
-        let mut row = div()
-            .px(DynamicSpacing::Base20.px(&theme))
-            .pt(DynamicSpacing::Base12.px(&theme))
-            .pb(DynamicSpacing::Base06.px(&theme))
-            .border_b_1()
-            .border_color(theme.border)
-            .flex()
-            .items_center()
-            .gap(DynamicSpacing::Base08.px(&theme))
-            .child(section_title(label, count, theme))
-            .when(additions + deletions > 0, |row| {
-                row.child(delta_stats(additions, deletions, theme))
-            })
-            .child(div().flex_1());
-        if let Some(action) = action {
-            row = row.child(
-                button_frame(
-                    div().id(gpui::ElementId::Name(
-                        format!("git-section-action-{slug}").into(),
-                    )),
-                    &theme,
-                    ButtonSize::Default,
-                )
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.bg_raised)
-                .cursor_pointer()
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_2)
-                .hover(|s| {
-                    s.bg(theme.bg_hover)
-                        .border_color(theme.border_strong)
-                        .text_color(theme.text)
-                })
-                .on_click(action)
-                .child(icon(
-                    if staged_section {
-                        "icons/minus.svg"
-                    } else {
-                        "icons/plus.svg"
-                    },
-                    ButtonSize::Default.icon_size().px(&theme),
-                    theme.text_3,
-                ))
-                .child(if staged_section {
-                    tr!("git_panel.unstage_all")
-                } else {
-                    tr!("git_panel.stage_all")
-                }),
-            );
-        }
-        row.into_any_element()
-    }
-
-    fn change_row(
-        &self,
-        row: StatusRow,
-        staged: bool,
-        theme: Theme,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let (badge, color) = if staged {
-            (row.staged_badge(), status_color(row.staged_badge(), theme))
-        } else {
-            (row.change_badge(), status_color(row.change_badge(), theme))
-        };
-        let (additions, deletions) = if staged {
-            (row.staged_additions, row.staged_deletions)
-        } else {
-            (row.unstaged_additions, row.unstaged_deletions)
-        };
-        let path = row.path.clone();
-        let name = path.rsplit('/').next().unwrap_or(&path).to_string();
-        let dir = path
-            .rsplit_once('/')
-            .map(|(dir, _)| format!("{dir}/"))
-            .unwrap_or_default();
-        let nerd = nerd_font_family(cx);
-        let dark = theme.mode == ThemeMode::Dark;
-        let glyph_size = IconSize::XSmall.px(&theme);
-        let fallback = icon("icons/file.svg", glyph_size, theme.text_3).into_any_element();
-        let glyph = crate::app::file_glyph(&path, dark, nerd.as_ref(), glyph_size, fallback);
-        let confirm = self.pending_discard.as_deref() == Some(path.as_str());
-        let row_path = path.clone();
-
-        let mut actions = div()
-            .flex()
-            .items_center()
-            .gap(DynamicSpacing::Base04.px(&theme))
-            .flex_none()
-            .opacity(if confirm { 1. } else { 0. })
-            .group_hover("git-row", |s| s.opacity(1.));
-        if staged {
-            actions = actions.child(row_button(
-                format!("git-unstage-{path}"),
-                "icons/minus.svg",
-                "git_panel.tip_unstage",
-                theme,
-                cx.listener(move |this, _: &ClickEvent, _, cx| this.unstage(row_path.clone(), cx)),
-            ));
-        } else {
-            actions = actions.child(row_button(
-                format!("git-stage-{path}"),
-                "icons/plus.svg",
-                "git_panel.tip_stage",
-                theme,
-                cx.listener(move |this, _: &ClickEvent, _, cx| this.stage(row_path.clone(), cx)),
-            ));
-            if confirm {
-                actions = actions
-                    .child(
-                        button_frame(
-                            div().id(gpui::ElementId::Name(
-                                format!("git-discard-yes-{path}").into(),
-                            )),
-                            &theme,
-                            ButtonSize::Default,
-                        )
-                        .bg(theme.crit)
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.send_fg)
-                        .cursor_pointer()
-                        .on_click(cx.listener({
-                            let p = path.clone();
-                            move |this, _: &ClickEvent, _, cx| {
-                                cx.stop_propagation();
-                                this.discard(p.clone(), cx)
-                            }
-                        }))
-                        .child(tr!("git_panel.discard")),
-                    )
-                    .child(
-                        button_frame(
-                            div().id(gpui::ElementId::Name(
-                                format!("git-discard-no-{path}").into(),
-                            )),
-                            &theme,
-                            ButtonSize::Default,
-                        )
-                        .text_color(theme.text_3)
-                        .cursor_pointer()
-                        .hover(|s| s.bg(theme.overlay))
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                            cx.stop_propagation();
-                            this.pending_discard = None;
-                            cx.notify();
-                        }))
-                        .child(tr!("git_panel.cancel")),
-                    );
-            } else {
-                actions = actions.child(row_button(
-                    format!("git-discard-{path}"),
-                    "icons/trash.svg",
-                    "git_panel.tip_discard",
-                    theme,
-                    cx.listener({
-                        let p = path.clone();
-                        move |this, _: &ClickEvent, _, cx| {
-                            this.pending_discard = Some(p.clone());
-                            cx.notify();
-                        }
-                    }),
-                ));
-            }
-        }
-
-        div()
-            .id(gpui::ElementId::Name(format!("git-row-{path}").into()))
-            .group("git-row")
-            .mx(DynamicSpacing::Base12.px(&theme))
-            .h(px(32.))
-            .px(DynamicSpacing::Base08.px(&theme))
-            .rounded(Radius::Medium.px(&theme))
-            .flex()
-            .items_center()
-            .gap(DynamicSpacing::Base08.px(&theme))
-            .cursor_pointer()
-            .hover(|s| s.bg(theme.bg_hover))
-            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                if let Some(on_open) = this.on_open_file.clone() {
-                    // Leave the Git page — the Review pane takes over.
-                    this.open = false;
-                    on_open(path.clone(), window, cx);
-                }
-            }))
-            .child(letter_tile(badge, color, theme))
-            .child(glyph)
-            .child(
-                div()
-                    .min_w_0()
-                    .flex_1()
-                    .flex()
-                    .items_center()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_size(TextSize::Small.px(&theme))
-                    .child(div().text_color(theme.text_3).child(dir))
-                    .child(div().text_color(theme.text).child(name)),
-            )
-            .child(delta_stats(additions, deletions, theme))
-            .child(actions)
-            .into_any_element()
     }
 
     fn history_tab(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -7143,6 +7037,11 @@ impl GitPanel {
                 tr!("git_panel.confirm_revert_body"),
                 tr!("git_panel.revert_all"),
             ),
+            PendingConfirm::DiscardPath(path) => (
+                tr!("git_panel.confirm_discard_title", name = path),
+                tr!("git_panel.confirm_discard_body"),
+                tr!("git_panel.discard"),
+            ),
         };
         let card = div()
             .w_full()
@@ -7363,13 +7262,7 @@ fn menu_row(
     )
     .on_click(listener)
     .child(icon(icon_path, context_menu::ICON.px(&theme), theme.text_3))
-    .child(
-        div()
-            .flex_1()
-            .min_w_0()
-            .truncate()
-            .child(label.to_string()),
-    )
+    .child(div().flex_1().min_w_0().truncate().child(label.to_string()))
     .into_any_element()
 }
 
@@ -7625,11 +7518,7 @@ fn row_time(value: &str, theme: Theme) -> AnyElement {
 fn issue_row(issue: &gh::GhIssue, theme: Theme, cx: &Context<GitPanel>) -> AnyElement {
     let number = issue.number;
     let open = issue.is_open();
-    let state_color = if open {
-        theme.add_green
-    } else {
-        theme.del_red
-    };
+    let state_color = if open { theme.add_green } else { theme.del_red };
     let state_glyph = if open {
         "icons/circle-dot.svg"
     } else {
@@ -8717,6 +8606,65 @@ fn avatar_hue(email: &str, name: &str) -> f32 {
     HUES[(hash % HUES.len() as u64) as usize] / 360.
 }
 
+/// An icon-only action for the embedded review's file header. Stops
+/// propagation so the header's collapse toggle never also fires.
+fn review_action_icon(
+    id: String,
+    icon_path: &'static str,
+    tip_key: &'static str,
+    theme: Theme,
+    listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    let label = tr!(tip_key);
+    icon_button_frame(
+        div().id(gpui::ElementId::Name(id.into())),
+        &theme,
+        ButtonSize::Default,
+    )
+    .group(BUTTON_GROUP)
+    .cursor_pointer()
+    .hover(|s| s.bg(theme.overlay))
+    .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into())
+    .on_click(move |event, window, cx| {
+        cx.stop_propagation();
+        listener(event, window, cx);
+    })
+    .child(icon(
+        icon_path,
+        ButtonSize::Default.icon_size().px(&theme),
+        theme.text_3,
+    ))
+    .into_any_element()
+}
+
+/// A labeled bulk action in the embedded review toolbar — stage / unstage /
+/// discard all — wearing the same bordered button the Git page uses elsewhere.
+fn review_toolbar_button(
+    id: &'static str,
+    icon_path: &'static str,
+    label: String,
+    color: Hsla,
+    theme: Theme,
+    listener: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    button_frame(div().id(id), &theme, ButtonSize::Medium)
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.bg_raised)
+        .cursor_pointer()
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(color)
+        .hover(|s| s.bg(theme.bg_hover).border_color(theme.border_strong))
+        .on_click(listener)
+        .child(icon(
+            icon_path,
+            ButtonSize::Medium.icon_size().px(&theme),
+            color,
+        ))
+        .child(label)
+        .into_any_element()
+}
+
 /// The Changes-tab section heading: a sentence-case label with the count set
 /// inline as quiet metadata (no count pill), the quieter head the reference
 /// uses.
@@ -8837,16 +8785,6 @@ fn delta_stats(additions: u64, deletions: u64, theme: Theme) -> AnyElement {
                 })
                 .child(format!("-{deletions}")),
         )
-        .into_any_element()
-}
-
-/// A hairline between changed-file rows, inset to the 20px page gutter so it
-/// lines up with the section label and the path — not a full-bleed rule.
-fn changes_separator(theme: Theme) -> AnyElement {
-    div()
-        .mx(DynamicSpacing::Base20.px(&theme))
-        .h(px(1.))
-        .bg(theme.border)
         .into_any_element()
 }
 

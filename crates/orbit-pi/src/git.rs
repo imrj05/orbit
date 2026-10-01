@@ -478,6 +478,7 @@ impl StatusRow {
     }
 
     /// Badge for the unstaged list (`U` for untracked).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn change_badge(&self) -> char {
         if self.untracked() {
             'U'

@@ -185,7 +185,7 @@ impl UsagePage {
                     .items_center()
                     .gap(DynamicSpacing::Base06.px(&theme))
                     .child(icon(
-                        "icons/usage-total.svg",
+                        "icons/chart-analysis.svg",
                         IconSize::Medium.px(&theme),
                         theme.text_2,
                     ))

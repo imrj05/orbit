@@ -6,8 +6,8 @@ use gpui::{point, Pixels};
 use crate::sessions::cap_chars;
 use crate::shimmer::ShimmerText;
 use crate::theme::tokens::{
-    context_menu, list_item, picker, popover, BufferLineHeight, ButtonSize, DynamicSpacing, IconSize,
-    TextSize,
+    context_menu, list_item, picker, popover, BufferLineHeight, ButtonSize, DynamicSpacing,
+    IconSize, TextSize,
 };
 use crate::workspace_mark::{self, WorkspaceMark};
 
@@ -280,9 +280,9 @@ fn sort_workspace_groups(
                 .cmp(&added_at.get(&a.1))
                 .then_with(|| by_label(a, b))
         }),
-        WorkspaceSort::SessionCount => groups.sort_by(|a, b| {
-            b.2.len().cmp(&a.2.len()).then_with(|| by_label(a, b))
-        }),
+        WorkspaceSort::SessionCount => {
+            groups.sort_by(|a, b| b.2.len().cmp(&a.2.len()).then_with(|| by_label(a, b)))
+        }
     }
 }
 
@@ -321,7 +321,10 @@ pub(crate) fn sticky_sidebar_header(list: &ListState, rows: &[SideRow]) -> Optio
     // its header would mask the previous group's rows.
     if matches!(
         rows.get(header_ix),
-        Some(SideRow::Workspace { collapsed: true, .. })
+        Some(SideRow::Workspace {
+            collapsed: true,
+            ..
+        })
     ) {
         return None;
     }
@@ -1689,13 +1692,7 @@ where
             this.update(cx, |app, cx| (on_click)(app, cx));
         })
         .child(icon(icon_path, context_menu::ICON.px(&theme), icon_color))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .child(label.to_string()),
-        )
+        .child(div().flex_1().min_w_0().truncate().child(label.to_string()))
 }
 
 /// Reveal a session file in the OS file manager (macOS first, matching the
@@ -1904,11 +1901,7 @@ impl OrbitApp {
     /// Open (or toggle closed) the sidebar's workspace-sort menu. Follows the
     /// same gesture guard as the row menus, so the dismissing click cannot
     /// immediately re-open it.
-    pub(super) fn toggle_sidebar_sort_menu(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn toggle_sidebar_sort_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         const GESTURE: Duration = Duration::from_millis(200);
         if let Some(dismissed) = self.menu_dismissed_at.take() {
             if dismissed.elapsed() < GESTURE {

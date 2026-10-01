@@ -42,15 +42,16 @@ use serde_json::Value;
 use orbit_rpc::MessageUsage;
 
 use crate::app::{
-    button_frame, context_menu_entry, context_menu_surface, file_badge, file_glyph,
-    icon_button_frame, nerd_font_family, TipExt, BUTTON_GROUP,
+    button_frame, file_badge, file_glyph, icon_button_frame, nerd_font_family, picker_entry,
+    picker_surface, TipExt, BUTTON_GROUP,
 };
 use crate::context_meter::{format_tokens, hit_percent_label};
 use crate::highlight::{self, Token};
 use crate::message_scroller::{self, MessageScrollerState};
 use crate::shimmer::ShimmerText;
 use crate::theme::tokens::{
-    popover, BufferLineHeight, ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize,
+    context_menu, picker, popover, BufferLineHeight, ButtonSize, DynamicSpacing, IconSize, Radius,
+    StyledExt, TextSize,
 };
 use crate::theme::{self, Theme, ThemeMode};
 use crate::transcript::{ChatMessage, Step, SummaryRow, ToolCall, ToolFacts};
@@ -895,12 +896,15 @@ fn register_text_selection(
 }
 
 /// The right-click menu: `Copy Selection` (disabled without one) and
-/// `Copy Message` (the clicked message's full text).
+/// `Copy Message` (the clicked message's full text). Wears the branch
+/// selector's picker shell, like every other dropdown in the app.
 fn text_selection_menu(menu: &TextMenu, state: TextSelectionState, theme: Theme) -> AnyElement {
     let selected = state.borrow().selected_text();
     let copy_selection = selected.clone();
     let close = state.clone();
     let copy_selection_item = selection_menu_item(
+        "transcript-copy-selection",
+        "icons/copy.svg",
         tr!("transcript.copy_selection"),
         selected.is_some(),
         theme,
@@ -916,6 +920,8 @@ fn text_selection_menu(menu: &TextMenu, state: TextSelectionState, theme: Theme)
     let copy_message = menu.message_text.clone();
     let close = state.clone();
     let copy_message_item = selection_menu_item(
+        "transcript-copy-message",
+        "icons/chat.svg",
         tr!("transcript.copy_message"),
         true,
         theme,
@@ -932,9 +938,12 @@ fn text_selection_menu(menu: &TextMenu, state: TextSelectionState, theme: Theme)
             .position(menu.position)
             .snap_to_window_with_margin(popover::WINDOW_MARGIN)
             .child(
-                context_menu_surface(div().id("transcript-text-menu"), &theme)
+                picker_surface(div().id("transcript-text-menu"), &theme)
+                    .w(px(220.))
+                    .py(picker::list_padding_y(&theme))
                     .flex()
                     .flex_col()
+                    .gap(DynamicSpacing::Base01.px(&theme))
                     .overflow_hidden()
                     .occlude()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -950,21 +959,30 @@ fn text_selection_menu(menu: &TextMenu, state: TextSelectionState, theme: Theme)
 }
 
 fn selection_menu_item(
+    id: &'static str,
+    icon_path: &'static str,
     label: String,
     enabled: bool,
     theme: Theme,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    context_menu_entry(div(), &theme)
-        .text_color(if enabled { theme.text } else { theme.text_3 })
+    picker_entry(div().id(id), &theme)
+        .h(picker::entry_height(&theme))
+        .flex_none()
+        .text_color(if enabled { theme.text_2 } else { theme.text_3 })
         .when(enabled, |item| {
             item.cursor_pointer()
-                .hover(|style| style.bg(theme.bg_hover))
+                .hover(|style| style.bg(theme.overlay).text_color(theme.text))
                 .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                     on_click(window, cx);
                 })
         })
-        .child(label)
+        .child(crate::app::icon(
+            icon_path,
+            context_menu::ICON.px(&theme),
+            theme.text_3,
+        ))
+        .child(div().flex_1().min_w_0().truncate().child(label))
         .into_any_element()
 }
 
@@ -5953,7 +5971,16 @@ fn render_block(
             .gap(px(4.))
             .children(lines.iter().enumerate().map(move |(sub, line)| {
                 render_container_line(
-                    line, ix, salt, block_ix, sub, 14., 26., FontWeight::NORMAL, theme.text_2, theme,
+                    line,
+                    ix,
+                    salt,
+                    block_ix,
+                    sub,
+                    14.,
+                    26.,
+                    FontWeight::NORMAL,
+                    theme.text_2,
+                    theme,
                 )
             }))
             .into_any_element(),
@@ -6111,7 +6138,8 @@ fn render_container_line(
     theme: Theme,
 ) -> AnyElement {
     if let Some((alt, url)) = image_line(line) {
-        return render_markdown_image(&alt, &url, ix, salt, block_ix, sub, theme).into_any_element();
+        return render_markdown_image(&alt, &url, ix, salt, block_ix, sub, theme)
+            .into_any_element();
     }
     paragraph_text(
         line,
@@ -8082,7 +8110,9 @@ mod tests {
         // GitHub stores a pasted screenshot as a raw `<img>` whose attributes
         // are ordered `alt width height src`, without a self-closing slash.
         let tag = "<img alt=\"Image\" width=\"1450\" height=\"932\" src=\"https://private-user-images.githubusercontent.com/1/2-a.png?jwt=eyJ0eXAi.eyJpc3Mi.OiJnaXRodWI\">";
-        let blocks = parse_blocks(&format!("### What happened?\n\n{tag}\n\n### Steps\n\n1. Open\n"));
+        let blocks = parse_blocks(&format!(
+            "### What happened?\n\n{tag}\n\n### Steps\n\n1. Open\n"
+        ));
         assert!(
             matches!(&blocks[1], Block::Image { alt, url }
                 if alt == "Image"
@@ -8912,9 +8942,11 @@ mod tests {
                     live: false,
                 })
             });
-            cx.draw(point(px(0.), px(0.)), gpui::size(px(900.), px(800.)), |_, _| {
-                view.clone()
-            });
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(900.), px(800.)),
+                |_, _| view.clone(),
+            );
         }
     }
 

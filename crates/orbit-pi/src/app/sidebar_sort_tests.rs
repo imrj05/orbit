@@ -59,7 +59,12 @@ fn manual_keeps_the_project_list_order() {
         store_session("a1", "/work/alpha", 20),
     ];
     let workspaces = workspace_paths(&["/work/alpha", "/work/beta"]);
-    let rows = rows_for(&sessions, &workspaces, WorkspaceSort::Manual, &HashMap::new());
+    let rows = rows_for(
+        &sessions,
+        &workspaces,
+        WorkspaceSort::Manual,
+        &HashMap::new(),
+    );
     assert_eq!(group_labels(&rows), vec!["alpha", "beta"]);
 }
 
@@ -176,7 +181,10 @@ fn sort_keys_round_trip_through_disk() {
     }
     // A missing key (a store predating the control) or an unknown one falls
     // back to the out-of-the-box order: most recent activity first.
-    assert_eq!(WorkspaceSort::from_key("nonsense"), WorkspaceSort::LastUpdated);
+    assert_eq!(
+        WorkspaceSort::from_key("nonsense"),
+        WorkspaceSort::LastUpdated
+    );
     assert_eq!(WorkspaceSort::from_key(""), WorkspaceSort::LastUpdated);
 }
 

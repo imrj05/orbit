@@ -330,12 +330,24 @@ impl Render for OrbitApp {
         let git_workspace = self.current_workspace.clone();
         let git_provider = self.model_provider.clone();
         let git_model = self.model_id.clone();
+        let git_session = self.session_id.clone();
+        let git_turn = self.latest_turn;
+        // The embedded Review browser on the Git page's Changes tab lays out
+        // against the page width, so its stats and tree follow the column.
+        let git_review_width = viewport.width
+            - if sidebar_shown {
+                self.sidebar_width
+            } else {
+                px(0.)
+            };
         // Leading inset the full-window pages (Git/Usage/Files) give their
         // headers while the sidebar is collapsed. They now sit in a card below
         // the top bar, so they only need the normal page padding.
         let page_leading = 12.;
         self.git_panel.update(cx, |panel, cx| {
             panel.set_context(git_workspace, git_provider, git_model, cx);
+            panel.set_review_turn_context(git_session, git_turn, cx);
+            panel.set_review_width(git_review_width, cx);
             panel.set_chrome_leading(page_leading, cx);
         });
         // ── file viewer (Files surface) ── spans the main column, so it gives
@@ -577,8 +589,8 @@ impl Render for OrbitApp {
                                         px(90.),
                                     )),
                             )
-                            // nav — one primary action (New Task), one quiet row
-                            // (Search); the switcher palette anchors under Search
+                            // nav — the primary action (New Task); the
+                            // utility icons live in the footer
                             .child(
                                 div()
                                     .px_3()
@@ -587,9 +599,7 @@ impl Render for OrbitApp {
                                     .flex()
                                     .flex_col()
                                     .gap_1()
-                                    .child(self.sidebar_new_task_button(theme, cx))
-                                    .child(self.sidebar_search_row(theme, cx))
-                                    .child(self.sidebar_usage_row(theme, cx)),
+                                    .child(self.sidebar_new_task_button(theme, cx)),
                             )
                             // session list (scrolls), grouped by workspace — or
                             // the empty state when pi's store has no sessions
@@ -688,8 +698,9 @@ impl Render for OrbitApp {
                                 (!self.star_banner_dismissed)
                                     .then(|| self.sidebar_star_banner(theme, cx)),
                             )
-                            // footer — Settings row + connection status, set off
-                            // from the session list by a hairline
+                            // footer — connection status, then the utility
+                            // icons on the last edge, set off from the session
+                            // list by a hairline
                             .child(
                                 div()
                                     .id("sidebar-footer")
@@ -700,36 +711,6 @@ impl Render for OrbitApp {
                                     .border_color(theme.border)
                                     .flex()
                                     .items_center()
-                                    .child(
-                                        button_frame(
-                                            div().id("settings"),
-                                            &theme,
-                                            ButtonSize::Medium,
-                                        )
-                                        .cursor_pointer()
-                                        .hover(|s| s.bg(theme.bg_hover))
-                                        .on_mouse_up(
-                                            MouseButton::Left,
-                                            cx.listener(Self::on_settings_gear_click),
-                                        )
-                                        .child(icon(
-                                            "icons/settings.svg",
-                                            ButtonSize::Medium.icon_size().px(&theme),
-                                            theme.text_3,
-                                        ))
-                                        .child(
-                                            div()
-                                                .text_color(theme.text_2)
-                                                .child(tr!("common.settings")),
-                                        ),
-                                    )
-                                    .child(div().flex_1())
-                                    .when_some(
-                                        self.sidebar_updater_button(theme, cx),
-                                        |footer, button| {
-                                            footer.child(button).child(div().w(px(8.)))
-                                        },
-                                    )
                                     .child(
                                         div()
                                             .flex()
@@ -752,7 +733,15 @@ impl Render for OrbitApp {
                                                         tr!("status.offline")
                                                     }),
                                             ),
-                                    ),
+                                    )
+                                    .child(div().flex_1())
+                                    .when_some(
+                                        self.sidebar_updater_button(theme, cx),
+                                        |footer, button| {
+                                            footer.child(button).child(div().w(px(8.)))
+                                        },
+                                    )
+                                    .child(self.sidebar_footer_actions(theme, cx)),
                             ),
                     );
                 let gen = self.sidebar_slide_gen;
@@ -979,18 +968,18 @@ impl Render for OrbitApp {
                                                 } else {
                                                     theme.border
                                                 })
-                                                .rounded(Radius::XLarge.px(&theme))
+                                                .rounded(Radius::XXLarge.px(&theme))
                                                 .shadow(theme.composer_shadow())
-                                                .px(DynamicSpacing::Base12.px(&theme))
-                                                .pt(DynamicSpacing::Base08.px(&theme))
-                                                .pb(DynamicSpacing::Base08.px(&theme))
+                                                .px(DynamicSpacing::Base16.px(&theme))
+                                                .pt(DynamicSpacing::Base12.px(&theme))
+                                                .pb(DynamicSpacing::Base12.px(&theme))
                                                 // Base interface font for the input
                                                 // (scales with the UI font-size
                                                 // setting); the editor inherits it.
                                                 .text_size(TextSize::Default.px(&theme))
                                                 .flex()
                                                 .flex_col()
-                                                .gap(DynamicSpacing::Base08.px(&theme))
+                                                .gap(DynamicSpacing::Base16.px(&theme))
                                                 .on_mouse_up(
                                                     MouseButton::Left,
                                                     cx.listener(Self::on_composer_click),
@@ -1007,7 +996,7 @@ impl Render for OrbitApp {
                                                     let overlay = div()
                                                         .absolute()
                                                         .inset_0()
-                                                        .rounded(Radius::XLarge.px(&theme))
+                                                        .rounded(Radius::XXLarge.px(&theme))
                                                         .bg(theme.bg_composer.opacity(0.92))
                                                         .border_1()
                                                         .border_color(theme.accent)
@@ -3491,7 +3480,7 @@ impl OrbitApp {
                 }),
             )
             .child(icon(
-                "icons/compose.svg",
+                "icons/task-add-01.svg",
                 ButtonSize::Large.icon_size().px(&theme),
                 theme.accent,
             ))
@@ -3516,17 +3505,17 @@ impl OrbitApp {
             )
     }
 
-    /// The quiet nav row under the primary button: opens the command
-    /// palette. Ghost style — hover is the only affordance; the ⌘P hint
-    /// mirrors the ⌘N hint on the button above.
-    pub(super) fn sidebar_search_row(
+    /// The sidebar footer's utility icons: Search (command palette), Usage,
+    /// and Settings. Icon-only — each glyph is labelled by its tooltip, which
+    /// also names its chord — so the column keeps labels for the primary
+    /// action and the session list alone.
+    pub(super) fn sidebar_footer_actions(
         &self,
         theme: Theme,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
-        button_frame(div().id("sidebar-search"), &theme, ButtonSize::Large)
-            .group(BUTTON_GROUP)
-            .w_full()
+        // Search — opens the command palette (⌘P).
+        let search = icon_button_frame(div().id("sidebar-search"), &theme, ButtonSize::Medium)
             .tip(commands::tooltip(CommandId::ToggleCommandPalette, false))
             .cursor_pointer()
             .hover(|s| s.bg(theme.bg_hover))
@@ -3537,27 +3526,62 @@ impl OrbitApp {
             )
             .child(icon(
                 "icons/search.svg",
-                ButtonSize::Large.icon_size().px(&theme),
+                ButtonSize::Medium.icon_size().px(&theme),
                 theme.text_3,
-            ))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_color(theme.text_2)
-                    .child(tr!("view.search")),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .ml(button::keybinding_gap(&theme))
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.text_3)
-                    .child(crate::platform::shortcuts::label(
-                        crate::platform::shortcuts::PALETTE,
-                    )),
-            )
+            ));
+        // Usage — opens (or leaves) the Usage page (⌘U).
+        let usage = icon_button_frame(div().id("sidebar-usage"), &theme, ButtonSize::Medium)
+            .tip(commands::tooltip(CommandId::ToggleUsage, false))
+            .when(self.usage_open, |btn| btn.bg(theme.active))
+            .cursor_pointer()
+            .hover(|s| {
+                s.bg(if self.usage_open {
+                    theme.active
+                } else {
+                    theme.bg_hover
+                })
+            })
+            .active(|s| s.opacity(PRESS_DIM))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_usage_nav_click))
+            .child(icon(
+                "icons/chart-analysis.svg",
+                ButtonSize::Medium.icon_size().px(&theme),
+                if self.usage_open {
+                    theme.active_fg
+                } else {
+                    theme.text_3
+                },
+            ));
+        // Settings — toggles the Settings surface (⌘,).
+        let settings = icon_button_frame(div().id("settings"), &theme, ButtonSize::Medium)
+            .tip(commands::tooltip(CommandId::OpenSettings, false))
+            .when(self.settings_open, |btn| btn.bg(theme.active))
+            .cursor_pointer()
+            .hover(|s| {
+                s.bg(if self.settings_open {
+                    theme.active
+                } else {
+                    theme.bg_hover
+                })
+            })
+            .active(|s| s.opacity(PRESS_DIM))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_settings_gear_click))
+            .child(icon(
+                "icons/settings.svg",
+                ButtonSize::Medium.icon_size().px(&theme),
+                if self.settings_open {
+                    theme.active_fg
+                } else {
+                    theme.text_3
+                },
+            ));
+        div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(search)
+            .child(usage)
+            .child(settings)
     }
 
     /// ⌘U: open the Usage page, or leave it if it is already open.
@@ -3671,47 +3695,6 @@ impl OrbitApp {
             || self.workspace_menu.is_some()
             || self.sidebar_sort_menu
             || self.settings_select.is_some()
-    }
-
-    /// Sidebar nav row for the Usage page, in the same `ButtonSize::Large`
-    /// frame as the New Task and Search rows; the open page is marked with an
-    /// `active` fill rather than accent color alone.
-    pub(super) fn sidebar_usage_row(
-        &self,
-        theme: Theme,
-        cx: &Context<Self>,
-    ) -> impl IntoElement + use<> {
-        let active = self.usage_open;
-        button_frame(div().id("sidebar-usage"), &theme, ButtonSize::Large)
-            .group(BUTTON_GROUP)
-            .w_full()
-            .tip(commands::tooltip(CommandId::ToggleUsage, false))
-            .when(active, |row| row.bg(theme.active))
-            .cursor_pointer()
-            .hover(|s| s.bg(if active { theme.active } else { theme.bg_hover }))
-            .active(|s| s.opacity(PRESS_DIM))
-            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_usage_nav_click))
-            .child(icon(
-                "icons/usage-total.svg",
-                ButtonSize::Large.icon_size().px(&theme),
-                if active {
-                    theme.active_fg
-                } else {
-                    theme.text_3
-                },
-            ))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_color(if active {
-                        theme.active_fg
-                    } else {
-                        theme.text_2
-                    })
-                    .child(tr!("view.usage")),
-            )
     }
 
     /// The sidebar's "star the project" banner. It sits directly above the

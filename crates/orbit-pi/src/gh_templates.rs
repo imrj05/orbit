@@ -112,7 +112,9 @@ fn templates_in_dir(root: &Path, dir: &Path, issue: bool) -> Vec<RepoTemplate> {
         if issue && (lower == "config.yml" || lower == "config.yaml") {
             continue;
         }
-        let Some(content) = read_text(&path) else { continue };
+        let Some(content) = read_text(&path) else {
+            continue;
+        };
         let rel = relative(root, &path);
         if lower.ends_with(".md") {
             out.push(parse_markdown(&content, &rel, &file));
@@ -127,7 +129,9 @@ fn templates_in_dir(root: &Path, dir: &Path, issue: bool) -> Vec<RepoTemplate> {
 fn first_template_file(root: &Path, candidates: &[&str]) -> Vec<RepoTemplate> {
     for candidate in candidates {
         let path = root.join(candidate);
-        let Some(content) = read_text(&path) else { continue };
+        let Some(content) = read_text(&path) else {
+            continue;
+        };
         let rel = relative(root, &path);
         let file = file_name(&path);
         return vec![parse_markdown(&content, &rel, &file)];
@@ -180,7 +184,13 @@ fn parse_markdown(content: &str, path: &str, fallback_name: &str) -> RepoTemplat
                 }
             }
             "title" => title = Some(scalar(value)),
-            "labels" => labels = scalar(value).split(',').map(str::trim).filter_map(list_item).collect(),
+            "labels" => {
+                labels = scalar(value)
+                    .split(',')
+                    .map(str::trim)
+                    .filter_map(list_item)
+                    .collect()
+            }
             _ => {}
         }
     }
@@ -574,14 +584,46 @@ mod tests {
         assert_eq!(template.name, "Bug report");
         assert_eq!(template.title_prefix.as_deref(), Some("bug: "));
         assert_eq!(template.labels, vec!["bug"]);
-        assert!(template.body.contains("Thanks for reporting."), "{}", template.body);
-        assert!(template.body.contains("### What happened?"), "{}", template.body);
-        assert!(template.body.contains("<!-- A clear description. -->"), "{}", template.body);
-        assert!(template.body.contains("1. Open\n2. Click"), "{}", template.body);
-        assert!(template.body.contains("### How did you install?"), "{}", template.body);
-        assert!(template.body.contains("<!-- one of: cargo run, DMG -->"), "{}", template.body);
-        assert!(template.body.contains("### Acknowledgements"), "{}", template.body);
-        assert!(template.body.contains("- [ ] I searched existing issues"), "{}", template.body);
+        assert!(
+            template.body.contains("Thanks for reporting."),
+            "{}",
+            template.body
+        );
+        assert!(
+            template.body.contains("### What happened?"),
+            "{}",
+            template.body
+        );
+        assert!(
+            template.body.contains("<!-- A clear description. -->"),
+            "{}",
+            template.body
+        );
+        assert!(
+            template.body.contains("1. Open\n2. Click"),
+            "{}",
+            template.body
+        );
+        assert!(
+            template.body.contains("### How did you install?"),
+            "{}",
+            template.body
+        );
+        assert!(
+            template.body.contains("<!-- one of: cargo run, DMG -->"),
+            "{}",
+            template.body
+        );
+        assert!(
+            template.body.contains("### Acknowledgements"),
+            "{}",
+            template.body
+        );
+        assert!(
+            template.body.contains("- [ ] I searched existing issues"),
+            "{}",
+            template.body
+        );
         fs::remove_dir_all(root).ok();
     }
 
@@ -620,7 +662,9 @@ mod tests {
                 .any(|template| template.name == "Feature request"),
             "feature_request.yml should be discovered"
         );
-        assert!(!issues.iter().any(|template| template.path.ends_with("config.yml")));
+        assert!(!issues
+            .iter()
+            .any(|template| template.path.ends_with("config.yml")));
 
         let pulls = pull_templates(&root);
         assert_eq!(pulls.len(), 1);

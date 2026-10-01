@@ -1574,6 +1574,18 @@ impl TerminalPanel {
         cx.notify();
     }
 
+    /// Close the panel if it is open. Idempotent, and unlike [`Self::toggle`]
+    /// it does not need a window — used when a fresh task takes the chat
+    /// column and the shell must get out of the way.
+    pub fn close(&mut self, cx: &mut Context<Self>) {
+        if !self.open {
+            return;
+        }
+        self.open = false;
+        self.sync_active(false, cx);
+        cx.notify();
+    }
+
     /// Kill the current shell and start a fresh one in the same directory.
     fn restart(&mut self, cx: &mut Context<Self>) {
         self.terminal = None;

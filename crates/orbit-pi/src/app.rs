@@ -1433,9 +1433,10 @@ impl OrbitApp {
         };
 
         let app_weak = cx.entity().downgrade();
-        // A changed-file row on the Git page opens its diff in Review. The
-        // Review pane replaces the Git page, so the diff gets the column and
-        // the change list is not left behind.
+        // The Git page's per-file actions menu opens a file's diff in Review.
+        // (Changed-file rows now expand their diff inline on the Changes tab.)
+        // The Review pane replaces the Git page, so the diff gets the column
+        // and the change list is not left behind.
         let review_sidepane = app.sidepane.clone();
         let review_app = app_weak.clone();
         app.git_panel.update(cx, |panel, _| {
@@ -1611,7 +1612,8 @@ impl OrbitApp {
         if self.workspaces.iter().any(|w| w == &cwd) {
             return;
         }
-        self.workspace_added_at.insert(cwd.clone(), SystemTime::now());
+        self.workspace_added_at
+            .insert(cwd.clone(), SystemTime::now());
         self.workspaces.push(cwd);
         self.persist_workspace_prefs();
     }
@@ -1866,7 +1868,11 @@ fn parse_workspace_store(value: &Value) -> WorkspaceStore {
     for entry in entries {
         let (path, added_at, mark) = match entry {
             // Legacy format: a bare path string.
-            Value::String(raw) => (normalize_workspace_path(raw), None, WorkspaceMark::default()),
+            Value::String(raw) => (
+                normalize_workspace_path(raw),
+                None,
+                WorkspaceMark::default(),
+            ),
             // Current format: `{ "path": …, "added_at": <unix secs>,
             // "icon": <stem>, "tint": <key> }`.
             Value::Object(map) => {
@@ -2358,6 +2364,8 @@ mod composer_layout_tests;
 mod devicons_tests;
 #[cfg(test)]
 mod error_label_tests;
+#[cfg(test)]
+mod new_task_panels_tests;
 #[cfg(test)]
 mod new_task_reconnect_tests;
 #[cfg(test)]

@@ -199,11 +199,15 @@ impl OrbitApp {
             self.turn_open = false;
             self.sidepane
                 .update(cx, |pane, cx| pane.mark_review_stale(cx));
+            self.git_panel
+                .update(cx, |panel, cx| panel.mark_review_stale(cx));
             return;
         };
         if !self.turn_open {
             self.sidepane
                 .update(cx, |pane, cx| pane.mark_review_stale(cx));
+            self.git_panel
+                .update(cx, |panel, cx| panel.mark_review_stale(cx));
             return;
         }
         // Close the turn synchronously so a second settle event can't start a
@@ -227,6 +231,8 @@ impl OrbitApp {
                 }
                 app.sidepane
                     .update(cx, |pane, cx| pane.mark_review_stale(cx));
+                app.git_panel
+                    .update(cx, |panel, cx| panel.mark_review_stale(cx));
                 cx.notify();
             });
         })
@@ -493,6 +499,28 @@ impl OrbitApp {
         self.on_abort(&crate::AbortRun, window, cx);
     }
 
+    /// Close every main-area surface and dock so the new-task page owns the
+    /// window. New Task is reachable while Review, Git, Files, Usage, the
+    /// Explorer, the terminal, or Settings is up; without this the fresh task
+    /// opens behind a panel that still covers the chat column.
+    pub(super) fn close_surfaces_for_new_task(&mut self, cx: &mut Context<Self>) {
+        self.settings_open = false;
+        self.provider_editor = None;
+        self.provider_key_editor = None;
+        if self.git_open {
+            self.close_git(cx);
+        }
+        if self.usage_open {
+            self.close_usage(cx);
+        }
+        if self.file_viewer.read(cx).is_open() {
+            self.close_files(cx);
+        }
+        self.sidepane.update(cx, |pane, cx| pane.close(cx));
+        self.project_panel.update(cx, |panel, cx| panel.close(cx));
+        self.terminal_panel.update(cx, |panel, cx| panel.close(cx));
+    }
+
     pub(super) fn on_new_session(
         &mut self,
         _: &crate::NewSession,
@@ -516,6 +544,7 @@ impl OrbitApp {
             self.begin_new_task(cwd, window, cx);
             return;
         }
+        self.close_surfaces_for_new_task(cx);
         self.send(CommandBody::NewSession, "new_session");
         self.input.read(cx).focus(window);
         cx.notify();
@@ -540,6 +569,7 @@ impl OrbitApp {
         // in flight is parked instead, so `new_session` never aborts it; a
         // dead process (or a different workspace) always needs its own.
         if self.current_workspace.as_ref() == Some(&cwd) && self.can_reuse_session() {
+            self.close_surfaces_for_new_task(cx);
             self.send(CommandBody::NewSession, "new_session");
             self.input.read(cx).focus(window);
             cx.notify();
@@ -561,6 +591,9 @@ impl OrbitApp {
         // Leaving this session: cancel any open blocking dialog first, so a
         // parked run never waits on a modal tied to the previous session.
         self.cancel_open_dialog(cx);
+        // A new task owns the window: drop whatever surface was covering the
+        // chat column before the fresh session paints.
+        self.close_surfaces_for_new_task(cx);
         // A live session is parked so a run in flight keeps going in the
         // background. A dead one holds nothing worth keeping: drop it (its
         // exit banner goes with it) instead of parking a corpse.
