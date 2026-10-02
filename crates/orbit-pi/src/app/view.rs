@@ -567,12 +567,16 @@ impl Render for OrbitApp {
                                     .hover(|style| style.bg(theme.accent.opacity(0.4)))
                                     .on_drag(SidebarResize, |_, _, _, cx| cx.new(|_| DragGhost)),
                             )
-                            // brand — the Orbit wordmark, set over the nav column
+                            // brand — the Orbit wordmark, set over the nav
+                            // column. The titlebar strip above already reserves
+                            // the space under the window controls, so `pb_3`
+                            // (plus the nav's `pt_1` below) gives the mark the
+                            // same optical gap above and below it.
                             .child(
                                 div()
                                     .px_3()
                                     .pt(px(2.))
-                                    .pb(px(6.))
+                                    .pb_3()
                                     .flex()
                                     .items_center()
                                     .justify_center()
