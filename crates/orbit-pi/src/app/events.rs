@@ -1,6 +1,17 @@
 use super::*;
 use crate::toast::ToastKind;
 
+/// One tick's worth of results from draining a background session.
+struct ParkedDrain {
+    /// An event changed the parked state — repaint.
+    changed: bool,
+    /// The session is mid-run (drives the sidebar loader).
+    busy: bool,
+    /// The process named its session file; move it from the pending pool into
+    /// `lives` under this path.
+    rekey: Option<PathBuf>,
+}
+
 impl OrbitApp {
     /// Heartbeat (~90ms): drain protocol events into the UI.
     pub(crate) fn tick(&mut self, cx: &mut Context<Self>) {
@@ -364,7 +375,7 @@ impl OrbitApp {
     /// pi processes; events keep their transcripts current, so reopening a
     /// parked session resumes the live stream exactly where it left off.
     pub(super) fn tick_background(&mut self, cx: &mut Context<Self>) {
-        if self.lives.is_empty() {
+        if self.lives.is_empty() && self.pending_parks.is_empty() {
             return;
         }
         let mut changed = false;
@@ -375,54 +386,46 @@ impl OrbitApp {
         let mut finished: Vec<(PathBuf, Option<String>, Option<transcript::TurnSummary>)> =
             Vec::new();
         for (path, parked) in self.lives.iter_mut() {
-            for event in parked.client.drain_events() {
-                match &event {
-                    Event::AgentStart => parked.busy = true,
-                    // `agent_settled` is the real settle (queued steering /
-                    // follow-up / retry can continue past `agent_end`).
-                    Event::AgentSettled => {
-                        parked.busy = false;
-                        finished.push((
-                            path.clone(),
-                            self.sessions
-                                .iter()
-                                .find(|session| session.path == *path)
-                                .map(|session| session.title.clone()),
-                            parked.transcript.latest_turn_summary(),
-                        ));
-                    }
-                    Event::ProcessExited => parked.busy = false,
-                    // A parked session has no visible dialog surface; cancel
-                    // so its blocked run can settle (an active session renders
-                    // the dialog in `tick` above).
-                    Event::ExtensionUiRequest { id, .. } => {
-                        let _ = parked.client.respond_dialog(
-                            id,
-                            serde_json::json!({
-                                "type": "extension_ui_response",
-                                "id": id,
-                                "cancelled": true
-                            }),
-                        );
-                        continue;
-                    }
-                    Event::MessageEnd { value } => {
-                        // Real edit stats from finalized tool calls.
-                        let (a, r) = transcript::diff_from_message(value);
-                        parked.added += a;
-                        parked.removed += r;
-                    }
-                    _ => {}
-                }
-                changed |= parked.transcript.apply_event(&event);
-            }
+            let drained =
+                Self::drain_parked_session(parked, Some(path), &self.sessions, &mut finished);
+            changed |= drained.changed;
+            any_busy |= drained.busy;
             if !parked.client.is_alive() {
                 dead.push(path.clone());
             }
-            any_busy |= parked.busy;
         }
         for path in dead {
             self.lives.remove(&path);
+        }
+        // Pending parks: live processes whose session file pi has not named
+        // yet. They drain like any parked session (a run started during boot
+        // keeps going) and join `lives` under their file the moment the boot
+        // handshake reveals it. A process that never claims a file is dropped
+        // only when it exits or the idle TTL reaps it.
+        let mut rekeyed: Vec<(PathBuf, ParkedSession)> = Vec::new();
+        let mut ix = 0;
+        while ix < self.pending_parks.len() {
+            let drained = Self::drain_parked_session(
+                &mut self.pending_parks[ix],
+                None,
+                &self.sessions,
+                &mut finished,
+            );
+            changed |= drained.changed;
+            any_busy |= drained.busy;
+            if !self.pending_parks[ix].client.is_alive() {
+                self.pending_parks.remove(ix);
+                changed = true;
+            } else if let Some(path) = drained.rekey {
+                let parked = self.pending_parks.remove(ix);
+                rekeyed.push((path, parked));
+                changed = true;
+            } else {
+                ix += 1;
+            }
+        }
+        for (path, parked) in rekeyed {
+            self.park(path, parked);
         }
         // A parked run that settled while the user was elsewhere still wants
         // saying. The settle also flips the sidebar's running loader, so the
@@ -436,6 +439,107 @@ impl OrbitApp {
             // park-state changes) even though the visible transcript's
             // active client produced no events this tick.
             cx.notify();
+        }
+    }
+
+    /// Drain one parked session's buffered events into its transcript and
+    /// report what changed. `path` is `None` for a pending park: such a
+    /// session also answers the boot handshake, because only the active view
+    /// used to — a `new_session`/`clone` reply asks the process for
+    /// `get_state`, and the reply naming `sessionFile` re-keys it into `lives`
+    /// (issue #46).
+    fn drain_parked_session(
+        parked: &mut ParkedSession,
+        path: Option<&Path>,
+        sessions: &[SessionInfo],
+        finished: &mut Vec<(PathBuf, Option<String>, Option<transcript::TurnSummary>)>,
+    ) -> ParkedDrain {
+        let mut changed = false;
+        let mut rekey = None;
+        for event in parked.client.drain_events() {
+            match &event {
+                Event::AgentStart => parked.busy = true,
+                // `agent_settled` is the real settle (queued steering /
+                // follow-up / retry can continue past `agent_end`).
+                Event::AgentSettled => {
+                    parked.busy = false;
+                    // A pending session has no sidebar row yet, so there is
+                    // no path to name in a notification; it is re-keyed
+                    // moments later and notices from then on.
+                    if let Some(path) = path {
+                        finished.push((
+                            path.to_path_buf(),
+                            sessions
+                                .iter()
+                                .find(|session| session.path == path)
+                                .map(|session| session.title.clone()),
+                            parked.transcript.latest_turn_summary(),
+                        ));
+                    }
+                }
+                Event::ProcessExited => parked.busy = false,
+                // A parked session has no visible dialog surface; cancel
+                // so its blocked run can settle (an active session renders
+                // the dialog in `tick` above).
+                Event::ExtensionUiRequest { id, .. } => {
+                    let _ = parked.client.respond_dialog(
+                        id,
+                        serde_json::json!({
+                            "type": "extension_ui_response",
+                            "id": id,
+                            "cancelled": true
+                        }),
+                    );
+                    continue;
+                }
+                Event::MessageEnd { value } => {
+                    // Real edit stats from finalized tool calls.
+                    let (a, r) = transcript::diff_from_message(value);
+                    parked.added += a;
+                    parked.removed += r;
+                }
+                Event::Response {
+                    command,
+                    success,
+                    data,
+                    ..
+                } if path.is_none() && *success => {
+                    let file = data
+                        .as_ref()
+                        .and_then(|data| data.get("sessionFile"))
+                        .and_then(Value::as_str)
+                        .map(PathBuf::from);
+                    match command.as_str() {
+                        "new_session" | "clone" => {
+                            // A clone inherits the source transcript in the
+                            // active view, which clears it on the reply; the
+                            // parked one never saw that, so clear it here.
+                            if command == "clone" {
+                                parked.transcript = Transcript::new();
+                                changed = true;
+                            }
+                            match file {
+                                Some(file) => rekey = Some(file),
+                                // pi creates the file but does not echo it on
+                                // this reply; the follow-up `get_state` names
+                                // it (same order the active view uses).
+                                None => {
+                                    let _ = parked.client.send(CommandBody::GetState);
+                                }
+                            }
+                        }
+                        "get_state" | "get_session_stats" => rekey = file,
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+            changed |= parked.transcript.apply_event(&event);
+        }
+        ParkedDrain {
+            changed,
+            busy: parked.busy,
+            rekey,
         }
     }
 

@@ -553,12 +553,14 @@ impl OrbitApp {
     /// stay regardless of age. Called from the heartbeat; a no-op when nothing
     /// is parked.
     pub(super) fn reap_idle_parked(&mut self) {
-        if self.lives.is_empty() {
+        if self.lives.is_empty() && self.pending_parks.is_empty() {
             return;
         }
         let now = Instant::now();
-        self.lives.retain(|_, parked| {
+        let alive = |parked: &ParkedSession| {
             parked.busy || now.duration_since(parked.parked_at) < PARKED_IDLE_TTL
-        });
+        };
+        self.lives.retain(|_, parked| alive(parked));
+        self.pending_parks.retain(alive);
     }
 }

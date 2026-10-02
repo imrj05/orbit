@@ -95,13 +95,15 @@ impl OrbitApp {
         .detach();
     }
 
-    /// True while any pi session (the active one or a parked one) is running,
-    /// streaming, or compacting — i.e. when pi's files must not be replaced.
+    /// True while any pi session (the active one, a parked one, or one still
+    /// claiming its file) is running, streaming, or compacting — i.e. when
+    /// pi's files must not be replaced.
     fn pi_busy(&self) -> bool {
         self.busy
             || self.transcript.is_streaming()
             || self.is_compacting
             || self.lives.values().any(|parked| parked.busy)
+            || self.pending_parks.iter().any(|parked| parked.busy)
     }
 
     /// Apply the result of `pi update self`. Live pi processes keep the old

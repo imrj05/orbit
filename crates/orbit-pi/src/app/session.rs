@@ -260,31 +260,32 @@ impl OrbitApp {
     /// (no Node spawn), so session switching is near-instant. Running parked
     /// sessions keep draining events; idle ones are reaped after
     /// [`PARKED_IDLE_TTL`](crate::app::PARKED_IDLE_TTL).
+    ///
+    /// A process that has not claimed a session file yet (pi still booting, or
+    /// a `new_session` reply in flight) joins the pending pool instead:
+    /// leaving it active would let the incoming `adopt_client` overwrite — and
+    /// kill — a live run on the next switch (issue #46).
     pub(super) fn park_active_session(&mut self) {
         let Some(client) = self.client.take() else {
-            return;
-        };
-        let Some(path) = self.current_session_path.take() else {
-            // No path claimed yet (still starting up): keep the client active.
-            self.client = Some(client);
             return;
         };
         let busy = self.busy || self.transcript.is_streaming();
         let transcript = std::mem::replace(&mut self.transcript, Transcript::new());
         let widgets = std::mem::take(&mut self.extension_widgets);
-        self.park(
-            path,
-            ParkedSession {
-                client,
-                transcript,
-                busy,
-                added: self.added,
-                removed: self.removed,
-                mcp_stamp: self.mcp_stamp,
-                widgets,
-                parked_at: Instant::now(),
-            },
-        );
+        let parked = ParkedSession {
+            client,
+            transcript,
+            busy,
+            added: self.added,
+            removed: self.removed,
+            mcp_stamp: self.mcp_stamp,
+            widgets,
+            parked_at: Instant::now(),
+        };
+        match self.current_session_path.take() {
+            Some(path) => self.park(path, parked),
+            None => self.pending_parks.push(parked),
+        }
     }
 
     /// Recover the newest completed turn from the persisted checkpoint refs,

@@ -28,6 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tab (⌘⌥4), so **Changes** stays the review browser plus commit bar; the
   **Issues** and **Pull requests** tabs moved to ⌘⌥5 and ⌘⌥6.
 
+### Fixed
+
+- Switching to another session no longer kills a session that is still
+  starting. A process pi has not named a session file for yet parks in a
+  pending pool, keeps draining its run, and joins the warm pool under its
+  file as soon as the boot handshake names it — instead of the incoming
+  session's adopt dropping (and killing) it (#46).
+
 ## [0.2.3] - 2026-10-01
 
 ### Added

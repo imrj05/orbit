@@ -198,6 +198,11 @@ pub struct OrbitApp {
     /// Sidebar width in pixels — adjusted by dragging its right edge.
     sidebar_width: Pixels,
     lives: HashMap<PathBuf, ParkedSession>,
+    /// Live processes parked before pi claimed their session file — the user
+    /// switched away mid-boot, or between `new_session` and the `get_state`
+    /// reply that names the file. Drained every tick like `lives`; re-keyed
+    /// into `lives` as soon as the file is known (issue #46).
+    pending_parks: Vec<ParkedSession>,
     transcript: Transcript,
     sessions: Vec<SessionInfo>,
     /// Debounced watcher over pi's session store — sessions written by the
@@ -1167,6 +1172,7 @@ impl OrbitApp {
                 .unwrap_or(SIDEBAR_DEFAULT_W)
                 .max(SIDEBAR_MIN_W)),
             lives: HashMap::new(),
+            pending_parks: Vec::new(),
             transcript: Transcript::new(),
             sessions: sessions::load_sessions(),
             session_watcher: sessions::SessionWatcher::start(),
@@ -2372,6 +2378,8 @@ mod new_task_reconnect_tests;
 mod popup_layout_tests;
 #[cfg(test)]
 mod session_default_apply_tests;
+#[cfg(test)]
+mod session_park_tests;
 #[cfg(test)]
 mod sidebar_active_reveal_tests;
 #[cfg(test)]
