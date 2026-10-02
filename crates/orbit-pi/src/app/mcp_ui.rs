@@ -37,7 +37,7 @@ const MCP_PROBE_DEBOUNCE: Duration = Duration::from_millis(500);
 const MCP_APPLY_DEBOUNCE: Duration = Duration::from_millis(350);
 /// How often the page re-checks the config files for external edits while the
 /// MCP section is open. A stat of two small files.
-const MCP_EXTERNAL_POLL: Duration = Duration::from_secs(4);
+const MCP_EXTERNAL_POLL: Duration = Duration::from_secs(60);
 
 /// The MCP add/edit modal's open state. Inputs are `ComposerInput` entities so
 /// they get real text editing (selection, IME, clipboard) for free.
