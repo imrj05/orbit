@@ -186,7 +186,8 @@ actions!(
         GitTabGraph,
         GitTabStashes,
         GitTabIssues,
-        GitTabPulls
+        GitTabPulls,
+        GitCommitSubmit
     ]
 );
 
@@ -499,6 +500,13 @@ fn bind_keys(cx: &mut App) {
         // same-depth tie against `Submit`/`AbortRun` (registered later).
         KeyBinding::new("enter", ExplorerEntryConfirm, Some("ExplorerEntry")),
         KeyBinding::new("escape", ExplorerEntryCancel, Some("ExplorerEntry")),
+        // Git commit message. The field carries `Composer GitCommitMessage`,
+        // so caret/clipboard keys stay live; Enter inserts a newline (a commit
+        // message is edited, not sent) and the primary modifier + Enter
+        // commits. Registered after the Composer and Picker bindings, so these
+        // win the same-depth tie against `Submit`/`PickerConfirm`.
+        KeyBinding::new("enter", Newline, Some("GitCommitMessage")),
+        KeyBinding::new("secondary-enter", GitCommitSubmit, Some("GitCommitMessage")),
         // Sessions sidebar: focus it with the primary modifier + Shift + B,
         // then navigate the row list with the arrows (Zed/VS Code convention).
         // The `Sidebar` context rides the sidebar's own focus handle, so these

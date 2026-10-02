@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The Git page's commit message box now matches the chat composer: the
+  multi-line editor and its action row share one rounded, lifted surface, so
+  the message reads as a text area instead of a one-line field. **Enter**
+  inserts a newline and **⌘↵** / **Ctrl+Enter** commits.
 - The top bar's right side now carries only what shows live state: the
   provider quota, **Open in**, the Review chip, and a single **…** menu. The
   Review chip folds together the side-panel toggle and the working tree's
