@@ -29,9 +29,20 @@ pi as a child process, no web, no webview, no Node daemon.
 ## Repo layout
 
 ```
-Cargo.toml              workspace: orbit-pi, orbit-rpc
+Cargo.toml              workspace: orbit-analytics, orbit-pi, orbit-rpc
+crates/orbit-analytics/ provider-independent, privacy-first product telemetry
+  src/lib.rs            public API: Analytics trait, AnalyticsEvent, re-exports
+  src/client.rs         AnalyticsClient + queue/session engine + background worker
+  src/config.rs         endpoint/app-key/environment config (HTTPS enforced)
+  src/event.rs          closed AnalyticsEvent enum and its (small) properties
+  src/countly.rs        Countly `/i` request builder + Transport seam + HTTP transport
+  src/identity.rs       pseudonymous installation id + persisted opt-out state
+  src/queue.rs          bounded in-memory batch queue
+  src/privacy.rs        forbidden-key/sensitive-value guard for payloads
+  tests/countly_http.rs mock-server integration test for the request shape
 crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/main.rs           bootstrap, assets, keybindings, heartbeat, native menu (localized)
+  src/analytics.rs      the app's only telemetry wiring: GPUI global + `track` helper + lifecycle
   src/commands.rs       command registry (D13): keymap rows, palette metadata, and the shortcut reference
   src/i18n.rs           AppLanguage + locale detection; the `tr!`/`tr_cow!` macros
   locales/              translations: en.yml is the source of truth, one file per locale
@@ -147,12 +158,44 @@ contrib/orbit-workflow-extension/  Orbit's bundled pi extension (loaded with
                         table and both files are `node --test` covered
 assets/icons/           logo-icon.png app-icon source + icon.icns / icon.ico / icon.png
                         + alpha-logo.png / alpha-logo.icns (macOS debug builds)
-PRODUCT.md  INTENT.md  README.md  AGENT.md
+PRODUCT.md  INTENT.md  README.md  AGENT.md  PRIVACY.md
 ```
 
 Workspace edition is **2021**. Prefer **Rust 1.94+**. Root `Cargo.lock` is the lockfile; ignore a nested `crates/orbit-pi/Cargo.lock` if present.
 
 Override the pi binary with `PI_BIN` (default: `pi` on `PATH`).
+
+## Analytics / Telemetry
+
+Orbit ships privacy-first, opt-out product analytics through the
+`crates/orbit-analytics` crate. The app only ever calls the `Analytics` trait
+(`track`, `start_session`, `end_session`) via the single `crate::analytics`
+module; Countly lives entirely behind that crate's `Transport` seam, so the
+backend can be replaced without touching application code.
+
+* Collected: a pseudonymous random-UUID installation id, a per-launch session
+  id, app version, OS, architecture, locale, and a small closed set of feature
+  events (`app_started`, `project_*`, `agent_*`, `mcp_*`, `terminal_*`,
+  `settings_opened`, `theme_changed`, `update_*`, …). Event properties are
+  built explicitly from `AnalyticsEvent`; application state is never
+  serialized wholesale.
+* Never collected: source code, project contents/paths/names, terminal
+  commands or output, prompts or responses, credentials, environment
+  variables, IP-as-property, hardware identifiers. See `PRIVACY.md`.
+* Lifecycle: `analytics::init` starts the session and queues `app_started`;
+  `on_app_quit` queues `app_closed` and does a bounded best-effort flush. All
+  network I/O runs on a dedicated worker thread, so the GPUI thread never
+  blocks.
+* Opt-out: Settings → Privacy → Anonymous Usage Analytics. Disabling stops
+  collection immediately and clears the queue. The choice persists in
+  `~/.orbit-pi/analytics.json`.
+* Configuration: `ORBIT_ANALYTICS_APP_KEY` (required to send),
+  `ORBIT_ANALYTICS_ENDPOINT` (default `https://telemetry.rajeshwar.tech`),
+  `ORBIT_ANALYTICS_ENVIRONMENT`, `ORBIT_ANALYTICS_DISABLED`. Development and
+  staging default to off; nothing is sent without an app key.
+
+Full developer documentation, including the Countly setup and how to test
+locally, lives in [`docs/analytics.md`](docs/analytics.md).
 
 ## Localization (i18n)
 

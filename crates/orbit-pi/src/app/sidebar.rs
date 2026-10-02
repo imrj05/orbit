@@ -2019,7 +2019,7 @@ impl OrbitApp {
         let Some(menu) = self.workspace_menu.take() else {
             return;
         };
-        self.remove_workspace(&menu.cwd);
+        self.remove_workspace(&menu.cwd, cx);
         // Forget the dropped group's view state so re-adding it starts fresh.
         self.collapsed_workspaces.remove(&menu.label);
         self.expanded_workspace_groups.remove(&menu.label);

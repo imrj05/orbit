@@ -136,7 +136,7 @@ impl OrbitApp {
         // view starts idle.
         self.busy = false;
         // Picking a folder to work in adds it to Orbit's own sidebar list.
-        self.add_workspace(folder.clone());
+        self.add_workspace(folder.clone(), cx);
         self.set_current_workspace(folder);
         self.current_session_path = None;
         self.added = 0;
@@ -307,6 +307,7 @@ impl OrbitApp {
         self.workspace_picker = None;
         self.session_menu = None;
         self.workspace_menu = None;
+        crate::analytics::track(cx, orbit_analytics::AnalyticsEvent::CommandPaletteOpened);
 
         // Model and thinking choices are fixed for the duration of a turn, so
         // the palette hides those two commands while a run is in flight.

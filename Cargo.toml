@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/orbit-analytics",
     "crates/orbit-pi",
     "crates/orbit-rpc",
 ]

@@ -248,6 +248,9 @@ pub struct OrbitApp {
     model_provider: String,
     thinking_label: String,
     busy: bool,
+    /// Whether the current run already reported a failure, so a later
+    /// `agent_settled` does not also log a completion. Analytics-only state.
+    analytics_agent_failed: bool,
     /// Pending steering + follow-up messages reported by pi's `queue_update`
     /// (and echoed by `clear_queue`). While the agent runs, messages sent from
     /// the composer are queued as follow-ups and shown here until delivered.
@@ -1194,6 +1197,7 @@ impl OrbitApp {
             model_provider: String::new(),
             thinking_label: "…".into(),
             busy: false,
+            analytics_agent_failed: false,
             queue: PendingQueue::default(),
             restore_queue_on_clear: false,
             follow_up_mode: "one-at-a-time".into(),
@@ -1613,7 +1617,7 @@ impl OrbitApp {
     /// Add `cwd` to Orbit's project list if it isn't already there. Called
     /// whenever the user picks a folder to work in — starting a task there,
     /// browsing for one, or opening one of its sessions. Never writes to pi.
-    pub(super) fn add_workspace(&mut self, cwd: PathBuf) {
+    pub(super) fn add_workspace(&mut self, cwd: PathBuf, cx: &App) {
         let cwd = normalize_workspace_path(&cwd.to_string_lossy());
         if self.workspaces.iter().any(|w| w == &cwd) {
             return;
@@ -1622,6 +1626,7 @@ impl OrbitApp {
             .insert(cwd.clone(), SystemTime::now());
         self.workspaces.push(cwd);
         self.persist_workspace_prefs();
+        crate::analytics::track(cx, orbit_analytics::AnalyticsEvent::ProjectCreated);
     }
 
     /// Write the sidebar's project list, each project's added-at stamp, the
@@ -1649,13 +1654,14 @@ impl OrbitApp {
 
     /// Drop a project from Orbit's sidebar. pi's session files stay exactly
     /// where they are — only Orbit's own list changes.
-    pub(super) fn remove_workspace(&mut self, cwd: &Path) {
+    pub(super) fn remove_workspace(&mut self, cwd: &Path, cx: &App) {
         let before = self.workspaces.len();
         self.workspaces.retain(|w| w.as_path() != cwd);
         if self.workspaces.len() != before {
             self.workspace_added_at.remove(cwd);
             self.workspace_marks.remove(cwd);
             self.persist_workspace_prefs();
+            crate::analytics::track(cx, orbit_analytics::AnalyticsEvent::ProjectDeleted);
         }
     }
 
@@ -2034,6 +2040,7 @@ pub(crate) enum SettingsSection {
     General,
     Appearance,
     Shortcuts,
+    Privacy,
     Runtime,
     Agent,
     Providers,

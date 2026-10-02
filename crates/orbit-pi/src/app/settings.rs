@@ -64,6 +64,11 @@ const SETTINGS_SECTIONS: &[(SettingsSection, &str, &str)] = &[
         "settings.shortcuts",
     ),
     (
+        SettingsSection::Privacy,
+        "icons/lock.svg",
+        "settings.privacy",
+    ),
+    (
         SettingsSection::Runtime,
         "icons/server-stack.svg",
         "settings.runtime",
@@ -333,6 +338,11 @@ const SETTINGS_SEARCH_INDEX: &[(SettingsSection, &str, &str)] = &[
         SettingsSection::Shortcuts,
         "settings.shortcuts",
         "shortcuts keyboard keys chords",
+    ),
+    (
+        SettingsSection::Privacy,
+        "settings.anonymous_analytics",
+        "telemetry analytics usage anonymous privacy opt out data collection",
     ),
     (
         SettingsSection::About,
@@ -821,6 +831,9 @@ impl OrbitApp {
                 tr!("settings.shortcuts"),
                 tr!("settings.shortcuts_description"),
             ),
+            SettingsSection::Privacy => {
+                (tr!("settings.privacy"), tr!("settings.privacy_description"))
+            }
             SettingsSection::About => (tr!("settings.about"), tr!("settings.about_description")),
         };
         div()
@@ -914,6 +927,7 @@ impl OrbitApp {
             SettingsSection::Appearance => self.appearance_rows(theme, this.clone(), cx),
             SettingsSection::Providers => self.provider_rows(theme, this.clone(), cx),
             SettingsSection::Shortcuts => self.shortcut_rows(theme),
+            SettingsSection::Privacy => self.privacy_rows(theme, this.clone(), cx),
             SettingsSection::About => {
                 let mut about = vec![self.setting_row(
                     theme,
@@ -5207,6 +5221,49 @@ impl OrbitApp {
             .into_any_element()
     }
 
+    /// Settings → Privacy: the single anonymous-usage-analytics switch. The
+    /// paragraph names what is collected and what never is; disabling takes
+    /// effect immediately and clears anything queued.
+    pub(super) fn privacy_rows(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> Vec<AnyElement> {
+        let enabled = crate::analytics::is_enabled(cx);
+        vec![self.settings_section(
+            theme,
+            &tr!("settings.anonymous_analytics"),
+            vec![self.setting_row(
+                theme,
+                &tr!("settings.anonymous_analytics"),
+                Some(&tr!("settings.anonymous_analytics_description")),
+                None,
+                Some(self.settings_toggle(
+                    "analytics-toggle",
+                    enabled,
+                    theme,
+                    this,
+                    Self::toggle_analytics,
+                )),
+            )],
+        )]
+    }
+
+    /// Flip the analytics opt-out. The client stops collecting and clears its
+    /// queue the moment this runs.
+    pub(super) fn toggle_analytics(&mut self, cx: &mut Context<Self>) {
+        let enabled = !crate::analytics::is_enabled(cx);
+        crate::analytics::set_enabled(cx, enabled);
+        crate::analytics::track(
+            cx,
+            orbit_analytics::AnalyticsEvent::SettingsChanged {
+                setting: orbit_analytics::SettingId::Analytics,
+            },
+        );
+        cx.notify();
+    }
+
     /// Toggle auto-applying pi's RPC patches. Persisted; the patches run
     /// before the next launch, so an agent restart is needed to load a change.
     pub(super) fn toggle_rpc_patches(&mut self, cx: &mut Context<Self>) {
@@ -6747,6 +6804,7 @@ impl OrbitApp {
     pub(super) fn open_settings(&mut self, cx: &mut Context<Self>) {
         self.refresh_updater(cx);
         self.settings_open = true;
+        crate::analytics::track(cx, orbit_analytics::AnalyticsEvent::SettingsOpened);
         self.set_settings_section(SettingsSection::General, cx);
     }
 
@@ -6769,6 +6827,7 @@ impl OrbitApp {
     ) {
         self.refresh_updater(cx);
         self.settings_open = true;
+        crate::analytics::track(cx, orbit_analytics::AnalyticsEvent::SettingsOpened);
         self.set_settings_section(SettingsSection::About, cx);
     }
 

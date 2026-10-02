@@ -37,6 +37,7 @@ macro_rules! tr_cow {
 }
 
 mod access;
+mod analytics;
 mod app;
 mod app_icon;
 mod ask;
@@ -612,6 +613,11 @@ fn main() {
         // Adopt the persisted interface language before the first paint (and
         // before the menu bar below reads its labels).
         i18n::set_language(theme::get(cx).ui.language);
+        // Start privacy-first analytics after the language is known (it rides
+        // along as non-sensitive metadata). This queues the launch events and
+        // spawns a background worker; nothing here touches the network on the
+        // UI thread.
+        analytics::init(cx);
         // Install the native menu bar after the keymap exists so each item
         // picks up its key equivalent.
         set_app_menus(cx);
@@ -690,6 +696,14 @@ fn main() {
         updater::signal_relaunch_ready();
 
         cx.activate(true);
+        // Record the close and flush briefly (bounded) on every quit path —
+        // cmd-q, the menu, or closing the last window. Analytics never blocks
+        // or cancels quitting.
+        cx.on_app_quit(|cx| {
+            analytics::shutdown(cx);
+            async {}
+        })
+        .detach();
         cx.on_action(|_: &Quit, cx| cx.quit());
     });
 }

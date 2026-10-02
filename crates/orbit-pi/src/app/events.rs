@@ -134,7 +134,11 @@ impl OrbitApp {
         let mut refresh_sessions = false;
         for event in &events {
             match event {
-                Event::AgentStart => self.busy = true,
+                Event::AgentStart => {
+                    self.busy = true;
+                    self.analytics_agent_failed = false;
+                    crate::analytics::track(cx, orbit_analytics::AnalyticsEvent::AgentStarted);
+                }
                 // An extension dialog blocks the run until the client answers.
                 // Render it natively (select / confirm / input / editor); the
                 // user's reply on the modal unblocks pi.
@@ -243,6 +247,12 @@ impl OrbitApp {
                 }
                 Event::AgentSettled => {
                     self.busy = false;
+                    if !self.analytics_agent_failed {
+                        crate::analytics::track(
+                            cx,
+                            orbit_analytics::AnalyticsEvent::AgentCompleted,
+                        );
+                    }
                     self.retrying = false;
                     self.retry_detail = None;
                     self.pending_follow_up = None;
@@ -294,6 +304,7 @@ impl OrbitApp {
                     self.refresh_context_stats();
                 }
                 Event::ProcessExited => {
+                    let was_busy = self.busy;
                     self.busy = false;
                     self.retrying = false;
                     self.retry_detail = None;
@@ -309,6 +320,15 @@ impl OrbitApp {
                     self.runtime.exited = true;
                     self.auth.on_disconnect();
                     self.set_error(tr!("events.process_exited"));
+                    if was_busy && !self.analytics_agent_failed {
+                        self.analytics_agent_failed = true;
+                        crate::analytics::track(
+                            cx,
+                            orbit_analytics::AnalyticsEvent::AgentFailed {
+                                reason: orbit_analytics::AgentFailure::ProcessExited,
+                            },
+                        );
+                    }
                 }
                 Event::MessageEnd { value } => {
                     // A failed LLM call ends the assistant message with
@@ -317,6 +337,15 @@ impl OrbitApp {
                     // transcript renders the same text inline.
                     if let Some(error) = transcript::message_error(value) {
                         self.set_error(tr!("events.agent_error", error = error));
+                        if !self.analytics_agent_failed {
+                            self.analytics_agent_failed = true;
+                            crate::analytics::track(
+                                cx,
+                                orbit_analytics::AnalyticsEvent::AgentFailed {
+                                    reason: orbit_analytics::AgentFailure::Provider,
+                                },
+                            );
+                        }
                     } else if self.error.as_deref().is_some_and(|error| {
                         error.starts_with(tr!("events.agent_error_prefix").as_str())
                     }) {
