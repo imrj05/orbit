@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `+N −N` counts (one or the other); the new **…** menu holds **Session
   details**, **Explorer**, **Terminal**, and **Git**, each still on its
   shortcut and one click away.
+- Stashes moved off the Git page's **Changes** tab onto their own **Stashes**
+  tab (⌘⌥4), so **Changes** stays the review browser plus commit bar; the
+  **Issues** and **Pull requests** tabs moved to ⌘⌥5 and ⌘⌥6.
 
 ## [0.2.3] - 2026-10-01
 

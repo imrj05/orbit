@@ -313,7 +313,7 @@ rename/pin/clone/delete, model and thinking pickers (⌘⇧M / ⌘⇧T), Review
 (⌘⇧R), and the shortcut reference (⌘/). Session management is number- and
 cycle-addressable: ⌘1…⌘9 open the Nth session in the sidebar's visible order
 and Ctrl+Tab / Ctrl+Shift+Tab cycle sessions (the Git page tabs moved to
-⌘⌥1…⌘⌥5 to free the numbers). Hover hints come from the same registry
+⌘⌥1…⌘⌥6 to free the numbers). Hover hints come from the same registry
 (`commands::tooltip`), so the model/thinking chips, New Task, Search/Usage
 rows, top-bar toggles, and Git tabs name their chord on hover — and a session
 row shows its ⌘1…⌘9 slot. The Review pane is fully keyboard navigable —

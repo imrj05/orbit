@@ -8,9 +8,10 @@ push** row or the top-bar Git affordance; `escape` / **Back** returns.
 
 | Tab | Source | What it does |
 |---|---|---|
-| **Changes** | `git status --porcelain` | Staged/unstaged lists with per-file stage/unstage and confirmed discard; Include-unstaged toggle; commit bar (branch menu, conventional-commit input, **Generate**); a collapsible **Stashes** section (stash all, pop, apply, drop). |
+| **Changes** | `git status --porcelain` | Staged/unstaged lists with per-file stage/unstage and confirmed discard; Include-unstaged toggle; commit bar (branch menu, conventional-commit input, **Generate**). |
 | **History** | `git log` | Commit rows with ref badges, author, relative time, paged. Clicking a row expands it in place: full body, author/committer facts, **Open on GitHub**, copy hash, and the changed files with a per-file actions menu. |
 | **Graph** | `git log --branches HEAD` (plus `--remotes --tags` with **All refs**) | Lane graph laid out by `git::layout_graph`, with the same expandable commit detail as History. |
+| **Stashes** | `git stash list` | The stash stack newest first: **Stash changes**, then pop / apply / drop per entry. |
 | **Issues** | `gh issue …` | Open/Closed/All, search, label filter/picker, **New issue** (with **Generate**), list, and a detail view with the rendered Markdown body, comments, a comment composer, **Close/Reopen**, **Edit labels**, and **Open on GitHub**. |
 | **Pull requests** | `gh pr …` | Open/Closed/Merged/All, search, **New pull request** (title, body, base picker, draft, **Generate**), list with CI rollup and review-decision chips, and a detail view with description, checks, commits, changed files, comments, reviews, **Approve** / **Request changes**, **Merge** (method + delete-branch confirm), **Close/Reopen**, and **Checkout branch**. |
 
@@ -113,7 +114,7 @@ chips (click an author name to filter by them), and **Clear**.
 
 ## Keyboard
 
-- `⌘1`…`⌘5` switch tabs while the page is open (a no-op elsewhere)
+- `⌘1`…`⌘6` switch tabs while the page is open (a no-op elsewhere)
 - `escape` dismisses a modal, then the branch/ref/file popovers, then leaves the
   page via the Back affordance
 

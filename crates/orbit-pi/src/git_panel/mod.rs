@@ -79,6 +79,7 @@ enum GitTab {
     Changes,
     History,
     Graph,
+    Stashes,
     Issues,
     Pulls,
 }
@@ -228,8 +229,6 @@ pub struct GitPanel {
     branch_prompt: Option<BranchPrompt>,
     /// The stash stack, newest first.
     stashes: Vec<git_ops::StashEntry>,
-    /// Whether the Stashes section on the Changes tab is expanded.
-    stash_open: bool,
 
     // ── github (gh CLI) ──
     /// Whether the `gh` binary is installed and runnable.
@@ -494,7 +493,6 @@ impl GitPanel {
             branch_input,
             branch_prompt: None,
             stashes: Vec::new(),
-            stash_open: false,
             gh_installed: false,
             gh_authenticated: false,
             gh_detail: String::new(),
@@ -581,14 +579,16 @@ impl GitPanel {
         cx.notify();
     }
 
-    /// Switch to a tab by index (0=Changes, 1=History, 2=Graph, 3=Issues,
-    /// 4=Pull requests), reloading it. Driven by the ⌘1–⌘5 shortcuts.
+    /// Switch to a tab by index (0=Changes, 1=History, 2=Graph, 3=Stashes,
+    /// 4=Issues, 5=Pull requests), reloading it. Driven by the ⌘1–⌘6
+    /// shortcuts.
     pub fn set_tab(&mut self, index: usize, cx: &mut Context<Self>) {
         let tab = match index {
             1 => GitTab::History,
             2 => GitTab::Graph,
-            3 => GitTab::Issues,
-            4 => GitTab::Pulls,
+            3 => GitTab::Stashes,
+            4 => GitTab::Issues,
+            5 => GitTab::Pulls,
             _ => GitTab::Changes,
         };
         if self.tab != tab {
@@ -902,7 +902,8 @@ impl GitPanel {
             GitTab::Graph => self.refresh_graph(cx),
             GitTab::Issues => self.refresh_issues(cx),
             GitTab::Pulls => self.refresh_pulls(cx),
-            GitTab::Changes => {}
+            // Stashes ride along with the branch refresh above.
+            GitTab::Changes | GitTab::Stashes => {}
         }
     }
 
@@ -938,6 +939,7 @@ impl GitPanel {
             GitTab::Graph => self.graph_loading,
             GitTab::Issues => self.issues_loading,
             GitTab::Pulls => self.pulls_loading,
+            GitTab::Stashes => false,
         }
     }
 
@@ -3194,6 +3196,11 @@ impl GitPanel {
             ),
             (GitTab::History, "icons/clock.svg", "git_panel.tab_history"),
             (GitTab::Graph, "icons/git-fork.svg", "git_panel.tab_graph"),
+            (
+                GitTab::Stashes,
+                "icons/archive.svg",
+                "git_panel.tab_stashes",
+            ),
         ];
         // Host tabs only appear when `gh` exists, so a repo without it keeps
         // the page exactly as it was. Sign-in state is handled inside the tab.
@@ -3225,6 +3232,7 @@ impl GitPanel {
                     GitTab::Changes => CommandId::GitTabChanges,
                     GitTab::History => CommandId::GitTabHistory,
                     GitTab::Graph => CommandId::GitTabGraph,
+                    GitTab::Stashes => CommandId::GitTabStashes,
                     GitTab::Issues => CommandId::GitTabIssues,
                     GitTab::Pulls => CommandId::GitTabPulls,
                 };
@@ -3858,15 +3866,14 @@ impl GitPanel {
     }
 
     fn changes_tab(&self, theme: Theme, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let has_changes = !self.staged.is_empty() || !self.unstaged.is_empty();
-        let mut column = div().flex_1().min_h_0().flex().flex_col();
-        // Stashes stay reachable at the top; the diff browser below is the
-        // same view the Review pane shows.
-        if has_changes || !self.stashes.is_empty() {
-            column = column.child(self.stash_section(theme, cx));
-        }
-        column = column.child(self.review.clone());
-        column
+        // The diff browser is the same view the Review pane shows; stashes
+        // live on their own tab.
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(self.review.clone())
             .child(self.commit_bar(theme, window, cx))
             .into_any_element()
     }
@@ -4168,12 +4175,15 @@ impl GitPanel {
         (additions, deletions)
     }
 
-    /// The collapsible Stashes section at the top of the Changes tab.
-    fn stash_section(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+    /// The Stashes tab: the stack with pop / apply / drop, plus the parking
+    /// action. It lives on its own tab so the Changes tab stays the review
+    /// browser plus commit bar.
+    fn stashes_tab(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
         let count = self.stashes.len();
         let has_changes = !self.staged.is_empty() || !self.unstaged.is_empty();
         let mut header = div()
-            .id("git-stash-header")
+            .id("git-stashes-header")
+            .flex_none()
             .px(DynamicSpacing::Base20.px(&theme))
             .pt(DynamicSpacing::Base12.px(&theme))
             .pb(DynamicSpacing::Base08.px(&theme))
@@ -4182,21 +4192,6 @@ impl GitPanel {
             .flex()
             .items_center()
             .gap(DynamicSpacing::Base08.px(&theme))
-            .cursor_pointer()
-            .hover(|s| s.bg(theme.bg_hover))
-            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                this.stash_open = !this.stash_open;
-                cx.notify();
-            }))
-            .child(icon(
-                if self.stash_open {
-                    "icons/arrow-down.svg"
-                } else {
-                    "icons/arrow-right.svg"
-                },
-                IconSize::XSmall.px(&theme),
-                theme.text_3,
-            ))
             .child(section_title(&tr!("git_panel.stashes"), count, theme))
             .child(div().flex_1());
         if has_changes {
@@ -4214,7 +4209,6 @@ impl GitPanel {
                             .text_color(theme.text)
                     })
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        cx.stop_propagation();
                         this.stash_push(cx);
                     }))
                     .child(icon(
@@ -4225,23 +4219,37 @@ impl GitPanel {
                     .child(tr!("git_panel.stash_changes")),
             );
         }
-        let mut section = div().flex().flex_col().child(header);
-        if self.stash_open {
-            if self.stashes.is_empty() {
-                section = section.child(
-                    div()
-                        .px(DynamicSpacing::Base20.px(&theme))
-                        .py(DynamicSpacing::Base08.px(&theme))
-                        .text_size(TextSize::Small.px(&theme))
-                        .text_color(theme.text_3)
-                        .child(tr!("git_panel.no_stashes")),
-                );
-            }
+        let body = if self.stashes.is_empty() {
+            empty_note(
+                theme,
+                "icons/archive.svg",
+                &tr!("git_panel.no_stashes"),
+                None,
+            )
+        } else {
+            let mut list = div()
+                .flex()
+                .flex_col()
+                .py(DynamicSpacing::Base06.px(&theme));
             for stash in &self.stashes {
-                section = section.child(stash_row(stash, theme, cx));
+                list = list.child(stash_row(stash, theme, cx));
             }
-        }
-        section.into_any_element()
+            div()
+                .id("git-stashes-scroll")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .child(list)
+                .into_any_element()
+        };
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(header)
+            .child(body)
+            .into_any_element()
     }
 
     fn history_tab(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -7151,6 +7159,7 @@ impl Render for GitPanel {
             GitTab::Changes => self.changes_tab(theme, window, cx),
             GitTab::History => self.history_tab(theme, cx),
             GitTab::Graph => self.graph_tab(theme, cx),
+            GitTab::Stashes => self.stashes_tab(theme, cx),
             GitTab::Issues => self.issues_tab(theme, cx),
             GitTab::Pulls => self.pulls_tab(theme, cx),
         };

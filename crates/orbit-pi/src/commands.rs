@@ -67,6 +67,7 @@ pub enum CommandId {
     GitTabChanges,
     GitTabHistory,
     GitTabGraph,
+    GitTabStashes,
     GitTabIssues,
     GitTabPulls,
     // Application
@@ -610,13 +611,23 @@ pub static COMMANDS: &[CommandSpec] = &[
     ),
     with_chord(
         help_only(command(
+            CommandId::GitTabStashes,
+            Git,
+            "icons/archive.svg",
+            "git_panel.tab_stashes",
+            "git stashes tab stash pop apply drop",
+        )),
+        "secondary-alt-4",
+    ),
+    with_chord(
+        help_only(command(
             CommandId::GitTabIssues,
             Git,
             "icons/github.svg",
             "git_panel.tab_issues",
             "git issues tab github",
         )),
-        "secondary-alt-4",
+        "secondary-alt-5",
     ),
     with_chord(
         help_only(command(
@@ -626,7 +637,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             "git_panel.tab_pulls",
             "git pulls requests tab github",
         )),
-        "secondary-alt-5",
+        "secondary-alt-6",
     ),
     // ── Application ────────────────────────────────────────────────────
     with_chord(
@@ -897,10 +908,15 @@ pub static BINDINGS: &[Binding] = &[
     Binding {
         chord: "secondary-alt-4",
         context: None,
-        id: CommandId::GitTabIssues,
+        id: CommandId::GitTabStashes,
     },
     Binding {
         chord: "secondary-alt-5",
+        context: None,
+        id: CommandId::GitTabIssues,
+    },
+    Binding {
+        chord: "secondary-alt-6",
         context: None,
         id: CommandId::GitTabPulls,
     },
@@ -997,8 +1013,8 @@ pub fn tooltip(id: CommandId, alternate: bool) -> String {
 fn action_binding(binding: &Binding) -> Option<KeyBinding> {
     use crate::{
         AbortRun, CheckForUpdates, CopyLastResponse, FocusSessions, GitTabChanges, GitTabGraph,
-        GitTabHistory, GitTabIssues, GitTabPulls, NewSession, NextSession, NextTurn, OpenGit,
-        OpenSessionSlot, OpenSettings, OpenShortcutHelp, PrevSession, PrevTurn, Quit,
+        GitTabHistory, GitTabIssues, GitTabPulls, GitTabStashes, NewSession, NextSession, NextTurn,
+        OpenGit, OpenSessionSlot, OpenSettings, OpenShortcutHelp, PrevSession, PrevTurn, Quit,
         RefreshSessions, ReviewChanges, ReviewClose, ReviewCollapseAll, ReviewExpandAll,
         ReviewFileNext, ReviewFilePrev, ReviewHunkNext, ReviewHunkPrev, ReviewTreeNext,
         ReviewTreePrev, ReviewTreeToggle, ToggleCommandPalette, ToggleModelMenu,
@@ -1045,6 +1061,7 @@ fn action_binding(binding: &Binding) -> Option<KeyBinding> {
         CommandId::GitTabGraph => KeyBinding::new(chord, GitTabGraph, context),
         CommandId::GitTabIssues => KeyBinding::new(chord, GitTabIssues, context),
         CommandId::GitTabPulls => KeyBinding::new(chord, GitTabPulls, context),
+        CommandId::GitTabStashes => KeyBinding::new(chord, GitTabStashes, context),
         CommandId::ReviewTreeNext => KeyBinding::new(chord, ReviewTreeNext, context),
         CommandId::ReviewTreePrev => KeyBinding::new(chord, ReviewTreePrev, context),
         CommandId::ReviewTreeToggle => KeyBinding::new(chord, ReviewTreeToggle, context),

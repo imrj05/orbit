@@ -492,8 +492,9 @@ impl OrbitApp {
             CommandId::GitTabChanges => self.on_git_tab(0, window, cx),
             CommandId::GitTabHistory => self.on_git_tab(1, window, cx),
             CommandId::GitTabGraph => self.on_git_tab(2, window, cx),
-            CommandId::GitTabIssues => self.on_git_tab(3, window, cx),
-            CommandId::GitTabPulls => self.on_git_tab(4, window, cx),
+            CommandId::GitTabStashes => self.on_git_tab(3, window, cx),
+            CommandId::GitTabIssues => self.on_git_tab(4, window, cx),
+            CommandId::GitTabPulls => self.on_git_tab(5, window, cx),
             CommandId::OpenSettings => {
                 self.on_open_settings(&crate::OpenSettings, window, cx);
             }

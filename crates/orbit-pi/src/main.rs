@@ -184,6 +184,7 @@ actions!(
         GitTabChanges,
         GitTabHistory,
         GitTabGraph,
+        GitTabStashes,
         GitTabIssues,
         GitTabPulls
     ]
