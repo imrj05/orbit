@@ -398,7 +398,14 @@ fn index_copy(cwd: &Path) -> anyhow::Result<PathBuf> {
     let git_dir = run_git_ok(cwd, ["rev-parse", "--absolute-git-dir"])?;
     let git_dir = PathBuf::from(git_dir.trim());
     let copy = git_dir.join(format!("orbit-index-read-{}", next_temp_suffix()));
-    let _ = std::fs::copy(git_dir.join("index"), &copy);
+    // A plain read + write, not `std::fs::copy`: on macOS the copy syscall
+    // emits an FSEvents notification for the *source* `.git/index`, and the
+    // workspace watcher keeps that path — so every Review load re-dirtied the
+    // watch and re-triggered itself, forever.
+    if let Ok(bytes) = std::fs::read(git_dir.join("index")) {
+        std::fs::write(&copy, bytes)
+            .map_err(|err| anyhow!("failed to snapshot the Git index: {err}"))?;
+    }
     Ok(copy)
 }
 

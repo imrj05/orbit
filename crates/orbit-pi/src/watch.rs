@@ -218,6 +218,48 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// The bug this guards: the Changes tab reloads its diff by reading the
+    /// staged tree, which copies `.git/index` to a throwaway file. On macOS,
+    /// `std::fs::copy` emitted an FSEvents notification for the *source*
+    /// index; the watcher keeps `.git/index`, so each review load dirtied the
+    /// workspace watch and triggered the next refresh — forever.
+    #[test]
+    fn workspace_watcher_ignores_changes_tab_diff_loads() {
+        use crate::review::Source;
+        let dir = std::env::temp_dir().join("orbit-watch-changes-tab-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "--quiet", "--initial-branch=main"]);
+        git(&dir, &["config", "user.name", "Orbit Test"]);
+        git(&dir, &["config", "user.email", "orbit@example.com"]);
+        fs::write(dir.join("tracked.txt"), "baseline\n").unwrap();
+        git(&dir, &["add", "tracked.txt"]);
+        git(&dir, &["commit", "--quiet", "-m", "baseline"]);
+        fs::write(dir.join("tracked.txt"), "staged\n").unwrap();
+        git(&dir, &["add", "tracked.txt"]);
+        fs::write(dir.join("tracked.txt"), "unstaged\n").unwrap();
+
+        let watcher =
+            WorkspaceWatcher::watch(&dir, Duration::from_millis(50)).expect("watcher");
+        std::thread::sleep(Duration::from_millis(300));
+        let _ = watcher.take_dirty();
+
+        // What the Git page's Changes tab loads on every `git status`
+        // refresh: the staged and unstaged working-tree diffs.
+        let _ = crate::git::collect_review_diff(&dir, Source::Staged, None);
+        let _ = crate::git::collect_review_diff(&dir, Source::Unstaged, None);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            assert!(
+                !watcher.take_dirty(),
+                "loading the Changes tab diff must not dirty the workspace watch"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn workspace_watcher_reports_a_source_change() {
         let dir = std::env::temp_dir().join("orbit-workspace-watch-test");
