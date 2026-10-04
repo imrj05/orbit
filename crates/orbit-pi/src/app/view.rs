@@ -4427,62 +4427,101 @@ impl OrbitApp {
     /// The pending queue pi is holding, shown as a bar directly above the
     /// composer. While a task is running, messages sent from the composer are
     /// queued as follow-ups here and delivered once the task finishes;
-    /// `queue_update` mirrors the list live.
+    /// `queue_update` mirrors the list live. One raised card in the sibling
+    /// strips' shape, a quiet label header, and flat hairline-separated rows.
     pub(super) fn queue_bar(&self, cx: &Context<Self>) -> Option<AnyElement> {
         if self.queue.is_empty() {
             return None;
         }
         let theme = *theme::get(cx);
-        let mut chips = div().flex().flex_wrap().gap(px(6.));
+        let count = self.queue.len();
+        let only_steering = self.queue.follow_up.is_empty();
+        // The label names the queue's dominant state in the app's 11px label
+        // style; the full delivery sentence stays on the tooltip so the
+        // header can be one quiet line.
+        let label = if only_steering {
+            tr!("view.queue_steering")
+        } else {
+            tr!("view.queue_queued")
+        };
+        let detail = if only_steering {
+            tr!("view.steering_turn", count = count)
+        } else if self.queue.steering.is_empty() {
+            tr!("view.queued_after_task", count = count)
+        } else {
+            tr!("view.steering_plus_followups", count = count)
+        };
+
+        let mut rows: Vec<AnyElement> = Vec::with_capacity(count);
         for text in &self.queue.steering {
-            chips = chips.child(queue_chip("Steer", text, false, theme));
+            rows.push(queue_row(&tr!("view.queue_steer"), text, false, theme));
         }
         for text in &self.queue.follow_up {
-            chips = chips.child(queue_chip("Follow-up", text, true, theme));
+            rows.push(queue_row(&tr!("view.queue_follow_up"), text, true, theme));
         }
+
         Some(
             div()
+                .id("queue-bar")
+                .debug_selector(|| "queue-bar".to_string())
                 .w_full()
                 .mb(px(8.))
-                .px(px(10.))
-                .py(px(8.))
                 .rounded(Radius::XLarge.px(&theme))
                 .border_1()
                 .border_color(theme.border)
                 .bg(theme.bg_raised)
                 .flex()
                 .flex_col()
-                .gap(px(6.))
+                // Clip the rows' hairline separators to the rounded corners.
+                .overflow_hidden()
                 .child(
+                    // A clock, `QUEUED · 2`, and the one action: a compact
+                    // dismiss. No second button, no sentence in the header.
                     div()
+                        .h(px(30.))
+                        .px(px(12.))
                         .flex()
                         .items_center()
-                        .gap_2()
+                        .gap(px(6.))
+                        .child(icon(
+                            "icons/clock.svg",
+                            IconSize::XSmall.px(&theme),
+                            theme.text_3,
+                        ))
                         .child(
                             div()
+                                .id("queue-label")
                                 .flex_1()
                                 .min_w_0()
-                                .text_size(TextSize::Small.px(&theme))
+                                .truncate()
+                                .tip(detail)
+                                .text_size(TextSize::XSmall.px(&theme))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(theme.text_3)
-                                .child(if self.queue.follow_up.is_empty() {
-                                    tr!("view.steering_turn", count = self.queue.len())
-                                } else if self.queue.steering.is_empty() {
-                                    tr!("view.queued_after_task", count = self.queue.len())
-                                } else {
-                                    tr!("view.steering_plus_followups", count = self.queue.len())
-                                }),
+                                .child(format!("{label} · {count}").to_uppercase()),
                         )
                         .child(
-                            button_frame(div().id("clear-queue"), &theme, ButtonSize::Compact)
-                                .text_color(theme.text_2)
-                                .cursor_pointer()
-                                .hover(|s| s.bg(theme.overlay).text_color(theme.text))
-                                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_clear_queue))
-                                .child(tr!("view.clear")),
+                            icon_button_frame(
+                                div()
+                                    .id("clear-queue")
+                                    .debug_selector(|| "clear-queue".to_string()),
+                                &theme,
+                                ButtonSize::Compact,
+                            )
+                            .group(BUTTON_GROUP)
+                            .tip(tr!("view.clear_queue"))
+                            .cursor_pointer()
+                            .text_color(theme.text_3)
+                            .hover(|s| s.bg(theme.overlay).text_color(theme.text))
+                            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_clear_queue))
+                            .child(icon(
+                                "icons/x.svg",
+                                ButtonSize::Compact.icon_size().px(&theme),
+                                theme.text_3,
+                            )),
                         ),
                 )
-                .child(chips)
+                .children(rows)
                 .into_any_element(),
         )
     }

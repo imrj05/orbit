@@ -36,34 +36,35 @@ pub(crate) fn humanize_command(command: &str) -> String {
     tr!("helpers.command_failed", label = label)
 }
 
-/// One queued-message chip: a kind tag plus the message text.
-pub(crate) fn queue_chip(kind: &str, text: &str, follow: bool, theme: Theme) -> AnyElement {
+/// One pending-message row in the queue bar: a hairline-separated row — the
+/// kind label plus the message text. Deliberately flat, with no border or
+/// fill of its own: the bar around it is already the raised surface, and a
+/// card inside a card doubles the chrome (DESIGN.md's card budget).
+pub(crate) fn queue_row(kind: &str, text: &str, follow: bool, theme: Theme) -> AnyElement {
     div()
         .w_full()
-        .min_w_0()
         .flex()
         .items_start()
-        .gap(px(6.))
-        .px(px(8.))
-        .py(px(5.))
-        .rounded(Radius::Medium.px(&theme))
-        .border_1()
+        .gap(px(10.))
+        .px(px(12.))
+        .py(px(7.))
+        .border_t_1()
         .border_color(theme.border)
-        .bg(theme.bg_raised)
         .child(
             div()
                 .flex_none()
+                .whitespace_nowrap()
                 .pt(px(1.))
                 .text_size(TextSize::XSmall.px(&theme))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(if follow { theme.text_2 } else { theme.accent })
-                .child(kind.to_string()),
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(if follow { theme.text_3 } else { theme.accent })
+                .child(kind.to_uppercase()),
         )
         .child(
             div()
                 .flex_1()
                 .min_w_0()
-                .line_clamp(4)
+                .line_clamp(2)
                 .text_size(TextSize::Small.px(&theme))
                 .line_height(theme.ui_px(16.))
                 .text_color(theme.text)
