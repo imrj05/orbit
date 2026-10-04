@@ -511,14 +511,7 @@ impl OrbitApp {
                 // so its blocked run can settle (an active session renders
                 // the dialog in `tick` above).
                 Event::ExtensionUiRequest { id, .. } => {
-                    let _ = parked.client.respond_dialog(
-                        id,
-                        serde_json::json!({
-                            "type": "extension_ui_response",
-                            "id": id,
-                            "cancelled": true
-                        }),
-                    );
+                    let _ = parked.client.cancel_dialog(id);
                     continue;
                 }
                 Event::MessageEnd { value } => {

@@ -627,7 +627,7 @@ impl OrbitApp {
         match self.extensions.spawn(&cwd, true, &self.mcp.secret_env()) {
             Ok(client) => {
                 self.adopt_client(client);
-                self.mcp_stamp = self.mcp.fingerprint();
+                self.mcp_stamp = self.mcp.fingerprint_for(Some(&cwd));
                 self.send(CommandBody::NewSession, "new_session");
                 self.refresh_catalogs();
                 // Capability probes queue after the new-session request.
@@ -736,11 +736,17 @@ impl OrbitApp {
         // ── activate the target ──
         // A parked process spawned before the latest MCP configuration change
         // is stale: drop it and cold-start so it loads the current servers.
-        let mcp_stamp = self.mcp.fingerprint();
+        // The stamp is workspace-specific, so compare against the *target
+        // session's* workspace — the manager is still pointed at the workspace
+        // being left. Using the current fingerprint made every cross-workspace
+        // switch look like a config change and drop (kill) the parked run.
+        // A busy session is never dropped for staleness: the live run wins,
+        // and the new config applies on its next idle reopen.
+        let mcp_stamp = self.mcp.fingerprint_for(Some(&session.cwd));
         if let Some(parked) = self
             .lives
             .remove(&session.path)
-            .filter(|parked| parked.mcp_stamp == mcp_stamp)
+            .filter(|parked| parked.busy || parked.mcp_stamp == mcp_stamp)
         {
             // Resume a background run. The parked transcript is already up
             // to date (its events drain every tick); anything buffered in

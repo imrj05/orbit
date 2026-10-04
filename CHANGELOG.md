@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Switching to a session in another workspace no longer kills the one that is
+  running. The MCP config fingerprint is workspace-specific, but the
+  parked-session resume check compared it against the workspace being left,
+  so every cross-workspace switch looked like an MCP change and dropped
+  (killed) the parked process — truncating its stream mid-turn. The check now
+  uses the target session's own workspace, and a busy run is never dropped for
+  staleness (#46).
+- A parked session no longer stalls mid-run when a tool asks for approval.
+  Its `extension_ui_request` is now cancelled with the top-level
+  `cancelled` flag pi expects; the previous payload nested it under `value`,
+  so the extension kept waiting and the background run stayed `busy` forever
+  (#46).
+
 ## [0.2.4] - 2026-10-02
 
 ### Added

@@ -86,7 +86,7 @@ use crate::workspace_picker::{WorkspaceEntry, WorkspacePicker};
 const SIDEBAR_DEFAULT_W: f32 = 248.;
 const SIDEBAR_MIN_W: f32 = 200.;
 /// Sessions shown under each workspace group before "Show more" appears.
-const SIDEBAR_GROUP_SESSIONS_VISIBLE: usize = 10;
+const SIDEBAR_GROUP_SESSIONS_VISIBLE: usize = 3;
 /// Room the side-pane resize keeps for the transcript column.
 const PANE_MAX_RESERVE: f32 = 480.;
 
@@ -424,7 +424,7 @@ pub struct OrbitApp {
     /// Workspace groups whose session list is expanded past
     /// [`SIDEBAR_GROUP_SESSIONS_VISIBLE`]. The value is how many extra
     /// sessions are revealed; each "Show more" click adds one step of
-    /// [`SIDEBAR_GROUP_SESSIONS_VISIBLE`], so a long history grows ten rows
+    /// [`SIDEBAR_GROUP_SESSIONS_VISIBLE`], so a long history grows three rows
     /// at a time instead of landing all at once.
     expanded_session_groups: HashMap<String, usize>,
     /// The projects Orbit lists in its sidebar — its own, user-curated folder

@@ -2621,7 +2621,7 @@ impl OrbitApp {
                     {
                         Ok(client) => {
                             app.client = Some(client);
-                            app.mcp_stamp = app.mcp.fingerprint();
+                            app.mcp_stamp = app.mcp.fingerprint_for(Some(&workspace));
                             app.send(CommandBody::GetState, "get_state");
                             app.refresh_catalogs();
                             app.toast_success(tr!("view.connected"));

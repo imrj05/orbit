@@ -452,10 +452,14 @@ impl PiClient {
             .expect("spawn pi stderr thread");
     }
 
-    /// Send a dialog answer for `extension_ui_request` ids (select/confirm/input).
-    pub fn respond_dialog(&self, id: &str, answer: serde_json::Value) -> Result<()> {
+    /// Cancel an `extension_ui_request` the host cannot answer — a parked
+    /// session has no dialog surface, so its blocked run must be released.
+    /// pi resolves the extension's pending promise on the *top-level*
+    /// `cancelled` flag; nesting it under `value` (as this helper used to)
+    /// left the extension waiting and the parked run stuck busy forever.
+    pub fn cancel_dialog(&self, id: &str) -> Result<()> {
         let wire =
-            serde_json::json!({ "type": "extension_ui_response", "id": id, "value": answer });
+            serde_json::json!({ "type": "extension_ui_response", "id": id, "cancelled": true });
         self.commands_tx
             .send(Outgoing {
                 wire: serde_json::to_string(&wire)?,

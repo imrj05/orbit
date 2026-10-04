@@ -152,7 +152,9 @@ impl OrbitApp {
         ) {
             Ok(client) => {
                 self.adopt_client(client);
-                self.mcp_stamp = self.mcp.fingerprint();
+                self.mcp_stamp = self
+                    .mcp
+                    .fingerprint_for(self.current_workspace.as_deref());
                 self.send(CommandBody::GetState, "get_state");
                 self.refresh_catalogs();
                 // Capability probes queue after the state request.

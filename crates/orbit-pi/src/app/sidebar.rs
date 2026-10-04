@@ -216,7 +216,7 @@ pub(crate) fn build_sidebar_rows(
         }
 
         // Sessions start at the base cap and grow one step per "Show more"
-        // click, so a group with a long history reveals ten rows at a time.
+        // click, so a group with a long history reveals three rows at a time.
         let extra = expanded_session_groups.get(&label).copied().unwrap_or(0);
         let limit = SIDEBAR_GROUP_SESSIONS_VISIBLE.saturating_add(extra);
         let visible = visible_sessions_in_group(&ixs, sessions, limit, active_path);

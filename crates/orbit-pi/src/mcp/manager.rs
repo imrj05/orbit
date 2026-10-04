@@ -241,6 +241,15 @@ impl McpManager {
         self.fingerprint
     }
 
+    /// The config fingerprint for an arbitrary workspace — the stamp a pi
+    /// process spawned there carries. [`fingerprint`](Self::fingerprint) only
+    /// covers the workspace the manager is currently pointed at, and that lags
+    /// the session being switched to (see `tick_mcp`), so it must not be used
+    /// to judge a parked session from another workspace.
+    pub(crate) fn fingerprint_for(&self, workspace: Option<&Path>) -> u64 {
+        config::fingerprint(&self.home, workspace)
+    }
+
     pub(crate) fn global_path(&self) -> &Path {
         &self.global_path
     }

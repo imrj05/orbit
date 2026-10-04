@@ -486,7 +486,7 @@ impl OrbitApp {
         match self.extensions.spawn(&cwd, true, &self.mcp.secret_env()) {
             Ok(client) => {
                 self.adopt_client(client);
-                self.mcp_stamp = self.mcp.fingerprint();
+                self.mcp_stamp = self.mcp.fingerprint_for(Some(&cwd));
                 self.send(CommandBody::GetState, "get_state");
                 self.refresh_catalogs();
                 // Capability probes queue after the state request.
