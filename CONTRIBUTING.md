@@ -163,9 +163,9 @@ the release. Notes come from `CHANGELOG.md`.
 4. The workflow then:
 
    - resolves the version from `crates/orbit-pi/Cargo.toml` (the source of truth);
-   - **macOS** — builds the universal `.app`, signs it with your Developer ID,
-     notarizes and staples the `.app` and DMG, and emits the updater `.tar.gz`
-     (`scripts/make-dmg.sh`);
+   - **macOS** — builds the arm64 and universal `.app`s, signs them with your
+     Developer ID, notarizes and staples each `.app` and DMG, and emits an
+     updater `.tar.gz` for each (`scripts/make-dmg.sh`);
    - **Linux** — builds `orbit-pi` and packages a `.tar.gz` plus a native `.deb`
      (`scripts/bundle-linux.sh`);
    - **Windows** — builds `orbit-pi.exe` and ships it both bare and in a `.zip`
@@ -176,9 +176,10 @@ the release. Notes come from `CHANGELOG.md`.
      previous tag). The same notes ship as an `Orbit-Pi-0.0.2.md` release asset.
 
    Review the draft and publish it. macOS signing needs the Apple secrets listed
-   at the top of the workflow file; without them the macOS job builds an
-   unsigned DMG. Windows and Linux are `continue-on-error` while those platforms
-   are validated.
+   at the top of the workflow file; without them the macOS job builds unsigned
+   DMGs, and if Apple refuses the notary credentials it falls back to signed but
+   un-notarized DMGs with a warning. Windows and Linux are `continue-on-error`
+   while those platforms are validated.
 
 5. The same job signs each artifact and attaches the update feeds to the
    release itself (`scripts/appcast.py`), so a published release serves them at

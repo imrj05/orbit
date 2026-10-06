@@ -10,8 +10,11 @@ name: Release
 # Actions tab (workflow_dispatch). Cargo.toml is the single source of truth:
 # the workflow creates the annotated tag `v<version>` at the commit it built,
 # so tags are never hand-cut. A manual run rebuilds a draft left by an earlier
-# run; a published release is never rebuilt. macOS produces a signed +
-# notarized DMG when the signing secrets exist, and an unsigned one otherwise.
+# run; a published release is never rebuilt. macOS produces signed +
+# notarized arm64 and universal DMGs when the signing secrets exist and Apple
+# accepts them, signed but un-notarized ones when Apple refuses the notary
+# credentials (an account-agreement problem, not a build one), and unsigned
+# ones otherwise.
 # Windows and Linux are best-effort (continue-on-error) until those platforms
 # are validated.
 #
@@ -91,13 +94,18 @@ jobs:
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
   macos:
-    name: macOS (signed + notarized DMG)
+    name: macOS (signed + notarized DMGs)
     needs: version
     if: needs.version.outputs.skip != 'true'
     runs-on: macos-latest
-    # A universal (two-arch) release build, then notarizing the .app and the
-    # DMG, legitimately runs long; the reference pipeline allows 90 minutes
-    # and so do we.
+    outputs:
+      # '1' only when the notary credentials were accepted and the DMGs were
+      # notarized + stapled; '0' when Apple refused them; empty for an
+      # unsigned build.
+      notarized: ${{ steps.notary.outputs.notarized }}
+    # Two packages (arm64 and universal) plus their notarization round-trips
+    # legitimately run long; the reference pipeline allows 90 minutes and so
+    # do we.
     timeout-minutes: 90
     env:
       VERSION: ${{ needs.version.outputs.version }}
@@ -156,23 +164,39 @@ jobs:
           # never stored.
           echo "NOTARY_PROFILE=orbit-notary" >> "$GITHUB_ENV"
 
+      # Best-effort: Apple rejects `store-credentials` while the team's
+      # Developer Program agreement is unsigned or expired (HTTP 403,
+      # "A required agreement is missing or has expired"). That is an account
+      # problem, not a build one, so it must not sink the release — fall back
+      # to a Developer ID-signed but un-notarized DMG and say so loudly.
+      # Fix at https://developer.apple.com/account → Agreements, tax, and banking.
       - name: Store notarization credentials
+        id: notary
         if: env.SIGNING == '1'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
-          xcrun notarytool store-credentials "$NOTARY_PROFILE" \
+          set -euo pipefail
+          if xcrun notarytool store-credentials "$NOTARY_PROFILE" \
             --apple-id "$APPLE_ID" \
             --team-id "$APPLE_TEAM_ID" \
-            --password "$APPLE_APP_PASSWORD"
+            --password "$APPLE_APP_PASSWORD"; then
+            echo "notarized=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "notarized=0" >> "$GITHUB_OUTPUT"
+            echo "NOTARY_PROFILE=" >> "$GITHUB_ENV"
+            echo "::warning title=Notarization skipped::notarytool rejected the Apple credentials; shipping a signed but un-notarized DMG. Usual cause: an unsigned or expired Apple Developer agreement — accept it at https://developer.apple.com/account (Agreements), then re-run the release."
+          fi
 
+      # `both` emits the arm64 and universal DMGs plus their updater
+      # archives; each is signed, notarized, and stapled.
       - name: Build, sign, notarize, staple
-        run: ./scripts/make-dmg.sh universal
+        run: ./scripts/make-dmg.sh both
 
       - name: Verify notarization
-        if: env.SIGNING == '1'
+        if: steps.notary.outputs.notarized == '1'
         run: |
           set -euo pipefail
           # Only this run's artifacts: a stale file left in dist/ must not be
@@ -378,6 +402,35 @@ jobs:
           fi
           cp release-notes.md "artifacts/Orbit-Pi-$VERSION.md"
           cat release-notes.md
+
+      # Gatekeeper blocks un-notarized (and unsigned) builds on other Macs.
+      # Users should not have to guess the one-line bypass, so the release
+      # notes carry it whenever the macOS job shipped without notarization.
+      # These notes also become the in-app changelog, via `--notes-file` below.
+      - name: Document the Gatekeeper bypass when the DMGs are not notarized
+        if: >-
+          needs.macos.result == 'success'
+          && needs.macos.outputs.notarized != '1'
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          cat >> release-notes.md <<'EOF'
+
+          ## Installing on macOS
+
+          This release's macOS app is not notarized by Apple, so Gatekeeper may
+          block the first launch. After dragging **Orbit Pi** to Applications,
+          clear the quarantine flag:
+
+          ```sh
+          xattr -dr com.apple.quarantine "/Applications/Orbit Pi.app"
+          ```
+
+          Or right-click **Orbit Pi** in Applications → **Open** → **Open** to
+          approve it once; later launches work normally.
+          EOF
+          cp release-notes.md "artifacts/Orbit-Pi-$VERSION.md"
 
       # Seed the appcast merge with the previous release's feeds, so each
       # release accumulates Version History (appcast.py keeps the newest 20
