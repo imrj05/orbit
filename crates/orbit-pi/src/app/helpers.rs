@@ -632,6 +632,7 @@ pub(crate) fn header_chip<S: Styled + InteractiveElement>(el: S, theme: &Theme) 
     el.border_1()
         .border_color(theme.border)
         .bg(header_fill(theme))
+        .shadow(tokens::button_shadow(theme))
         .hover(move |_| lifted)
 }
 

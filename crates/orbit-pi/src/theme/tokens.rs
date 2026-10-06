@@ -37,7 +37,10 @@
 
 use std::time::Duration;
 
-use gpui::{hsla, point, px, relative, BoxShadow, DefiniteLength, Hsla, Pixels, Styled};
+use gpui::{
+    hsla, linear_color_stop, linear_gradient, point, px, relative, Background, BoxShadow,
+    DefiniteLength, Hsla, Pixels, Styled,
+};
 
 use super::{Theme, ThemeMode};
 
@@ -1060,6 +1063,73 @@ pub trait StyledExt: Styled + Sized {
 
 impl<E: Styled> StyledExt for E {}
 
+// ── Raised buttons ──────────────────────────────────────────────────────
+
+/// A button's fill as a soft top-lit gradient of its own color: a touch
+/// lighter at the top edge, a touch deeper at the bottom, so the face reads
+/// as a raised key rather than a flat sticker. The hue never changes — the
+/// ramp only moves lightness (and, for translucent washes, alpha) — so every
+/// button keeps the identity of the color it was given.
+pub fn raised_fill(color: Hsla) -> Background {
+    const LIFT: f32 = 0.02;
+    const SINK: f32 = 0.012;
+    let translucent = color.a < 0.95;
+    let mut top = color;
+    let mut bottom = color;
+    top.l = (color.l + LIFT).min(1.);
+    bottom.l = (color.l - SINK).max(0.);
+    if translucent {
+        top.a = (color.a * 1.12).min(1.);
+        bottom.a = color.a * 0.94;
+    }
+    linear_gradient(
+        180.,
+        linear_color_stop(top, 0.),
+        linear_color_stop(bottom, 1.),
+    )
+}
+
+/// The shadow that lifts a button off its surface: a 1px contact line plus a
+/// short, soft ambient layer. Tight on purpose — a button sits just above the
+/// page, not over it (menus and modals use [`ElevationIndex`]).
+pub fn button_shadow(theme: &Theme) -> Vec<BoxShadow> {
+    let mut contact = theme.shadow_contact;
+    contact.a *= 0.45;
+    let mut ambient = theme.shadow_contact;
+    ambient.a *= 0.25;
+    vec![
+        BoxShadow {
+            color: contact,
+            offset: point(px(0.), px(1.)),
+            blur_radius: px(1.),
+            spread_radius: px(0.),
+        },
+        BoxShadow {
+            color: ambient,
+            offset: point(px(0.), px(1.)),
+            blur_radius: px(3.),
+            spread_radius: px(-1.),
+        },
+    ]
+}
+
+/// Raised-button fills. Works on elements and on hover/active refinements
+/// alike (`.hover(|s| s.raised(theme.bg_hover, &theme))`).
+pub trait RaisedExt: Styled + Sized {
+    /// Gradient face in `color` plus the lift shadow — a standalone button.
+    fn raised(self, color: Hsla, theme: &Theme) -> Self {
+        self.bg(raised_fill(color)).shadow(button_shadow(theme))
+    }
+
+    /// Gradient face only — for segments of a grouped control, where a
+    /// per-segment shadow would spill onto the neighbours.
+    fn raised_flat(self, color: Hsla) -> Self {
+        self.bg(raised_fill(color))
+    }
+}
+
+impl<E: Styled> RaisedExt for E {}
+
 fn elevated<E: Styled>(el: E, theme: &Theme, index: ElevationIndex, bordered: bool) -> E {
     let el = el
         .bg(ElevationIndex::ElevatedSurface.bg(theme))
@@ -1247,6 +1317,21 @@ mod tests {
         assert!(close(ButtonSize::Large.padding_x(&theme), 8.));
         assert!(close(ButtonSize::Default.padding_x(&theme), 4.));
         assert_eq!(ButtonSize::None.padding_x(&theme), px(1.));
+    }
+
+    #[test]
+    fn raised_buttons_cast_a_short_shadow_in_both_modes() {
+        for theme in [default_theme(), Theme::light()] {
+            let shadow = button_shadow(&theme);
+            assert_eq!(shadow.len(), 2, "contact line + soft ambient");
+            for layer in &shadow {
+                assert!(layer.color.a > 0., "{:?} shadow is visible", theme.mode);
+                assert!(
+                    layer.blur_radius <= px(4.),
+                    "a button sits just above the page"
+                );
+            }
+        }
     }
 
     #[test]

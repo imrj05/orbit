@@ -334,7 +334,7 @@ impl OrbitApp {
             let label = tr!("updater_ui.updating");
             let button = icon_button_frame(div().id("sidebar-update"), &theme, ButtonSize::Compact)
                 .rounded_full()
-                .bg(theme.accent)
+                .raised(theme.accent, &theme)
                 .cursor_default()
                 .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into())
                 .child(crate::app::spinner(
@@ -351,7 +351,7 @@ impl OrbitApp {
             .overflow_hidden()
             .rounded_full()
             .relative()
-            .bg(theme.accent)
+            .raised(theme.accent, &theme)
             .text_color(theme.bg_main)
             .text_size(button::label_size(ButtonSize::Compact).px(&theme))
             .font_weight(FontWeight::MEDIUM)
@@ -517,9 +517,9 @@ impl OrbitApp {
                     ButtonSize::Medium,
                 )
                 .group(BUTTON_GROUP)
-                .bg(theme.send_bg)
+                .raised(theme.send_bg, &theme)
                 .cursor_pointer()
-                .hover(|s| s.bg(theme.send_bg_hover))
+                .hover(|s| s.raised(theme.send_bg_hover, &theme))
                 .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into())
                 .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                     this.update(cx, |app, cx| app.open_staged_update_dialog(cx));
@@ -552,10 +552,10 @@ impl OrbitApp {
             .font_weight(FontWeight::MEDIUM)
             .border_1()
             .border_color(theme.border)
-            .bg(theme.bg_raised)
+            .raised(theme.bg_raised, &theme)
             .text_color(theme.text_2)
             .cursor_pointer()
-            .hover(|s| s.bg(theme.bg_hover))
+            .hover(|s| s.raised(theme.bg_hover, &theme))
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                 this.update(cx, |app, cx| app.begin_update_check(cx));
             })
@@ -1026,16 +1026,16 @@ fn dialog_button(
         .on_mouse_up(MouseButton::Left, on_mouse_up);
     let button = if primary {
         button
-            .bg(theme.send_bg)
+            .raised(theme.send_bg, &theme)
             .text_color(theme.send_fg)
-            .hover(|s| s.bg(theme.send_bg_hover))
+            .hover(|s| s.raised(theme.send_bg_hover, &theme))
     } else {
         button
             .border_1()
             .border_color(theme.border)
-            .bg(theme.bg_raised)
+            .raised(theme.bg_raised, &theme)
             .text_color(theme.text_2)
-            .hover(|s| s.bg(theme.bg_hover))
+            .hover(|s| s.raised(theme.bg_hover, &theme))
     };
     press(button).child(label).into_any_element()
 }

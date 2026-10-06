@@ -254,7 +254,7 @@ button. Nothing is a pill except those circles.
 Borders are 1px at `theme.border`; `border_strong` (ink at ~14% alpha) is reserved for
 focus and hover emphasis. Charts and graphs draw with 1.5px strokes; grid lines are 1px
 at low-opacity hairline. No drop-shadowed text, no gradients except the one backdrop
-fade on the new-task page.
+fade on the new-task page and the raised-button fill (see Buttons).
 
 ## Components
 
@@ -262,6 +262,11 @@ fade on the new-task page.
 - **Shape:** 8px radius, 28px tall (chips) or 34px (the sidebar's primary action).
 - **Primary:** `bg_raised` + 1px `border`, hover steps to `bg_hover` with a
   `border_strong` edge. One per screen region.
+- **Raised:** every filled button (primary, accent, danger, chip) paints its fill
+  through `RaisedExt::raised` — a top-lit gradient of the button's own color plus
+  the short `button_shadow`. Segmented controls use `raised_flat` (gradient, no
+  shadow). Ghost and disabled buttons stay flat; this is the one sanctioned
+  exception to the no-gradient / hairline-only rules below.
 - **Ghost:** no fill until hover (`bg_hover`); used for every icon action in a header.
 - **Disabled:** `overlay` fill with `text_3` content; never opacity-faded color.
 

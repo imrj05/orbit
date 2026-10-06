@@ -30,6 +30,7 @@ use crate::app::{
 use crate::composer::ComposerInput;
 use crate::git;
 use crate::platform;
+use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
     context_menu, input, ButtonSize, IconSize, Radius, StyledExt, TextSize,
 };
@@ -1505,7 +1506,7 @@ fn prompt_button(
     press(
         button_frame(div().id(id).group(BUTTON_GROUP), &theme, ButtonSize::Medium)
             .cursor_pointer()
-            .bg(bg)
+            .raised(bg, &theme)
             .hover(|el| el.opacity(0.9)),
     )
     .on_click(listener)

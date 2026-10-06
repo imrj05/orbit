@@ -29,6 +29,7 @@ use crate::app::{
 };
 use crate::composer::ComposerInput;
 use crate::highlight::{self, Lang, Token};
+use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
 use crate::theme::{self, Theme, ThemeMode};
 
@@ -985,13 +986,13 @@ impl FileViewer {
             .when(content.mode == Mode::Markdown && content.editable(), |el| {
                 el.child(
                     button_frame(div().id("viewer-md-toggle"), &theme, ButtonSize::Compact)
-                        .bg(theme.bg_raised)
+                        .raised(theme.bg_raised, &theme)
                         .border_1()
                         .border_color(theme.border)
                         .font_family(theme::ui_font_family())
                         .cursor_pointer()
                         .text_color(theme.text_2)
-                        .hover(|el| el.bg(theme.bg_hover))
+                        .hover(|el| el.raised(theme.bg_hover, &theme))
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.toggle_markdown_preview(cx)
                         }))

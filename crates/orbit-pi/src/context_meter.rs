@@ -15,6 +15,7 @@ use gpui::{
 use orbit_rpc::{ContextUsage, SessionUsage};
 
 use crate::app::{button_frame, icon_button_frame, TipExt};
+use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{ButtonSize, IconSize, Radius, StyledExt, TextSize};
 use crate::theme::Theme;
 
@@ -414,7 +415,7 @@ fn compact_action(is_compacting: bool, on_compact: Rc<ActionClick>, theme: Theme
         .w_full()
         .border_1()
         .border_color(theme.border)
-        .bg(theme.bg_raised)
+        .raised(theme.bg_raised, &theme)
         .font_weight(FontWeight::MEDIUM);
     if is_compacting {
         button
@@ -426,7 +427,7 @@ fn compact_action(is_compacting: bool, on_compact: Rc<ActionClick>, theme: Theme
         button
             .text_color(theme.text_2)
             .cursor_pointer()
-            .hover(|s| s.bg(theme.bg_hover))
+            .hover(|s| s.raised(theme.bg_hover, &theme))
             .on_click(move |event, window, cx| on_compact(event, window, cx))
             .child(tr!("context_meter.compact_now"))
             .into_any_element()

@@ -1044,9 +1044,9 @@ pub(crate) fn session_menu_popup(
                     .gap(DynamicSpacing::Base06.px(&theme))
                     .child(
                         button_frame(div().id("menu-cancel"), &theme, ButtonSize::Default)
-                            .bg(theme.bg_raised)
+                            .raised(theme.bg_raised, &theme)
                             .cursor_pointer()
-                            .hover(|s| s.bg(theme.bg_hover))
+                            .hover(|s| s.raised(theme.bg_hover, &theme))
                             .text_color(theme.text_2)
                             .on_mouse_down(MouseButton::Left, {
                                 let this = this.clone();
@@ -1059,9 +1059,9 @@ pub(crate) fn session_menu_popup(
                     )
                     .child(
                         button_frame(div().id("menu-confirm-delete"), &theme, ButtonSize::Default)
-                            .bg(theme.stop_red)
+                            .raised(theme.stop_red, &theme)
                             .cursor_pointer()
-                            .hover(|s| s.bg(theme.stop_red_hover))
+                            .hover(|s| s.raised(theme.stop_red_hover, &theme))
                             .text_color(theme.send_fg)
                             .on_mouse_down(MouseButton::Left, {
                                 let this = this.clone();

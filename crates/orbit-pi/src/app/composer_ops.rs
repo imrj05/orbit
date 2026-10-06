@@ -338,9 +338,9 @@ impl OrbitApp {
                     .tip(tr!("composer.remove_attachment"))
                     .border_1()
                     .border_color(theme.border)
-                    .bg(theme.bg_raised)
+                    .raised(theme.bg_raised, &theme)
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.overlay))
+                    .hover(|s| s.raised(theme.overlay, &theme))
                     .child(visual)
                     .child(
                         div()

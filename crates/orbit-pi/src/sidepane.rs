@@ -34,6 +34,7 @@ use crate::diff_view::{
 };
 use crate::git;
 use crate::review::{self, ExpansionDirection, GapPosition, LineKind, Snapshot, Source};
+use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
     context_menu, input, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
 };
@@ -1134,9 +1135,9 @@ impl SidePane {
                 } else {
                     theme.border
                 })
-                .bg(theme.bg_raised)
+                .raised(theme.bg_raised, &theme)
                 .cursor_pointer()
-                .hover(|s| s.bg(theme.bg_hover))
+                .hover(|s| s.raised(theme.bg_hover, &theme))
                 .active(|s| s.opacity(PRESS_DIM))
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_source_menu(cx)))
                 .child(icon(

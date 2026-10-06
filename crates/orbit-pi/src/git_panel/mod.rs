@@ -37,6 +37,7 @@ use crate::git::{self, CommitEntry, StatusRow};
 use crate::git_ops::{self, InProgress};
 use crate::issue_message::{self, DraftKind};
 use crate::sidepane::{FileActions, SectionActions, SidePane};
+use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
     button, context_menu, input, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius,
     StyledExt, TextSize,
@@ -3096,13 +3097,16 @@ impl GitPanel {
                     button_frame(div().id("git-branch-chip"), &theme, ButtonSize::Medium)
                         .border_1()
                         .border_color(theme.border)
-                        .bg(if self.branch_menu_open {
-                            theme.active
-                        } else {
-                            theme.bg_raised
-                        })
+                        .raised(
+                            if self.branch_menu_open {
+                                theme.active
+                            } else {
+                                theme.bg_raised
+                            },
+                            &theme,
+                        )
                         .cursor_pointer()
-                        .hover(|s| s.bg(theme.bg_hover))
+                        .hover(|s| s.raised(theme.bg_hover, &theme))
                         .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                             this.toggle_branch_menu(window, cx);
                         }))
@@ -3330,7 +3334,7 @@ impl GitPanel {
         Some(
             icon_button_frame(div().id("git-account"), &theme, ButtonSize::Default)
                 .rounded_full()
-                .bg(theme.bg_raised)
+                .raised(theme.bg_raised, &theme)
                 .border_1()
                 .border_color(theme.border)
                 .tooltip(move |_, cx| cx.new(|_| Tooltip::new(login.clone())).into())
@@ -3357,7 +3361,7 @@ impl GitPanel {
             .rounded(button::RADIUS.px(&theme))
             .border_1()
             .border_color(theme.border)
-            .bg(theme.bg_raised)
+            .raised(theme.bg_raised, &theme)
             .flex()
             .items_center()
             .overflow_hidden()
@@ -3862,10 +3866,10 @@ impl GitPanel {
                             )
                             .border_1()
                             .border_color(theme.border)
-                            .bg(theme.bg_raised)
+                            .raised(theme.bg_raised, &theme)
                             .cursor_pointer()
                             .text_color(theme.text_2)
-                            .hover(|s| s.bg(theme.bg_hover).text_color(theme.text))
+                            .hover(|s| s.raised(theme.bg_hover, &theme).text_color(theme.text))
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                                 this.open_path(target.clone(), window, cx)
                             }))
@@ -4027,10 +4031,9 @@ impl GitPanel {
                                 button_frame(div().id("git-generate"), &theme, ButtonSize::Medium)
                                     .border_1()
                                     .border_color(theme.border)
-                                    .bg(if self.generating {
-                                        theme.overlay
-                                    } else {
-                                        theme.bg_raised
+                                    .when(self.generating, |button| button.bg(theme.overlay))
+                                    .when(!self.generating, |button| {
+                                        button.raised(theme.bg_raised, &theme)
                                     })
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(if self.generating {
@@ -4042,7 +4045,7 @@ impl GitPanel {
                                         button
                                             .cursor_pointer()
                                             .hover(|s| {
-                                                s.bg(theme.bg_hover)
+                                                s.raised(theme.bg_hover, &theme)
                                                     .border_color(theme.border_strong)
                                             })
                                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
@@ -4245,12 +4248,12 @@ impl GitPanel {
                 button_frame(div().id("git-stash-all"), &theme, ButtonSize::Default)
                     .border_1()
                     .border_color(theme.border)
-                    .bg(theme.bg_raised)
+                    .raised(theme.bg_raised, &theme)
                     .cursor_pointer()
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_2)
                     .hover(|s| {
-                        s.bg(theme.bg_hover)
+                        s.raised(theme.bg_hover, &theme)
                             .border_color(theme.border_strong)
                             .text_color(theme.text)
                     })
@@ -7434,10 +7437,10 @@ fn filter_chip(
     button_frame(div().id(id), &theme, ButtonSize::Medium)
         .border_1()
         .border_color(theme.border)
-        .bg(theme.bg_raised)
+        .raised(theme.bg_raised, &theme)
         .cursor_pointer()
         .text_color(theme.text_2)
-        .hover(|s| s.bg(theme.bg_hover).text_color(theme.text))
+        .hover(|s| s.raised(theme.bg_hover, &theme).text_color(theme.text))
         .on_click(listener)
         .child(label.to_string())
         .child(icon(
@@ -7463,7 +7466,7 @@ fn filter_toggle_chip(
         .border_1()
         .border_color(if active { theme.accent } else { theme.border })
         .when(active, |chip| {
-            chip.bg(theme.accent).text_color(theme.send_fg)
+            chip.raised(theme.accent, &theme).text_color(theme.send_fg)
         })
         .when(!active, |chip| {
             chip.text_color(theme.text_3)
@@ -7496,9 +7499,9 @@ fn dropdown_chip(
     button_frame(div().id(id), &theme, ButtonSize::Medium)
         .border_1()
         .border_color(theme.border)
-        .bg(if open { theme.active } else { theme.bg_raised })
+        .raised(if open { theme.active } else { theme.bg_raised }, &theme)
         .cursor_pointer()
-        .hover(|s| s.bg(theme.bg_hover))
+        .hover(|s| s.raised(theme.bg_hover, &theme))
         .on_click(listener)
         .child(icon(
             glyph,

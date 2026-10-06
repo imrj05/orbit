@@ -190,9 +190,9 @@ impl OrbitApp {
             toast_tokens::ACTION_BUTTON,
         ))
         .cursor_pointer()
-        .bg(theme.send_bg)
+        .raised(theme.send_bg, &theme)
         .text_color(theme.send_fg)
-        .hover(|style| style.bg(theme.send_bg_hover))
+        .hover(|style| style.raised(theme.send_bg_hover, &theme))
         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
             this.update(cx, |app, cx| app.apply_plugin_updates(cx));
         })

@@ -374,6 +374,15 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Enter may be confirming an IME candidate in the custom-answer
+        // field; that must not advance or commit the questionnaire.
+        if self
+            .ask
+            .as_ref()
+            .is_some_and(|prompt| prompt.input.read(cx).is_composing())
+        {
+            return;
+        }
         self.ask_next_question(window, cx);
     }
 

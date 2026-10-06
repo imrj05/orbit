@@ -3,8 +3,9 @@
 //! inserts a newline, and ↑/↓ move the caret between visual rows.
 //!
 //! Built on gpui's `shape_text`/`WrappedLine` (the 0.2.2 text system caches
-//! shaped layouts, so re-shaping on keystrokes is cheap). IME is still
-//! approximated as plain replaces — flag for P2 polish.
+//! shaped layouts, so re-shaping on keystrokes is cheap). IME composition is
+//! tracked as a marked range: preedit updates replace the span in place and
+//! commits/cancellations clear it (see `EntityInputHandler` below).
 
 use std::ops::Range;
 use std::time::{Duration, Instant};
@@ -78,6 +79,12 @@ pub struct ComposerInput {
     selected_range: Range<usize>,
     selection_reversed: bool,
     is_selecting: bool,
+    /// Active IME composition span (byte offsets into `content`), or `None`
+    /// outside a composition. Platform composition updates carry ranges
+    /// relative to the composition text and often pass no replacement range,
+    /// so the previous preedit span must be remembered to replace it in
+    /// place instead of appending a new copy each keystroke.
+    marked_range: Option<Range<usize>>,
     /// Layout snapshot from the last prepaint, for hit-testing and IME
     /// bounds outside the paint pass.
     last_lines: Vec<WrappedLine>,
@@ -155,6 +162,7 @@ impl ComposerInput {
             selected_range: 0..0,
             selection_reversed: false,
             is_selecting: false,
+            marked_range: None,
             last_lines: Vec::new(),
             last_line_starts: Vec::new(),
             last_line_height: px(18.),
@@ -296,6 +304,13 @@ impl ComposerInput {
         self.content.clone()
     }
 
+    /// Whether an IME composition is in flight. Submit-like handlers must bail
+    /// while this is set: Enter may be confirming an IME candidate, not
+    /// asking to submit the draft.
+    pub fn is_composing(&self) -> bool {
+        self.marked_range.is_some()
+    }
+
     /// Monotonic text-revision counter; changes only on actual edits, not on
     /// caret moves or blinks.
     pub fn revision(&self) -> u64 {
@@ -319,12 +334,14 @@ impl ComposerInput {
         let end = range.end.min(self.content.len()).max(start);
         self.content = self.content[0..start].to_owned() + text + &self.content[end..];
         self.selected_range = start + text.len()..start + text.len();
+        self.marked_range = None;
         self.revision = self.revision.wrapping_add(1);
         cx.notify();
     }
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.content.clear();
         self.selected_range = 0..0;
+        self.marked_range = None;
         self.scroll_offset = px(0.);
         self.revision = self.revision.wrapping_add(1);
         self.reset_history();
@@ -337,6 +354,7 @@ impl ComposerInput {
         self.content = text.into();
         self.selected_range = self.content.len()..self.content.len();
         self.selection_reversed = false;
+        self.marked_range = None;
         self.scroll_offset = px(0.);
         self.revision = self.revision.wrapping_add(1);
         self.reset_history();
@@ -349,6 +367,7 @@ impl ComposerInput {
         self.content = text.into();
         self.selected_range = 0..0;
         self.selection_reversed = false;
+        self.marked_range = None;
         self.scroll_offset = px(0.);
         self.revision = self.revision.wrapping_add(1);
         self.reset_history();
@@ -617,6 +636,7 @@ impl ComposerInput {
         self.content = snapshot.content;
         self.selected_range = snapshot.selected_range;
         self.selection_reversed = snapshot.selection_reversed;
+        self.marked_range = None;
         self.scroll_offset = px(0.);
         self.revision = self.revision.wrapping_add(1);
         self.last_edit = None;
@@ -859,16 +879,31 @@ impl ComposerInput {
     }
 
     fn offset_from_utf16(&self, offset: usize) -> usize {
-        let mut utf8_offset = 0;
-        let mut utf16_count = 0;
-        for ch in self.content.chars() {
-            if utf16_count >= offset {
-                break;
-            }
-            utf16_count += ch.len_utf16();
-            utf8_offset += ch.len_utf8();
+        utf16_offset_to_utf8(&self.content, offset)
+    }
+
+    /// The document span a platform text replacement targets: the explicit
+    /// range when the platform supplies one, else the active composition
+    /// span, else the current selection. Windows IME passes `None` for both
+    /// incremental updates and the final commit, so the marked range is what
+    /// keeps those edits from landing on the wrong span.
+    fn replacement_range(&self, range_utf16: Option<Range<usize>>) -> Range<usize> {
+        if let Some(range) = range_utf16 {
+            return clamp_range(&self.content, self.range_from_utf16(&range));
         }
-        utf8_offset
+        if let Some(marked) = self.marked_range.clone() {
+            return marked;
+        }
+        clamp_range(&self.content, self.selected_range.clone())
+    }
+
+    /// Splice `new_text` over `range` and return the inserted byte span.
+    /// The range is clamped to character boundaries first, so a stale or
+    /// malformed platform range can never slice mid-character.
+    fn splice(&mut self, range: Range<usize>, new_text: &str) -> Range<usize> {
+        let range = clamp_range(&self.content, range);
+        self.content.replace_range(range.clone(), new_text);
+        range.start..range.start + new_text.len()
     }
 
     fn offset_to_utf16(&self, offset: usize) -> usize {
@@ -1026,10 +1061,17 @@ impl EntityInputHandler for ComposerInput {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Range<usize>> {
-        None
+        // The trait's ranges are UTF-16 (see `text_for_range` and
+        // `replace_text_in_range`), and Linux platforms feed this value back
+        // into those methods, so convert the tracked byte span.
+        self.marked_range
+            .as_ref()
+            .map(|range| self.range_to_utf16(range))
     }
 
-    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
+    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+        self.marked_range = None;
+    }
 
     fn replace_text_in_range(
         &mut self,
@@ -1038,14 +1080,16 @@ impl EntityInputHandler for ComposerInput {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A plain replacement ends any active composition. On Windows the
+        // commit (`GCS_RESULTSTR`) and cancel (`lparam == 0`) paths both route
+        // here with `None`, so the marked span — not the selection — is what
+        // gets replaced; otherwise the preedit text would be left behind and
+        // the final text duplicated.
+        let range = self.replacement_range(range_utf16);
         self.record_undo();
-        let range = range_utf16
-            .as_ref()
-            .map(|range| self.range_from_utf16(range))
-            .unwrap_or(self.selected_range.clone());
-        self.content =
-            self.content[0..range.start].to_owned() + new_text + &self.content[range.end..];
-        self.selected_range = range.start + new_text.len()..range.start + new_text.len();
+        let inserted = self.splice(range, new_text);
+        self.selected_range = inserted.end..inserted.end;
+        self.marked_range = None;
         self.revision = self.revision.wrapping_add(1);
         cx.notify();
     }
@@ -1058,19 +1102,32 @@ impl EntityInputHandler for ComposerInput {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // IME composition is stubbed; treat as a plain replace.
+        let range = self.replacement_range(range_utf16);
         self.record_undo();
-        let range = range_utf16
-            .as_ref()
-            .map(|range| self.range_from_utf16(range))
-            .unwrap_or(self.selected_range.clone());
-        self.content =
-            self.content[0..range.start].to_owned() + new_text + &self.content[range.end..];
-        self.selected_range = new_selected_range_utf16
-            .as_ref()
-            .map(|r| self.range_from_utf16(r))
-            .map(|r| r.start + new_text.len()..r.end + new_text.len())
-            .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
+        let inserted = self.splice(range, new_text);
+        if new_text.is_empty() {
+            // An empty composition clears the preedit text rather than
+            // leaving an empty marked span behind.
+            self.selected_range = inserted.start..inserted.start;
+            self.marked_range = None;
+        } else {
+            // The IME's selection is relative to the composition text, so map
+            // it against `new_text` and offset by the splice start. Converting
+            // it against the whole document and offsetting by `new_text.len()`
+            // (the old stub) produced ranges past the end of the buffer — for
+            // example, composing "n" with selection 1..1 gave a 2..2 selection
+            // on a one-byte document — which the next update then sliced and
+            // panicked on.
+            self.selected_range = new_selected_range_utf16
+                .map(|selection| {
+                    let start = inserted.start + utf16_offset_to_utf8(new_text, selection.start);
+                    let end = inserted.start + utf16_offset_to_utf8(new_text, selection.end);
+                    start..end.max(start)
+                })
+                .unwrap_or_else(|| inserted.end..inserted.end);
+            self.selection_reversed = false;
+            self.marked_range = Some(inserted);
+        }
         self.revision = self.revision.wrapping_add(1);
         cx.notify();
     }
@@ -1140,6 +1197,42 @@ fn prev_char_boundary(text: &str, offset: usize) -> usize {
         .next_back()
         .map(|(i, _)| i)
         .unwrap_or(0)
+}
+
+/// Clamp `offset` to `text.len()` and walk back to the nearest character
+/// boundary, so it is always safe to slice `text` there.
+fn floor_char_boundary(text: &str, offset: usize) -> usize {
+    let mut offset = offset.min(text.len());
+    while !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
+}
+
+/// Clamp a byte range to `text` and snap its ends to character boundaries.
+/// Platform IME ranges are UTF-16 conversions that can go stale between a
+/// preedit update and the next key event; this keeps them from slicing
+/// mid-character (or out of bounds) and panicking.
+fn clamp_range(text: &str, range: Range<usize>) -> Range<usize> {
+    let start = floor_char_boundary(text, range.start);
+    let end = floor_char_boundary(text, range.end).max(start);
+    start..end
+}
+
+/// Convert a UTF-16 offset within `text` to a UTF-8 byte offset. Offsets past
+/// the end (or landing inside a surrogate pair) clamp to the nearest scalar
+/// boundary, so the result always slices `text` safely.
+fn utf16_offset_to_utf8(text: &str, offset: usize) -> usize {
+    let mut utf8_offset = 0;
+    let mut utf16_count = 0;
+    for ch in text.chars() {
+        if utf16_count >= offset {
+            break;
+        }
+        utf16_count += ch.len_utf16();
+        utf8_offset += ch.len_utf8();
+    }
+    utf8_offset
 }
 
 /// The byte after the char at `offset`, or the end. `offset` must be a char
@@ -2494,6 +2587,206 @@ mod geometry_tests {
             assert_eq!(input.read(cx).text(), "abcd");
             input.update(cx, |input, cx| input.redo(&Redo, window, cx));
             assert_eq!(input.read(cx).text(), "Xabcd");
+        });
+    }
+
+    fn ime_input(cx: &mut VisualTestContext) -> Entity<ComposerInput> {
+        cx.update(|_, cx| {
+            cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit));
+            cx.new(ComposerInput::new)
+        })
+    }
+
+    /// Issue #51 regression: incremental IME composition ("n" → "ni" → "你")
+    /// replaces the previous preedit in place. The old stub mapped the
+    /// composition-relative selection against the whole document, producing
+    /// out-of-range selections that the next update sliced and panicked on.
+    #[gpui::test]
+    fn ime_composition_replaces_the_previous_preedit_in_place(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let input = ime_input(cx);
+        cx.update(|window, cx| {
+            // Windows sends `GCS_COMPSTR` updates with no replacement range and
+            // a selection relative to the composition text.
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "n", Some(1..1), window, cx);
+                input.replace_and_mark_text_in_range(None, "ni", Some(2..2), window, cx);
+                input.replace_and_mark_text_in_range(None, "你", Some(1..1), window, cx);
+            });
+            let (text, marked, selected, composing) = input.update(cx, |input, cx| {
+                (
+                    input.text(),
+                    input.marked_text_range(window, cx),
+                    input.selected_range.clone(),
+                    input.is_composing(),
+                )
+            });
+            assert_eq!(text, "你", "each update replaced the previous preedit");
+            assert_eq!(marked, Some(0..1), "marked range is UTF-16");
+            assert_eq!(selected, "你".len().."你".len());
+            assert!(composing);
+
+            // The commit path (`GCS_RESULTSTR`) replaces the marked span, not
+            // the selection, and ends the composition.
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(None, "你好", window, cx)
+            });
+            let (text, marked, composing) = input.update(cx, |input, cx| {
+                (
+                    input.text(),
+                    input.marked_text_range(window, cx),
+                    input.is_composing(),
+                )
+            });
+            assert_eq!(text, "你好", "commit replaced the preedit, not appended");
+            assert_eq!(marked, None);
+            assert!(!composing, "submit works again once composition ends");
+        });
+    }
+
+    /// Composing inside existing text splices over the marked span, and the
+    /// IME's selection — relative to the preedit — maps into the document.
+    #[gpui::test]
+    fn ime_composition_splices_inside_existing_text(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let input = ime_input(cx);
+        cx.update(|_, cx| {
+            input.update(cx, |input, cx| {
+                input.set_text("hello world", cx);
+                input.move_to(6, cx); // before "world"
+            });
+        });
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "n", None, window, cx);
+                input.replace_and_mark_text_in_range(None, "ni", Some(1..1), window, cx);
+            });
+            let (text, marked, selected, composing) = input.update(cx, |input, cx| {
+                (
+                    input.text(),
+                    input.marked_text_range(window, cx),
+                    input.selected_range.clone(),
+                    input.is_composing(),
+                )
+            });
+            assert_eq!(text, "hello niworld");
+            assert_eq!(marked, Some(6..8));
+            assert_eq!(selected, 7..7, "selection is relative to the preedit");
+            assert!(composing);
+
+            // Cancel: the platform replaces the marked span with an empty
+            // string, removing the preedit without touching the rest.
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(None, "", window, cx)
+            });
+            let (text, marked, composing) = input.update(cx, |input, cx| {
+                (
+                    input.text(),
+                    input.marked_text_range(window, cx),
+                    input.is_composing(),
+                )
+            });
+            assert_eq!(text, "hello world", "cancellation removed the preedit");
+            assert_eq!(marked, None);
+            assert!(!composing);
+        });
+    }
+
+    /// An empty platform range and an empty composition both clamp instead of
+    /// slicing, and `unmark_text` ends the composition without dropping text.
+    #[gpui::test]
+    fn ime_stale_ranges_clamp_and_unmark_clears(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let input = ime_input(cx);
+        cx.update(|window, cx| {
+            // A selection that overruns the short preedit clamps to its end
+            // instead of setting an invalid document selection.
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "n", Some(99..120), window, cx)
+            });
+            let (text, marked, selected) = input.update(cx, |input, cx| {
+                (
+                    input.text(),
+                    input.marked_text_range(window, cx),
+                    input.selected_range.clone(),
+                )
+            });
+            assert_eq!(text, "n");
+            assert_eq!(marked, Some(0..1));
+            assert_eq!(selected, 1..1);
+
+            // An out-of-bounds replacement range clamps to the buffer rather
+            // than panicking: 0..900 covers the preedit and commits "ok".
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(Some(0..900), "ok", window, cx)
+            });
+            assert_eq!(input.read(cx).text(), "ok");
+            assert!(!input.read(cx).is_composing());
+
+            // A range entirely past the end clamps to the end (append).
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(Some(400..900), "!", window, cx)
+            });
+            assert_eq!(input.read(cx).text(), "ok!");
+
+            // `unmark_text` ends composition but keeps the text, like
+            // NSTextView; an empty composition clears the preedit outright.
+            input.update(cx, |input, cx| {
+                input.clear(cx);
+                input.replace_and_mark_text_in_range(None, "n", None, window, cx);
+                input.replace_and_mark_text_in_range(None, "", None, window, cx);
+            });
+            assert_eq!(input.read(cx).text(), "", "empty composition cleared");
+            assert!(!input.read(cx).is_composing());
+
+            input.update(cx, |input, cx| {
+                input.clear(cx);
+                input.replace_and_mark_text_in_range(None, "ni", None, window, cx);
+                input.unmark_text(window, cx);
+            });
+            assert_eq!(input.read(cx).text(), "ni", "unmark keeps the text");
+            assert!(!input.read(cx).is_composing());
+        });
+    }
+
+    /// Non-BMP characters are two UTF-16 units; a selection inside a surrogate
+    /// pair clamps to the scalar's end and commit spans all four bytes.
+    #[gpui::test]
+    fn ime_non_bmp_composition_tracks_utf16_offsets(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let input = ime_input(cx);
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "😀", Some(1..1), window, cx);
+            });
+            let (marked, selected) = input.update(cx, |input, cx| {
+                (
+                    input.marked_text_range(window, cx),
+                    input.selected_range.clone(),
+                )
+            });
+            assert_eq!(marked, Some(0..2));
+            assert_eq!(selected, 4..4, "a surrogate-half selection clamps");
+
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "😀!", Some(3..3), window, cx);
+            });
+            let (text, marked, selected) = input.update(cx, |input, cx| {
+                (
+                    input.text(),
+                    input.marked_text_range(window, cx),
+                    input.selected_range.clone(),
+                )
+            });
+            assert_eq!(text, "😀!");
+            assert_eq!(marked, Some(0..3));
+            assert_eq!(selected, 5..5, "3 UTF-16 units = 5 bytes");
+
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(None, "😀!", window, cx)
+            });
+            assert_eq!(input.read(cx).text(), "😀!");
+            assert!(!input.read(cx).is_composing());
         });
     }
 }

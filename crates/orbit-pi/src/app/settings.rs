@@ -1054,10 +1054,14 @@ impl OrbitApp {
         .border_color(theme.border)
         .cursor_pointer()
         .when(self.models_favorites_only, |button| {
-            button.bg(theme.active).text_color(theme.active_fg)
+            button
+                .raised(theme.active, &theme)
+                .text_color(theme.active_fg)
         })
         .when(!self.models_favorites_only, |button| {
-            button.bg(theme.bg_raised).hover(|s| s.bg(theme.bg_hover))
+            button
+                .raised(theme.bg_raised, &theme)
+                .hover(|s| s.raised(theme.bg_hover, &theme))
         })
         .on_mouse_up(MouseButton::Left, {
             let this = this.clone();
@@ -1846,13 +1850,14 @@ impl OrbitApp {
         .cursor_pointer()
         .font_weight(FontWeight::MEDIUM);
         chip = if active {
-            chip.bg(theme.active).text_color(theme.active_fg)
+            chip.raised(theme.active, &theme)
+                .text_color(theme.active_fg)
         } else {
             chip.border_1()
                 .border_color(theme.border)
-                .bg(theme.bg_raised)
+                .raised(theme.bg_raised, &theme)
                 .text_color(theme.text_3)
-                .hover(|style| style.bg(theme.bg_hover))
+                .hover(|style| style.raised(theme.bg_hover, &theme))
         };
         chip.on_mouse_up(MouseButton::Left, move |_, _, cx| {
             this.update(cx, |app, cx| {
@@ -1888,18 +1893,18 @@ impl OrbitApp {
             .font_weight(FontWeight::MEDIUM);
         let (button, icon_color) = if primary {
             (
-                base.bg(theme.send_bg)
+                base.raised(theme.send_bg, &theme)
                     .text_color(theme.send_fg)
-                    .hover(|style| style.bg(theme.send_bg_hover)),
+                    .hover(|style| style.raised(theme.send_bg_hover, &theme)),
                 theme.send_fg,
             )
         } else {
             (
                 base.border_1()
                     .border_color(theme.border)
-                    .bg(theme.bg_raised)
+                    .raised(theme.bg_raised, &theme)
                     .text_color(theme.text_2)
-                    .hover(|style| style.bg(theme.bg_hover)),
+                    .hover(|style| style.raised(theme.bg_hover, &theme)),
                 theme.text_2,
             )
         };
@@ -1992,11 +1997,11 @@ impl OrbitApp {
             .group(BUTTON_GROUP)
             .border_1()
             .border_color(theme.border)
-            .bg(theme.bg_raised)
+            .raised(theme.bg_raised, &theme)
             .cursor_pointer()
             .when(self.providers_refreshing, |button| button.opacity(0.6))
-            .hover(|style| style.bg(theme.bg_hover))
-            .active(|style| style.bg(theme.active))
+            .hover(|style| style.raised(theme.bg_hover, &theme))
+            .active(|style| style.raised(theme.active, &theme))
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, _, cx| {
@@ -2012,9 +2017,9 @@ impl OrbitApp {
             );
 
         let add_button = button_frame(div().id("providers-add"), &theme, ButtonSize::Large)
-            .bg(theme.send_bg)
+            .raised(theme.send_bg, &theme)
             .cursor_pointer()
-            .hover(|style| style.bg(theme.send_bg_hover))
+            .hover(|style| style.raised(theme.send_bg_hover, &theme))
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, window, cx| {
@@ -3335,24 +3340,24 @@ impl OrbitApp {
         .font_weight(FontWeight::MEDIUM);
         button = match style {
             ProviderButtonStyle::Primary => button
-                .bg(theme.send_bg)
+                .raised(theme.send_bg, &theme)
                 .text_color(theme.send_fg)
-                .hover(|style| style.bg(theme.send_bg_hover)),
+                .hover(|style| style.raised(theme.send_bg_hover, &theme)),
             ProviderButtonStyle::Ghost => button
                 .border_1()
                 .border_color(theme.border)
-                .bg(theme.bg_raised)
+                .raised(theme.bg_raised, &theme)
                 .text_color(theme.text_2)
-                .hover(|style| style.bg(theme.bg_hover)),
+                .hover(|style| style.raised(theme.bg_hover, &theme)),
             ProviderButtonStyle::Danger => button
                 .border_1()
                 .border_color(theme.border)
-                .bg(theme.bg_raised)
+                .raised(theme.bg_raised, &theme)
                 .text_color(theme.crit)
                 .hover(|style| {
                     style
                         .border_color(theme.crit.opacity(0.6))
-                        .bg(theme.crit.opacity(0.08))
+                        .raised(theme.crit.opacity(0.08), &theme)
                 }),
         };
         let icon_color = match style {
@@ -3480,9 +3485,9 @@ impl OrbitApp {
         let close = button_frame(div().id("provider-usage-close"), &theme, ButtonSize::Large)
             .border_1()
             .border_color(theme.border)
-            .bg(theme.bg_raised)
+            .raised(theme.bg_raised, &theme)
             .cursor_pointer()
-            .hover(|style| style.bg(theme.bg_hover))
+            .hover(|style| style.raised(theme.bg_hover, &theme))
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, _, cx| {
@@ -3684,9 +3689,9 @@ impl OrbitApp {
         let cancel = button_frame(div().id("provider-key-close"), &theme, ButtonSize::Large)
             .border_1()
             .border_color(theme.border)
-            .bg(theme.bg_raised)
+            .raised(theme.bg_raised, &theme)
             .cursor_pointer()
-            .hover(|style| style.bg(theme.bg_hover))
+            .hover(|style| style.raised(theme.bg_hover, &theme))
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, _, cx| {
@@ -3869,13 +3874,16 @@ impl OrbitApp {
                 } else {
                     theme.border
                 })
-                .bg(if selected {
-                    theme.accent.opacity(0.12)
-                } else {
-                    theme.bg_raised
-                })
+                .raised(
+                    if selected {
+                        theme.accent.opacity(0.12)
+                    } else {
+                        theme.bg_raised
+                    },
+                    &theme,
+                )
                 .cursor_pointer()
-                .hover(|style| style.bg(theme.bg_hover))
+                .hover(|style| style.raised(theme.bg_hover, &theme))
                 .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                     this.update(cx, |app, cx| {
                         if let Some(editor) = app.provider_editor.as_mut() {
@@ -4049,9 +4057,9 @@ impl OrbitApp {
             )
             .border_1()
             .border_color(theme.border)
-            .bg(theme.bg_raised)
+            .raised(theme.bg_raised, &theme)
             .cursor_pointer()
-            .hover(|style| style.bg(theme.bg_hover))
+            .hover(|style| style.raised(theme.bg_hover, &theme))
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                 this.update(cx, |app, cx| {
                     app.provider_editor = None;
@@ -4063,9 +4071,9 @@ impl OrbitApp {
         let save = {
             let this = this.clone();
             button_frame(div().id("provider-editor-save"), &theme, ButtonSize::Large)
-                .bg(theme.send_bg)
+                .raised(theme.send_bg, &theme)
                 .cursor_pointer()
-                .hover(|style| style.bg(theme.send_bg_hover))
+                .hover(|style| style.raised(theme.send_bg_hover, &theme))
                 .on_mouse_up(MouseButton::Left, move |_, window, cx| {
                     this.update(cx, |app, cx| app.provider_save(window, cx));
                 })
@@ -4268,11 +4276,11 @@ impl OrbitApp {
             .group(BUTTON_GROUP)
             .border_1()
             .border_color(theme.border)
-            .bg(theme.bg_raised)
+            .raised(theme.bg_raised, &theme)
             .font_weight(FontWeight::MEDIUM)
             .text_color(theme.text_2)
             .cursor_pointer()
-            .hover(|s| s.bg(theme.bg_hover))
+            .hover(|s| s.raised(theme.bg_hover, &theme))
             .child(icon(
                 "icons/arrow-up-right.svg",
                 ButtonSize::Medium.icon_size().px(&theme),
@@ -5066,7 +5074,7 @@ impl OrbitApp {
             )
             .border_1()
             .border_color(theme.border)
-            .bg(theme.bg_raised)
+            .raised(theme.bg_raised, &theme)
             .text_color(theme.text_3)
             .child(tr!("settings.pi_default"))
             .into_any_element();
@@ -5114,11 +5122,13 @@ impl OrbitApp {
                 )
                 .font_weight(FontWeight::MEDIUM)
                 .cursor_pointer()
-                .when(active, |b| b.bg(theme.active).text_color(theme.active_fg))
+                .when(active, |b| {
+                    b.raised_flat(theme.active).text_color(theme.active_fg)
+                })
                 .when(!active, |b| {
-                    b.bg(theme.bg_raised)
+                    b.raised_flat(theme.bg_raised)
                         .text_color(theme.text_2)
-                        .hover(|s| s.bg(theme.bg_hover))
+                        .hover(|s| s.raised_flat(theme.bg_hover))
                 })
                 .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                     this.update(cx, |app, cx| app.set_composer_send_mode(mode, cx));
@@ -5165,14 +5175,14 @@ impl OrbitApp {
                         .cursor_pointer()
                         .when(active, |b| {
                             b.border_color(theme.border)
-                                .bg(theme.active)
+                                .raised_flat(theme.active)
                                 .text_color(theme.active_fg)
                         })
                         .when(!active, |b| {
                             b.border_color(theme.border)
-                                .bg(theme.bg_raised)
+                                .raised_flat(theme.bg_raised)
                                 .text_color(theme.text_2)
-                                .hover(|s| s.bg(theme.bg_hover))
+                                .hover(|s| s.raised_flat(theme.bg_hover))
                         })
                         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                             this.update(cx, |app, cx| app.set_follow_up_mode(value_all, cx));
@@ -5350,6 +5360,12 @@ impl OrbitApp {
     }
 
     pub(super) fn rename_session(&mut self, cx: &mut Context<Self>) {
+        // Enter while an IME candidate window is open confirms the candidate;
+        // it must not commit a half-composed name. The click path is covered
+        // by the same guard, since the preedit text is not a final answer.
+        if self.session_name_input.read(cx).is_composing() {
+            return;
+        }
         let name = self.session_name_input.read(cx).text().trim().to_string();
         if name.is_empty() {
             self.toast_warning(tr!("settings.enter_session_name"));
@@ -5406,16 +5422,16 @@ impl OrbitApp {
             .font_weight(FontWeight::MEDIUM);
         if primary {
             button = button
-                .bg(theme.send_bg)
+                .raised(theme.send_bg, &theme)
                 .text_color(theme.send_fg)
-                .hover(|s| s.bg(theme.send_bg_hover));
+                .hover(|s| s.raised(theme.send_bg_hover, &theme));
         } else {
             button = button
                 .border_1()
                 .border_color(theme.border)
-                .bg(theme.bg_raised)
+                .raised(theme.bg_raised, &theme)
                 .text_color(theme.text_2)
-                .hover(|s| s.bg(theme.bg_hover));
+                .hover(|s| s.raised(theme.bg_hover, &theme));
         }
         press(button)
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
@@ -5717,14 +5733,14 @@ impl OrbitApp {
                         .cursor_pointer()
                         .when(active, |b| {
                             b.border_color(theme.border)
-                                .bg(theme.active)
+                                .raised_flat(theme.active)
                                 .text_color(theme.active_fg)
                         })
                         .when(!active, |b| {
                             b.border_color(theme.border)
-                                .bg(theme.bg_raised)
+                                .raised_flat(theme.bg_raised)
                                 .text_color(theme.text_2)
-                                .hover(|s| s.bg(theme.bg_hover))
+                                .hover(|s| s.raised_flat(theme.bg_hover))
                         })
                         .on_click(move |_, _, cx| {
                             this.update(cx, |app, cx| app.set_appearance_mode(mode, cx));
@@ -6359,10 +6375,10 @@ impl OrbitApp {
                 } else {
                     theme.border
                 })
-                .bg(if open { theme.overlay } else { theme.bg_raised })
+                .raised(if open { theme.overlay } else { theme.bg_raised }, &theme)
                 .cursor_pointer()
                 .text_color(theme.text_2)
-                .hover(|s| s.bg(theme.overlay))
+                .hover(|s| s.raised(theme.overlay, &theme))
                 .on_mouse_up(MouseButton::Left, move |_, window, cx| {
                     chip_this.update(cx, |app, cx| {
                         // A dismissal from this same click's mouse-down

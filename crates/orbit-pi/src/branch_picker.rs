@@ -13,6 +13,7 @@ use crate::app::{
     picker_surface,
 };
 use crate::composer::ComposerInput;
+use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{context_menu, input, picker, ButtonSize, DynamicSpacing, TextSize};
 use crate::theme::{self, Theme};
 
@@ -269,8 +270,8 @@ impl Render for BranchPicker {
                     button_frame(div(), &theme, ButtonSize::Medium)
                         .mx(DynamicSpacing::Base08.px(&theme))
                         .mb(DynamicSpacing::Base04.px(&theme))
-                        .bg(theme.send_bg)
-                        .hover(|s| s.bg(theme.send_bg_hover))
+                        .raised(theme.send_bg, &theme)
+                        .hover(|s| s.raised(theme.send_bg_hover, &theme))
                         .cursor_pointer()
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.send_fg)

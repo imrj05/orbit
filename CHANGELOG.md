@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Filled buttons now read as raised from the surface: each carries a soft
+  top-lit gradient built from its own fill color plus a short contact/ambient
+  shadow (`RaisedExt::raised` in `theme/tokens.rs`). Segmented controls get the
+  gradient without the per-segment shadow; ghost icon buttons and disabled
+  buttons stay flat.
+
 ### Fixed
 
 - Switching to a session in another workspace no longer kills the one that is

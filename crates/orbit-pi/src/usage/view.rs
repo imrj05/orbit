@@ -66,6 +66,7 @@ use crate::app::{
     picker_entry, picker_search_frame, picker_surface, press, TipExt, BUTTON_GROUP,
 };
 use crate::composer::ComposerInput;
+use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
     button, input, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
 };
@@ -635,9 +636,9 @@ impl UsagePage {
                         .mt(DynamicSpacing::Base02.px(&theme))
                         .border_1()
                         .border_color(theme.border)
-                        .bg(theme.bg_raised)
+                        .raised(theme.bg_raised, &theme)
                         .cursor_pointer()
-                        .hover(|style| style.bg(theme.bg_hover)),
+                        .hover(|style| style.raised(theme.bg_hover, &theme)),
                 )
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     entity.update(cx, |page, cx| page.refresh(cx));
@@ -892,9 +893,9 @@ impl UsagePage {
                     .mt(DynamicSpacing::Base02.px(&theme))
                     .border_1()
                     .border_color(theme.border)
-                    .bg(theme.bg_raised)
+                    .raised(theme.bg_raised, &theme)
                     .cursor_pointer()
-                    .hover(|style| style.bg(theme.bg_hover)),
+                    .hover(|style| style.raised(theme.bg_hover, &theme)),
             )
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 entity.update(cx, |page, cx| page.clear_filters(cx));
@@ -4708,16 +4709,16 @@ where
                 .when(many && ix == last, |tab| tab.rounded_r(radius).border_l_0())
                 .when(many && ix > 0 && ix < last, |tab| tab.border_l_0())
                 .when(is_active, |tab| {
-                    tab.bg(theme.active)
+                    tab.raised_flat(theme.active)
                         .text_color(theme.active_fg)
                         .font_weight(FontWeight::MEDIUM)
                         .cursor_pointer()
                 })
                 .when(!is_active && is_enabled, |tab| {
-                    tab.bg(resting)
+                    tab.raised_flat(resting)
                         .text_color(theme.text_2)
                         .cursor_pointer()
-                        .hover(|style| style.bg(theme.bg_hover))
+                        .hover(|style| style.raised_flat(theme.bg_hover))
                         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                             handler(option, window, cx)
                         })

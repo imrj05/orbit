@@ -1905,8 +1905,8 @@ impl OrbitApp {
             icon_button_frame(div().id("steer-btn"), &theme, ButtonSize::Medium)
                 .group(BUTTON_GROUP)
                 .rounded_full()
-                .bg(theme.overlay)
-                .hover(|s| s.bg(theme.overlay_strong))
+                .raised(theme.overlay, &theme)
+                .hover(|s| s.raised(theme.overlay_strong, &theme))
                 .active(|s| s.opacity(PRESS_DIM))
                 .cursor_pointer()
                 .on_mouse_up(
@@ -2419,15 +2419,18 @@ impl OrbitApp {
                                                 } else {
                                                     theme.border
                                                 })
-                                                .bg(if selected {
-                                                    theme.accent.opacity(0.12)
-                                                } else {
-                                                    theme.bg_raised
-                                                })
+                                                .raised(
+                                                    if selected {
+                                                        theme.accent.opacity(0.12)
+                                                    } else {
+                                                        theme.bg_raised
+                                                    },
+                                                    &theme,
+                                                )
                                                 .cursor_pointer()
                                                 .hover(|s| {
                                                     s.border_color(theme.border_strong)
-                                                        .bg(theme.overlay)
+                                                        .raised(theme.overlay, &theme)
                                                 })
                                                 .on_mouse_up(
                                                     MouseButton::Left,
@@ -3474,11 +3477,14 @@ impl OrbitApp {
             .group(BUTTON_GROUP)
             .w_full()
             .tip(commands::tooltip(CommandId::NewSession, false))
-            .bg(theme.bg_raised)
+            .raised(theme.bg_raised, &theme)
             .border_1()
             .border_color(theme.border)
             .cursor_pointer()
-            .hover(|s| s.bg(theme.bg_hover).border_color(theme.border_strong))
+            .hover(|s| {
+                s.raised(theme.bg_hover, &theme)
+                    .border_color(theme.border_strong)
+            })
             .active(|s| s.opacity(PRESS_DIM))
             .on_mouse_up(
                 MouseButton::Left,
@@ -3758,9 +3764,9 @@ impl OrbitApp {
         if self.busy {
             icon_button_frame(div().id("stop-btn"), &theme, ButtonSize::Medium)
                 .rounded_full()
-                .bg(theme.stop_red)
-                .hover(|s| s.bg(theme.stop_red_hover))
-                .active(|s| s.bg(theme.stop_red))
+                .raised(theme.stop_red, &theme)
+                .hover(|s| s.raised(theme.stop_red_hover, &theme))
+                .active(|s| s.raised(theme.stop_red, &theme))
                 .cursor_pointer()
                 .text_color(theme.send_fg)
                 .on_mouse_up(MouseButton::Left, cx.listener(Self::on_abort_mouse))
@@ -3784,10 +3790,11 @@ impl OrbitApp {
             let empty = self.input.read(cx).text().trim().is_empty() && self.attachments.is_empty();
             icon_button_frame(div().id("send-btn"), &theme, ButtonSize::Medium)
                 .rounded_full()
-                .bg(if empty { theme.overlay } else { theme.send_bg })
+                .when(empty, |btn| btn.bg(theme.overlay))
                 .when(!empty, |btn| {
-                    btn.hover(|s| s.bg(theme.send_bg_hover))
-                        .active(|s| s.bg(theme.send_bg))
+                    btn.raised(theme.send_bg, &theme)
+                        .hover(|s| s.raised(theme.send_bg_hover, &theme))
+                        .active(|s| s.raised(theme.send_bg, &theme))
                         .cursor_pointer()
                 })
                 .on_mouse_up(MouseButton::Left, cx.listener(Self::on_send_click))
@@ -4221,7 +4228,7 @@ impl OrbitApp {
             .font_weight(FontWeight::MEDIUM)
             .border_1()
             .border_color(gpui::transparent_black())
-            .bg(theme.overlay)
+            .raised(theme.overlay, &theme)
             .text_color(theme.text_2);
         let back_disabled = submitted || cursor == 0;
         if back_disabled {
@@ -4229,7 +4236,11 @@ impl OrbitApp {
         } else {
             back = back
                 .cursor_pointer()
-                .hover(|style| style.bg(theme.overlay_strong).text_color(theme.text))
+                .hover(|style| {
+                    style
+                        .raised(theme.overlay_strong, &theme)
+                        .text_color(theme.text)
+                })
                 .on_click(cx.listener(|this, _, window, cx| this.ask_prev_question(window, cx)));
         }
         back = back.child(tr!("view.back"));
@@ -4244,14 +4255,14 @@ impl OrbitApp {
             .font_weight(FontWeight::MEDIUM)
             .border_1()
             .border_color(gpui::transparent_black())
-            .bg(theme.accent.opacity(0.16))
+            .raised(theme.accent.opacity(0.16), &theme)
             .text_color(theme.accent);
         if submitted {
             next = next.opacity(0.45);
         } else {
             next = next
                 .cursor_pointer()
-                .hover(|style| style.bg(theme.accent.opacity(0.26)))
+                .hover(|style| style.raised(theme.accent.opacity(0.26), &theme))
                 .on_click(cx.listener(|this, _, window, cx| this.ask_next_question(window, cx)));
         }
         next = next.child(next_label);
@@ -4324,19 +4335,25 @@ impl OrbitApp {
             // ember-washed tile with ember ink, matching the One Accent Rule.
             button = if is_primary {
                 button
-                    .bg(theme.accent.opacity(0.16))
+                    .raised(theme.accent.opacity(0.16), &theme)
                     .text_color(theme.accent)
-                    .hover(|s| s.bg(theme.accent.opacity(0.26)))
+                    .hover(|s| s.raised(theme.accent.opacity(0.26), &theme))
             } else if is_deny {
                 button
-                    .bg(theme.overlay)
+                    .raised(theme.overlay, &theme)
                     .text_color(theme.text_2)
-                    .hover(|s| s.bg(theme.crit.opacity(0.14)).text_color(theme.crit))
+                    .hover(|s| {
+                        s.raised(theme.crit.opacity(0.14), &theme)
+                            .text_color(theme.crit)
+                    })
             } else {
                 button
-                    .bg(theme.overlay)
+                    .raised(theme.overlay, &theme)
                     .text_color(theme.text_2)
-                    .hover(|s| s.bg(theme.overlay_strong).text_color(theme.text))
+                    .hover(|s| {
+                        s.raised(theme.overlay_strong, &theme)
+                            .text_color(theme.text)
+                    })
             };
             // The keyboard cursor reads as a strong border.
             button = button.border_color(if highlighted {
@@ -4566,8 +4583,8 @@ impl OrbitApp {
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.text)
                             .cursor_pointer()
-                            .bg(theme.overlay)
-                            .hover(|s| s.bg(theme.overlay_strong))
+                            .raised(theme.overlay, &theme)
+                            .hover(|s| s.raised(theme.overlay_strong, &theme))
                             .on_mouse_up(
                                 MouseButton::Left,
                                 cx.listener(|this, _, _, cx| {

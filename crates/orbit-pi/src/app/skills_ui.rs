@@ -647,12 +647,12 @@ impl OrbitApp {
             (
                 base.border_1()
                     .border_color(theme.border)
-                    .bg(theme.bg_raised)
+                    .raised(theme.bg_raised, &theme)
                     .text_color(theme.crit)
                     .hover(|style| {
                         style
                             .border_color(theme.crit.opacity(0.6))
-                            .bg(theme.crit.opacity(0.08))
+                            .raised(theme.crit.opacity(0.08), &theme)
                     }),
                 theme.crit,
             )
@@ -660,9 +660,9 @@ impl OrbitApp {
             (
                 base.border_1()
                     .border_color(theme.border)
-                    .bg(theme.bg_raised)
+                    .raised(theme.bg_raised, &theme)
                     .text_color(theme.text_2)
-                    .hover(|style| style.bg(theme.bg_hover)),
+                    .hover(|style| style.raised(theme.bg_hover, &theme)),
                 theme.text_2,
             )
         };

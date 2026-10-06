@@ -10,6 +10,7 @@ use gpui::{div, prelude::*, px, AnyElement, ClickEvent, FontWeight, Hsla, Window
 use crate::app::helpers::empty_state_glyph;
 use crate::app::{button_frame, icon, icon_button_frame, press, BUTTON_GROUP};
 use crate::git::RefKind;
+use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
 use crate::theme::Theme;
 use crate::usage::tooltip::Tooltip;
@@ -76,19 +77,22 @@ pub fn action_button(
         button = press(button)
             .group(BUTTON_GROUP)
             .border_color(gpui::transparent_black())
-            .bg(theme.send_bg)
+            .raised(theme.send_bg, &theme)
             .text_color(theme.send_fg)
             .cursor_pointer()
-            .hover(|s| s.bg(theme.send_bg_hover))
+            .hover(|s| s.raised(theme.send_bg_hover, &theme))
             .on_click(listener);
     } else {
         button = press(button)
             .group(BUTTON_GROUP)
             .border_color(theme.border)
-            .bg(theme.bg_raised)
+            .raised(theme.bg_raised, &theme)
             .text_color(theme.text)
             .cursor_pointer()
-            .hover(|s| s.bg(theme.bg_hover).border_color(theme.border_strong))
+            .hover(|s| {
+                s.raised(theme.bg_hover, &theme)
+                    .border_color(theme.border_strong)
+            })
             .on_click(listener);
     }
     if let Some(leading) = leading {

@@ -1026,9 +1026,9 @@ impl OrbitApp {
         let refresh = icon_button_frame(div().id("mcp-refresh"), &theme, ButtonSize::Large)
             .border_1()
             .border_color(theme.border)
-            .bg(theme.bg_raised)
+            .raised(theme.bg_raised, &theme)
             .cursor_pointer()
-            .hover(|style| style.bg(theme.bg_hover))
+            .hover(|style| style.raised(theme.bg_hover, &theme))
             .tip(tr!("mcp.refresh"))
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
@@ -1045,9 +1045,9 @@ impl OrbitApp {
         let add = button_frame(div().id("mcp-add"), &theme, ButtonSize::Large)
             .cursor_pointer()
             .font_weight(FontWeight::MEDIUM)
-            .bg(theme.send_bg)
+            .raised(theme.send_bg, &theme)
             .text_color(theme.send_fg)
-            .hover(|style| style.bg(theme.send_bg_hover))
+            .hover(|style| style.raised(theme.send_bg_hover, &theme))
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, window, cx| this.update(cx, |app, cx| app.mcp_add(window, cx))
@@ -1662,9 +1662,9 @@ impl OrbitApp {
                     button_frame(div().id("mcp-empty-add"), &theme, ButtonSize::Medium)
                         .cursor_pointer()
                         .font_weight(FontWeight::MEDIUM)
-                        .bg(theme.send_bg)
+                        .raised(theme.send_bg, &theme)
                         .text_color(theme.send_fg)
-                        .hover(|style| style.bg(theme.send_bg_hover))
+                        .hover(|style| style.raised(theme.send_bg_hover, &theme))
                         .on_mouse_up(MouseButton::Left, {
                             let this = this.clone();
                             move |_, window, cx| this.update(cx, |app, cx| app.mcp_add(window, cx))
@@ -1866,14 +1866,17 @@ impl OrbitApp {
                 } else {
                     theme.border
                 })
-                .bg(if selected {
-                    theme.accent.opacity(0.12)
-                } else {
-                    theme.bg_raised
-                })
+                .raised(
+                    if selected {
+                        theme.accent.opacity(0.12)
+                    } else {
+                        theme.bg_raised
+                    },
+                    &theme,
+                )
                 .text_color(if selected { theme.accent } else { theme.text_2 })
                 .cursor_pointer()
-                .hover(|style| style.bg(theme.bg_hover))
+                .hover(|style| style.raised(theme.bg_hover, &theme))
                 .on_mouse_up(MouseButton::Left, {
                     let this = this.clone();
                     move |_, _, cx| {
@@ -2267,9 +2270,9 @@ impl OrbitApp {
         let cancel = button_frame(div().id("mcp-editor-cancel"), &theme, ButtonSize::Large)
             .border_1()
             .border_color(theme.border)
-            .bg(theme.bg_raised)
+            .raised(theme.bg_raised, &theme)
             .cursor_pointer()
-            .hover(|style| style.bg(theme.bg_hover))
+            .hover(|style| style.raised(theme.bg_hover, &theme))
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, _, cx| this.update(cx, |app, cx| app.mcp_editor_close(cx))
@@ -2278,9 +2281,9 @@ impl OrbitApp {
         let save = button_frame(div().id("mcp-editor-save"), &theme, ButtonSize::Large)
             .cursor_pointer()
             .font_weight(FontWeight::MEDIUM)
-            .bg(theme.send_bg)
+            .raised(theme.send_bg, &theme)
             .text_color(theme.send_fg)
-            .hover(|style| style.bg(theme.send_bg_hover))
+            .hover(|style| style.raised(theme.send_bg_hover, &theme))
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, _, cx| this.update(cx, |app, cx| app.mcp_editor_save(cx))
@@ -2826,14 +2829,18 @@ fn mcp_popup_action(
     .font_weight(FontWeight::MEDIUM);
     button = if primary {
         button
-            .bg(theme.send_bg)
+            .raised(theme.send_bg, &theme)
             .text_color(theme.send_fg)
-            .hover(|style| style.bg(theme.send_bg_hover))
+            .hover(|style| style.raised(theme.send_bg_hover, &theme))
     } else {
         button
-            .bg(theme.overlay)
+            .raised(theme.overlay, &theme)
             .text_color(theme.text_2)
-            .hover(|style| style.bg(theme.overlay_strong).text_color(theme.text))
+            .hover(|style| {
+                style
+                    .raised(theme.overlay_strong, &theme)
+                    .text_color(theme.text)
+            })
     };
     press(button)
         .child(label)
@@ -3024,16 +3031,16 @@ fn mcp_text_button(
     .font_weight(FontWeight::MEDIUM);
     button = if primary {
         button
-            .bg(theme.send_bg)
+            .raised(theme.send_bg, &theme)
             .text_color(theme.send_fg)
-            .hover(|style| style.bg(theme.send_bg_hover))
+            .hover(|style| style.raised(theme.send_bg_hover, &theme))
     } else {
         button
             .border_1()
             .border_color(theme.border)
-            .bg(theme.bg_raised)
+            .raised(theme.bg_raised, &theme)
             .text_color(theme.text_2)
-            .hover(|style| style.bg(theme.bg_hover))
+            .hover(|style| style.raised(theme.bg_hover, &theme))
     };
     press(button)
         .child(label)

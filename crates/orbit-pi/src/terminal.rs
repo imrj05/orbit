@@ -55,6 +55,7 @@ use gpui::{
 use crate::app::{
     button_frame, icon, icon_button_frame, nerd_font_family, refresh_glyph, TipExt, BUTTON_GROUP,
 };
+use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
 use crate::theme::{self, Theme};
 
@@ -1789,7 +1790,7 @@ impl TerminalPanel {
                                 &theme,
                                 ButtonSize::Medium,
                             )
-                            .bg(theme.accent)
+                            .raised(theme.accent, &theme)
                             .cursor_pointer()
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.active_fg)

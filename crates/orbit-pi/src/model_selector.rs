@@ -35,6 +35,7 @@ use crate::context_meter::format_tokens;
 use crate::favorites::Favorites;
 use crate::model_selector_match::is_model_selected;
 use crate::providers::provider_display_name;
+use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
     context_menu, input, list, list_item, picker, BufferLineHeight, ButtonSize, DynamicSpacing,
     IconSize, Radius, TextSize,
@@ -1114,18 +1115,23 @@ fn scope_chip(
         } else {
             theme.border
         })
-        .bg(if active {
-            theme.active
-        } else {
-            theme.bg_raised
-        })
+        .raised(
+            if active {
+                theme.active
+            } else {
+                theme.bg_raised
+            },
+            &theme,
+        )
         .text_color(if active {
             theme.active_fg
         } else {
             theme.text_2
         })
         .cursor_pointer()
-        .when(!active, |chip| chip.hover(|s| s.bg(theme.bg_hover)))
+        .when(!active, |chip| {
+            chip.hover(|s| s.raised(theme.bg_hover, &theme))
+        })
         .on_click(move |_, window, cx| on_click(window, cx))
         .child(lead)
         .child(label)

@@ -49,6 +49,7 @@ use crate::context_meter::{format_tokens, hit_percent_label};
 use crate::highlight::{self, Token};
 use crate::message_scroller::{self, MessageScrollerState};
 use crate::shimmer::ShimmerText;
+use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
     context_menu, picker, popover, BufferLineHeight, ButtonSize, DynamicSpacing, IconSize, Radius,
     StyledExt, TextSize,
@@ -2368,7 +2369,7 @@ fn render_activity_group(
             .max_w_full()
             // Raised fill + hairline = DESIGN.md's chip treatment: the
             // open state steps the border up for emphasis.
-            .bg(theme.bg_raised)
+            .raised(theme.bg_raised, &theme)
             .border_1()
             .border_color(if open {
                 theme.border_strong
@@ -2376,7 +2377,7 @@ fn render_activity_group(
                 theme.border
             })
             .cursor_pointer()
-            .hover(|style| style.bg(theme.bg_hover).text_color(theme.text))
+            .hover(|style| style.raised(theme.bg_hover, &theme).text_color(theme.text))
             .child(
                 div()
                     .flex_none()
@@ -6852,11 +6853,11 @@ pub(crate) fn render_changed_files(
         )
         .border_1()
         .border_color(theme.border)
-        .bg(theme.bg_raised)
+        .raised(theme.bg_raised, &theme)
         .cursor_pointer()
         .font_weight(FontWeight::MEDIUM)
         .text_color(theme.text_2)
-        .hover(|style| style.bg(theme.bg_hover).text_color(theme.text))
+        .hover(|style| style.raised(theme.bg_hover, &theme).text_color(theme.text))
         .child(glyph(
             "icons/file-diff.svg",
             ButtonSize::Medium.icon_size().px(&theme),

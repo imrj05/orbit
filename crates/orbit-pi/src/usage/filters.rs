@@ -27,6 +27,7 @@ use super::page::{
     BucketSort, ExportFormat, MenuKind, SeriesSort, SessionSort, UsagePage, PAGE_SIZES,
 };
 use super::table::FailureSort;
+use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
     context_menu, input, list, picker, popover, ButtonSize, DynamicSpacing, IconSize, TextSize,
 };
@@ -127,9 +128,9 @@ pub fn chip(
     } else {
         theme.border
     })
-    .bg(if active { theme.active } else { resting })
+    .raised(if active { theme.active } else { resting }, &theme)
     .cursor_pointer()
-    .hover(|style| style.bg(if active { theme.active } else { theme.bg_hover }))
+    .hover(|style| style.raised(if active { theme.active } else { theme.bg_hover }, &theme))
     .on_mouse_down(MouseButton::Left, on_click)
     .children(icon_path.map(|path| {
         icon(
@@ -1108,7 +1109,7 @@ pub fn toggle_chip(
     .pr(DynamicSpacing::Base06.px(&theme))
     .border_1()
     .border_color(theme.border_strong)
-    .bg(theme.active)
+    .raised(theme.active, &theme)
     .text_color(theme.active_fg)
     .child(label.into())
     .child(
@@ -1189,16 +1190,17 @@ pub fn outline_button(
     .group(BUTTON_GROUP)
     .border_1()
     .border_color(theme.border)
-    .bg(if enabled {
-        theme.bg_main
-    } else {
-        theme.overlay
-    })
     .text_color(if enabled { theme.text } else { theme.text_3 })
+    .when(!enabled, |button| button.bg(theme.overlay))
     .when(enabled, |button| {
         press(button)
+            .raised(theme.bg_main, &theme)
             .cursor_pointer()
-            .hover(|style| style.bg(theme.bg_hover).border_color(theme.border_strong))
+            .hover(|style| {
+                style
+                    .raised(theme.bg_hover, &theme)
+                    .border_color(theme.border_strong)
+            })
             .on_mouse_down(MouseButton::Left, on_click)
     })
     .child(label.to_string())

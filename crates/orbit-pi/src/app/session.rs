@@ -75,9 +75,16 @@ impl OrbitApp {
     }
 
     fn submit_composer_as(&mut self, mode: SendMode, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.input.read(cx).focus_handle(cx).is_focused(window)
-            || self.commit_autocomplete_if_open(cx)
+        // Enter can be the key that confirms an IME candidate; never submit a
+        // composition in flight (the platform routes it to the IME first, but
+        // other backends may dispatch the action anyway).
         {
+            let input = self.input.read(cx);
+            if input.is_composing() || !input.focus_handle(cx).is_focused(window) {
+                return;
+            }
+        }
+        if self.commit_autocomplete_if_open(cx) {
             return;
         }
         let text = self.input.read(cx).text();
@@ -87,6 +94,9 @@ impl OrbitApp {
     /// Send the composer's current text/attachments as a steer; used by the
     /// composer's steer control.
     pub(super) fn steer_current(&mut self, cx: &mut Context<Self>) {
+        if self.input.read(cx).is_composing() {
+            return;
+        }
         let text = self.input.read(cx).text();
         self.submit_as(text, SendMode::Steer, cx);
     }
@@ -371,6 +381,9 @@ impl OrbitApp {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.input.read(cx).is_composing() {
+            return;
+        }
         if self.commit_autocomplete_if_open(cx) {
             return;
         }
@@ -960,15 +973,15 @@ impl OrbitApp {
                 .group(BUTTON_GROUP)
                 .border_1()
                 .border_color(theme.border)
-                .bg(if generating {
-                    theme.overlay
-                } else {
-                    theme.bg_raised
-                });
+                .when(generating, |button| button.bg(theme.overlay))
+                .when(!generating, |button| button.raised(theme.bg_raised, &theme));
         if !generating {
             button = button
                 .cursor_pointer()
-                .hover(|s| s.bg(theme.bg_hover).border_color(theme.border_strong))
+                .hover(|s| {
+                    s.raised(theme.bg_hover, &theme)
+                        .border_color(theme.border_strong)
+                })
                 .active(|s| s.opacity(PRESS_DIM))
                 .tooltip({
                     let label = tr!("session.generate_title");
@@ -1315,15 +1328,15 @@ impl OrbitApp {
                                 // that pops in, so the button confirms the
                                 // rename instead of silently doing nothing.
                                 button = button
-                                    .bg(theme.ok_green)
+                                    .raised(theme.ok_green, &theme)
                                     .border_color(theme.ok_green)
                                     .child(Self::rename_check(theme, cx));
                             } else {
                                 button = button
-                                    .bg(theme.bg_raised)
+                                    .raised(theme.bg_raised, &theme)
                                     .border_color(theme.border)
                                     .text_color(theme.text)
-                                    .hover(|s| s.bg(theme.bg_hover))
+                                    .hover(|s| s.raised(theme.bg_hover, &theme))
                                     .child(tr!("session.update"));
                             }
                             button
@@ -1721,12 +1734,12 @@ impl OrbitApp {
                 .cursor_pointer()
                 .border_color(theme.border)
                 .when(selected, |chip| {
-                    chip.bg(theme.active).text_color(theme.active_fg)
+                    chip.raised_flat(theme.active).text_color(theme.active_fg)
                 })
                 .when(!selected, |chip| {
-                    chip.bg(theme.bg_raised)
+                    chip.raised_flat(theme.bg_raised)
                         .text_color(theme.text_2)
-                        .hover(|style| style.bg(theme.bg_hover))
+                        .hover(|style| style.raised_flat(theme.bg_hover))
                 })
                 .on_mouse_up(MouseButton::Left, {
                     let this = this.clone();
@@ -1936,9 +1949,9 @@ impl OrbitApp {
                     .debug_selector(|| "quota-empty-mcp".to_string())
                     .cursor_pointer()
                     .font_weight(FontWeight::MEDIUM)
-                    .bg(theme.send_bg)
+                    .raised(theme.send_bg, &theme)
                     .text_color(theme.send_fg)
-                    .hover(|style| style.bg(theme.send_bg_hover))
+                    .hover(|style| style.raised(theme.send_bg_hover, &theme))
                     .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                         this.update(cx, |app, cx| {
                             app.mcp_popup_tab(QuotaPopupTab::Mcp, cx);
