@@ -49,13 +49,19 @@ function resolvePiBin() {
   }
 }
 
+const PI_PACKAGE = "@earendil-works/pi-coding-agent";
+
 function packageRoot(bin) {
-  let dir = path.dirname(fs.realpathSync(bin));
+  // Orbit resolves the package (npm/pnpm global or pi's managed installer) and
+  // passes it in, so the script works on layouts its own walk cannot reach.
+  if (process.env.PI_PACKAGE_ROOT) return process.env.PI_PACKAGE_ROOT;
+  const real = fs.realpathSync(bin);
+  let dir = path.dirname(real);
   for (let i = 0; i < 12; i += 1) {
     const pkg = path.join(dir, "package.json");
     if (fs.existsSync(pkg)) {
       try {
-        if (JSON.parse(fs.readFileSync(pkg, "utf8")).name === "@earendil-works/pi-coding-agent") {
+        if (JSON.parse(fs.readFileSync(pkg, "utf8")).name === PI_PACKAGE) {
           return dir;
         }
       } catch {
@@ -65,6 +71,17 @@ function packageRoot(bin) {
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
+  }
+  // pi's managed installer: <agent>/bin/pi -> <agent>/install/releases/<v>/…
+  const install = path.join(path.dirname(path.dirname(real)), "install");
+  try {
+    const version = fs
+      .readFileSync(path.join(install, "current-version"), "utf8")
+      .trim();
+    const root = path.join(install, "releases", version, "node_modules", PI_PACKAGE);
+    if (fs.existsSync(root)) return root;
+  } catch {
+    /* not a managed install */
   }
   throw new Error(`Could not locate the pi package from ${bin}`);
 }

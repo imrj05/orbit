@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- RPC patch auto-apply now locates the pi package for pi's **managed
+  installer** as well as npm/pnpm/bun globals. The managed launcher at
+  `<agent>/bin/pi` is not inside a `node_modules`, so the old ancestor walk
+  never reached the package at
+  `<agent>/install/releases/<version>/node_modules/@earendil-works/pi-coding-agent`
+  and the Settings → Runtime row read *pi package not found*. Resolution now
+  handles that layout on every platform — via `PI_MANAGED_INSTALL_ROOT`,
+  `install/current-version`, or the newest release — searches the usual
+  install roots when even the launcher is missing. The resolved path is
+  recorded in `~/.orbit-pi/rpc-patches/config.json` (shown as **Package
+  root** in Settings); the live launcher stays authoritative, so the row
+  follows `pi update` to the new release dir and the saved path is only the
+  fallback when no launcher resolves. Override for a single run with
+  `PI_PACKAGE_ROOT`; the bundled `contrib/pi-*-rpc/apply.mjs` scripts honour it
+  and fall back to the managed layout, so hand-runs work too.
+
 ## [0.2.6] - 2026-10-07
 
 ### Added

@@ -4696,6 +4696,15 @@ impl OrbitApp {
                 OrbitApp::toggle_rpc_patches,
             )),
         ));
+        if let Some(root) = &self.rpc_patches.package_root {
+            process.push(self.setting_row(
+                theme,
+                "Package root",
+                None,
+                None,
+                Some(runtime_path(theme, root.display().to_string())),
+            ));
+        }
         if let Some(error) = &self.runtime.error {
             process.push(self.setting_row(
                 theme,

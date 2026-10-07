@@ -15,6 +15,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     ffi::OsString,
+    fs,
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStderr, ChildStdin, ChildStdout, Stdio},
@@ -32,6 +33,13 @@ use crate::types::{CommandBody, Event};
 
 /// Environment override for the pi binary (default: `pi` on PATH).
 pub const PI_BIN_ENV: &str = "PI_BIN";
+/// Environment override for the pi *package root* — the directory holding
+/// pi's `package.json`. The RPC patcher sets it so its bundled `apply.mjs`
+/// scripts skip their own layout-dependent search.
+pub const PI_PACKAGE_ROOT_ENV: &str = "PI_PACKAGE_ROOT";
+/// The npm package name that identifies a pi install, and the directory it
+/// occupies under `node_modules`.
+const PI_PACKAGE_NAME: &str = "@earendil-works/pi-coding-agent";
 /// Cap on retained stderr lines (dropped oldest first).
 const STDERR_RING_CAP: usize = 200;
 
@@ -521,25 +529,218 @@ pub fn pi_binary() -> String {
 /// pnpm, bun, volta, mise, …), and finally fall back to the bare name so any
 /// spawn error still names something meaningful.
 fn resolve_pi_bin() -> String {
+    pi_bin_candidates()
+        .into_iter()
+        .next()
+        .map(|bin| bin.to_string_lossy().into_owned())
+        .unwrap_or_else(|| PI_BIN_NAMES[0].to_string())
+}
+
+/// Every plausible `pi` launcher, most-preferred first: `PI_BIN`, then each
+/// `PATH` dir, then the platform search dirs. Public so a caller that needs to
+/// *inspect* the install (the RPC patcher) can, not just spawn it.
+pub fn pi_bin_candidates() -> Vec<PathBuf> {
+    let mut bins: Vec<PathBuf> = Vec::new();
     if let Ok(bin) = std::env::var(PI_BIN_ENV) {
         if !bin.is_empty() {
-            return bin;
+            push_unique(&mut bins, PathBuf::from(bin));
         }
     }
-    for name in PI_BIN_NAMES {
-        if let Some(found) = find_on_path(name) {
-            return found;
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            for name in PI_BIN_NAMES {
+                let candidate = dir.join(name);
+                if candidate.is_file() {
+                    push_unique(&mut bins, candidate);
+                }
+            }
         }
     }
     for dir in search_dirs() {
         for name in PI_BIN_NAMES {
             let candidate = dir.join(name);
             if candidate.is_file() {
-                return candidate.to_string_lossy().into_owned();
+                push_unique(&mut bins, candidate);
             }
         }
     }
-    PI_BIN_NAMES[0].to_string()
+    bins
+}
+
+fn push_unique(bins: &mut Vec<PathBuf>, candidate: PathBuf) {
+    if !bins.contains(&candidate) {
+        bins.push(candidate);
+    }
+}
+
+/// Resolve the installed pi **package root** — the directory whose
+/// `package.json` is named [`PI_PACKAGE_NAME`].
+///
+/// Both install layouts Orbit sees are handled, on every platform:
+///
+/// - **npm/pnpm/bun globals** — walk up from the launcher's real path to the
+///   enclosing `node_modules/@earendil-works/pi-coding-agent`.
+/// - **pi's managed installer** — the launcher is a script at `<agent>/bin/pi`,
+///   so the package sits under
+///   `<agent>/install/releases/<version>/node_modules/@earendil-works/pi-coding-agent`.
+///   `PI_MANAGED_INSTALL_ROOT` and `install/current-version` are honoured.
+///
+/// `PI_PACKAGE_ROOT` wins when set. Otherwise every candidate launcher is tried
+/// (`PI_BIN`, `PATH`, then the platform search dirs), then the managed install
+/// roots directly. Callers persist a success so later launches skip the search.
+pub fn pi_package_root() -> Result<PathBuf, String> {
+    if let Some(root) = env_package_root()? {
+        return Ok(root);
+    }
+
+    let mut launchers = Vec::new();
+    for bin in pi_bin_candidates() {
+        if let Some(root) = pi_package_root_from(&bin) {
+            return Ok(root);
+        }
+        launchers.push(bin);
+    }
+    for install in install_root_candidates() {
+        if let Some(root) = managed_package_root(&install) {
+            return Ok(root);
+        }
+    }
+
+    Err(if launchers.is_empty() {
+        "pi package not found (no pi on PATH or in the usual install dirs)".to_string()
+    } else {
+        let looked = launchers
+            .iter()
+            .take(3)
+            .map(|bin| bin.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("pi package not found from {looked}")
+    })
+}
+
+/// The pi package root for a known path: the root itself, or a `pi` launcher
+/// anywhere inside it. `None` when the path is not a pi install. Validates a
+/// path saved by a previous launch without trusting it blindly.
+pub fn pi_package_root_from(path: &Path) -> Option<PathBuf> {
+    if is_pi_package(path) {
+        return Some(path.to_path_buf());
+    }
+    let real = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if let Some(root) = walk_up_to_package_root(&real) {
+        return Some(root);
+    }
+    // pi's managed launcher: `<agent>/bin/pi` → `<agent>/install/releases/<v>/…`.
+    let dir = if real.is_dir() {
+        real.as_path()
+    } else {
+        real.parent()?
+    };
+    dir.ancestors()
+        .take(3)
+        .find_map(|ancestor| managed_package_root(&ancestor.join("install")))
+}
+
+/// A `PI_PACKAGE_ROOT` value, validated. An explicitly set but invalid path is
+/// an error rather than a silent fall-through, so a typo is visible.
+fn env_package_root() -> Result<Option<PathBuf>, String> {
+    let Some(value) = std::env::var_os(PI_PACKAGE_ROOT_ENV).filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(value);
+    pi_package_root_from(&path)
+        .map(Some)
+        .ok_or_else(|| format!("{} is not a pi package root", path.display()))
+}
+
+/// Walk up from `start` to a directory whose `package.json` names the pi
+/// package. Handles the npm/pnpm/bun global layout.
+fn walk_up_to_package_root(start: &Path) -> Option<PathBuf> {
+    let start = if start.is_dir() {
+        start
+    } else {
+        start.parent()?
+    };
+    let mut dir = start.to_path_buf();
+    for _ in 0..12 {
+        if is_pi_package(&dir) {
+            return Some(dir);
+        }
+        dir = dir.parent()?.to_path_buf();
+    }
+    None
+}
+
+fn is_pi_package(dir: &Path) -> bool {
+    fs::read_to_string(dir.join("package.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|value| {
+            value
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .is_some_and(|name| name == PI_PACKAGE_NAME)
+}
+
+/// The package root inside a managed install dir (`…/.pi/agent/install`),
+/// preferring the recorded `current-version` and falling back to the newest
+/// release still carrying the pi package.
+fn managed_package_root(install: &Path) -> Option<PathBuf> {
+    let package = |version: &str| {
+        install
+            .join("releases")
+            .join(version)
+            .join("node_modules")
+            .join(PI_PACKAGE_NAME)
+    };
+    if let Ok(raw) = fs::read_to_string(install.join("current-version")) {
+        let version = raw.trim();
+        if !version.is_empty() {
+            let root = package(version);
+            if is_pi_package(&root) {
+                return Some(root);
+            }
+        }
+    }
+    let mut versions: Vec<String> = fs::read_dir(install.join("releases"))
+        .ok()?
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    versions.sort_by_key(|version| version_key(version));
+    versions.iter().rev().find_map(|version| {
+        let root = package(version);
+        is_pi_package(&root).then_some(root)
+    })
+}
+
+/// Managed-install roots to probe when no launcher could be resolved.
+fn install_root_candidates() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(env) = std::env::var_os("PI_MANAGED_INSTALL_ROOT").filter(|value| !value.is_empty())
+    {
+        roots.push(PathBuf::from(env));
+    }
+    if let Some(home) = home_dir() {
+        let root = home.join(".pi").join("agent").join("install");
+        if !roots.contains(&root) {
+            roots.push(root);
+        }
+    }
+    roots
+}
+
+/// `1.0.10` sorts after `1.0.9`, unlike a plain string compare.
+fn version_key(version: &str) -> Vec<u64> {
+    version
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| part.parse().ok())
+        .collect()
 }
 
 /// Install dirs probed for `pi` when it isn't on `PATH`: the absolute
@@ -589,18 +790,6 @@ fn home_dir() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
 }
 
-/// Walk `PATH` and return the first executable named `name` found on it.
-fn find_on_path(name: &str) -> Option<String> {
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            return Some(candidate.to_string_lossy().into_owned());
-        }
-    }
-    None
-}
-
 /// The PATH handed to a pi child: the resolved binary's dir plus common
 /// install dirs prepended to whatever PATH the parent process has. Public so
 /// every direct pi spawn (updater, version probe) resolves `node` from a
@@ -625,6 +814,124 @@ mod tmp_resolve_probe {
     #[test]
     fn tmp_probe_resolve() {
         println!("PI_BIN_NAMES = {PI_BIN_NAMES:?}");
+        println!("candidates = {:?}", pi_bin_candidates());
         println!("resolved = {}", resolve_pi_bin());
+        println!("package_root = {:?}", pi_package_root());
+    }
+}
+
+#[cfg(test)]
+mod package_root_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn scratch_dir() -> PathBuf {
+        let unique = format!(
+            "orbit-rpc-package-root-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let dir = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_pi_package(root: &Path) {
+        fs::create_dir_all(root.join("dist").join("bundle")).unwrap();
+        fs::write(
+            root.join("package.json"),
+            format!(r#"{{"name":"{PI_PACKAGE_NAME}","version":"0.0.0"}}"#),
+        )
+        .unwrap();
+        fs::write(
+            root.join("dist").join("bundle").join("cli.js"),
+            "#!/usr/bin/env node",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn walks_up_to_an_npm_global_package() {
+        let dir = scratch_dir();
+        let root = dir
+            .join("node_modules")
+            .join("@earendil-works")
+            .join("pi-coding-agent");
+        write_pi_package(&root);
+        let bin = root.join("dist").join("bundle").join("cli.js");
+
+        assert_eq!(
+            pi_package_root_from(&bin),
+            Some(fs::canonicalize(&root).unwrap())
+        );
+        assert_eq!(pi_package_root_from(&dir.join("missing")), None);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolves_a_managed_install_from_its_launcher() {
+        // pi's managed layout: the launcher at <agent>/bin/pi is a script, not
+        // inside node_modules, so the package is only reachable via
+        // <agent>/install/current-version.
+        let dir = scratch_dir();
+        let agent = dir.join("agent");
+        let bin = agent.join("bin").join("pi");
+        fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        fs::write(&bin, "#!/bin/sh\n").unwrap();
+
+        let root = agent
+            .join("install")
+            .join("releases")
+            .join("1.0.4")
+            .join("node_modules")
+            .join(PI_PACKAGE_NAME);
+        write_pi_package(&root);
+        fs::write(agent.join("install").join("current-version"), "1.0.4\n").unwrap();
+
+        assert_eq!(
+            pi_package_root_from(&bin),
+            Some(fs::canonicalize(&root).unwrap())
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn managed_uses_current_version_then_newest_release() {
+        let dir = scratch_dir();
+        let install = dir.join("install");
+        fs::create_dir_all(&install).unwrap();
+        let install = fs::canonicalize(&install).unwrap();
+        let root = |version: &str| {
+            install
+                .join("releases")
+                .join(version)
+                .join("node_modules")
+                .join(PI_PACKAGE_NAME)
+        };
+        write_pi_package(&root("1.0.3"));
+        write_pi_package(&root("1.0.10"));
+
+        // No current-version: the newest release wins, compared numerically so
+        // `1.0.10` beats `1.0.9` rather than sorting as a string.
+        assert_eq!(managed_package_root(&install), Some(root("1.0.10")));
+
+        // current-version wins when present.
+        fs::write(install.join("current-version"), "1.0.3").unwrap();
+        assert_eq!(managed_package_root(&install), Some(root("1.0.3")));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn version_key_orders_numerically() {
+        let mut versions = vec![
+            "1.0.9".to_string(),
+            "1.0.10".to_string(),
+            "1.0.2".to_string(),
+        ];
+        versions.sort_by_key(|version| version_key(version));
+        assert_eq!(versions, vec!["1.0.2", "1.0.9", "1.0.10"]);
     }
 }

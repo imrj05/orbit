@@ -27,7 +27,6 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 const CUSTOM_UI_APPLY: &str = include_str!("../../../contrib/pi-custom-ui-rpc/apply.mjs");
 const CUSTOM_UI_HANDLER: &str =
@@ -82,6 +81,9 @@ const PATCHES: &[Patch] = &[
 #[derive(Debug, Clone)]
 pub(crate) struct PatchReport {
     pub enabled: bool,
+    /// The pi package root the patches target, once resolved. Surfaced in
+    /// Settings so a saved path is visible and a stale one is obvious.
+    pub package_root: Option<PathBuf>,
     /// Patches (re)applied on this launch.
     pub applied: Vec<&'static str>,
     /// Patches already present, skipped by the fast path.
@@ -94,6 +96,7 @@ impl Default for PatchReport {
     fn default() -> Self {
         Self {
             enabled: true,
+            package_root: None,
             applied: Vec::new(),
             already: Vec::new(),
             error: None,
@@ -120,12 +123,26 @@ impl PatchReport {
     }
 }
 
-/// The persisted opt-in. A missing file means enabled; `ORBIT_NO_RPC_PATCHES`
-/// in the environment wins over the file so a single launch can opt out.
-#[derive(Serialize, Deserialize, Default)]
+/// The persisted opt-in and the last resolved package root. A missing file
+/// means enabled; `ORBIT_NO_RPC_PATCHES` in the environment wins over the file
+/// so a single launch can opt out.
+#[derive(Serialize, Deserialize)]
 struct Config {
     #[serde(default = "default_true")]
     enabled: bool,
+    /// The pi package root found by the last search. Saved so later launches
+    /// skip the search; hand-edit to pin a nonstandard install.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    package_root: Option<String>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            package_root: None,
+        }
+    }
 }
 
 fn default_true() -> bool {
@@ -164,11 +181,15 @@ pub(crate) fn apply_on_launch() -> PatchReport {
         report.error = Some("no home directory".to_string());
         return report;
     };
-    let pi = PathBuf::from(orbit_rpc::pi_binary());
-    let Some(root) = pi_package_root(&pi) else {
-        report.error = Some(format!("pi package not found from {}", pi.display()));
-        return report;
+    let root = match resolved_package_root(&base) {
+        Ok(root) => root,
+        Err(error) => {
+            report.error = Some(error);
+            return report;
+        }
     };
+    let pi = PathBuf::from(orbit_rpc::pi_binary());
+    report.package_root = Some(root.clone());
 
     let fingerprint = sources_fingerprint();
     // Fast path: nothing changed since the last successful apply, so neither
@@ -203,7 +224,7 @@ pub(crate) fn apply_on_launch() -> PatchReport {
     }
 
     for patch in PATCHES {
-        match run_patch(&node, &pi, &base, patch) {
+        match run_patch(&node, &pi, &root, &base, patch) {
             Ok(()) => report.applied.push(patch.name),
             Err(error) => {
                 report.error = Some(format!("{}: {error}", patch.name));
@@ -237,16 +258,65 @@ pub(crate) fn enabled() -> bool {
         .unwrap_or(true)
 }
 
-/// Persist the opt-in/opt-out. Best-effort; a write failure only means the
-/// next launch keeps the previous value.
+/// Persist the opt-in/opt-out, keeping the saved package root. Best-effort; a
+/// write failure only means the next launch keeps the previous value.
 pub(crate) fn set_enabled(enabled: bool) {
     let Some(base) = base_dir() else {
         return;
     };
-    if fs::create_dir_all(&base).is_err() {
+    set_config_enabled(&base, enabled);
+}
+
+fn set_config_enabled(base: &Path, enabled: bool) {
+    if fs::create_dir_all(base).is_err() {
         return;
     }
-    if let Ok(bytes) = serde_json::to_vec_pretty(&Config { enabled }) {
+    let mut config = read_config(base);
+    config.enabled = enabled;
+    write_config(base, &config);
+}
+
+/// The pi package root for this launch.
+///
+/// Resolved from the live launcher first, so it follows `pi update` to the new
+/// release dir; a saved path only fills in when no launcher can be resolved
+/// (e.g. a bundled app launched without a `PATH`). Every fresh success is
+/// persisted so the Settings row shows it and the fallback stays current.
+fn resolved_package_root(base: &Path) -> Result<PathBuf, String> {
+    match orbit_rpc::pi_package_root() {
+        Ok(root) => {
+            save_package_root(base, &root);
+            Ok(root)
+        }
+        Err(error) => {
+            if let Some(root) = read_config(base)
+                .package_root
+                .and_then(|saved| orbit_rpc::pi_package_root_from(Path::new(&saved)))
+            {
+                return Ok(root);
+            }
+            Err(error)
+        }
+    }
+}
+
+fn save_package_root(base: &Path, root: &Path) {
+    let Some(root) = root.to_str() else {
+        return;
+    };
+    let mut config = read_config(base);
+    if config.package_root.as_deref() == Some(root) {
+        return;
+    }
+    config.package_root = Some(root.to_string());
+    if fs::create_dir_all(base).is_err() {
+        return;
+    }
+    write_config(base, &config);
+}
+
+fn write_config(base: &Path, config: &Config) {
+    if let Ok(bytes) = serde_json::to_vec_pretty(config) {
         let _ = fs::write(base.join("config.json"), bytes);
     }
 }
@@ -257,30 +327,6 @@ fn base_dir() -> Option<PathBuf> {
             .join(".orbit-pi")
             .join("rpc-patches"),
     )
-}
-
-/// Resolve the pi package root from the `pi` executable: walk up from its
-/// real path to the `package.json` named `@earendil-works/pi-coding-agent`.
-fn pi_package_root(bin: &Path) -> Option<PathBuf> {
-    let real = fs::canonicalize(bin).unwrap_or_else(|_| bin.to_path_buf());
-    let mut dir = real.parent()?.to_path_buf();
-    for _ in 0..12 {
-        let package_json = dir.join("package.json");
-        let name = fs::read_to_string(&package_json)
-            .ok()
-            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-            .and_then(|value| {
-                value
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            });
-        if name.as_deref() == Some("@earendil-works/pi-coding-agent") {
-            return Some(dir);
-        }
-        dir = dir.parent()?.to_path_buf();
-    }
-    None
 }
 
 /// Every `.js` under `dist/bundle` that carries the RPC-mode anchors.
@@ -359,11 +405,11 @@ fn read_config(base: &Path) -> Config {
     fs::read_to_string(base.join("config.json"))
         .ok()
         .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or(Config { enabled: true })
+        .unwrap_or_default()
 }
 
 /// Materialize one patch's scripts and run its `apply.mjs` against pi.
-fn run_patch(node: &str, pi: &Path, base: &Path, patch: &Patch) -> Result<(), String> {
+fn run_patch(node: &str, pi: &Path, root: &Path, base: &Path, patch: &Patch) -> Result<(), String> {
     let dir = base.join(patch.dir);
     fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
     for (name, contents) in patch.files {
@@ -374,9 +420,11 @@ fn run_patch(node: &str, pi: &Path, base: &Path, patch: &Patch) -> Result<(), St
     command
         .arg(dir.join("apply.mjs"))
         .current_dir(&dir)
-        // The scripts resolve pi from `PI_BIN`, else `command -v pi`. Pin it
-        // to the same binary Orbit is about to spawn.
+        // The scripts resolve pi from `PI_BIN`, else `command -v pi`, and the
+        // package from `PI_PACKAGE_ROOT`, else their own walk. Pin both to what
+        // Orbit resolved, so the managed-install layout works everywhere.
         .env(orbit_rpc::PI_BIN_ENV, pi)
+        .env(orbit_rpc::PI_PACKAGE_ROOT_ENV, root)
         .env("PATH", orbit_rpc::augmented_path(pi.parent()))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -519,39 +567,26 @@ mod tests {
     }
 
     #[test]
-    fn package_root_walks_up_to_the_pi_manifest() {
-        let dir = scratch_dir();
-        let root = dir
-            .join("node_modules")
-            .join("@earendil-works")
-            .join("pi-coding-agent");
-        fs::create_dir_all(root.join("dist").join("bundle")).unwrap();
-        fs::write(
-            root.join("package.json"),
-            r#"{"name":"@earendil-works/pi-coding-agent","version":"0.0.0"}"#,
-        )
-        .unwrap();
-        let bin = root.join("dist").join("bundle").join("cli.js");
-        fs::write(&bin, "#!/usr/bin/env node").unwrap();
-
-        assert_eq!(
-            pi_package_root(&bin),
-            Some(fs::canonicalize(&root).unwrap())
-        );
-        assert_eq!(pi_package_root(&dir.join("missing")), None);
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn config_defaults_on_and_round_trips() {
+    fn config_round_trips_enabled_and_saved_package_root() {
         let dir = scratch_dir();
         assert!(read_config(&dir).enabled, "missing config means enabled");
+        assert_eq!(read_config(&dir).package_root, None);
 
         fs::write(dir.join("config.json"), r#"{"enabled":false}"#).unwrap();
         assert!(!read_config(&dir).enabled);
 
         fs::write(dir.join("config.json"), "not json").unwrap();
         assert!(read_config(&dir).enabled, "garbage falls back to enabled");
+
+        // A discovered root is saved, and toggling the opt-in keeps it.
+        let root = "/opt/pi/node_modules/@earendil-works/pi-coding-agent";
+        save_package_root(&dir, Path::new(root));
+        assert_eq!(read_config(&dir).package_root.as_deref(), Some(root));
+
+        set_config_enabled(&dir, false);
+        let config = read_config(&dir);
+        assert!(!config.enabled);
+        assert_eq!(config.package_root.as_deref(), Some(root));
         fs::remove_dir_all(&dir).ok();
     }
 
