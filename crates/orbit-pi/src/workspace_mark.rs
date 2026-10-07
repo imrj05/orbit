@@ -26,9 +26,13 @@ impl WorkspaceMark {
 }
 
 /// A curated subset of the embedded HugeIcons set that reads as a project
-/// mark. Kept to four rows of six in the picker.
+/// mark. Kept to a compact grid in the picker; the folder-open / sync /
+/// archive glyphs double as the automatic status marks below.
 pub(crate) const PROJECT_ICONS: &[&str] = &[
     "folder",
+    "folder-open",
+    "folder-sync",
+    "folder-archive",
     "branch",
     "rocket-01",
     "star",
@@ -95,6 +99,41 @@ pub(crate) fn icon_path(icon: Option<&str>) -> SharedString {
     }
 }
 
+/// A workspace's live state, resolved to a folder glyph when the user has not
+/// picked a custom mark icon. Ordered by priority: the first match wins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkspaceStatus {
+    /// The active session, or the workspace it is working in.
+    Current,
+    /// A running session, or a workspace with at least one mid-run.
+    Running,
+    /// An archived session, or a workspace whose sessions are all archived.
+    Archived,
+    /// Nothing special — the plain folder.
+    Idle,
+}
+
+impl WorkspaceStatus {
+    fn icon_stem(self) -> &'static str {
+        match self {
+            Self::Current => "folder-open",
+            Self::Running => "folder-sync",
+            Self::Archived => "folder-archive",
+            Self::Idle => "folder",
+        }
+    }
+}
+
+/// The mark's own icon when the user picked one; otherwise the glyph for the
+/// workspace's status. A custom mark always wins over the status default, so
+/// status never overrides a deliberate choice.
+pub(crate) fn resolved_icon_path(mark: &WorkspaceMark, status: WorkspaceStatus) -> SharedString {
+    match mark.icon.as_deref() {
+        Some(stem) if PROJECT_ICONS.contains(&stem) => format!("icons/{stem}.svg").into(),
+        _ => format!("icons/{}.svg", status.icon_stem()).into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,6 +165,37 @@ mod tests {
                     .expect("asset source reads");
             assert!(bytes.is_some(), "missing icon asset: {path}");
         }
+    }
+
+    #[test]
+    fn status_icons_apply_only_without_a_custom_mark() {
+        let idle = WorkspaceMark::default();
+        assert_eq!(
+            resolved_icon_path(&idle, WorkspaceStatus::Current),
+            SharedString::from("icons/folder-open.svg")
+        );
+        assert_eq!(
+            resolved_icon_path(&idle, WorkspaceStatus::Running),
+            SharedString::from("icons/folder-sync.svg")
+        );
+        assert_eq!(
+            resolved_icon_path(&idle, WorkspaceStatus::Archived),
+            SharedString::from("icons/folder-archive.svg")
+        );
+        assert_eq!(
+            resolved_icon_path(&idle, WorkspaceStatus::Idle),
+            SharedString::from("icons/folder.svg")
+        );
+
+        // A user-picked icon wins over the status glyph.
+        let custom = WorkspaceMark {
+            icon: Some("rocket-01".into()),
+            tint: None,
+        };
+        assert_eq!(
+            resolved_icon_path(&custom, WorkspaceStatus::Current),
+            SharedString::from("icons/rocket-01.svg")
+        );
     }
 
     #[test]

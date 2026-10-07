@@ -341,7 +341,11 @@ fn cache_math_matches_the_documented_formula() {
     assert_eq!(snapshot.cache.uncached_input, 250);
     assert_eq!(snapshot.cache.cached_requests, 1);
     let rate = snapshot.cache.hit_rate.expect("hit rate");
-    assert!((rate - 75.0).abs() < 1e-6, "750 / 1000 = 75%, got {rate}");
+    // Cache writes are prompt tokens too: 750 reads over 250 + 750 + 40.
+    assert!(
+        (rate - 750.0 / 1_040.0 * 100.0).abs() < 1e-6,
+        "750 / 1040, got {rate}"
+    );
     assert!(snapshot.cache.is_available());
 }
 

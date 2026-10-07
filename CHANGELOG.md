@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The live **Working for…** line now shows the streaming output rate — e.g.
+  **Working for 12s · 42 tok/s**. The rate is generation-only: output
+  tokens over the time the model was actively decoding, so tool execution,
+  round-trips, and provider stalls don't drag it down. Tokens come from the
+  provider's cumulative `usage.output` when reported, with a `chars/4`
+  estimate otherwise; the client-measured decode window carries through to
+  the settled footer, where the `↑in ↓out · $cost` metric also shows the
+  rate and the hover breakdown gains a **Rate** row.
+
+### Fixed
+
+- The cache hit rate no longer reads 100% for a session that wrote cache.
+  pi normalizes the token buckets as disjoint, so the denominator now
+  includes cache-write tokens — `cache reads / (reads + uncached input +
+  writes)` — instead of only reads and uncached input. A share below the
+  whole is also withheld from rounding up to a displayed `100%` (it shows
+  `99.9%`), and cache rates now render to one decimal.
+
 ## [0.2.5] - 2026-10-06
 
 ### Changed

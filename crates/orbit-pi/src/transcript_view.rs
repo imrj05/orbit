@@ -1000,6 +1000,8 @@ struct RowPaint {
     nerd: Option<SharedString>,
     live: bool,
     live_elapsed: Option<Duration>,
+    /// Live output rate for the streaming row (`None` until meaningful).
+    live_tps: Option<f64>,
     fold_open: bool,
     copied: bool,
     /// True for the last message when the tail summary owns the footer, so
@@ -1148,6 +1150,16 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
         } else {
             None
         };
+        // Tokens/sec for the streaming row: the provider's cumulative
+        // output (or a chars/4 estimate) over the turn's live clock.
+        let live_tps = if live {
+            messages
+                .borrow()
+                .get(ix)
+                .and_then(|message| streaming_tps(message, message.generation_time()))
+        } else {
+            None
+        };
         let fold_open = expanded_turns.borrow().contains(&ix);
         let copied_now = copied
             .borrow()
@@ -1191,11 +1203,16 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
                 .is_some_and(|at| at.elapsed() < COPY_FEEDBACK);
             let stamp = summary_finished_at
                 .map(|millis| footer_time_stamp(summary_time_label(millis), theme));
+            let summary_generation = messages
+                .borrow()
+                .get(last_ix)
+                .and_then(|message| message.generation_time());
             let footer = div().mt(px(10.)).px(px(4.)).child(render_message_footer(
                 copy_text,
                 last_ix,
                 stamp,
                 summary_usage.clone(),
+                summary_generation,
                 copied_last,
                 false,
                 theme,
@@ -1230,6 +1247,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
             nerd: nerd.clone(),
             live,
             live_elapsed,
+            live_tps,
             fold_open,
             copied: copied_now,
             suppress_footer: suppress_message_footer(summary_files.is_some(), ix, row_count),
@@ -1927,6 +1945,7 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint) -> impl IntoEleme
                 .and_then(format_time)
                 .map(|time| footer_time_stamp(time, theme)),
             message.usage(),
+            message.generation_time(),
             paint.copied,
             true,
             theme,
@@ -2116,6 +2135,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
         content = content.child(render_working_indicator(
             paint.live_elapsed.unwrap_or(Duration::ZERO),
             activity,
+            paint.live_tps,
             theme,
         ));
     }
@@ -2137,6 +2157,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
                 .and_then(format_time)
                 .map(|time| footer_time_stamp(time, theme)),
             message.usage(),
+            message.generation_time(),
             paint.copied,
             false,
             theme,
@@ -4217,6 +4238,7 @@ fn render_message_footer(
     ix: usize,
     stamp: Option<AnyElement>,
     usage: Option<MessageUsage>,
+    generation: Option<Duration>,
     copied: bool,
     align_right: bool,
     theme: Theme,
@@ -4263,7 +4285,7 @@ fn render_message_footer(
             footer = footer.child(stamp);
         }
     }
-    if let Some(metric) = usage_metric(usage, ix, theme, hovered_usage) {
+    if let Some(metric) = usage_metric(usage, generation, ix, theme, hovered_usage) {
         footer = footer.child(metric);
     }
     footer
@@ -4273,6 +4295,7 @@ fn render_message_footer(
 /// `None` when the turn has no reported usage, so the footer stays clean.
 fn usage_metric(
     usage: Option<MessageUsage>,
+    generation: Option<Duration>,
     ix: usize,
     theme: Theme,
     hovered_usage: Rc<Cell<Option<usize>>>,
@@ -4289,13 +4312,17 @@ fn usage_metric(
             if let Some(percent) = usage.cache_read_percent() {
                 label.push_str(&tr!(
                     "transcript_view.cached_share",
-                    percent = format!("{percent:.0}")
+                    percent = hit_percent_label(percent)
                 ));
             }
         }
         if let Some(cost) = usage.cost.filter(|cost| *cost > 0.0) {
             label.push_str(" · ");
             label.push_str(&format_message_cost(cost));
+        }
+        if let Some(tps) = generation_tps(&usage, generation) {
+            label.push_str(" · ");
+            label.push_str(&tr!("transcript_view.tps_value", rate = format_tps(tps)));
         }
         label
     };
@@ -4324,7 +4351,7 @@ fn usage_metric(
                 .bottom_full()
                 .left_0()
                 .mb(popover::MENU_OFFSET)
-                .child(deferred(usage_breakdown_card(&usage, theme))),
+                .child(deferred(usage_breakdown_card(&usage, generation, theme))),
         );
     }
     Some(metric.into_any_element())
@@ -4332,7 +4359,11 @@ fn usage_metric(
 
 /// Hover card: the full per-turn token/cache/cost breakdown behind the
 /// compact footer metric.
-fn usage_breakdown_card(usage: &MessageUsage, theme: Theme) -> AnyElement {
+fn usage_breakdown_card(
+    usage: &MessageUsage,
+    generation: Option<Duration>,
+    theme: Theme,
+) -> AnyElement {
     let cost = usage
         .cost
         .map(format_message_cost)
@@ -4382,6 +4413,14 @@ fn usage_breakdown_card(usage: &MessageUsage, theme: Theme) -> AnyElement {
             format_tokens(usage.total),
             theme,
         ))
+        .children(generation_tps(usage, generation).map(|tps| {
+            usage_metric_row(
+                "icons/usage-output.svg",
+                tr!("transcript_view.rate"),
+                tr!("transcript_view.tps_value", rate = format_tps(tps)),
+                theme,
+            )
+        }))
         .child(usage_metric_row(
             "icons/usage-cost.svg",
             "Cost",
@@ -4640,16 +4679,26 @@ fn render_stopped_marker(theme: Theme) -> impl IntoElement {
 fn render_working_indicator(
     elapsed: Duration,
     activity: Option<String>,
+    tps: Option<f64>,
     theme: Theme,
 ) -> impl IntoElement {
     // Name the current activity when we know it; the elapsed time stays so
-    // a long-running command still reads as progress, not a hang.
-    let label = match activity {
-        Some(activity) => format!("{} · {}", activity, format_working_elapsed(elapsed)),
+    // a long-running command still reads as progress, not a hang. When the
+    // row is producing output, the rate rides alongside as `· 42 tok/s`.
+    let timing = match tps {
+        Some(tps) => tr!(
+            "transcript_view.working_for_with_rate",
+            duration = format_working_elapsed(elapsed),
+            rate = format_tps(tps)
+        ),
         None => tr!(
             "transcript_view.working_for",
             duration = format_working_elapsed(elapsed)
         ),
+    };
+    let label = match activity {
+        Some(activity) => format!("{activity} · {timing}"),
+        None => timing,
     };
     let label_size = theme.ui_px(13.5);
     let label_line = theme.ui_px(18.);
@@ -4721,6 +4770,60 @@ fn format_working_elapsed(duration: Duration) -> String {
         format!("{hours}h {minutes}m")
     } else {
         format!("{hours}h")
+    }
+}
+
+/// Output tokens a streaming row has produced so far: the provider's latest
+/// cumulative `usage.output` when it reports one, else a `chars/4` estimate
+/// over the live text (reasoning included — reasoning is a subset of the
+/// provider's output).
+fn streamed_output_tokens(message: &ChatMessage) -> u64 {
+    if let Some(usage) = message.usage() {
+        if usage.output > 0 {
+            return usage.output;
+        }
+    }
+    let chars: usize = message
+        .steps
+        .iter()
+        .map(|step| step.text.chars().count() + step.thinking.chars().count())
+        .sum();
+    (chars / 4) as u64
+}
+
+/// Tokens per second for a streaming row, or `None` before a rate is
+/// meaningful (under a second elapsed, or no output yet).
+fn streaming_tps(message: &ChatMessage, elapsed: Option<Duration>) -> Option<f64> {
+    let elapsed = elapsed?;
+    let secs = elapsed.as_secs_f64();
+    if secs < 1.0 {
+        return None;
+    }
+    let tokens = streamed_output_tokens(message);
+    (tokens > 0).then(|| tokens as f64 / secs)
+}
+
+/// Generation-only output rate for a settled turn: output tokens over the
+/// time the model was actively decoding (tool execution, round-trips, and
+/// stalls excluded). `None` when there is no measurable rate.
+fn generation_tps(usage: &MessageUsage, generation: Option<Duration>) -> Option<f64> {
+    let secs = generation?.as_secs_f64();
+    if secs < 1.0 || usage.output == 0 {
+        return None;
+    }
+    Some(usage.output as f64 / secs)
+}
+
+/// Compact rate label: whole numbers at 10+ (`42`), one decimal below
+/// (`7.4`).
+fn format_tps(tps: f64) -> String {
+    if !tps.is_finite() || tps <= 0.0 {
+        return "0".into();
+    }
+    if tps >= 10.0 {
+        format!("{tps:.0}")
+    } else {
+        format!("{tps:.1}")
     }
 }
 
@@ -7468,6 +7571,96 @@ mod tests {
         assert_eq!(format_working_elapsed(Duration::from_secs(341)), "5m 41s");
         assert_eq!(format_working_elapsed(Duration::from_secs(3_600)), "1h");
         assert_eq!(format_working_elapsed(Duration::from_secs(3_721)), "1h 2m");
+    }
+
+    #[test]
+    fn streaming_tps_prefers_reported_output_and_guards_early() {
+        let message = |output: u64, text: &str| ChatMessage {
+            user: false,
+            summary: None,
+            steps: vec![Step {
+                text: text.into(),
+                usage: (output > 0).then_some(MessageUsage {
+                    input: 0,
+                    output,
+                    cache_read: 0,
+                    cache_write: 0,
+                    total: output,
+                    cost: None,
+                }),
+                ..Step::default()
+            }],
+            images: Vec::new(),
+            elapsed: None,
+            finished_at: None,
+            error: None,
+            aborted: false,
+        };
+
+        // Provider-reported output wins over the char estimate.
+        let reported = message(80, "short");
+        assert_eq!(streamed_output_tokens(&reported), 80);
+        assert_eq!(
+            streaming_tps(&reported, Some(Duration::from_secs(2))),
+            Some(40.0)
+        );
+        // Under a second, and with no clock, there is no rate yet.
+        assert_eq!(
+            streaming_tps(&reported, Some(Duration::from_millis(800))),
+            None
+        );
+        assert_eq!(streaming_tps(&reported, None), None);
+
+        // Without provider usage the estimate is chars/4: 40 chars -> 10
+        // tokens over 2s -> 5.0.
+        let estimated = message(0, &"a".repeat(40));
+        assert_eq!(streamed_output_tokens(&estimated), 10);
+        assert_eq!(
+            streaming_tps(&estimated, Some(Duration::from_secs(2))),
+            Some(5.0)
+        );
+
+        // No text and no usage: no rate.
+        let empty = message(0, "");
+        assert_eq!(streaming_tps(&empty, Some(Duration::from_secs(2))), None);
+    }
+
+    #[test]
+    fn format_tps_reads_compactly() {
+        assert_eq!(format_tps(42.4), "42");
+        assert_eq!(format_tps(7.44), "7.4");
+        assert_eq!(format_tps(0.0), "0");
+        assert_eq!(format_tps(f64::NAN), "0");
+    }
+
+    #[test]
+    fn generation_tps_uses_output_over_active_decode_time() {
+        let usage = MessageUsage {
+            input: 100,
+            output: 90,
+            cache_read: 0,
+            cache_write: 0,
+            total: 190,
+            cost: None,
+        };
+        assert_eq!(
+            generation_tps(&usage, Some(Duration::from_secs(3))),
+            Some(30.0)
+        );
+        // No clock, under a second, or no output: not a rate yet.
+        assert_eq!(generation_tps(&usage, None), None);
+        assert_eq!(
+            generation_tps(&usage, Some(Duration::from_millis(900))),
+            None
+        );
+        let no_output = MessageUsage {
+            output: 0,
+            ..usage.clone()
+        };
+        assert_eq!(
+            generation_tps(&no_output, Some(Duration::from_secs(3))),
+            None
+        );
     }
 
     #[test]

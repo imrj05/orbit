@@ -11,7 +11,7 @@ use crate::theme::tokens::{
 };
 use crate::usage::tooltip::Tooltip;
 use crate::widgets as ext_widgets;
-use crate::workspace_mark::WorkspaceMark;
+use crate::workspace_mark::{self, WorkspaceMark};
 
 /// Height of a page's top bar (DESIGN.md: 44px header rows). The new-task
 /// backdrop is offset by it, so the picture starts below the title exactly
@@ -174,15 +174,25 @@ impl Render for OrbitApp {
         // `/`-command and `@`-file menu state derives from the composer text
         // every frame, so typing opens/closes/filters it without extra sync.
         self.sync_autocomplete(cx);
-        let working_label = self.workspace_label();
-        // Workspace groups (ordered by each group's most recently active
-        // session). Only the active workspace is expanded by default; each
-        // open group shows up to SIDEBAR_GROUP_SESSIONS_VISIBLE sessions
-        // with per-group Show more / Show less toggles.
-        let sidebar_sessions = self.sidebar_sessions();
+        // Sessions the sidebar lists, plus a placeholder for the open one
+        // when its file is not on disk yet. The archived filter is applied
+        // here so row indices match the list the render path receives; the
+        // unfiltered list still drives the per-workspace status glyphs.
+        let all_sessions = self.sidebar_sessions();
+        let archived_set: HashSet<PathBuf> = crate::archive::all().paths();
+        let sidebar_sessions = filter_archived(
+            all_sessions.clone(),
+            self.sidebar_archived_filter,
+            &archived_set,
+        );
         // A pinned session leads its project group; the sidebar sorts and
         // marks pinned rows from this snapshot (Orbit-owned state).
         let pinned: Rc<HashSet<PathBuf>> = Rc::new(crate::pins::all().paths());
+        // Archived sessions, from the Orbit-owned set — rows in "show
+        // archived" mode wear a small archive glyph.
+        let archived_paths: Rc<HashSet<PathBuf>> = Rc::new(archived_set);
+        // Flat "one list" mode names each row's workspace instead of grouping.
+        let show_workspace = self.sidebar_group_by == SidebarGroupBy::OneList;
         // Parked (background) sessions mid-run — they keep their row under a
         // collapsed workspace header, like the open session, so a live task
         // is never hidden by a collapse. Also drives the running loader.
@@ -193,19 +203,54 @@ impl Render for OrbitApp {
                 .map(|(path, _)| path.clone())
                 .collect(),
         );
-        let side_rows = Rc::new(build_sidebar_rows(
-            &sidebar_sessions,
-            &self.workspaces,
-            self.workspace_sort,
-            &self.workspace_added_at,
-            &working_label,
-            &self.collapsed_workspaces,
-            &self.expanded_workspace_groups,
-            &self.expanded_session_groups,
-            &pinned,
-            &self.current_session_path,
-            &running_paths,
-        ));
+        // Per-workspace glyph: the user's mark icon when set, otherwise a
+        // folder status (current / running / archived-only / idle).
+        let running_workspaces: HashSet<PathBuf> = sidebar_sessions
+            .iter()
+            .filter(|session| running_paths.contains(&session.path))
+            .map(|session| session.cwd.clone())
+            .collect();
+        let archived_only_workspaces: HashSet<PathBuf> = {
+            let mut totals: HashMap<PathBuf, (usize, usize)> = HashMap::new();
+            for session in &all_sessions {
+                let entry = totals.entry(session.cwd.clone()).or_insert((0, 0));
+                entry.0 += 1;
+                if archived_paths.contains(&session.path) {
+                    entry.1 += 1;
+                }
+            }
+            totals
+                .into_iter()
+                .filter(|(_, (total, archived))| *total > 0 && total == archived)
+                .map(|(workspace, _)| workspace)
+                .collect()
+        };
+        let workspace_icons: Rc<HashMap<PathBuf, gpui::SharedString>> = Rc::new(
+            self.workspaces
+                .iter()
+                .map(|workspace| {
+                    let mark = self
+                        .workspace_marks
+                        .get(workspace)
+                        .cloned()
+                        .unwrap_or_default();
+                    let status = if Some(workspace.as_path()) == self.current_workspace.as_deref() {
+                        workspace_mark::WorkspaceStatus::Current
+                    } else if running_workspaces.contains(workspace) {
+                        workspace_mark::WorkspaceStatus::Running
+                    } else if archived_only_workspaces.contains(workspace) {
+                        workspace_mark::WorkspaceStatus::Archived
+                    } else {
+                        workspace_mark::WorkspaceStatus::Idle
+                    };
+                    (
+                        workspace.clone(),
+                        workspace_mark::resolved_icon_path(&mark, status),
+                    )
+                })
+                .collect(),
+        );
+        let side_rows = Rc::new(self.sidebar_rows(&sidebar_sessions, &pinned));
         let old = self.sidebar_list.item_count();
         if old != side_rows.len() {
             self.sidebar_list.splice(0..old, side_rows.len());
@@ -248,8 +293,11 @@ impl Render for OrbitApp {
                     agent_running,
                     &running_paths,
                     &pinned,
+                    &archived_paths,
+                    show_workspace,
                     &live_paths,
                     &marks,
+                    &workspace_icons,
                     session_menu.as_ref().as_ref(),
                     workspace_menu.as_ref().as_ref(),
                     sidebar_cursor == Some(sticky.ix),
@@ -606,22 +654,21 @@ impl Render for OrbitApp {
                                     .child(self.sidebar_new_task_button(theme, cx)),
                             )
                             // session list (scrolls), grouped by workspace — or
-                            // the empty state when pi's store has no sessions
-                            .child(if side_rows.is_empty() {
-                                empty_sessions_state(theme).into_any_element()
-                            } else {
+                            // one flat list when grouping is off. The section
+                            // header stays mounted either way so the view
+                            // toggle is reachable even with no sessions.
+                            .child(
                                 div()
                                     .flex_1()
                                     .min_h_0()
                                     .flex()
                                     .flex_col()
                                     // section label — anchors the list below the nav;
-                                    // the hover-revealed sort control orders the groups
+                                    // the view control on its right opens the options
                                     .child(
                                         div()
                                             .px(px(14.))
                                             .pb(px(2.))
-                                            .group("sidebar-projects")
                                             .flex()
                                             .items_center()
                                             .child(
@@ -632,16 +679,28 @@ impl Render for OrbitApp {
                                                     .text_size(TextSize::Small.px(&theme))
                                                     .font_weight(FontWeight::MEDIUM)
                                                     .text_color(theme.text_3)
-                                                    .child(tr!("sidebar.projects")),
+                                                    .child(
+                                                        if self.sidebar_group_by
+                                                            == SidebarGroupBy::OneList
+                                                        {
+                                                            tr!("sidebar.all_sessions")
+                                                        } else {
+                                                            tr!("sidebar.projects")
+                                                        },
+                                                    ),
                                             )
-                                            .child(sidebar_sort_button(
+                                            .child(sidebar_options_button(
+                                                self.sidebar_group_by,
                                                 self.workspace_sort,
+                                                self.sidebar_archived_filter,
                                                 self.sidebar_sort_menu,
                                                 cx.entity(),
                                                 theme,
                                             )),
                                     )
-                                    .child(
+                                    .child(if side_rows.is_empty() {
+                                        empty_sessions_state(theme).into_any_element()
+                                    } else {
                                         div()
                                             .id("sidebar-sessions")
                                             .flex_1()
@@ -678,8 +737,11 @@ impl Render for OrbitApp {
                                                                     agent_running,
                                                                     &running_paths,
                                                                     &pinned,
+                                                                    &archived_paths,
+                                                                    show_workspace,
                                                                     &live_paths,
                                                                     &marks,
+                                                                    &workspace_icons,
                                                                     session_menu.as_ref().as_ref(),
                                                                     row_workspace_menu,
                                                                     sidebar_cursor == Some(ix),
@@ -692,10 +754,10 @@ impl Render for OrbitApp {
                                                         .h_full(),
                                                     )
                                                     .children(sticky_header),
-                                            ),
-                                    )
-                                    .into_any_element()
-                            })
+                                            )
+                                            .into_any_element()
+                                    }),
+                            )
                             // star the project — a quiet GitHub call to action
                             // set just above the footer, until dismissed
                             .children(

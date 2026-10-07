@@ -70,17 +70,20 @@ pub fn format_percent(usage: &ContextUsage) -> Option<String> {
     }
 }
 
-/// Whole-number label for a cache hit rate: rounds to nearest, but a rate
-/// that merely *rounds* to 100 (e.g. 99.9%) shows `99`, since claiming a
-/// perfect hit rate would be false — pi still served uncached input tokens.
-/// Only an exact 100 prints as `100`.
+/// One-decimal label for a cache hit rate (`99.9`, `68.4`, `100`). A rate
+/// that merely *rounds* up to 100 (e.g. 99.96%) is withheld at `99.9`, since
+/// claiming a perfect hit rate would be false — the model still processed
+/// uncached prompt tokens. Only an exact 100 prints as `100`.
 pub fn hit_percent_label(percent: f32) -> String {
-    let rounded = (percent.round() as i32).clamp(0, 100);
-    if rounded == 100 && percent < 100.0 {
-        String::from("99")
-    } else {
-        rounded.to_string()
+    if !percent.is_finite() {
+        return "0".into();
     }
+    let mut value = (percent.clamp(0.0, 100.0) * 10.0).round() / 10.0;
+    if percent < 100.0 && value >= 100.0 {
+        value = 99.9;
+    }
+    let text = format!("{value:.1}");
+    text.strip_suffix(".0").unwrap_or(&text).to_string()
 }
 
 /// Compact token label (`151K`, `1.0K`, `688`) matching the reference UI.
@@ -805,7 +808,7 @@ mod tests {
             total: 90_000,
             cost: None,
         };
-        assert_eq!(cache_read_label(&usage), "40K · 44%");
+        assert_eq!(cache_read_label(&usage), "40K · 44.4%");
 
         // A real cache miss reads `0%`, not `None` — the prompt had tokens.
         usage.cache_read = 0;

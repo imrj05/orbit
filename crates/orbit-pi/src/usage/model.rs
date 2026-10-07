@@ -33,9 +33,10 @@
 //!   (input/output/cache read/cache write) sums to it exactly.
 //! - **Reasoning tokens** — a *subset of* `output` when a provider reports
 //!   them; never added to the total (that would double-count).
-//! - **Cache hit rate** — `cache_read / (cache_read + input)`, matching
-//!   [`orbit_rpc::SessionUsage::cache_read_percent`]. `input` is the uncached
-//!   prompt; a request with no prompt tokens has no rate and is excluded.
+//! - **Cache hit rate** — `cache_read / (cache_read + input + cache_write)`,
+//!   matching [`orbit_rpc::SessionUsage::cache_read_percent`]. `input` is
+//!   the uncached prompt, so the denominator is every prompt token the
+//!   model processed; a request with no prompt tokens has no rate.
 //! - **Cost** — pi's own per-message `cost.total`. Providers without a pricing
 //!   table report `0`, which is indistinguishable from "genuinely free", so a
 //!   model counts as *priced* only if some request for it reported a positive
@@ -352,17 +353,18 @@ impl TokenCounts {
         self.total += other.total;
     }
 
-    /// Prompt tokens this request had to process: uncached input plus what the
-    /// provider served from its cache. This is what "context consumed" means
-    /// on the page — distinct from tokens *generated* (output).
+    /// Prompt tokens this request had to process: uncached input, what the
+    /// provider served from its cache, and what it wrote to the cache. This
+    /// is what "context consumed" means on the page — distinct from tokens
+    /// *generated* (output).
     pub fn prompt(&self) -> u64 {
-        self.input + self.cache_read
+        self.input + self.cache_read + self.cache_write
     }
 
-    /// `cache_read / (cache_read + input)` as a percentage. `None` when the
-    /// rate is undefined rather than zero: no prompt tokens at all, or a
-    /// provider that reported no cache traffic whatsoever (§6/§25). Same
-    /// formula as `SessionUsage::cache_read_percent`.
+    /// `cache_read / (cache_read + input + cache_write)` as a percentage.
+    /// `None` when the rate is undefined rather than zero: no prompt tokens
+    /// at all, or a provider that reported no cache traffic whatsoever
+    /// (§6/§25). Same formula as `SessionUsage::cache_read_percent`.
     pub fn cache_hit_rate(&self) -> Option<f64> {
         let prompt = self.prompt();
         (prompt > 0 && (self.cache_read > 0 || self.cache_write > 0))

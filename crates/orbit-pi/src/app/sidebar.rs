@@ -9,7 +9,7 @@ use crate::theme::tokens::{
     context_menu, list_item, picker, popover, BufferLineHeight, ButtonSize, DynamicSpacing,
     IconSize, TextSize,
 };
-use crate::workspace_mark::{self, WorkspaceMark};
+use crate::workspace_mark::{self, WorkspaceMark, WorkspaceStatus};
 
 /// Whether a workspace group is collapsed in the sidebar. The active
 /// workspace is expanded by default; all others are collapsed unless the
@@ -155,10 +155,38 @@ pub(crate) fn build_sidebar_rows(
     running_paths: &HashSet<PathBuf>,
 ) -> Vec<SideRow> {
     let mut side_rows: Vec<SideRow> = Vec::new();
-    // One group per listed project, in the order the user added them — an
-    // empty project still gets a header (and its `+`) so a task can start
-    // there. Groups are keyed by label, so two paths with the same basename
-    // share one header (the first listed path wins).
+    for (label, cwd, ixs) in sidebar_groups(sessions, workspaces, sort, added_at, pinned) {
+        emit_workspace_group(
+            &mut side_rows,
+            sessions,
+            label,
+            cwd,
+            &ixs,
+            working_label,
+            collapsed_workspaces,
+            expanded_workspace_groups,
+            expanded_session_groups,
+            pinned,
+            active_path,
+            running_paths,
+        );
+    }
+    side_rows
+}
+
+/// One group per listed project, in the order the user added them — an
+/// empty project still gets a header (and its `+`) so a task can start
+/// there. Groups are keyed by label, so two paths with the same basename
+/// share one header (the first listed path wins). Attaches each session to
+/// its project; a folder that is not listed simply finds no group. Used by
+/// [`build_sidebar_rows`].
+fn sidebar_groups(
+    sessions: &[SessionInfo],
+    workspaces: &[PathBuf],
+    sort: WorkspaceSort,
+    added_at: &HashMap<PathBuf, SystemTime>,
+    pinned: &HashSet<PathBuf>,
+) -> Vec<(String, PathBuf, Vec<usize>)> {
     let mut groups: Vec<(String, PathBuf, Vec<usize>)> = Vec::new();
     for ws in workspaces {
         let label = sessions::workspace_label(ws);
@@ -167,8 +195,6 @@ pub(crate) fn build_sidebar_rows(
         }
         groups.push((label, ws.clone(), Vec::new()));
     }
-    // Attach each session to its project; a folder that is not listed simply
-    // finds no group and stays out of the sidebar.
     for (ix, session) in sessions.iter().enumerate() {
         let label = sessions::workspace_label(&session.cwd);
         if let Some((_, _, ixs)) = groups.iter_mut().find(|(l, _, _)| *l == label) {
@@ -186,61 +212,116 @@ pub(crate) fn build_sidebar_rows(
     for (_, _, ixs) in groups.iter_mut() {
         ixs.sort_by_key(|&ix| !pinned.contains(&sessions[ix].path));
     }
-    for (label, cwd, ixs) in groups {
-        let collapsed = is_workspace_group_collapsed(
-            &label,
-            working_label,
-            collapsed_workspaces,
-            expanded_workspace_groups,
-        );
-        side_rows.push(SideRow::Workspace {
-            label: label.clone(),
-            count: ixs.len(),
-            collapsed,
-            cwd,
-        });
-        if collapsed {
-            // A collapsed group hides its sessions — except the open one,
-            // any running (busy background) ones, and pinned ones. The live
-            // session and a deliberate mark stay reachable under the header.
-            // `ixs` is already pinned-first, so the pinned rows keep their
-            // place at the top.
-            for &ix in &ixs {
-                let open = active_path.as_deref() == Some(sessions[ix].path.as_path());
-                let running = running_paths.contains(&sessions[ix].path);
-                if open || running || pinned.contains(&sessions[ix].path) {
-                    side_rows.push(SideRow::Session(ix));
-                }
+    groups
+}
+
+/// Lay one workspace group into rows: its header, then either the collapsed
+/// always-visible rows or the capped session list with its overflow toggle.
+#[allow(clippy::too_many_arguments)]
+fn emit_workspace_group(
+    side_rows: &mut Vec<SideRow>,
+    sessions: &[SessionInfo],
+    label: String,
+    cwd: PathBuf,
+    ixs: &[usize],
+    working_label: &str,
+    collapsed_workspaces: &HashSet<String>,
+    expanded_workspace_groups: &HashSet<String>,
+    expanded_session_groups: &HashMap<String, usize>,
+    pinned: &HashSet<PathBuf>,
+    active_path: &Option<PathBuf>,
+    running_paths: &HashSet<PathBuf>,
+) {
+    let collapsed = is_workspace_group_collapsed(
+        &label,
+        working_label,
+        collapsed_workspaces,
+        expanded_workspace_groups,
+    );
+    side_rows.push(SideRow::Workspace {
+        label: label.clone(),
+        count: ixs.len(),
+        collapsed,
+        cwd,
+    });
+    if collapsed {
+        // A collapsed group hides its sessions — except the open one,
+        // any running (busy background) ones, and pinned ones. The live
+        // session and a deliberate mark stay reachable under the header.
+        // `ixs` is already pinned-first, so the pinned rows keep their
+        // place at the top.
+        for &ix in ixs {
+            let open = active_path.as_deref() == Some(sessions[ix].path.as_path());
+            let running = running_paths.contains(&sessions[ix].path);
+            if open || running || pinned.contains(&sessions[ix].path) {
+                side_rows.push(SideRow::Session(ix));
             }
-            continue;
         }
-
-        // Sessions start at the base cap and grow one step per "Show more"
-        // click, so a group with a long history reveals three rows at a time.
-        let extra = expanded_session_groups.get(&label).copied().unwrap_or(0);
-        let limit = SIDEBAR_GROUP_SESSIONS_VISIBLE.saturating_add(extra);
-        let visible = visible_sessions_in_group(&ixs, sessions, limit, active_path);
-        for ix in &visible {
-            side_rows.push(SideRow::Session(*ix));
-        }
-
-        let hidden_count = ixs.len().saturating_sub(visible.len());
-        if hidden_count > 0 {
-            side_rows.push(SideRow::ShowMore {
-                label: label.clone(),
-                count: hidden_count.min(SIDEBAR_GROUP_SESSIONS_VISIBLE),
-                // Past the base cap the same row carries the collapse
-                // affordance on its right edge, so the group never needs a
-                // second toggle row.
-                can_collapse: extra > 0,
-            });
-        } else if extra > 0 {
-            // Everything is shown — keep one quiet row to collapse the group
-            // back to the base cap.
-            side_rows.push(SideRow::ShowLess { label });
-        }
+        return;
     }
-    side_rows
+
+    // Sessions start at the base cap and grow one step per "Show more"
+    // click, so a group with a long history reveals three rows at a time.
+    let extra = expanded_session_groups.get(&label).copied().unwrap_or(0);
+    let limit = SIDEBAR_GROUP_SESSIONS_VISIBLE.saturating_add(extra);
+    let visible = visible_sessions_in_group(ixs, sessions, limit, active_path);
+    for ix in &visible {
+        side_rows.push(SideRow::Session(*ix));
+    }
+
+    let hidden_count = ixs.len().saturating_sub(visible.len());
+    if hidden_count > 0 {
+        side_rows.push(SideRow::ShowMore {
+            label: label.clone(),
+            count: hidden_count.min(SIDEBAR_GROUP_SESSIONS_VISIBLE),
+            // Past the base cap the same row carries the collapse
+            // affordance on its right edge, so the group never needs a
+            // second toggle row.
+            can_collapse: extra > 0,
+        });
+    } else if extra > 0 {
+        // Everything is shown — keep one quiet row to collapse the group
+        // back to the base cap.
+        side_rows.push(SideRow::ShowLess { label });
+    }
+}
+
+/// Build the flat sidebar list: every listed project's sessions in one
+/// ungrouped list, with no workspace headers, show-more, or collapse rows.
+/// Pinned sessions lead (stable, so the rest keep the store's newest-first
+/// order). Used when the user turns workspace grouping off; the same
+/// `SideRow::Session` rows mean the render and keyboard paths are unchanged.
+pub(crate) fn build_flat_sidebar_rows(
+    sessions: &[SessionInfo],
+    pinned: &HashSet<PathBuf>,
+) -> Vec<SideRow> {
+    let mut ixs: Vec<usize> = (0..sessions.len()).collect();
+    // Stable: pinned sessions rise to the top without disturbing the
+    // newest-first order within the pinned and unpinned partitions.
+    ixs.sort_by_key(|&ix| !pinned.contains(&sessions[ix].path));
+    ixs.into_iter().map(SideRow::Session).collect()
+}
+
+/// Apply the archived-session filter. `Show` keeps every session, `Hide`
+/// drops archived ones, and `Only` keeps just the archived ones. Runs before
+/// row building so `SideRow::Session` indices stay aligned with the list the
+/// render path receives.
+pub(crate) fn filter_archived(
+    sessions: Vec<SessionInfo>,
+    filter: SidebarArchivedFilter,
+    archived: &HashSet<PathBuf>,
+) -> Vec<SessionInfo> {
+    match filter {
+        SidebarArchivedFilter::Show => sessions,
+        SidebarArchivedFilter::Hide => sessions
+            .into_iter()
+            .filter(|session| !archived.contains(&session.path))
+            .collect(),
+        SidebarArchivedFilter::Only => sessions
+            .into_iter()
+            .filter(|session| archived.contains(&session.path))
+            .collect(),
+    }
 }
 
 /// Reorder `(label, cwd, session indices)` groups for the active sidebar
@@ -354,6 +435,26 @@ pub(crate) fn sticky_sidebar_header(list: &ListState, rows: &[SideRow]) -> Optio
     })
 }
 
+/// The status a flat session row's workspace glyph conveys, from the row's
+/// own state — the open session leads (open folder), then a run in flight,
+/// then an archive. Workspace-level status is never used here, so siblings in
+/// the same folder stay plain.
+pub(crate) fn session_icon_status(
+    active: bool,
+    running: bool,
+    archived: bool,
+) -> WorkspaceStatus {
+    if active {
+        WorkspaceStatus::Current
+    } else if running {
+        WorkspaceStatus::Running
+    } else if archived {
+        WorkspaceStatus::Archived
+    } else {
+        WorkspaceStatus::Idle
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render_side_row(
     rows: &Rc<Vec<SideRow>>,
@@ -366,11 +467,20 @@ pub(crate) fn render_side_row(
     // Sessions the user pinned — they lead their project group and take a
     // small pin glyph on the title line.
     pinned_paths: &Rc<HashSet<PathBuf>>,
+    // Sessions in the archive set — shown with a small archive glyph when the
+    // filter includes them.
+    archived_paths: &Rc<HashSet<PathBuf>>,
+    // Flat "one list" mode has no workspace headers, so each row names its
+    // workspace instead.
+    show_workspace: bool,
     // Every session with a live (running or warm-idle) pi process. Guards
     // delete, which would otherwise let an alive process recreate the file.
     live_paths: &Rc<HashSet<PathBuf>>,
     // Per-workspace sidebar marks (icon + tint), keyed by path.
     marks: &Rc<HashMap<PathBuf, WorkspaceMark>>,
+    // Resolved per-workspace glyphs: the user's mark icon, or the folder
+    // status (current / running / archived-only / idle).
+    workspace_icons: &Rc<HashMap<PathBuf, SharedString>>,
     session_menu: Option<&SessionMenu>,
     workspace_menu: Option<&WorkspaceMenu>,
     // Whether this row is the keyboard cursor (see `OrbitApp::sidebar_cursor`).
@@ -393,6 +503,10 @@ pub(crate) fn render_side_row(
             let this_menu = this.clone();
             let menu = workspace_menu.filter(|m| m.label == label);
             let mark = marks.get(cwd).cloned().unwrap_or_default();
+            let workspace_icon = workspace_icons
+                .get(cwd)
+                .cloned()
+                .unwrap_or_else(|| workspace_mark::icon_path(mark.icon.as_deref()));
             // Outer shell: inter-group spacing only — horizontal inset comes
             // from the list's `px_2`, so the hover pill lines up with the
             // session rows' (inside the same container) and the chevron lands
@@ -465,7 +579,7 @@ pub(crate) fn render_side_row(
                             theme.text_3,
                         ))
                         .child(icon_dyn(
-                            workspace_mark::icon_path(mark.icon.as_deref()),
+                            workspace_icon,
                             IconSize::Medium.px(&theme),
                             workspace_mark::tint_color(&theme, mark.tint.as_deref()),
                         ))
@@ -668,6 +782,7 @@ pub(crate) fn render_side_row(
             // in their own pi processes — both get the loader.
             let running = (active && agent_running) || running_paths.contains(&session.path);
             let pinned = pinned_paths.contains(&session.path);
+            let archived = archived_paths.contains(&session.path);
             let this = this.clone();
             let this_for_row = this.clone();
             let this_for_menu = this.clone();
@@ -752,6 +867,16 @@ pub(crate) fn render_side_row(
             // has not flushed) keeps the age on the title line.
             let age = sessions::relative_time(session.modified);
             let show_preview = !session.first_message.trim().is_empty();
+            // Flat list has no workspace headers — name the workspace on the
+            // row instead. The glyph is the row's own status (open on the
+            // active session, sync while running, archive when archived),
+            // falling back to the workspace mark / plain folder.
+            let workspace_label = sessions::workspace_label(&session.cwd);
+            let mark = marks.get(&session.cwd).cloned().unwrap_or_default();
+            let workspace_icon = workspace_mark::resolved_icon_path(
+                &mark,
+                session_icon_status(active, running, archived),
+            );
             card = card.child(
                 div()
                     .flex_1()
@@ -787,7 +912,23 @@ pub(crate) fn render_side_row(
                                     theme.text_3,
                                 ))
                             })
+                            .when(archived, |line| {
+                                line.child(icon(
+                                    "icons/archive.svg",
+                                    IconSize::Medium.px(&theme),
+                                    theme.text_3,
+                                ))
+                            })
                             .child(title)
+                            .when(active && show_workspace, |line| {
+                                line.child(
+                                    div()
+                                        .flex_none()
+                                        .text_size(TextSize::XSmall.px(&theme))
+                                        .text_color(theme.accent)
+                                        .child(tr!("sidebar.current")),
+                                )
+                            })
                             .child(session_menu_button(
                                 *ix,
                                 menu,
@@ -797,7 +938,7 @@ pub(crate) fn render_side_row(
                                 this_for_menu,
                                 theme,
                             ))
-                            .when(!show_preview, |line| {
+                            .when(!show_preview && !show_workspace, |line| {
                                 line.child(
                                     div()
                                         .flex_none()
@@ -807,26 +948,43 @@ pub(crate) fn render_side_row(
                                 )
                             }),
                     )
-                    // Line 2 — first-message preview with the age at the very
-                    // end, both tertiary metadata (accent is reserved for the
-                    // running signal, not timestamps).
-                    .when(show_preview, |col| {
+                    // Line 2 — the workspace name (flat list only), the
+                    // first-message preview, and the age at the very end.
+                    .when(show_preview || show_workspace, |col| {
                         col.child(
                             div()
                                 .w_full()
                                 .flex()
                                 .items_center()
                                 .gap(DynamicSpacing::Base06.px(&theme))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .truncate()
-                                        .text_size(TextSize::Small.px(&theme))
-                                        .line_height(BufferLineHeight::Standard.relative())
-                                        .text_color(theme.text_3)
-                                        .child(session.first_message.clone()),
-                                )
+                                .when(show_workspace, |line| {
+                                    line.child(icon_dyn(
+                                        workspace_icon,
+                                        IconSize::XSmall.px(&theme),
+                                        workspace_mark::tint_color(&theme, mark.tint.as_deref()),
+                                    ))
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .max_w(px(120.))
+                                            .truncate()
+                                            .text_size(TextSize::XSmall.px(&theme))
+                                            .text_color(theme.text_2)
+                                            .child(workspace_label),
+                                    )
+                                })
+                                .when(show_preview, |line| {
+                                    line.child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_size(TextSize::Small.px(&theme))
+                                            .line_height(BufferLineHeight::Standard.relative())
+                                            .text_color(theme.text_3)
+                                            .child(session.first_message.clone()),
+                                    )
+                                })
                                 .child(
                                     div()
                                         .flex_none()
@@ -1010,6 +1168,7 @@ pub(crate) fn session_menu_popup(
     let deletable = menu.deletable;
     let confirm = menu.confirm_delete;
     let pinned = crate::pins::contains(&menu.path);
+    let archived = crate::archive::contains(&menu.path);
 
     let body: AnyElement = if confirm {
         // Delete confirmation — the destructive step gets a named victim.
@@ -1093,6 +1252,19 @@ pub(crate) fn session_menu_popup(
                 this.clone(),
                 false,
                 |app, cx| app.on_menu_toggle_pin(cx),
+            ))
+            .child(menu_item(
+                "menu-archive",
+                "icons/archive.svg",
+                if archived {
+                    tr!("sidebar.unarchive_session")
+                } else {
+                    tr!("sidebar.archive_session")
+                },
+                theme,
+                this.clone(),
+                false,
+                |app, cx| app.on_menu_toggle_archive(cx),
             ))
             .child(menu_item(
                 "menu-copy-path",
@@ -1537,22 +1709,24 @@ fn workspace_appearance_picker(
         .into_any_element()
 }
 
-/// The hover-revealed sort control on the sidebar's Projects header. Opens
-/// the workspace-sort menu anchored below; the active mode is checked.
-pub(crate) fn sidebar_sort_button(
+/// The hover-revealed view control on the sidebar's header. Opens the
+/// sidebar-options menu anchored below: how sessions are grouped, ordered,
+/// and filtered (each active choice checked).
+pub(crate) fn sidebar_options_button(
+    group_by: SidebarGroupBy,
     sort: WorkspaceSort,
+    archived_filter: SidebarArchivedFilter,
     open: bool,
     this: Entity<OrbitApp>,
     theme: Theme,
 ) -> impl IntoElement + use<> {
     let this_for_popup = this.clone();
-    icon_button_frame(div().id("sidebar-sort"), &theme, ButtonSize::Compact)
+    icon_button_frame(div().id("sidebar-options"), &theme, ButtonSize::Compact)
         .relative()
-        .tip(tr!("sidebar.sort"))
+        .tip(tr!("sidebar.options"))
         .cursor_pointer()
-        // Revealed on the Projects row's hover, or while the menu is open.
-        .opacity(if open { 1.0 } else { 0.0 })
-        .group_hover("sidebar-projects", |s| s.opacity(1.))
+        // Always visible: the sidebar's one view control, not a hover reveal.
+        .when(open, |button| button.bg(theme.active))
         .hover(|s| s.bg(theme.overlay))
         .active(|s| s.opacity(PRESS_DIM))
         .on_mouse_up(MouseButton::Left, move |_, window, cx| {
@@ -1570,24 +1744,89 @@ pub(crate) fn sidebar_sort_button(
                 .top_0()
                 .left_0()
                 .size(px(0.))
-                .child(sidebar_sort_popup(sort, this_for_popup, theme))
+                .child(sidebar_options_popup(
+                    group_by,
+                    sort,
+                    archived_filter,
+                    this_for_popup,
+                    theme,
+                ))
         }))
 }
 
-/// Width of the workspace-sort popover. Matches the branch picker's compact
-/// picker width so the two dropdowns read as the same control.
-const SORT_POPOVER_W: f32 = 280.;
+/// One row of the sidebar-options menu, on the picker metrics the branch
+/// selector uses: a leading glyph, the label, and a trailing check when the
+/// choice is active. The closure is the action the row runs.
+fn sidebar_choice_item<C>(
+    id: &'static str,
+    icon_path: &'static str,
+    label: String,
+    active: bool,
+    this: Entity<OrbitApp>,
+    theme: Theme,
+    on_click: C,
+) -> impl IntoElement
+where
+    C: Fn(&mut OrbitApp, &mut Context<OrbitApp>) + 'static,
+{
+    picker_entry(div().id(id), &theme)
+        .h(picker::entry_height(&theme))
+        .flex_none()
+        .cursor_pointer()
+        .when(active, |row| row.bg(theme.active))
+        .when(!active, |row| row.hover(|s| s.bg(theme.overlay)))
+        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+            cx.stop_propagation();
+            this.update(cx, |app, cx| on_click(app, cx));
+        })
+        .child(icon(
+            icon_path,
+            context_menu::ICON.px(&theme),
+            if active {
+                theme.active_fg
+            } else {
+                theme.text_3
+            },
+        ))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_color(if active {
+                    theme.active_fg
+                } else {
+                    theme.text_2
+                })
+                .child(label),
+        )
+        .when(active, |row| {
+            row.child(icon(
+                "icons/check.svg",
+                context_menu::ICON.px(&theme),
+                theme.accent,
+            ))
+        })
+}
 
-/// The workspace-sort menu, anchored below the Projects sort button. Uses the
+/// Width of the sidebar-options popover. Wider than the branch picker's
+/// compact width so the long "All conversations (show archived)" row reads
+/// without truncating.
+const OPTIONS_POPOVER_W: f32 = 300.;
+
+/// The sidebar-options menu, anchored below the header control. Uses the
 /// picker surface (search-less) and `picker_entry` rows so it matches the
-/// branch selector; an outside mouse-down dismisses it.
-pub(crate) fn sidebar_sort_popup(
+/// branch selector; an outside mouse-down dismisses it. Three sections:
+/// Group by, Order by, and Filter sessions.
+pub(crate) fn sidebar_options_popup(
+    group_by: SidebarGroupBy,
     sort: WorkspaceSort,
+    archived_filter: SidebarArchivedFilter,
     this: Entity<OrbitApp>,
     theme: Theme,
 ) -> AnyElement {
     let popup = picker_surface(div(), &theme)
-        .w(px(SORT_POPOVER_W))
+        .w(px(OPTIONS_POPOVER_W))
         .flex()
         .flex_col()
         .overflow_hidden()
@@ -1604,18 +1843,48 @@ pub(crate) fn sidebar_sort_popup(
                 })
             }
         })
-        .child(menu_header(tr!("sidebar.sort"), &theme).pt(picker::list_padding_y(&theme)))
         .child(
             div()
                 .py(picker::list_padding_y(&theme))
                 .flex()
                 .flex_col()
                 .gap(DynamicSpacing::Base01.px(&theme))
-                .children(
-                    WorkspaceSort::ALL
-                        .into_iter()
-                        .map(|option| sidebar_sort_item(option, sort, this.clone(), theme)),
-                ),
+                .child(menu_header(tr!("sidebar.group_by"), &theme))
+                .children(SidebarGroupBy::ALL.into_iter().map(|option| {
+                    sidebar_choice_item(
+                        option.as_str(),
+                        option.icon_path(),
+                        tr!(option.label_key()),
+                        option == group_by,
+                        this.clone(),
+                        theme,
+                        move |app, cx| app.set_sidebar_group_by(option, cx),
+                    )
+                }))
+                .child(menu_header(tr!("sidebar.order_by"), &theme))
+                .children(WorkspaceSort::MENU.into_iter().map(|option| {
+                    sidebar_choice_item(
+                        option.as_str(),
+                        option.icon_path(),
+                        tr!(option.label_key()),
+                        option == sort,
+                        this.clone(),
+                        theme,
+                        move |app, cx| app.set_workspace_sort(option, cx),
+                    )
+                }))
+                .child(menu_header(tr!("sidebar.filter_sessions"), &theme))
+                .children(SidebarArchivedFilter::ALL.into_iter().map(|option| {
+                    sidebar_choice_item(
+                        option.as_str(),
+                        option.icon_path(),
+                        tr!(option.label_key()),
+                        option == archived_filter,
+                        this.clone(),
+                        theme,
+                        move |app, cx| app.set_sidebar_archived_filter(option, cx),
+                    )
+                })),
         );
 
     anchored()
@@ -1628,57 +1897,6 @@ pub(crate) fn sidebar_sort_popup(
         .snap_to_window_with_margin(popover::WINDOW_MARGIN)
         .child(deferred(popup))
         .into_any_element()
-}
-
-/// One workspace-sort menu entry, on the picker row metrics the branch
-/// selector uses: a leading mode glyph, the label, and a trailing check when
-/// the mode is active. Selecting any entry switches the mode and closes the
-/// menu.
-fn sidebar_sort_item(
-    option: WorkspaceSort,
-    active: WorkspaceSort,
-    this: Entity<OrbitApp>,
-    theme: Theme,
-) -> impl IntoElement {
-    let is_active = option == active;
-    picker_entry(div().id(option.as_str()), &theme)
-        .h(picker::entry_height(&theme))
-        .flex_none()
-        .cursor_pointer()
-        .when(is_active, |row| row.bg(theme.active))
-        .when(!is_active, |row| row.hover(|s| s.bg(theme.overlay)))
-        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-            cx.stop_propagation();
-            this.update(cx, |app, cx| app.set_workspace_sort(option, cx));
-        })
-        .child(icon(
-            option.icon_path(),
-            context_menu::ICON.px(&theme),
-            if is_active {
-                theme.active_fg
-            } else {
-                theme.text_3
-            },
-        ))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .text_color(if is_active {
-                    theme.active_fg
-                } else {
-                    theme.text_2
-                })
-                .child(tr!(option.label_key())),
-        )
-        .when(is_active, |row| {
-            row.child(icon(
-                "icons/check.svg",
-                context_menu::ICON.px(&theme),
-                theme.accent,
-            ))
-        })
 }
 
 /// One entry of the sidebar's session / workspace menus, on Zed's context
@@ -1887,6 +2105,16 @@ impl OrbitApp {
         cx.notify();
     }
 
+    /// Archive or unarchive the session whose row menu is open, then re-run
+    /// the archived filter so the row appears or leaves per the view choice.
+    pub(super) fn on_menu_toggle_archive(&mut self, cx: &mut Context<Self>) {
+        if let Some(menu) = self.session_menu.take() {
+            crate::archive::toggle(&menu.path);
+        }
+        self.clamp_sidebar_cursor(cx);
+        cx.notify();
+    }
+
     /// First Delete click: swap the popup to the confirmation state.
     pub(super) fn on_menu_delete_request(&mut self, cx: &mut Context<Self>) {
         if let Some(menu) = self.session_menu.as_mut() {
@@ -1909,6 +2137,7 @@ impl OrbitApp {
             } else {
                 // A deleted session must not leave a stale pin behind.
                 crate::pins::remove(&menu.path);
+                crate::archive::remove(&menu.path);
             }
             self.sessions = sessions::load_sessions();
             self.prune_workflow_store();
@@ -1951,6 +2180,38 @@ impl OrbitApp {
             self.workspace_sort = sort;
             self.persist_workspace_prefs();
         }
+        cx.notify();
+    }
+
+    /// Choose how the sidebar arranges sessions, persisting the choice beside
+    /// the project list. Regrouping is pure UI: pi's session files are never
+    /// touched.
+    pub(super) fn set_sidebar_group_by(
+        &mut self,
+        group_by: SidebarGroupBy,
+        cx: &mut Context<Self>,
+    ) {
+        self.sidebar_sort_menu = false;
+        if self.sidebar_group_by != group_by {
+            self.sidebar_group_by = group_by;
+            self.persist_workspace_prefs();
+        }
+        self.clamp_sidebar_cursor(cx);
+        cx.notify();
+    }
+
+    /// Choose which archived sessions the sidebar lists and persist it.
+    pub(super) fn set_sidebar_archived_filter(
+        &mut self,
+        filter: SidebarArchivedFilter,
+        cx: &mut Context<Self>,
+    ) {
+        self.sidebar_sort_menu = false;
+        if self.sidebar_archived_filter != filter {
+            self.sidebar_archived_filter = filter;
+            self.persist_workspace_prefs();
+        }
+        self.clamp_sidebar_cursor(cx);
         cx.notify();
     }
 
@@ -2040,32 +2301,53 @@ impl OrbitApp {
 
     // ── keyboard navigation ───────────────────────────────────────────
 
-    /// The sidebar rows as currently laid out — the same grouping, ordering,
-    /// collapse state, and pinned/running marks the render path uses. Shared
-    /// so the keyboard cursor can never point at a row the user cannot see.
-    fn sidebar_rows_for_nav(&self) -> Vec<SideRow> {
-        let sessions = self.sidebar_sessions();
+    /// The sidebar rows as currently laid out — grouped by workspace, or one
+    /// flat list when grouping is off. Shared by the render path and keyboard
+    /// navigation so the cursor can never point at a row the user cannot see.
+    pub(super) fn sidebar_rows(
+        &self,
+        sessions: &[SessionInfo],
+        pinned: &HashSet<PathBuf>,
+    ) -> Vec<SideRow> {
         let working = self.workspace_label();
-        let pinned: HashSet<PathBuf> = crate::pins::all().paths();
         let running: HashSet<PathBuf> = self
             .lives
             .iter()
             .filter(|(_, parked)| parked.busy)
             .map(|(path, _)| path.clone())
             .collect();
-        build_sidebar_rows(
-            &sessions,
-            &self.workspaces,
-            self.workspace_sort,
-            &self.workspace_added_at,
-            &working,
-            &self.collapsed_workspaces,
-            &self.expanded_workspace_groups,
-            &self.expanded_session_groups,
-            &pinned,
-            &self.current_session_path,
-            &running,
-        )
+        match self.sidebar_group_by {
+            SidebarGroupBy::OneList => build_flat_sidebar_rows(sessions, pinned),
+            SidebarGroupBy::Workspace => build_sidebar_rows(
+                sessions,
+                &self.workspaces,
+                self.workspace_sort,
+                &self.workspace_added_at,
+                &working,
+                &self.collapsed_workspaces,
+                &self.expanded_workspace_groups,
+                &self.expanded_session_groups,
+                pinned,
+                &self.current_session_path,
+                &running,
+            ),
+        }
+    }
+
+    /// The sidebar's session list with the archived filter applied — the same
+    /// list the render path paints, so keyboard navigation stays in step.
+    pub(super) fn sidebar_sessions_filtered(&self) -> Vec<SessionInfo> {
+        let sessions = self.sidebar_sessions();
+        let archived: HashSet<PathBuf> = crate::archive::all().paths();
+        filter_archived(sessions, self.sidebar_archived_filter, &archived)
+    }
+
+    /// The sidebar rows with the pinned snapshot read fresh — the same
+    /// grouping, ordering, and collapse state the render path uses.
+    fn sidebar_rows_for_nav(&self) -> Vec<SideRow> {
+        let sessions = self.sidebar_sessions_filtered();
+        let pinned: HashSet<PathBuf> = crate::pins::all().paths();
+        self.sidebar_rows(&sessions, &pinned)
     }
 
     /// Row index of the open session in `rows`, when it is visible.

@@ -39,6 +39,12 @@ pub struct Step {
     /// pi's per-step message timestamp (epoch millis), when supplied — the
     /// fallback for estimating reasoning time on reload.
     pub timestamp: Option<i64>,
+    /// Active generation time measured client-side while this step
+    /// streamed: text, thinking, and tool-call argument deltas, excluding
+    /// gaps for tool execution, round-trips, and first-token latency.
+    /// Reloaded sessions leave this `None` — pi does not persist per-step
+    /// generation timing.
+    pub generation_time: Option<Duration>,
 }
 
 /// A context-boundary summary row: pi compacted the conversation (or
@@ -123,6 +129,21 @@ impl ChatMessage {
             }
         }
         total
+    }
+
+    /// Active generation time measured while this turn streamed — the sum
+    /// of its steps' client-measured values. `None` when no step carries
+    /// one (reloaded sessions, or providers that deliver whole blocks).
+    pub fn generation_time(&self) -> Option<Duration> {
+        let mut total = Duration::ZERO;
+        let mut any = false;
+        for step in &self.steps {
+            if let Some(duration) = step.generation_time {
+                total += duration;
+                any = true;
+            }
+        }
+        any.then_some(total)
     }
 }
 
@@ -869,6 +890,13 @@ pub struct Transcript {
     stream_started: Rc<Cell<Option<Instant>>>,
     /// When the current step's reasoning began (the per-thought clock).
     thinking_started: Rc<Cell<Option<Instant>>>,
+    /// Active generation time for the step currently streaming — the sum
+    /// of inter-delta gaps short enough to be decode rather than a stall.
+    generation_time: Rc<Cell<Duration>>,
+    /// When the last content delta arrived (text/thinking/tool-call args);
+    /// `None` after a reset or a tool begins, so the following gap is not
+    /// counted as generation.
+    last_delta_at: Rc<Cell<Option<Instant>>>,
     /// Settled turns whose thinking/tools are disclosed (turn fold).
     expanded_turns: Rc<RefCell<HashSet<usize>>>,
     /// Messages whose changed-files list is fully expanded.
@@ -941,6 +969,8 @@ impl Transcript {
             streaming: Rc::new(Cell::new(None)),
             stream_started: Rc::new(Cell::new(None)),
             thinking_started: Rc::new(Cell::new(None)),
+            generation_time: Rc::new(Cell::new(Duration::ZERO)),
+            last_delta_at: Rc::new(Cell::new(None)),
             expanded_turns: Rc::new(RefCell::new(HashSet::new())),
             expanded_files: Rc::new(RefCell::new(HashSet::new())),
             expanded_activities: Rc::new(RefCell::new(HashMap::new())),
@@ -1010,6 +1040,7 @@ impl Transcript {
         self.seed_thinking.set(false);
         self.stream_started.set(None);
         self.thinking_started.set(None);
+        self.reset_generation();
         self.expanded_turns.borrow_mut().clear();
         self.expanded_files.borrow_mut().clear();
         self.expanded_activities.borrow_mut().clear();
@@ -1044,6 +1075,7 @@ impl Transcript {
         self.seed_thinking.set(false);
         self.stream_started.set(None);
         self.thinking_started.set(None);
+        self.reset_generation();
         self.expanded_turns.borrow_mut().clear();
         self.expanded_files.borrow_mut().clear();
         self.expanded_activities.borrow_mut().clear();
@@ -1068,7 +1100,7 @@ impl Transcript {
     pub fn apply_event(&mut self, event: &Event) -> bool {
         match event {
             Event::MessageStart { value } => self.on_message_boundary(value),
-            Event::MessageUpdate { assistant, .. } => self.on_message_update(assistant),
+            Event::MessageUpdate { assistant, usage } => self.on_message_update(assistant, usage),
             Event::MessageEnd { value } => self.on_message_end(value),
             Event::ToolExecutionStart { value } => self.on_tool_execution(value, false),
             Event::ToolExecutionUpdate { value } => self.on_tool_execution_update(value),
@@ -1138,6 +1170,7 @@ impl Transcript {
                 messages.push(message);
                 self.streaming.set(None);
                 self.stream_started.set(None);
+                self.reset_generation();
                 drop(messages);
                 self.insert_row();
                 return true;
@@ -1158,6 +1191,7 @@ impl Transcript {
         // Each step starts a fresh reasoning clock; a buffered start snapshot
         // that already carries reasoning begins it now.
         self.thinking_started.set(None);
+        self.reset_generation();
         if seed.is_some_and(|s| !s.thinking.is_empty()) {
             self.begin_thinking();
         }
@@ -1188,8 +1222,18 @@ impl Transcript {
         true
     }
 
-    fn on_message_update(&mut self, assistant: &Option<AssistantMessageEvent>) -> bool {
+    fn on_message_update(
+        &mut self,
+        assistant: &Option<AssistantMessageEvent>,
+        usage: &Option<Value>,
+    ) -> bool {
         use AssistantMessageEvent as Am;
+        // `message_update.usage` is the provider's latest cumulative usage
+        // for the response; keep it on the streaming step so the live tok/s
+        // indicator reads real output counts when the provider reports them.
+        if let Some(reported) = MessageUsage::from_value(usage.as_ref()) {
+            self.store_live_usage(reported);
+        }
         let Some(assistant) = assistant else {
             return false;
         };
@@ -1199,6 +1243,7 @@ impl Transcript {
                 let mark = self.step_mark.get().map(|k| k.text).unwrap_or(0);
                 // The step moved on from reasoning to its answer.
                 let thinking = self.finish_thinking();
+                let generation = self.note_generation();
                 self.with_streaming(move |m| {
                     let step = m.steps.last_mut().expect("step");
                     if let Some(duration) = thinking {
@@ -1206,6 +1251,7 @@ impl Transcript {
                             step.thinking_duration = Some(duration);
                         }
                     }
+                    step.generation_time = Some(generation);
                     drop_seed(&mut step.text, mark, delta, seeded);
                     step.text.push_str(delta);
                 })
@@ -1214,8 +1260,10 @@ impl Transcript {
                 let seeded = self.seed_thinking.replace(false);
                 let mark = self.step_mark.get().map(|k| k.thinking).unwrap_or(0);
                 let started = self.begin_thinking();
+                let generation = self.note_generation();
                 self.with_streaming(move |m| {
                     let step = m.steps.last_mut().expect("step");
+                    step.generation_time = Some(generation);
                     drop_seed(&mut step.thinking, mark, delta, seeded);
                     step.thinking.push_str(delta);
                     // Keep the per-thought clock ticking while it streams.
@@ -1272,6 +1320,7 @@ impl Transcript {
                 // row as soon as the accumulated buffer parses, so a command
                 // or file path shows while the model is still writing it.
                 if let Some(delta) = value.get("delta").and_then(Value::as_str) {
+                    let generation = self.note_generation();
                     let mut buffer = self.toolcall_args.borrow_mut();
                     buffer.push_str(delta);
                     // Only a buffer that looks like a complete JSON object
@@ -1285,6 +1334,7 @@ impl Transcript {
                     match parsed {
                         Some(args) => self.with_streaming(move |m| {
                             let step = m.steps.last_mut().expect("step");
+                            step.generation_time = Some(generation);
                             let Some(tool) = step.tools.last_mut() else {
                                 return;
                             };
@@ -1500,6 +1550,17 @@ impl Transcript {
                     .steps
                     .get(mark.step)
                     .and_then(|step| step.thinking_duration);
+                // A provider that reports usage only while streaming (and
+                // omits it from the final message) still leaves the
+                // turn's token count intact.
+                let live_usage = slot
+                    .steps
+                    .get(mark.step)
+                    .and_then(|step| step.usage.clone());
+                let live_generation = slot
+                    .steps
+                    .get(mark.step)
+                    .and_then(|step| step.generation_time);
                 // The settled step carries the run's wall clock — keep it
                 // on the row (merge_step does this for non-stream paths).
                 let step_elapsed = final_message.elapsed.take();
@@ -1510,6 +1571,12 @@ impl Transcript {
                 // them).
                 if settled_step.thinking_duration.is_none() {
                     settled_step.thinking_duration = live_thinking;
+                }
+                if settled_step.usage.is_none() {
+                    settled_step.usage = live_usage;
+                }
+                if settled_step.generation_time.is_none() {
+                    settled_step.generation_time = live_generation;
                 }
                 for tool in &mut settled_step.tools {
                     if tool.output.is_some() {
@@ -1663,6 +1730,8 @@ impl Transcript {
         }
         // Start: upsert on the streaming message (creating it if a tool
         // execution begins before any `message_start`).
+        // The gap until the next delta is execution, not decode.
+        self.pause_generation();
         let name = value
             .get("toolName")
             .and_then(Value::as_str)
@@ -1807,6 +1876,7 @@ impl Transcript {
                         thinking: 0,
                         tools: 0,
                     }));
+                    self.reset_generation();
                     self.streaming.set(Some(ix));
                     (ix, false)
                 } else {
@@ -1814,6 +1884,7 @@ impl Transcript {
                     let ix = messages.len() - 1;
                     self.streaming.set(Some(ix));
                     self.step_mark.set(Some(StepMark::default()));
+                    self.reset_generation();
                     (ix, true)
                 }
             }
@@ -1831,6 +1902,52 @@ impl Transcript {
             })
             .unwrap_or(false);
         (changed, created)
+    }
+
+    /// Keep the provider's latest cumulative `message_update.usage` on the
+    /// step currently streaming. Never opens a row: a usage-only update is
+    /// not a reason to create one.
+    fn store_live_usage(&self, usage: MessageUsage) {
+        let Some(ix) = self.streaming.get() else {
+            return;
+        };
+        let mut messages = self.messages.borrow_mut();
+        if let Some(step) = messages
+            .get_mut(ix)
+            .and_then(|message| message.steps.last_mut())
+        {
+            step.usage = Some(usage);
+        }
+    }
+
+    /// Longest inter-delta gap still counted as generation. Tool execution,
+    /// provider stalls, and the round-trip before a step's first token all
+    /// exceed this, so they stay out of the rate.
+    const GENERATION_GAP: Duration = Duration::from_millis(1_000);
+
+    /// Begin a fresh step's generation clock.
+    fn reset_generation(&self) {
+        self.generation_time.set(Duration::ZERO);
+        self.last_delta_at.set(None);
+    }
+
+    /// Stop counting until the next delta — a tool is running, so the gap
+    /// is execution, not decode.
+    fn pause_generation(&self) {
+        self.last_delta_at.set(None);
+    }
+
+    /// Account for one content delta (text, thinking, or tool-call
+    /// arguments) and return the step's accumulated generation time.
+    fn note_generation(&self) -> Duration {
+        let now = Instant::now();
+        if let Some(previous) = self.last_delta_at.replace(Some(now)) {
+            let gap = now.saturating_duration_since(previous);
+            if gap <= Self::GENERATION_GAP {
+                self.generation_time.set(self.generation_time.get() + gap);
+            }
+        }
+        self.generation_time.get()
     }
 
     fn mark_stream_start(&self) {
@@ -2077,6 +2194,7 @@ impl Transcript {
         self.step_mark.set(None);
         self.stream_started.set(None);
         self.thinking_started.set(None);
+        self.reset_generation();
     }
 
     /// Turn end (or abort): drop live streaming state, then — once the run
@@ -2455,6 +2573,85 @@ mod tests {
         let messages = t.messages.borrow();
         assert_eq!(messages[0].text(), "hello");
         assert!(messages[0].finished_at.is_some());
+    }
+
+    /// Deltas accrue a client-measured generation clock, and the settled
+    /// replacement must carry it forward so the footer's tok/s does not
+    /// vanish when the turn ends.
+    #[test]
+    fn live_deltas_accrue_generation_time_and_survive_settle() {
+        let mut t = Transcript::new();
+        t.apply_event(&Event::MessageStart {
+            value: json!({"type": "message_start", "message": {
+                "role": "assistant", "content": [], "stopReason": "pending"
+            }}),
+        });
+        for delta in ["Hel", "lo"] {
+            t.apply_event(&Event::MessageUpdate {
+                usage: None,
+                assistant: Some(AssistantMessageEvent::TextDelta {
+                    delta: delta.to_string(),
+                }),
+            });
+        }
+        {
+            let messages = t.messages.borrow();
+            assert_eq!(messages[0].text(), "Hello");
+            assert!(
+                messages[0].steps[0].generation_time.is_some(),
+                "the live step must carry a generation clock"
+            );
+        }
+        t.apply_event(&Event::MessageEnd {
+            value: json!({"type": "message_end", "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Hello"}],
+                "stopReason": "stop"
+            }}),
+        });
+        let messages = t.messages.borrow();
+        assert!(
+            messages[0].generation_time().is_some(),
+            "generation time must survive the settled replacement"
+        );
+        assert!(!t.is_streaming());
+    }
+
+    /// `generation_time()` sums the turn's per-step clocks (multi-step
+    /// turns), and reports nothing when no step measured one.
+    #[test]
+    fn generation_time_sums_every_step() {
+        let message = ChatMessage {
+            user: false,
+            summary: None,
+            steps: vec![
+                Step {
+                    generation_time: Some(Duration::from_millis(400)),
+                    ..Step::default()
+                },
+                Step {
+                    generation_time: Some(Duration::from_millis(600)),
+                    ..Step::default()
+                },
+            ],
+            images: Vec::new(),
+            elapsed: None,
+            finished_at: None,
+            error: None,
+            aborted: false,
+        };
+        assert_eq!(message.generation_time(), Some(Duration::from_secs(1)));
+        let bare = ChatMessage {
+            user: false,
+            summary: None,
+            steps: vec![Step::default()],
+            images: Vec::new(),
+            elapsed: None,
+            finished_at: None,
+            error: None,
+            aborted: false,
+        };
+        assert_eq!(bare.generation_time(), None);
     }
 
     #[test]

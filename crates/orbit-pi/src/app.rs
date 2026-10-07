@@ -445,7 +445,13 @@ pub struct OrbitApp {
     /// How workspace groups are ordered in the sidebar. Persisted alongside
     /// the project list; changing it re-sorts the UI and never touches pi.
     workspace_sort: WorkspaceSort,
-    /// The sidebar's Projects-header sort menu is open.
+    /// How the sidebar arranges sessions (workspace / one list). Persisted
+    /// beside the project list; a UI-only choice that never touches pi.
+    sidebar_group_by: SidebarGroupBy,
+    /// Which archived sessions the sidebar lists. Persisted beside the
+    /// project list.
+    sidebar_archived_filter: SidebarArchivedFilter,
+    /// The sidebar's Projects-header view menu is open.
     sidebar_sort_menu: bool,
     /// Open row-actions menu on a workspace group header (which workspace's
     /// label + cwd). Mutually exclusive with `session_menu`.
@@ -1268,6 +1274,8 @@ impl OrbitApp {
             workspace_added_at: workspace_store.added_at,
             workspace_marks: workspace_store.marks,
             workspace_sort: workspace_store.sort,
+            sidebar_group_by: workspace_store.group_by,
+            sidebar_archived_filter: workspace_store.archived_filter,
             sidebar_sort_menu: false,
             workspace_menu: None,
             current_session_path: None,
@@ -1638,6 +1646,8 @@ impl OrbitApp {
             added_at: self.workspace_added_at.clone(),
             marks: self.workspace_marks.clone(),
             sort: self.workspace_sort,
+            group_by: self.sidebar_group_by,
+            archived_filter: self.sidebar_archived_filter,
         });
     }
 
@@ -1769,7 +1779,9 @@ pub(crate) enum WorkspaceSort {
 }
 
 impl WorkspaceSort {
-    /// Every mode, in the order the sort menu lists them.
+    /// Every mode. The view menu offers only [`Self::MENU`], but the full set
+    /// still round-trips through disk — pinned by the sort-store test.
+    #[allow(dead_code)]
     pub(crate) const ALL: [WorkspaceSort; 6] = [
         Self::LastUpdated,
         Self::DateAdded,
@@ -1778,6 +1790,11 @@ impl WorkspaceSort {
         Self::SessionCount,
         Self::Manual,
     ];
+
+    /// The modes the sidebar view menu offers. Kept minimal (matching the
+    /// deepseek-harness menu); the remaining modes still parse from disk for
+    /// anyone who set them earlier.
+    pub(crate) const MENU: [WorkspaceSort; 2] = [Self::Manual, Self::LastUpdated];
 
     /// Stable key written to disk. Renaming one needs a migration in
     /// [`Self::from_key`], or the user's choice silently resets.
@@ -1832,6 +1849,100 @@ impl WorkspaceSort {
     }
 }
 
+/// How the sidebar arranges sessions. `Workspace` groups them under one
+/// header per project; `OneList` shows every session in a single flat list.
+/// Persisted beside the project list in `workspaces.json`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum SidebarGroupBy {
+    #[default]
+    Workspace,
+    OneList,
+}
+
+impl SidebarGroupBy {
+    pub(crate) const ALL: [SidebarGroupBy; 2] = [Self::Workspace, Self::OneList];
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Workspace => "workspace",
+            Self::OneList => "one_list",
+        }
+    }
+
+    pub(crate) fn from_key(key: &str) -> Self {
+        match key {
+            "workspace" => Self::Workspace,
+            "one_list" => Self::OneList,
+            // A store written while the tree mode existed falls back to the
+            // grouped default rather than an unknown state.
+            _ => Self::default(),
+        }
+    }
+
+    pub(crate) fn label_key(self) -> &'static str {
+        match self {
+            Self::Workspace => "sidebar.group_workspace",
+            Self::OneList => "sidebar.group_one_list",
+        }
+    }
+
+    pub(crate) fn icon_path(self) -> &'static str {
+        match self {
+            Self::Workspace => "icons/folder.svg",
+            Self::OneList => "icons/unified-view.svg",
+        }
+    }
+}
+
+/// Which archived sessions the sidebar lists. `Hide` (the default) drops
+/// them, `Show` mixes them back into their places, and `Only` lists just the
+/// archived ones. Persisted beside the project list; an Orbit-owned view
+/// choice that never touches pi.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum SidebarArchivedFilter {
+    #[default]
+    Hide,
+    Show,
+    Only,
+}
+
+impl SidebarArchivedFilter {
+    pub(crate) const ALL: [SidebarArchivedFilter; 3] = [Self::Hide, Self::Show, Self::Only];
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Hide => "hide",
+            Self::Show => "show",
+            Self::Only => "only",
+        }
+    }
+
+    pub(crate) fn from_key(key: &str) -> Self {
+        match key {
+            "hide" => Self::Hide,
+            "show" => Self::Show,
+            "only" => Self::Only,
+            _ => Self::default(),
+        }
+    }
+
+    pub(crate) fn label_key(self) -> &'static str {
+        match self {
+            Self::Hide => "sidebar.filter_hide_archived",
+            Self::Show => "sidebar.filter_show_archived",
+            Self::Only => "sidebar.filter_only_archived",
+        }
+    }
+
+    pub(crate) fn icon_path(self) -> &'static str {
+        match self {
+            Self::Hide => "icons/eye-off.svg",
+            Self::Show => "icons/archive.svg",
+            Self::Only => "icons/archive.svg",
+        }
+    }
+}
+
 /// `~/.orbit-pi/workspaces.json` — the folders Orbit lists in its sidebar,
 /// when each was added, and how the sidebar orders them. Orbit-owned: pi owns
 /// the session files, this only records which projects the user added.
@@ -1843,12 +1954,30 @@ fn workspaces_path() -> PathBuf {
 
 /// The parsed workspaces store. Keeping `added_at` beside the path list gives
 /// [`WorkspaceSort::DateAdded`] a stable key across relaunches.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct WorkspaceStore {
     workspaces: Vec<PathBuf>,
     added_at: HashMap<PathBuf, SystemTime>,
     marks: HashMap<PathBuf, WorkspaceMark>,
     sort: WorkspaceSort,
+    /// How the sidebar groups sessions. A missing key keeps the default
+    /// (workspace headers).
+    group_by: SidebarGroupBy,
+    /// Which archived sessions the sidebar lists.
+    archived_filter: SidebarArchivedFilter,
+}
+
+impl Default for WorkspaceStore {
+    fn default() -> Self {
+        Self {
+            workspaces: Vec::new(),
+            added_at: HashMap::new(),
+            marks: HashMap::new(),
+            sort: WorkspaceSort::default(),
+            group_by: SidebarGroupBy::default(),
+            archived_filter: SidebarArchivedFilter::default(),
+        }
+    }
 }
 
 /// Read the project list, tolerating the pre-timestamp format where
@@ -1871,6 +2000,30 @@ fn parse_workspace_store(value: &Value) -> WorkspaceStore {
             .get("sort")
             .and_then(Value::as_str)
             .map(WorkspaceSort::from_key)
+            .unwrap_or_default(),
+        // `group_by` is the current key; the legacy boolean is honored so a
+        // store written during the two-mode experiment still loads.
+        group_by: value
+            .get("group_by")
+            .and_then(Value::as_str)
+            .map(SidebarGroupBy::from_key)
+            .or_else(|| {
+                value
+                    .get("group_by_workspace")
+                    .and_then(Value::as_bool)
+                    .map(|grouped| {
+                        if grouped {
+                            SidebarGroupBy::Workspace
+                        } else {
+                            SidebarGroupBy::OneList
+                        }
+                    })
+            })
+            .unwrap_or_default(),
+        archived_filter: value
+            .get("archived_filter")
+            .and_then(Value::as_str)
+            .map(SidebarArchivedFilter::from_key)
             .unwrap_or_default(),
         ..WorkspaceStore::default()
     };
@@ -1958,6 +2111,8 @@ fn persist_workspace_store(store: &WorkspaceStore) {
     let payload = serde_json::json!({
         "workspaces": workspaces,
         "sort": store.sort.as_str(),
+        "group_by": store.group_by.as_str(),
+        "archived_filter": store.archived_filter.as_str(),
     });
     let _ = fs::write(path, payload.to_string());
 }
@@ -2389,6 +2544,8 @@ mod session_default_apply_tests;
 mod session_park_tests;
 #[cfg(test)]
 mod sidebar_active_reveal_tests;
+#[cfg(test)]
+mod sidebar_group_tests;
 #[cfg(test)]
 mod sidebar_placeholder_tests;
 #[cfg(test)]

@@ -1174,10 +1174,10 @@ impl SessionUsage {
     }
 
     /// Share of prompt tokens served from the provider cache across the
-    /// session: `cacheRead / (input + cacheRead)`, as `0..=100`. `None` when
-    /// no prompt tokens were processed.
+    /// session: `cacheRead / (input + cacheRead + cacheWrite)`, as `0..=100`.
+    /// `None` when no prompt tokens were processed.
     pub fn cache_read_percent(&self) -> Option<f32> {
-        cache_hit_rate(self.input, self.cache_read)
+        cache_hit_rate(self.input, self.cache_read, self.cache_write)
     }
 }
 
@@ -1252,10 +1252,11 @@ impl MessageUsage {
     }
 
     /// Share of prompt tokens served from the provider cache:
-    /// `cacheRead / (input + cacheRead)`, as `0..=100`. `None` when no prompt
-    /// tokens were processed, so the UI never shows a meaningless `0%`.
+    /// `cacheRead / (input + cacheRead + cacheWrite)`, as `0..=100`. `None`
+    /// when no prompt tokens were processed, so the UI never shows a
+    /// meaningless `0%`.
     pub fn cache_read_percent(&self) -> Option<f32> {
-        cache_hit_rate(self.input, self.cache_read)
+        cache_hit_rate(self.input, self.cache_read, self.cache_write)
     }
 }
 
@@ -1403,8 +1404,10 @@ fn json_f64_or_null(value: &Value) -> Option<f64> {
 /// Provider cache hit rate for prompt tokens: `cache_read / (input +
 /// cache_read)` scaled to `0..=100`. `None` when the prompt was empty (a turn
 /// with no input at all), which keeps the UI from claiming `0%`.
-fn cache_hit_rate(input: u64, cache_read: u64) -> Option<f32> {
-    let prompt = input + cache_read;
+fn cache_hit_rate(input: u64, cache_read: u64, cache_write: u64) -> Option<f32> {
+    // pi normalizes every provider so `input` is the *uncached* prompt; the
+    // whole prompt is therefore uncached input + cache reads + cache writes.
+    let prompt = input + cache_read + cache_write;
     (prompt > 0).then(|| (cache_read as f64 / prompt as f64 * 100.0) as f32)
 }
 
@@ -1846,6 +1849,18 @@ mod tests {
             cost: None,
         };
         assert_eq!(session.cache_read_percent(), Some(50.0));
+
+        // Cache writes are prompt tokens too: reading a fully written cache
+        // back is a 50% hit rate, not 100%.
+        let written = MessageUsage {
+            input: 0,
+            output: 0,
+            cache_read: 100,
+            cache_write: 100,
+            total: 200,
+            cost: None,
+        };
+        assert_eq!(written.cache_read_percent(), Some(50.0));
     }
 
     #[test]

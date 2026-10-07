@@ -40,6 +40,7 @@ mod access;
 mod analytics;
 mod app;
 mod app_icon;
+mod archive;
 mod ask;
 mod assets;
 mod auth;

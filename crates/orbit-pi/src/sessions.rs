@@ -9,10 +9,14 @@
 //! first user message.
 
 use std::{
+    collections::HashMap,
     fs,
     io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver},
+    sync::{
+        mpsc::{self, Receiver},
+        RwLock,
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -314,29 +318,86 @@ fn read_session(path: &Path) -> Option<SessionInfo> {
     })
 }
 
-/// The session's most recent pi-assigned name, read from a bounded tail
-/// window so it works against a file pi is still appending to. pi writes a
-/// `session_info` entry when it auto-titles the session and again on rename,
-/// so the newest entry wins; a session never named (or whose name was
-/// cleared) yields `None` and the caller falls back to the first message.
-/// The window is capped because a session's name sits near its live edge long
-/// before the file grows unbounded — an older name simply falls back.
+/// The session's most recent pi-assigned name. pi writes a `session_info`
+/// entry when it auto-titles the session and again on rename, so the newest
+/// entry wins; a session never named (or whose name was cleared) yields
+/// `None` and the caller falls back to the first message.
+///
+/// The name usually sits in the live tail, so the tail window is read first.
+/// A long session can push its auto-title entry far behind that window, so a
+/// full scan runs only when the tail yields nothing — and its result is
+/// cached per file, keyed by the scanned length, so later appends cost only
+/// the appended bytes.
 fn last_session_name(path: &Path) -> Option<String> {
-    const MAX_SCAN: u64 = 256 * 1024;
+    const TAIL: u64 = 256 * 1024;
+    /// Bytes of overlap rescanned on the incremental path so a line torn
+    /// across the previous boundary still parses.
+    const OVERLAP: u64 = 8 * 1024;
+
+    let len = fs::metadata(path).ok()?.len();
+    if let Some(entry) = name_cache_get(path) {
+        if entry.scanned == len {
+            return entry.name;
+        }
+        if len > entry.scanned {
+            // The file only grew: a new name can only be in the appended
+            // bytes (renames append a `session_info`). Reuse the cached name
+            // when the delta carries none.
+            let from = entry.scanned.saturating_sub(OVERLAP);
+            return scan_for_last_name(path, from, len).or(entry.name);
+        }
+        // Truncated or replaced: fall through to a fresh scan.
+    }
+
+    // Common case: the newest name sits in the tail.
+    let name = scan_for_last_name(path, len.saturating_sub(TAIL), len).or_else(|| {
+        // Long sessions can carry the auto-title entry far behind the tail;
+        // a one-time full scan finds it, then the cache keeps it cheap.
+        scan_for_last_name(path, 0, len)
+    });
+    name_cache_put(path, len, name.clone());
+    name
+}
+
+/// The name on the newest `session_info` line in `[start, end)`, if any.
+/// A window that starts mid-line leaves one unparseable segment, skipped.
+fn scan_for_last_name(path: &Path, start: u64, end: u64) -> Option<String> {
     let mut file = fs::File::open(path).ok()?;
-    let len = file.metadata().ok()?.len();
-    let start = len.saturating_sub(MAX_SCAN);
     file.seek(SeekFrom::Start(start)).ok()?;
     let mut buf = Vec::new();
-    file.read_to_end(&mut buf).ok()?;
+    file.take(end.saturating_sub(start))
+        .read_to_end(&mut buf)
+        .ok()?;
     // Newest line first: the last `session_info` entry is the current name.
-    // A window that starts mid-line leaves one unparseable segment, skipped.
     for line in buf.split(|byte| *byte == b'\n').rev() {
         if let Some(name) = session_name_in_line(line) {
             return name;
         }
     }
     None
+}
+
+/// One file's last-resolved name and the length it was resolved at.
+#[derive(Clone)]
+struct NameCache {
+    scanned: u64,
+    name: Option<String>,
+}
+
+/// Per-file name cache shared by the startup scan and the watcher thread.
+static NAME_CACHE: RwLock<Option<HashMap<PathBuf, NameCache>>> = RwLock::new(None);
+
+fn name_cache_get(path: &Path) -> Option<NameCache> {
+    let guard = NAME_CACHE.read().ok()?;
+    guard.as_ref()?.get(path).cloned()
+}
+
+fn name_cache_put(path: &Path, scanned: u64, name: Option<String>) {
+    if let Ok(mut guard) = NAME_CACHE.write() {
+        guard
+            .get_or_insert_with(HashMap::new)
+            .insert(path.to_path_buf(), NameCache { scanned, name });
+    }
 }
 
 /// The name on one `session_info` line: `Some(Some(name))` when the entry
@@ -607,6 +668,31 @@ mod tests {
         );
         assert_eq!(read_session(&path).unwrap().title, "hii");
         let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// A long session can push its auto-title entry further back than the
+    /// tail window; the disk title must still be found instead of falling
+    /// back to the first message (which is why a non-active row looked stale
+    /// while the active one, fed pi's live name, updated at once).
+    #[test]
+    fn read_session_finds_a_name_behind_the_tail_window() {
+        let dir = std::env::temp_dir().join("orbit-session-deep-name-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.jsonl");
+        let filler = "x".repeat(400 * 1024);
+        fs::write(
+            &path,
+            format!(
+                "{{\"type\":\"session\",\"id\":\"deep\",\"cwd\":\"/tmp/ws\"}}\n\
+                 {{\"type\":\"message\",\"message\":{{\"role\":\"user\",\"content\":\"hii\"}}}}\n\
+                 {{\"type\":\"session_info\",\"name\":\"deep name\"}}\n\
+                 {{\"type\":\"message\",\"message\":{{\"role\":\"assistant\",\"content\":\"{filler}\"}}}}\n"
+            ),
+        )
+        .unwrap();
+        assert_eq!(read_session(&path).unwrap().title, "deep name");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
