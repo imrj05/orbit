@@ -465,6 +465,9 @@ pub struct OrbitApp {
     _worktree_branch_sub: Subscription,
     /// Whether the Worktrees page replaces the chat area.
     worktrees_open: bool,
+    /// The dismissible "How worktrees work" card was closed (persisted beside
+    /// the other one-time hints).
+    worktree_howto_dismissed: bool,
     /// Whether the status bar's "Work in" picker (Local / worktrees) is open.
     work_in_menu_open: bool,
     /// Highlighted row in the "Work in" picker.
@@ -1445,6 +1448,9 @@ impl OrbitApp {
             worktree_script_input: worktree_script_input.clone(),
             _worktree_script_sub: worktree_script_sub,
             worktrees_open: false,
+            worktree_howto_dismissed: crate::transcript::hint_seen(
+                worktrees::WORKTREE_HOWTO_HINT_KEY,
+            ),
             work_in_menu_open: false,
             work_in_menu_highlight: 0,
             work_in_menu_focus: cx.focus_handle(),
@@ -2790,6 +2796,8 @@ mod new_task_reconnect_tests;
 #[cfg(test)]
 mod popup_layout_tests;
 #[cfg(test)]
+mod refresh_tests;
+#[cfg(test)]
 mod session_default_apply_tests;
 #[cfg(test)]
 mod session_park_tests;
@@ -2805,6 +2813,8 @@ mod sidebar_sort_tests;
 mod sidepane_full_width_tests;
 #[cfg(test)]
 mod titlebar_layout_tests;
+#[cfg(test)]
+mod worktree_howto_tests;
 
 // `icon` and friends are part of the crate-wide UI kit; keep their original
 // `crate::app::…` paths stable for the other modules that import them.

@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The Worktrees page opens with a short **How worktrees work** primer: what a
+  worktree is, how to create and open one, the optional
+  `.orbit/worktree-setup.sh` step, and the folder-vs-branch rule. It is
+  dismissible and stays gone once closed.
 - Git worktrees as first-class workspaces. A new Worktrees page (workspace
   header menu or the `Open Worktrees` command) lists every worktree Git
   reports, creates one from a new or existing branch (name, branch, and path
@@ -29,6 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Refresh** (⌘R, the File menu, or the command palette) now refreshes the
+  whole app, not just the session list. It re-reads sessions and settings from
+  disk, re-lists the active repository's worktrees, rebuilds the Explorer tree
+  and the Review diff, refreshes Git status, re-scans the Usage analytics,
+  re-reads the MCP config, and re-asks the running agent for its model/skill
+  catalog, session stats, and provider auth/quota. The menu and palette entry
+  is now labelled **Refresh** rather than **Refresh Sessions**.
 - Quieter chrome on the work surfaces:
   - The sidebar's "star the project" card is gone — the same link stays in
     Settings → About.

@@ -746,7 +746,7 @@ impl SidePane {
 
     /// Refresh from the header button: same reload, plus a short minimum spin
     /// so the click is visibly acknowledged even when the diff is instant.
-    fn refresh_from_button(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn refresh_from_button(&mut self, cx: &mut Context<Self>) {
         self.refresh_review(cx);
         self.refresh_spin_until = Some(Instant::now() + REFRESH_FEEDBACK);
         cx.spawn(async move |this, cx| {

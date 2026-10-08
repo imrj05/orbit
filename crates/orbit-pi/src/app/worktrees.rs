@@ -32,6 +32,8 @@ use crate::worktree_setup;
 const WATCH_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 /// Page column width; matches the Settings body.
 const PAGE_MAX_W: f32 = 720.;
+/// The one-time "How worktrees work" card's key in `hints.json`.
+pub(super) const WORKTREE_HOWTO_HINT_KEY: &str = "worktree_howto_dismissed";
 
 impl OrbitApp {
     // ── page lifecycle ─────────────────────────────────────────────────
@@ -1041,6 +1043,7 @@ impl OrbitApp {
                             .gap(DynamicSpacing::Base16.px(&theme))
                             .children(self.worktree_setup_banner(theme, this.clone(), cx))
                             .children(self.worktrees_error_banner(theme, this.clone()))
+                            .children(self.worktree_howto_card(theme, this.clone()))
                             .child(self.worktrees_list(theme, this.clone(), cx)),
                     ),
             )
@@ -1431,6 +1434,83 @@ impl OrbitApp {
                         cx.notify();
                     },
                 ))
+                .into_any_element(),
+        )
+    }
+
+    /// A dismissible primer shown above the list: what a worktree is and how
+    /// the pieces fit together. Once dismissed it stays gone (persisted with
+    /// the other one-time hints), so the page then shows only the list.
+    pub(super) fn worktree_howto_card(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+    ) -> Option<AnyElement> {
+        if self.worktree_howto_dismissed {
+            return None;
+        }
+        let dismiss = button_frame(
+            div().id("worktrees-howto-dismiss"),
+            &theme,
+            ButtonSize::Default,
+        )
+        .rounded(Radius::Small.px(&theme))
+        .cursor_pointer()
+        .hover(|s| s.bg(theme.overlay_strong))
+        .tip(tr!("common.dismiss"))
+        .child(icon(
+            "icons/x.svg",
+            ButtonSize::Default.icon_size().px(&theme),
+            theme.text_3,
+        ))
+        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+            this.update(cx, |app, cx| {
+                app.worktree_howto_dismissed = true;
+                crate::transcript::persist_hint(WORKTREE_HOWTO_HINT_KEY);
+                cx.notify();
+            });
+        });
+        Some(
+            div()
+                .w_full()
+                .bg(theme.bg_composer)
+                .border_1()
+                .border_color(theme.border)
+                .rounded(Radius::XLarge.px(&theme))
+                .px(DynamicSpacing::Base16.px(&theme))
+                .py(DynamicSpacing::Base12.px(&theme))
+                .flex()
+                .flex_col()
+                .gap(DynamicSpacing::Base08.px(&theme))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(DynamicSpacing::Base08.px(&theme))
+                        .child(icon(
+                            "icons/info.svg",
+                            IconSize::Small.px(&theme),
+                            theme.text_3,
+                        ))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(tr!("worktree.howto.title")),
+                        )
+                        .child(dismiss),
+                )
+                .child(
+                    div()
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_2)
+                        .child(tr!("worktree.howto.intro")),
+                )
+                .child(worktree_howto_line(theme, tr!("worktree.howto.create")))
+                .child(worktree_howto_line(theme, tr!("worktree.howto.open")))
+                .child(worktree_howto_line(theme, tr!("worktree.howto.setup")))
+                .child(worktree_howto_line(theme, tr!("worktree.howto.rename")))
                 .into_any_element(),
         )
     }
@@ -2906,6 +2986,24 @@ fn worktree_markers(worktree: &Worktree, theme: Theme) -> AnyElement {
         );
     }
     row.into_any_element()
+}
+
+/// One bullet in the "How worktrees work" card.
+fn worktree_howto_line(theme: Theme, text: String) -> AnyElement {
+    div()
+        .flex()
+        .items_start()
+        .gap(DynamicSpacing::Base08.px(&theme))
+        .child(div().flex_none().text_color(theme.text_3).child("•"))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_2)
+                .child(text),
+        )
+        .into_any_element()
 }
 
 /// Empty state for the worktrees list.

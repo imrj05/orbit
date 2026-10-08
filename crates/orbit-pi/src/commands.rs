@@ -227,7 +227,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             Session,
             "icons/refresh.svg",
             "command_palette.refresh_sessions",
-            "refresh reload sessions list disk",
+            "refresh reload sessions worktrees branch git explorer files usage providers mcp disk",
         ),
         shortcuts::REFRESH,
     ),

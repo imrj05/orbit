@@ -2624,11 +2624,43 @@ impl OrbitApp {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Sessions first: the CLI or another Orbit window may have written
+        // since the list was last read.
         self.sessions = sessions::load_sessions();
         self.sync_session_menu(cx);
-        // ⌘R on the Usage page refreshes the analytics too.
+        // Worktrees for the active repository, when their page is up.
+        if self.worktrees_open {
+            self.refresh_worktrees(cx);
+        }
+        // The Explorer tree (a cheap no-op when it was never loaded).
+        self.project_panel
+            .update(cx, |panel, cx| panel.mark_stale(cx));
+        // The Review pane's diff, only while it is showing.
+        if self.sidepane.read(cx).is_open() {
+            self.sidepane
+                .update(cx, |pane, cx| pane.refresh_from_button(cx));
+        }
+        // Git status/branch (the panel itself no-ops when closed).
+        self.git_panel.update(cx, |panel, cx| panel.refresh(cx));
+        // Usage analytics when its page is open.
         if self.usage_open {
             self.usage.update(cx, |page, cx| page.refresh(cx));
+        }
+        // Settings-backed catalogs: MCP config/status and installed packages
+        // are only meaningful while their section is on screen.
+        if self.settings_open {
+            match self.settings_section {
+                SettingsSection::Mcp => self.mcp_refresh(cx),
+                SettingsSection::Plugins => self.refresh_plugins(cx),
+                _ => {}
+            }
+        }
+        // The running agent can change under us (re-auth, model list, a
+        // compaction moved the context estimate) — re-ask it directly.
+        if self.client.is_some() {
+            self.refresh_auth();
+            self.refresh_catalogs();
+            self.refresh_context_stats();
         }
         cx.notify();
     }
