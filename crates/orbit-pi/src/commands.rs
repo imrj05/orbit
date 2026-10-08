@@ -47,6 +47,7 @@ pub enum CommandId {
     ToggleUsage,
     ReviewChanges,
     OpenGit,
+    OpenWorktrees,
     // Panels
     ToggleSidebar,
     ToggleSidePanel,
@@ -426,6 +427,13 @@ pub static COMMANDS: &[CommandSpec] = &[
             "git commit push branch history graph changes",
         ),
         shortcuts::OPEN_GIT,
+    ),
+    command(
+        CommandId::OpenWorktrees,
+        Navigation,
+        "icons/branch.svg",
+        "worktree.command_open",
+        "worktree worktrees git branch parallel workspace create",
     ),
     // ── Panels ─────────────────────────────────────────────────────────
     with_alt_title(
@@ -1081,6 +1089,7 @@ fn action_binding(binding: &Binding) -> Option<KeyBinding> {
         | CommandId::FocusComposer
         | CommandId::ToggleSidePanel
         | CommandId::OpenMcpSettings
+        | CommandId::OpenWorktrees
         | CommandId::AddMcpServer
         | CommandId::RefreshMcpServers
         | CommandId::ReconnectMcpServers => return None,

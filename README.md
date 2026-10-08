@@ -26,7 +26,7 @@ Usage — requests, tokens, cost, and cache, read from your own sessions:
 | **Plugins** | **Skills** |
 | ![Orbit's Plugins page listing installed pi packages with update and remove actions.](marketing/public/screens/plugins.png) | ![Orbit's Skills page listing project and global skills with the selected skill's SKILL.md rendered on the right.](marketing/public/screens/skills.png) |
 | **Models** | **Appearance** |
-| ![Orbit's Models page listing models grouped by provider with context sizes and favorite toggles.](marketing/public/screens/models.png) | ![Orbit's Appearance settings with theme swatches, type and density previews, and font pickers.](marketing/public/screens/appearance.png) |
+| ![Orbit's Models page listing models grouped by provider with context sizes and favorite toggles.](marketing/public/screens/models.png) | ![Orbit's Appearance settings with theme pickers, type and density previews, and font pickers.](marketing/public/screens/appearance.png) |
 | **General** | **Agent** |
 | ![Orbit's General settings showing the connected pi agent, the local session store, the workspace, and notification toggles.](marketing/public/screens/general.png) | ![Orbit's Agent settings with follow-up delivery, auto-compaction, auto-retry, compact-now, and session rename.](marketing/public/screens/agent.png) |
 
@@ -65,6 +65,7 @@ Usage — requests, tokens, cost, and cache, read from your own sessions:
 - Diff view controls: collapse or expand each file, wrap or pan long lines, unified or side-by-side rows, docked / full-page / minimized, and full keyboard operation (Tab focus stops, arrows, `n` / `p` between files, `[` / `]` between hunks)
 - Git page for Changes / History / Graph / Stashes: staging, commit (⌘↵), stash push/pop/apply/drop, sync, push (including force-with-lease), pull, fetch, merge, and rebase, with recovery actions for rejected pushes and conflicts
 - Git page's Issues and Pull requests tabs through `gh`: browse and filter, file issues and PRs, comment, apply labels, close/reopen, review, merge, and check out a PR's branch — with repository templates and an AI **Generate** action that drafts a title and body from the branch, its commits, optional notes, and the repo's own template
+- Git worktrees as first-class workspaces — a Worktrees page lists and creates worktrees (`repo/.wt/113` → `feature/issue-113`), opens them as the active workspace so the Explorer, terminal, Git page, Review, and agent all run there, and supports rename / move / lock / remove / prune / repair; the status bar's **Work in** chip switches between Local and any worktree or opens a quick create with a custom worktree name, and an optional per-repository setup script runs asynchronously with `ORBIT_ROOT_PATH` and `ORBIT_WORKTREE_PATH`
 
 **Explorer and Files**
 

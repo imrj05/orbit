@@ -419,6 +419,12 @@ impl OrbitApp {
             cx.notify();
             return;
         }
+        // The Worktrees dialog is a modal surface: Escape closes it before
+        // anything underneath (menus, the page, a running agent).
+        if self.worktree_dialog.is_some() {
+            self.cancel_worktree_dialog(cx);
+            return;
+        }
         // A pending access-guard approval is answered first: escape denies it.
         if self.approval.is_some() {
             self.respond_to_approval(None, window, cx);
@@ -437,6 +443,10 @@ impl OrbitApp {
             self.close_access_menu(window, cx);
             return;
         }
+        if self.work_in_menu_open {
+            self.close_work_in_menu(window, cx);
+            return;
+        }
         if self.git_open && self.git_panel.read(cx).has_modal() {
             self.git_panel
                 .update(cx, |panel, cx| panel.dismiss_modal(cx));
@@ -452,6 +462,15 @@ impl OrbitApp {
         }
         if self.git_open {
             self.close_git(cx);
+            return;
+        }
+        if self.worktree_menu.take().is_some() || self.worktree_advanced_open {
+            self.worktree_advanced_open = false;
+            cx.notify();
+            return;
+        }
+        if self.worktrees_open {
+            self.close_worktrees(cx);
             return;
         }
         if self.settings_open {
@@ -781,41 +800,52 @@ impl OrbitApp {
             // on pi boot. `get_messages` supersedes it moments later.
             self.extension_widgets.clear();
             self.preview_session_transcript(session.path.clone(), cx);
-            // Spawn a dedicated pi process rooted at the session's workspace
-            // and point it at the session file.
-            let secret_env = self.mcp.secret_env();
-            let spawned = self
-                .extensions
-                .spawn(&session.cwd, false, &secret_env)
-                .or_else(|_| {
-                    self.extensions.spawn(
-                        &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-                        false,
-                        &secret_env,
-                    )
+            if !session.cwd.is_dir() {
+                // The session's workspace is gone (a removed worktree, a
+                // deleted folder). Never spawn the agent in a fallback
+                // directory and never re-point the session silently (§22) —
+                // show the unavailable notice instead.
+                self.client = None;
+                self.worktree_dialog = Some(WorktreeDialog::Unavailable {
+                    path: session.cwd.clone(),
                 });
-            match spawned {
-                Ok(client) => {
-                    self.adopt_client(client);
-                    self.mcp_stamp = mcp_stamp;
-                    self.send(
-                        CommandBody::SwitchSession {
-                            session_path: session.path.to_string_lossy().into_owned(),
-                        },
-                        "switch_session",
-                    );
-                    // `get_state` and the capability probes are sent from the
-                    // switch_session success handler: querying state eagerly
-                    // here races the switch (pi answers with the default
-                    // model), and the probes only get queued after the load
-                    // commands, so a slow auth/quota lookup can't delay the
-                    // transcript.
-                }
-                Err(err) => {
-                    let message = tr!("runtime.pi_spawn_failed", error = err);
-                    self.client = None;
-                    self.runtime.error = Some(message.clone());
-                    self.set_status(message);
+            } else {
+                // Spawn a dedicated pi process rooted at the session's
+                // workspace and point it at the session file.
+                let secret_env = self.mcp.secret_env();
+                let spawned = self
+                    .extensions
+                    .spawn(&session.cwd, false, &secret_env)
+                    .or_else(|_| {
+                        self.extensions.spawn(
+                            &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                            false,
+                            &secret_env,
+                        )
+                    });
+                match spawned {
+                    Ok(client) => {
+                        self.adopt_client(client);
+                        self.mcp_stamp = mcp_stamp;
+                        self.send(
+                            CommandBody::SwitchSession {
+                                session_path: session.path.to_string_lossy().into_owned(),
+                            },
+                            "switch_session",
+                        );
+                        // `get_state` and the capability probes are sent from
+                        // the switch_session success handler: querying state
+                        // eagerly here races the switch (pi answers with the
+                        // default model), and the probes only get queued after
+                        // the load commands, so a slow auth/quota lookup can't
+                        // delay the transcript.
+                    }
+                    Err(err) => {
+                        let message = tr!("runtime.pi_spawn_failed", error = err);
+                        self.client = None;
+                        self.runtime.error = Some(message.clone());
+                        self.set_status(message);
+                    }
                 }
             }
         }
@@ -1046,6 +1076,7 @@ impl OrbitApp {
         self.git_open = true;
         // One main-area feature at a time.
         self.usage_open = false;
+        self.worktrees_open = false;
         self.session_details_open = false;
         // Files is another main-area feature; leave it for the Git card.
         self.close_files(cx);
@@ -1101,6 +1132,7 @@ impl OrbitApp {
     pub(super) fn open_usage(&mut self, cx: &mut Context<Self>) {
         self.usage_open = true;
         self.git_open = false;
+        self.worktrees_open = false;
         self.session_details_open = false;
         // Files is another main-area feature; leave it for the Usage card.
         self.close_files(cx);
@@ -2343,6 +2375,7 @@ impl OrbitApp {
         self.settings_open = false;
         self.git_open = false;
         self.usage_open = false;
+        self.worktrees_open = false;
         self.file_viewer
             .update(cx, |viewer, cx| viewer.show(path, display, cx));
         cx.notify();

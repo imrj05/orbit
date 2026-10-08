@@ -712,7 +712,6 @@ impl UsagePage {
                 band(
                     "usage-overview",
                     &tr!("usage.overview"),
-                    &tr!("usage.overview_hint"),
                     cards.into_any_element(),
                     theme,
                 )
@@ -720,7 +719,6 @@ impl UsagePage {
             UsageMode::Details => band(
                 "usage-details-band",
                 &tr!("usage.details"),
-                &tr!("usage.details_hint"),
                 div()
                     .w_full()
                     .flex()
@@ -765,7 +763,7 @@ impl UsagePage {
         section(
             "usage-activity",
             &tr!("usage.over_time"),
-            Some(&tr!("usage.over_time_hint")),
+            None,
             Some(meta),
             None,
             self.trend_body(snapshot, theme, cx),
@@ -803,7 +801,7 @@ impl UsagePage {
         section(
             "usage-series",
             &tr!("usage.buckets"),
-            Some(&tr!("usage.buckets_hint")),
+            None,
             Some(meta),
             None,
             self.chart_data_table(
@@ -832,7 +830,7 @@ impl UsagePage {
         section(
             "usage-signals",
             &tr!("usage.signals"),
-            Some(&tr!("usage.signals_hint")),
+            None,
             Some(meta),
             None,
             self.signals_body(insights, theme),
@@ -854,7 +852,7 @@ impl UsagePage {
         section(
             "usage-daily",
             &tr!("usage.daily_activity"),
-            Some(&tr!("usage.daily_activity_hint")),
+            None,
             Some(daily_meta),
             None,
             self.heatmap_body(snapshot, theme, cx),
@@ -873,7 +871,7 @@ impl UsagePage {
         section(
             "usage-token-health",
             &tr!("usage.token_health"),
-            Some(&tr!("usage.token_health_hint")),
+            None,
             Some(tr!("usage.composition_and_cache")),
             None,
             self.health_body(snapshot, theme, wide, cx),
@@ -1268,7 +1266,7 @@ impl UsagePage {
         card(
             "usage-summary",
             &tr!("usage.summary"),
-            Some(&tr!("usage.summary_hint")),
+            None,
             Some(summary_meta(snapshot)),
             None,
             body.into_any_element(),
@@ -2404,7 +2402,7 @@ impl UsagePage {
         section(
             "usage-breakdowns",
             &tr!("usage.breakdown"),
-            Some(&tr!("usage.breakdown_hint")),
+            None,
             Some(meta),
             None,
             body.into_any_element(),
@@ -3419,7 +3417,7 @@ impl UsagePage {
         section(
             "usage-details",
             &tr!("usage.records"),
-            Some(&tr!("usage.records_hint")),
+            None,
             Some(meta),
             None,
             content,
@@ -4505,13 +4503,7 @@ fn section(
 /// A reading band: the Simple / Details group heading, then its sections.
 /// Title is the 11px label register; the 15px titles live on the sections
 /// inside, so the two levels never compete.
-fn band(
-    id: &'static str,
-    title: &str,
-    description: &str,
-    content: AnyElement,
-    theme: Theme,
-) -> AnyElement {
+fn band(id: &'static str, title: &str, content: AnyElement, theme: Theme) -> AnyElement {
     div()
         .id(SharedString::from(id))
         .w_full()
@@ -4520,25 +4512,11 @@ fn band(
         .gap(DynamicSpacing::Base20.px(&theme))
         .child(
             div()
-                .w_full()
-                .flex()
-                .flex_col()
-                .gap(DynamicSpacing::Base04.px(&theme))
-                .child(
-                    div()
-                        .text_size(TextSize::Small.px(&theme))
-                        .line_height(theme.ui_px(14.))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text_3)
-                        .child(title.to_uppercase()),
-                )
-                .child(
-                    div()
-                        .text_size(TextSize::Small.px(&theme))
-                        .line_height(theme.ui_px(16.))
-                        .text_color(theme.text_3)
-                        .child(description.to_string()),
-                ),
+                .text_size(TextSize::Small.px(&theme))
+                .line_height(theme.ui_px(14.))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text_3)
+                .child(title.to_uppercase()),
         )
         .child(content)
         .into_any_element()
@@ -4581,6 +4559,7 @@ fn subpanel(label: &str, meta: Option<String>, content: AnyElement, theme: Theme
         .into_any_element()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn card(
     id: &'static str,
     title: &str,

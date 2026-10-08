@@ -4,7 +4,7 @@
 //! End-aligned neutral bubbles, assistant turns are Start-aligned prose. A
 //! ghost copy/timestamp footer reveals on row hover. Settled: **Worked for**
 //! fold → thinking/tool cards → answer → files → copy footer. Live: thinking
-//! + activity cards → answer → files → **Working for** — work stays in
+//! and activity cards → answer → files → **Working for** — work stays in
 //! sequence with the text as it arrives from the agent.
 //!
 //! Timestamps render on the footer when pi provides one (snapshot
@@ -167,6 +167,10 @@ pub(crate) struct TranscriptView {
     pub scroller: MessageScrollerState,
     pub streaming: Rc<Cell<Option<usize>>>,
     pub stream_started: Rc<Cell<Option<Instant>>>,
+    /// When the current turn's provider request began (`turn_start`). The
+    /// live rate divides by this clock, the same basis as pi's settled
+    /// `durationMs`, so a bursty stream is not read as the generation.
+    pub turn_started: Rc<Cell<Option<Instant>>>,
     pub expanded_turns: Rc<RefCell<HashSet<usize>>>,
     pub expanded_files: Rc<RefCell<HashSet<usize>>>,
     pub expanded_activities: ExpandedActivities,
@@ -1046,6 +1050,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
     let menu_selection = text_selection.clone();
     let streaming = view.streaming.clone();
     let stream_started = view.stream_started.clone();
+    let turn_started = view.turn_started.clone();
     let expanded_turns = view.expanded_turns.clone();
     let expanded_files = view.expanded_files.clone();
     let expanded_activities = view.expanded_activities.clone();
@@ -1145,18 +1150,20 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
     let nerd = nerd_font_family(cx);
     let list_el = list(view.scroller.list_state(), move |ix, _window, cx| {
         let live = streaming.get() == Some(ix);
-        let live_elapsed = if live {
-            stream_started.get().map(|started| started.elapsed())
-        } else {
-            None
-        };
+        // The rate's clock: prefer the turn's request start (`turn_start`),
+        // the same basis as pi's `durationMs`; fall back to the stream start
+        // when an older pi build never emitted one.
+        let live_clock = turn_started
+            .get()
+            .or_else(|| stream_started.get())
+            .map(|started| started.elapsed());
+        let live_elapsed = if live { live_clock } else { None };
         // Tokens/sec for the streaming row: the provider's cumulative
-        // output (or a chars/4 estimate) over the turn's live clock.
+        // output (or a chars/4 estimate) over the turn's request clock.
         let live_tps = if live {
-            messages
-                .borrow()
-                .get(ix)
-                .and_then(|message| streaming_tps(message, message.generation_time()))
+            messages.borrow().get(ix).and_then(|message| {
+                streaming_tps(message, live_generation_clock(message, live_clock))
+            })
         } else {
             None
         };
@@ -4791,8 +4798,37 @@ fn streamed_output_tokens(message: &ChatMessage) -> u64 {
     (chars / 4) as u64
 }
 
+/// The denominator for a streaming turn's rate. Settled steps contribute
+/// pi's `durationMs` (or their client fallback); the step still streaming
+/// contributes the time since its own request began. The numerator
+/// ([`streamed_output_tokens`]) is turn-cumulative, so the clock must be too
+/// — otherwise a step after a tool call would divide the whole run's tokens
+/// by only its own elapsed time.
+fn live_generation_clock(
+    message: &ChatMessage,
+    streaming_elapsed: Option<Duration>,
+) -> Option<Duration> {
+    let last = message.steps.len().checked_sub(1)?;
+    let mut total = Duration::ZERO;
+    let mut any = false;
+    for (ix, step) in message.steps.iter().enumerate() {
+        let clock = if ix == last {
+            streaming_elapsed.or(step.generation_time)
+        } else {
+            step.duration.or(step.generation_time)
+        };
+        if let Some(clock) = clock {
+            total += clock;
+            any = true;
+        }
+    }
+    any.then_some(total)
+}
+
 /// Tokens per second for a streaming row, or `None` before a rate is
-/// meaningful (under a second elapsed, or no output yet).
+/// meaningful (under a second of the turn elapsed, or no output yet). The
+/// caller passes the turn's request clock (`turn_start`) — the same basis as
+/// pi's settled `durationMs` — so the two figures agree.
 fn streaming_tps(message: &ChatMessage, elapsed: Option<Duration>) -> Option<f64> {
     let elapsed = elapsed?;
     let secs = elapsed.as_secs_f64();
@@ -4803,9 +4839,9 @@ fn streaming_tps(message: &ChatMessage, elapsed: Option<Duration>) -> Option<f64
     (tokens > 0).then(|| tokens as f64 / secs)
 }
 
-/// Generation-only output rate for a settled turn: output tokens over the
-/// time the model was actively decoding (tool execution, round-trips, and
-/// stalls excluded). `None` when there is no measurable rate.
+/// Settled output rate: output tokens over pi's measured call duration
+/// (its `durationMs`, or the client-measured fallback) — prefill plus
+/// decode. `None` when there is no measurable rate.
 fn generation_tps(usage: &MessageUsage, generation: Option<Duration>) -> Option<f64> {
     let secs = generation?.as_secs_f64();
     if secs < 1.0 || usage.output == 0 {
@@ -7625,6 +7661,58 @@ mod tests {
         assert_eq!(streaming_tps(&empty, Some(Duration::from_secs(2))), None);
     }
 
+    /// A streaming turn's clock sums the settled steps' durations plus the
+    /// live step's elapsed time, so a step that follows a tool call is not
+    /// measured against the whole run's token count.
+    #[test]
+    fn live_generation_clock_spans_settled_and_streaming_steps() {
+        let step = |duration: Option<Duration>, generation_time: Option<Duration>| Step {
+            duration,
+            generation_time,
+            ..Step::default()
+        };
+        let message = |steps: Vec<Step>| ChatMessage {
+            user: false,
+            summary: None,
+            steps,
+            images: Vec::new(),
+            elapsed: None,
+            finished_at: None,
+            error: None,
+            aborted: false,
+        };
+
+        // A single streaming step uses just its own request clock.
+        let one = message(vec![step(None, None)]);
+        assert_eq!(
+            live_generation_clock(&one, Some(Duration::from_secs(5))),
+            Some(Duration::from_secs(5))
+        );
+
+        // A settled step's pi duration plus the live step's elapsed time.
+        let two = message(vec![
+            step(Some(Duration::from_secs(3)), None),
+            step(None, None),
+        ]);
+        assert_eq!(
+            live_generation_clock(&two, Some(Duration::from_secs(2))),
+            Some(Duration::from_secs(5))
+        );
+
+        // Without a live clock, the step's client measurement is the fallback.
+        let fallback = message(vec![step(None, Some(Duration::from_secs(4)))]);
+        assert_eq!(
+            live_generation_clock(&fallback, None),
+            Some(Duration::from_secs(4))
+        );
+
+        // No steps: no clock at all.
+        assert_eq!(
+            live_generation_clock(&message(Vec::new()), Some(Duration::from_secs(1))),
+            None
+        );
+    }
+
     #[test]
     fn format_tps_reads_compactly() {
         assert_eq!(format_tps(42.4), "42");
@@ -8881,6 +8969,7 @@ mod tests {
             text_selection: state,
             streaming: Rc::new(Cell::new(None)),
             stream_started: Rc::new(Cell::new(None)),
+            turn_started: Rc::new(Cell::new(None)),
             expanded_turns: Rc::new(RefCell::new(HashSet::new())),
             expanded_files: Rc::new(RefCell::new(HashSet::new())),
             expanded_activities: Rc::new(RefCell::new(HashMap::new())),
@@ -9551,7 +9640,7 @@ mod tests {
     /// selection (this caught a panel hitbox that never filled its bounds).
     #[gpui::test]
     fn transcript_drag_selects_across_paragraphs(cx: &mut gpui::TestAppContext) {
-        let mut cx = cx.add_empty_window();
+        let cx = cx.add_empty_window();
         cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
         let state: TextSelectionState = Rc::new(RefCell::new(TextSelection::new()));
         let messages = test_messages();
@@ -9580,7 +9669,7 @@ mod tests {
                 move |_, _| view.clone(),
             );
         };
-        paint(&mut cx);
+        paint(cx);
 
         let blocks = state.borrow();
         assert!(
@@ -9595,9 +9684,9 @@ mod tests {
         let start = point(first.left() + px(2.), first.top() + px(8.));
         let end = point(last.left() + px(60.), last.top() + px(8.));
         cx.simulate_mouse_down(start, MouseButton::Left, gpui::Modifiers::none());
-        paint(&mut cx);
+        paint(cx);
         cx.simulate_mouse_move(end, Some(MouseButton::Left), gpui::Modifiers::none());
-        paint(&mut cx);
+        paint(cx);
         cx.simulate_mouse_up(end, MouseButton::Left, gpui::Modifiers::none());
 
         let selected = state.borrow().selected_text();

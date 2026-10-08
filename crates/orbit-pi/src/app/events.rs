@@ -86,6 +86,9 @@ impl OrbitApp {
                     .update(cx, |viewer, cx| viewer.reload(&path, cx));
             }
             self.refresh_branch_status(cx);
+            // External `git worktree add`/`remove` lands as a workspace
+            // change; re-list the page so Git's own worktrees appear (§30).
+            self.refresh_worktrees_soon(cx);
             cx.notify();
         }
         // Expire a stalled login and auto-cancel it with pi.
@@ -1163,5 +1166,9 @@ impl OrbitApp {
             .as_deref()
             .and_then(watch::WorkspaceWatcher::start);
         self.refresh_branch_status(cx);
+        // The status bar's "Work in" chip and the Worktrees page both read the
+        // repository's worktree list, so keep it current on every workspace
+        // move (one background `git worktree list`).
+        self.refresh_worktrees(cx);
     }
 }

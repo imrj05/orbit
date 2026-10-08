@@ -327,7 +327,7 @@ impl Render for OrbitApp {
         // full-page Review pane yields to the one that just opened rather
         // than covering it.
         let viewer_open = self.file_viewer.read(cx).is_open();
-        let feature_open = viewer_open || self.git_open || self.usage_open;
+        let feature_open = viewer_open || self.git_open || self.usage_open || self.worktrees_open;
         // A page that opens under a full-page Review pane gets the window
         // back; one that was already open does not block maximizing over it.
         if pane_visible
@@ -364,6 +364,7 @@ impl Render for OrbitApp {
             && !self.settings_open
             && !self.usage_open
             && !self.git_open
+            && !self.worktrees_open
             && !pane_full;
         let panel_workspace = review_workspace.clone();
         self.terminal_panel.update(cx, |panel, cx| {
@@ -495,6 +496,9 @@ impl Render for OrbitApp {
             self.usage
                 .update(cx, |page, cx| page.top_bar_leading(theme, cx))
         });
+        let worktrees_leading = self
+            .worktrees_open
+            .then(|| self.worktrees_top_bar_leading(theme, cx));
         let mut top_controls = div().flex_none().flex().items_center().gap_2();
         // Provider quota — a compact, provider-independent headroom meter.
         // Hidden entirely on a pi without `quota.*` (or when no provider
@@ -758,12 +762,6 @@ impl Render for OrbitApp {
                                             .into_any_element()
                                     }),
                             )
-                            // star the project — a quiet GitHub call to action
-                            // set just above the footer, until dismissed
-                            .children(
-                                (!self.star_banner_dismissed)
-                                    .then(|| self.sidebar_star_banner(theme, cx)),
-                            )
                             // footer — connection status, then the utility
                             // icons on the last edge, set off from the session
                             // list by a hairline
@@ -883,7 +881,9 @@ impl Render for OrbitApp {
                                 .h_full()
                                 .flex()
                                 .items_center();
-                            if let Some(leading) = git_leading.or(usage_leading) {
+                            if let Some(leading) =
+                                git_leading.or(usage_leading).or(worktrees_leading)
+                            {
                                 // A feature page's leading controls (Back and the
                                 // page title) are interactive, so they sit outside
                                 // the drag region — pressing them must not start a
@@ -940,6 +940,8 @@ impl Render for OrbitApp {
                     self.git_panel.clone().into_any_element()
                 } else if self.usage_open {
                     self.usage.clone().into_any_element()
+                } else if self.worktrees_open {
+                    self.render_worktrees_page(cx).into_any_element()
                 } else {
                     // chat body — transcript/empty, composer, terminal
                     div()
@@ -1245,6 +1247,9 @@ impl Render for OrbitApp {
                     .iter()
                     .map(|ui| crate::custom_ui::layer(ui.clone()).into_any_element()),
             )
+            // ── worktrees dialog — create / rename / move / remove,
+            // opened from the page and its row menus.
+            .children(self.worktree_dialog_layer(theme, cx.entity(), cx))
             // ── update modal — the search, changelog, and install decision,
             // opened by the download control and Check for Updates. Below the
             // extension dialog (a run blocks on it) and the lightbox.
@@ -1470,8 +1475,12 @@ impl OrbitApp {
             // row gets narrow.
             .when(!compact, |row| row.child(self.access_chip(cx)))
             // Workflow mode: the session's scope (Plan / Build / Ask), enforced
-            // by the workflow extension. Sits beside the access chip.
-            .when(!compact, |row| row.child(self.workflow_chip(cx)))
+            // by the workflow extension. Sits beside the access chip — except
+            // on the new-task page, where the centred Mode control already
+            // owns it.
+            .when(!compact && !self.transcript.is_empty(), |row| {
+                row.child(self.workflow_chip(cx))
+            })
             .child(div().flex_1())
             .child(self.model_chip(compact, cx))
             .child(self.thinking_chip(cx))
@@ -1527,7 +1536,7 @@ impl OrbitApp {
     /// animated on open (reduce-motion aware) so the turn reads as a
     /// transition, and resting flat when closed so there is no reverse
     /// flicker. `fg` is the caret color while open.
-    fn chip_caret(
+    pub(super) fn chip_caret(
         open: bool,
         fg: gpui::Hsla,
         animation_id: &'static str,
@@ -3071,6 +3080,9 @@ impl OrbitApp {
                     ))
                     .child(workspace_label.to_string()),
             )
+            // "Work in": Local / linked worktree / New worktree. Hidden when
+            // the active workspace is not a Git repository.
+            .children(self.work_in_chip(cx))
             .children(self.branch.as_ref().map(|branch| {
                 let open = self.branch_picker.is_some();
                 let pending = self.branch_operation_pending;
@@ -3117,31 +3129,6 @@ impl OrbitApp {
                             )
                             .children(self.branch_picker_popup()),
                     )
-                    .children(branch.other_branches.map(|count| {
-                        button_frame(div().id("status-branch-count"), &theme, ButtonSize::Default)
-                            .when(!pending, |chip| chip.cursor_pointer())
-                            .when(open, |chip| {
-                                chip.bg(theme.active).text_color(theme.active_fg)
-                            })
-                            .when(!open && !pending, |chip| {
-                                chip.hover(|s| s.bg(theme.overlay).text_color(theme.text_2))
-                            })
-                            .when(pending, |chip| chip.opacity(0.6))
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(|app, _, window, cx| {
-                                    if !app.branch_operation_pending {
-                                        app.toggle_branch_picker(window, cx);
-                                    }
-                                }),
-                            )
-                            .child(icon(
-                                "icons/git-fork.svg",
-                                ButtonSize::Default.icon_size().px(&theme),
-                                theme.text_3,
-                            ))
-                            .child(tr!("view.count_more", count = count))
-                    }))
                     .into_any_element()
             }))
             // A quiet MCP indicator: only when servers are configured, and
@@ -3770,55 +3757,6 @@ impl OrbitApp {
             || self.workspace_menu.is_some()
             || self.sidebar_sort_menu
             || self.settings_select.is_some()
-    }
-
-    /// The sidebar's "star the project" banner. It sits directly above the
-    /// Settings/status footer, so the last thing in the column is the GitHub
-    /// link. Same card as Settings → About, plus a close button that remembers
-    /// the dismissal.
-    pub(super) fn sidebar_star_banner(&self, theme: Theme, cx: &Context<Self>) -> AnyElement {
-        let dismiss = icon_button_frame(
-            div()
-                .id("sidebar-star-dismiss")
-                .debug_selector(|| "sidebar-star-dismiss".to_string())
-                .cursor_pointer()
-                .hover(|s| s.bg(theme.bg_hover)),
-            &theme,
-            ButtonSize::Compact,
-        )
-        .tooltip({
-            let label = tr!("common.dismiss");
-            move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
-        })
-        // The banner itself opens the repo on mouse-up: swallow this click so
-        // dismissing never also opens GitHub.
-        .on_mouse_up(
-            MouseButton::Left,
-            cx.listener(|this, _, _, cx| {
-                cx.stop_propagation();
-                this.dismiss_star_banner(cx);
-            }),
-        )
-        .child(icon(
-            "icons/x.svg",
-            ButtonSize::Compact.icon_size().px(&theme),
-            theme.text_3,
-        ))
-        .into_any_element();
-
-        div()
-            .mx_3()
-            .mt_2()
-            .mb_2()
-            .child(star_project_banner(theme, "sidebar-star", Some(dismiss)))
-            .into_any_element()
-    }
-
-    /// Hide the sidebar's star banner and remember it across relaunches.
-    pub(super) fn dismiss_star_banner(&mut self, cx: &mut Context<Self>) {
-        self.star_banner_dismissed = true;
-        crate::transcript::persist_hint(crate::transcript::STAR_BANNER_HINT_KEY);
-        cx.notify();
     }
 
     pub(super) fn send_button(&self, cx: &Context<Self>) -> impl IntoElement + use<> {

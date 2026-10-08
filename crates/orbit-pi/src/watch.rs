@@ -6,7 +6,7 @@
 //! scan/refresh off-thread and expose a cheap `take_dirty` the ~90 ms UI
 //! heartbeat can poll, so no I/O ever blocks a frame.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
@@ -24,6 +24,18 @@ pub fn debounced_watch(
     debounce: Duration,
     keep: impl Fn(&Path) -> bool + Send + 'static,
 ) -> Option<(Debouncer<RecommendedWatcher>, Receiver<()>)> {
+    debounced_watch_mode(dir, debounce, RecursiveMode::Recursive, keep)
+}
+
+/// [`debounced_watch`] with an explicit notify watch mode (the git-metadata
+/// watcher uses non-recursive mode for directories whose children should not
+/// be traversed).
+fn debounced_watch_mode(
+    dir: &Path,
+    debounce: Duration,
+    mode: RecursiveMode,
+    keep: impl Fn(&Path) -> bool + Send + 'static,
+) -> Option<(Debouncer<RecommendedWatcher>, Receiver<()>)> {
     if !dir.is_dir() {
         return None;
     }
@@ -35,10 +47,7 @@ pub fn debounced_watch(
         }
     })
     .ok()?;
-    debouncer
-        .watcher()
-        .watch(dir, RecursiveMode::Recursive)
-        .ok()?;
+    debouncer.watcher().watch(dir, mode).ok()?;
     Some((debouncer, rx))
 }
 
@@ -54,30 +63,123 @@ pub fn drain(rx: &Receiver<()>) -> bool {
 /// Watches a workspace tree so Review and the Git page refresh when files or
 /// git state change without an RPC event (pi edits, the user in another tool,
 /// a CLI commit/checkout).
+///
+/// A linked worktree keeps its Git metadata outside its own tree (a `.git`
+/// *file* points at `<common>/.git/worktrees/<name>`), so a workspace watch
+/// alone would miss HEAD/index/ref moves there. The watcher therefore also
+/// follows the directories `git rev-parse` names:
+///
+/// ```text
+/// git rev-parse --absolute-git-dir     # <common>/.git/worktrees/<name>
+/// git rev-parse --git-common-dir       # <common>/.git
+/// ```
+///
 pub struct WorkspaceWatcher {
-    _debouncer: Debouncer<RecommendedWatcher>,
-    dirty: Receiver<()>,
+    _debouncers: Vec<Debouncer<RecommendedWatcher>>,
+    dirty: Vec<Receiver<()>>,
 }
 
 impl WorkspaceWatcher {
-    /// Watch `dir` recursively. `None` when the backend can't start; the
-    /// existing manual refresh buttons still cover that case.
+    /// Watch `dir` recursively, plus the repository's Git metadata when that
+    /// lives outside `dir` (linked worktrees). `None` when no backend can
+    /// start; the existing manual refresh buttons still cover that case.
     pub fn start(dir: &Path) -> Option<Self> {
         Self::watch(dir, Duration::from_millis(500))
     }
 
     fn watch(dir: &Path, debounce: Duration) -> Option<Self> {
-        let (debouncer, dirty) = debounced_watch(dir, debounce, workspace_relevant)?;
+        let mut debouncers = Vec::new();
+        let mut dirty = Vec::new();
+        if let Some((debouncer, rx)) = debounced_watch(dir, debounce, workspace_relevant) {
+            debouncers.push(debouncer);
+            dirty.push(rx);
+        }
+        // The per-worktree Git dir is inside the workspace for the main
+        // worktree (already covered by the recursive watch) and outside it
+        // for linked worktrees (needs its own watch).
+        let workspace = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+        for git_dir in git_metadata_dirs(dir) {
+            if git_dir.starts_with(&workspace) {
+                continue;
+            }
+            let root = git_dir.canonicalize().unwrap_or_else(|_| git_dir.clone());
+            if let Some((debouncer, rx)) =
+                debounced_watch(&git_dir, debounce, git_metadata_relevant(root))
+            {
+                debouncers.push(debouncer);
+                dirty.push(rx);
+            }
+        }
+        if debouncers.is_empty() {
+            return None;
+        }
         Some(Self {
-            _debouncer: debouncer,
+            _debouncers: debouncers,
             dirty,
         })
     }
 
     /// Whether a relevant path changed since the last call.
     pub fn take_dirty(&self) -> bool {
-        drain(&self.dirty)
+        self.dirty
+            .iter()
+            .fold(false, |dirty, rx| drain(rx) || dirty)
     }
+}
+
+/// Git metadata directories a workspace watch must follow: the worktree's own
+/// Git dir (HEAD, index, in-progress markers) and the common dir (refs`).
+/// Empty for a non-repository or when Git is unavailable.
+fn git_metadata_dirs(dir: &Path) -> Vec<PathBuf> {
+    let mut seen = std::collections::HashSet::new();
+    let mut dirs = Vec::new();
+    // `--absolute-git-dir` returns the per-worktree dir; `--git-common-dir`
+    // the shared one. `--path-format=absolute` needs Git >= 2.31, so a
+    // relative fallback is joined against the workspace.
+    let candidates = [
+        ("--absolute-git-dir", ""),
+        ("--path-format=absolute", "--git-common-dir"),
+    ];
+    for (first, second) in candidates {
+        let mut args = vec!["rev-parse"];
+        if !first.is_empty() {
+            args.push(first);
+        }
+        if !second.is_empty() {
+            args.push(second);
+        }
+        let Ok(raw) = crate::git::run_git(dir, &args) else {
+            continue;
+        };
+        if raw.is_empty() {
+            continue;
+        }
+        let path = PathBuf::from(&raw);
+        let path = if path.is_absolute() {
+            path
+        } else {
+            dir.join(path)
+        };
+        let path = path.canonicalize().unwrap_or(path);
+        if seen.insert(path.clone()) {
+            dirs.push(path);
+        }
+    }
+    // Git < 2.31: resolve the common dir the old way.
+    if dirs.is_empty() {
+        if let Ok(raw) = crate::git::run_git(dir, &["rev-parse", "--git-common-dir"]) {
+            if !raw.is_empty() {
+                let path = PathBuf::from(&raw);
+                let path = if path.is_absolute() {
+                    path
+                } else {
+                    dir.join(path)
+                };
+                dirs.push(path.canonicalize().unwrap_or(path));
+            }
+        }
+    }
+    dirs.into_iter().filter(|path| path.is_dir()).collect()
 }
 
 /// Generated trees and editor cruft churn constantly without changing what
@@ -128,6 +230,34 @@ fn workspace_relevant(path: &Path) -> bool {
         }
     }
     true
+}
+
+/// Path filter for a watch rooted at a Git metadata directory (a linked
+/// worktree's per-worktree dir or the common dir). Only HEAD/index/ref/config
+/// moves count; object churn and Orbit's own checkpoint scratch are dropped.
+fn git_metadata_relevant(root: PathBuf) -> impl Fn(&Path) -> bool + Send + 'static {
+    move |path| {
+        let Ok(relative) = path.strip_prefix(&root) else {
+            return false;
+        };
+        let parts: Vec<&str> = relative
+            .components()
+            .filter_map(|component| component.as_os_str().to_str())
+            .collect();
+        match parts.as_slice() {
+            ["HEAD"]
+            | ["index"]
+            | ["ORIG_HEAD"]
+            | ["packed-refs"]
+            | ["config"]
+            | ["MERGE_HEAD"]
+            | ["CHERRY_PICK_HEAD"]
+            | ["REVERT_HEAD"] => true,
+            ["refs", kind, ..] => matches!(*kind, "heads" | "remotes" | "tags"),
+            ["rebase-merge", ..] | ["rebase-apply", ..] => true,
+            _ => false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -187,6 +317,74 @@ mod tests {
         assert!(status.success(), "git {args:?} failed");
     }
 
+    /// A linked worktree's Git metadata is outside its own tree; the metadata
+    /// watch keeps HEAD/index/ref moves and drops object churn and Orbit's
+    /// checkpoint scratch.
+    #[test]
+    fn git_metadata_filter_keeps_head_index_and_refs() {
+        let worktree_git = PathBuf::from("/repo/.git/worktrees/113");
+        let keep = git_metadata_relevant(worktree_git.clone());
+        assert!(keep(&worktree_git.join("HEAD")));
+        assert!(keep(&worktree_git.join("index")));
+        assert!(keep(&worktree_git.join("MERGE_HEAD")));
+        assert!(keep(&worktree_git.join("rebase-merge/git-rebase-todo")));
+        assert!(!keep(&worktree_git.join("orbit-index-read-1")));
+        assert!(!keep(&worktree_git.join("orbit-index-read-1.lock")));
+        assert!(!keep(&worktree_git.join("objects/ab/cdef")));
+
+        let common = PathBuf::from("/repo/.git");
+        let keep = git_metadata_relevant(common.clone());
+        assert!(keep(&common.join("refs/heads/main")));
+        assert!(keep(&common.join("refs/remotes/origin/main")));
+        assert!(keep(&common.join("packed-refs")));
+        assert!(keep(&common.join("HEAD")));
+        assert!(!keep(&common.join("objects/ab/cdef")));
+        assert!(!keep(&common.join("config.lock")));
+        assert!(!keep(Path::new("/elsewhere/HEAD")));
+    }
+
+    /// The §28 regression guard: a linked worktree's HEAD and index live in
+    /// the main repository's `.git/worktrees/<name>`, and its refs in the
+    /// common `.git`; both must be named as metadata dirs to watch.
+    #[test]
+    fn linked_worktree_metadata_dirs_are_resolved_outside_the_tree() {
+        let dir = std::env::temp_dir().join("orbit-watch-worktree-metadata-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "--quiet", "--initial-branch=main"]);
+        git(&dir, &["config", "user.name", "Orbit Test"]);
+        git(&dir, &["config", "user.email", "orbit@example.com"]);
+        fs::write(dir.join("tracked.txt"), "baseline\n").unwrap();
+        git(&dir, &["add", "tracked.txt"]);
+        git(&dir, &["commit", "--quiet", "-m", "baseline"]);
+        git(
+            &dir,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                ".wt/113",
+                "-b",
+                "feature/issue-113",
+            ],
+        );
+
+        let worktree = dir.join(".wt/113");
+        let resolved = git_metadata_dirs(&worktree);
+        assert!(
+            !resolved.is_empty(),
+            "linked worktree metadata dirs resolved"
+        );
+        assert!(
+            resolved.iter().all(|path| !path.starts_with(&worktree)),
+            "linked worktree metadata must live outside the tree: {resolved:?}"
+        );
+        // The per-worktree git dir carries HEAD and index.
+        assert!(resolved.iter().any(|path| path.join("HEAD").is_file()));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     /// The bug this guards: Review loads by calling
     /// `capture_worktree_commit`, which writes `.git/orbit-checkpoint-index-*`.
     /// If the watcher kept that path, each refresh would trigger the next.
@@ -239,8 +437,7 @@ mod tests {
         git(&dir, &["add", "tracked.txt"]);
         fs::write(dir.join("tracked.txt"), "unstaged\n").unwrap();
 
-        let watcher =
-            WorkspaceWatcher::watch(&dir, Duration::from_millis(50)).expect("watcher");
+        let watcher = WorkspaceWatcher::watch(&dir, Duration::from_millis(50)).expect("watcher");
         std::thread::sleep(Duration::from_millis(300));
         let _ = watcher.take_dirty();
 

@@ -527,6 +527,7 @@ impl SeriesQueryResult {
 
 /// Filter → search → sort → paginate the usage-over-time buckets. Pure, so
 /// the ordering is unit-tested without GPUI.
+#[allow(clippy::too_many_arguments)]
 pub fn query_series(
     points: &[SeriesPoint],
     search: &str,

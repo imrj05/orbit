@@ -58,10 +58,7 @@ impl FakePi {
                     return raw.lines().map(str::to_string).collect();
                 }
             }
-            assert!(
-                Instant::now() < deadline,
-                "fake pi never recorded its argv"
-            );
+            assert!(Instant::now() < deadline, "fake pi never recorded its argv");
             std::thread::sleep(Duration::from_millis(10));
         }
     }
@@ -74,8 +71,9 @@ fn workspace() -> &'static Path {
 #[test]
 fn empty_extra_args_keep_the_base_argv() {
     let fake = FakePi::new();
-    let _client = PiClient::spawn_with_bin_and_args(fake.bin.to_str().unwrap(), workspace(), None, &[])
-        .expect("spawn fake pi");
+    let _client =
+        PiClient::spawn_with_bin_and_args(fake.bin.to_str().unwrap(), workspace(), None, &[])
+            .expect("spawn fake pi");
     assert_eq!(
         fake.read_argv(),
         vec!["--mode", "rpc", "--approve"],

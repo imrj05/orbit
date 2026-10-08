@@ -7,8 +7,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Git worktrees as first-class workspaces. A new Worktrees page (workspace
+  header menu or the `Open Worktrees` command) lists every worktree Git
+  reports, creates one from a new or existing branch (name, branch, and path
+  are independent concepts), opens it as the active workspace — Explorer,
+  terminal, Git page, Review, MCP scope, and the agent all follow its path —
+  and supports rename (directory only, never the branch), move, lock/unlock,
+  remove with a dirty-worktree confirmation, and advanced prune/repair. The
+  status bar's **Work in** chip switches between the main working directory and
+  any linked worktree and opens the create dialog with a suggested but fully
+  editable (custom) worktree name; the default root is `repo/.wt`, configurable
+  globally (Settings → Worktrees) and per repository (`.orbit/worktree.json`),
+  and an optional setup script (default `.orbit/worktree-setup.sh`, explicitly
+  allowed per repository on first use) runs asynchronously after creation with
+  `ORBIT_ROOT_PATH` and `ORBIT_WORKTREE_PATH`, keeping the worktree on failure.
+  Sessions record and restore the worktree path; an unavailable worktree is
+  surfaced instead of silently falling back to the main repository. See
+  `crates/orbit-pi/docs/worktrees.md`.
+
+### Changed
+
+- Quieter chrome on the work surfaces:
+  - The sidebar's "star the project" card is gone — the same link stays in
+    Settings → About.
+  - Appearance drops the duplicate palette-swatch strip beside each theme
+    picker.
+  - The Usage page's cards lose their explanatory subtitles; the metric
+    captions that carry data stay.
+  - The status bar drops the redundant branch-count chip (the branch chip's
+    own popover lists every branch) and hides the MCP indicator while every
+    server is connected.
+  - The composer no longer repeats the Plan/Build/Ask chip on the new-task
+    page, where the centred Mode control already owns it.
+  - Settings → General states the notification trigger once — "When a run
+    finishes or pi needs an answer" — instead of repeating it on each of the
+    three channel rows.
+  - The pull-request detail page drops its metadata rail, which only
+    repeated the chips above it (review, checks, changes, branches). It now
+    reads as one centred column, with the opened/updated times folded into
+    the header line and the checkout/close/open actions moved below the
+    review actions.
+  - The pull-request list row now splits identity (number, title, labels,
+    author, branches) from status (review, checks, diffstat, time), which
+    reads down the right edge, and merged/closed rows carry their own state
+    glyph instead of a recoloured open-PR icon.
+  - The issue pages get the same treatment: the list row moves its comment
+    count into the right status column, and the detail page drops its rail —
+    assignees, the labels editor, and the updated time fold into the header
+    as one centred reading column.
+
 ### Fixed
 
+- The transcript's **tok/s** rate reads correctly again. It was measured
+  client-side from the gaps between pi's streamed deltas, but pi emits the
+  response in bursts, so that window collapsed to a fraction of the real
+  generation and the rate ballooned (e.g. `600 tok/s` against a true ~100).
+  The settled rate now uses pi's own per-call `durationMs`, and the live rate
+  divides by the time since the turn's `turn_start` — the same clock basis —
+  so the two figures agree.
+- Baseten's provider-usage readout works again. Its billing summary requires
+  an explicit ISO 8601 `start_date`/`end_date` range (31 days maximum), so the
+  old `?window=30d` query returned HTTP 400 and the Providers page showed an
+  error instead of a spend figure. The adapter now asks for a rolling 30-day
+  window and sums the response's `dedicated_usage`, `training_usage`, and
+  `model_apis_usage` totals — the shape Baseten actually returns — showing the
+  combined spend with a per-category breakdown.
+- The issue and pull-request detail headers no longer collapse their meta
+  line to one character per line. The text beside the state chip is now
+  `flex_1` + `whitespace_normal`, so it takes the column's remaining width
+  and wraps there instead of shrinking inside a wrapping flex row and
+  overrunning the rows beneath it.
+- A review or comment card with no body (a bare approval, for example) no
+  longer draws a stray hairline across its bottom — the header rule that
+  separates a body from its header now appears only when there is a body.
 - RPC patch auto-apply now locates the pi package for pi's **managed
   installer** as well as npm/pnpm/bun globals. The managed launcher at
   `<agent>/bin/pi` is not inside a `node_modules`, so the old ancestor walk

@@ -344,12 +344,11 @@ fn walk_js(dir: &Path, found: &mut Vec<PathBuf>) {
         let path = entry.path();
         if path.is_dir() {
             walk_js(&path, found);
-        } else if path.extension().is_some_and(|ext| ext == "js") {
-            if fs::read_to_string(&path)
+        } else if path.extension().is_some_and(|ext| ext == "js")
+            && fs::read_to_string(&path)
                 .is_ok_and(|text| text.contains(ANCHOR_HELPERS) && text.contains(ANCHOR_CASES))
-            {
-                found.push(path);
-            }
+        {
+            found.push(path);
         }
     }
 }

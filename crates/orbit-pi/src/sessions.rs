@@ -635,6 +635,30 @@ mod tests {
     }
 
     #[test]
+    fn read_session_restores_the_worktree_cwd() {
+        // A session created in a worktree records the worktree path as its
+        // cwd; reopening after a restart must read that back exactly, because
+        // the app uses it as the active workspace (never the main repository).
+        let dir = std::env::temp_dir().join("orbit-session-worktree-cwd-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("2026-01-01T00-00-00-000Z_wt.jsonl");
+        let cwd = "/tmp/my-project/.wt/113";
+        fs::write(
+            &path,
+            format!(
+                "{{\"type\":\"session\",\"id\":\"wt\",\"cwd\":\"{cwd}\"}}\n\
+                 {{\"type\":\"message\",\"message\":{{\"role\":\"user\",\"content\":\"ship it\"}}}}\n"
+            ),
+        )
+        .unwrap();
+        let info = read_session(&path).expect("listable");
+        assert_eq!(info.cwd, PathBuf::from(cwd));
+        assert_ne!(info.cwd, PathBuf::from("/tmp/my-project"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn read_session_uses_pis_persisted_name_as_the_title() {
         // pi writes the auto-title as a `session_info` entry; the sidebar
         // must show it as the title and the first message as the preview,

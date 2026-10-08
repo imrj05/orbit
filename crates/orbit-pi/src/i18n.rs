@@ -14,7 +14,9 @@ use serde::{Deserialize, Serialize};
 /// locales Orbit deliberately ships today.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub enum AppLanguage {
+    #[default]
     System,
     English,
     SimplifiedChinese,
@@ -178,12 +180,6 @@ impl AppLanguage {
     /// English rather than reading as the wrong script.
     pub fn from_locale_id(locale: &str) -> Self {
         Self::shipped_locale_id(locale).unwrap_or(Self::English)
-    }
-}
-
-impl Default for AppLanguage {
-    fn default() -> Self {
-        Self::System
     }
 }
 

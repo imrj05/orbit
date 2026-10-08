@@ -1598,7 +1598,7 @@ fn loading_state(theme: &Theme) -> AnyElement {
         ))
         .child(
             div()
-                .text_size(TextSize::Small.px(&theme))
+                .text_size(TextSize::Small.px(theme))
                 .text_color(theme.text_3)
                 .child(tr!("explorer.loading")),
         )

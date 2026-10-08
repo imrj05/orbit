@@ -526,6 +526,7 @@ impl OrbitApp {
         self.context_popup = ContextPopup::None;
         self.access_menu_open = false;
         self.workflow_menu_open = false;
+        self.work_in_menu_open = false;
         self.autocomplete_dismissed = true;
         self.autocomplete.borrow_mut().open = false;
         self.add_menu_open = true;
@@ -694,6 +695,7 @@ impl OrbitApp {
         self.model_selector = None;
         self.context_popup = ContextPopup::None;
         self.add_menu_open = false;
+        self.work_in_menu_open = false;
         self.autocomplete_dismissed = true;
         self.autocomplete.borrow_mut().open = false;
         self.access_menu_open = true;
@@ -812,6 +814,7 @@ impl OrbitApp {
         self.context_popup = ContextPopup::None;
         self.access_menu_open = false;
         self.add_menu_open = false;
+        self.work_in_menu_open = false;
         self.autocomplete_dismissed = true;
         self.autocomplete.borrow_mut().open = false;
         self.workflow_menu_open = true;

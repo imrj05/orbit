@@ -117,6 +117,71 @@ fn last_updated_sorts_an_empty_group_last() {
 }
 
 #[test]
+fn last_updated_keeps_the_open_sessions_group_first() {
+    // beta has the newest activity (a background run writing), but alpha
+    // holds the open session. Alpha must still lead, or the workspace the
+    // user is working in slides down on every watcher reload.
+    let sessions = vec![
+        store_session("a1", "/work/alpha", 10),
+        store_session("b1", "/work/beta", 30),
+    ];
+    let workspaces = workspace_paths(&["/work/alpha", "/work/beta"]);
+    let expanded: HashSet<String> = ["alpha", "beta"].iter().map(|s| s.to_string()).collect();
+    let active = Some(sessions[0].path.clone());
+    let rows = build_sidebar_rows(
+        &sessions,
+        &workspaces,
+        WorkspaceSort::LastUpdated,
+        &HashMap::new(),
+        "none",
+        &HashSet::new(),
+        &expanded,
+        &HashMap::new(),
+        &HashSet::new(),
+        &active,
+        &HashSet::new(),
+    );
+    assert_eq!(group_labels(&rows), vec!["alpha", "beta"]);
+}
+
+#[test]
+fn active_session_leads_its_group_over_a_newer_run() {
+    // Within one group the open session (oldest) must beat a running sibling
+    // with newer activity; otherwise the two swap as each appends a message.
+    let sessions = vec![
+        store_session("a1", "/work/alpha", 10),
+        store_session("a2", "/work/alpha", 30),
+        store_session("a3", "/work/alpha", 20),
+    ];
+    let workspaces = workspace_paths(&["/work/alpha"]);
+    let expanded: HashSet<String> = ["alpha"].iter().map(|s| s.to_string()).collect();
+    let running: HashSet<PathBuf> = [sessions[1].path.clone()].into_iter().collect();
+    let active = Some(sessions[0].path.clone());
+    let rows = build_sidebar_rows(
+        &sessions,
+        &workspaces,
+        WorkspaceSort::Manual,
+        &HashMap::new(),
+        "none",
+        &HashSet::new(),
+        &expanded,
+        &HashMap::new(),
+        &HashSet::new(),
+        &active,
+        &running,
+    );
+    let indices: Vec<usize> = rows
+        .iter()
+        .filter_map(|row| match row {
+            SideRow::Session(ix) => Some(*ix),
+            _ => None,
+        })
+        .collect();
+    // Open session first, then the live run, then the idle sibling.
+    assert_eq!(indices, vec![0, 1, 2]);
+}
+
+#[test]
 fn alphabetical_orders_by_label_case_insensitively() {
     let workspaces = workspace_paths(&["/work/Zeta", "/work/apple", "/work/Banana"]);
     let rows = rows_for(

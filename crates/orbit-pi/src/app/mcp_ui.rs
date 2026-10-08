@@ -930,6 +930,12 @@ impl OrbitApp {
     /// users who do not use MCP. Clicking opens Settings → MCP.
     pub(super) fn mcp_status_chip(&self, theme: Theme, cx: &Context<Self>) -> Option<AnyElement> {
         let (dot, label) = self.mcp_chip_parts(theme)?;
+        // A fully connected fleet is the steady state; the chip only earns
+        // its place when a server needs attention, so the status bar stays
+        // quiet when there is nothing to act on.
+        if self.mcp_all_connected() {
+            return None;
+        }
         let entity = cx.entity();
         Some(
             button_frame(div().id("status-mcp"), &theme, ButtonSize::Default)
@@ -1005,6 +1011,24 @@ impl OrbitApp {
             )
         };
         Some((dot, label))
+    }
+
+    /// Whether every enabled MCP server is connected — the quiet steady state
+    /// where the status-bar chip hides.
+    pub(super) fn mcp_all_connected(&self) -> bool {
+        let enabled: Vec<_> = self
+            .mcp
+            .servers()
+            .iter()
+            .filter(|server| server.def.enabled)
+            .collect();
+        !enabled.is_empty()
+            && enabled.iter().all(|server| {
+                matches!(
+                    self.mcp.runtime(&server.name).status,
+                    McpServerStatus::Connected
+                )
+            })
     }
 
     /// The pinned MCP toolbar: search, a status line, Refresh, and Add.
