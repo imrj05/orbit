@@ -210,6 +210,7 @@ The other nine locale files are generated, never hand-edited:
 ```
 python3 scripts/gen_locales.py        # regenerate locales/*.yml + report gaps
 cargo test -p orbit-pi i18n           # completeness guard
+python3 scripts/check_i18n.py         # key + placeholder guard
 ```
 
 - **Ships:** English, 简体中文 (`zh-CN`), 日本語 (`ja`), 한국어 (`ko`),
@@ -219,7 +220,11 @@ cargo test -p orbit-pi i18n           # completeness guard
 - **Call sites:** wrap literals with the crate-root macros — `tr!("key")` for
   plain text, `tr!("key", count = n)` for `%{count}` interpolation, and
   `tr_cow!("key")` only on hot render paths that borrow. Never hard-code
-  user-facing English in a render path; add a key instead.
+  user-facing English in a render path; add a key instead. The binding name
+  must match the key's placeholder exactly (`count = n`, not `total = n`):
+  rust-i18n leaves an unbound `%{name}` literal in the rendered string.
+  `scripts/check_i18n.py` fails on a key/placeholder mismatch, so run it after
+  touching call sites.
 - **Translations** live in `scripts/i18n_glossary*.py`, keyed by the exact
   English string from `en.yml`. Split by surface (core, settings, palette,
   transcript). A string with no entry falls back to English.

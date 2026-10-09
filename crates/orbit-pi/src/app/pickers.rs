@@ -683,7 +683,9 @@ impl OrbitApp {
                 app.branch_operation_pending = false;
                 match result {
                     Ok(()) => app.toast_success(tr!("pickers.created_and_switched", label = label)),
-                    Err(err) => app.toast_error(tr!("pickers.branch_create_failed", error = err)),
+                    // The key's placeholder is `%{err}` — binding `error`
+                    // left the literal `%{err}` in the toast.
+                    Err(err) => app.toast_error(tr!("pickers.branch_create_failed", err = err)),
                 }
                 app.refresh_branch_status(cx);
                 cx.notify();

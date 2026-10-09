@@ -402,7 +402,10 @@ pub struct Theme {
     pub syn_literal: Hsla,
     pub syn_meta: Hsla,
     pub syn_operator: Hsla,
-    /// Inline-code chip wash (text uses [`Self::accent`]).
+    /// Inline-code chip wash. The wash is the accent at low alpha; the
+    /// glyphs ride the body ink, so code stays distinct from links (which
+    /// are [`Self::accent`] text) and a code-heavy answer does not flood
+    /// the screen with accent.
     pub inline_code_bg: Hsla,
     pub tool_border: Hsla,
     pub tool_meta: Hsla,

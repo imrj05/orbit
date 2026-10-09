@@ -50,8 +50,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The status bar drops the redundant branch-count chip (the branch chip's
     own popover lists every branch) and hides the MCP indicator while every
     server is connected.
-  - The composer no longer repeats the Plan/Build/Ask chip on the new-task
-    page, where the centred Mode control already owns it.
+  - The composer's Plan/Build/Ask chip is the single home for the workflow
+    scope: the new-task page no longer draws its own centred Mode control
+    (a block of tiles in the empty state). The chip sits with the other
+    agent controls on every composer, new task included, and still holds the
+    choice as pending until the session id exists.
   - Settings → General states the notification trigger once — "When a run
     finishes or pi needs an answer" — instead of repeating it on each of the
     three channel rows.
@@ -68,9 +71,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     count into the right status column, and the detail page drops its rail —
     assignees, the labels editor, and the updated time fold into the header
     as one centred reading column.
+  - Inline code in the transcript keeps the body ink and its wash instead of
+    painting the glyphs in the accent. A code-heavy answer used to become a
+    field of ember and read as one long link; now only links carry the
+    accent, and code is marked by the mono face and the chip wash.
+  - The sidebar wordmark is held to a quieter size, so it labels the
+    workbench instead of reading as the column's headline.
+  - An expanded command tool call now reads as one terminal surface. The
+    **Command** and **Output** sections sit on a single recessed code plane
+    (`code_bg`) divided by a hairline, each with its label and copy control on
+    a shared axis, instead of two label-plus-body groups floating on the card
+    with only a gap between them. The command keeps its `$` prompt gutter, so
+    a wrapped command hangs under the first line.
+  - Settled tool activity is monochrome. Tool glyphs used to shift the accent
+    into a per-kind hue (amber for run, cyan for explore, green for mutate,
+    violet for web); a long transcript became a field of tinted badges. The
+    glyph shape already names the kind, so settled work now uses one muted
+    ink. Running still takes the accent and failure still takes red.
+  - Transcript cards (tool, summary, thought, ask) use the plain `border`
+    hairline instead of `border_strong`. `border_strong` is the focus/hover
+    edge; using it at rest made every card read a step too loud.
 
 ### Fixed
 
+- Hover fills no longer square off rounded cards. gpui 0.2.2 clips
+  `overflow_hidden` to a rectangle, not the border radius, so a full-bleed
+  child background painted square corners over the rounded edge. The tool
+  card's header (the reported case), its error strip and detail surface, the
+  summary card's header, the code-block title strip, and the MCP server rows'
+  first/last entries now carry the matching corner radius themselves.
+- Two `tr!` call sites bound the wrong placeholder name, so the literal token
+  was printed instead of the value: the tool-detail and edit-diff fold labels
+  showed `Show all %{count} lines` (the call bound `total` for a `%{count}`
+  key), and a failed branch creation toasted `Branch create failed: %{err}`
+  (the call bound `error`). Both now bind the declared name.
+  `scripts/check_i18n.py` gained a placeholder pass so the class cannot
+  recur — it validates every `tr!` call's bindings against its key's
+  `%{…}` placeholders and exits non-zero on a mismatch.
+- A truncated tool result no longer renders its **truncated** chip twice in
+  the activity row; the chip was queued twice back-to-back.
+- The transcript no longer writes a per-render `[card-dbg]` line to stderr
+  for every read/edit/write tool card.
 - The transcript's **tok/s** rate reads correctly again. It was measured
   client-side from the gaps between pi's streamed deltas, but pi emits the
   response in bursts, so that window collapsed to a fraction of the real

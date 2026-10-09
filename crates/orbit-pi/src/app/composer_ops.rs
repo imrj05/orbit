@@ -905,18 +905,6 @@ impl OrbitApp {
         cx.notify();
     }
 
-    /// The New Task page's Mode field. Quiet version of [`set_workflow_mode`]:
-    /// before a session exists the choice is pending, committed when the new
-    /// session id arrives. No status/toast — the field is its own feedback.
-    pub(super) fn choose_workflow_mode(&mut self, mode: WorkflowMode, cx: &mut Context<Self>) {
-        self.workflow_mode = mode;
-        match self.session_id.clone() {
-            Some(id) => crate::workflow::persist_for(&id, mode),
-            None => self.workflow_pending = Some(mode),
-        }
-        cx.notify();
-    }
-
     /// Drop workflow-store entries for sessions that no longer exist, keeping
     /// the active session (which may be an unlisted draft). Called whenever
     /// the session list reloads, so the store cannot grow without bound.
