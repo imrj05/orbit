@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-10-09
+
 ### Added
 
 - The Worktrees page opens with a short **How worktrees work** primer: what a
@@ -926,7 +928,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - In-transcript find (⌘F) and a full-window image lightbox.
 - Native macOS app bundle, Developer-ID signed and notarizable.
 
-[Unreleased]: https://github.com/imrj05/orbit/compare/v0.2.6...HEAD
+[Unreleased]: https://github.com/imrj05/orbit/compare/v0.2.7...HEAD
 [0.0.1]: https://github.com/imrj05/orbit/releases/tag/v0.0.1
 [0.0.2]: https://github.com/imrj05/orbit/releases/tag/v0.0.2
 [0.0.3]: https://github.com/imrj05/orbit/releases/tag/v0.0.3
@@ -953,3 +955,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.2.4]: https://github.com/imrj05/orbit/releases/tag/v0.2.4
 [0.2.5]: https://github.com/imrj05/orbit/releases/tag/v0.2.5
 [0.2.6]: https://github.com/imrj05/orbit/releases/tag/v0.2.6
+[0.2.7]: https://github.com/imrj05/orbit/releases/tag/v0.2.7
