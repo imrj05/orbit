@@ -112,6 +112,7 @@ impl OrbitApp {
         }
         self.open_in_menu_open = !self.open_in_menu_open;
         if self.open_in_menu_open {
+            self.work_in_menu_open = false;
             self.open_in_filter
                 .update(cx, |filter, cx| filter.clear(cx));
             let handle = self.open_in_filter.read(cx).focus_handle(cx);

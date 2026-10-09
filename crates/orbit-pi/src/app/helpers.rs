@@ -432,12 +432,12 @@ pub(crate) fn empty_state(
         .flex_col()
         .items_center()
         .justify_center()
-        .px(px(16.))
-        .pb(px(24.))
+        .px(DynamicSpacing::Base16.px(&theme))
+        .pb(DynamicSpacing::Base24.px(&theme))
         .child(empty_state_glyph(theme, glyph))
         .child(
             div()
-                .mt(px(16.))
+                .mt(DynamicSpacing::Base16.px(&theme))
                 .text_size(TextSize::Default.px(&theme))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text)
@@ -446,7 +446,7 @@ pub(crate) fn empty_state(
     if let Some(detail) = detail {
         column = column.child(
             div()
-                .mt(px(6.))
+                .mt(DynamicSpacing::Base06.px(&theme))
                 .max_w(px(360.))
                 .text_align(TextAlign::Center)
                 .text_size(TextSize::Small.px(&theme))

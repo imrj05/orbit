@@ -5024,7 +5024,14 @@ impl GitPanel {
         } else {
             tr!("git_panel.issue_comments", count = issue.comments.len())
         };
-        let meta_text = format!("{opened_by} \u{b7} {comments}");
+        // The metadata rail that held opened/updated is gone, so both
+        // timestamps ride the meta line.
+        let updated = format!(
+            "{} {}",
+            tr!("git_panel.updated"),
+            gh::relative_time(&issue.updated_at)
+        );
+        let meta_text = format!("{opened_by} \u{b7} {updated} \u{b7} {comments}");
         let title_row = div()
             .flex()
             .items_start()
@@ -5048,7 +5055,6 @@ impl GitPanel {
                         div()
                             .flex()
                             .items_center()
-                            .flex_wrap()
                             .gap(DynamicSpacing::Base08.px(&theme))
                             .child(state_chip(
                                 &state_label,
@@ -5057,8 +5063,15 @@ impl GitPanel {
                                 theme,
                             ))
                             .child(
+                                // `flex_1` + `min_w_0` + `whitespace_normal`:
+                                // the meta text takes the column's remaining
+                                // width and wraps there. A bare `min_w_0` child
+                                // in a wrapping row collapsed to one character
+                                // per line and overran the rows below it.
                                 div()
+                                    .flex_1()
                                     .min_w_0()
+                                    .whitespace_normal()
                                     .text_size(TextSize::Small.px(&theme))
                                     .text_color(theme.text_3)
                                     .child(meta_text),
@@ -5117,26 +5130,90 @@ impl GitPanel {
             .flex_col()
             .gap(DynamicSpacing::Base12.px(&theme))
             .child(title_row);
-        if !issue.labels.is_empty() {
+        // Labels and the manage action share one row: the chips are the
+        // state, the button edits it. With no labels the row is just the
+        // button.
+        header = header.child(
+            div()
+                .flex()
+                .items_center()
+                .flex_wrap()
+                .gap(DynamicSpacing::Base06.px(&theme))
+                .children(
+                    issue
+                        .labels
+                        .iter()
+                        .map(|label| issue_label_chip(label, theme)),
+                )
+                .child({
+                    let trigger = action_button(
+                        "git-issue-labels",
+                        &tr!("git_panel.edit_labels"),
+                        Some(
+                            icon(
+                                "icons/tag-01.svg",
+                                ButtonSize::Medium.icon_size().px(&theme),
+                                theme.text_2,
+                            )
+                            .into_any_element(),
+                        ),
+                        false,
+                        self.issue_busy,
+                        theme,
+                        cx.listener(|this, _: &ClickEvent, _, cx| {
+                            // mouse-down-out closes the popup; the button's
+                            // mouse-up would otherwise toggle it straight back
+                            // open on the same gesture (see AGENT.md popovers).
+                            const GESTURE: Duration = Duration::from_millis(200);
+                            if let Some(dismissed) = this.menu_dismissed_at.take() {
+                                if dismissed.elapsed() < GESTURE {
+                                    return;
+                                }
+                            }
+                            this.label_menu_open = !this.label_menu_open;
+                            cx.notify();
+                        }),
+                    );
+                    self.label_selector(theme, trigger, false, cx)
+                }),
+        );
+        // Assignees are the one thing the header did not already carry; they
+        // stay a compact row, hidden when nobody is assigned.
+        if !issue.assignees.is_empty() {
             header = header.child(
                 div()
                     .flex()
                     .items_center()
                     .flex_wrap()
-                    .gap(DynamicSpacing::Base06.px(&theme))
-                    .children(
-                        issue
-                            .labels
-                            .iter()
-                            .map(|label| issue_label_chip(label, theme)),
-                    ),
+                    .gap(DynamicSpacing::Base08.px(&theme))
+                    .child(
+                        div()
+                            .text_size(TextSize::XSmall.px(&theme))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text_3)
+                            .child(tr!("git_panel.assignees").to_uppercase()),
+                    )
+                    .children(issue.assignees.iter().map(|user| {
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(DynamicSpacing::Base06.px(&theme))
+                            .child(author_avatar(&user.login, "", theme))
+                            .child(
+                                div()
+                                    .text_size(TextSize::Small.px(&theme))
+                                    .text_color(theme.text_2)
+                                    .child(user.login.clone()),
+                            )
+                            .into_any_element()
+                    })),
             );
         }
 
         // ── reading column ──
         let mut main = div()
             .flex_1()
-            .min_w(px(520.))
+            .min_w_0()
             .flex()
             .flex_col()
             .gap(DynamicSpacing::Base16.px(&theme))
@@ -5209,108 +5286,6 @@ impl GitPanel {
                 )),
         );
 
-        // ── metadata rail (assignees, labels, timeline) ──
-        let mut assignees = div()
-            .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base06.px(&theme));
-        if issue.assignees.is_empty() {
-            assignees = assignees.child(
-                div()
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.text_3)
-                    .child(tr!("git_panel.no_assignees")),
-            );
-        } else {
-            assignees = assignees.children(issue.assignees.iter().map(|user| {
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(DynamicSpacing::Base06.px(&theme))
-                    .child(author_avatar(&user.login, "", theme))
-                    .child(
-                        div()
-                            .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_2)
-                            .child(user.login.clone()),
-                    )
-                    .into_any_element()
-            }));
-        }
-        // The chips live in the header; the rail keeps the manage action so
-        // the two surfaces never repeat the same labels. With none set, the
-        // header row is hidden and this button is the whole section.
-        let labels = div()
-            .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base08.px(&theme))
-            .child({
-                let trigger = action_button(
-                    "git-issue-labels",
-                    &tr!("git_panel.edit_labels"),
-                    Some(
-                        icon(
-                            "icons/tag-01.svg",
-                            ButtonSize::Medium.icon_size().px(&theme),
-                            theme.text_2,
-                        )
-                        .into_any_element(),
-                    ),
-                    false,
-                    self.issue_busy,
-                    theme,
-                    cx.listener(|this, _: &ClickEvent, _, cx| {
-                        // mouse-down-out closes the popup; the button's mouse-up
-                        // would otherwise toggle it straight back open on the
-                        // same gesture (see AGENT.md popovers).
-                        const GESTURE: Duration = Duration::from_millis(200);
-                        if let Some(dismissed) = this.menu_dismissed_at.take() {
-                            if dismissed.elapsed() < GESTURE {
-                                return;
-                            }
-                        }
-                        this.label_menu_open = !this.label_menu_open;
-                        cx.notify();
-                    }),
-                );
-                self.label_selector(theme, trigger, false, cx)
-            });
-        let timeline = div()
-            .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base06.px(&theme))
-            .child(meta_time_row(
-                &tr!("git_panel.opened"),
-                &gh::relative_time(&issue.created_at),
-                theme,
-            ))
-            .child(meta_time_row(
-                &tr!("git_panel.updated"),
-                &gh::relative_time(&issue.updated_at),
-                theme,
-            ));
-        let rail = div()
-            .flex_none()
-            .w(px(240.))
-            .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base16.px(&theme))
-            .child(meta_section(
-                &tr!("git_panel.assignees"),
-                assignees.into_any_element(),
-                theme,
-            ))
-            .child(meta_section(
-                &tr!("git_panel.labels"),
-                labels.into_any_element(),
-                theme,
-            ))
-            .child(meta_section(
-                &tr!("git_panel.timeline"),
-                timeline.into_any_element(),
-                theme,
-            ));
-
         div()
             .id("git-issue-detail-scroll")
             .flex_1()
@@ -5324,17 +5299,10 @@ impl GitPanel {
                     .px(DynamicSpacing::Base20.px(&theme))
                     .py(DynamicSpacing::Base16.px(&theme))
                     .child(
-                        // The rail wraps under the reading column when the pane
-                        // is too narrow to hold both (min column + rail + gap).
-                        div()
-                            .w_full()
-                            .max_w(px(1040.))
-                            .flex()
-                            .flex_wrap()
-                            .items_start()
-                            .gap(DynamicSpacing::Base20.px(&theme))
-                            .child(main)
-                            .child(rail),
+                        // A single reading column, matching the pull-request
+                        // detail. The rail repeated the header; its one unique
+                        // section (assignees) and its edit action folded in.
+                        div().w_full().max_w(px(860.)).child(main),
                     ),
             )
             .into_any_element()
@@ -5736,7 +5704,7 @@ impl GitPanel {
         };
         let mut content = div()
             .flex_1()
-            .min_w(px(520.))
+            .min_w_0()
             .flex()
             .flex_col()
             .gap(DynamicSpacing::Base12.px(&theme));
@@ -5766,7 +5734,6 @@ impl GitPanel {
                             div()
                                 .flex()
                                 .items_center()
-                                .flex_wrap()
                                 .gap(DynamicSpacing::Base06.px(&theme))
                                 .child(state_chip(
                                     &state_label,
@@ -5783,15 +5750,25 @@ impl GitPanel {
                                     )
                                 }))
                                 .child(
+                                    // `flex_1` + `whitespace_normal`: the meta
+                                    // text takes the remaining width and wraps
+                                    // there instead of overflowing the row.
                                     div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .whitespace_normal()
                                         .text_size(TextSize::Small.px(&theme))
                                         .text_color(theme.text_3)
                                         .child(format!(
-                                            "#{} \u{b7} {} \u{b7} {} \u{2192} {}",
+                                            "#{} \u{b7} {} \u{b7} {} \u{2192} {} \u{b7} {} {} \u{b7} {} {}",
                                             pull.number,
                                             pull.author.login,
                                             pull.base_ref,
-                                            pull.head_ref
+                                            pull.head_ref,
+                                            tr!("git_panel.opened"),
+                                            gh::relative_time(&pull.created_at),
+                                            tr!("git_panel.updated"),
+                                            gh::relative_time(&pull.updated_at),
                                         )),
                                 ),
                         ),
@@ -6136,71 +6113,9 @@ impl GitPanel {
                     )),
             );
         }
-        content = content.child(
-            div()
-                .flex()
-                .items_center()
-                .flex_wrap()
-                .gap(DynamicSpacing::Base08.px(&theme))
-                .child(action_button(
-                    "git-pr-checkout",
-                    &tr!("git_panel.checkout_pull"),
-                    Some(
-                        icon(
-                            "icons/branch.svg",
-                            ButtonSize::Medium.icon_size().px(&theme),
-                            theme.text_2,
-                        )
-                        .into_any_element(),
-                    ),
-                    false,
-                    self.pr_busy || !pull.is_open(),
-                    theme,
-                    cx.listener(|this, _: &ClickEvent, _, cx| this.checkout_pull(cx)),
-                ))
-                // "Close" sits with the utility actions, away from the primary
-                // Merge button, so it cannot be hit by a merge-shaped reflex.
-                .children(pull.is_open().then(|| {
-                    action_button(
-                        "git-pr-close",
-                        &tr!("git_panel.close_pull"),
-                        Some(
-                            icon(
-                                "icons/x.svg",
-                                ButtonSize::Medium.icon_size().px(&theme),
-                                theme.text_2,
-                            )
-                            .into_any_element(),
-                        ),
-                        false,
-                        self.pr_busy,
-                        theme,
-                        cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_pull_state(cx)),
-                    )
-                }))
-                .children((!pull.url.is_empty()).then(|| {
-                    let url = pull.url.clone();
-                    action_button(
-                        "git-pr-web",
-                        &tr!("git_panel.open_on_github"),
-                        Some(
-                            icon(
-                                "icons/arrow-up-right.svg",
-                                ButtonSize::Medium.icon_size().px(&theme),
-                                theme.text_2,
-                            )
-                            .into_any_element(),
-                        ),
-                        false,
-                        false,
-                        theme,
-                        cx.listener(move |_, _: &ClickEvent, _, cx| cx.open_url(&url)),
-                    )
-                })),
-        );
-
-        // The composer stays last on the page: timeline, then the merge box,
-        // then the field the reader writes in.
+        // The composer follows the merge box; the review actions sit under it,
+        // and the quieter utility actions (checkout / close / open on GitHub)
+        // trail the page.
         content = content.child(composer_field(theme, self.pr_comment.clone(), px(88.)));
         content = content.child(
             div()
@@ -6261,77 +6176,69 @@ impl GitPanel {
                     }),
                 )),
         );
-        // ── metadata rail ──
-        let review_body: AnyElement = review_chip(pull, theme).unwrap_or_else(|| {
+        // Utility actions last: they are the least primary thing on the page,
+        // and "Close" sits here, away from the primary Merge button, so it
+        // cannot be hit by a merge-shaped reflex.
+        content = content.child(
             div()
-                .text_size(TextSize::Small.px(&theme))
-                .text_color(theme.text_3)
-                .child(tr!("git_panel.review_none"))
-                .into_any_element()
-        });
-        let checks_body: AnyElement = match check_bucket_chip(pull.checks_summary(), theme) {
-            Some(chip) => chip,
-            None => div()
-                .text_size(TextSize::Small.px(&theme))
-                .text_color(theme.text_3)
-                .child(tr!("git_panel.no_checks"))
-                .into_any_element(),
-        };
-        let changes = div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap(DynamicSpacing::Base08.px(&theme))
-            .child(delta_stats(pull.additions, pull.deletions, theme))
-            .child(
-                div()
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.text_3)
-                    .child(tr!("git_panel.files_count", count = pull.changed_files)),
-            )
-            .into_any_element();
-        let branches = div()
-            .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base06.px(&theme))
-            .child(meta_time_row(
-                &tr!("git_panel.base_branch"),
-                &pull.base_ref,
-                theme,
-            ))
-            .child(meta_time_row(
-                &tr!("git_panel.head_branch"),
-                &pull.head_ref,
-                theme,
-            ))
-            .into_any_element();
-        let timeline = div()
-            .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base06.px(&theme))
-            .child(meta_time_row(
-                &tr!("git_panel.opened"),
-                &gh::relative_time(&pull.created_at),
-                theme,
-            ))
-            .child(meta_time_row(
-                &tr!("git_panel.updated"),
-                &gh::relative_time(&pull.updated_at),
-                theme,
-            ))
-            .into_any_element();
-        let rail = div()
-            .flex_none()
-            .w(px(240.))
-            .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base16.px(&theme))
-            .child(meta_section(&tr!("git_panel.review"), review_body, theme))
-            .child(meta_section(&tr!("git_panel.checks"), checks_body, theme))
-            .child(meta_section(&tr!("git_panel.tab_changes"), changes, theme))
-            .child(meta_section(&tr!("git_panel.branches"), branches, theme))
-            .child(meta_section(&tr!("git_panel.timeline"), timeline, theme));
-
+                .flex()
+                .items_center()
+                .flex_wrap()
+                .gap(DynamicSpacing::Base08.px(&theme))
+                .child(action_button(
+                    "git-pr-checkout",
+                    &tr!("git_panel.checkout_pull"),
+                    Some(
+                        icon(
+                            "icons/branch.svg",
+                            ButtonSize::Medium.icon_size().px(&theme),
+                            theme.text_2,
+                        )
+                        .into_any_element(),
+                    ),
+                    false,
+                    self.pr_busy || !pull.is_open(),
+                    theme,
+                    cx.listener(|this, _: &ClickEvent, _, cx| this.checkout_pull(cx)),
+                ))
+                .children(pull.is_open().then(|| {
+                    action_button(
+                        "git-pr-close",
+                        &tr!("git_panel.close_pull"),
+                        Some(
+                            icon(
+                                "icons/x.svg",
+                                ButtonSize::Medium.icon_size().px(&theme),
+                                theme.text_2,
+                            )
+                            .into_any_element(),
+                        ),
+                        false,
+                        self.pr_busy,
+                        theme,
+                        cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_pull_state(cx)),
+                    )
+                }))
+                .children((!pull.url.is_empty()).then(|| {
+                    let url = pull.url.clone();
+                    action_button(
+                        "git-pr-web",
+                        &tr!("git_panel.open_on_github"),
+                        Some(
+                            icon(
+                                "icons/arrow-up-right.svg",
+                                ButtonSize::Medium.icon_size().px(&theme),
+                                theme.text_2,
+                            )
+                            .into_any_element(),
+                        ),
+                        false,
+                        false,
+                        theme,
+                        cx.listener(move |_, _: &ClickEvent, _, cx| cx.open_url(&url)),
+                    )
+                })),
+        );
         div()
             .id("git-pr-detail-scroll")
             .flex_1()
@@ -6345,17 +6252,12 @@ impl GitPanel {
                     .px(DynamicSpacing::Base20.px(&theme))
                     .py(DynamicSpacing::Base16.px(&theme))
                     .child(
-                        // The rail wraps under the reading column when the pane
-                        // is too narrow to hold both (min column + rail + gap).
-                        div()
-                            .w_full()
-                            .max_w(px(1040.))
-                            .flex()
-                            .flex_wrap()
-                            .items_start()
-                            .gap(DynamicSpacing::Base20.px(&theme))
-                            .child(content)
-                            .child(rail),
+                        // A single reading column. The metadata rail that used
+                        // to sit beside it only repeated the chips above
+                        // (review, checks, changes, branches); its one unique
+                        // fact — the opened/updated timeline — now rides the
+                        // header line, so the page reads top to bottom.
+                        div().w_full().max_w(px(860.)).child(content),
                     ),
             )
             .into_any_element()
@@ -7657,22 +7559,24 @@ fn issue_row(issue: &gh::GhIssue, theme: Theme, cx: &Context<GitPanel>) -> AnyEl
                                 .text_size(TextSize::Small.px(&theme))
                                 .text_color(theme.text_3)
                                 .child(issue.author.login.clone()),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(DynamicSpacing::Base03.px(&theme))
-                                .text_size(TextSize::Small.px(&theme))
-                                .text_color(theme.text_3)
-                                .child(icon(
-                                    "icons/chat.svg",
-                                    IconSize::Indicator.px(&theme),
-                                    theme.text_3,
-                                ))
-                                .child(issue.comments.len().to_string()),
                         ),
                 ),
+        )
+        // Status reads down the right edge — comment count, then the relative
+        // time — matching the pull-request row so both lists scan the same way.
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(DynamicSpacing::Base03.px(&theme))
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_3)
+                .child(icon(
+                    "icons/chat.svg",
+                    IconSize::Indicator.px(&theme),
+                    theme.text_3,
+                ))
+                .child(issue.comments.len().to_string()),
         )
         .child(row_time(&gh::relative_time(&issue.updated_at), theme));
     if !issue.url.is_empty() {
@@ -7838,6 +7742,8 @@ fn issue_comment_card(comment: &gh::GhComment, theme: Theme) -> AnyElement {
         .as_ref()
         .map(|user| user.login.clone())
         .unwrap_or_default();
+    // Same rule as the review card: no body, no header separator.
+    let has_body = !comment.body.trim().is_empty();
     div()
         .rounded(Radius::XLarge.px(&theme))
         .border_1()
@@ -7849,8 +7755,9 @@ fn issue_comment_card(comment: &gh::GhComment, theme: Theme) -> AnyElement {
             div()
                 .px(DynamicSpacing::Base12.px(&theme))
                 .py(DynamicSpacing::Base08.px(&theme))
-                .border_b_1()
-                .border_color(theme.border)
+                .when(has_body, |header| {
+                    header.border_b_1().border_color(theme.border)
+                })
                 .flex()
                 .items_center()
                 .gap(DynamicSpacing::Base06.px(&theme))
@@ -7869,15 +7776,17 @@ fn issue_comment_card(comment: &gh::GhComment, theme: Theme) -> AnyElement {
                         .child(gh::relative_time(&comment.created_at)),
                 ),
         )
-        .child(
-            div()
-                .px(DynamicSpacing::Base12.px(&theme))
-                .py(DynamicSpacing::Base08.px(&theme))
-                .child(crate::transcript_view::render_markdown_document(
-                    &comment.body,
-                    theme,
-                )),
-        )
+        .when(has_body, |card| {
+            card.child(
+                div()
+                    .px(DynamicSpacing::Base12.px(&theme))
+                    .py(DynamicSpacing::Base08.px(&theme))
+                    .child(crate::transcript_view::render_markdown_document(
+                        &comment.body,
+                        theme,
+                    )),
+            )
+        })
         .into_any_element()
 }
 
@@ -7894,6 +7803,15 @@ fn pr_row(pull: &gh::GhPull, theme: Theme, cx: &Context<GitPanel>) -> AnyElement
     } else {
         theme.del_red
     };
+    // Same glyph logic as the detail header, so a merged PR reads as merged
+    // here too instead of always drawing the open-PR glyph recoloured.
+    let state_glyph = if pull.is_merged() {
+        "icons/git-merge.svg"
+    } else if pull.is_open() {
+        "icons/git-pull-request.svg"
+    } else {
+        "icons/circle-x.svg"
+    };
     let mut row = div()
         .id(gpui::ElementId::Name(format!("git-pr-{number}").into()))
         .group("git-row")
@@ -7907,7 +7825,7 @@ fn pr_row(pull: &gh::GhPull, theme: Theme, cx: &Context<GitPanel>) -> AnyElement
         .cursor_pointer()
         .hover(|s| s.bg(theme.bg_hover))
         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open_pull(number, cx)))
-        .child(state_tile("icons/git-pull-request.svg", state_color, theme))
+        .child(state_tile(state_glyph, state_color, theme))
         .child(
             div()
                 .flex_1()
@@ -7970,12 +7888,15 @@ fn pr_row(pull: &gh::GhPull, theme: Theme, cx: &Context<GitPanel>) -> AnyElement
                                 .text_size(TextSize::Small.px(&theme))
                                 .text_color(theme.text_3)
                                 .child(format!("{} \u{2192} {}", pull.base_ref, pull.head_ref)),
-                        )
-                        .children(review_chip(pull, theme))
-                        .children(check_bucket_chip(pull.checks_summary(), theme))
-                        .child(delta_stats(pull.additions, pull.deletions, theme)),
+                        ),
                 ),
         )
+        // Status reads down the right edge — review decision, CI rollup,
+        // diffstat, then the relative time — while identity stays on the left,
+        // so the eye has one column to scan instead of a mixed middle line.
+        .children(review_chip(pull, theme))
+        .children(check_bucket_chip(pull.checks_summary(), theme))
+        .child(delta_stats(pull.additions, pull.deletions, theme))
         .child(row_time(&gh::relative_time(&pull.updated_at), theme));
     if !pull.url.is_empty() {
         let url = pull.url.clone();
@@ -8078,6 +7999,9 @@ fn review_card(review: &gh::GhReview, theme: Theme) -> AnyElement {
             "icons/chat.svg",
         ),
     };
+    // A bare approval carries no body: the header rule only exists to
+    // separate a body from the header, so it is dropped when there is none.
+    let has_body = !review.body.trim().is_empty();
     div()
         .rounded(Radius::XLarge.px(&theme))
         .border_1()
@@ -8089,8 +8013,9 @@ fn review_card(review: &gh::GhReview, theme: Theme) -> AnyElement {
             div()
                 .px(DynamicSpacing::Base12.px(&theme))
                 .py(DynamicSpacing::Base08.px(&theme))
-                .border_b_1()
-                .border_color(theme.border)
+                .when(has_body, |header| {
+                    header.border_b_1().border_color(theme.border)
+                })
                 .flex()
                 .items_center()
                 .gap(DynamicSpacing::Base06.px(&theme))
@@ -8110,7 +8035,7 @@ fn review_card(review: &gh::GhReview, theme: Theme) -> AnyElement {
                         .child(gh::relative_time(&review.submitted_at)),
                 ),
         )
-        .when(!review.body.trim().is_empty(), |card| {
+        .when(has_body, |card| {
             card.child(
                 div()
                     .px(DynamicSpacing::Base12.px(&theme))
@@ -8757,48 +8682,6 @@ fn section_title(label: &str, count: usize, theme: Theme) -> AnyElement {
                 .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.text_3)
                 .child(count.to_string()),
-        )
-        .into_any_element()
-}
-
-/// One section of the issue/PR metadata rail: an 11px uppercase label over the
-/// section body. The rail is a quiet summary, so the label carries the
-/// hierarchy and the body stays at reading weight.
-fn meta_section(label: &str, body: AnyElement, theme: Theme) -> AnyElement {
-    div()
-        .flex()
-        .flex_col()
-        .gap(DynamicSpacing::Base08.px(&theme))
-        .child(
-            div()
-                .text_size(TextSize::Small.px(&theme))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_3)
-                .child(label.to_uppercase()),
-        )
-        .child(body)
-        .into_any_element()
-}
-
-/// One "Opened / Updated" row in the rail's Timeline section: a quiet label on
-/// the left, the relative time on the right.
-fn meta_time_row(label: &str, value: &str, theme: Theme) -> AnyElement {
-    div()
-        .flex()
-        .items_center()
-        .justify_between()
-        .gap(DynamicSpacing::Base08.px(&theme))
-        .child(
-            div()
-                .text_size(TextSize::Small.px(&theme))
-                .text_color(theme.text_3)
-                .child(label.to_string()),
-        )
-        .child(
-            div()
-                .text_size(TextSize::Small.px(&theme))
-                .text_color(theme.text_2)
-                .child(value.to_string()),
         )
         .into_any_element()
 }

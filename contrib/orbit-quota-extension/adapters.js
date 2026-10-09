@@ -629,17 +629,37 @@ async function orbitQuotaFireworks(id) {
 async function orbitQuotaBaseten(id) {
   const { key } = await orbitQuotaResolved(id);
   if (!key) return { kind: "unsupported", note: "No Baseten key stored." };
+  // The billing summary requires an explicit ISO 8601 UTC range (max 31 days)
+  // and rejects a bare `window` parameter with HTTP 400.
+  const end = new Date();
+  const start = new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const iso = (date) => date.toISOString().replace(/\.\d{3}Z$/, "Z");
   const r = await orbitQuotaJson(
-    "https://api.baseten.co/v1/billing/usage_summary?window=30d",
+    "https://api.baseten.co/v1/billing/usage_summary" +
+      "?start_date=" + encodeURIComponent(iso(start)) +
+      "&end_date=" + encodeURIComponent(iso(end)),
     { Authorization: "Bearer " + key, Accept: "application/json" },
   );
   if (!r.ok) return { kind: "spend", error: orbitQuotaHttpError(r.status) };
   const d = r.body || {};
+  // Each category reports `subtotal` (after credits) and `total` (gross cost).
+  const categories = [
+    ["dedicated_usage", "Dedicated"],
+    ["training_usage", "Training"],
+    ["model_apis_usage", "Model APIs"],
+  ];
   const balances = [];
-  const net = orbitQuotaNumber(d.net_subtotal != null ? d.net_subtotal : d.net);
-  const gross = orbitQuotaNumber(d.gross_usage != null ? d.gross_usage : d.gross);
-  if (net != null) balances.push(orbitQuotaBalance("30-day net spend", net, "USD"));
-  else if (gross != null) balances.push(orbitQuotaBalance("30-day spend", gross, "USD"));
+  let spend = 0;
+  for (const [field, label] of categories) {
+    const usage = d[field] || {};
+    const amount = orbitQuotaNumber(
+      usage.total != null ? usage.total : usage.subtotal,
+    );
+    if (amount == null) continue;
+    spend += amount;
+    if (amount !== 0) balances.push(orbitQuotaBalance(label, amount, "USD"));
+  }
+  balances.unshift(orbitQuotaBalance("30-day spend", spend, "USD"));
   return { kind: "spend", balances };
 }
 

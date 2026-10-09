@@ -533,7 +533,7 @@ impl AuthManager {
                 session.phase = LoginPhase::Cancelled;
                 session.deadline = None;
                 session.finished_at = Some(Instant::now());
-                session.message = Some(tr!("auth.interrupted_by_restart").into());
+                session.message = Some(tr!("auth.interrupted_by_restart"));
             }
         }
         self.support = AuthSupport::Unknown;
@@ -573,7 +573,7 @@ impl AuthManager {
             session.phase = LoginPhase::Error;
             session.deadline = None;
             session.finished_at = Some(now);
-            session.error = Some((AuthErrorCode::Timeout, tr!("auth.sign_in_timed_out").into()));
+            session.error = Some((AuthErrorCode::Timeout, tr!("auth.sign_in_timed_out")));
             effects.push(AuthEffect::CancelLogin(session.id.clone()));
         }
         effects
@@ -643,7 +643,7 @@ impl AuthManager {
                     session.phase = LoginPhase::Succeeded;
                     session.finished_at = Some(Instant::now());
                     session.error = None;
-                    session.message = Some(tr!("auth.completed_while_restarting").into());
+                    session.message = Some(tr!("auth.completed_while_restarting"));
                 }
             }
             self.recovering = None;

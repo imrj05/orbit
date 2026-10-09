@@ -30,3 +30,5 @@ orbit-update.pem
 *.key
 *.p12
 *.pfx
+# Orbit worktrees (local only)
+.wt/

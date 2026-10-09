@@ -243,6 +243,25 @@ run arm — and appears in the palette, the shortcut reference, and the keymap t
 Context actions (the review tree, Git tabs) are registry commands too, but never palette
 rows.
 
+### D14 — Git worktrees are workspaces, not a parallel filesystem
+**Choice:** a Git worktree is modeled by a dedicated `WorktreeManager`
+(`crates/orbit-pi/src/worktree.rs`, with the optional setup script in
+`worktree_setup.rs`) and driven only through the `git worktree` porcelain; the UI
+(`app/worktrees.rs`) consumes that abstraction. Opening a worktree sets
+`current_workspace` and adds it to the project list like any other folder — the
+Explorer, terminal, Git page, Review, MCP scope, file watcher, and agent read that one
+path, so no second filesystem abstraction exists. Worktree **name**, **branch**, and
+**path** stay separate identities; renames move only the directory.
+**Rationale:** sessions already persist an absolute `cwd`, and every consumer already
+reads the active workspace path. A separate worktree-specific layer would duplicate
+that plumbing and create a second source of truth for “where the agent runs”. The
+porcelain requirement (never editing `.git/worktrees` or `.git/config` by hand) keeps
+Orbit compatible with Git's own metadata format across versions.
+**Consequence:** new workspace-scoped features get worktree support for free by honoring
+`current_workspace`; worktree lifecycle/UI changes stay in `worktree.rs` / `app/worktrees.rs`.
+A missing worktree surfaces a notice rather than silently re-pointing a session at the
+main repository.
+
 ## The feature parity contract
 
 Everything below must behave identically in the GPUI app (against the pi CLI) as it does in the
@@ -265,7 +284,7 @@ legacy app today:
 
 ### Implementation status (living)
 
-Done: streaming transcript + virtualization; markdown + highlighting; composer with steering, follow-ups, cancel, autocomplete, attachments; extension dialogs; diff/Review + Git page + GitHub issues/PRs (where `gh` is available); sessions (list/switch/new/delete/clone/cross-workspace) over an Orbit-owned project list (only folders the user added; removing one never touches pi) whose groups sort by activity, added date, name, or session count, with a **warm process pool** so re-opening a recent session is a resume, not a Node spawn; Explorer project panel + editable Files surface; integrated terminal (⌘J); usage, skills, plugins, models, providers, settings pages; transcript find; image lightbox; theming (dark/light/system, 43 palettes) + reduce-motion; localization (ten locales + System, D9); in-app signed updater + Version History; notifications; open-in-editor; signed/notarizable macOS packaging + best-effort Windows/Linux bundles (D5); CI; access modes (a guard, not a sandbox), workflow modes (Plan/Build/Ask per D8), and the auto-title / quota extension bridges (D10); Zed design tokens (D11) with context menus, the tooltip, the extension dialog, the floating modal cards (provider usage / API-key / editor, update dialog, custom UI), the sidebar session / workspace rows, the transcript's message / card chrome, the settings section / group / row chrome, UI type on `TextSize` across every surface, corner radii on `Radius`, and one-shot motion on `AnimationDuration` migrated onto them.
+Done: streaming transcript + virtualization; markdown + highlighting; composer with steering, follow-ups, cancel, autocomplete, attachments; extension dialogs; diff/Review + Git page + GitHub issues/PRs (where `gh` is available); sessions (list/switch/new/delete/clone/cross-workspace) over an Orbit-owned project list (only folders the user added; removing one never touches pi) whose groups sort by activity, added date, name, or session count, with a **warm process pool** so re-opening a recent session is a resume, not a Node spawn; Git worktrees as first-class workspaces (`worktree.rs` + the Worktrees page: discovery, create from a new/existing branch, open/rename/move/lock/remove/prune/repair, configurable `.wt` root, optional async setup script with `ORBIT_ROOT_PATH`/`ORBIT_WORKTREE_PATH`, sessions rooted in and restored to the worktree — D14); Explorer project panel + editable Files surface; integrated terminal (⌘J); usage, skills, plugins, models, providers, settings pages; transcript find; image lightbox; theming (dark/light/system, 43 palettes) + reduce-motion; localization (ten locales + System, D9); in-app signed updater + Version History; notifications; open-in-editor; signed/notarizable macOS packaging + best-effort Windows/Linux bundles (D5); CI; access modes (a guard, not a sandbox), workflow modes (Plan/Build/Ask per D8), and the auto-title / quota extension bridges (D10); Zed design tokens (D11) with context menus, the tooltip, the extension dialog, the floating modal cards (provider usage / API-key / editor, update dialog, custom UI), the sidebar session / workspace rows, the transcript's message / card chrome, the settings section / group / row chrome, UI type on `TextSize` across every surface, corner radii on `Radius`, and one-shot motion on `AnimationDuration` migrated onto them.
 
 Every icon-only button carries the app's native tooltip — a localized label, usually
 with its shortcut appended (the send / stop button set the register) — across the top

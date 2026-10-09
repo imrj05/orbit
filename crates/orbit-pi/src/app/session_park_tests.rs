@@ -368,9 +368,7 @@ exec cat >/dev/null
 /// expects. Nesting it under `value` left the extension waiting and the run
 /// stuck `busy` forever, which is the "stops streaming midway" symptom.
 #[gpui::test]
-fn parked_session_cancels_extension_dialogs_with_a_top_level_flag(
-    cx: &mut gpui::TestAppContext,
-) {
+fn parked_session_cancels_extension_dialogs_with_a_top_level_flag(cx: &mut gpui::TestAppContext) {
     let app = test_app(cx);
     let out = std::env::temp_dir().join(format!(
         "orbit-park-dialog-{}-{:?}.txt",
@@ -415,10 +413,7 @@ exec cat >/dev/null
         serde_json::from_str(line.trim()).expect("the cancel is valid JSON");
     assert_eq!(wire["type"], "extension_ui_response");
     assert_eq!(wire["id"], "req-1");
-    assert_eq!(
-        wire["cancelled"], true,
-        "cancel must be top-level: {line}"
-    );
+    assert_eq!(wire["cancelled"], true, "cancel must be top-level: {line}");
     assert!(
         wire.get("value").is_none(),
         "cancel must not be nested under `value`: {line}"
@@ -470,9 +465,9 @@ fn cross_workspace_switch_back_resumes_the_running_session(cx: &mut gpui::TestAp
             app.adopt_client(client);
             app.current_session_path = Some(running_path.clone());
             app.current_workspace = Some(ws_a.clone());
-            app.mcp_stamp =
-                app.mcp
-                    .fingerprint_for(Some(Path::new("/tmp/orbit-park-tests/ws-stale")));
+            app.mcp_stamp = app
+                .mcp
+                .fingerprint_for(Some(Path::new("/tmp/orbit-park-tests/ws-stale")));
             app.busy = true;
 
             // The target is warm in workspace B, keyed to B's own fingerprint.
@@ -495,10 +490,7 @@ fn cross_workspace_switch_back_resumes_the_running_session(cx: &mut gpui::TestAp
             // A -> B (A parks) then B -> A (must resume A, not kill it).
             app.switch_to_session(target_session.clone(), true, cx);
             assert_eq!(app.current_session_path.as_ref(), Some(&target_path));
-            assert!(
-                child_alive(running_pid),
-                "A keeps running while B is open"
-            );
+            assert!(child_alive(running_pid), "A keeps running while B is open");
 
             app.switch_to_session(running_session.clone(), true, cx);
             assert_eq!(

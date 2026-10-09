@@ -45,6 +45,13 @@ pub struct Step {
     /// Reloaded sessions leave this `None` — pi does not persist per-step
     /// generation timing.
     pub generation_time: Option<Duration>,
+    /// pi's own `durationMs` for this call: wall time from the provider
+    /// request starting to the stream finishing, so prefill and decode are
+    /// both included. The authoritative generation clock, preferred over
+    /// the client-measured [`Step::generation_time`] (which only sees the
+    /// bursts pi emits and so reads far too high). `None` on reload — pi
+    /// does not persist it — and for user rows.
+    pub duration: Option<Duration>,
 }
 
 /// A context-boundary summary row: pi compacted the conversation (or
@@ -131,14 +138,15 @@ impl ChatMessage {
         total
     }
 
-    /// Active generation time measured while this turn streamed — the sum
-    /// of its steps' client-measured values. `None` when no step carries
-    /// one (reloaded sessions, or providers that deliver whole blocks).
+    /// Generation clock for this turn — the sum of its steps' values,
+    /// preferring pi's own `durationMs` ([`Step::duration`]) over the
+    /// client-measured fallback. `None` when no step carries either
+    /// (reloaded sessions, or providers that deliver whole blocks).
     pub fn generation_time(&self) -> Option<Duration> {
         let mut total = Duration::ZERO;
         let mut any = false;
         for step in &self.steps {
-            if let Some(duration) = step.generation_time {
+            if let Some(duration) = step.duration.or(step.generation_time) {
                 total += duration;
                 any = true;
             }
@@ -362,6 +370,16 @@ impl ChatMessage {
         message.steps[0].usage = MessageUsage::from_value(value.get("usage"));
         let timestamp = message.finished_at;
         message.steps[0].timestamp = timestamp;
+        // pi measures the whole call (`durationMs`) — prefill plus decode —
+        // which is the honest generation clock. Use it when it lands.
+        message.steps[0].duration = value
+            .get("durationMs")
+            .and_then(|millis| {
+                millis
+                    .as_u64()
+                    .or_else(|| millis.as_f64().map(|f| f.round() as u64))
+            })
+            .map(Duration::from_millis);
         Some(message)
     }
 
@@ -825,8 +843,6 @@ fn hints_path() -> PathBuf {
 
 /// The rail hint's key in `hints.json`.
 const RAIL_HINT_KEY: &str = "rail_hint_seen";
-/// The sidebar star banner's key in `hints.json`.
-pub(crate) const STAR_BANNER_HINT_KEY: &str = "star_banner_dismissed";
 
 /// Read one named hint. A missing file or key reads as false (not yet seen).
 pub(crate) fn hint_seen(key: &str) -> bool {
@@ -888,6 +904,10 @@ pub struct Transcript {
     streaming: Rc<Cell<Option<usize>>>,
     /// When the current assistant turn started (for the live Working clock).
     stream_started: Rc<Cell<Option<Instant>>>,
+    /// When the current turn's provider request began (`turn_start`). This
+    /// is the same clock basis as pi's `durationMs`, so the live rate does
+    /// not read the bursty gap between deltas as the whole generation.
+    turn_started: Rc<Cell<Option<Instant>>>,
     /// When the current step's reasoning began (the per-thought clock).
     thinking_started: Rc<Cell<Option<Instant>>>,
     /// Active generation time for the step currently streaming — the sum
@@ -968,6 +988,7 @@ impl Transcript {
             scroller: MessageScrollerState::new(0),
             streaming: Rc::new(Cell::new(None)),
             stream_started: Rc::new(Cell::new(None)),
+            turn_started: Rc::new(Cell::new(None)),
             thinking_started: Rc::new(Cell::new(None)),
             generation_time: Rc::new(Cell::new(Duration::ZERO)),
             last_delta_at: Rc::new(Cell::new(None)),
@@ -1039,6 +1060,7 @@ impl Transcript {
         self.seed_text.set(false);
         self.seed_thinking.set(false);
         self.stream_started.set(None);
+        self.turn_started.set(None);
         self.thinking_started.set(None);
         self.reset_generation();
         self.expanded_turns.borrow_mut().clear();
@@ -1074,6 +1096,7 @@ impl Transcript {
         self.seed_text.set(false);
         self.seed_thinking.set(false);
         self.stream_started.set(None);
+        self.turn_started.set(None);
         self.thinking_started.set(None);
         self.reset_generation();
         self.expanded_turns.borrow_mut().clear();
@@ -1105,6 +1128,12 @@ impl Transcript {
             Event::ToolExecutionStart { value } => self.on_tool_execution(value, false),
             Event::ToolExecutionUpdate { value } => self.on_tool_execution_update(value),
             Event::ToolExecutionEnd { value } => self.on_tool_execution(value, true),
+            // The provider request began: start the clock the live rate
+            // divides by, matching pi's settled `durationMs`.
+            Event::TurnStart => {
+                self.turn_started.set(Some(Instant::now()));
+                false
+            }
             // A settled run closes its working clock; the next run re-arms it.
             Event::AgentSettled => {
                 self.end_live_run();
@@ -2193,6 +2222,7 @@ impl Transcript {
         self.streaming.set(None);
         self.step_mark.set(None);
         self.stream_started.set(None);
+        self.turn_started.set(None);
         self.thinking_started.set(None);
         self.reset_generation();
     }
@@ -2318,6 +2348,7 @@ impl Transcript {
                 scroller: self.scroller.clone(),
                 streaming: self.streaming.clone(),
                 stream_started: self.stream_started.clone(),
+                turn_started: self.turn_started.clone(),
                 expanded_turns: self.expanded_turns.clone(),
                 expanded_files: self.expanded_files.clone(),
                 expanded_activities: self.expanded_activities.clone(),
@@ -2615,6 +2646,58 @@ mod tests {
             "generation time must survive the settled replacement"
         );
         assert!(!t.is_streaming());
+    }
+
+    /// pi's own `durationMs` rides the settled step and wins over any
+    /// client-measured value — the client only ever saw pi's bursts, so its
+    /// clock reads far too short (and the rate far too high).
+    #[test]
+    fn pi_duration_ms_wins_the_generation_clock() {
+        let parsed = ChatMessage::from_value(&json!({
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "hi"}],
+                "stopReason": "stop",
+                "durationMs": 5237,
+                "usage": {"input": 10, "output": 4, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 14}
+            }
+        }))
+        .expect("assistant message");
+        assert_eq!(parsed.steps[0].duration, Some(Duration::from_millis(5237)));
+
+        // When pi supplies a duration it wins; without it, the client
+        // measurement is still used as the fallback.
+        let mut message = ChatMessage {
+            user: false,
+            summary: None,
+            steps: vec![Step {
+                generation_time: Some(Duration::from_secs(3)),
+                duration: Some(Duration::from_secs(9)),
+                ..Step::default()
+            }],
+            images: Vec::new(),
+            elapsed: None,
+            finished_at: None,
+            error: None,
+            aborted: false,
+        };
+        assert_eq!(message.generation_time(), Some(Duration::from_secs(9)));
+        message.steps[0].duration = None;
+        assert_eq!(message.generation_time(), Some(Duration::from_secs(3)));
+    }
+
+    /// `turn_start` arms the live rate's clock — the same basis as pi's
+    /// `durationMs` — so a bursty stream is not mistaken for the whole
+    /// generation. Clearing live state disarms it for the next run.
+    #[test]
+    fn turn_start_arms_the_live_rate_clock() {
+        let mut t = Transcript::new();
+        assert!(t.turn_started.get().is_none());
+        assert!(!t.apply_event(&Event::TurnStart));
+        assert!(t.turn_started.get().is_some());
+        t.clear_live_state();
+        assert!(t.turn_started.get().is_none());
     }
 
     /// `generation_time()` sums the turn's per-step clocks (multi-step
@@ -3644,11 +3727,11 @@ mod tests {
         assert!(!hint_seen_at(&path, RAIL_HINT_KEY));
         persist_hint_at(&path, RAIL_HINT_KEY);
         assert!(hint_seen_at(&path, RAIL_HINT_KEY));
-        persist_hint_at(&path, STAR_BANNER_HINT_KEY);
-        assert!(hint_seen_at(&path, STAR_BANNER_HINT_KEY));
+        persist_hint_at(&path, "another_hint");
+        assert!(hint_seen_at(&path, "another_hint"));
         assert!(
             hint_seen_at(&path, RAIL_HINT_KEY),
-            "persisting the star banner must not wipe the rail hint"
+            "persisting a hint must not wipe its siblings"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -1474,10 +1474,10 @@ fn terminal_message(theme: &Theme, title: &str, detail: Option<&str>) -> AnyElem
         .flex_col()
         .items_center()
         .justify_center()
-        .gap(DynamicSpacing::Base04.px(&theme))
+        .gap(DynamicSpacing::Base04.px(theme))
         .child(
             div()
-                .text_size(TextSize::Small.px(&theme))
+                .text_size(TextSize::Small.px(theme))
                 .text_color(theme.text_2)
                 .child(SharedString::from(title.to_owned())),
         );
@@ -1485,7 +1485,7 @@ fn terminal_message(theme: &Theme, title: &str, detail: Option<&str>) -> AnyElem
         column = column.child(
             div()
                 .max_w(px(520.))
-                .text_size(TextSize::Small.px(&theme))
+                .text_size(TextSize::Small.px(theme))
                 .text_color(theme.stop_red)
                 .child(SharedString::from(detail.to_owned())),
         );

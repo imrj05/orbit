@@ -152,9 +152,7 @@ impl OrbitApp {
         ) {
             Ok(client) => {
                 self.adopt_client(client);
-                self.mcp_stamp = self
-                    .mcp
-                    .fingerprint_for(self.current_workspace.as_deref());
+                self.mcp_stamp = self.mcp.fingerprint_for(self.current_workspace.as_deref());
                 self.send(CommandBody::GetState, "get_state");
                 self.refresh_catalogs();
                 // Capability probes queue after the state request.
@@ -190,6 +188,7 @@ impl OrbitApp {
         if self.model_selector.is_some() {
             self.close_model_selector(window, cx);
         }
+        self.work_in_menu_open = false;
         self.open_picker(kind, window, cx);
     }
 
@@ -474,6 +473,9 @@ impl OrbitApp {
                 self.command_palette = None;
                 self.open_git(cx);
             }
+            CommandId::OpenWorktrees => {
+                self.on_open_worktrees(&crate::OpenWorktrees, window, cx);
+            }
             CommandId::ToggleSidebar => {
                 self.toggle_sidebar(window, cx);
                 cx.notify();
@@ -564,6 +566,7 @@ impl OrbitApp {
         }
         self.workspace_picker = None;
         self.session_menu = None;
+        self.work_in_menu_open = false;
 
         let cwd = match self
             .current_workspace
@@ -680,7 +683,9 @@ impl OrbitApp {
                 app.branch_operation_pending = false;
                 match result {
                     Ok(()) => app.toast_success(tr!("pickers.created_and_switched", label = label)),
-                    Err(err) => app.toast_error(tr!("pickers.branch_create_failed", error = err)),
+                    // The key's placeholder is `%{err}` — binding `error`
+                    // left the literal `%{err}` in the toast.
+                    Err(err) => app.toast_error(tr!("pickers.branch_create_failed", err = err)),
                 }
                 app.refresh_branch_status(cx);
                 cx.notify();

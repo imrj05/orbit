@@ -657,6 +657,7 @@ mod tests {
     /// Every preset is a real option, and the defaults sit inside them — the
     /// dropdowns and the painted result can never disagree.
     #[test]
+    #[allow(clippy::assertions_on_constants)] // deliberate preset invariants
     fn presets_cover_the_defaults() {
         assert!((0. ..=BLUR_MAX).contains(&Tuning::default().blur));
         assert_eq!(Tuning::default().blur, 0.);

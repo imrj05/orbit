@@ -104,6 +104,8 @@ mod workflow;
 mod workspace_logo;
 mod workspace_mark;
 mod workspace_picker;
+mod worktree;
+mod worktree_setup;
 
 use std::time::Duration;
 
@@ -179,6 +181,7 @@ actions!(
         PrevSession,
         ReviewChanges,
         OpenGit,
+        OpenWorktrees,
         OpenShortcutHelp,
         CloseFiles,
         CloseFileTab,
@@ -229,6 +232,18 @@ actions!(
         AccessMenuPrev,
         AccessMenuConfirm,
         AccessMenuClose
+    ]
+);
+
+// Work-in picker actions (bound to the `WorkInMenu` context, which rides on
+// the open popup's focus handle).
+actions!(
+    work_in_menu_keys,
+    [
+        WorkInMenuNext,
+        WorkInMenuPrev,
+        WorkInMenuConfirm,
+        WorkInMenuClose
     ]
 );
 
@@ -435,6 +450,11 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("enter", AccessMenuConfirm, Some("AccessMenu")),
         KeyBinding::new("up", AccessMenuPrev, Some("AccessMenu")),
         KeyBinding::new("down", AccessMenuNext, Some("AccessMenu")),
+        // Work-in picker keys — same shape again.
+        KeyBinding::new("escape", WorkInMenuClose, Some("WorkInMenu")),
+        KeyBinding::new("enter", WorkInMenuConfirm, Some("WorkInMenu")),
+        KeyBinding::new("up", WorkInMenuPrev, Some("WorkInMenu")),
+        KeyBinding::new("down", WorkInMenuNext, Some("WorkInMenu")),
         // Workflow-mode picker keys — same shape again.
         KeyBinding::new("escape", WorkflowMenuClose, Some("WorkflowMenu")),
         KeyBinding::new("enter", WorkflowMenuConfirm, Some("WorkflowMenu")),

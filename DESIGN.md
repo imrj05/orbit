@@ -131,9 +131,10 @@ A near-black canvas with a single ember accent; light mode is warm off-white, no
 
 ### Primary
 - **Ember** (#E2795B dark / #B55035 light): selection, focus rings, links, the active
-  data series, the caret, inline-code wash. Never decoration, never a large fill.
+  data series, the caret, the inline-code wash. Never decoration, never a large fill.
   The light ember is held dark enough to clear 4.5:1 on the light canvas, since links
-  and inline code paint it as text.
+  paint it as text. Inline code keeps the body ink and sits on the wash: tinting its
+  glyphs accent too filled code-heavy answers with ember and blurred code into links.
 
 ### Neutral
 - **Canvas** (#1A1A1A / #F6F5F6): the main content plane and every page background.
@@ -240,16 +241,26 @@ three surfaces float, and each has one authored shadow from `Theme`:
 - **`card_shadow`** (compact contact + ambient): hover cards over dense lists.
 
 ### Named Rules
-**The Border-Or-Shadow Rule.** A surface declares one: either a 1px `border_strong`
-hairline or a shadow. Never both, or it reads as a ghost card.
+**The Border-Or-Shadow Rule.** A surface declares one: either a 1px `border`
+hairline or a shadow. Never both, or it reads as a ghost card. (`border_strong`
+is a focus/hover/selection edge, not a resting card edge.)
+
+**The Rectangle-Clip Rule.** gpui 0.2.2 clips `overflow_hidden` to a rectangle,
+not the border radius (`Style::overflow_mask` builds a `ContentMask` from
+`bounds` alone), so a child background that reaches a rounded container's edge
+paints square corners over it. Such a child must carry the matching radius
+itself — `rounded_t` on the first, `rounded_b` on the last — or the container
+must be a popover whose content is `deferred` (deferred draws bypass ancestor
+masks). Applies to the transcript cards, the code-block title strip, and
+list-board rows (`settings_group`, the MCP server rows).
 
 ## Shapes
 
 Corners are soft but restrained: 6px for navigation and session rows and
-compact controls (≤24px icon buttons, toggles), 8px for chips, action buttons,
+compact controls (≤24px icon buttons), 8px for chips, action buttons,
 inline inputs, and data-list rows, 12px for grouped surfaces and boards, 16px for
-the composer, `full` only for status dots, avatar monograms, and the send
-button. Nothing is a pill except those circles.
+the composer, `full` only for status dots, avatar monograms, the send button,
+and the toggle-switch track. Nothing else is a pill.
 
 Borders are 1px at `theme.border`; `border_strong` (ink at ~14% alpha) is reserved for
 focus and hover emphasis. Charts and graphs draw with 1.5px strokes; grid lines are 1px
@@ -550,6 +561,11 @@ Tool calls are operational information, not decorative chat bubbles.
 - Make failure states immediately discoverable.
 - Allow expansion without leaving the current session.
 - Preserve a compact representation in long transcripts.
+- An expanded command's input and output share **one recessed code plane**
+  (`code_bg`, the same treatment a markdown code block takes), divided by a
+  hairline. Sections read top-to-bottom — command, then output — the way a
+  shell transcript does; they are not stacked cards, and each carries its
+  label and copy control on one shared axis.
 
 ### Approval
 

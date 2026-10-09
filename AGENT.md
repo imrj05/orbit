@@ -68,6 +68,7 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/app/toast_ui.rs   in-app toast stack: push/dismiss helpers + the bottom-right layer
   src/app/view.rs       top-level chrome: sidebar, transcript, composer, status bar, onboarding, image lightbox
   src/app/open_in.rs    installed-editor/terminal detection and the "open in" menu
+  src/app/worktrees.rs  Worktrees page + controller: list/create/open/rename/move/lock/remove, setup progress, settings rows
   src/app/pi_update_ui.rs launch-time pi self-update: background check, install, toasts
   src/app/helpers.rs    shared UI primitives (icon/file glyphs, the loading spinner, the floating-surface chrome, the empty/error state) + small formatting helpers
   src/auth.rs           non-sensitive provider-auth state machine for the auth.* RPC namespace (login/cancel/timeout/restart recovery)
@@ -83,6 +84,8 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/workspace_picker.rs new-task folder selector (recent folders + native browse)
   src/workspace_logo.rs workspace logo lookup for the new-task folder field (conventional paths, `.orbit-pi/icon.*` override, folder glyph fallback)
   src/workspace_mark.rs per-workspace sidebar mark: curated HugeIcons + semantic tints, persisted in workspaces.json
+  src/worktree.rs       Git worktree lifecycle: `WorktreeManager` (list/create/remove/move/lock/unlock/prune/repair), porcelain parsing, name validation, worktree root + `.orbit/worktree.json`
+  src/worktree_setup.rs optional worktree setup script: resolution, `ORBIT_ROOT_PATH`/`ORBIT_WORKTREE_PATH`, captured stdout/stderr/exit code (async host in app/worktrees.rs)
   src/sessions.rs       reads ~/.pi/agent/sessions (+ debounced session-store watcher)
   src/watch.rs          shared debounced fs watching (workspace tree for Review/Git)
   src/explorer/         workspace file tree + file editor
@@ -91,6 +94,7 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
     panel.rs            ProjectPanel entity: right dock, virtualized tree
     viewer.rs           FileViewer entity: editable code/text, markdown/image views, autosave
   docs/explorer.md      Explorer design (project panel + Files surface)
+  docs/worktrees.md     Git worktrees as first-class workspaces: creation, naming, roots, setup scripts, sessions, locking, external worktrees
   src/assets.rs         include_dir AssetSource (SVGs + app icon)
   src/app_icon.rs       dock icon (macOS; Alpha in debug builds) + Settings → About mark
   src/review.rs         git diff model: sources, parsing, context gaps, changed-files tree
@@ -206,6 +210,7 @@ The other nine locale files are generated, never hand-edited:
 ```
 python3 scripts/gen_locales.py        # regenerate locales/*.yml + report gaps
 cargo test -p orbit-pi i18n           # completeness guard
+python3 scripts/check_i18n.py         # key + placeholder guard
 ```
 
 - **Ships:** English, 简体中文 (`zh-CN`), 日本語 (`ja`), 한국어 (`ko`),
@@ -215,7 +220,11 @@ cargo test -p orbit-pi i18n           # completeness guard
 - **Call sites:** wrap literals with the crate-root macros — `tr!("key")` for
   plain text, `tr!("key", count = n)` for `%{count}` interpolation, and
   `tr_cow!("key")` only on hot render paths that borrow. Never hard-code
-  user-facing English in a render path; add a key instead.
+  user-facing English in a render path; add a key instead. The binding name
+  must match the key's placeholder exactly (`count = n`, not `total = n`):
+  rust-i18n leaves an unbound `%{name}` literal in the rendered string.
+  `scripts/check_i18n.py` fails on a key/placeholder mismatch, so run it after
+  touching call sites.
 - **Translations** live in `scripts/i18n_glossary*.py`, keyed by the exact
   English string from `en.yml`. Split by surface (core, settings, palette,
   transcript). A string with no entry falls back to English.
@@ -259,9 +268,9 @@ stack is gone; do not resurrect it.
 | Transcript | `transcript.rs`, `transcript_view.rs`, `message_scroller.rs` | Virtualized streaming transcript with tail-following, jump-to-latest, tool activity, markdown/code rendering, find, and error states. |
 | Composer | `composer.rs`, `app/composer_ops.rs` | Multiline input, commands, file mentions, image attachments, queued follow-ups, steer, abort, and access/workflow controls. |
 | Explorer / Files | `src/explorer/` | Gitignore-aware workspace tree, keyboard navigation, file editor, Markdown/image views, autosave, file operations, and honest binary/oversized/non-UTF-8 states. |
-| Review / Git | `review.rs`, `sidepane.rs`, `git.rs`, `git_panel.rs` | Diff review, changed-file navigation, Git status/history/graph, staging, commit, branch operations, and GitHub issue/PR workflows where `gh` is available. |
+| Review / Git | `review.rs`, `sidepane.rs`, `git.rs`, `git_panel.rs`, `worktree.rs`, `worktree_setup.rs`, `app/worktrees.rs` | Diff review, changed-file navigation, Git status/history/graph, staging, commit, branch operations, GitHub issue/PR workflows where `gh` is available, and Git worktrees as first-class workspaces (optional setup script, sessions rooted in the worktree). |
 | Agent controls | `access.rs`, `workflow.rs` | Supervised/Auto-accept edits/Full access and Plan/Build/Ask workflow modes. These are extension-backed controls, not a sandbox. |
-| Settings | `app/settings.rs`, `providers.rs`, `auth.rs`, `quota.rs`, `skills_ui.rs` | General/runtime/agent/skills/plugins/models/appearance/providers/about/shortcuts plus provider auth, model catalog, quota, skills and plugin management. |
+| Settings | `app/settings.rs`, `providers.rs`, `auth.rs`, `quota.rs`, `skills_ui.rs` | General/runtime/agent/worktrees/skills/plugins/models/appearance/providers/about/shortcuts plus provider auth, model catalog, quota, skills and plugin management. |
 | Native infrastructure | `notifications.rs`, `pi_update.rs`, `app/open_in.rs` | Desktop notifications, pi self-update, open-in-editor/terminal integration, and native menus. |
 
 ### Important implementation truths

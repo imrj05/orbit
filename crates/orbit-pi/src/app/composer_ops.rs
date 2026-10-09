@@ -526,6 +526,7 @@ impl OrbitApp {
         self.context_popup = ContextPopup::None;
         self.access_menu_open = false;
         self.workflow_menu_open = false;
+        self.work_in_menu_open = false;
         self.autocomplete_dismissed = true;
         self.autocomplete.borrow_mut().open = false;
         self.add_menu_open = true;
@@ -694,6 +695,7 @@ impl OrbitApp {
         self.model_selector = None;
         self.context_popup = ContextPopup::None;
         self.add_menu_open = false;
+        self.work_in_menu_open = false;
         self.autocomplete_dismissed = true;
         self.autocomplete.borrow_mut().open = false;
         self.access_menu_open = true;
@@ -812,6 +814,7 @@ impl OrbitApp {
         self.context_popup = ContextPopup::None;
         self.access_menu_open = false;
         self.add_menu_open = false;
+        self.work_in_menu_open = false;
         self.autocomplete_dismissed = true;
         self.autocomplete.borrow_mut().open = false;
         self.workflow_menu_open = true;
@@ -898,18 +901,6 @@ impl OrbitApp {
             self.toast_warning(tr!("workflow.mode_set_unavailable", mode = mode.label()));
         } else {
             self.set_status(tr!("workflow.mode_set", mode = mode.label()));
-        }
-        cx.notify();
-    }
-
-    /// The New Task page's Mode field. Quiet version of [`set_workflow_mode`]:
-    /// before a session exists the choice is pending, committed when the new
-    /// session id arrives. No status/toast — the field is its own feedback.
-    pub(super) fn choose_workflow_mode(&mut self, mode: WorkflowMode, cx: &mut Context<Self>) {
-        self.workflow_mode = mode;
-        match self.session_id.clone() {
-            Some(id) => crate::workflow::persist_for(&id, mode),
-            None => self.workflow_pending = Some(mode),
         }
         cx.notify();
     }

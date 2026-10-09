@@ -930,6 +930,12 @@ impl OrbitApp {
     /// users who do not use MCP. Clicking opens Settings → MCP.
     pub(super) fn mcp_status_chip(&self, theme: Theme, cx: &Context<Self>) -> Option<AnyElement> {
         let (dot, label) = self.mcp_chip_parts(theme)?;
+        // A fully connected fleet is the steady state; the chip only earns
+        // its place when a server needs attention, so the status bar stays
+        // quiet when there is nothing to act on.
+        if self.mcp_all_connected() {
+            return None;
+        }
         let entity = cx.entity();
         Some(
             button_frame(div().id("status-mcp"), &theme, ButtonSize::Default)
@@ -1005,6 +1011,24 @@ impl OrbitApp {
             )
         };
         Some((dot, label))
+    }
+
+    /// Whether every enabled MCP server is connected — the quiet steady state
+    /// where the status-bar chip hides.
+    pub(super) fn mcp_all_connected(&self) -> bool {
+        let enabled: Vec<_> = self
+            .mcp
+            .servers()
+            .iter()
+            .filter(|server| server.def.enabled)
+            .collect();
+        !enabled.is_empty()
+            && enabled.iter().all(|server| {
+                matches!(
+                    self.mcp.runtime(&server.name).status,
+                    McpServerStatus::Connected
+                )
+            })
     }
 
     /// The pinned MCP toolbar: search, a status line, Refresh, and Add.
@@ -1216,14 +1240,26 @@ impl OrbitApp {
                 this_for_keys.update(cx, |app, cx| app.mcp_handle_key(&key, window, cx));
             });
         for scope in McpScope::ALL {
-            let group: Vec<AnyElement> = visible
+            let scoped: Vec<&McpServer> = visible
                 .iter()
+                .copied()
                 .filter(|server| server.scope == scope)
-                .map(|server| self.mcp_server_row(server, theme, this.clone(), cx))
                 .collect();
-            if group.is_empty() {
+            if scoped.is_empty() {
                 continue;
             }
+            // A row's hover fill is full-bleed inside the board, and gpui
+            // clips children to a rectangle (not the border radius), so the
+            // first and last rows carry the board's own corners — otherwise
+            // the highlight squares off the rounded border.
+            let count = scoped.len();
+            let group: Vec<AnyElement> = scoped
+                .iter()
+                .enumerate()
+                .map(|(ix, server)| {
+                    self.mcp_server_row(server, ix == 0, ix + 1 == count, theme, this.clone(), cx)
+                })
+                .collect();
             list = list.child(self.settings_section(
                 theme,
                 &tr!(scope.label_key()),
@@ -1306,6 +1342,8 @@ impl OrbitApp {
     fn mcp_server_row(
         &self,
         server: &McpServer,
+        first: bool,
+        last: bool,
         theme: Theme,
         this: Entity<OrbitApp>,
         _cx: &Context<Self>,
@@ -1332,6 +1370,8 @@ impl OrbitApp {
             .flex()
             .items_start()
             .gap(DynamicSpacing::Base16.px(&theme))
+            .when(first, |row| row.rounded_t(Radius::XLarge.px(&theme)))
+            .when(last, |row| row.rounded_b(Radius::XLarge.px(&theme)))
             .when(selected, |row| row.bg(theme.overlay))
             .hover(|row| row.bg(theme.bg_hover))
             .on_mouse_up(MouseButton::Left, {

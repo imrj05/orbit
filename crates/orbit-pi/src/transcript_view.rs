@@ -4,7 +4,7 @@
 //! End-aligned neutral bubbles, assistant turns are Start-aligned prose. A
 //! ghost copy/timestamp footer reveals on row hover. Settled: **Worked for**
 //! fold → thinking/tool cards → answer → files → copy footer. Live: thinking
-//! + activity cards → answer → files → **Working for** — work stays in
+//! and activity cards → answer → files → **Working for** — work stays in
 //! sequence with the text as it arrives from the agent.
 //!
 //! Timestamps render on the footer when pi provides one (snapshot
@@ -52,7 +52,7 @@ use crate::shimmer::ShimmerText;
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
     context_menu, picker, popover, BufferLineHeight, ButtonSize, DynamicSpacing, IconSize, Radius,
-    StyledExt, TextSize,
+    StyledExt, TextSize, BORDER_WIDTH,
 };
 use crate::theme::{self, Theme, ThemeMode};
 use crate::transcript::{ChatMessage, Step, SummaryRow, ToolCall, ToolFacts};
@@ -167,6 +167,10 @@ pub(crate) struct TranscriptView {
     pub scroller: MessageScrollerState,
     pub streaming: Rc<Cell<Option<usize>>>,
     pub stream_started: Rc<Cell<Option<Instant>>>,
+    /// When the current turn's provider request began (`turn_start`). The
+    /// live rate divides by this clock, the same basis as pi's settled
+    /// `durationMs`, so a bursty stream is not read as the generation.
+    pub turn_started: Rc<Cell<Option<Instant>>>,
     pub expanded_turns: Rc<RefCell<HashSet<usize>>>,
     pub expanded_files: Rc<RefCell<HashSet<usize>>>,
     pub expanded_activities: ExpandedActivities,
@@ -1046,6 +1050,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
     let menu_selection = text_selection.clone();
     let streaming = view.streaming.clone();
     let stream_started = view.stream_started.clone();
+    let turn_started = view.turn_started.clone();
     let expanded_turns = view.expanded_turns.clone();
     let expanded_files = view.expanded_files.clone();
     let expanded_activities = view.expanded_activities.clone();
@@ -1145,18 +1150,20 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
     let nerd = nerd_font_family(cx);
     let list_el = list(view.scroller.list_state(), move |ix, _window, cx| {
         let live = streaming.get() == Some(ix);
-        let live_elapsed = if live {
-            stream_started.get().map(|started| started.elapsed())
-        } else {
-            None
-        };
+        // The rate's clock: prefer the turn's request start (`turn_start`),
+        // the same basis as pi's `durationMs`; fall back to the stream start
+        // when an older pi build never emitted one.
+        let live_clock = turn_started
+            .get()
+            .or_else(|| stream_started.get())
+            .map(|started| started.elapsed());
+        let live_elapsed = if live { live_clock } else { None };
         // Tokens/sec for the streaming row: the provider's cumulative
-        // output (or a chars/4 estimate) over the turn's live clock.
+        // output (or a chars/4 estimate) over the turn's request clock.
         let live_tps = if live {
-            messages
-                .borrow()
-                .get(ix)
-                .and_then(|message| streaming_tps(message, message.generation_time()))
+            messages.borrow().get(ix).and_then(|message| {
+                streaming_tps(message, live_generation_clock(message, live_clock))
+            })
         } else {
             None
         };
@@ -1781,6 +1788,11 @@ fn render_summary_card(row: &SummaryRow, paint: &RowPaint) -> AnyElement {
         .flex()
         .items_center()
         .gap(DynamicSpacing::Base08.px(&theme))
+        // Square hover fill over a rounded card otherwise; see the tool card.
+        .rounded_t(Radius::XLarge.px(&theme))
+        .when(!expanded, |header| {
+            header.rounded_b(Radius::XLarge.px(&theme))
+        })
         .cursor_pointer()
         .hover(|style| style.bg(theme.overlay_strong))
         .on_click({
@@ -1830,7 +1842,7 @@ fn render_summary_card(row: &SummaryRow, paint: &RowPaint) -> AnyElement {
         .overflow_hidden()
         .rounded(Radius::XLarge.px(&theme))
         .border_1()
-        .border_color(theme.border_strong)
+        .border_color(theme.border)
         .bg(theme.overlay)
         .child(header);
     if expanded {
@@ -2406,10 +2418,12 @@ fn render_activity_group(
                     .items_center()
                     .gap(DynamicSpacing::Base04.px(&theme))
                     .children(icons.iter().copied().map(|icon| {
+                        // Settled work is monochrome ink; only run/fail state
+                        // takes a color (see `cluster_state`).
                         glyph(
                             icon,
                             IconSize::XSmall.px(&theme),
-                            cluster_state.unwrap_or_else(|| work_tint(icon, theme)),
+                            cluster_state.unwrap_or(theme.text_2),
                         )
                     })),
             )
@@ -2623,7 +2637,7 @@ fn render_thinking_body(
         .debug_selector(move || format!("thought-card-{}-{}", key.0, key.1))
         .rounded(Radius::XLarge.px(&theme))
         .border_1()
-        .border_color(theme.border_strong)
+        .border_color(theme.border)
         .bg(theme.overlay)
         .px(px(12.))
         .py(px(8.))
@@ -2868,7 +2882,7 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
         .overflow_hidden()
         .rounded(Radius::XLarge.px(&theme))
         .border_1()
-        .border_color(theme.border_strong)
+        .border_color(theme.border)
         .bg(theme.overlay)
         .flex()
         .flex_col();
@@ -3084,14 +3098,16 @@ fn render_activity_card(
         None => activity_preview(tool),
     };
     let icon = activity_icon(&tool.name);
-    // The glyph tone: strong state color while the call runs or once it
-    // failed; otherwise the work kind's soft tint (see `work_tint`).
+    // The glyph tone: state color while the call runs or once it failed;
+    // settled work is monochrome ink. The glyph shape names the kind, so a
+    // per-kind hue was decoration that spent the accent budget and turned a
+    // long transcript into a field of tinted badges.
     let tone = if tool.failed {
         theme.del_red
     } else if pulse {
         theme.accent
     } else {
-        work_tint(icon, theme)
+        theme.text_2
     };
     let is_command = tool_command(tool).is_some();
     let has_diff = tool.added > 0 || tool.removed > 0;
@@ -3108,16 +3124,14 @@ fn render_activity_card(
     // devicons palette follows the theme.
     let file_path = file_preview_path(tool);
     let dark = theme.mode == ThemeMode::Dark;
-    if matches!(tool.name.as_str(), "read" | "edit" | "write") {
-        eprintln!(
-            "[card-dbg] name={} nerd={:?} devicon={:?} path={:?}",
-            tool.name,
-            nerd,
-            file_path.and_then(|p| crate::app::helpers::dev_file_icon(p, dark)),
-            file_path
-        );
-    }
 
+    // gpui 0.2.2's `overflow_hidden` clips a rectangle, not the border radius
+    // (`Style::overflow_mask` builds the `ContentMask` from `bounds` alone), so
+    // a child background reaching the card's edge paints square corners over
+    // the rounded border. The first and last children carry the card's own
+    // radius instead.
+    let detail_shown = tool_open && has_detail;
+    let header_is_only_child = !detail_shown && !tool.failed;
     let mut card = div()
         .id(ElementId::NamedInteger(
             "activity-card".into(),
@@ -3129,7 +3143,7 @@ fn render_activity_card(
         .overflow_hidden()
         .rounded(Radius::XLarge.px(&theme))
         .border_1()
-        .border_color(theme.border_strong)
+        .border_color(theme.border)
         .bg(theme.overlay)
         .child(
             div()
@@ -3140,6 +3154,10 @@ fn render_activity_card(
                 .gap(DynamicSpacing::Base08.px(&theme))
                 .text_size(TextSize::Default.px(&theme))
                 .line_height(BufferLineHeight::Standard.relative())
+                .rounded_t(Radius::XLarge.px(&theme))
+                .when(header_is_only_child, |row| {
+                    row.rounded_b(Radius::XLarge.px(&theme))
+                })
                 .when(has_detail, |row| row.cursor_pointer())
                 .hover(|style| style.bg(theme.overlay_strong))
                 .child(activity_badge(icon, tone, theme))
@@ -3238,9 +3256,6 @@ fn render_activity_card(
                 .when_some(truncation_chip(&tool.facts, theme), |row, chip| {
                     row.child(chip)
                 })
-                .when_some(truncation_chip(&tool.facts, theme), |row, chip| {
-                    row.child(chip)
-                })
                 .when(has_diff, |row| {
                     row.child(render_line_delta(added, removed, theme, 12.5))
                 })
@@ -3327,7 +3342,7 @@ fn render_activity_card(
     // A failed run carries its first error line right on the card — the
     // fact a user scanning the turn needs, without opening the detail.
     if tool.failed {
-        card = card.child(render_tool_error_strip(tool, theme));
+        card = card.child(render_tool_error_strip(tool, !detail_shown, theme));
     }
     card = card.when(has_detail, |row| {
         let scroller = scroller.clone();
@@ -3411,7 +3426,11 @@ fn first_error_line(value: &Value) -> Option<String> {
 /// One-line error strip on a failed tool card: red-washed, drawn stop
 /// glyph, and the actual error text (never invented — the fallback says
 /// when nothing was captured).
-fn render_tool_error_strip(tool: &ToolCall, theme: Theme) -> impl IntoElement {
+fn render_tool_error_strip(
+    tool: &ToolCall,
+    round_bottom: bool,
+    theme: Theme,
+) -> impl IntoElement {
     let snippet = tool
         .output
         .as_ref()
@@ -3420,8 +3439,9 @@ fn render_tool_error_strip(tool: &ToolCall, theme: Theme) -> impl IntoElement {
     div()
         .w_full()
         .border_t_1()
-        .border_color(theme.border_strong)
+        .border_color(theme.border)
         .bg(theme.del_red.opacity(0.07))
+        .when(round_bottom, |s| s.rounded_b(Radius::XLarge.px(&theme)))
         .px(DynamicSpacing::Base08.px(&theme))
         .py(DynamicSpacing::Base04.px(&theme))
         .flex()
@@ -3498,49 +3518,64 @@ fn render_tool_detail(
     .collect();
     let has_sections = !sections.is_empty();
 
-    let mut container = div()
-        .w_full()
-        .min_w_0()
-        .border_t_1()
-        .border_color(theme.border_strong)
-        .flex()
-        .flex_col();
+    let mut container = div().w_full().min_w_0().flex().flex_col();
     if let Some(rows) = diff.as_ref() {
-        container = container.child(render_edit_diff(
-            rows,
-            key,
-            expanded_sections.clone(),
-            scroller.clone(),
-            theme,
-        ));
-    }
-    if has_sections {
         container = container.child(
             div()
                 .w_full()
                 .min_w_0()
-                .px(px(10.))
-                .py(px(8.))
-                .flex()
-                .flex_col()
-                .gap(px(10.))
-                .children(sections.into_iter().map(
-                    move |(section, label, content, lang, prompt)| {
-                        render_detail_section(
-                            key,
-                            section,
-                            &label,
-                            content,
-                            lang,
-                            prompt,
-                            copied_sections.clone(),
-                            expanded_sections.clone(),
-                            scroller.clone(),
-                            theme,
-                        )
-                    },
+                .border_t_1()
+                .border_color(theme.border)
+                // With no sections below it, the diff is the card's last
+                // child and carries its bottom radius.
+                .when(!has_sections, |d| d.rounded_b(Radius::XLarge.px(&theme)))
+                .child(render_edit_diff(
+                    rows,
+                    key,
+                    expanded_sections.clone(),
+                    scroller.clone(),
+                    theme,
                 )),
         );
+    }
+    if has_sections {
+        // One recessed terminal surface holds every section, divided by a
+        // hairline: a command reads top-to-bottom — input, then output — the
+        // way a shell transcript does, instead of two blocks whose only
+        // boundary is a gap. The surface is a code plane (`code_bg`), the
+        // same treatment a markdown code block takes.
+        let mut surface = div()
+            .w_full()
+            .min_w_0()
+            .bg(theme.code_bg)
+            .flex()
+            .flex_col()
+            // The surface is always the card's last child, so it carries the
+            // card's bottom radius (gpui clips children to a rectangle).
+            .rounded_b(Radius::XLarge.px(&theme))
+            // Without a diff above it, the surface owns the rule that
+            // separates it from the card header.
+            .when(diff.is_none(), |s| s.border_t_1().border_color(theme.border));
+        for (section_ix, (section, label, content, lang, prompt)) in
+            sections.into_iter().enumerate()
+        {
+            if section_ix > 0 {
+                surface = surface.child(div().w_full().h(BORDER_WIDTH).flex_none().bg(theme.border));
+            }
+            surface = surface.child(render_detail_section(
+                key,
+                section,
+                &label,
+                content,
+                lang,
+                prompt,
+                copied_sections.clone(),
+                expanded_sections.clone(),
+                scroller.clone(),
+                theme,
+            ));
+        }
+        container = container.child(surface);
     }
     container
 }
@@ -3594,19 +3629,27 @@ fn render_detail_section(
         .min_w_0()
         .flex()
         .flex_col()
-        .gap(px(4.))
+        // The label row: a quiet heading on the terminal surface, with the
+        // copy control pinned right so every section's action shares one
+        // axis.
         .child(
             div()
-                .h(px(22.))
+                .w_full()
+                .min_w_0()
+                .h(ButtonSize::Default.height(&theme))
+                .px(DynamicSpacing::Base12.px(&theme))
                 .flex()
                 .items_center()
-                .justify_between()
+                .gap(DynamicSpacing::Base08.px(&theme))
                 .child(
                     div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
                         .font_weight(FontWeight::MEDIUM)
                         .text_size(TextSize::Small.px(&theme))
                         .line_height(theme.ui_px(15.))
-                        .text_color(theme.text_2)
+                        .text_color(theme.text_3)
                         .child(label.to_string()),
                 )
                 .child(
@@ -3643,9 +3686,11 @@ fn render_detail_section(
             div()
                 .w_full()
                 .min_w_0()
+                .px(DynamicSpacing::Base12.px(&theme))
+                .pb(DynamicSpacing::Base08.px(&theme))
                 .flex()
                 .items_start()
-                .gap(px(8.))
+                .gap(DynamicSpacing::Base08.px(&theme))
                 .when(prompt, |row| {
                     row.child(
                         div()
@@ -3666,7 +3711,9 @@ fn render_detail_section(
         let toggle_label = if expanded {
             tr!("transcript.show_less")
         } else {
-            tr!("transcript.show_all_lines", total = total)
+            // The key's placeholder is `%{count}` — binding `total` left the
+            // literal `%{count}` printed in the fold label.
+            tr!("transcript.show_all_lines", count = total)
         };
         card.child(
             button_frame(
@@ -4028,7 +4075,7 @@ fn render_edit_diff(
         let label = if expanded {
             tr!("transcript.show_less")
         } else {
-            tr!("transcript.show_all_lines", total = total)
+            tr!("transcript.show_all_lines", count = total)
         };
         body = body.child(
             button_frame(
@@ -4791,8 +4838,37 @@ fn streamed_output_tokens(message: &ChatMessage) -> u64 {
     (chars / 4) as u64
 }
 
+/// The denominator for a streaming turn's rate. Settled steps contribute
+/// pi's `durationMs` (or their client fallback); the step still streaming
+/// contributes the time since its own request began. The numerator
+/// ([`streamed_output_tokens`]) is turn-cumulative, so the clock must be too
+/// — otherwise a step after a tool call would divide the whole run's tokens
+/// by only its own elapsed time.
+fn live_generation_clock(
+    message: &ChatMessage,
+    streaming_elapsed: Option<Duration>,
+) -> Option<Duration> {
+    let last = message.steps.len().checked_sub(1)?;
+    let mut total = Duration::ZERO;
+    let mut any = false;
+    for (ix, step) in message.steps.iter().enumerate() {
+        let clock = if ix == last {
+            streaming_elapsed.or(step.generation_time)
+        } else {
+            step.duration.or(step.generation_time)
+        };
+        if let Some(clock) = clock {
+            total += clock;
+            any = true;
+        }
+    }
+    any.then_some(total)
+}
+
 /// Tokens per second for a streaming row, or `None` before a rate is
-/// meaningful (under a second elapsed, or no output yet).
+/// meaningful (under a second of the turn elapsed, or no output yet). The
+/// caller passes the turn's request clock (`turn_start`) — the same basis as
+/// pi's settled `durationMs` — so the two figures agree.
 fn streaming_tps(message: &ChatMessage, elapsed: Option<Duration>) -> Option<f64> {
     let elapsed = elapsed?;
     let secs = elapsed.as_secs_f64();
@@ -4803,9 +4879,9 @@ fn streaming_tps(message: &ChatMessage, elapsed: Option<Duration>) -> Option<f64
     (tokens > 0).then(|| tokens as f64 / secs)
 }
 
-/// Generation-only output rate for a settled turn: output tokens over the
-/// time the model was actively decoding (tool execution, round-trips, and
-/// stalls excluded). `None` when there is no measurable rate.
+/// Settled output rate: output tokens over pi's measured call duration
+/// (its `durationMs`, or the client-measured fallback) — prefill plus
+/// decode. `None` when there is no measurable rate.
 fn generation_tps(usage: &MessageUsage, generation: Option<Duration>) -> Option<f64> {
     let secs = generation?.as_secs_f64();
     if secs < 1.0 || usage.output == 0 {
@@ -5201,9 +5277,11 @@ fn inline_runs(
                 FontStyle::Normal
             };
         }
-        // Inline code and links both take the accent so they read as
-        // interactive/technical at a glance; body text keeps its base color.
-        let color = if span.code || span.link.is_some() {
+        // Only links take the accent — they are the interactive token. Inline
+        // code keeps the body ink and is marked by the mono face and its wash
+        // instead; tinting it too made a code-heavy answer a field of ember
+        // (violating DESIGN.md's One Accent Rule) and blurred it into links.
+        let color = if span.link.is_some() {
             theme.accent
         } else {
             base_color
@@ -6425,6 +6503,9 @@ fn render_code_block(
         .items_center()
         .gap(px(8.))
         .bg(theme.overlay)
+        // The title strip is the card's first child; gpui clips children to a
+        // rectangle, so the strip carries the card's top radius itself.
+        .rounded_t(Radius::XLarge.px(&theme))
         .border_b_1()
         .border_color(theme.border)
         .child(
@@ -7183,46 +7264,6 @@ fn activity_icon_rank(icon: &'static str) -> usize {
     }
 }
 
-/// Rotate the accent's hue by `offset` turns while keeping the palette's
-/// tuned chroma and lightness — the same mechanism `Theme::mention_file`
-/// uses for the `@file` complement. Chroma-less palettes (Ashwood, Mono;
-/// `accent.s < 0.15`) return `None` so the caller falls back to ink and
-/// separates kinds by tone instead of hue.
-fn accent_shifted(accent: Hsla, offset: f32) -> Option<Hsla> {
-    if accent.s < 0.15 {
-        return None;
-    }
-    let mut color = accent;
-    color.h = (color.h + offset).fract();
-    color.s = color.s.max(0.5);
-    Some(color)
-}
-
-/// The soft category tint for a work kind, keyed by its glyph path. These
-/// tints are content, not chrome — they describe what the agent did, the
-/// same exemption the composer's `/command` / `@file` tokens already take —
-/// so they sit outside the One Accent budget. State (run/fail) still wins:
-/// callers override with `theme.accent` / `theme.del_red` when it applies.
-///
-/// With the ember accent (h ≈ 0.04): run reads amber, explore reads the
-/// complement (cool), mutate reads green, web reads violet; the reasoning
-/// bulb keeps the accent itself. Unknown kinds and chroma-less palettes
-/// stay neutral ink.
-fn work_tint(icon: &'static str, theme: Theme) -> Hsla {
-    let shifted = |offset: f32| accent_shifted(theme.accent, offset).unwrap_or(theme.text_2);
-    match icon {
-        "icons/tools/bash.svg" => shifted(0.07),
-        "icons/tools/read.svg"
-        | "icons/tools/search.svg"
-        | "icons/tools/find.svg"
-        | "icons/tools/list.svg" => shifted(0.50),
-        "icons/tools/edit.svg" | "icons/tools/write.svg" => shifted(0.32),
-        "icons/tools/web.svg" | "icons/tools/fetch.svg" => shifted(0.62),
-        "icons/tools/thinking.svg" => theme.accent,
-        _ => theme.text_2,
-    }
-}
-
 /// A tool glyph in its category badge: a 22px rounded square washed at a low
 /// alpha of the tone, the glyph at full strength. The wash lifts the icon out
 /// of the prose column so a tool row reads as a control at a glance, in every
@@ -7511,39 +7552,6 @@ mod tests {
     }
 
     #[test]
-    fn accent_shifted_rotates_hue_and_keeps_the_palettes_chroma() {
-        let ember = gpui::hsla(0.04, 0.45, 0.62, 1.0);
-        let shifted = accent_shifted(ember, 0.5).unwrap();
-        assert!((shifted.h - 0.54).abs() < 1e-6);
-        assert!((shifted.s - 0.5).abs() < 1e-6);
-        assert!((shifted.l - 0.62).abs() < 1e-6);
-        // Chroma-less palettes (Ashwood, Mono) drop the hue so kinds
-        // separate by tone instead — callers paint ink.
-        assert_eq!(accent_shifted(gpui::hsla(0.0, 0.0, 0.5, 1.0), 0.5), None);
-        // Wrapping past 1.0 is modulo, not clamping.
-        assert!(
-            (accent_shifted(gpui::hsla(0.9, 0.6, 0.5, 1.0), 0.3)
-                .unwrap()
-                .h
-                - 0.2)
-                .abs()
-                < 1e-6
-        );
-    }
-
-    #[test]
-    fn work_tint_uses_ink_for_unknown_kinds_and_low_chroma_palettes() {
-        // Chroma-less palette (accent.s < 0.15): every kind falls back to ink.
-        let theme = Theme {
-            accent: gpui::hsla(0.0, 0.0, 0.5, 1.0),
-            ..Theme::default()
-        };
-        assert_eq!(work_tint("icons/tools/bash.svg", theme), theme.text_2);
-        assert_eq!(work_tint("icons/tools/edit.svg", theme), theme.text_2);
-        assert_eq!(work_tint("icons/tools/tool.svg", theme), theme.text_2);
-    }
-
-    #[test]
     fn duration_format_matches_spoken_forms() {
         assert_eq!(format_duration(Duration::from_secs(1)), "1 second");
         assert_eq!(format_duration(Duration::from_secs(12)), "12 seconds");
@@ -7623,6 +7631,58 @@ mod tests {
         // No text and no usage: no rate.
         let empty = message(0, "");
         assert_eq!(streaming_tps(&empty, Some(Duration::from_secs(2))), None);
+    }
+
+    /// A streaming turn's clock sums the settled steps' durations plus the
+    /// live step's elapsed time, so a step that follows a tool call is not
+    /// measured against the whole run's token count.
+    #[test]
+    fn live_generation_clock_spans_settled_and_streaming_steps() {
+        let step = |duration: Option<Duration>, generation_time: Option<Duration>| Step {
+            duration,
+            generation_time,
+            ..Step::default()
+        };
+        let message = |steps: Vec<Step>| ChatMessage {
+            user: false,
+            summary: None,
+            steps,
+            images: Vec::new(),
+            elapsed: None,
+            finished_at: None,
+            error: None,
+            aborted: false,
+        };
+
+        // A single streaming step uses just its own request clock.
+        let one = message(vec![step(None, None)]);
+        assert_eq!(
+            live_generation_clock(&one, Some(Duration::from_secs(5))),
+            Some(Duration::from_secs(5))
+        );
+
+        // A settled step's pi duration plus the live step's elapsed time.
+        let two = message(vec![
+            step(Some(Duration::from_secs(3)), None),
+            step(None, None),
+        ]);
+        assert_eq!(
+            live_generation_clock(&two, Some(Duration::from_secs(2))),
+            Some(Duration::from_secs(5))
+        );
+
+        // Without a live clock, the step's client measurement is the fallback.
+        let fallback = message(vec![step(None, Some(Duration::from_secs(4)))]);
+        assert_eq!(
+            live_generation_clock(&fallback, None),
+            Some(Duration::from_secs(4))
+        );
+
+        // No steps: no clock at all.
+        assert_eq!(
+            live_generation_clock(&message(Vec::new()), Some(Duration::from_secs(1))),
+            None
+        );
     }
 
     #[test]
@@ -8881,6 +8941,7 @@ mod tests {
             text_selection: state,
             streaming: Rc::new(Cell::new(None)),
             stream_started: Rc::new(Cell::new(None)),
+            turn_started: Rc::new(Cell::new(None)),
             expanded_turns: Rc::new(RefCell::new(HashSet::new())),
             expanded_files: Rc::new(RefCell::new(HashSet::new())),
             expanded_activities: Rc::new(RefCell::new(HashMap::new())),
@@ -9551,7 +9612,7 @@ mod tests {
     /// selection (this caught a panel hitbox that never filled its bounds).
     #[gpui::test]
     fn transcript_drag_selects_across_paragraphs(cx: &mut gpui::TestAppContext) {
-        let mut cx = cx.add_empty_window();
+        let cx = cx.add_empty_window();
         cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
         let state: TextSelectionState = Rc::new(RefCell::new(TextSelection::new()));
         let messages = test_messages();
@@ -9580,7 +9641,7 @@ mod tests {
                 move |_, _| view.clone(),
             );
         };
-        paint(&mut cx);
+        paint(cx);
 
         let blocks = state.borrow();
         assert!(
@@ -9595,9 +9656,9 @@ mod tests {
         let start = point(first.left() + px(2.), first.top() + px(8.));
         let end = point(last.left() + px(60.), last.top() + px(8.));
         cx.simulate_mouse_down(start, MouseButton::Left, gpui::Modifiers::none());
-        paint(&mut cx);
+        paint(cx);
         cx.simulate_mouse_move(end, Some(MouseButton::Left), gpui::Modifiers::none());
-        paint(&mut cx);
+        paint(cx);
         cx.simulate_mouse_up(end, MouseButton::Left, gpui::Modifiers::none());
 
         let selected = state.borrow().selected_text();

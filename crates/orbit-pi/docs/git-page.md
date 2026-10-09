@@ -4,6 +4,17 @@ The Git page is a full main-area surface (`src/git_panel/`) that combines local
 Git work with the GitHub CLI. It opens from the session-details **Commit or
 push** row or the top-bar Git affordance; `escape` / **Back** returns.
 
+## Worktrees
+
+The page always operates on the **active workspace**, which may be a linked Git
+worktree (`repo/.wt/113`) rather than the main repository. Every Git command
+(`status`, `diff`, `branch`, `log`, `commit`, `push`, `pull`, staging, graph,
+stash) runs with that path as its cwd, so the Changes/History/Graph tabs show
+that worktree's branch and working tree. Worktree lifecycle — creation,
+removal, moving, locking, pruning — lives on the Worktrees page
+(`app/worktrees.rs`) and is not duplicated here; see
+[worktrees.md](./worktrees.md).
+
 ## Tabs
 
 | Tab | Source | What it does |

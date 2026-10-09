@@ -327,7 +327,7 @@ impl Render for OrbitApp {
         // full-page Review pane yields to the one that just opened rather
         // than covering it.
         let viewer_open = self.file_viewer.read(cx).is_open();
-        let feature_open = viewer_open || self.git_open || self.usage_open;
+        let feature_open = viewer_open || self.git_open || self.usage_open || self.worktrees_open;
         // A page that opens under a full-page Review pane gets the window
         // back; one that was already open does not block maximizing over it.
         if pane_visible
@@ -364,6 +364,7 @@ impl Render for OrbitApp {
             && !self.settings_open
             && !self.usage_open
             && !self.git_open
+            && !self.worktrees_open
             && !pane_full;
         let panel_workspace = review_workspace.clone();
         self.terminal_panel.update(cx, |panel, cx| {
@@ -495,6 +496,9 @@ impl Render for OrbitApp {
             self.usage
                 .update(cx, |page, cx| page.top_bar_leading(theme, cx))
         });
+        let worktrees_leading = self
+            .worktrees_open
+            .then(|| self.worktrees_top_bar_leading(theme, cx));
         let mut top_controls = div().flex_none().flex().items_center().gap_2();
         // Provider quota — a compact, provider-independent headroom meter.
         // Hidden entirely on a pi without `quota.*` (or when no provider
@@ -615,11 +619,10 @@ impl Render for OrbitApp {
                                     .hover(|style| style.bg(theme.accent.opacity(0.4)))
                                     .on_drag(SidebarResize, |_, _, _, cx| cx.new(|_| DragGhost)),
                             )
-                            // brand — the Orbit wordmark, set over the nav
-                            // column. The titlebar strip above already reserves
-                            // the space under the window controls, so `pb_3`
-                            // (plus the nav's `pt_1` below) gives the mark the
-                            // same optical gap above and below it.
+                            // brand — the wordmark, centred over the nav
+                            // column and held to a quiet size. White mark on
+                            // dark sidebars; the dark-ink mark on light ones,
+                            // where the white wordmark vanishes.
                             .child(
                                 div()
                                     .px_3()
@@ -628,17 +631,13 @@ impl Render for OrbitApp {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    // White mark on dark sidebars; the dark-ink
-                                    // mark on light ones, where the white
-                                    // wordmark vanishes. A compact fixed width
-                                    // keeps the brand quiet above the nav rows.
                                     .child(embedded_image_w(
                                         if theme.mode == ThemeMode::Light {
                                             crate::app_icon::LOGO_DARK_ASSET
                                         } else {
                                             crate::app_icon::LOGO_ASSET
                                         },
-                                        px(90.),
+                                        px(76.),
                                     )),
                             )
                             // nav — the primary action (New Task); the
@@ -757,12 +756,6 @@ impl Render for OrbitApp {
                                             )
                                             .into_any_element()
                                     }),
-                            )
-                            // star the project — a quiet GitHub call to action
-                            // set just above the footer, until dismissed
-                            .children(
-                                (!self.star_banner_dismissed)
-                                    .then(|| self.sidebar_star_banner(theme, cx)),
                             )
                             // footer — connection status, then the utility
                             // icons on the last edge, set off from the session
@@ -883,7 +876,9 @@ impl Render for OrbitApp {
                                 .h_full()
                                 .flex()
                                 .items_center();
-                            if let Some(leading) = git_leading.or(usage_leading) {
+                            if let Some(leading) =
+                                git_leading.or(usage_leading).or(worktrees_leading)
+                            {
                                 // A feature page's leading controls (Back and the
                                 // page title) are interactive, so they sit outside
                                 // the drag region — pressing them must not start a
@@ -940,6 +935,8 @@ impl Render for OrbitApp {
                     self.git_panel.clone().into_any_element()
                 } else if self.usage_open {
                     self.usage.clone().into_any_element()
+                } else if self.worktrees_open {
+                    self.render_worktrees_page(cx).into_any_element()
                 } else {
                     // chat body — transcript/empty, composer, terminal
                     div()
@@ -1245,6 +1242,9 @@ impl Render for OrbitApp {
                     .iter()
                     .map(|ui| crate::custom_ui::layer(ui.clone()).into_any_element()),
             )
+            // ── worktrees dialog — create / rename / move / remove,
+            // opened from the page and its row menus.
+            .children(self.worktree_dialog_layer(theme, cx.entity(), cx))
             // ── update modal — the search, changelog, and install decision,
             // opened by the download control and Check for Updates. Below the
             // extension dialog (a run blocks on it) and the lightbox.
@@ -1470,7 +1470,10 @@ impl OrbitApp {
             // row gets narrow.
             .when(!compact, |row| row.child(self.access_chip(cx)))
             // Workflow mode: the session's scope (Plan / Build / Ask), enforced
-            // by the workflow extension. Sits beside the access chip.
+            // by the workflow extension. Sits beside the access chip on every
+            // composer, including the new-task page — the scope belongs with
+            // the other agent controls, not as a control block in the page's
+            // empty state.
             .when(!compact, |row| row.child(self.workflow_chip(cx)))
             .child(div().flex_1())
             .child(self.model_chip(compact, cx))
@@ -1527,7 +1530,7 @@ impl OrbitApp {
     /// animated on open (reduce-motion aware) so the turn reads as a
     /// transition, and resting flat when closed so there is no reverse
     /// flicker. `fg` is the caret color while open.
-    fn chip_caret(
+    pub(super) fn chip_caret(
         open: bool,
         fg: gpui::Hsla,
         animation_id: &'static str,
@@ -2449,79 +2452,6 @@ impl OrbitApp {
                                             .child(tr!("workspace.pick_workspace_hint")),
                                     ),
                             )
-                            // Workflow mode — the task's scope before the
-                            // session exists: Plan / Build / Ask. Held pending
-                            // and committed to the new session id.
-                            .child(
-                                div()
-                                    .w(field_w)
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(6.))
-                                    .child(
-                                        div()
-                                            .px(px(2.))
-                                            .text_size(TextSize::XSmall.px(&theme))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(theme.text_3)
-                                            .child(tr!("view.mode")),
-                                    )
-                                    .child(div().flex().gap(px(4.)).children(
-                                        WorkflowMode::ALL.iter().map(|mode| {
-                                            let mode = *mode;
-                                            let selected = self.workflow_mode == mode;
-                                            let button = div().id(ElementId::Name(
-                                                format!("new-task-mode-{}", mode.as_wire()).into(),
-                                            ));
-                                            button_frame(button, &theme, ButtonSize::Large)
-                                                .flex_1()
-                                                .border_1()
-                                                .border_color(if selected {
-                                                    theme.accent.opacity(0.55)
-                                                } else {
-                                                    theme.border
-                                                })
-                                                .raised(
-                                                    if selected {
-                                                        theme.accent.opacity(0.12)
-                                                    } else {
-                                                        theme.bg_raised
-                                                    },
-                                                    &theme,
-                                                )
-                                                .cursor_pointer()
-                                                .hover(|s| {
-                                                    s.border_color(theme.border_strong)
-                                                        .raised(theme.overlay, &theme)
-                                                })
-                                                .on_mouse_up(
-                                                    MouseButton::Left,
-                                                    cx.listener(move |app, _, _, cx| {
-                                                        app.choose_workflow_mode(mode, cx);
-                                                    }),
-                                                )
-                                                .child(icon(
-                                                    mode.icon(),
-                                                    ButtonSize::Large.icon_size().px(&theme),
-                                                    if selected {
-                                                        theme.accent
-                                                    } else {
-                                                        theme.text_3
-                                                    },
-                                                ))
-                                                .child(
-                                                    div()
-                                                        .font_weight(FontWeight::MEDIUM)
-                                                        .text_color(if selected {
-                                                            theme.text
-                                                        } else {
-                                                            theme.text_2
-                                                        })
-                                                        .child(mode.label()),
-                                                )
-                                        }),
-                                    )),
-                            )
                             // Workspace — a labeled select field, not a ghost
                             // row. Click opens the workspace picker (recent
                             // folders, filter, browse) anchored below; the
@@ -3071,6 +3001,9 @@ impl OrbitApp {
                     ))
                     .child(workspace_label.to_string()),
             )
+            // "Work in": Local / linked worktree / New worktree. Hidden when
+            // the active workspace is not a Git repository.
+            .children(self.work_in_chip(cx))
             .children(self.branch.as_ref().map(|branch| {
                 let open = self.branch_picker.is_some();
                 let pending = self.branch_operation_pending;
@@ -3117,31 +3050,6 @@ impl OrbitApp {
                             )
                             .children(self.branch_picker_popup()),
                     )
-                    .children(branch.other_branches.map(|count| {
-                        button_frame(div().id("status-branch-count"), &theme, ButtonSize::Default)
-                            .when(!pending, |chip| chip.cursor_pointer())
-                            .when(open, |chip| {
-                                chip.bg(theme.active).text_color(theme.active_fg)
-                            })
-                            .when(!open && !pending, |chip| {
-                                chip.hover(|s| s.bg(theme.overlay).text_color(theme.text_2))
-                            })
-                            .when(pending, |chip| chip.opacity(0.6))
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(|app, _, window, cx| {
-                                    if !app.branch_operation_pending {
-                                        app.toggle_branch_picker(window, cx);
-                                    }
-                                }),
-                            )
-                            .child(icon(
-                                "icons/git-fork.svg",
-                                ButtonSize::Default.icon_size().px(&theme),
-                                theme.text_3,
-                            ))
-                            .child(tr!("view.count_more", count = count))
-                    }))
                     .into_any_element()
             }))
             // A quiet MCP indicator: only when servers are configured, and
@@ -3770,55 +3678,6 @@ impl OrbitApp {
             || self.workspace_menu.is_some()
             || self.sidebar_sort_menu
             || self.settings_select.is_some()
-    }
-
-    /// The sidebar's "star the project" banner. It sits directly above the
-    /// Settings/status footer, so the last thing in the column is the GitHub
-    /// link. Same card as Settings → About, plus a close button that remembers
-    /// the dismissal.
-    pub(super) fn sidebar_star_banner(&self, theme: Theme, cx: &Context<Self>) -> AnyElement {
-        let dismiss = icon_button_frame(
-            div()
-                .id("sidebar-star-dismiss")
-                .debug_selector(|| "sidebar-star-dismiss".to_string())
-                .cursor_pointer()
-                .hover(|s| s.bg(theme.bg_hover)),
-            &theme,
-            ButtonSize::Compact,
-        )
-        .tooltip({
-            let label = tr!("common.dismiss");
-            move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
-        })
-        // The banner itself opens the repo on mouse-up: swallow this click so
-        // dismissing never also opens GitHub.
-        .on_mouse_up(
-            MouseButton::Left,
-            cx.listener(|this, _, _, cx| {
-                cx.stop_propagation();
-                this.dismiss_star_banner(cx);
-            }),
-        )
-        .child(icon(
-            "icons/x.svg",
-            ButtonSize::Compact.icon_size().px(&theme),
-            theme.text_3,
-        ))
-        .into_any_element();
-
-        div()
-            .mx_3()
-            .mt_2()
-            .mb_2()
-            .child(star_project_banner(theme, "sidebar-star", Some(dismiss)))
-            .into_any_element()
-    }
-
-    /// Hide the sidebar's star banner and remember it across relaunches.
-    pub(super) fn dismiss_star_banner(&mut self, cx: &mut Context<Self>) {
-        self.star_banner_dismissed = true;
-        crate::transcript::persist_hint(crate::transcript::STAR_BANNER_HINT_KEY);
-        cx.notify();
     }
 
     pub(super) fn send_button(&self, cx: &Context<Self>) -> impl IntoElement + use<> {

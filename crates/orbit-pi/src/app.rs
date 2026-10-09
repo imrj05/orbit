@@ -180,9 +180,6 @@ struct RetryDetail {
 struct BranchStatus {
     name: String,
     ahead_behind: Option<(usize, usize)>,
-    /// Local branches other than the current one (`None` when the list could
-    /// not be read).
-    other_branches: Option<usize>,
 }
 
 pub struct OrbitApp {
@@ -221,9 +218,6 @@ pub struct OrbitApp {
     /// would let the repeat skip) while the first frame — generation 0 — draws
     /// the settled state with no launch animation.
     sidebar_slide_gen: u64,
-    /// Whether the sidebar's "star the project" banner has been dismissed.
-    /// Persisted in `hints.json`, so a dismissal survives a relaunch.
-    star_banner_dismissed: bool,
     /// Whether a feature page (Files / Git / Usage / AI Review) was open on
     /// the previous frame. A full-page Review pane yields only to a page that
     /// *opens* under it, never to one that was already there when the reader
@@ -456,6 +450,85 @@ pub struct OrbitApp {
     /// Open row-actions menu on a workspace group header (which workspace's
     /// label + cwd). Mutually exclusive with `session_menu`.
     workspace_menu: Option<WorkspaceMenu>,
+    /// Worktree preferences (`~/.orbit-pi/worktrees.json`), shared by
+    /// Settings → Worktrees and the Worktrees page. Repository-local
+    /// `.orbit/worktree.json` overrides the directory and setup script.
+    worktree_config: crate::worktree::WorktreeConfig,
+    /// Settings → Worktrees: default-location field.
+    worktree_dir_input: Entity<ComposerInput>,
+    _worktree_dir_sub: Subscription,
+    /// Settings → Worktrees: setup-script field.
+    worktree_script_input: Entity<ComposerInput>,
+    _worktree_script_sub: Subscription,
+    /// Keeps the create dialog's name→branch derivation observers alive.
+    _worktree_name_sub: Subscription,
+    _worktree_branch_sub: Subscription,
+    /// Whether the Worktrees page replaces the chat area.
+    worktrees_open: bool,
+    /// The dismissible "How worktrees work" card was closed (persisted beside
+    /// the other one-time hints).
+    worktree_howto_dismissed: bool,
+    /// Whether the status bar's "Work in" picker (Local / worktrees) is open.
+    work_in_menu_open: bool,
+    /// Highlighted row in the "Work in" picker.
+    work_in_menu_highlight: usize,
+    /// Focus handle that carries the `WorkInMenu` key context while the picker
+    /// is open (focus moves here so ↑/↓/Enter/Escape hit it).
+    work_in_menu_focus: FocusHandle,
+    /// Linked worktrees Git reports for the active repository (main first).
+    worktrees: Vec<crate::worktree::Worktree>,
+    /// Main worktree root of the active repository, cached from the last
+    /// worktree list so path resolution never shells out during render.
+    worktree_repo_root: Option<PathBuf>,
+    /// A worktree list or mutation is in flight.
+    worktrees_busy: bool,
+    /// Generation of the newest worktree list; a late result from an older
+    /// list (workspace switched, page reopened) is discarded.
+    worktree_fetch: u64,
+    /// A list was requested while one was in flight; re-run it when the
+    /// current one settles.
+    worktree_refresh_pending: bool,
+    /// Repository path of the in-flight worktree mutation; guards one
+    /// mutating operation per repository at a time (§31).
+    worktree_mutation_repo: Option<PathBuf>,
+    /// Human-readable label of the in-flight worktree operation.
+    worktree_operation: Option<String>,
+    /// Last worktree failure, shown as the page's banner.
+    worktrees_error: Option<String>,
+    /// Inline validation error for the open dialog.
+    worktree_dialog_error: Option<String>,
+    /// Whether the page's Advanced (prune / repair) menu is open.
+    worktree_advanced_open: bool,
+    /// Earliest time a watcher-driven worktree re-list may run (§30).
+    worktree_refresh_due: Option<Instant>,
+    /// The open Worktrees dialog, if any.
+    worktree_dialog: Option<WorktreeDialog>,
+    /// Create dialog: worktree name.
+    worktree_name_input: Entity<ComposerInput>,
+    /// Create dialog: new-branch name.
+    worktree_branch_input: Entity<ComposerInput>,
+    /// Create dialog: new-branch start point.
+    worktree_start_input: Entity<ComposerInput>,
+    /// Rename / Move dialog: the new name or destination.
+    worktree_field_input: Entity<ComposerInput>,
+    /// Branches loaded for the create dialog's branch choices.
+    worktree_branches: Vec<String>,
+    /// Create dialog: use a new branch or an existing one.
+    worktree_branch_mode: WorktreeBranchMode,
+    /// Create dialog: the user edited the branch field, so the name no longer
+    /// drives it.
+    worktree_branch_touched: bool,
+    /// Guards the name→branch derivation from marking the branch as
+    /// user-edited when Orbit sets it programmatically.
+    worktree_branch_programmatic: bool,
+    /// Create dialog: the chosen existing branch.
+    worktree_branch_choice: Option<String>,
+    /// Create dialog: run the setup script for this worktree.
+    worktree_run_setup: bool,
+    /// Setup progress and captured output for the most recent creation.
+    worktree_setup: Option<WorktreeSetupState>,
+    /// Open row menu on the Worktrees page.
+    worktree_menu: Option<WorktreeMenu>,
     /// Path of the active session file, for the sidebar highlight.
     current_session_path: Option<PathBuf>,
     /// When the popup was dismissed by an outside mouse-down; guards against
@@ -1173,6 +1246,100 @@ impl OrbitApp {
         });
 
         let workspace_store = load_workspace_store();
+        // Worktree preferences and the fields Settings → Worktrees edits.
+        // Both fields persist on change; observers only fire on real text
+        // edits, so loading never writes back.
+        let worktree_config = crate::worktree::WorktreeConfig::load();
+        let worktree_dir_input = cx.new(|cx| {
+            ComposerInput::new(cx)
+                .with_element_id("worktree-dir-input")
+                .with_text(worktree_config.directory.clone())
+                .with_placeholder_key("worktree.settings.directory_placeholder")
+                .with_key_context("Composer Picker")
+                .with_max_lines(1)
+                .with_wrap(false)
+        });
+        let worktree_dir_sub = cx.observe(&worktree_dir_input, |this, input, cx| {
+            let value = input.read(cx).text().trim().to_string();
+            if !value.is_empty() && value != this.worktree_config.directory {
+                this.worktree_config.directory = value;
+                let _ = this.worktree_config.persist();
+            }
+            cx.notify();
+        });
+        let worktree_script_input = cx.new(|cx| {
+            ComposerInput::new(cx)
+                .with_element_id("worktree-script-input")
+                .with_text(worktree_config.setup_script.clone())
+                .with_placeholder_key("worktree.settings.script_placeholder")
+                .with_key_context("Composer Picker")
+                .with_max_lines(1)
+                .with_wrap(false)
+        });
+        let worktree_script_sub = cx.observe(&worktree_script_input, |this, input, cx| {
+            let value = input.read(cx).text().trim().to_string();
+            if !value.is_empty() && value != this.worktree_config.setup_script {
+                this.worktree_config.setup_script = value;
+                let _ = this.worktree_config.persist();
+            }
+            cx.notify();
+        });
+        // Create / rename / move dialog fields. The create dialog's start
+        // point defaults to HEAD (empty input).
+        let worktree_name_input = cx.new(|cx| {
+            ComposerInput::new(cx)
+                .with_element_id("worktree-name-input")
+                .with_placeholder_key("worktree.field.name_placeholder")
+                .with_key_context("Composer")
+                .with_max_lines(1)
+                .with_wrap(false)
+        });
+        let worktree_branch_input = cx.new(|cx| {
+            ComposerInput::new(cx)
+                .with_element_id("worktree-branch-input")
+                .with_placeholder_key("worktree.field.branch_placeholder")
+                .with_key_context("Composer")
+                .with_max_lines(1)
+                .with_wrap(false)
+        });
+        let worktree_start_input = cx.new(|cx| {
+            ComposerInput::new(cx)
+                .with_element_id("worktree-start-input")
+                .with_placeholder_key("worktree.field.start_placeholder")
+                .with_key_context("Composer")
+                .with_max_lines(1)
+                .with_wrap(false)
+        });
+        let worktree_field_input = cx.new(|cx| {
+            ComposerInput::new(cx)
+                .with_element_id("worktree-field-input")
+                .with_key_context("Composer")
+                .with_max_lines(1)
+                .with_wrap(false)
+        });
+        // Create dialog: derive the new-branch name from the worktree name
+        // until the user edits the branch themselves, so the quick "New
+        // worktree" flow is one field to change (the custom name) without
+        // silently overwriting a deliberate branch choice.
+        let worktree_name_sub = cx.observe(&worktree_name_input, |this, input, cx| {
+            if this.worktree_branch_touched {
+                return;
+            }
+            let slug = crate::worktree::slugify(&input.read(cx).text());
+            if slug.is_empty() {
+                return;
+            }
+            this.worktree_branch_programmatic = true;
+            this.worktree_branch_input
+                .update(cx, |field, cx| field.set_text(format!("orbit/{slug}"), cx));
+            this.worktree_branch_programmatic = false;
+        });
+        let worktree_branch_sub = cx.observe(&worktree_branch_input, |this, _, cx| {
+            if !this.worktree_branch_programmatic {
+                this.worktree_branch_touched = true;
+            }
+            cx.notify();
+        });
         let mut app = Self {
             client,
             runtime,
@@ -1190,9 +1357,6 @@ impl OrbitApp {
             sidebar_list: ListState::new(0, ListAlignment::Top, px(44.)),
             sidebar_visible: true,
             sidebar_slide_gen: 0,
-            star_banner_dismissed: crate::transcript::hint_seen(
-                crate::transcript::STAR_BANNER_HINT_KEY,
-            ),
             feature_open_last: false,
             pane_full_last: false,
             sidebar_cursor: None,
@@ -1278,6 +1442,44 @@ impl OrbitApp {
             sidebar_archived_filter: workspace_store.archived_filter,
             sidebar_sort_menu: false,
             workspace_menu: None,
+            worktree_config,
+            worktree_dir_input: worktree_dir_input.clone(),
+            _worktree_dir_sub: worktree_dir_sub,
+            worktree_script_input: worktree_script_input.clone(),
+            _worktree_script_sub: worktree_script_sub,
+            worktrees_open: false,
+            worktree_howto_dismissed: crate::transcript::hint_seen(
+                worktrees::WORKTREE_HOWTO_HINT_KEY,
+            ),
+            work_in_menu_open: false,
+            work_in_menu_highlight: 0,
+            work_in_menu_focus: cx.focus_handle(),
+            worktrees: Vec::new(),
+            worktree_repo_root: None,
+            worktrees_busy: false,
+            worktree_fetch: 0,
+            worktree_refresh_pending: false,
+            worktree_mutation_repo: None,
+            worktree_operation: None,
+            worktrees_error: None,
+            worktree_dialog_error: None,
+            worktree_advanced_open: false,
+            worktree_refresh_due: None,
+            worktree_dialog: None,
+            worktree_name_input: worktree_name_input.clone(),
+            worktree_branch_input: worktree_branch_input.clone(),
+            worktree_start_input: worktree_start_input.clone(),
+            worktree_field_input: worktree_field_input.clone(),
+            _worktree_name_sub: worktree_name_sub,
+            _worktree_branch_sub: worktree_branch_sub,
+            worktree_branches: Vec::new(),
+            worktree_branch_mode: WorktreeBranchMode::New,
+            worktree_branch_touched: false,
+            worktree_branch_programmatic: false,
+            worktree_branch_choice: None,
+            worktree_run_setup: true,
+            worktree_setup: None,
+            worktree_menu: None,
             current_session_path: None,
             menu_dismissed_at: None,
             context: None,
@@ -1619,6 +1821,12 @@ impl OrbitApp {
     pub(super) fn set_current_workspace(&mut self, cwd: PathBuf) {
         persist_last_workspace(&cwd);
         self.workspace_logo = crate::workspace_logo::load(&cwd);
+        // A different workspace may belong to a different repository; the
+        // cached worktree root (used for name/path resolution) must not leak
+        // across, and an in-flight list for the previous workspace must not
+        // land. The next worktree list resolves the root again off-thread.
+        self.worktree_repo_root = None;
+        self.worktree_fetch = self.worktree_fetch.wrapping_add(1);
         self.current_workspace = Some(cwd.clone());
     }
 
@@ -1696,17 +1904,9 @@ impl OrbitApp {
             let branch = cx
                 .background_executor()
                 .spawn(async move {
-                    crate::git::current_branch(&cwd).map(|name| {
-                        // The picker's own list, so the count and the popup it
-                        // opens always agree.
-                        let other_branches = crate::git::list_branches(&cwd).ok().map(|branches| {
-                            branches.iter().filter(|branch| **branch != name).count()
-                        });
-                        BranchStatus {
-                            name,
-                            ahead_behind: crate::git::ahead_behind(&cwd),
-                            other_branches,
-                        }
+                    crate::git::current_branch(&cwd).map(|name| BranchStatus {
+                        name,
+                        ahead_behind: crate::git::ahead_behind(&cwd),
                     })
                 })
                 .await;
@@ -1954,7 +2154,7 @@ fn workspaces_path() -> PathBuf {
 
 /// The parsed workspaces store. Keeping `added_at` beside the path list gives
 /// [`WorkspaceSort::DateAdded`] a stable key across relaunches.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct WorkspaceStore {
     workspaces: Vec<PathBuf>,
     added_at: HashMap<PathBuf, SystemTime>,
@@ -1965,19 +2165,6 @@ struct WorkspaceStore {
     group_by: SidebarGroupBy,
     /// Which archived sessions the sidebar lists.
     archived_filter: SidebarArchivedFilter,
-}
-
-impl Default for WorkspaceStore {
-    fn default() -> Self {
-        Self {
-            workspaces: Vec::new(),
-            added_at: HashMap::new(),
-            marks: HashMap::new(),
-            sort: WorkspaceSort::default(),
-            group_by: SidebarGroupBy::default(),
-            archived_filter: SidebarArchivedFilter::default(),
-        }
-    }
 }
 
 /// Read the project list, tolerating the pre-timestamp format where
@@ -2198,12 +2385,81 @@ pub(crate) enum SettingsSection {
     Privacy,
     Runtime,
     Agent,
+    Worktrees,
     Providers,
     Models,
     Skills,
     Plugins,
     Mcp,
     About,
+}
+
+/// Which branch source the Create Worktree dialog uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorktreeBranchMode {
+    /// A brand-new branch, optionally from a start point.
+    New,
+    /// A branch that already exists (local or remote-tracking).
+    Existing,
+}
+
+/// A create request held while the user confirms a repository's setup
+/// script. Scripts run arbitrary commands, so the first run in a repository
+/// is an explicit permission (never a silent side effect of creating).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PendingWorktreeCreate {
+    pub name: String,
+    pub path: PathBuf,
+    pub branch: String,
+    /// The branch already exists (check it out) vs. is created here.
+    pub existing_branch: bool,
+    /// Start point for a new branch; `None` means the repository's HEAD.
+    pub start_point: Option<String>,
+    pub run_setup: bool,
+}
+
+/// The open Worktrees dialog, if any.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WorktreeDialog {
+    /// Name / branch / location / setup fields.
+    Create,
+    /// First setup-script run in this repository.
+    AllowSetup(PendingWorktreeCreate),
+    /// Rename the worktree directory (never the Git branch).
+    Rename { path: PathBuf },
+    /// Move the worktree directory somewhere else.
+    Move { path: PathBuf },
+    /// Remove a worktree; `dirty` drives the "uncommitted changes" copy and
+    /// the forced-removal confirmation.
+    Remove { path: PathBuf, dirty: bool },
+    /// The chosen branch already has a worktree elsewhere; offer to open it.
+    BranchInUse { branch: String, path: PathBuf },
+    /// The workspace a session points at is gone (e.g. its worktree was
+    /// removed). The session is never silently re-pointed at another
+    /// workspace (§22).
+    Unavailable { path: PathBuf },
+}
+
+/// Setup-script progress for the most recent worktree creation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorktreeSetupState {
+    pub worktree: PathBuf,
+    pub script: PathBuf,
+    /// `None` while the script runs.
+    pub outcome: Option<crate::worktree_setup::SetupOutcome>,
+    /// Whether the captured output is expanded.
+    pub expanded: bool,
+    /// Open the worktree when the script succeeds (the create dialog's
+    /// "open after creation" setting, deferred until setup finishes).
+    pub open_after: bool,
+}
+
+/// Open row-actions popup on the Worktrees page.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct WorktreeMenu {
+    pub path: PathBuf,
+    /// Right-click origin in window coordinates (see [`SessionMenu::at`]).
+    pub at: Option<Point<Pixels>>,
 }
 
 /// The update modal's state. One surface serves both entry points: the
@@ -2523,6 +2779,7 @@ mod skills_ui;
 mod toast_ui;
 mod updater_ui;
 mod view;
+mod worktrees;
 
 #[cfg(test)]
 mod backdrop_layout_tests;
@@ -2539,6 +2796,8 @@ mod new_task_reconnect_tests;
 #[cfg(test)]
 mod popup_layout_tests;
 #[cfg(test)]
+mod refresh_tests;
+#[cfg(test)]
 mod session_default_apply_tests;
 #[cfg(test)]
 mod session_park_tests;
@@ -2554,6 +2813,8 @@ mod sidebar_sort_tests;
 mod sidepane_full_width_tests;
 #[cfg(test)]
 mod titlebar_layout_tests;
+#[cfg(test)]
+mod worktree_howto_tests;
 
 // `icon` and friends are part of the crate-wide UI kit; keep their original
 // `crate::app::…` paths stable for the other modules that import them.

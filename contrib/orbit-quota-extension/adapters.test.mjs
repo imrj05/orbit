@@ -18,6 +18,7 @@ import test, { beforeEach } from "node:test";
 
 import {
   OllamaCloudParser,
+  configureQuotaAuth,
   ollamaCloudKey,
   quotaAdapters,
   quotaReport,
@@ -168,6 +169,46 @@ test("sanitize redacts credential-shaped substrings", () => {
   );
   assert.ok(!cleaned.includes("sk-abc123DEFghi"), "openai-style key redacted");
   assert.ok(!cleaned.includes("ghp_00aa11bb22cc"), "github token redacted");
+});
+
+test("baseten sends an ISO range and sums the billing usage categories", async () => {
+  configureQuotaAuth(async (id) =>
+    id === "baseten" ? { auth: { apiKey: "bt-key" } } : null,
+  );
+  try {
+    let requested = "";
+    globalThis.fetch = async (url) => {
+      requested = String(url);
+      return {
+        ok: true,
+        status: 200,
+        url,
+        text: async () =>
+          JSON.stringify({
+            dedicated_usage: { subtotal: 10, total: 12, credits_used: 2, minutes: 60 },
+            training_usage: { subtotal: 0, total: 0, credits_used: 0, minutes: 0 },
+            model_apis_usage: { subtotal: 3, total: 3, credits_used: 0 },
+          }),
+      };
+    };
+    const report = await quotaReport("baseten");
+    assert.equal(report.kind, "spend");
+    // The endpoint requires an explicit ISO 8601 range; a bare `window` 400s.
+    const params = new URL(requested).searchParams;
+    assert.ok(params.get("start_date"), "start_date sent");
+    assert.ok(params.get("end_date"), "end_date sent");
+    const days =
+      (Date.parse(params.get("end_date")) - Date.parse(params.get("start_date"))) /
+      86400000;
+    assert.ok(days > 0 && days <= 31, "range within 31 days");
+    assert.deepEqual(report.balances, [
+      { label: "30-day spend", amount: 15, currency: "USD" },
+      { label: "Dedicated", amount: 12, currency: "USD" },
+      { label: "Model APIs", amount: 3, currency: "USD" },
+    ]);
+  } finally {
+    configureQuotaAuth(null);
+  }
 });
 
 test("ollama with a real cloud key maps the monthly credit fraction", async () => {

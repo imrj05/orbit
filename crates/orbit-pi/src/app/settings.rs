@@ -75,6 +75,11 @@ const SETTINGS_SECTIONS: &[(SettingsSection, &str, &str)] = &[
     ),
     (SettingsSection::Agent, "icons/spark.svg", "settings.agent"),
     (
+        SettingsSection::Worktrees,
+        "icons/branch.svg",
+        "worktree.settings.title",
+    ),
+    (
         SettingsSection::Providers,
         "icons/cloud.svg",
         "settings.providers",
@@ -226,6 +231,27 @@ const SETTINGS_SEARCH_INDEX: &[(SettingsSection, &str, &str)] = &[
         SettingsSection::Agent,
         "settings.default_thinking",
         "thinking level default session reasoning",
+    ),
+    // Worktrees
+    (
+        SettingsSection::Worktrees,
+        "worktree.settings.directory",
+        "worktree worktrees directory location .wt folder path git branch",
+    ),
+    (
+        SettingsSection::Worktrees,
+        "worktree.settings.setup_script",
+        "worktree worktrees setup script install bootstrap hook",
+    ),
+    (
+        SettingsSection::Worktrees,
+        "worktree.settings.run_setup_auto",
+        "worktree worktrees setup script automatic auto run",
+    ),
+    (
+        SettingsSection::Worktrees,
+        "worktree.settings.open_after_create",
+        "worktree worktrees open after create switch workspace",
     ),
     // Appearance
     (
@@ -813,6 +839,10 @@ impl OrbitApp {
                 (tr!("settings.runtime"), tr!("settings.runtime_description"))
             }
             SettingsSection::Agent => (tr!("settings.agent"), tr!("settings.agent_description")),
+            SettingsSection::Worktrees => (
+                tr!("worktree.settings.title"),
+                tr!("worktree.settings.description"),
+            ),
             SettingsSection::Skills => (tr!("settings.skills"), tr!("settings.skills_description")),
             SettingsSection::Plugins => {
                 (tr!("settings.plugins"), tr!("settings.plugins_description"))
@@ -917,6 +947,7 @@ impl OrbitApp {
             }
             SettingsSection::Runtime => self.runtime_rows(theme, this.clone(), cx),
             SettingsSection::Agent => self.agent_rows(theme, this.clone(), cx),
+            SettingsSection::Worktrees => self.worktree_settings_rows(theme, this.clone(), cx),
             // Rendered by `skills_ui::render_skills_page`, not the card body.
             SettingsSection::Skills => Vec::new(),
             SettingsSection::Plugins => self.plugin_rows(theme, this.clone(), cx),
@@ -4142,6 +4173,19 @@ impl OrbitApp {
         label: &str,
         rows: Vec<AnyElement>,
     ) -> AnyElement {
+        self.settings_section_desc(theme, label, None, rows)
+    }
+
+    /// Like [`Self::settings_section`], with one line of context under the
+    /// label. Used where several rows share a trigger, so it is stated once
+    /// instead of repeated on every row.
+    pub(super) fn settings_section_desc(
+        &self,
+        theme: Theme,
+        label: &str,
+        desc: Option<&str>,
+        rows: Vec<AnyElement>,
+    ) -> AnyElement {
         div()
             .w_full()
             .flex()
@@ -4150,10 +4194,22 @@ impl OrbitApp {
             .child(
                 div()
                     .px(DynamicSpacing::Base04.px(&theme))
-                    .text_size(TextSize::XSmall.px(&theme))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_3)
-                    .child(label.to_uppercase()),
+                    .flex()
+                    .flex_col()
+                    .gap(DynamicSpacing::Base02.px(&theme))
+                    .child(
+                        div()
+                            .text_size(TextSize::XSmall.px(&theme))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text_3)
+                            .child(label.to_uppercase()),
+                    )
+                    .children(desc.map(|desc| {
+                        div()
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_3)
+                            .child(desc.to_string())
+                    })),
             )
             .child(self.settings_group(theme, rows))
             .into_any_element()
@@ -4487,7 +4543,12 @@ impl OrbitApp {
                 notifications::DesktopAuth::Granted | notifications::DesktopAuth::Unknown => {}
             }
         }
-        self.settings_section(theme, &tr!("settings.notifications"), rows)
+        self.settings_section_desc(
+            theme,
+            &tr!("settings.notifications"),
+            Some(&tr!("settings.notifications_description")),
+            rows,
+        )
     }
 
     /// Flip the desktop channel, ask for permission on the way on, and
@@ -5487,7 +5548,7 @@ impl OrbitApp {
                 &label,
                 None,
                 None,
-                Some(self.theme_control(mode, theme, this.clone(), cx)),
+                Some(self.theme_select(mode, theme, this.clone(), cx)),
             ));
         }
         theme_rows.push(self.setting_row(
@@ -5767,44 +5828,6 @@ impl OrbitApp {
             self.toast_error(tr!("settings.appearance_save_failed", error = error));
         }
         cx.notify();
-    }
-
-    /// Preview the configured palette, even when the other appearance is active.
-    pub(super) fn theme_control(
-        &self,
-        mode: ThemeMode,
-        theme: Theme,
-        this: Entity<OrbitApp>,
-        cx: &Context<Self>,
-    ) -> AnyElement {
-        let preview = Theme::for_id(theme::appearance_prefs(cx).theme(mode));
-        let swatch = |color: Hsla| {
-            div()
-                .size(px(16.))
-                .rounded(Radius::Small.px(&theme))
-                .bg(color)
-                .border_1()
-                .border_color(theme.border_strong)
-                .flex_none()
-        };
-        div()
-            .flex()
-            .items_center()
-            .gap(DynamicSpacing::Base12.px(&theme))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(DynamicSpacing::Base04.px(&theme))
-                    .child(swatch(preview.bg_main))
-                    .child(swatch(preview.bg_sidebar))
-                    .child(swatch(preview.bg_raised))
-                    .child(swatch(preview.text_3))
-                    .child(swatch(preview.text))
-                    .child(swatch(preview.accent)),
-            )
-            .child(self.theme_select(mode, theme, this, cx))
-            .into_any_element()
     }
 
     /// Live previews of the chosen faces at their current sizes: the
@@ -6145,7 +6168,7 @@ impl OrbitApp {
         let dialog = rfd::AsyncFileDialog::new()
             .set_title(tr!("settings.choose_background_title"))
             .add_filter(
-                &tr!("settings.images_filter"),
+                tr!("settings.images_filter"),
                 &["png", "jpg", "jpeg", "webp", "gif", "bmp", "tiff"],
             );
         cx.spawn(async move |this, cx| {
@@ -7856,7 +7879,7 @@ mod about_banner_tests {
         cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
         let cx = cx.add_empty_window();
         let app = cx.update(|_, cx| cx.new(OrbitApp::new));
-        let _ = cx.update(|_, cx| {
+        cx.update(|_, cx| {
             app.update(cx, |app, cx| {
                 app.open_settings(cx);
                 app.set_settings_section(SettingsSection::About, cx);

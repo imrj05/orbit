@@ -739,9 +739,7 @@ mod render_tests {
 
     impl Render for Host {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .size_full()
-                .children(self.surfaces.iter().map(|ui| ui.clone()))
+            div().size_full().children(self.surfaces.iter().cloned())
         }
     }
 
