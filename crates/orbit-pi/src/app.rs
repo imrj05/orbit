@@ -160,6 +160,11 @@ struct ParkedSession {
     /// Extension `setWidget` blocks live at park time, so switching back to a
     /// warm session restores them (a parked process never re-emits).
     widgets: Vec<ExtensionWidget>,
+    /// The session's pending steering / follow-up queue at park time. pi only
+    /// emits `queue_update` when the queue changes, so a warm resume would
+    /// otherwise show nothing — and a stale restore would show messages pi
+    /// already delivered. Drain keeps it current while parked.
+    queue: PendingQueue,
     /// When this session was last parked; drives idle TTL reaping.
     parked_at: Instant,
 }
@@ -262,6 +267,11 @@ pub struct OrbitApp {
     /// Settings → Agent: auto session titles. Persisted to
     /// `~/.orbit-pi/auto-title.json`, which the bundled title extension reads.
     auto_title: crate::auto_title::AutoTitleConfig,
+    /// Settings → Privacy: the session-retention policy. Persisted to
+    /// `~/.orbit-pi/session-retention.json`; applied once per launch.
+    retention: crate::session_retention::RetentionConfig,
+    /// One-shot latch: the launch retention pass must run exactly once.
+    retention_ran: bool,
     /// Display name pi reports for the session (`get_state.sessionName`).
     session_name: Option<String>,
     /// pi is compacting right now (`get_state` / `compaction_*`).
@@ -1438,6 +1448,8 @@ impl OrbitApp {
             auto_compaction: true,
             auto_retry: true,
             auto_title: crate::auto_title::AutoTitleConfig::load(),
+            retention: crate::session_retention::RetentionConfig::load(),
+            retention_ran: false,
             session_name: None,
             is_compacting: false,
             retrying: false,
@@ -2847,6 +2859,9 @@ enum SettingsSelect {
     DefaultModel,
     /// The default model's thinking level (Settings → Agent).
     DefaultThinking,
+    /// The session-retention action and threshold (Settings → Privacy).
+    RetentionMode,
+    RetentionDays,
 }
 
 // ── feature modules ───────────────────────────────────────────────────────
@@ -2864,6 +2879,7 @@ mod open_in;
 mod pi_update_ui;
 mod pickers;
 mod plugin_update_ui;
+mod retention_ui;
 mod runtime;
 mod search;
 mod session;

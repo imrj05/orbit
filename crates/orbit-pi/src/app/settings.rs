@@ -5332,23 +5332,146 @@ impl OrbitApp {
         cx: &Context<Self>,
     ) -> Vec<AnyElement> {
         let enabled = crate::analytics::is_enabled(cx);
-        vec![self.settings_section(
-            theme,
-            &tr!("settings.anonymous_analytics"),
-            vec![self.setting_row(
+        vec![
+            self.settings_section(
                 theme,
                 &tr!("settings.anonymous_analytics"),
-                Some(&tr!("settings.anonymous_analytics_description")),
-                None,
-                Some(self.settings_toggle(
-                    "analytics-toggle",
-                    enabled,
+                vec![self.setting_row(
                     theme,
-                    this,
-                    Self::toggle_analytics,
-                )),
-            )],
-        )]
+                    &tr!("settings.anonymous_analytics"),
+                    Some(&tr!("settings.anonymous_analytics_description")),
+                    None,
+                    Some(self.settings_toggle(
+                        "analytics-toggle",
+                        enabled,
+                        theme,
+                        this.clone(),
+                        Self::toggle_analytics,
+                    )),
+                )],
+            ),
+            self.settings_section(
+                theme,
+                &tr!("settings.session_retention"),
+                vec![
+                    self.setting_row(
+                        theme,
+                        &tr!("settings.session_retention_enabled"),
+                        Some(&tr!("settings.session_retention_enabled_description")),
+                        None,
+                        Some(self.settings_toggle(
+                            "session-retention-toggle",
+                            self.retention.enabled,
+                            theme,
+                            this.clone(),
+                            Self::toggle_session_retention,
+                        )),
+                    ),
+                    self.setting_row(
+                        theme,
+                        &tr!("settings.session_retention_action"),
+                        Some(&tr!("settings.session_retention_action_description")),
+                        None,
+                        Some(self.retention_mode_select(theme, this.clone(), cx)),
+                    ),
+                    self.setting_row(
+                        theme,
+                        &tr!("settings.session_retention_age"),
+                        Some(&tr!("settings.session_retention_age_description")),
+                        None,
+                        Some(self.retention_days_select(theme, this.clone(), cx)),
+                    ),
+                    self.setting_row(
+                        theme,
+                        &tr!("settings.session_retention_run"),
+                        Some(&tr!("settings.session_retention_run_description")),
+                        None,
+                        Some(self.retention_run_button(theme, this.clone())),
+                    ),
+                ],
+            ),
+        ]
+    }
+
+    /// Settings → Privacy: the retention action dropdown (archive / delete).
+    fn retention_mode_select(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let options = vec![
+            tr!("settings.session_retention_mode_archive"),
+            tr!("settings.session_retention_mode_delete"),
+        ];
+        let selected = match self.retention.mode {
+            crate::session_retention::RetentionMode::Archive => 0,
+            crate::session_retention::RetentionMode::Delete => 1,
+        };
+        self.select_control(
+            "session-retention-mode-select",
+            SettingsSelect::RetentionMode,
+            options[selected].clone(),
+            options,
+            selected,
+            theme,
+            this,
+            cx,
+        )
+    }
+
+    /// Settings → Privacy: the idle-threshold dropdown.
+    fn retention_days_select(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        use crate::session_retention::DAY_PRESETS;
+        let options: Vec<String> = DAY_PRESETS
+            .iter()
+            .map(|days| tr!("settings.session_retention_days", days = days))
+            .collect();
+        let selected = DAY_PRESETS
+            .iter()
+            .position(|days| *days == self.retention.days)
+            .unwrap_or(0);
+        self.select_control(
+            "session-retention-days-select",
+            SettingsSelect::RetentionDays,
+            options[selected].clone(),
+            options,
+            selected,
+            theme,
+            this,
+            cx,
+        )
+    }
+
+    /// Settings → Privacy: run the policy immediately (the same pass the
+    /// launch hook runs) and report the result as a toast.
+    fn retention_run_button(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
+        button_frame(div().id("session-retention-run"), &theme, ButtonSize::Large)
+            .border_1()
+            .border_color(theme.border)
+            .raised(theme.bg_raised, &theme)
+            .cursor_pointer()
+            .hover(|style| style.raised(theme.bg_hover, &theme))
+            .active(|style| style.raised(theme.active, &theme))
+            .text_color(theme.text_2)
+            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                this.update(cx, |app, cx| app.run_session_retention(cx));
+            })
+            .child(tr!("settings.session_retention_run"))
+            .into_any_element()
+    }
+
+    /// Flip the session-retention policy and persist it. It takes effect on
+    /// the next launch, or right away from "Clean up now".
+    pub(super) fn toggle_session_retention(&mut self, cx: &mut Context<Self>) {
+        self.retention.enabled = !self.retention.enabled;
+        self.retention.persist();
+        cx.notify();
     }
 
     /// Flip the analytics opt-out. The client stops collecting and clears its
@@ -6329,7 +6452,9 @@ impl OrbitApp {
             | SettingsSelect::BackdropFade
             | SettingsSelect::TitleModel
             | SettingsSelect::DefaultModel
-            | SettingsSelect::DefaultThinking => unreachable!(),
+            | SettingsSelect::DefaultThinking
+            | SettingsSelect::RetentionMode
+            | SettingsSelect::RetentionDays => unreachable!(),
         };
         let selected = values
             .iter()
@@ -6835,6 +6960,23 @@ impl OrbitApp {
                 crate::dither::background();
                 return;
             }
+            SettingsSelect::RetentionMode => {
+                self.retention.mode = match ix {
+                    1 => crate::session_retention::RetentionMode::Delete,
+                    _ => crate::session_retention::RetentionMode::Archive,
+                };
+                self.retention.persist();
+                cx.notify();
+                return;
+            }
+            SettingsSelect::RetentionDays => {
+                if let Some(days) = crate::session_retention::DAY_PRESETS.get(ix) {
+                    self.retention.days = *days;
+                    self.retention.persist();
+                }
+                cx.notify();
+                return;
+            }
             _ => {}
         }
         use crate::theme::{Language, FONT_SIZES, SPACING_DENSITIES};
@@ -6862,7 +7004,9 @@ impl OrbitApp {
             | SettingsSelect::BackdropFade
             | SettingsSelect::TitleModel
             | SettingsSelect::DefaultModel
-            | SettingsSelect::DefaultThinking => unreachable!(),
+            | SettingsSelect::DefaultThinking
+            | SettingsSelect::RetentionMode
+            | SettingsSelect::RetentionDays => unreachable!(),
         }
         theme::set_ui_prefs(cx, ui);
     }

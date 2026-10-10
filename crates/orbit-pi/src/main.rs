@@ -88,6 +88,7 @@ mod quota_hidden;
 mod review;
 mod rpc_patches;
 mod session_defaults;
+mod session_retention;
 mod sessions;
 mod shimmer;
 mod sidepane;
