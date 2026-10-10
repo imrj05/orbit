@@ -675,6 +675,8 @@ impl OrbitApp {
             .children(self.provider_usage_layer(theme, this.clone(), cx))
             // ── MCP add/edit modal ──
             .children(self.mcp_editor_layer(theme, this.clone(), cx))
+            // ── Git identity editor modal ──
+            .children(self.git_identity_layer(theme, this.clone(), cx))
             .children(self.provider_key_layer(theme, this, cx))
     }
 

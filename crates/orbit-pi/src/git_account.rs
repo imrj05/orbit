@@ -74,24 +74,105 @@ pub fn clear_local_identity(repo: &Path) -> Result<(), String> {
     Ok(())
 }
 
-// ── Saved Git accounts ──────────────────────────────────────────────────
+// ── Saved Git identities ────────────────────────────────────────────────
 
-/// A saved account preset: a label, the host it targets, an optional SSH key
-/// from `~/.ssh`, and the commit identity. Applying one writes only the
-/// current repository's `.git/config` — nothing global changes.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// How a saved identity authenticates pushes and pulls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum AuthMethod {
+    /// Whatever Git on this machine already uses (default).
+    #[default]
+    Machine,
+    /// A signed-in `gh` account, applied through `credential.username`.
+    Account,
+    /// A specific key from `~/.ssh`, applied through `core.sshCommand`.
+    Ssh,
+    /// No credentials; only public remotes work.
+    Anonymous,
+}
+
+/// The identity color swatches offered in the editor: name and RGB hex.
+pub const ACCOUNT_COLORS: &[(&str, u32)] = &[
+    ("green", 0x2ea043),
+    ("red", 0xf85149),
+    ("peach", 0xffa198),
+    ("lime", 0x7ee787),
+    ("blue", 0x58a6ff),
+    ("purple", 0xbc8cff),
+];
+
+/// The identity icon choices offered in the editor: id and bundled asset.
+pub const ACCOUNT_ICONS: &[(&str, &str)] = &[
+    ("git", "icons/git-merge.svg"),
+    ("folder", "icons/folder.svg"),
+    ("terminal", "icons/terminal.svg"),
+    ("monitor", "icons/monitor.svg"),
+    ("cloud", "icons/cloud.svg"),
+    ("rocket", "icons/rocket-01.svg"),
+    ("star", "icons/star.svg"),
+];
+
+/// The RGB value for a stored color name (falls back to the first swatch).
+pub fn color_value(name: &str) -> u32 {
+    ACCOUNT_COLORS
+        .iter()
+        .find(|(candidate, _)| *candidate == name)
+        .or_else(|| ACCOUNT_COLORS.first())
+        .map(|(_, value)| *value)
+        .unwrap_or(0x2ea043)
+}
+
+/// The asset path for a stored icon id (falls back to the first icon).
+pub fn icon_path(id: &str) -> &'static str {
+    ACCOUNT_ICONS
+        .iter()
+        .find(|(candidate, _)| *candidate == id)
+        .or_else(|| ACCOUNT_ICONS.first())
+        .map(|(_, path)| *path)
+        .unwrap_or("icons/git-merge.svg")
+}
+
+/// A saved Git identity profile: the commit identity plus how it authenticates.
+/// Applying one writes only the current repository's `.git/config`; nothing
+/// global changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GitAccount {
     pub label: String,
-    pub host: String,
-    /// Path to the private half, as chosen (`~/.ssh/...` or absolute). Empty
-    /// means the account carries identity only and leaves SSH alone.
-    pub ssh_key: String,
+    /// A color name from [`ACCOUNT_COLORS`].
+    pub color: String,
+    /// An icon id from [`ACCOUNT_ICONS`].
+    pub icon: String,
     pub name: String,
     pub email: String,
+    /// A signed-in `gh` login, used when `auth_method` is `Account`.
+    pub source_account: String,
+    pub auth_method: AuthMethod,
+    /// Path to a key from `~/.ssh`, used when `auth_method` is `Ssh`.
+    pub ssh_key: String,
+    pub sign_commits: bool,
+    /// A GPG/SSH signing key (id or path) when `sign_commits` is set.
+    pub signing_key: String,
 }
 
-/// The saved Git accounts, persisted to `~/.orbit-pi/git-accounts.json`.
+impl Default for GitAccount {
+    fn default() -> Self {
+        Self {
+            label: String::new(),
+            color: ACCOUNT_COLORS[0].0.to_string(),
+            icon: ACCOUNT_ICONS[0].0.to_string(),
+            name: String::new(),
+            email: String::new(),
+            source_account: String::new(),
+            auth_method: AuthMethod::Machine,
+            ssh_key: String::new(),
+            sign_commits: false,
+            signing_key: String::new(),
+        }
+    }
+}
+
+/// The saved Git identities, persisted to `~/.orbit-pi/git-accounts.json`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GitAccountsConfig {
@@ -106,7 +187,7 @@ impl GitAccountsConfig {
             .join("git-accounts.json")
     }
 
-    /// Load the saved accounts, falling back to empty on any error.
+    /// Load the saved identities, falling back to empty on any error.
     pub fn load() -> Self {
         let Ok(raw) = std::fs::read_to_string(Self::store_path()) else {
             return Self::default();
@@ -114,7 +195,7 @@ impl GitAccountsConfig {
         serde_json::from_str(&raw).unwrap_or_default()
     }
 
-    /// Persist the accounts, creating `~/.orbit-pi/` when needed.
+    /// Persist the identities, creating `~/.orbit-pi/` when needed.
     pub fn persist(&self) -> std::io::Result<()> {
         let path = Self::store_path();
         if let Some(parent) = path.parent() {
@@ -126,21 +207,57 @@ impl GitAccountsConfig {
     }
 }
 
-/// Apply an account to `repo` through `git config --local`: its commit identity
-/// and, when it carries a key, a `core.sshCommand` that pins SSH to that key
-/// with `IdentitiesOnly=yes` so the agent's other keys are not offered.
+/// Apply an identity to `repo` through `git config --local`.
+///
+/// The commit identity is always written. `auth_method` then decides the
+/// transport: `Machine` clears the overrides so the machine's own setup wins,
+/// `Ssh` pins `core.sshCommand` to the chosen key (`IdentitiesOnly=yes`),
+/// `Account` sets `credential.username`, and `Anonymous` clears the
+/// credentials. Signing writes `commit.gpgsign` and `user.signingkey`.
 ///
 /// Local scope keeps the choice to this repository; the global identity and the
 /// user's `~/.ssh/config` are left untouched.
 pub fn apply_to_repo(repo: &Path, account: &GitAccount) -> Result<(), String> {
+    use AuthMethod::*;
+
     set_config(Scope::Local, Some(repo), "user.name", &account.name)?;
     set_config(Scope::Local, Some(repo), "user.email", &account.email)?;
-    if account.ssh_key.trim().is_empty() {
-        set_config(Scope::Local, Some(repo), "core.sshCommand", "")?;
+
+    match account.auth_method {
+        Ssh if !account.ssh_key.trim().is_empty() => {
+            let key = expand_key(&account.ssh_key);
+            let command = format!("ssh -i {} -o IdentitiesOnly=yes", shell_quote(&key));
+            set_config(Scope::Local, Some(repo), "core.sshCommand", &command)?;
+            set_config(Scope::Local, Some(repo), "credential.username", "")?;
+        }
+        Account => {
+            set_config(Scope::Local, Some(repo), "core.sshCommand", "")?;
+            set_config(
+                Scope::Local,
+                Some(repo),
+                "credential.username",
+                &account.source_account,
+            )?;
+        }
+        // Machine, Anonymous, and Ssh-without-a-key all defer the transport to
+        // whatever the machine already has (or nothing, for public remotes).
+        _ => {
+            set_config(Scope::Local, Some(repo), "core.sshCommand", "")?;
+            set_config(Scope::Local, Some(repo), "credential.username", "")?;
+        }
+    }
+
+    if account.sign_commits && !account.signing_key.trim().is_empty() {
+        set_config(Scope::Local, Some(repo), "commit.gpgsign", "true")?;
+        set_config(
+            Scope::Local,
+            Some(repo),
+            "user.signingkey",
+            &account.signing_key,
+        )?;
     } else {
-        let key = expand_key(&account.ssh_key);
-        let command = format!("ssh -i {} -o IdentitiesOnly=yes", shell_quote(&key));
-        set_config(Scope::Local, Some(repo), "core.sshCommand", &command)?;
+        set_config(Scope::Local, Some(repo), "commit.gpgsign", "")?;
+        set_config(Scope::Local, Some(repo), "user.signingkey", "")?;
     }
     Ok(())
 }
@@ -561,10 +678,13 @@ github.com
 
         let account = GitAccount {
             label: "Work".into(),
-            host: "github.com".into(),
+            auth_method: AuthMethod::Ssh,
             ssh_key: "/Users/ada/.ssh/id_work".into(),
             name: "Ada Work".into(),
             email: "ada@work.example.com".into(),
+            sign_commits: true,
+            signing_key: "ABCD1234".into(),
+            ..GitAccount::default()
         };
         apply_to_repo(&root, &account).unwrap();
 
@@ -577,8 +697,16 @@ github.com
         );
         let ssh = config_get(Scope::Local, Some(&root), "core.sshCommand");
         assert_eq!(ssh, "ssh -i /Users/ada/.ssh/id_work -o IdentitiesOnly=yes");
+        assert_eq!(
+            config_get(Scope::Local, Some(&root), "commit.gpgsign"),
+            "true"
+        );
+        assert_eq!(
+            config_get(Scope::Local, Some(&root), "user.signingkey"),
+            "ABCD1234"
+        );
 
-        // An identity-only account clears the pinned SSH command.
+        // A machine-auth identity clears the pinned SSH command and signing.
         let identity_only = GitAccount {
             label: "Personal".into(),
             name: "Ada".into(),
@@ -587,6 +715,23 @@ github.com
         };
         apply_to_repo(&root, &identity_only).unwrap();
         assert!(config_get(Scope::Local, Some(&root), "core.sshCommand").is_empty());
+        assert!(config_get(Scope::Local, Some(&root), "commit.gpgsign").is_empty());
+        assert!(config_get(Scope::Local, Some(&root), "user.signingkey").is_empty());
+
+        // An account identity records the gh login instead of a key.
+        let account_auth = GitAccount {
+            label: "GH".into(),
+            auth_method: AuthMethod::Account,
+            source_account: "octocat".into(),
+            name: "Ada".into(),
+            email: "ada@example.com".into(),
+            ..GitAccount::default()
+        };
+        apply_to_repo(&root, &account_auth).unwrap();
+        assert_eq!(
+            config_get(Scope::Local, Some(&root), "credential.username"),
+            "octocat"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

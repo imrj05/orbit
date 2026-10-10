@@ -520,6 +520,8 @@ pub struct OrbitApp {
     git_accounts_config: crate::git_account::GitAccountsConfig,
     /// Settings → Git: the open add/edit form, if any.
     git_account_form: Option<GitAccountForm>,
+    /// Settings → Git: whether the form's source-account dropdown is open.
+    git_account_source_open: bool,
     /// Whether the `gh` CLI is installed and runnable.
     git_gh_installed: bool,
     /// Whether the installed `gh` supports `gh auth switch`.
@@ -1638,6 +1640,7 @@ impl OrbitApp {
             git_ssh_keys: Vec::new(),
             git_accounts_config,
             git_account_form: None,
+            git_account_source_open: false,
             git_gh_installed: false,
             git_switch_supported: false,
             git_settings_busy: false,
@@ -2610,15 +2613,23 @@ pub(crate) enum SettingsSection {
     ReportBug,
 }
 
-/// The open Git-account add/edit form on Settings → Git.
+/// The open Git-identity add/edit form on Settings → Git.
 pub(crate) struct GitAccountForm {
-    /// Editing the saved account at this index; `None` for a new one.
+    /// Editing the saved identity at this index; `None` for a new one.
     pub edit_index: Option<usize>,
     pub label: Entity<ComposerInput>,
-    pub host: Entity<ComposerInput>,
     pub name: Entity<ComposerInput>,
     pub email: Entity<ComposerInput>,
-    /// Selected SSH key (index into `git_ssh_keys`); `None` means identity only.
+    pub signing_key: Entity<ComposerInput>,
+    /// A color name from [`crate::git_account::ACCOUNT_COLORS`].
+    pub color: String,
+    /// An icon id from [`crate::git_account::ACCOUNT_ICONS`].
+    pub icon: String,
+    /// A `gh` login, or empty for "No account".
+    pub source_account: String,
+    pub auth_method: crate::git_account::AuthMethod,
+    pub sign_commits: bool,
+    /// Selected SSH key (index into `git_ssh_keys`); `None` means no key.
     pub key_ix: Option<usize>,
 }
 

@@ -1,17 +1,14 @@
-//! Settings → Git: the machine's accounts and the commit identity.
+//! Settings → Git: saved identities and the accounts that back them.
 //!
-//! The page leads with what the user actually came for — the accounts that can
-//! authenticate Git on this machine:
+//! The page leads with **Identities** — named commit identities (`user.name` /
+//! `user.email`) plus how each authenticates: whatever the machine already
+//! uses, a signed-in `gh` account, a specific `~/.ssh` key, or nothing. A
+//! read-only **System identity** row shows the global default. The editor modal
+//! is the only surface that lists `~/.ssh` keys.
 //!
-//! - **SSH keys** discovered under `~/.ssh` (name, type, fingerprint, agent
-//!   status, and the hosts `~/.ssh/config` binds them to).
-//! - **GitHub accounts** from the `gh` CLI, with per-account switch / sign-out
-//!   and an add-account flow (a token piped to `gh` and forgotten; a browser
-//!   fallback in the terminal). Orbit never stores a token (D7).
-//!
-//! Below that, **Commit identity** (the global `git config --global` name and
-//! email) and **This repository** (an optional `git config --local` override)
-//! are kept distinct, because an author identity is not an account.
+//! Below that, **GitHub accounts (gh)** carries API/token auth (Orbit never
+//! stores a token, D7) and **Commit identity** / **This repository** carry the
+//! raw global and local overrides.
 
 use gpui::AnyElement;
 
@@ -19,7 +16,9 @@ use super::helpers::*;
 use super::*;
 use crate::git_account;
 use crate::ssh_keys;
-use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, RaisedExt, TextSize};
+use crate::theme::tokens::{
+    modal, ButtonSize, DynamicSpacing, IconSize, Radius, RaisedExt, TextSize,
+};
 
 /// The visual weight of a Git action button.
 #[derive(Clone, Copy)]
@@ -49,201 +48,319 @@ impl OrbitApp {
         rows
     }
 
-    // ── Saved Git accounts ─────────────────────────────────────────────
+    // ── Identities ─────────────────────────────────────────────────────
 
-    /// The accounts the user saved: each binds a repository to one SSH key and
-    /// commit identity. The only place `~/.ssh` keys are shown is the add/edit
-    /// form's picker — never as a standing list.
+    /// The saved identities, with a read-only System identity first. The only
+    /// place `~/.ssh` keys appear is the editor's picker.
     fn git_accounts_section(
         &self,
         theme: Theme,
         this: Entity<OrbitApp>,
-        _cx: &Context<Self>,
+        cx: &Context<Self>,
     ) -> AnyElement {
         let mut rows: Vec<AnyElement> = Vec::new();
         let in_repo = self.git_repo_root.is_some();
-        let accounts = &self.git_accounts_config.accounts;
-
-        if accounts.is_empty() && self.git_account_form.is_none() {
-            rows.push(self.setting_row(
-                theme,
-                &tr!("git_settings.git_accounts_empty"),
-                Some(&tr!("git_settings.git_accounts_empty_hint")),
-                None,
-                None,
-            ));
-        }
-
-        for (ix, account) in accounts.iter().enumerate() {
-            let key_name = self.git_key_name(&account.ssh_key);
-            let mut details = Vec::new();
-            if !account.host.trim().is_empty() {
-                details.push(account.host.clone());
-            }
-            if !key_name.is_empty() {
-                details.push(key_name);
-            }
-            if !account.email.trim().is_empty() {
-                details.push(account.email.clone());
-            }
-            let desc = details.join(" · ");
-            let mut control = div()
-                .flex()
-                .items_center()
-                .gap(DynamicSpacing::Base08.px(&theme));
-            if in_repo {
-                control = control.child(self.git_button(
-                    ElementId::Name(format!("git-account-use-{ix}").into()),
-                    tr!("git_settings.git_account_use"),
-                    GitButtonStyle::Primary,
-                    theme,
-                    this.clone(),
-                    move |app, cx| app.git_account_use(ix, cx),
-                ));
-            }
-            control = control
-                .child(self.git_button(
-                    ElementId::Name(format!("git-account-edit-{ix}").into()),
-                    tr!("git_settings.git_account_edit"),
-                    GitButtonStyle::Ghost,
-                    theme,
-                    this.clone(),
-                    move |app, cx| app.git_account_edit(ix, cx),
-                ))
-                .child(self.git_button(
-                    ElementId::Name(format!("git-account-remove-{ix}").into()),
-                    tr!("git_settings.git_account_remove"),
-                    GitButtonStyle::Danger,
-                    theme,
-                    this.clone(),
-                    move |app, cx| app.git_account_remove(ix, cx),
-                ));
-            rows.push(self.setting_row(
-                theme,
-                &account.label,
-                Some(&desc),
-                None,
-                Some(control.into_any_element()),
-            ));
-        }
-
-        if let Some(form) = &self.git_account_form {
-            rows.extend(self.git_account_form_rows(form, theme, this.clone()));
+        let applied_email = if self.git_repo_identity_set {
+            self.git_repo_email_input.read(cx).text().trim().to_string()
         } else {
-            let hint = if in_repo {
-                tr!("git_settings.git_accounts_add_hint")
-            } else {
-                tr!("git_settings.git_accounts_no_repo")
-            };
-            rows.push(self.setting_row(
-                theme,
-                &tr!("git_settings.git_accounts_add"),
-                Some(&hint),
-                None,
-                Some(self.git_button(
-                    "git-account-add",
-                    tr!("git_settings.git_account_add_button"),
-                    GitButtonStyle::Ghost,
-                    theme,
-                    this,
-                    |app, cx| app.git_account_add_start(cx),
-                )),
-            ));
+            String::new()
+        };
+
+        rows.push(git_system_identity_row(
+            theme,
+            &self.git_identity.name,
+            &self.git_identity.email,
+        ));
+
+        if self.git_accounts_config.accounts.is_empty() {
+            rows.push(
+                div()
+                    .w_full()
+                    .px(DynamicSpacing::Base16.px(&theme))
+                    .py(DynamicSpacing::Base12.px(&theme))
+                    .flex()
+                    .flex_col()
+                    .gap(DynamicSpacing::Base02.px(&theme))
+                    .child(
+                        div()
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_2)
+                            .child(tr!("git_settings.git_accounts_empty")),
+                    )
+                    .child(
+                        div()
+                            .text_size(TextSize::XSmall.px(&theme))
+                            .text_color(theme.text_3)
+                            .child(tr!("git_settings.git_accounts_empty_hint")),
+                    )
+                    .into_any_element(),
+            );
         }
 
-        self.settings_section_desc(
-            theme,
-            &tr!("git_settings.git_accounts_section"),
-            Some(&tr!("git_settings.git_accounts_section_desc")),
-            rows,
-        )
+        for (ix, account) in self.git_accounts_config.accounts.iter().enumerate() {
+            let applied =
+                in_repo && !applied_email.is_empty() && account.email.trim() == applied_email;
+            rows.push(self.git_identity_row(theme, this.clone(), account, ix, applied, in_repo));
+        }
+
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(DynamicSpacing::Base08.px(&theme))
+            .child(
+                div()
+                    .px(DynamicSpacing::Base04.px(&theme))
+                    .flex()
+                    .flex_col()
+                    .gap(DynamicSpacing::Base02.px(&theme))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(DynamicSpacing::Base08.px(&theme))
+                            .child(
+                                div()
+                                    .text_size(TextSize::Default.px(&theme))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme.text)
+                                    .child(tr!("git_settings.git_accounts_section")),
+                            )
+                            .child(self.git_button(
+                                "git-identity-new",
+                                tr!("git_settings.identity_new_button"),
+                                GitButtonStyle::Ghost,
+                                theme,
+                                this,
+                                |app, cx| app.git_account_add_start(cx),
+                            )),
+                    )
+                    .child(
+                        div()
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_3)
+                            .child(tr!("git_settings.git_accounts_section_desc")),
+                    ),
+            )
+            .child(self.settings_group(theme, rows))
+            .into_any_element()
     }
 
-    /// The add/edit form rows, including the SSH-key picker (the only place
-    /// `~/.ssh` keys appear).
-    fn git_account_form_rows(
+    /// One saved identity row: color/icon tile, label, email, and actions.
+    fn git_identity_row(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        account: &git_account::GitAccount,
+        index: usize,
+        applied: bool,
+        in_repo: bool,
+    ) -> AnyElement {
+        let color: Hsla = gpui::rgb(git_account::color_value(&account.color)).into();
+        let icon_path = git_account::icon_path(&account.icon);
+        let mut control = div()
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base06.px(&theme));
+        if applied {
+            control = control.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(DynamicSpacing::Base04.px(&theme))
+                    .child(icon(
+                        "icons/circle-check.svg",
+                        IconSize::XSmall.px(&theme),
+                        theme.ok_green,
+                    ))
+                    .child(
+                        div()
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_3)
+                            .child(tr!("git_settings.identity_applied")),
+                    ),
+            );
+        }
+        control = control
+            .child(self.git_button(
+                ElementId::Name(format!("git-identity-edit-{index}").into()),
+                tr!("git_settings.git_account_edit"),
+                GitButtonStyle::Ghost,
+                theme,
+                this.clone(),
+                move |app, cx| app.git_account_edit(index, cx),
+            ))
+            .child(self.git_button(
+                ElementId::Name(format!("git-identity-remove-{index}").into()),
+                tr!("git_settings.git_account_remove"),
+                GitButtonStyle::Danger,
+                theme,
+                this.clone(),
+                move |app, cx| app.git_account_remove(index, cx),
+            ));
+
+        let row = div()
+            .w_full()
+            .px(DynamicSpacing::Base16.px(&theme))
+            .py(DynamicSpacing::Base08.px(&theme))
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base12.px(&theme))
+            .when(in_repo, |row| {
+                row.cursor_pointer().hover(|row| row.bg(theme.bg_hover))
+            })
+            .when(in_repo, |row| {
+                row.on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    this.update(cx, |app, cx| app.git_account_use(index, cx));
+                })
+            })
+            .child(
+                div()
+                    .flex_none()
+                    .size(px(32.))
+                    .rounded(Radius::Medium.px(&theme))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(color.opacity(0.18))
+                    .child(icon(icon_path, IconSize::Small.px(&theme), color)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(DynamicSpacing::Base01.px(&theme))
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(TextSize::Default.px(&theme))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text)
+                            .child(account.label.clone()),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_3)
+                            .child(if account.email.trim().is_empty() {
+                                account.name.clone()
+                            } else {
+                                account.email.clone()
+                            }),
+                    ),
+            )
+            .child(control);
+        row.into_any_element()
+    }
+
+    /// The body of the New/Edit Identity modal.
+    fn git_identity_modal_body(
         &self,
         form: &GitAccountForm,
         theme: Theme,
         this: Entity<OrbitApp>,
-    ) -> Vec<AnyElement> {
-        let host_placeholder = tr!("git_settings.git_account_host_placeholder");
-        let mut rows = vec![
-            self.setting_row(
+    ) -> AnyElement {
+        use crate::git_account::AuthMethod;
+
+        let mut body = div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(DynamicSpacing::Base16.px(&theme))
+            .child(git_modal_field(
                 theme,
-                &tr!("git_settings.git_account_label"),
-                None,
-                None,
-                Some(self.git_field(&form.label, &theme)),
-            ),
-            self.setting_row(
+                &tr!("git_settings.identity_profile_name"),
+                false,
+                git_modal_input(&form.label, &theme),
+            ))
+            .child(git_modal_field(
                 theme,
-                &tr!("git_settings.git_account_host"),
-                Some(&host_placeholder),
-                None,
-                Some(self.git_field(&form.host, &theme)),
-            ),
-            self.setting_row(
+                &tr!("git_settings.identity_color"),
+                false,
+                git_color_swatches(theme, this.clone(), &form.color),
+            ))
+            .child(git_modal_field(
                 theme,
-                &tr!("git_settings.name"),
-                None,
-                None,
-                Some(self.git_field(&form.name, &theme)),
-            ),
-            self.setting_row(
+                &tr!("git_settings.identity_icon"),
+                false,
+                git_icon_picker(theme, this.clone(), &form.icon),
+            ))
+            .child(git_modal_field(
                 theme,
-                &tr!("git_settings.email"),
-                None,
-                None,
-                Some(self.git_field(&form.email, &theme)),
-            ),
-        ];
-        let selected = form.key_ix;
-        rows.push(git_key_picker(
-            theme,
-            this.clone(),
-            &self.git_ssh_keys,
-            selected,
-        ));
-        rows.push(
-            div()
-                .w_full()
-                .px(DynamicSpacing::Base16.px(&theme))
-                .py(DynamicSpacing::Base12.px(&theme))
-                .flex()
-                .items_center()
-                .justify_end()
-                .gap(DynamicSpacing::Base08.px(&theme))
-                .child(self.git_button(
-                    "git-account-cancel",
-                    tr!("git_settings.git_account_cancel"),
-                    GitButtonStyle::Ghost,
+                &tr!("git_settings.identity_user_name"),
+                true,
+                git_modal_input(&form.name, &theme),
+            ))
+            .child(git_modal_field(
+                theme,
+                &tr!("git_settings.identity_email"),
+                true,
+                git_modal_input(&form.email, &theme),
+            ))
+            .child(git_modal_field(
+                theme,
+                &tr!("git_settings.identity_source_account"),
+                false,
+                git_source_account(
                     theme,
                     this.clone(),
-                    |app, cx| app.git_account_cancel(cx),
-                ))
-                .child(self.git_button(
-                    "git-account-save",
-                    tr!("git_settings.git_account_save"),
-                    GitButtonStyle::Primary,
-                    theme,
-                    this,
-                    |app, cx| app.git_account_save(cx),
-                ))
-                .into_any_element(),
-        );
-        rows
-    }
+                    &self.git_accounts,
+                    &form.source_account,
+                    self.git_account_source_open,
+                ),
+            ))
+            .child(git_modal_field(
+                theme,
+                &tr!("git_settings.identity_auth_method"),
+                false,
+                git_auth_methods(theme, this.clone(), form.auth_method),
+            ))
+            .child(
+                div()
+                    .text_size(TextSize::XSmall.px(&theme))
+                    .text_color(theme.text_3)
+                    .child(git_auth_description(form.auth_method)),
+            );
 
-    /// The file stem of a stored key path, for the account row's detail line.
-    fn git_key_name(&self, ssh_key: &str) -> String {
-        if ssh_key.trim().is_empty() {
-            return String::new();
+        if form.auth_method == AuthMethod::Ssh {
+            body = body.child(git_modal_field(
+                theme,
+                &tr!("git_settings.git_account_key"),
+                false,
+                git_key_picker(theme, this.clone(), &self.git_ssh_keys, form.key_ix),
+            ));
         }
-        Path::new(ssh_key)
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default()
+
+        body = body.child(git_checkbox(
+            theme,
+            this.clone(),
+            form.sign_commits,
+            tr!("git_settings.identity_sign_commits"),
+            |app, cx| app.git_account_toggle_sign(cx),
+        ));
+        if form.sign_commits {
+            body = body.child(git_modal_field(
+                theme,
+                &tr!("git_settings.identity_signing_key"),
+                false,
+                git_modal_input(&form.signing_key, &theme),
+            ));
+        }
+
+        if let Some(error) = &self.git_settings_error {
+            body = body.child(
+                div()
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.crit)
+                    .child(error.clone()),
+            );
+        }
+        body.into_any_element()
     }
 
     // ── Commit identity ────────────────────────────────────────────────
@@ -484,6 +601,159 @@ impl OrbitApp {
         )
     }
 
+    /// The New/Edit Identity modal, when the form is open.
+    pub(super) fn git_identity_layer(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        _cx: &Context<Self>,
+    ) -> Option<AnyElement> {
+        let form = self.git_account_form.as_ref()?;
+        let editing = form.edit_index.is_some();
+        let title = if editing {
+            tr!("git_settings.identity_edit_title")
+        } else {
+            tr!("git_settings.identity_new_title")
+        };
+        let confirm = if editing {
+            tr!("git_settings.identity_save")
+        } else {
+            tr!("git_settings.identity_create")
+        };
+
+        let header = div()
+            .px(modal::header_padding_x(&theme))
+            .pt(modal::header_padding_top(&theme))
+            .pb(modal::header_padding_bottom(&theme))
+            .flex()
+            .items_start()
+            .justify_between()
+            .gap(DynamicSpacing::Base12.px(&theme))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(DynamicSpacing::Base02.px(&theme))
+                    .child(
+                        div()
+                            .text_size(TextSize::Large.px(&theme))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme.text)
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_3)
+                            .child(tr!("git_settings.identity_subtitle")),
+                    ),
+            )
+            .child(
+                div()
+                    .id("git-identity-close")
+                    .flex_none()
+                    .size(px(24.))
+                    .rounded(Radius::Medium.px(&theme))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme.bg_hover))
+                    .on_mouse_down(MouseButton::Left, {
+                        let this = this.clone();
+                        move |_, _, cx| this.update(cx, |app, cx| app.git_account_close(cx))
+                    })
+                    .child(icon(
+                        "icons/x.svg",
+                        IconSize::Small.px(&theme),
+                        theme.text_3,
+                    )),
+            );
+
+        let footer = div()
+            .px(modal::footer_padding(&theme))
+            .py(modal::footer_padding(&theme))
+            .flex()
+            .items_center()
+            .justify_end()
+            .gap(modal::footer_gap(&theme))
+            .border_t_1()
+            .border_color(theme.border)
+            .child(self.git_button(
+                "git-identity-cancel",
+                tr!("git_settings.git_account_cancel"),
+                GitButtonStyle::Ghost,
+                theme,
+                this.clone(),
+                |app, cx| app.git_account_close(cx),
+            ))
+            .child(self.git_button(
+                "git-identity-confirm",
+                confirm,
+                GitButtonStyle::Primary,
+                theme,
+                this.clone(),
+                |app, cx| app.git_account_save(cx),
+            ));
+
+        let card = div()
+            .w(px(560.))
+            .max_h(px(660.))
+            .bg(theme.bg_composer)
+            .border_1()
+            .border_color(theme.border)
+            .rounded(Radius::XLarge.px(&theme))
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .occlude()
+            .child(header)
+            .child(
+                div()
+                    .id("git-identity-body")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .px(modal::header_padding_x(&theme))
+                    .pb(modal::header_padding_bottom(&theme))
+                    .child(self.git_identity_modal_body(form, theme, this.clone())),
+            )
+            .child(footer);
+
+        let scrim = match theme.mode {
+            ThemeMode::Dark => Hsla {
+                h: 0.,
+                s: 0.,
+                l: 0.,
+                a: 0.42,
+            },
+            ThemeMode::Light => Hsla {
+                h: 0.,
+                s: 0.,
+                l: 0.,
+                a: 0.22,
+            },
+        };
+        Some(
+            div()
+                .id("git-identity-layer")
+                .absolute()
+                .inset_0()
+                .occlude()
+                .bg(scrim)
+                .p(DynamicSpacing::Base24.px(&theme))
+                .flex()
+                .items_center()
+                .justify_center()
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    let this = this.clone();
+                    this.update(cx, |app, cx| app.git_account_close(cx));
+                })
+                .child(card)
+                .into_any_element(),
+        )
+    }
+
     // ── controller ─────────────────────────────────────────────────────
 
     /// Load the SSH keys, `gh` accounts, and identities when the page opens.
@@ -495,22 +765,18 @@ impl OrbitApp {
         self.git_probe_identity(cx);
     }
 
-    /// Open the add form with blank fields and the global identity prefilled.
+    /// Open the New Identity modal with blank fields and the global identity
+    /// prefilled.
     pub(super) fn git_account_add_start(&mut self, cx: &mut Context<Self>) {
         let identity = self.git_identity.clone();
+        let defaults = git_account::GitAccount::default();
         let form = GitAccountForm {
             edit_index: None,
             label: git_form_input(
                 cx,
                 "git-account-label",
                 "",
-                "git_settings.git_account_label_placeholder",
-            ),
-            host: git_form_input(
-                cx,
-                "git-account-host",
-                "github.com",
-                "git_settings.git_account_host_placeholder",
+                "git_settings.identity_profile_name_placeholder",
             ),
             name: git_form_input(
                 cx,
@@ -524,13 +790,26 @@ impl OrbitApp {
                 &identity.email,
                 "git_settings.email_placeholder",
             ),
+            signing_key: git_form_input(
+                cx,
+                "git-account-signing-key",
+                "",
+                "git_settings.identity_signing_key_placeholder",
+            ),
+            color: defaults.color,
+            icon: defaults.icon,
+            source_account: String::new(),
+            auth_method: git_account::AuthMethod::Machine,
+            sign_commits: false,
             key_ix: None,
         };
+        self.git_settings_error = None;
+        self.git_account_source_open = false;
         self.git_account_form = Some(form);
         cx.notify();
     }
 
-    /// Open the edit form for a saved account, preselecting its key.
+    /// Open the edit modal for a saved identity, preselecting every field.
     pub(super) fn git_account_edit(&mut self, index: usize, cx: &mut Context<Self>) {
         let Some(account) = self.git_accounts_config.accounts.get(index).cloned() else {
             return;
@@ -545,13 +824,7 @@ impl OrbitApp {
                 cx,
                 "git-account-label",
                 &account.label,
-                "git_settings.git_account_label_placeholder",
-            ),
-            host: git_form_input(
-                cx,
-                "git-account-host",
-                &account.host,
-                "git_settings.git_account_host_placeholder",
+                "git_settings.identity_profile_name_placeholder",
             ),
             name: git_form_input(
                 cx,
@@ -565,8 +838,21 @@ impl OrbitApp {
                 &account.email,
                 "git_settings.email_placeholder",
             ),
+            signing_key: git_form_input(
+                cx,
+                "git-account-signing-key",
+                &account.signing_key,
+                "git_settings.identity_signing_key_placeholder",
+            ),
+            color: account.color,
+            icon: account.icon,
+            source_account: account.source_account,
+            auth_method: account.auth_method,
+            sign_commits: account.sign_commits,
             key_ix,
         };
+        self.git_settings_error = None;
+        self.git_account_source_open = false;
         self.git_account_form = Some(form);
         cx.notify();
     }
@@ -579,13 +865,66 @@ impl OrbitApp {
         cx.notify();
     }
 
-    /// Close the form without saving.
-    pub(super) fn git_account_cancel(&mut self, cx: &mut Context<Self>) {
-        self.git_account_form = None;
+    /// Pick the identity's color swatch.
+    pub(super) fn git_account_pick_color(&mut self, color: String, cx: &mut Context<Self>) {
+        if let Some(form) = &mut self.git_account_form {
+            form.color = color;
+        }
         cx.notify();
     }
 
-    /// Save the open form as a new account or over the edited one.
+    /// Pick the identity's icon.
+    pub(super) fn git_account_pick_icon(&mut self, icon: String, cx: &mut Context<Self>) {
+        if let Some(form) = &mut self.git_account_form {
+            form.icon = icon;
+        }
+        cx.notify();
+    }
+
+    /// Pick the auth method.
+    pub(super) fn git_account_pick_auth(
+        &mut self,
+        method: git_account::AuthMethod,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(form) = &mut self.git_account_form {
+            form.auth_method = method;
+        }
+        cx.notify();
+    }
+
+    /// Toggle commit signing in the open form.
+    pub(super) fn git_account_toggle_sign(&mut self, cx: &mut Context<Self>) {
+        if let Some(form) = &mut self.git_account_form {
+            form.sign_commits = !form.sign_commits;
+        }
+        cx.notify();
+    }
+
+    /// Toggle the source-account dropdown.
+    pub(super) fn git_account_toggle_source(&mut self, cx: &mut Context<Self>) {
+        self.git_account_source_open = !self.git_account_source_open;
+        cx.notify();
+    }
+
+    /// Pick (or clear) the source control account.
+    pub(super) fn git_account_pick_source(&mut self, login: String, cx: &mut Context<Self>) {
+        if let Some(form) = &mut self.git_account_form {
+            form.source_account = login;
+        }
+        self.git_account_source_open = false;
+        cx.notify();
+    }
+
+    /// Close the form without saving.
+    pub(super) fn git_account_close(&mut self, cx: &mut Context<Self>) {
+        self.git_account_form = None;
+        self.git_account_source_open = false;
+        self.git_settings_error = None;
+        cx.notify();
+    }
+
+    /// Save the open form as a new identity or over the edited one.
     pub(super) fn git_account_save(&mut self, cx: &mut Context<Self>) {
         let Some(form) = &self.git_account_form else {
             return;
@@ -598,14 +937,19 @@ impl OrbitApp {
         }
         let account = git_account::GitAccount {
             label,
-            host: form.host.read(cx).text().trim().to_string(),
+            color: form.color.clone(),
+            icon: form.icon.clone(),
+            name: form.name.read(cx).text().trim().to_string(),
+            email: form.email.read(cx).text().trim().to_string(),
+            source_account: form.source_account.clone(),
+            auth_method: form.auth_method,
             ssh_key: form
                 .key_ix
                 .and_then(|ix| self.git_ssh_keys.get(ix))
                 .map(|key| key.private_path.to_string_lossy().into_owned())
                 .unwrap_or_default(),
-            name: form.name.read(cx).text().trim().to_string(),
-            email: form.email.read(cx).text().trim().to_string(),
+            sign_commits: form.sign_commits,
+            signing_key: form.signing_key.read(cx).text().trim().to_string(),
         };
         match form.edit_index {
             Some(index) if index < self.git_accounts_config.accounts.len() => {
@@ -621,10 +965,11 @@ impl OrbitApp {
             self.toast_success(tr!("git_settings.git_account_saved", label = label));
         }
         self.git_account_form = None;
+        self.git_account_source_open = false;
         cx.notify();
     }
 
-    /// Delete a saved account.
+    /// Delete a saved identity.
     pub(super) fn git_account_remove(&mut self, index: usize, cx: &mut Context<Self>) {
         if index >= self.git_accounts_config.accounts.len() {
             return;
@@ -636,7 +981,7 @@ impl OrbitApp {
         cx.notify();
     }
 
-    /// Apply a saved account to the active repository (`git config --local`).
+    /// Apply a saved identity to the active repository (`git config --local`).
     pub(super) fn git_account_use(&mut self, index: usize, cx: &mut Context<Self>) {
         let Some(repo) = self.git_repo_root.clone() else {
             self.git_settings_error = Some(tr!("git_settings.git_accounts_no_repo"));
@@ -1011,6 +1356,9 @@ impl OrbitApp {
         press(button)
             .child(label)
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                // A row's click-to-apply must not also fire when its action
+                // button is pressed.
+                cx.stop_propagation();
                 this.update(cx, |app, cx| action(app, cx));
             })
             .into_any_element()
@@ -1038,8 +1386,9 @@ fn git_form_input(
     })
 }
 
-/// The SSH-key picker inside the add/edit form. This is the only surface that
-/// lists `~/.ssh` keys, and it exists only while the form is open.
+/// The SSH-key picker inside the identity editor. It is rendered as the
+/// control of a normal [`git_modal_field`], so the list lines up with the
+/// text inputs instead of carrying its own inset.
 fn git_key_picker(
     theme: Theme,
     this: Entity<OrbitApp>,
@@ -1095,18 +1444,10 @@ fn git_key_picker(
     }
     div()
         .w_full()
-        .px(DynamicSpacing::Base16.px(&theme))
-        .py(DynamicSpacing::Base12.px(&theme))
+        .min_w_0()
         .flex()
         .flex_col()
         .gap(DynamicSpacing::Base08.px(&theme))
-        .child(
-            div()
-                .text_size(TextSize::Small.px(&theme))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text_2)
-                .child(tr!("git_settings.git_account_key")),
-        )
         .child(
             div()
                 .text_size(TextSize::XSmall.px(&theme))
@@ -1177,6 +1518,424 @@ fn git_key_option(
         row = row.child(git_agent_chip(theme, true));
     }
     row.into_any_element()
+}
+
+/// The read-only System identity row (the global git config default).
+fn git_system_identity_row(theme: Theme, name: &str, email: &str) -> AnyElement {
+    let subtitle = if !email.trim().is_empty() {
+        email.to_string()
+    } else if !name.trim().is_empty() {
+        name.to_string()
+    } else {
+        tr!("git_settings.identity_system_unset")
+    };
+    div()
+        .w_full()
+        .px(DynamicSpacing::Base16.px(&theme))
+        .py(DynamicSpacing::Base08.px(&theme))
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base12.px(&theme))
+        .child(
+            div()
+                .flex_none()
+                .size(px(32.))
+                .rounded(Radius::Medium.px(&theme))
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(theme.overlay)
+                .child(icon(
+                    "icons/git-merge.svg",
+                    IconSize::Small.px(&theme),
+                    theme.text_2,
+                )),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(DynamicSpacing::Base01.px(&theme))
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(TextSize::Default.px(&theme))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.text)
+                        .child(tr!("git_settings.identity_system")),
+                )
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_3)
+                        .child(subtitle),
+                ),
+        )
+        .into_any_element()
+}
+
+/// A labelled field in the identity modal.
+fn git_modal_field(theme: Theme, label: &str, required: bool, control: AnyElement) -> AnyElement {
+    let mut label_row = div()
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base04.px(&theme))
+        .child(
+            div()
+                .text_size(TextSize::Small.px(&theme))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text_2)
+                .child(label.to_string()),
+        );
+    if required {
+        label_row = label_row.child(
+            div()
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.crit)
+                .child("*"),
+        );
+    }
+    div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap(DynamicSpacing::Base06.px(&theme))
+        .child(label_row)
+        .child(control)
+        .into_any_element()
+}
+
+/// A full-width input frame for the modal.
+fn git_modal_input(input: &Entity<ComposerInput>, theme: &Theme) -> AnyElement {
+    input_field_frame(div(), theme)
+        .w_full()
+        .bg(theme.bg_main)
+        .child(input.clone())
+        .into_any_element()
+}
+
+/// The identity color swatch row.
+fn git_color_swatches(theme: Theme, this: Entity<OrbitApp>, selected: &str) -> AnyElement {
+    let mut row = div()
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base08.px(&theme));
+    for (name, hex) in git_account::ACCOUNT_COLORS {
+        let color: Hsla = gpui::rgb(*hex).into();
+        let is_selected = *name == selected;
+        let name = name.to_string();
+        let this = this.clone();
+        row = row.child(
+            div()
+                .id(ElementId::Name(format!("git-color-{name}").into()))
+                .size(px(22.))
+                .rounded_full()
+                .bg(color)
+                .cursor_pointer()
+                .when(is_selected, |swatch| {
+                    swatch.border_2().border_color(theme.text)
+                })
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    let name = name.clone();
+                    this.update(cx, |app, cx| app.git_account_pick_color(name, cx));
+                }),
+        );
+    }
+    row.into_any_element()
+}
+
+/// The identity icon choices.
+fn git_icon_picker(theme: Theme, this: Entity<OrbitApp>, selected: &str) -> AnyElement {
+    let mut row = div()
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base04.px(&theme));
+    for (id, path) in git_account::ACCOUNT_ICONS {
+        let is_selected = *id == selected;
+        let id = id.to_string();
+        let this = this.clone();
+        row = row.child(
+            div()
+                .id(ElementId::Name(format!("git-icon-{id}").into()))
+                .size(px(30.))
+                .rounded(Radius::Medium.px(&theme))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .when(is_selected, |cell| cell.bg(theme.overlay))
+                .when(!is_selected, |cell| {
+                    cell.hover(|cell| cell.bg(theme.bg_hover))
+                })
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    let id = id.clone();
+                    this.update(cx, |app, cx| app.git_account_pick_icon(id, cx));
+                })
+                .child(icon(
+                    path,
+                    IconSize::Small.px(&theme),
+                    if is_selected {
+                        theme.accent
+                    } else {
+                        theme.text_3
+                    },
+                )),
+        );
+    }
+    row.into_any_element()
+}
+
+/// The auth-method segmented control.
+fn git_auth_methods(
+    theme: Theme,
+    this: Entity<OrbitApp>,
+    selected: git_account::AuthMethod,
+) -> AnyElement {
+    use git_account::AuthMethod;
+    let options = [
+        (
+            AuthMethod::Machine,
+            "git_settings.identity_auth_machine",
+            "icons/monitor.svg",
+        ),
+        (
+            AuthMethod::Account,
+            "git_settings.identity_auth_account",
+            "icons/at-sign.svg",
+        ),
+        (
+            AuthMethod::Ssh,
+            "git_settings.identity_auth_ssh",
+            "icons/lock.svg",
+        ),
+        (
+            AuthMethod::Anonymous,
+            "git_settings.identity_auth_anonymous",
+            "icons/eye-off.svg",
+        ),
+    ];
+    let mut row = div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(DynamicSpacing::Base04.px(&theme));
+    for (method, key, icon_path) in options {
+        let is_selected = method == selected;
+        let this = this.clone();
+        row = row.child(
+            div()
+                .id(ElementId::Name(format!("git-auth-{key}").into()))
+                .px(DynamicSpacing::Base08.px(&theme))
+                .py(DynamicSpacing::Base04.px(&theme))
+                .rounded(Radius::Medium.px(&theme))
+                .border_1()
+                .border_color(if is_selected {
+                    theme.border_strong
+                } else {
+                    theme.border
+                })
+                .when(is_selected, |chip| chip.bg(theme.overlay))
+                .when(!is_selected, |chip| {
+                    chip.hover(|chip| chip.bg(theme.bg_hover))
+                })
+                .flex()
+                .items_center()
+                .gap(DynamicSpacing::Base04.px(&theme))
+                .cursor_pointer()
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    this.update(cx, |app, cx| app.git_account_pick_auth(method, cx));
+                })
+                .child(icon(
+                    icon_path,
+                    IconSize::XSmall.px(&theme),
+                    if is_selected {
+                        theme.accent
+                    } else {
+                        theme.text_3
+                    },
+                ))
+                .child(
+                    div()
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(if is_selected {
+                            theme.text
+                        } else {
+                            theme.text_2
+                        })
+                        .child(tr!(key)),
+                ),
+        );
+    }
+    row.into_any_element()
+}
+
+/// The helper line under the auth-method control.
+fn git_auth_description(method: git_account::AuthMethod) -> String {
+    use git_account::AuthMethod;
+    match method {
+        AuthMethod::Machine => tr!("git_settings.identity_auth_machine_hint"),
+        AuthMethod::Account => tr!("git_settings.identity_auth_account_hint"),
+        AuthMethod::Ssh => tr!("git_settings.identity_auth_ssh_hint"),
+        AuthMethod::Anonymous => tr!("git_settings.identity_auth_anonymous_hint"),
+    }
+}
+
+/// The source-control-account dropdown (a compact inline list).
+fn git_source_account(
+    theme: Theme,
+    this: Entity<OrbitApp>,
+    accounts: &[git_account::GhAccount],
+    selected: &str,
+    open: bool,
+) -> AnyElement {
+    let label = if selected.trim().is_empty() {
+        tr!("git_settings.identity_source_none")
+    } else {
+        selected.to_string()
+    };
+    let chip = button_frame(div().id("git-source-toggle"), &theme, ButtonSize::Medium)
+        .w_full()
+        .border_1()
+        .border_color(theme.border)
+        .raised(theme.bg_raised, &theme)
+        .cursor_pointer()
+        .hover(|chip| chip.raised(theme.bg_hover, &theme))
+        .flex()
+        .items_center()
+        .justify_between()
+        .on_mouse_up(MouseButton::Left, {
+            let this = this.clone();
+            move |_, _, cx| this.update(cx, |app, cx| app.git_account_toggle_source(cx))
+        })
+        .child(div().text_color(theme.text_2).child(label))
+        .child(icon(
+            "icons/chevron-down.svg",
+            IconSize::XSmall.px(&theme),
+            theme.text_3,
+        ));
+
+    let mut column = div().w_full().flex().flex_col().child(chip);
+    if open {
+        let mut list = div()
+            .mt(DynamicSpacing::Base04.px(&theme))
+            .w_full()
+            .flex()
+            .flex_col()
+            .border_1()
+            .border_color(theme.border)
+            .rounded(Radius::Large.px(&theme))
+            .overflow_hidden()
+            .child(git_source_option(
+                theme,
+                this.clone(),
+                "",
+                selected.trim().is_empty(),
+                tr!("git_settings.identity_source_none"),
+            ));
+        for account in accounts {
+            list = list.child(git_source_option(
+                theme,
+                this.clone(),
+                &account.login,
+                account.login == selected,
+                account.login.clone(),
+            ));
+        }
+        column = column.child(list);
+    }
+    column.into_any_element()
+}
+
+/// One row of the source-account list.
+fn git_source_option(
+    theme: Theme,
+    this: Entity<OrbitApp>,
+    login: &str,
+    selected: bool,
+    label: String,
+) -> AnyElement {
+    let login = login.to_string();
+    div()
+        .id(ElementId::Name(format!("git-source-option-{login}").into()))
+        .w_full()
+        .px(DynamicSpacing::Base12.px(&theme))
+        .py(DynamicSpacing::Base08.px(&theme))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(DynamicSpacing::Base08.px(&theme))
+        .cursor_pointer()
+        .when(selected, |row| row.bg(theme.overlay))
+        .hover(|row| row.bg(theme.bg_hover))
+        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+            let login = login.clone();
+            this.update(cx, |app, cx| app.git_account_pick_source(login, cx));
+        })
+        .child(div().truncate().text_color(theme.text_2).child(label))
+        .when(selected, |row| {
+            row.child(icon(
+                "icons/check.svg",
+                IconSize::XSmall.px(&theme),
+                theme.accent,
+            ))
+        })
+        .into_any_element()
+}
+
+/// A labelled checkbox for the modal.
+fn git_checkbox<F>(
+    theme: Theme,
+    this: Entity<OrbitApp>,
+    on: bool,
+    label: String,
+    action: F,
+) -> AnyElement
+where
+    F: Fn(&mut OrbitApp, &mut Context<OrbitApp>) + 'static,
+{
+    div()
+        .id("git-identity-sign")
+        .w_full()
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base08.px(&theme))
+        .cursor_pointer()
+        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+            this.update(cx, |app, cx| action(app, cx));
+        })
+        .child(
+            div()
+                .flex_none()
+                .size(px(16.))
+                .rounded(Radius::Small.px(&theme))
+                .border_1()
+                .border_color(if on {
+                    theme.accent
+                } else {
+                    theme.border_strong
+                })
+                .when(on, |box_| box_.bg(theme.accent))
+                .flex()
+                .items_center()
+                .justify_center()
+                .children(on.then(|| {
+                    icon(
+                        "icons/check.svg",
+                        IconSize::XSmall.px(&theme),
+                        theme.send_fg,
+                    )
+                })),
+        )
+        .child(
+            div()
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_2)
+                .child(label),
+        )
+        .into_any_element()
 }
 
 /// The active-account marker on an account row.
