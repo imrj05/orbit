@@ -102,6 +102,7 @@ const JSON_LD = {
         height: 256,
       },
       sameAs: [SITE.github],
+      email: SITE.email,
     },
     {
       "@type": "SoftwareApplication",

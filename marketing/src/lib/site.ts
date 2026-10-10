@@ -29,6 +29,7 @@ export const SITE = {
     "A native workbench for the pi coding agent — chat, review, and commit in one window.",
   url: SITE_URL,
   github: "https://github.com/imrj05/orbit",
+  email: "info@orbitpi.app",
   // Change this if the X/Twitter handle differs from the GitHub handle.
   twitter: "@imrj05",
   keywords: [

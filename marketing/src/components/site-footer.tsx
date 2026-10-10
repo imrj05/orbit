@@ -40,6 +40,7 @@ const COLUMNS = [
         href: `${SITE.github}/issues`,
         external: true,
       },
+      { label: "Email", href: `mailto:${SITE.email}`, external: false },
     ],
   },
 ];
