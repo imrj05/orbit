@@ -46,7 +46,7 @@ const BLUR_KNOB: f32 = 14.;
 /// Grouped so the app's own preferences lead (General / Appearance /
 /// Shortcuts), the agent and its resources follow (Runtime / Agent /
 /// Providers / Models), the extensions pi loads close the list (Skills /
-/// Plugins / MCP), and About sits alone at the end.
+/// Plugins / MCP), and About and Report a bug sit alone at the end.
 const SETTINGS_SECTIONS: &[(SettingsSection, &str, &str)] = &[
     (
         SettingsSection::General,
@@ -101,6 +101,11 @@ const SETTINGS_SECTIONS: &[(SettingsSection, &str, &str)] = &[
     ),
     (SettingsSection::Mcp, "icons/tools/mcp.svg", "settings.mcp"),
     (SettingsSection::About, "icons/info.svg", "settings.about"),
+    (
+        SettingsSection::ReportBug,
+        "icons/github.svg",
+        "settings.report_bug",
+    ),
 ];
 
 /// Every searchable setting, flattened: section, label key, and the extra
@@ -375,6 +380,16 @@ const SETTINGS_SEARCH_INDEX: &[(SettingsSection, &str, &str)] = &[
         "settings.about",
         "about version updates source github",
     ),
+    (
+        SettingsSection::ReportBug,
+        "settings.report_bug",
+        "bug report issue crash problem broken github feedback",
+    ),
+    (
+        SettingsSection::ReportBug,
+        "bug_report.heading",
+        "bug report issue title description steps reproduce diagnostics",
+    ),
 ];
 
 /// The nav icon and label key for a section, from [`SETTINGS_SECTIONS`].
@@ -537,6 +552,7 @@ impl OrbitApp {
                                         SettingsSection::Runtime
                                             | SettingsSection::Skills
                                             | SettingsSection::About
+                                            | SettingsSection::ReportBug
                                     );
                                     let row = div()
                                         .id(ElementId::Name(format!("settings-nav-{label}").into()))
@@ -865,6 +881,10 @@ impl OrbitApp {
                 (tr!("settings.privacy"), tr!("settings.privacy_description"))
             }
             SettingsSection::About => (tr!("settings.about"), tr!("settings.about_description")),
+            SettingsSection::ReportBug => (
+                tr!("settings.report_bug"),
+                tr!("settings.report_bug_description"),
+            ),
         };
         div()
             .flex()
@@ -1019,6 +1039,7 @@ impl OrbitApp {
                     self.settings_group(theme, about),
                 ]
             }
+            SettingsSection::ReportBug => self.bug_report_rows(theme, cx),
         }
     }
 

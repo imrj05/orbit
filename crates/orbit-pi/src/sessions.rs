@@ -271,7 +271,10 @@ fn read_session(path: &Path) -> Option<SessionInfo> {
         return None;
     }
     let id = header.get("id")?.as_str()?.to_string();
-    let cwd = PathBuf::from(header.get("cwd")?.as_str()?);
+    // Resolve the recorded cwd to the same identity Orbit stores for a
+    // project, so a session created in a symlinked path (`/tmp` →
+    // `/private/tmp` on macOS) still lands under its workspace.
+    let cwd = canonical_workspace_path(Path::new(header.get("cwd")?.as_str()?));
 
     // Scan a bounded number of lines for the first user message → preview.
     let mut first_text = String::new();
@@ -553,6 +556,46 @@ pub fn workspace_label(cwd: &Path) -> String {
     cwd.file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| cwd.to_string_lossy().to_string())
+}
+
+/// A workspace path with a stable identity: symlinks resolved and a trailing
+/// separator trimmed, so a folder and its symlinked form (`/tmp` →
+/// `/private/tmp` on macOS) map to one workspace. Falls back to the lexical
+/// path when the folder no longer exists, so a removed workspace still
+/// compares by its recorded path.
+pub fn canonical_workspace_path(path: &Path) -> PathBuf {
+    match fs::canonicalize(path) {
+        Ok(canonical) => strip_verbatim_prefix(canonical),
+        Err(_) => {
+            let raw = path.to_string_lossy();
+            let trimmed = raw.trim_end_matches(std::path::MAIN_SEPARATOR);
+            if trimmed.is_empty() {
+                PathBuf::from(raw.as_ref())
+            } else {
+                PathBuf::from(trimmed)
+            }
+        }
+    }
+}
+
+/// `fs::canonicalize` answers with a `\\?\` verbatim path on Windows; pi and
+/// the rest of Orbit speak the plain form, so unwrap the prefix.
+#[cfg(windows)]
+fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    let raw = path.to_string_lossy();
+    let Some(rest) = raw.strip_prefix(r"\\?\") else {
+        return path;
+    };
+    if let Some(unc) = rest.strip_prefix(r"UNC\") {
+        PathBuf::from(format!(r"\\{unc}"))
+    } else {
+        PathBuf::from(rest)
+    }
+}
+
+#[cfg(not(windows))]
+fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    path
 }
 
 /// Compact age label for a session row (`2m`, `2h`, `1d`, `2mo`, `1y`).

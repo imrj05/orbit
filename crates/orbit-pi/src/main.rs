@@ -46,6 +46,7 @@ mod assets;
 mod auth;
 mod auto_title;
 mod branch_picker;
+mod bug_report;
 mod bundled_extensions;
 mod checkpoint;
 mod command_palette;
