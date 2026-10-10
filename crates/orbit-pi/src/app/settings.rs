@@ -79,6 +79,7 @@ const SETTINGS_SECTIONS: &[(SettingsSection, &str, &str)] = &[
         "icons/branch.svg",
         "worktree.settings.title",
     ),
+    (SettingsSection::Git, "icons/github.svg", "settings.git"),
     (
         SettingsSection::Providers,
         "icons/cloud.svg",
@@ -257,6 +258,22 @@ const SETTINGS_SEARCH_INDEX: &[(SettingsSection, &str, &str)] = &[
         SettingsSection::Worktrees,
         "worktree.settings.open_after_create",
         "worktree worktrees open after create switch workspace",
+    ),
+    // Git
+    (
+        SettingsSection::Git,
+        "settings.git",
+        "git commit identity name email author global config",
+    ),
+    (
+        SettingsSection::Git,
+        "git_settings.identity_section",
+        "git commit identity name email author global config",
+    ),
+    (
+        SettingsSection::Git,
+        "git_settings.account_section",
+        "github account token key personal access auth sign in gh switch sign out",
     ),
     // Appearance
     (
@@ -859,6 +876,7 @@ impl OrbitApp {
                 tr!("worktree.settings.title"),
                 tr!("worktree.settings.description"),
             ),
+            SettingsSection::Git => (tr!("settings.git"), tr!("settings.git_description")),
             SettingsSection::Skills => (tr!("settings.skills"), tr!("settings.skills_description")),
             SettingsSection::Plugins => {
                 (tr!("settings.plugins"), tr!("settings.plugins_description"))
@@ -968,6 +986,7 @@ impl OrbitApp {
             SettingsSection::Runtime => self.runtime_rows(theme, this.clone(), cx),
             SettingsSection::Agent => self.agent_rows(theme, this.clone(), cx),
             SettingsSection::Worktrees => self.worktree_settings_rows(theme, this.clone(), cx),
+            SettingsSection::Git => self.git_settings_rows(theme, this.clone(), cx),
             // Rendered by `skills_ui::render_skills_page`, not the card body.
             SettingsSection::Skills => Vec::new(),
             SettingsSection::Plugins => self.plugin_rows(theme, this.clone(), cx),
@@ -7088,6 +7107,8 @@ impl OrbitApp {
         self.provider_editor = None;
         self.provider_key_editor = None;
         self.plugin_remove_confirm = None;
+        // The Git-account form belongs to the Git page; leaving discards it.
+        self.git_account_form = None;
         // The MCP add/edit modal belongs to the MCP page; leaving the page
         // discards it like the provider editors above.
         self.mcp_editor = None;
@@ -7103,6 +7124,7 @@ impl OrbitApp {
             SettingsSection::Skills => self.refresh_skills(cx),
             SettingsSection::Plugins => self.refresh_plugins(cx),
             SettingsSection::Mcp => self.mcp_section_opened(cx),
+            SettingsSection::Git => self.git_settings_section_opened(cx),
             _ => {}
         }
         cx.notify();
