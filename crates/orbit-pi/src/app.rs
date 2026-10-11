@@ -491,45 +491,6 @@ pub struct OrbitApp {
     /// Settings → Worktrees: setup-script field.
     worktree_script_input: Entity<ComposerInput>,
     _worktree_script_sub: Subscription,
-    /// Settings → Git: the global commit identity (`git config --global`),
-    /// loaded at launch and saved explicitly from the page.
-    git_identity: crate::git_account::GitIdentity,
-    /// Settings → Git: commit-name field.
-    git_name_input: Entity<ComposerInput>,
-    /// Settings → Git: commit-email field.
-    git_email_input: Entity<ComposerInput>,
-    /// Settings → Git: the `gh` token field. The value is piped to `gh auth
-    /// login --with-token` and cleared; Orbit never persists it.
-    git_token_input: Entity<ComposerInput>,
-    /// Settings → Git: the hostname the token sign-in targets.
-    git_host_input: Entity<ComposerInput>,
-    /// Settings → Git: the active workspace when it is a Git repository, for
-    /// the repository-local identity override. `None` hides that section.
-    git_repo_root: Option<PathBuf>,
-    /// Settings → Git: repository-local identity fields.
-    git_repo_name_input: Entity<ComposerInput>,
-    git_repo_email_input: Entity<ComposerInput>,
-    /// Whether the repository has a local identity override (`git config
-    /// --local`), rather than inheriting the global one.
-    git_repo_identity_set: bool,
-    /// Settings → Git: accounts `gh auth status` reported.
-    git_accounts: Vec<crate::git_account::GhAccount>,
-    /// Settings → Git: SSH keys discovered under `~/.ssh`.
-    git_ssh_keys: Vec<crate::ssh_keys::SshKey>,
-    /// Settings → Git: accounts the user saved (`~/.orbit-pi/git-accounts.json`).
-    git_accounts_config: crate::git_account::GitAccountsConfig,
-    /// Settings → Git: the open add/edit form, if any.
-    git_account_form: Option<GitAccountForm>,
-    /// Settings → Git: whether the form's source-account dropdown is open.
-    git_account_source_open: bool,
-    /// Whether the `gh` CLI is installed and runnable.
-    git_gh_installed: bool,
-    /// Whether the installed `gh` supports `gh auth switch`.
-    git_switch_supported: bool,
-    /// A Git settings background op (identity save / sign-in) is running.
-    git_settings_busy: bool,
-    /// The last Git settings op error, cleared on the next attempt.
-    git_settings_error: Option<String>,
     /// Keeps the create dialog's name→branch derivation observers alive.
     _worktree_name_sub: Subscription,
     _worktree_branch_sub: Subscription,
@@ -1397,62 +1358,6 @@ impl OrbitApp {
             }
             cx.notify();
         });
-        // Git preferences (Settings → Git). The identity is read from the
-        // global git config at launch and written back on an explicit Save;
-        // the token field is never persisted.
-        let git_identity = crate::git_account::read_identity();
-        let git_accounts_config = crate::git_account::GitAccountsConfig::load();
-        let git_name_input = cx.new(|cx| {
-            ComposerInput::new(cx)
-                .with_element_id("git-name-input")
-                .with_text(git_identity.name.clone())
-                .with_placeholder_key("git_settings.name_placeholder")
-                .with_key_context("Composer Picker")
-                .with_max_lines(1)
-                .with_wrap(false)
-        });
-        let git_email_input = cx.new(|cx| {
-            ComposerInput::new(cx)
-                .with_element_id("git-email-input")
-                .with_text(git_identity.email.clone())
-                .with_placeholder_key("git_settings.email_placeholder")
-                .with_key_context("Composer Picker")
-                .with_max_lines(1)
-                .with_wrap(false)
-        });
-        let git_token_input = cx.new(|cx| {
-            ComposerInput::new(cx)
-                .with_element_id("git-token-input")
-                .with_placeholder_key("git_settings.token_placeholder")
-                .with_key_context("Composer Picker")
-                .with_max_lines(1)
-                .with_wrap(false)
-        });
-        let git_host_input = cx.new(|cx| {
-            ComposerInput::new(cx)
-                .with_element_id("git-host-input")
-                .with_text("github.com")
-                .with_placeholder_key("git_settings.host_placeholder")
-                .with_key_context("Composer Picker")
-                .with_max_lines(1)
-                .with_wrap(false)
-        });
-        let git_repo_name_input = cx.new(|cx| {
-            ComposerInput::new(cx)
-                .with_element_id("git-repo-name-input")
-                .with_placeholder_key("git_settings.name_placeholder")
-                .with_key_context("Composer Picker")
-                .with_max_lines(1)
-                .with_wrap(false)
-        });
-        let git_repo_email_input = cx.new(|cx| {
-            ComposerInput::new(cx)
-                .with_element_id("git-repo-email-input")
-                .with_placeholder_key("git_settings.email_placeholder")
-                .with_key_context("Composer Picker")
-                .with_max_lines(1)
-                .with_wrap(false)
-        });
         // Create / rename / move dialog fields. The create dialog's start
         // point defaults to HEAD (empty input).
         let worktree_name_input = cx.new(|cx| {
@@ -1627,24 +1532,6 @@ impl OrbitApp {
             _worktree_dir_sub: worktree_dir_sub,
             worktree_script_input: worktree_script_input.clone(),
             _worktree_script_sub: worktree_script_sub,
-            git_identity,
-            git_name_input: git_name_input.clone(),
-            git_email_input: git_email_input.clone(),
-            git_token_input: git_token_input.clone(),
-            git_host_input: git_host_input.clone(),
-            git_repo_root: None,
-            git_repo_name_input: git_repo_name_input.clone(),
-            git_repo_email_input: git_repo_email_input.clone(),
-            git_repo_identity_set: false,
-            git_accounts: Vec::new(),
-            git_ssh_keys: Vec::new(),
-            git_accounts_config,
-            git_account_form: None,
-            git_account_source_open: false,
-            git_gh_installed: false,
-            git_switch_supported: false,
-            git_settings_busy: false,
-            git_settings_error: None,
             worktrees_open: false,
             worktree_howto_dismissed: crate::transcript::hint_seen(
                 worktrees::WORKTREE_HOWTO_HINT_KEY,
@@ -2603,7 +2490,6 @@ pub(crate) enum SettingsSection {
     Runtime,
     Agent,
     Worktrees,
-    Git,
     Providers,
     Models,
     Skills,
@@ -2611,26 +2497,6 @@ pub(crate) enum SettingsSection {
     Mcp,
     About,
     ReportBug,
-}
-
-/// The open Git-identity add/edit form on Settings → Git.
-pub(crate) struct GitAccountForm {
-    /// Editing the saved identity at this index; `None` for a new one.
-    pub edit_index: Option<usize>,
-    pub label: Entity<ComposerInput>,
-    pub name: Entity<ComposerInput>,
-    pub email: Entity<ComposerInput>,
-    pub signing_key: Entity<ComposerInput>,
-    /// A color name from [`crate::git_account::ACCOUNT_COLORS`].
-    pub color: String,
-    /// An icon id from [`crate::git_account::ACCOUNT_ICONS`].
-    pub icon: String,
-    /// A `gh` login, or empty for "No account".
-    pub source_account: String,
-    pub auth_method: crate::git_account::AuthMethod,
-    pub sign_commits: bool,
-    /// Selected SSH key (index into `git_ssh_keys`); `None` means no key.
-    pub key_ix: Option<usize>,
 }
 
 /// Which branch source the Create Worktree dialog uses.
@@ -3007,7 +2873,6 @@ mod bug_report_ui;
 mod composer_ops;
 mod dialogs;
 mod events;
-mod git_settings;
 pub(crate) mod helpers;
 mod mcp_ui;
 mod open_in;

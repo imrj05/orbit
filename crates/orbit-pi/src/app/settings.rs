@@ -79,7 +79,6 @@ const SETTINGS_SECTIONS: &[(SettingsSection, &str, &str)] = &[
         "icons/branch.svg",
         "worktree.settings.title",
     ),
-    (SettingsSection::Git, "icons/github.svg", "settings.git"),
     (
         SettingsSection::Providers,
         "icons/cloud.svg",
@@ -259,22 +258,6 @@ const SETTINGS_SEARCH_INDEX: &[(SettingsSection, &str, &str)] = &[
         "worktree.settings.open_after_create",
         "worktree worktrees open after create switch workspace",
     ),
-    // Git
-    (
-        SettingsSection::Git,
-        "settings.git",
-        "git commit identity name email author global config",
-    ),
-    (
-        SettingsSection::Git,
-        "git_settings.identity_section",
-        "git commit identity name email author global config",
-    ),
-    (
-        SettingsSection::Git,
-        "git_settings.account_section",
-        "github account token key personal access auth sign in gh switch sign out",
-    ),
     // Appearance
     (
         SettingsSection::Appearance,
@@ -390,7 +373,7 @@ const SETTINGS_SEARCH_INDEX: &[(SettingsSection, &str, &str)] = &[
     (
         SettingsSection::Privacy,
         "settings.anonymous_analytics",
-        "telemetry analytics usage anonymous privacy opt out data collection",
+        "telemetry analytics usage anonymous privacy opt out data collection personal",
     ),
     (
         SettingsSection::About,
@@ -675,8 +658,6 @@ impl OrbitApp {
             .children(self.provider_usage_layer(theme, this.clone(), cx))
             // ── MCP add/edit modal ──
             .children(self.mcp_editor_layer(theme, this.clone(), cx))
-            // ── Git identity editor modal ──
-            .children(self.git_identity_layer(theme, this.clone(), cx))
             .children(self.provider_key_layer(theme, this, cx))
     }
 
@@ -878,7 +859,6 @@ impl OrbitApp {
                 tr!("worktree.settings.title"),
                 tr!("worktree.settings.description"),
             ),
-            SettingsSection::Git => (tr!("settings.git"), tr!("settings.git_description")),
             SettingsSection::Skills => (tr!("settings.skills"), tr!("settings.skills_description")),
             SettingsSection::Plugins => {
                 (tr!("settings.plugins"), tr!("settings.plugins_description"))
@@ -988,7 +968,6 @@ impl OrbitApp {
             SettingsSection::Runtime => self.runtime_rows(theme, this.clone(), cx),
             SettingsSection::Agent => self.agent_rows(theme, this.clone(), cx),
             SettingsSection::Worktrees => self.worktree_settings_rows(theme, this.clone(), cx),
-            SettingsSection::Git => self.git_settings_rows(theme, this.clone(), cx),
             // Rendered by `skills_ui::render_skills_page`, not the card body.
             SettingsSection::Skills => Vec::new(),
             SettingsSection::Plugins => self.plugin_rows(theme, this.clone(), cx),
@@ -5343,9 +5322,9 @@ impl OrbitApp {
             .into_any_element()
     }
 
-    /// Settings → Privacy: the single anonymous-usage-analytics switch. The
-    /// paragraph names what is collected and what never is; disabling takes
-    /// effect immediately and clears anything queued.
+    /// Settings → Privacy: the single anonymous-usage-analytics switch plus a
+    /// plain-language disclosure of exactly what is and is never collected.
+    /// Disabling takes effect immediately and clears anything queued.
     pub(super) fn privacy_rows(
         &self,
         theme: Theme,
@@ -5357,19 +5336,38 @@ impl OrbitApp {
             self.settings_section(
                 theme,
                 &tr!("settings.anonymous_analytics"),
-                vec![self.setting_row(
-                    theme,
-                    &tr!("settings.anonymous_analytics"),
-                    Some(&tr!("settings.anonymous_analytics_description")),
-                    None,
-                    Some(self.settings_toggle(
-                        "analytics-toggle",
-                        enabled,
+                vec![
+                    self.setting_row(
                         theme,
-                        this.clone(),
-                        Self::toggle_analytics,
-                    )),
-                )],
+                        &tr!("settings.anonymous_analytics"),
+                        Some(&tr!("settings.anonymous_analytics_description")),
+                        None,
+                        Some(self.settings_toggle(
+                            "analytics-toggle",
+                            enabled,
+                            theme,
+                            this.clone(),
+                            Self::toggle_analytics,
+                        )),
+                    ),
+                    // A read-only disclosure: the two halves of what the toggle
+                    // above actually means, so the privacy promise is visible
+                    // in the app rather than only in PRIVACY.md.
+                    self.setting_row(
+                        theme,
+                        &tr!("settings.analytics_collected_title"),
+                        Some(&tr!("settings.analytics_collected_body")),
+                        None,
+                        None,
+                    ),
+                    self.setting_row(
+                        theme,
+                        &tr!("settings.analytics_never_title"),
+                        Some(&tr!("settings.analytics_never_body")),
+                        None,
+                        None,
+                    ),
+                ],
             ),
             self.settings_section(
                 theme,
@@ -7109,8 +7107,6 @@ impl OrbitApp {
         self.provider_editor = None;
         self.provider_key_editor = None;
         self.plugin_remove_confirm = None;
-        // The Git-account form belongs to the Git page; leaving discards it.
-        self.git_account_form = None;
         // The MCP add/edit modal belongs to the MCP page; leaving the page
         // discards it like the provider editors above.
         self.mcp_editor = None;
@@ -7126,7 +7122,6 @@ impl OrbitApp {
             SettingsSection::Skills => self.refresh_skills(cx),
             SettingsSection::Plugins => self.refresh_plugins(cx),
             SettingsSection::Mcp => self.mcp_section_opened(cx),
-            SettingsSection::Git => self.git_settings_section_opened(cx),
             _ => {}
         }
         cx.notify();
