@@ -413,6 +413,20 @@ pub fn run_pi_update() -> io::Result<Output> {
     command.output()
 }
 
+/// Refresh pi's provider/model catalog through pi's documented command
+/// (`pi update --models`). A running pi process keeps the catalog it loaded at
+/// startup, so the caller reloads it by restarting the agent afterwards.
+pub fn run_model_catalog_refresh() -> io::Result<Output> {
+    let bin = orbit_rpc::pi_binary();
+    let mut command = Command::new(&bin);
+    command
+        .env("PATH", orbit_rpc::augmented_path(Path::new(&bin).parent()))
+        .env("PI_SKIP_VERSION_CHECK", "1")
+        .args(["update", "--models", "--no-approve"]);
+    orbit_rpc::hide_console(&mut command);
+    command.output()
+}
+
 /// PATH handed to the installer: the parent PATH plus the usual install dirs,
 /// so `node` (and the `npm` the managed install uses internally) resolve from
 /// a bundled `.app`.

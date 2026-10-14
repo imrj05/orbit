@@ -802,6 +802,13 @@ pub struct OrbitApp {
     /// Models page: show favorited models only (the second filter next to
     /// the search field).
     models_favorites_only: bool,
+    /// Models page: provider scope. `None` shows every provider; `Some(id)`
+    /// narrows the grid to one, mirroring the composer picker's provider
+    /// chips.
+    models_provider_filter: Option<String>,
+    /// True while the Models page's "Update model list" action runs pi's
+    /// catalog refresh and reloads the agent.
+    models_refreshing: bool,
     /// Skills discovered for the current workspace (project + user scope).
     skills: Vec<Skill>,
     /// Installed pi packages (plugins) from user + project settings.
@@ -1675,6 +1682,8 @@ impl OrbitApp {
             models_filter: models_filter.clone(),
             _models_filter_sub: models_filter_sub,
             models_favorites_only: false,
+            models_provider_filter: None,
+            models_refreshing: false,
             skills: Vec::new(),
             plugins: Vec::new(),
             plugins_error: None,
@@ -2876,6 +2885,10 @@ enum SettingsSelect {
     DefaultModel,
     /// The default model's thinking level (Settings → Agent).
     DefaultThinking,
+    /// The session's active model (Settings → Models).
+    ActiveModel,
+    /// The Models page's provider scope filter.
+    ModelProvider,
     /// The session-retention action and threshold (Settings → Privacy).
     RetentionMode,
     RetentionDays,
