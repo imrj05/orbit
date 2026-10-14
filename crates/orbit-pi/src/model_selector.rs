@@ -6,9 +6,11 @@
 //!
 //! - compact raised surface (`menu_bg`, strong border, layered shadow)
 //! - inset search field, then a horizontally scrollable scope row (`All`,
-//!   `Favorites` when any exist, and each provider), then the list
-//! - models are grouped under provider headers (name + count), with
-//!   favorited models pinned under a `Favorites` section at the top; a
+//!   `Recents`/`Favorites` when any exist, and each provider), then the list
+//! - models are grouped under provider headers (name + count), with recently
+//!   used models pinned under a `Recents` section and favorited models under a
+//!   `Favorites` section above the provider groups (a model that is both
+//!   appears once, under `Recents`); selecting a model records it as recent; a
 //!   thinking list is flat, one icon-chip row per reasoning level
 //! - every model row carries a star: an accent star at rest for favorites,
 //!   revealed on hover for the rest, so any model can be pinned
@@ -33,6 +35,7 @@ use crate::app::{
 use crate::composer::ComposerInput;
 use crate::context_meter::format_tokens;
 use crate::favorites::Favorites;
+use crate::recent_models::Recents;
 use crate::model_selector_match::is_model_selected;
 use crate::providers::provider_display_name;
 use crate::theme::tokens::RaisedExt;
@@ -107,6 +110,8 @@ enum Scope {
     /// The full catalog, grouped by provider.
     #[default]
     All,
+    /// Only recently used models, most-recent first.
+    Recents,
     /// Only favorited models, pinned under a Favorites section.
     Favorites,
     /// A single provider, listed flat.
@@ -122,6 +127,8 @@ enum Row {
         provider: String,
         count: usize,
         favorites: bool,
+        /// The pinned Recents section at the top of the list.
+        recents: bool,
     },
     /// A thinking level (`level` is the raw pi value; display only).
     Level { level: String, selected: bool },
@@ -226,6 +233,7 @@ impl ModelSelector {
             selected_catalog_ix,
             &Scope::All,
             &Favorites::default(),
+            &Recents::default(),
             "",
         );
         let mut list_scroll = ScrollHandle::new();
@@ -307,6 +315,7 @@ impl ModelSelector {
         selected_catalog_ix: Option<usize>,
         scope: &Scope,
         favorites: &Favorites,
+        recents: &Recents,
         needle: &str,
     ) -> Vec<Row> {
         let matches = |text: &str| needle.is_empty() || text.to_lowercase().contains(needle);
@@ -326,9 +335,32 @@ impl ModelSelector {
             return rows;
         }
 
+        // A dedicated Recents scope: flat and in most-recent-first order (not
+        // catalog order), still honoring the text filter.
+        if *scope == Scope::Recents {
+            for (provider, id) in recents.entries() {
+                let Some(ix) = models
+                    .iter()
+                    .position(|model| &model.provider == provider && &model.id == id)
+                else {
+                    continue;
+                };
+                let model = &models[ix];
+                if matches(&model.name) || matches(&model.id) || matches(&model.provider) {
+                    rows.push(Row::Model {
+                        model_ix: ix,
+                        selected: selected_catalog_ix == Some(ix),
+                    });
+                }
+            }
+            return rows;
+        }
+
         let in_scope = |model: &ModelEntry| -> bool {
             match scope {
                 Scope::All => true,
+                // Handled above.
+                Scope::Recents => false,
                 Scope::Favorites => favorites.contains(&model.provider, &model.id),
                 Scope::Provider(provider) => &model.provider == provider,
             }
@@ -340,39 +372,85 @@ impl ModelSelector {
                 && (matches(&model.name) || matches(&model.id) || matches(&model.provider))
         };
 
-        // In the All scope, favorite models are pinned under their own header
-        // at the top of the list, and their provider group skips them so no
-        // model appears twice.
+        // Recents and favorites pin above the provider groups — recents at the
+        // very top (a recently used model is the likeliest pick), then
+        // favorites. Both de-dup against the groups below, and recents win over
+        // favorites, so no model appears twice.
         let mut pinned: Vec<usize> = Vec::new();
-        if *scope == Scope::All && !favorites.is_empty() {
-            pinned = models
-                .iter()
-                .enumerate()
-                .filter(|(_, model)| {
-                    favorites.contains(&model.provider, &model.id) && included(model)
-                })
-                .map(|(ix, _)| ix)
-                .collect();
-            if !pinned.is_empty() {
+
+        // Recents lead the All scope; a provider scope pins that provider's own
+        // recents (the chip already names the provider).
+        if matches!(scope, Scope::All | Scope::Provider(_)) {
+            let section: Vec<usize> = if *scope == Scope::All {
+                recents
+                    .entries()
+                    .iter()
+                    .filter_map(|(provider, id)| {
+                        models
+                            .iter()
+                            .position(|model| &model.provider == provider && &model.id == id)
+                    })
+                    .filter(|&ix| included(&models[ix]))
+                    .collect()
+            } else {
+                models
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, model)| {
+                        recents.contains(&model.provider, &model.id) && included(model)
+                    })
+                    .map(|(ix, _)| ix)
+                    .collect()
+            };
+            if !section.is_empty() {
                 rows.push(Row::Header {
                     provider: String::new(),
-                    count: pinned.len(),
-                    favorites: true,
+                    count: section.len(),
+                    favorites: false,
+                    recents: true,
                 });
-                for ix in &pinned {
+                for ix in &section {
                     rows.push(Row::Model {
                         model_ix: *ix,
                         selected: selected_catalog_ix == Some(*ix),
                     });
                 }
+                pinned.extend(section);
             }
         }
-        let is_pinned = |ix: usize| pinned.contains(&ix);
+
+        if *scope == Scope::All && !favorites.is_empty() {
+            let section: Vec<usize> = models
+                .iter()
+                .enumerate()
+                .filter(|(ix, model)| {
+                    favorites.contains(&model.provider, &model.id)
+                        && included(model)
+                        && !pinned.contains(ix)
+                })
+                .map(|(ix, _)| ix)
+                .collect();
+            if !section.is_empty() {
+                rows.push(Row::Header {
+                    provider: String::new(),
+                    count: section.len(),
+                    favorites: true,
+                    recents: false,
+                });
+                for ix in &section {
+                    rows.push(Row::Model {
+                        model_ix: *ix,
+                        selected: selected_catalog_ix == Some(*ix),
+                    });
+                }
+                pinned.extend(section);
+            }
+        }
 
         let mut providers: Vec<String> = Vec::new();
         let mut groups: Vec<Vec<usize>> = Vec::new();
         for (ix, model) in models.iter().enumerate() {
-            if !included(model) || is_pinned(ix) {
+            if !included(model) || pinned.contains(&ix) {
                 continue;
             }
             match providers.iter().position(|p| p == &model.provider) {
@@ -384,13 +462,14 @@ impl ModelSelector {
             }
         }
         for (provider, group) in providers.iter().zip(groups) {
-            // A provider scope and the Favorites scope are stated by the
-            // chip, so only the All scope needs group headers.
+            // A provider scope is stated by the chip, so only the All scope
+            // needs group headers.
             if *scope == Scope::All {
                 rows.push(Row::Header {
                     provider: provider.clone(),
                     count: group.len(),
                     favorites: false,
+                    recents: false,
                 });
             }
             for ix in group {
@@ -412,6 +491,7 @@ impl ModelSelector {
             self.selected_catalog_ix,
             &self.scope,
             &crate::favorites::all(),
+            &crate::recent_models::all(),
             needle,
         )
     }
@@ -459,11 +539,19 @@ impl ModelSelector {
     fn scope_row(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let this = cx.weak_entity();
         let favorites = crate::favorites::all();
+        let recents = crate::recent_models::all();
         let mut entries: Vec<(String, Scope, &'static str)> = vec![(
             tr!("model_selector.all"),
             Scope::All,
             "icons/extensions.svg",
         )];
+        if !recents.is_empty() {
+            entries.push((
+                tr!("model_selector.recents"),
+                Scope::Recents,
+                "icons/clock.svg",
+            ));
+        }
         if !favorites.is_empty() {
             entries.push((
                 tr!("model_selector.favorites"),
@@ -659,6 +747,9 @@ impl ModelSelector {
             {
                 self.scope = Scope::All;
             }
+            Scope::Recents if crate::recent_models::all().is_empty() => {
+                self.scope = Scope::All;
+            }
             Scope::Favorites if crate::favorites::all().is_empty() => {
                 self.scope = Scope::All;
             }
@@ -840,6 +931,7 @@ impl Render for ModelSelector {
         let count_label = match self.kind {
             PickerKind::Thinking => tr!("model_selector.n_levels", count = option_count),
             PickerKind::Model => match self.scope {
+                Scope::Recents => tr!("model_selector.n_recent", count = option_count),
                 Scope::Favorites => tr!("model_selector.n_favorites", count = option_count),
                 _ => tr!("model_selector.n_models", count = option_count),
             },
@@ -1334,12 +1426,18 @@ fn render_row(
         provider,
         count,
         favorites,
+        recents,
     } = row
     {
-        // The Favorites section leads the model list; render it with the star
-        // glyph and the same uppercase/metrics register as a provider header.
-        return if *favorites {
-            group_header("FAVORITES", Some("icons/star.svg"), *count, theme).into_any_element()
+        // The pinned Recents/Favorites sections lead the model list; render
+        // each with its glyph and the same uppercase/metrics register as a
+        // provider header.
+        return if *recents {
+            let label = tr!("model_selector.recents").to_uppercase();
+            group_header(&label, Some("icons/clock.svg"), *count, theme).into_any_element()
+        } else if *favorites {
+            let label = tr!("model_selector.favorites").to_uppercase();
+            group_header(&label, Some("icons/star.svg"), *count, theme).into_any_element()
         } else {
             group_header(
                 &provider_display_name(provider).to_uppercase(),
@@ -1534,6 +1632,7 @@ mod tests {
             provider: "openai".into(),
             count: 2,
             favorites: false,
+            recents: false,
         }];
         rows.extend(model_rows(5));
         let m = metrics();
@@ -1584,6 +1683,10 @@ mod tests {
         Favorites::default()
     }
 
+    fn no_recents() -> Recents {
+        Recents::default()
+    }
+
     #[test]
     fn models_group_by_provider_with_headers() {
         let models = vec![
@@ -1600,6 +1703,7 @@ mod tests {
             Some(2),
             &Scope::All,
             &favs,
+            &no_recents(),
             "",
         );
         assert_eq!(providers(&rows), vec!["openai", "anthropic"]);
@@ -1626,6 +1730,7 @@ mod tests {
             None,
             &Scope::Provider("openai".into()),
             &favs,
+            &no_recents(),
             "",
         );
         // The chip states the provider, so no header repeats it, and only
@@ -1651,6 +1756,7 @@ mod tests {
             None,
             &Scope::All,
             &favs,
+            &no_recents(),
             "",
         );
         // Favorites header first, then its model, then the provider groups.
@@ -1688,11 +1794,161 @@ mod tests {
             None,
             &Scope::Favorites,
             &favs,
+            &no_recents(),
             "",
         );
         assert!(providers(&rows).is_empty());
         assert_eq!(rows.len(), 1);
         assert!(matches!(rows[0], Row::Model { model_ix: 1, .. }));
+    }
+
+    #[test]
+    fn recents_pin_a_section_above_favorites() {
+        let models = vec![
+            entry("a", "A", "openai", None),
+            entry("b", "B", "anthropic", None),
+            entry("c", "C", "google", None),
+        ];
+        let favs = Favorites::from_pairs(&[("google", "c")]);
+        let recents = Recents::from_pairs(&[("anthropic", "b")]);
+        let rows = ModelSelector::rows_for(
+            PickerKind::Model,
+            &models,
+            &[],
+            "low",
+            None,
+            &Scope::All,
+            &favs,
+            &recents,
+            "",
+        );
+        // Recents lead, then favorites, then the provider groups.
+        assert!(matches!(rows[0], Row::Header { recents: true, .. }));
+        assert!(matches!(rows[1], Row::Model { model_ix: 1, .. }));
+        assert!(matches!(rows[2], Row::Header { favorites: true, .. }));
+        assert!(matches!(rows[3], Row::Model { model_ix: 2, .. }));
+        // Neither pinned model repeats under its provider group.
+        let model_ixs: Vec<usize> = rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Model { model_ix, .. } => Some(*model_ix),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(model_ixs, vec![1, 2, 0]);
+    }
+
+    #[test]
+    fn a_model_that_is_both_recent_and_favorite_pins_once() {
+        let models = vec![
+            entry("a", "A", "openai", None),
+            entry("b", "B", "anthropic", None),
+        ];
+        let favs = Favorites::from_pairs(&[("openai", "a")]);
+        let recents = Recents::from_pairs(&[("openai", "a")]);
+        let rows = ModelSelector::rows_for(
+            PickerKind::Model,
+            &models,
+            &[],
+            "low",
+            None,
+            &Scope::All,
+            &favs,
+            &recents,
+            "",
+        );
+        // Recent wins: a Recents pinned header only, no Favorites pinned
+        // header, and the model appears once (provider headers are ignored).
+        let pinned_headers: Vec<(bool, bool)> = rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Header {
+                    favorites, recents, ..
+                } if *recents || *favorites => Some((*recents, *favorites)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pinned_headers, vec![(true, false)]);
+        let model_ixs: Vec<usize> = rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Model { model_ix, .. } => Some(*model_ix),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(model_ixs, vec![0, 1]);
+    }
+
+    #[test]
+    fn recents_scope_lists_most_recent_first() {
+        let models = vec![
+            entry("a", "A", "openai", None),
+            entry("b", "B", "anthropic", None),
+            entry("c", "C", "google", None),
+        ];
+        let favs = no_favorites();
+        let recents = Recents::from_pairs(&[("google", "c"), ("openai", "a")]);
+        let rows = ModelSelector::rows_for(
+            PickerKind::Model,
+            &models,
+            &[],
+            "low",
+            None,
+            &Scope::Recents,
+            &favs,
+            &recents,
+            "",
+        );
+        // Flat, MRU order (c then a), never catalog order, and no headers.
+        assert!(providers(&rows).is_empty());
+        let model_ixs: Vec<usize> = rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Model { model_ix, .. } => Some(*model_ix),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(model_ixs, vec![2, 0]);
+    }
+
+    #[test]
+    fn provider_scope_pins_its_own_recents() {
+        let models = vec![
+            entry("a", "A", "openai", None),
+            entry("b", "B", "openai", None),
+            entry("c", "C", "anthropic", None),
+        ];
+        let favs = no_favorites();
+        let recents = Recents::from_pairs(&[("anthropic", "c"), ("openai", "b")]);
+        let rows = ModelSelector::rows_for(
+            PickerKind::Model,
+            &models,
+            &[],
+            "low",
+            None,
+            &Scope::Provider("openai".into()),
+            &favs,
+            &recents,
+            "",
+        );
+        // The provider's own recent (b) pins at the top; the other provider's
+        // recent (c) is out of scope and never appears.
+        assert!(matches!(
+            rows[0],
+            Row::Header {
+                recents: true,
+                count: 1,
+                ..
+            }
+        ));
+        let model_ixs: Vec<usize> = rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Model { model_ix, .. } => Some(*model_ix),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(model_ixs, vec![1, 0]);
     }
 
     #[test]
@@ -1710,6 +1966,7 @@ mod tests {
             None,
             &Scope::All,
             &favs,
+            &no_recents(),
             "alpha",
         );
         assert_eq!(providers(&rows), vec!["openai"]);

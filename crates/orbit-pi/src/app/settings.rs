@@ -372,8 +372,8 @@ const SETTINGS_SEARCH_INDEX: &[(SettingsSection, &str, &str)] = &[
     ),
     (
         SettingsSection::Privacy,
-        "settings.anonymous_analytics",
-        "telemetry analytics usage anonymous privacy opt out data collection personal",
+        "settings.privacy",
+        "privacy session retention cleanup local data",
     ),
     (
         SettingsSection::About,
@@ -5322,53 +5322,14 @@ impl OrbitApp {
             .into_any_element()
     }
 
-    /// Settings → Privacy: the single anonymous-usage-analytics switch plus a
-    /// plain-language disclosure of exactly what is and is never collected.
-    /// Disabling takes effect immediately and clears anything queued.
+    /// Settings → Privacy: local-only controls such as session retention.
     pub(super) fn privacy_rows(
         &self,
         theme: Theme,
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
     ) -> Vec<AnyElement> {
-        let enabled = crate::analytics::is_enabled(cx);
         vec![
-            self.settings_section(
-                theme,
-                &tr!("settings.anonymous_analytics"),
-                vec![
-                    self.setting_row(
-                        theme,
-                        &tr!("settings.anonymous_analytics"),
-                        Some(&tr!("settings.anonymous_analytics_description")),
-                        None,
-                        Some(self.settings_toggle(
-                            "analytics-toggle",
-                            enabled,
-                            theme,
-                            this.clone(),
-                            Self::toggle_analytics,
-                        )),
-                    ),
-                    // A read-only disclosure: the two halves of what the toggle
-                    // above actually means, so the privacy promise is visible
-                    // in the app rather than only in PRIVACY.md.
-                    self.setting_row(
-                        theme,
-                        &tr!("settings.analytics_collected_title"),
-                        Some(&tr!("settings.analytics_collected_body")),
-                        None,
-                        None,
-                    ),
-                    self.setting_row(
-                        theme,
-                        &tr!("settings.analytics_never_title"),
-                        Some(&tr!("settings.analytics_never_body")),
-                        None,
-                        None,
-                    ),
-                ],
-            ),
             self.settings_section(
                 theme,
                 &tr!("settings.session_retention"),
@@ -5490,20 +5451,6 @@ impl OrbitApp {
     pub(super) fn toggle_session_retention(&mut self, cx: &mut Context<Self>) {
         self.retention.enabled = !self.retention.enabled;
         self.retention.persist();
-        cx.notify();
-    }
-
-    /// Flip the analytics opt-out. The client stops collecting and clears its
-    /// queue the moment this runs.
-    pub(super) fn toggle_analytics(&mut self, cx: &mut Context<Self>) {
-        let enabled = !crate::analytics::is_enabled(cx);
-        crate::analytics::set_enabled(cx, enabled);
-        crate::analytics::track(
-            cx,
-            orbit_analytics::AnalyticsEvent::SettingsChanged {
-                setting: orbit_analytics::SettingId::Analytics,
-            },
-        );
         cx.notify();
     }
 
@@ -7036,7 +6983,6 @@ impl OrbitApp {
     pub(super) fn open_settings(&mut self, cx: &mut Context<Self>) {
         self.refresh_updater(cx);
         self.settings_open = true;
-        crate::analytics::track(cx, orbit_analytics::AnalyticsEvent::SettingsOpened);
         self.set_settings_section(SettingsSection::General, cx);
     }
 
@@ -7059,7 +7005,6 @@ impl OrbitApp {
     ) {
         self.refresh_updater(cx);
         self.settings_open = true;
-        crate::analytics::track(cx, orbit_analytics::AnalyticsEvent::SettingsOpened);
         self.set_settings_section(SettingsSection::About, cx);
     }
 
