@@ -1498,7 +1498,7 @@ impl OrbitApp {
                             .child(icon_dyn(
                                 provider_icon(&provider),
                                 IconSize::Small.px(&theme),
-                                theme.text_3,
+                                provider_mark_color(&provider, &theme, theme.text_3),
                             ))
                             .child(
                                 div()
@@ -3176,11 +3176,15 @@ impl OrbitApp {
             .child(icon_dyn(
                 provider_icon(&view.id),
                 IconSize::Custom(30. / 16.).px(&theme),
-                if view.active || view.connected() {
-                    theme.text
-                } else {
-                    theme.text_2
-                },
+                provider_mark_color(
+                    &view.id,
+                    &theme,
+                    if view.active || view.connected() {
+                        theme.text
+                    } else {
+                        theme.text_2
+                    },
+                ),
             ));
 
         let status_pill = div()

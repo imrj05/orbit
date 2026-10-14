@@ -1588,7 +1588,7 @@ impl OrbitApp {
                 .child(icon_dyn(
                     provider_icon(&report.provider),
                     IconSize::XSmall.px(&theme),
-                    theme.text_3,
+                    provider_mark_color(&report.provider, &theme, theme.text_3),
                 ))
                 .child(
                     div()
@@ -2792,7 +2792,7 @@ fn quota_provider_card(
         .child(icon_dyn(
             provider_icon(&report.provider),
             IconSize::Small.px(&theme),
-            theme.text_3,
+            provider_mark_color(&report.provider, &theme, theme.text_3),
         ))
         .child(
             div()

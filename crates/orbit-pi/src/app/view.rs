@@ -2171,7 +2171,7 @@ impl OrbitApp {
                     .child(icon_dyn(
                         provider_icon(&self.model_provider),
                         ButtonSize::Default.icon_size().px(&theme),
-                        theme.text_3,
+                        provider_mark_color(&self.model_provider, &theme, theme.text_3),
                     ))
                     .child(
                         div()

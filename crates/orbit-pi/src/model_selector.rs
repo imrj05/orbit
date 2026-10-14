@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 
 use crate::app::{
     button_frame, icon, icon_button_frame, icon_dyn, picker_entry, picker_search_frame,
-    picker_surface, ModelEntry, TipExt,
+    picker_surface, provider_mark_color, ModelEntry, TipExt,
 };
 use crate::composer::ComposerInput;
 use crate::context_meter::format_tokens;
@@ -582,19 +582,27 @@ impl ModelSelector {
             .overflow_x_scroll();
         for (ix, (label, scope, static_icon)) in entries.into_iter().enumerate() {
             let active = self.scope == scope;
-            let brand = if active {
-                theme.active_fg
-            } else {
-                theme.text_3
-            };
             // `All`/`Favorites` carry a static glyph; each provider chip
-            // carries its own brand mark.
+            // carries its own brand mark, in the provider's identity color —
+            // except on the active fill, where `active_fg` keeps contrast.
             let lead = match &scope {
                 Scope::Provider(provider) => {
-                    icon_dyn(provider_icon(provider), IconSize::Small.px(&theme), brand)
+                    let color = if active {
+                        theme.active_fg
+                    } else {
+                        provider_mark_color(provider, &theme, theme.text_3)
+                    };
+                    icon_dyn(provider_icon(provider), IconSize::Small.px(&theme), color)
                         .into_any_element()
                 }
-                _ => icon(static_icon, IconSize::Small.px(&theme), brand).into_any_element(),
+                _ => {
+                    let brand = if active {
+                        theme.active_fg
+                    } else {
+                        theme.text_3
+                    };
+                    icon(static_icon, IconSize::Small.px(&theme), brand).into_any_element()
+                }
             };
             let chip_id = ElementId::NamedInteger("scope-chip".into(), ix as u64);
             let this = this.clone();
@@ -1175,7 +1183,11 @@ fn provider_chip(provider: &str, selected: bool, theme: Theme) -> impl IntoEleme
         .child(icon_dyn(
             provider_icon(provider),
             context_menu::ICON.px(&theme),
-            if selected { theme.text } else { theme.text_2 },
+            provider_mark_color(
+                provider,
+                &theme,
+                if selected { theme.text } else { theme.text_2 },
+            ),
         ))
 }
 
