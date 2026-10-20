@@ -75,6 +75,11 @@ const SETTINGS_SECTIONS: &[(SettingsSection, &str, &str)] = &[
     ),
     (SettingsSection::Agent, "icons/spark.svg", "settings.agent"),
     (
+        SettingsSection::Subagents,
+        "icons/tools/task.svg",
+        "settings.subagents",
+    ),
+    (
         SettingsSection::Worktrees,
         "icons/branch.svg",
         "worktree.settings.title",
@@ -236,6 +241,11 @@ const SETTINGS_SEARCH_INDEX: &[(SettingsSection, &str, &str)] = &[
         SettingsSection::Agent,
         "settings.default_thinking",
         "thinking level default session reasoning",
+    ),
+    (
+        SettingsSection::Subagents,
+        "settings.subagents",
+        "subagents agents delegate roles scout planner reviewer worker",
     ),
     // Worktrees
     (
@@ -644,6 +654,8 @@ impl OrbitApp {
                     self.settings_search_results(theme, this.clone(), cx)
                 } else if self.settings_section == SettingsSection::Skills {
                     self.render_skills_page(theme, this.clone(), cx)
+                } else if self.settings_section == SettingsSection::Subagents {
+                    self.render_subagents_page(theme, this.clone(), cx)
                 } else {
                     self.settings_body(theme, this.clone(), cx)
                 }
@@ -850,6 +862,10 @@ impl OrbitApp {
                 (tr!("settings.runtime"), tr!("settings.runtime_description"))
             }
             SettingsSection::Agent => (tr!("settings.agent"), tr!("settings.agent_description")),
+            SettingsSection::Subagents => (
+                tr!("settings.subagents"),
+                tr!("settings.subagents_description"),
+            ),
             SettingsSection::Worktrees => (
                 tr!("worktree.settings.title"),
                 tr!("worktree.settings.description"),
@@ -965,6 +981,8 @@ impl OrbitApp {
             SettingsSection::Worktrees => self.worktree_settings_rows(theme, this.clone(), cx),
             // Rendered by `skills_ui::render_skills_page`, not the card body.
             SettingsSection::Skills => Vec::new(),
+            // Rendered by `subagents_ui::render_subagents_page`.
+            SettingsSection::Subagents => Vec::new(),
             SettingsSection::Plugins => self.plugin_rows(theme, this.clone(), cx),
             // The MCP page's rows are owned by `mcp_ui`; it needs the cursor
             // and filter state that lives beside the manager.
@@ -7416,6 +7434,7 @@ impl OrbitApp {
                 self.refresh_auth();
             }
             SettingsSection::Skills => self.refresh_skills(cx),
+            SettingsSection::Subagents => self.refresh_subagents(cx),
             SettingsSection::Plugins => self.refresh_plugins(cx),
             SettingsSection::Mcp => self.mcp_section_opened(cx),
             _ => {}

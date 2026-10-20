@@ -178,6 +178,108 @@ pub struct ToolFacts {
     pub output_lines: Option<u64>,
     /// Lines the full result held, when pi reported them.
     pub total_lines: Option<u64>,
+    /// Structured subagent progress (our bundled `subagent` tool's `details`).
+    /// `None` for every other tool and for results that carry no details yet.
+    pub subagent: Option<SubagentFacts>,
+}
+
+/// One `subagent` tool run, as reported in its `details` payload.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SubagentFacts {
+    /// `single`, `parallel`, `chain`, or `list`.
+    pub mode: String,
+    pub results: Vec<SubagentRun>,
+}
+
+/// One child agent inside a subagent run.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SubagentRun {
+    pub agent: String,
+    pub source: Option<String>,
+    pub task: String,
+    pub step: Option<u64>,
+    pub status: SubagentStatus,
+    pub output: String,
+    pub model: Option<String>,
+    pub turns: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SubagentStatus {
+    /// `exitCode` is still -1; the child process has not exited.
+    #[default]
+    Running,
+    Completed,
+    Failed,
+}
+
+impl SubagentStatus {
+    fn from_wire(value: Option<&str>, exit_code: Option<i64>, stop_reason: Option<&str>) -> Self {
+        match value {
+            Some("running") => Self::Running,
+            Some("failed") => Self::Failed,
+            Some("completed") | Some("done") => Self::Completed,
+            _ => {
+                let failed = exit_code.is_some_and(|code| code != 0)
+                    || matches!(stop_reason, Some("error") | Some("aborted"));
+                if exit_code == Some(-1) {
+                    Self::Running
+                } else if failed {
+                    Self::Failed
+                } else {
+                    Self::Completed
+                }
+            }
+        }
+    }
+}
+
+/// Parse the compact `details` our subagent extension attaches to every
+/// result. Any other tool's details simply yield `None`.
+fn parse_subagent_facts(details: &Value) -> Option<SubagentFacts> {
+    let mode = details.get("mode").and_then(Value::as_str)?;
+    let results = details.get("results").and_then(Value::as_array)?;
+    let runs = results
+        .iter()
+        .filter_map(|run| {
+            let agent = run.get("agent").and_then(Value::as_str)?.to_string();
+            let exit_code = run.get("exitCode").and_then(Value::as_i64);
+            let stop_reason = run.get("stopReason").and_then(Value::as_str);
+            Some(SubagentRun {
+                agent,
+                source: run
+                    .get("agentSource")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                task: run
+                    .get("task")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                step: run.get("step").and_then(Value::as_u64),
+                status: SubagentStatus::from_wire(
+                    run.get("status").and_then(Value::as_str),
+                    exit_code,
+                    stop_reason,
+                ),
+                output: run
+                    .get("output")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                model: run.get("model").and_then(Value::as_str).map(str::to_string),
+                turns: run
+                    .get("usage")
+                    .and_then(|usage| usage.get("turns"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+            })
+        })
+        .collect();
+    Some(SubagentFacts {
+        mode: mode.to_string(),
+        results: runs,
+    })
 }
 
 impl ToolFacts {
@@ -205,6 +307,7 @@ impl ToolFacts {
                 facts.truncated = true;
             }
         }
+        facts.subagent = parse_subagent_facts(details);
         facts
     }
 }
@@ -2237,6 +2340,44 @@ impl Transcript {
     }
 
     /// True while an assistant message is still streaming.
+    /// Every child row from subagent tool calls still in flight, in call
+    /// order. A call is in flight while at least one of its children is
+    /// running; its already-completed and failed siblings stay in the list so
+    /// the composer's live strip shows the whole delegation, not just the
+    /// remaining spinner. Calls whose children all settled are omitted.
+    pub fn active_subagent_runs(&self) -> Vec<SubagentRun> {
+        let messages = self.messages.borrow();
+        let mut runs = Vec::new();
+        for message in messages.iter().rev() {
+            // A running delegation belongs to the current turn; an older
+            // turn's stale facts must not leak into the live strip.
+            if message.user {
+                break;
+            }
+            for step in message.steps.iter().rev() {
+                for tool in step.tools.iter().rev() {
+                    if tool.name != "subagent" {
+                        continue;
+                    }
+                    let Some(facts) = tool.facts.subagent.as_ref() else {
+                        continue;
+                    };
+                    if !facts
+                        .results
+                        .iter()
+                        .any(|run| run.status == SubagentStatus::Running)
+                    {
+                        continue;
+                    }
+                    runs.extend(facts.results.iter().rev().cloned());
+                }
+            }
+        }
+        // The reverse walk collected newest-first; the strip reads oldest-first.
+        runs.reverse();
+        runs
+    }
+
     pub fn is_streaming(&self) -> bool {
         self.streaming.get().is_some()
     }
@@ -3996,6 +4137,129 @@ mod tests {
             ToolFacts::from_result(&json!({"content": [], "details": {}})),
             ToolFacts::default()
         );
+    }
+
+    #[test]
+    fn tool_facts_read_subagent_details() {
+        let facts = ToolFacts::from_result(&json!({
+            "content": [{"type": "text", "text": "done"}],
+            "details": {
+                "mode": "parallel",
+                "results": [
+                    {
+                        "agent": "scout",
+                        "agentSource": "builtin",
+                        "task": "find the auth flow",
+                        "status": "running",
+                        "exitCode": -1,
+                        "output": "",
+                        "usage": {"turns": 0}
+                    },
+                    {
+                        "agent": "reviewer",
+                        "task": "review the diff",
+                        "step": 2,
+                        "status": "completed",
+                        "exitCode": 0,
+                        "output": "No findings",
+                        "model": "fake/model",
+                        "usage": {"turns": 3}
+                    },
+                    {
+                        "agent": "worker",
+                        "task": "implement the fix",
+                        "status": "failed",
+                        "errorMessage": "provider error"
+                    }
+                ]
+            }
+        }));
+        let subagent = facts.subagent.expect("subagent details");
+        assert_eq!(subagent.mode, "parallel");
+        assert_eq!(subagent.results.len(), 3);
+        assert_eq!(subagent.results[0].status, SubagentStatus::Running);
+        assert_eq!(subagent.results[0].agent, "scout");
+        assert_eq!(subagent.results[1].status, SubagentStatus::Completed);
+        assert_eq!(subagent.results[1].step, Some(2));
+        assert_eq!(subagent.results[1].turns, 3);
+        assert_eq!(subagent.results[2].status, SubagentStatus::Failed);
+        // A missing `status` falls back to the exit code / stop reason, so an
+        // older extension build still reports the right state.
+        assert_eq!(
+            SubagentStatus::from_wire(None, Some(-1), None),
+            SubagentStatus::Running
+        );
+        assert_eq!(
+            SubagentStatus::from_wire(None, Some(0), Some("end")),
+            SubagentStatus::Completed
+        );
+        assert_eq!(
+            SubagentStatus::from_wire(None, Some(1), None),
+            SubagentStatus::Failed
+        );
+        assert_eq!(
+            SubagentStatus::from_wire(None, Some(0), Some("aborted")),
+            SubagentStatus::Failed
+        );
+        // Other tools' details stay untouched.
+        assert!(
+            ToolFacts::from_result(&json!({"details": {"truncated": true}}))
+                .subagent
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn active_subagent_runs_lists_only_running_children() {
+        let mut transcript = Transcript::new();
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": ""}),
+        });
+        transcript.apply_event(&Event::ToolExecutionStart {
+            value: json!({
+                "toolCallId": "s1",
+                "toolName": "subagent",
+                "args": {"tasks": [{"agent": "scout"}, {"agent": "reviewer"}]}
+            }),
+        });
+        transcript.apply_event(&Event::ToolExecutionUpdate {
+            value: json!({
+                "toolCallId": "s1",
+                "partialResult": {
+                    "content": [{"type": "text", "text": "Parallel: 1 running"}],
+                    "details": {
+                        "mode": "parallel",
+                        "results": [
+                            {"agent": "scout", "task": "map", "status": "running", "exitCode": -1, "output": ""},
+                            {"agent": "reviewer", "task": "review", "status": "completed", "exitCode": 0, "output": "ok"}
+                        ]
+                    }
+                }
+            }),
+        });
+        let runs = transcript.active_subagent_runs();
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].agent, "scout");
+        assert_eq!(runs[0].status, SubagentStatus::Running);
+        assert_eq!(runs[1].agent, "reviewer");
+        assert_eq!(runs[1].status, SubagentStatus::Completed);
+
+        transcript.apply_event(&Event::ToolExecutionUpdate {
+            value: json!({
+                "toolCallId": "s1",
+                "partialResult": {
+                    "content": [{"type": "text", "text": "Parallel: 2 done"}],
+                    "details": {
+                        "mode": "parallel",
+                        "results": [
+                            {"agent": "scout", "task": "map", "status": "completed", "exitCode": 0, "output": "ok"},
+                            {"agent": "reviewer", "task": "review", "status": "completed", "exitCode": 0, "output": "ok"}
+                        ]
+                    }
+                }
+            }),
+        });
+        assert!(transcript.active_subagent_runs().is_empty());
     }
 
     #[test]

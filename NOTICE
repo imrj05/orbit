@@ -10,6 +10,9 @@ third-party components under their own licenses, including:
 - Waku (MIT), by egoist — https://github.com/egoist/waku — the review-diff,
   turn-checkpoint, syntax-highlighting, and localization patterns adapted in
   crates/orbit-pi are derived from it under its MIT license
+- pi (MIT), by Mario Zechner / earendil-works — the subagent extension in
+  contrib/orbit-subagent-extension is adapted from pi's
+  examples/extensions/subagent reference implementation
 - The HugeIcons icon set (MIT)
 - The skill-icons Tux mark used on the marketing site (MIT), by tandpfun —
   https://github.com/tandpfun/skill-icons

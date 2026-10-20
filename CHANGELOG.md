@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Subagents** — a bundled `subagent` tool lets the agent delegate to child
+  pi processes with isolated context. Single, parallel (up to eight tasks,
+  four at a time), and chained modes; built-in read-only `scout`, `planner`,
+  and `reviewer` roles plus a full `worker`; user agents in
+  `~/.pi/agent/agents` and project agents in `.pi/agents` override the
+  built-ins. Plan/Ask sessions pass their workflow scope to children, so a
+  delegated worker cannot edit in a read-only session. The tool card shows a
+  per-child status row (running / completed / failed, step, turns, latest
+  output) without expanding the card. The active parent session also shows a
+  live “Subagents · N running” strip above the composer. **Settings →
+  Subagents** manages built-in, global, and project roles: create, edit the
+  Markdown definition, duplicate built-ins, and delete user/project files.
+
 ## [0.2.10] - 2026-10-16
 
 ### Changed

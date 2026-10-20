@@ -262,6 +262,34 @@ Orbit compatible with Git's own metadata format across versions.
 A missing worktree surfaces a notice rather than silently re-pointing a session at the
 main repository.
 
+### D15 — Subagents: child pi processes behind a bundled tool extension
+**Choice:** Orbit ships `contrib/orbit-subagent-extension/` (loaded with
+`--extension` on every session) which registers a `subagent` tool. A call spawns one
+child `pi --mode json -p --no-session` per delegated task, with the agent's system
+prompt, optional model/thinking override, and tools allowlist. It supports single,
+parallel (max 8 tasks, 4 concurrent), and chain modes. Built-in read-only `scout`,
+`planner`, and `reviewer` roles plus a full `worker` live beside the extension; user
+agents (`~/.pi/agent/agents`) and project agents (`.pi/agents`) override them by name.
+The parent's workflow mode is passed to children through `ORBIT_WORKFLOW_MODE` plus the
+workflow extension, and Plan/Ask children are additionally restricted to the read-only
+`read`/`grep`/`find`/`ls` tool set, so delegation cannot bypass a read-only session.
+**Rationale:** pi can expose a new model-callable tool only through an extension, and a
+separate `pi` process is the only way to get a genuinely isolated context window.
+Keeping children ephemeral (`--no-session`) keeps Orbit's sidebar and session store
+focused on user-visible sessions; the parent's tool result carries the child's answer.
+The tool is foreground-only: the parent waits, while parallel mode supplies concurrency.
+Its tool result carries structured `details` (mode plus one record per child), which the
+transcript parses into an always-visible per-child status strip; the active session
+also surfaces the still-running children in a live strip above the composer.
+Settings → Subagents manages the same files (`subagents.rs` + `app/subagents_ui.rs`):
+built-ins are read-only and can be duplicated into a global or project file; user
+and project definitions are edited as raw Markdown and saved in place.
+**Consequence:** child agents are headless and do not inherit Orbit's access-guard UI;
+each agent's `tools` allowlist is the safety boundary. Project agents are repo-controlled
+and load under Orbit's existing project-trust model (`--approve`); use Plan/Ask or
+read-only agents for untrusted repositories. Parallel writers share the checkout and
+must be given disjoint files; worktree isolation is not part of this decision.
+
 ## The feature parity contract
 
 Everything below must behave identically in the GPUI app (against the pi CLI) as it does in the
@@ -284,7 +312,7 @@ legacy app today:
 
 ### Implementation status (living)
 
-Done: streaming transcript + virtualization; markdown + highlighting; composer with steering, follow-ups, cancel, autocomplete, attachments; extension dialogs; diff/Review + Git page + GitHub issues/PRs (where `gh` is available); sessions (list/switch/new/delete/clone/cross-workspace) over an Orbit-owned project list (only folders the user added; removing one never touches pi) whose groups sort by activity, added date, name, or session count, with a **warm process pool** so re-opening a recent session is a resume, not a Node spawn; Git worktrees as first-class workspaces (`worktree.rs` + the Worktrees page: discovery, create from a new/existing branch, open/rename/move/lock/remove/prune/repair, configurable `.wt` root, optional async setup script with `ORBIT_ROOT_PATH`/`ORBIT_WORKTREE_PATH`, sessions rooted in and restored to the worktree — D14); Explorer project panel + editable Files surface; integrated terminal (⌘J); usage, skills, plugins, models, providers, settings pages; transcript find; image lightbox; theming (dark/light/system, 43 palettes) + reduce-motion; localization (ten locales + System, D9); in-app signed updater + Version History; notifications; open-in-editor; signed/notarizable macOS packaging + best-effort Windows/Linux bundles (D5); CI; access modes (a guard, not a sandbox), workflow modes (Plan/Build/Ask per D8), and the auto-title / quota extension bridges (D10); Zed design tokens (D11) with context menus, the tooltip, the extension dialog, the floating modal cards (provider usage / API-key / editor, update dialog, custom UI), the sidebar session / workspace rows, the transcript's message / card chrome, the settings section / group / row chrome, UI type on `TextSize` across every surface, corner radii on `Radius`, and one-shot motion on `AnimationDuration` migrated onto them.
+Done: streaming transcript + virtualization; markdown + highlighting; composer with steering, follow-ups, cancel, autocomplete, attachments; extension dialogs; diff/Review + Git page + GitHub issues/PRs (where `gh` is available); sessions (list/switch/new/delete/clone/cross-workspace) over an Orbit-owned project list (only folders the user added; removing one never touches pi) whose groups sort by activity, added date, name, or session count, with a **warm process pool** so re-opening a recent session is a resume, not a Node spawn; Git worktrees as first-class workspaces (`worktree.rs` + the Worktrees page: discovery, create from a new/existing branch, open/rename/move/lock/remove/prune/repair, configurable `.wt` root, optional async setup script with `ORBIT_ROOT_PATH`/`ORBIT_WORKTREE_PATH`, sessions rooted in and restored to the worktree — D14); Explorer project panel + editable Files surface; integrated terminal (⌘J); usage, skills, plugins, models, providers, settings pages; transcript find; image lightbox; theming (dark/light/system, 43 palettes) + reduce-motion; localization (ten locales + System, D9); in-app signed updater + Version History; notifications; open-in-editor; signed/notarizable macOS packaging + best-effort Windows/Linux bundles (D5); CI; access modes (a guard, not a sandbox), workflow modes (Plan/Build/Ask per D8), subagents (child pi sessions behind the bundled `subagent` tool — D15), and the auto-title / quota extension bridges (D10); Zed design tokens (D11) with context menus, the tooltip, the extension dialog, the floating modal cards (provider usage / API-key / editor, update dialog, custom UI), the sidebar session / workspace rows, the transcript's message / card chrome, the settings section / group / row chrome, UI type on `TextSize` across every surface, corner radii on `Radius`, and one-shot motion on `AnimationDuration` migrated onto them.
 
 Every icon-only button carries the app's native tooltip — a localized label, usually
 with its shortcut appended (the send / stop button set the register) — across the top

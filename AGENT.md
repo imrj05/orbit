@@ -58,6 +58,7 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/app/view.rs       top-level chrome: sidebar, transcript, composer, status bar, onboarding, image lightbox
   src/app/open_in.rs    installed-editor/terminal detection and the "open in" menu
   src/app/worktrees.rs  Worktrees page + controller: list/create/open/rename/move/lock/remove, setup progress, settings rows
+  src/app/subagents_ui.rs  Settings → Subagents master-detail manager: role list, facts, raw Markdown editor, new/duplicate/delete
   src/app/pi_update_ui.rs launch-time pi self-update: background check, install, toasts
   src/app/helpers.rs    shared UI primitives (icon/file glyphs, the loading spinner, the floating-surface chrome, the empty/error state) + small formatting helpers
   src/auth.rs           non-sensitive provider-auth state machine for the auth.* RPC namespace (login/cancel/timeout/restart recovery)
@@ -99,7 +100,8 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/access.rs         access mode (Supervised / Auto-accept edits / Full access): persistence to `~/.orbit-pi/access.json`, which the guard extension reads
   src/layout.rs         persisted workbench layout: resizable panel sizes in `~/.orbit-pi/layout.json` (recorded on drag, flushed by the heartbeat once a drag settles)
   src/workflow.rs       workflow mode (Plan / Build / Ask): per-session persistence to `~/.orbit-pi/workflow.json`, which the workflow extension reads
-  src/bundled_extensions.rs  materializes the bundled pi extensions (quota bridge + access guard + auto-title + workflow) under `~/.orbit-pi/` and spawns every session with `--extension`
+  src/subagents.rs      subagent role discovery/parsing + file writes for Settings → Subagents (built-in, global, project; shadowing)
+  src/bundled_extensions.rs  materializes the bundled pi extensions (quota bridge + access guard + auto-title + workflow + subagent) under `~/.orbit-pi/` and spawns every session with `--extension`
   src/commit_message.rs one-shot, tool-free `pi -p` conventional-commit generation
   assets/icons/         HugeIcons SVGs (MIT) + provider brand marks
   assets/fonts/         SymbolsNerdFont-Regular.ttf
@@ -149,6 +151,16 @@ contrib/orbit-workflow-extension/  Orbit's bundled pi extension (loaded with
                         Reads the per-session mode from `~/.orbit-pi/workflow.json`
                         fresh on every hook; policy.js is the pure decision
                         table and both files are `node --test` covered
+contrib/orbit-subagent-extension/  Orbit's bundled pi extension (loaded with
+                        `pi --extension`): registers the `subagent` tool. Each
+                        call runs a child `pi --mode json -p --no-session` with
+                        the agent's prompt, optional model/thinking override,
+                        and tools allowlist; single, parallel (8 tasks, 4 at a
+                        time), and chain modes. Built-in read-only scout /
+                        planner / reviewer plus a full worker; user agents in
+                        `~/.pi/agent/agents` and project agents in `.pi/agents`
+                        override them by name. agents.js / lib.js are pure and
+                        `node --test` covered
 assets/icons/           logo-icon.png app-icon source + icon.icns / icon.ico / icon.png
                         + alpha-logo.png / alpha-logo.icns (macOS debug builds)
 PRODUCT.md  INTENT.md  README.md  AGENT.md  PRIVACY.md

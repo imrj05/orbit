@@ -1,6 +1,6 @@
 //! Orbit's bundled pi extensions.
 //!
-//! Orbit ships three small pi extensions under `contrib/` and loads them with
+//! Orbit ships five small pi extensions under `contrib/` and loads them with
 //! `pi --extension <path>` on every session process it spawns:
 //!
 //! - **quota bridge** (`contrib/orbit-quota-extension/`) — fetches each
@@ -15,7 +15,10 @@
 //! - **workflow** (`contrib/orbit-workflow-extension/`) — scopes the session
 //!   to Plan/Build/Ask: disables write tools in read-only modes, gates bash to
 //!   a read-only allowlist, and injects mode guidance (see [`crate::workflow`]).
-//!
+//! - **subagent** (`contrib/orbit-subagent-extension/`) — registers a
+//!   `subagent` tool that runs child pi processes with isolated context:
+//!   single, parallel, and chained delegation over built-in scout / planner /
+//!   reviewer / worker roles plus user and project agent files.
 //!
 //! Nothing is installed and no settings file is touched: each extension is
 //! materialized under `~/.orbit-pi/` and rewritten only when its contents
@@ -38,6 +41,18 @@ const TITLE_HELPERS_JS: &str = include_str!("../../../contrib/orbit-title-extens
 const WORKFLOW_INDEX_JS: &str = include_str!("../../../contrib/orbit-workflow-extension/index.js");
 const WORKFLOW_POLICY_JS: &str =
     include_str!("../../../contrib/orbit-workflow-extension/policy.js");
+const SUBAGENT_INDEX_JS: &str = include_str!("../../../contrib/orbit-subagent-extension/index.js");
+const SUBAGENT_AGENTS_JS: &str =
+    include_str!("../../../contrib/orbit-subagent-extension/agents.js");
+const SUBAGENT_LIB_JS: &str = include_str!("../../../contrib/orbit-subagent-extension/lib.js");
+const SUBAGENT_SCOUT_MD: &str =
+    include_str!("../../../contrib/orbit-subagent-extension/agents/scout.md");
+const SUBAGENT_PLANNER_MD: &str =
+    include_str!("../../../contrib/orbit-subagent-extension/agents/planner.md");
+const SUBAGENT_REVIEWER_MD: &str =
+    include_str!("../../../contrib/orbit-subagent-extension/agents/reviewer.md");
+const SUBAGENT_WORKER_MD: &str =
+    include_str!("../../../contrib/orbit-subagent-extension/agents/worker.md");
 
 /// The bundled extensions materialized on disk, kept for the process lifetime.
 #[derive(Default)]
@@ -54,6 +69,9 @@ pub(crate) struct BundledExtensions {
     /// The workflow extension's `index.js`; `None` when it could not be
     /// written (sessions then run unscoped and the mode chip is honest).
     workflow: Option<PathBuf>,
+    /// The subagent extension's `index.js`; `None` when it could not be
+    /// written (the parent then has no `subagent` tool).
+    subagent: Option<PathBuf>,
 }
 
 impl BundledExtensions {
@@ -65,6 +83,7 @@ impl BundledExtensions {
             guard: install_guard(),
             title: install_title_extension(),
             workflow: install_workflow_extension(),
+            subagent: install_subagent_extension(),
         }
     }
 
@@ -126,11 +145,17 @@ impl BundledExtensions {
 
     /// The installed bundled extension entry points, in load order.
     fn extension_paths(&self) -> Vec<PathBuf> {
-        [&self.quota, &self.guard, &self.title, &self.workflow]
-            .into_iter()
-            .flatten()
-            .cloned()
-            .collect()
+        [
+            &self.quota,
+            &self.guard,
+            &self.title,
+            &self.workflow,
+            &self.subagent,
+        ]
+        .into_iter()
+        .flatten()
+        .cloned()
+        .collect()
     }
 }
 
@@ -141,9 +166,13 @@ fn install_extension(home: &Path, slug: &str, files: &[(&str, &str)]) -> Option<
     fs::create_dir_all(&dir).ok()?;
     let mut entry = None;
     for (name, contents) in files {
-        write_if_changed(&dir.join(name), contents).ok()?;
-        if *name == "index.js" {
-            entry = Some(dir.join(name));
+        let path = dir.join(name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).ok()?;
+        }
+        write_if_changed(&path, contents).ok()?;
+        if *name == "index.js" || *name == "index.ts" {
+            entry = Some(path);
         }
     }
     entry
@@ -183,6 +212,22 @@ fn install_workflow_extension() -> Option<PathBuf> {
         &[
             ("index.js", WORKFLOW_INDEX_JS),
             ("policy.js", WORKFLOW_POLICY_JS),
+        ],
+    )
+}
+
+fn install_subagent_extension() -> Option<PathBuf> {
+    install_extension(
+        &home_dir()?,
+        "subagent-extension",
+        &[
+            ("index.js", SUBAGENT_INDEX_JS),
+            ("agents.js", SUBAGENT_AGENTS_JS),
+            ("lib.js", SUBAGENT_LIB_JS),
+            ("agents/scout.md", SUBAGENT_SCOUT_MD),
+            ("agents/planner.md", SUBAGENT_PLANNER_MD),
+            ("agents/reviewer.md", SUBAGENT_REVIEWER_MD),
+            ("agents/worker.md", SUBAGENT_WORKER_MD),
         ],
     )
 }
@@ -243,6 +288,15 @@ mod tests {
         assert!(entry.ends_with("demo-extension/index.js"));
         assert!(entry.exists());
         assert!(entry.with_file_name("helper.js").exists());
+        // Nested files create their parent directories.
+        let nested = install_extension(
+            &dir,
+            "nested-extension",
+            &[("index.js", "// entry"), ("agents/scout.md", "agent")],
+        )
+        .expect("nested install writes files");
+        assert!(nested.ends_with("nested-extension/index.js"));
+        assert!(nested.with_file_name("agents/scout.md").exists());
         // A directory named without an `index.js` yields no entry point.
         assert!(install_extension(&dir, "no-entry", &[("other.js", "x")]).is_none());
         fs::remove_dir_all(&dir).ok();
@@ -265,5 +319,53 @@ mod tests {
         assert!(entry.ends_with("title-extension/index.js"));
         assert!(entry.with_file_name("title.js").exists());
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn subagent_extension_ships_its_entry_helpers_and_agents() {
+        // The entry imports its siblings and registers the tool under the name
+        // the transcript already paints with a Task icon.
+        assert!(SUBAGENT_INDEX_JS.contains("registerTool"));
+        assert!(SUBAGENT_INDEX_JS.contains("./agents.js"));
+        assert!(SUBAGENT_INDEX_JS.contains("./lib.js"));
+        assert!(SUBAGENT_INDEX_JS.contains("name: \"subagent\""));
+        assert!(SUBAGENT_AGENTS_JS.contains("discoverAgents"));
+        assert!(SUBAGENT_LIB_JS.contains("mapWithConcurrencyLimit"));
+        for (slug, source) in [
+            ("scout", SUBAGENT_SCOUT_MD),
+            ("planner", SUBAGENT_PLANNER_MD),
+            ("reviewer", SUBAGENT_REVIEWER_MD),
+            ("worker", SUBAGENT_WORKER_MD),
+        ] {
+            assert!(source.contains(&format!("name: {slug}")));
+            assert!(source.contains("---"));
+        }
+
+        let dir = scratch_dir();
+        let entry = install_subagent_extension_at(&dir).expect("subagent extension installs");
+        assert!(entry.ends_with("subagent-extension/index.js"));
+        assert!(entry.with_file_name("agents.js").exists());
+        assert!(entry.with_file_name("lib.js").exists());
+        assert!(entry.with_file_name("agents/scout.md").exists());
+        assert!(entry.with_file_name("agents/worker.md").exists());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Install the embedded subagent extension under a scratch home so the
+    /// test never touches the real `~/.orbit-pi`.
+    fn install_subagent_extension_at(dir: &Path) -> Option<PathBuf> {
+        install_extension(
+            dir,
+            "subagent-extension",
+            &[
+                ("index.js", SUBAGENT_INDEX_JS),
+                ("agents.js", SUBAGENT_AGENTS_JS),
+                ("lib.js", SUBAGENT_LIB_JS),
+                ("agents/scout.md", SUBAGENT_SCOUT_MD),
+                ("agents/planner.md", SUBAGENT_PLANNER_MD),
+                ("agents/reviewer.md", SUBAGENT_REVIEWER_MD),
+                ("agents/worker.md", SUBAGENT_WORKER_MD),
+            ],
+        )
     }
 }

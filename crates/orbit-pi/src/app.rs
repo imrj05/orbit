@@ -854,6 +854,22 @@ pub struct OrbitApp {
     skill_delete_confirm: Option<PathBuf>,
     /// Re-render the skill list as the filter is typed.
     _skills_filter_sub: Subscription,
+    /// Settings → Subagents: discovered roles and the selected file.
+    subagents: Vec<crate::subagents::Subagent>,
+    subagents_filter: Entity<ComposerInput>,
+    selected_subagent: Option<PathBuf>,
+    /// Raw Markdown editor for the selected user/project agent.
+    subagent_editor: Entity<ComposerInput>,
+    /// Text loaded into the editor, so Save can distinguish dirty content.
+    subagent_editor_original: String,
+    /// Validation error shown in the detail column.
+    subagent_editor_error: Option<String>,
+    /// A user/project file awaiting delete confirmation.
+    subagent_delete_confirm: Option<PathBuf>,
+    /// Re-render the list as the filter is typed.
+    _subagents_filter_sub: Subscription,
+    /// Re-render the Save/Discard state as the editor changes.
+    _subagent_editor_sub: Subscription,
     /// Background updater status mirrored from the global: `Idle` (nothing to
     /// show), `Available` (the footer and settings offer the update),
     /// `Updating` (spinning until the app quits to install). The payload
@@ -1179,6 +1195,26 @@ impl OrbitApp {
                 .with_wrap(false)
         });
         let skills_filter_sub = cx.observe(&skills_filter, |_, _, cx| cx.notify());
+
+        // Settings → Subagents: the role-list filter and the raw Markdown
+        // editor. `Editor` keeps real text editing for the multi-line prompt.
+        let subagents_filter = cx.new(|cx| {
+            ComposerInput::new(cx)
+                .with_element_id("subagents-filter")
+                .with_placeholder_key("app.search_subagents")
+                .with_key_context("Composer Picker")
+                .with_max_lines(1)
+                .with_wrap(false)
+        });
+        let subagents_filter_sub = cx.observe(&subagents_filter, |_, _, cx| cx.notify());
+        let subagent_editor = cx.new(|cx| {
+            ComposerInput::new(cx)
+                .with_element_id("subagent-editor")
+                .with_placeholder_key("subagents_ui.editor_placeholder")
+                .with_key_context("Editor")
+                .with_max_lines(22)
+        });
+        let subagent_editor_sub = cx.observe(&subagent_editor, |_, _, cx| cx.notify());
 
         // Settings → MCP: the server-list filter.
         let mcp_filter = cx.new(|cx| {
@@ -1709,6 +1745,15 @@ impl OrbitApp {
             skill_content: None,
             skill_delete_confirm: None,
             _skills_filter_sub: skills_filter_sub,
+            subagents: Vec::new(),
+            subagents_filter: subagents_filter.clone(),
+            selected_subagent: None,
+            subagent_editor: subagent_editor.clone(),
+            subagent_editor_original: String::new(),
+            subagent_editor_error: None,
+            subagent_delete_confirm: None,
+            _subagents_filter_sub: subagents_filter_sub,
+            _subagent_editor_sub: subagent_editor_sub,
             mcp,
             mcp_filter: mcp_filter.clone(),
             _mcp_filter_sub: mcp_filter_sub,
@@ -2520,6 +2565,7 @@ pub(crate) enum SettingsSection {
     Privacy,
     Runtime,
     Agent,
+    Subagents,
     Worktrees,
     Providers,
     Models,
@@ -2921,6 +2967,7 @@ mod session;
 mod settings;
 mod sidebar;
 mod skills_ui;
+mod subagents_ui;
 mod toast_ui;
 mod updater_ui;
 mod view;

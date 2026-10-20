@@ -1005,6 +1005,10 @@ impl Render for OrbitApp {
                                         // persistent while active, never a
                                         // transient status line.
                                         .children(self.run_status_strip(cx))
+                                        // Live child-agent progress for this
+                                        // parent session, above approvals and
+                                        // the queue.
+                                        .children(self.subagent_progress_strip(cx))
                                         // Access-guard approval — inline, above
                                         // the queue and composer (no scrim modal).
                                         .children(self.ask_panel(cx))
@@ -4496,6 +4500,113 @@ impl OrbitApp {
     /// queued as follow-ups here and delivered once the task finishes;
     /// `queue_update` mirrors the list live. One raised card in the sibling
     /// strips' shape, a quiet label header, and flat hairline-separated rows.
+    /// Live child-agent progress for the active parent session. Reads the
+    /// transcript's structured subagent facts and shows only runs still in
+    /// flight; the strip disappears when the delegation settles.
+    pub(super) fn subagent_progress_strip(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        if !self.is_running() {
+            return None;
+        }
+        let runs = self.transcript.active_subagent_runs();
+        if runs.is_empty() {
+            return None;
+        }
+        let theme = *theme::get(cx);
+        const MAX_ROWS: usize = 4;
+        let running = runs
+            .iter()
+            .filter(|run| run.status == crate::transcript::SubagentStatus::Running)
+            .count();
+        if running == 0 {
+            return None;
+        }
+        let hidden = runs.len().saturating_sub(MAX_ROWS);
+        let label = format!(
+            "{} · {}",
+            tr!("view.subagents_running").to_uppercase(),
+            tr!("view.subagents_running_count", count = running)
+        );
+        // Keep the still-running children first when the list is capped.
+        let mut ordered: Vec<_> = runs.iter().collect();
+        ordered.sort_by_key(|run| run.status != crate::transcript::SubagentStatus::Running);
+
+        Some(
+            div()
+                .id("subagent-progress")
+                .debug_selector(|| "subagent-progress".to_string())
+                .w_full()
+                .mb(px(8.))
+                .rounded(Radius::XLarge.px(&theme))
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.bg_raised)
+                .flex()
+                .flex_col()
+                // Clip the rows' hairline separators to the rounded corners.
+                .overflow_hidden()
+                .child(
+                    div()
+                        .h(px(30.))
+                        .px(px(12.))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(icon(
+                            "icons/tools/task.svg",
+                            IconSize::XSmall.px(&theme),
+                            theme.text_3,
+                        ))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(TextSize::XSmall.px(&theme))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(theme.text_3)
+                                .child(label),
+                        ),
+                )
+                .children(
+                    ordered
+                        .into_iter()
+                        .take(MAX_ROWS)
+                        .enumerate()
+                        .map(|(ix, run)| {
+                            div()
+                                .h(px(26.))
+                                .px(px(12.))
+                                .flex()
+                                .items_center()
+                                .border_t_1()
+                                .border_color(theme.border)
+                                .child(crate::transcript_view::render_subagent_run_row(
+                                    run,
+                                    ix,
+                                    (usize::MAX, 0),
+                                    theme,
+                                ))
+                        })
+                        .collect::<Vec<_>>(),
+                )
+                .when(hidden > 0, |strip| {
+                    strip.child(
+                        div()
+                            .h(px(22.))
+                            .px(px(12.))
+                            .flex()
+                            .items_center()
+                            .border_t_1()
+                            .border_color(theme.border)
+                            .text_size(TextSize::XSmall.px(&theme))
+                            .text_color(theme.text_3)
+                            .child(format!("+{hidden} more")),
+                    )
+                })
+                .into_any_element(),
+        )
+    }
+
     pub(super) fn queue_bar(&self, cx: &Context<Self>) -> Option<AnyElement> {
         if self.queue.is_empty() {
             return None;

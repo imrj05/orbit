@@ -1,0 +1,11 @@
+{
+  "name": "orbit-subagent-extension",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Orbit's subagent tool: a pi extension loaded with --extension that delegates work to child pi sessions with isolated context.",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test"
+  }
+}

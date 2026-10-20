@@ -94,6 +94,7 @@ mod sessions;
 mod shimmer;
 mod sidepane;
 mod skills;
+mod subagents;
 mod terminal;
 mod theme;
 mod toast;

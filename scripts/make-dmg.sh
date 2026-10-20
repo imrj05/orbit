@@ -52,7 +52,7 @@ DMG_ICON_Y=190
 if [ "${SIGNING:-1}" = "0" ]; then
   SIGN_ID="-"
 else
-  SIGN_ID="${SIGN_ID:-Developer ID Application: One Man Wireless Inc. (RFBXG4V45C)}"
+  SIGN_ID="${SIGN_ID:-Developer ID Application: Rajeshwar Kashyap (LX5W2R7FBK)}"
 fi
 
 BUILD_ROOT="$ROOT/target/package"

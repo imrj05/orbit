@@ -55,7 +55,9 @@ use crate::theme::tokens::{
     StyledExt, TextSize, BORDER_WIDTH,
 };
 use crate::theme::{self, Theme, ThemeMode};
-use crate::transcript::{ChatMessage, Step, SummaryRow, ToolCall, ToolFacts};
+use crate::transcript::{
+    ChatMessage, Step, SubagentFacts, SubagentRun, SubagentStatus, SummaryRow, ToolCall, ToolFacts,
+};
 
 /// Opens the changed-files Review in the side pane (see `sidepane.rs`) —
 /// handed down from the app so the transcript's Review buttons can point
@@ -3083,6 +3085,150 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
     card.into_any_element()
 }
 
+/// One always-visible row per child under a `subagent` tool's header: status
+/// glyph, agent name, step (for chains), and a one-line preview. This is what
+/// makes a running delegation legible without expanding the tool card.
+fn render_subagent_status_strip(
+    facts: &SubagentFacts,
+    key: (usize, usize),
+    theme: Theme,
+    is_last: bool,
+) -> AnyElement {
+    const MAX_ROWS: usize = 6;
+    let hidden = facts.results.len().saturating_sub(MAX_ROWS);
+    let rows = facts
+        .results
+        .iter()
+        .take(MAX_ROWS)
+        .enumerate()
+        .map(|(ix, run)| render_subagent_run_row(run, ix, key, theme));
+
+    div()
+        .w_full()
+        .min_w_0()
+        .border_t_1()
+        .border_color(theme.border)
+        .bg(theme.overlay)
+        .px(DynamicSpacing::Base12.px(&theme))
+        .py(DynamicSpacing::Base06.px(&theme))
+        .flex()
+        .flex_col()
+        .gap(DynamicSpacing::Base04.px(&theme))
+        .when(is_last, |strip| strip.rounded_b(Radius::XLarge.px(&theme)))
+        .children(rows)
+        .when(hidden > 0, |strip| {
+            strip.child(
+                div()
+                    .pl(DynamicSpacing::Base20.px(&theme))
+                    .text_size(TextSize::XSmall.px(&theme))
+                    .text_color(theme.text_3)
+                    .child(format!("+{hidden} more")),
+            )
+        })
+        .into_any_element()
+}
+
+pub(crate) fn render_subagent_run_row(
+    run: &SubagentRun,
+    ix: usize,
+    key: (usize, usize),
+    theme: Theme,
+) -> AnyElement {
+    let status_glyph: AnyElement = match run.status {
+        SubagentStatus::Running => crate::app::spinner(
+            ElementId::NamedInteger(
+                "subagent-spin".into(),
+                (key.0 as u64) << 40 | (key.1 as u64) << 16 | ix as u64,
+            ),
+            IconSize::XSmall.px(&theme),
+            theme.accent,
+            theme,
+        ),
+        SubagentStatus::Completed => {
+            glyph("icons/check.svg", IconSize::XSmall.px(&theme), theme.text_3).into_any_element()
+        }
+        SubagentStatus::Failed => {
+            glyph("icons/stop.svg", IconSize::XSmall.px(&theme), theme.del_red).into_any_element()
+        }
+    };
+
+    let mut row = div()
+        .w_full()
+        .min_w_0()
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base06.px(&theme))
+        .text_size(TextSize::Small.px(&theme))
+        .line_height(theme.ui_px(15.))
+        .child(status_glyph)
+        .child(
+            div()
+                .flex_none()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(if run.status == SubagentStatus::Failed {
+                    theme.del_red
+                } else {
+                    theme.text_2
+                })
+                .child(run.agent.clone()),
+        );
+
+    if let Some(step) = run.step {
+        row = row.child(
+            div()
+                .flex_none()
+                .text_size(TextSize::XSmall.px(&theme))
+                .text_color(theme.text_3)
+                .child(format!("step {step}")),
+        );
+    }
+
+    if run.turns > 0 {
+        row = row.child(
+            div()
+                .flex_none()
+                .text_size(TextSize::XSmall.px(&theme))
+                .text_color(theme.text_3)
+                .child(format!(
+                    "{} turn{}",
+                    run.turns,
+                    if run.turns == 1 { "" } else { "s" }
+                )),
+        );
+    }
+
+    row.child(
+        div()
+            .flex_1()
+            .min_w_0()
+            .truncate()
+            .text_color(theme.text_3)
+            .child(subagent_run_preview(run)),
+    )
+    .into_any_element()
+}
+
+/// The one line a status row shows: the child's latest output, or its task
+/// while nothing has been produced yet. A running placeholder from the
+/// extension can carry `(no output)`; the task is more useful there.
+pub(crate) fn subagent_run_preview(run: &SubagentRun) -> String {
+    let output = run.output.trim();
+    let line = output
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .filter(|line| *line != "(no output)");
+    let text = match line {
+        Some(line) => line,
+        None => run.task.trim(),
+    };
+    if text.is_empty() {
+        "(no output)".to_string()
+    } else {
+        snippet(text, 96)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_activity_card(
     tool: &ToolCall,
@@ -3133,6 +3279,13 @@ fn render_activity_card(
     // live, the tool result.
     let has_detail =
         tool.args.as_ref().is_some_and(|args| !args.is_null()) || tool.output.is_some();
+    // A subagent's child rows stay visible when the card is collapsed, so the
+    // header is not the card's only child and its bottom radius must yield.
+    let has_subagent_strip = tool
+        .facts
+        .subagent
+        .as_ref()
+        .is_some_and(|facts| !facts.results.is_empty());
     // An edit/write tool carries its own change; the header copy button and
     // the expanded body both read from it.
     let diff = edit_diff(tool);
@@ -3147,7 +3300,7 @@ fn render_activity_card(
     // the rounded border. The first and last children carry the card's own
     // radius instead.
     let detail_shown = tool_open && has_detail;
-    let header_is_only_child = !detail_shown && !tool.failed;
+    let header_is_only_child = !detail_shown && !tool.failed && !has_subagent_strip;
     let mut card = div()
         .id(ElementId::NamedInteger(
             "activity-card".into(),
@@ -3355,6 +3508,16 @@ fn render_activity_card(
                     },
                 )),
         );
+    if has_subagent_strip {
+        if let Some(facts) = tool.facts.subagent.as_ref() {
+            card = card.child(render_subagent_status_strip(
+                facts,
+                key,
+                theme,
+                !detail_shown && !tool.failed,
+            ));
+        }
+    }
     // A failed run carries its first error line right on the card — the
     // fact a user scanning the turn needs, without opening the detail.
     if tool.failed {
@@ -4968,6 +5131,35 @@ fn file_preview_path(tool: &ToolCall) -> Option<&str> {
 }
 
 fn activity_preview(tool: &ToolCall) -> String {
+    if tool.name == "subagent" {
+        if let Some(args) = tool.args.as_ref() {
+            if args.get("action").and_then(Value::as_str) == Some("list") {
+                return "list roles".to_string();
+            }
+            if let Some(agent) = args.get("agent").and_then(Value::as_str) {
+                let task = args.get("task").and_then(Value::as_str).unwrap_or("");
+                return if task.is_empty() {
+                    agent.to_string()
+                } else {
+                    snippet(&format!("{agent} · {task}"), 72)
+                };
+            }
+            if let Some(tasks) = args.get("tasks").and_then(Value::as_array) {
+                let count = tasks.len();
+                return format!(
+                    "parallel · {count} task{}",
+                    if count == 1 { "" } else { "s" }
+                );
+            }
+            if let Some(chain) = args.get("chain").and_then(Value::as_array) {
+                let count = chain.len();
+                return format!(
+                    "chain · {count} step{}",
+                    if count == 1 { "" } else { "s" }
+                );
+            }
+        }
+    }
     if let Some(path) = &tool.path {
         return path.clone();
     }
@@ -7327,7 +7519,9 @@ fn activity_action_label(name: &str) -> String {
         "grep" | "search" => Some("Search"),
         "find" | "glob" => Some("Find files"),
         "list" | "ls" | "tree" => Some("List"),
-        "task" | "agent" | "subagent" => Some("Task"),
+        "task" => Some("Task"),
+        "agent" => Some("Agent"),
+        "subagent" => Some("Subagent"),
         "web_search" | "websearch" | "search_web" | "browse" => Some("Web search"),
         "web_fetch" | "webfetch" | "fetch" | "open_url" => Some("Fetch"),
         "skill" => Some("Skill"),
@@ -7845,9 +8039,70 @@ mod tests {
         assert_eq!(activity_action_label("codemode"), "Run code");
         assert_eq!(activity_action_label("tool_search"), "Find tools");
         assert_eq!(activity_action_label("read_mcp_resource"), "Read resource");
+        assert_eq!(activity_action_label("task"), "Task");
+        assert_eq!(activity_action_label("agent"), "Agent");
+        assert_eq!(activity_action_label("subagent"), "Subagent");
         // Unknown tools still get a readable, never-blank label.
         assert_eq!(activity_action_label("frobnicate"), "Frobnicate");
         assert_eq!(activity_action_label(""), "Tool");
+    }
+
+    fn subagent_tool(args: Value) -> ToolCall {
+        ToolCall {
+            name: "subagent".to_string(),
+            summary: String::new(),
+            path: None,
+            added: 0,
+            removed: 0,
+            id: None,
+            args: Some(args),
+            output: None,
+            failed: false,
+            facts: Default::default(),
+        }
+    }
+
+    #[test]
+    fn activity_preview_names_the_subagent_and_mode() {
+        assert_eq!(
+            activity_preview(&subagent_tool(serde_json::json!({
+                "agent": "scout",
+                "task": "map the auth flow"
+            }))),
+            "scout · map the auth flow"
+        );
+        assert_eq!(
+            activity_preview(&subagent_tool(serde_json::json!({
+                "tasks": [{"agent": "a"}, {"agent": "b"}]
+            }))),
+            "parallel · 2 tasks"
+        );
+        assert_eq!(
+            activity_preview(&subagent_tool(serde_json::json!({
+                "chain": [{"agent": "scout"}]
+            }))),
+            "chain · 1 step"
+        );
+        assert_eq!(
+            activity_preview(&subagent_tool(serde_json::json!({"action": "list"}))),
+            "list roles"
+        );
+    }
+
+    #[test]
+    fn subagent_run_preview_falls_back_to_the_task() {
+        let mut run = SubagentRun {
+            agent: "scout".into(),
+            task: "find the auth flow".into(),
+            status: SubagentStatus::Running,
+            output: "(no output)".into(),
+            ..SubagentRun::default()
+        };
+        assert_eq!(subagent_run_preview(&run), "find the auth flow");
+        run.output = "line one\nline two".into();
+        assert_eq!(subagent_run_preview(&run), "line one");
+        run.output = String::new();
+        assert_eq!(subagent_run_preview(&run), "find the auth flow");
     }
 
     #[test]
@@ -7875,6 +8130,7 @@ mod tests {
                 truncated: true,
                 output_lines: Some(1172),
                 total_lines: Some(1303),
+                ..ToolFacts::default()
             })
             .as_deref(),
             Some("truncated · 1172/1303")

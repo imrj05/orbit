@@ -37,6 +37,7 @@ Usage — requests, tokens, cost, and cache, read from your own sessions:
 - Chat-style agent sessions — composer with model selection, thinking effort, follow-up queueing, mid-run steering, cancel, and streaming replies
 - **Choose Enter’s behavior** in Settings → Agent → Behavior: queue a follow-up (default) or steer the running task. Alt/Option+Enter uses the other mode; ⌘⇧Enter / Ctrl+Shift+Enter always steers. Compact hints immediately left of the context-window indicator show both sending modes while the agent is working. Steering takes effect after the current response and tools finish; idle Enter sends normally, and Shift+Enter inserts a new line.
 - **Workflow modes** — scope a session to **Plan**, **Build**, or **Ask**: Plan and Ask are read-only (write tools disabled, bash gated), so you can explore and plan before switching to Build
+- **Subagents** — a built-in `subagent` tool delegates to child pi sessions with isolated context: read-only **scout**, **planner**, and **reviewer** roles plus a full **worker**; single, parallel (8 tasks, 4 at a time), and chained runs, with a per-child status row in the transcript and a live “Subagents · N running” strip above the composer that keeps running children visible while you work. User agents in `~/.pi/agent/agents` and project agents in `.pi/agents` override the built-ins and may pin a model or thinking level, and Plan/Ask scope propagates to children (which are limited to read-only tools) so delegation cannot bypass a read-only session. Ask in plain language — “Use scout to map…”, “Run two reviewers in parallel…”, “Use worker to implement this” — or run `/subagents` to list the discovered roles. **Settings → Subagents** is a master-detail manager: create global/project agents, edit their Markdown definitions, duplicate built-ins, and delete user files.
 - GPU-rendered transcript — virtualized so cost is independent of message count, with stick-to-latest streaming and coalesced commits
 - GFM markdown and syntax-highlighted code; highlighting is paint-only so streaming code blocks never reflow, and Mermaid fences stay copyable code blocks
 - In-transcript find (⌘F) and a full-window image lightbox
@@ -58,6 +59,7 @@ Usage — requests, tokens, cost, and cache, read from your own sessions:
 - Enforced by a bundled pi extension that hooks `tool_call` and confirms mutating calls the mode does not auto-approve
 - An inline bar above the composer offers **Allow once / Always allow this tool / Deny** (↑ ↓ ⏎ esc), with the allowlist recorded per mode
 - A confirmation guard, not a sandbox — pi ships no sandbox, and Orbit does not add one
+- Subagents are headless: approving a `subagent` call approves the delegated role's tool scope. Plan/Ask scopes children to read-only tools; in Build, the agent's `tools` allowlist is the child's boundary
 
 **Review and Git**
 
@@ -123,7 +125,7 @@ Orbit spawns the `pi` CLI as a child process per open session and speaks its RPC
 ```
 crates/orbit-pi/      The GPUI app — window, transcript, markdown, workbench
 crates/orbit-rpc/     pi CLI RPC client (process lifecycle + JSONL protocol)
-contrib/              Bundled pi extensions (access guard, auth/quota bridges)
+contrib/              Bundled pi extensions (access guard, quota/title/workflow, subagent)
 scripts/make-dmg.sh   Build a signed .app + DMG (arm64 / universal)
 assets/icons/         App icon (logo-icon.png source, icon.icns, icon.png)
 marketing/            Next.js landing page
@@ -146,6 +148,7 @@ issue before starting.
 | Feature | Area | Description | Status | Tracking |
 | --- | --- | --- | --- | --- |
 | Workflow modes | Composer | Start a session scoped to **Plan Mode**, **Build Mode**, or **Ask Mode** instead of one undifferentiated chat. | Shipped | — |
+| Subagents | Agent | Delegate work to child pi sessions with isolated context: single, parallel, or chained runs over read-only and implementation roles. | Shipped — built-in `subagent` tool with scout / planner / reviewer / worker roles, user and project agent files, and Plan/Ask propagation | — |
 | Follow-up on settle | Transcript | Show a queued follow-up inline once a run ends, not only in the compose queue. | Planned | — |
 | Suggested follow-ups | Transcript | Propose 2–3 context-grounded next prompts as composer inserts after a run settles. | Proposed | [#10](https://github.com/imrj05/orbit/issues/10) |
 | GitHub client | Workbench | Browse and manage remote commits, graph, issues, and pull requests in-app. | In progress — Issues and Pull requests ship with comments, reviews, merges, and branch checkouts; remote commit browsing remains open | [#8](https://github.com/imrj05/orbit/issues/8) |
@@ -162,6 +165,7 @@ issue before starting.
 ### Contributor checklist
 
 - [x] **Workflow modes** — Plan Mode / Build Mode / Ask Mode
+- [x] **Subagents** — delegate to isolated child agents (single / parallel / chain)
 - [ ] **Follow-up on settle** — show a queued follow-up inline when a run ends
 - [ ] **Suggested follow-ups** — context-grounded next prompts ([#10](https://github.com/imrj05/orbit/issues/10))
 - [ ] **GitHub client** — remote commits and graph (issues and PRs ship today) ([#8](https://github.com/imrj05/orbit/issues/8))
