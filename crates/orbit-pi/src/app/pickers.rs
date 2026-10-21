@@ -137,7 +137,7 @@ impl OrbitApp {
         self.busy = false;
         // Picking a folder to work in adds it to Orbit's own sidebar list.
         self.add_workspace(folder.clone(), cx);
-        self.set_current_workspace(folder);
+        self.set_current_workspace(folder.clone(), cx);
         self.current_session_path = None;
         self.added = 0;
         self.removed = 0;
@@ -145,11 +145,7 @@ impl OrbitApp {
         self.session_usage = None;
         self.reset_turns();
         self.reset_queue();
-        match self.extensions.spawn(
-            self.current_workspace.as_ref().unwrap(),
-            true,
-            &self.mcp.secret_env(),
-        ) {
+        match self.extensions.spawn(&folder, true, &self.mcp.secret_env()) {
             Ok(client) => {
                 self.adopt_client(client);
                 self.mcp_stamp = self.mcp.fingerprint_for(self.current_workspace.as_deref());
@@ -399,6 +395,7 @@ impl OrbitApp {
             PaletteCommand::OpenSettings(section) => {
                 self.settings_open = true;
                 self.set_settings_section(section, cx);
+                self.sync_terminal_active(cx);
             }
             PaletteCommand::Mcp { name, action } => match action {
                 crate::command_palette::McpPaletteAction::Toggle => {
@@ -529,11 +526,13 @@ impl OrbitApp {
                 self.command_palette = None;
                 self.settings_open = true;
                 self.set_settings_section(SettingsSection::Mcp, cx);
+                self.sync_terminal_active(cx);
             }
             CommandId::AddMcpServer => {
                 self.command_palette = None;
                 self.settings_open = true;
                 self.set_settings_section(SettingsSection::Mcp, cx);
+                self.sync_terminal_active(cx);
                 self.mcp_add(window, cx);
             }
             CommandId::RefreshMcpServers => {
@@ -547,6 +546,7 @@ impl OrbitApp {
             CommandId::OpenShortcutHelp => {
                 self.settings_open = true;
                 self.set_settings_section(SettingsSection::Shortcuts, cx);
+                self.sync_terminal_active(cx);
             }
             CommandId::CheckForUpdates => {
                 self.on_check_for_updates(&crate::CheckForUpdates, window, cx)

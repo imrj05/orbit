@@ -371,6 +371,16 @@ const SETTINGS_SEARCH_INDEX: &[(SettingsSection, &str, &str)] = &[
         "privacy session retention cleanup local data",
     ),
     (
+        SettingsSection::Privacy,
+        "settings.temporary_files",
+        "temporary temp cache scratch files cleanup remove folder",
+    ),
+    (
+        SettingsSection::Privacy,
+        "settings.ai_scratch_files",
+        "ai pi agent scratch logs codemode images share editor cleanup temp",
+    ),
+    (
         SettingsSection::About,
         "settings.about",
         "about version updates source github",
@@ -5619,6 +5629,8 @@ impl OrbitApp {
                     ),
                 ],
             ),
+            self.temporary_files_section(theme, this.clone()),
+            self.ai_scratch_files_section(theme, this),
         ]
     }
 
@@ -7335,6 +7347,7 @@ impl OrbitApp {
         // expanded catalog a previous visit left behind.
         self.settings_themes_expanded = false;
         self.set_settings_section(SettingsSection::General, cx);
+        self.sync_terminal_active(cx);
     }
 
     pub(super) fn on_open_settings(
@@ -7357,6 +7370,7 @@ impl OrbitApp {
         self.refresh_updater(cx);
         self.settings_open = true;
         self.set_settings_section(SettingsSection::About, cx);
+        self.sync_terminal_active(cx);
     }
 
     pub(super) fn on_settings_gear_click(
@@ -7371,6 +7385,7 @@ impl OrbitApp {
             self.settings_open = false;
             self.provider_editor = None;
             self.provider_key_editor = None;
+            self.sync_terminal_active(cx);
         } else {
             self.open_settings(cx);
             return;
@@ -7388,6 +7403,7 @@ impl OrbitApp {
         self.provider_editor = None;
         self.provider_key_editor = None;
         self.input.read(cx).focus(window);
+        self.sync_terminal_active(cx);
         cx.notify();
     }
 
@@ -7415,6 +7431,7 @@ impl OrbitApp {
                 self.reload_custom_providers_later(cx);
                 self.refresh_auth();
             }
+            SettingsSection::Privacy => self.refresh_temp_files(cx),
             SettingsSection::Skills => self.refresh_skills(cx),
             SettingsSection::Plugins => self.refresh_plugins(cx),
             SettingsSection::Mcp => self.mcp_section_opened(cx),

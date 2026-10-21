@@ -175,9 +175,6 @@ impl Render for OrbitApp {
             self.close_model_selector(window, cx);
         }
         let theme = *theme::get(cx);
-        // `/`-command and `@`-file menu state derives from the composer text
-        // every frame, so typing opens/closes/filters it without extra sync.
-        self.sync_autocomplete(cx);
         // Sessions the sidebar lists, plus a placeholder for the open one
         // when its file is not on disk yet. The archived filter is applied
         // here so row indices match the list the render path receives; the
@@ -353,11 +350,6 @@ impl Render for OrbitApp {
         }
         self.pane_full_last = pane_full;
         let sidebar_shown = self.sidebar_visible && !self.settings_open;
-        // Keep the pane's workspace in sync with the app (cheap no-op when
-        // unchanged; a change marks Review stale).
-        let pane_workspace = self.current_workspace.clone();
-        self.sidepane
-            .update(cx, |pane, cx| pane.set_workspace(pane_workspace, cx));
 
         // Bottom terminal panel. The chat branch is what renders it, so the
         // full-page surfaces (settings / Git / Usage) hide it by construction;
@@ -370,21 +362,6 @@ impl Render for OrbitApp {
             && !self.git_open
             && !self.worktrees_open
             && !pane_full;
-        let panel_workspace = review_workspace.clone();
-        self.terminal_panel.update(cx, |panel, cx| {
-            panel.set_workspace(panel_workspace, cx);
-            panel.sync_active(terminal_visible, cx);
-        });
-        let pane_session = self.session_id.clone();
-        let pane_latest_turn = self.latest_turn;
-        self.sidepane.update(cx, |pane, cx| {
-            pane.set_turn_context(pane_session, pane_latest_turn, cx)
-        });
-        let git_workspace = self.current_workspace.clone();
-        let git_provider = self.model_provider.clone();
-        let git_model = self.model_id.clone();
-        let git_session = self.session_id.clone();
-        let git_turn = self.latest_turn;
         // The embedded Review browser on the Git page's Changes tab lays out
         // against the page width, so its stats and tree follow the column.
         let git_review_width = viewport.width
@@ -395,22 +372,10 @@ impl Render for OrbitApp {
             };
         // Leading inset the full-window pages (Git/Usage/Files) give their
         // headers while the sidebar is collapsed. They now sit in a card below
-        // the top bar, so they only need the normal page padding.
-        let page_leading = 12.;
-        self.git_panel.update(cx, |panel, cx| {
-            panel.set_context(git_workspace, git_provider, git_model, cx);
-            panel.set_review_turn_context(git_session, git_turn, cx);
-            panel.set_review_width(git_review_width, cx);
-            panel.set_chrome_leading(page_leading, cx);
-        });
-        // ── file viewer (Files surface) ── spans the main column, so it gives
-        // its tab strip the same leading inset as the Git/Usage page headers.
-        self.file_viewer.update(cx, |viewer, cx| {
-            viewer.set_chrome_leading(page_leading, cx);
-            // The top bar above owns the caption buttons; the card below it
-            // never shares their row.
-            viewer.set_reserve_controls(false, cx);
-        });
+        // the top bar, so they only need the normal page padding — which is
+        // already their default; nothing to sync per frame.
+        self.git_panel
+            .update(cx, |panel, cx| panel.set_review_width(git_review_width, cx));
         // ── project panel (right dock) ── hidden while Settings owns the
         // window, like the sessions sidebar. Sync the workspace each render;
         // a change rebuilds the tree off-thread. The Explorer and the Review
@@ -443,23 +408,6 @@ impl Render for OrbitApp {
         } else {
             px(0.)
         };
-        let explorer_workspace = self
-            .current_workspace
-            .clone()
-            .or_else(|| std::env::current_dir().ok());
-        let explorer_active = self.file_viewer.read(cx).active_display();
-        self.project_panel.update(cx, |panel, cx| {
-            panel.set_workspace(explorer_workspace, cx);
-            panel.set_active(explorer_active, cx);
-            // The top bar above owns the caption buttons.
-            panel.set_reserve_controls(false, cx);
-            // Review is open, so the Explorer must not be: close it here to
-            // catch every path that opens the pane (diff chip, transcript
-            // cards, Git page file rows), not just the top-bar toggle.
-            if pane_open {
-                panel.close(cx);
-            }
-        });
         let main_width = viewport.width
             - if sidebar_shown {
                 self.sidebar_width
@@ -475,10 +423,8 @@ impl Render for OrbitApp {
         // its tables and grids never overflow the column it is given.
         if self.usage_open {
             let width = f32::from(main_width);
-            self.usage.update(cx, |page, cx| {
-                page.set_main_width(width, cx);
-                page.set_header_leading(page_leading, cx);
-            });
+            self.usage
+                .update(cx, |page, cx| page.set_main_width(width, cx));
         }
 
         // ── top-bar right controls ──
@@ -2645,6 +2591,7 @@ impl OrbitApp {
                 app.host = host;
                 app.pi_install = pi_install;
                 app.refreshing = false;
+                app.sync_terminal_active(cx);
                 if ready && app.client.is_none() {
                     let workspace = app
                         .current_workspace
@@ -3755,6 +3702,7 @@ impl OrbitApp {
     ) {
         self.settings_open = true;
         self.set_settings_section(SettingsSection::Shortcuts, cx);
+        self.sync_terminal_active(cx);
     }
 
     /// Escape from the Review tree: leave keyboard navigation and hand focus

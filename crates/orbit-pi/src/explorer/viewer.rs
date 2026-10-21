@@ -392,26 +392,6 @@ impl FileViewer {
         }
     }
 
-    /// The app syncs this each render with the page leading: with the sidebar
-    /// open the surface starts after it and only needs the normal page padding;
-    /// collapsed, it owns the window's left edge and must clear the overlaid
-    /// titlebar controls.
-    pub fn set_chrome_leading(&mut self, leading: f32, cx: &mut Context<Self>) {
-        if (self.chrome_leading - leading).abs() > 0.5 {
-            self.chrome_leading = leading;
-            cx.notify();
-        }
-    }
-
-    /// Reserve the window-control inset in the tab strip (Windows only, and
-    /// only while this surface is the window's rightmost column).
-    pub fn set_reserve_controls(&mut self, reserve: bool, cx: &mut Context<Self>) {
-        if reserve != self.reserve_controls {
-            self.reserve_controls = reserve;
-            cx.notify();
-        }
-    }
-
     pub fn is_open(&self) -> bool {
         self.open
     }
@@ -1404,20 +1384,29 @@ impl Render for FileViewer {
             return div().into_any_element();
         }
         if self.focus_pending {
-            self.focus_pending = false;
-            // Only focus the editor when it is actually painted. Focusing an
-            // editor that a read-only/preview tab does not render drops focus —
-            // and with it the `Files` key context, so `cmd-w` would stop
-            // working. Otherwise the viewer root holds focus.
-            let handle = self
-                .tabs
-                .get(self.active)
-                .filter(|tab| editor_shown(tab))
-                .map(|tab| tab.editor.read(cx).focus_handle(cx));
-            match handle {
-                Some(handle) => window.focus(&handle),
-                None => window.focus(&self.focus),
-            }
+            let viewer = cx.entity();
+            // Claim focus after this frame's effects have settled: the target
+            // depends on the active tab actually rendering an editor, which
+            // only holds once the frame is built.
+            window.defer(cx, move |window, cx| {
+                let target = viewer.update(cx, |viewer, cx| {
+                    if !viewer.focus_pending {
+                        return None;
+                    }
+                    viewer.focus_pending = false;
+                    let target = viewer
+                        .tabs
+                        .get(viewer.active)
+                        .filter(|tab| editor_shown(tab))
+                        .map(|tab| tab.editor.read(cx).focus_handle(cx))
+                        .unwrap_or_else(|| viewer.focus.clone());
+                    cx.notify();
+                    Some(target)
+                });
+                if let Some(target) = target {
+                    window.focus(&target);
+                }
+            });
         }
         let theme = *theme::get(cx);
         div()

@@ -921,6 +921,7 @@ impl OrbitApp {
                     entity.update(cx, |app, cx| {
                         app.settings_open = true;
                         app.set_settings_section(SettingsSection::Mcp, cx);
+                        app.sync_terminal_active(cx);
                     });
                 })
                 .child(icon(
@@ -1923,7 +1924,13 @@ impl OrbitApp {
                         .font_family(theme::code_font_family())
                         .text_size(TextSize::Default.px(&theme))
                         .text_color(theme.text)
-                        .child(editor.original.as_ref().unwrap().name.clone()),
+                        .child(
+                            editor
+                                .original
+                                .as_ref()
+                                .map(|original| original.name.clone())
+                                .unwrap_or_default(),
+                        ),
                 )
                 .into_any_element()
         } else {
@@ -2463,6 +2470,7 @@ impl OrbitApp {
         self.settings_open = true;
         self.mcp_cursor = name;
         self.set_settings_section(SettingsSection::Mcp, cx);
+        self.sync_terminal_active(cx);
     }
 
     /// The right side of the popover header on the MCP tab: enabled-server

@@ -10,7 +10,8 @@ use std::path::PathBuf;
 
 use gpui::{
     div, point, prelude::*, px, App, Context, ElementId, Entity, FocusHandle, Focusable,
-    FontWeight, IntoElement, MouseDownEvent, ParentElement, Render, ScrollHandle, Styled, Window,
+    FontWeight, IntoElement, MouseDownEvent, ParentElement, Render, ScrollHandle, Styled,
+    Subscription, Window,
 };
 
 use crate::app::{icon, menu_header, picker_entry, picker_search_frame, picker_surface};
@@ -84,6 +85,7 @@ pub struct WorkspacePicker {
     /// `0..rows.len()` — one past the last folder row is "Choose folder…".
     highlighted: usize,
     last_filter: String,
+    _filter_sub: Subscription,
     on_pick: WorkspacePick,
     on_browse: WorkspaceBrowse,
     /// `bool` = dismissed by an outside mouse-down (vs. escape).
@@ -105,6 +107,17 @@ impl WorkspacePicker {
                 .with_placeholder_key("workspace_picker.filter_folders")
                 .with_key_context("Composer Picker")
         });
+        // Keep the derived filter state in sync from the input's notifications
+        // so `render` only reads it.
+        let filter_sub = cx.observe(&filter, |picker: &mut Self, filter, cx| {
+            let needle = filter.read(cx).text().to_lowercase();
+            if needle != picker.last_filter {
+                picker.last_filter = needle;
+                picker.highlighted = 0;
+                picker.scroll.set_offset(point(px(0.), px(0.)));
+                cx.notify();
+            }
+        });
         Self {
             entries,
             current,
@@ -113,6 +126,7 @@ impl WorkspacePicker {
             scroll: ScrollHandle::new(),
             highlighted: 0,
             last_filter: String::new(),
+            _filter_sub: filter_sub,
             on_pick,
             on_browse,
             on_dismiss,
@@ -236,15 +250,7 @@ impl Render for WorkspacePicker {
         let theme = *theme::get(cx);
         let this = cx.entity();
 
-        let needle = self.filter.read(cx).text().to_lowercase();
-        if needle != self.last_filter {
-            self.last_filter = needle.clone();
-            self.highlighted = 0;
-            self.scroll.set_offset(point(px(0.), px(0.)));
-        }
-        let rows = self.filtered(&needle);
-        let count = self.row_count(&rows);
-        self.highlighted = self.highlighted.min(count - 1);
+        let rows = self.filtered(&self.last_filter);
 
         // ── folder rows ──
         let mut list = div()

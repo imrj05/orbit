@@ -1890,14 +1890,16 @@ impl Element for TextElement {
                 let i = prepaint.number_first + k;
                 if let Some(y) = prepaint.line_y.get(i).copied() {
                     let x = bounds.origin.x + gutter - px(9.) - number.width();
-                    let _ = number.paint(
+                    if let Err(error) = number.paint(
                         point(x, bounds.origin.y + y - scroll),
                         line_height,
                         TextAlign::Left,
                         None,
                         window,
                         cx,
-                    );
+                    ) {
+                        eprintln!("Orbit composer: could not paint a line number: {error}");
+                    }
                 }
             }
             window.with_content_mask(
@@ -1910,7 +1912,7 @@ impl Element for TextElement {
                         window.paint_quad(quad);
                     }
                     for (i, line) in prepaint.lines.iter().enumerate() {
-                        line.paint(
+                        if let Err(error) = line.paint(
                             point(
                                 bounds.origin.x + gutter - scroll_x,
                                 bounds.origin.y + prepaint.line_y[i] - scroll,
@@ -1920,8 +1922,9 @@ impl Element for TextElement {
                             None,
                             window,
                             cx,
-                        )
-                        .unwrap();
+                        ) {
+                            eprintln!("Orbit composer: could not paint a text line: {error}");
+                        }
                     }
                     // Caret over the text.
                     if focused {

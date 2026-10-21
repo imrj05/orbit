@@ -53,6 +53,7 @@ impl OrbitApp {
         self.close_files(cx);
         self.sidepane.update(cx, |pane, cx| pane.close(cx));
         self.refresh_worktrees(cx);
+        self.sync_terminal_active(cx);
         cx.notify();
     }
 
@@ -61,6 +62,7 @@ impl OrbitApp {
         self.worktrees_open = false;
         self.worktree_menu = None;
         self.worktree_advanced_open = false;
+        self.sync_terminal_active(cx);
         cx.notify();
     }
 
@@ -570,7 +572,7 @@ impl OrbitApp {
         }
         let path = path.to_path_buf();
         self.add_workspace(path.clone(), cx);
-        self.set_current_workspace(path);
+        self.set_current_workspace(path, cx);
         self.close_worktrees(cx);
     }
 
@@ -704,7 +706,7 @@ impl OrbitApp {
                         // A moved active workspace follows its directory so a
                         // running session is not stranded on a dead path.
                         if app.worktree_is_active(&path) {
-                            app.set_current_workspace(destination.clone());
+                            app.set_current_workspace(destination.clone(), cx);
                         }
                         app.worktrees_error = None;
                     }

@@ -5,7 +5,8 @@
 
 use gpui::{
     div, point, prelude::*, px, App, Context, ElementId, Entity, FocusHandle, Focusable,
-    FontWeight, IntoElement, MouseDownEvent, ParentElement, Render, ScrollHandle, Styled, Window,
+    FontWeight, IntoElement, MouseDownEvent, ParentElement, Render, ScrollHandle, Styled,
+    Subscription, Window,
 };
 
 use crate::app::{
@@ -61,6 +62,7 @@ pub struct BranchPicker {
     list_scroll: ScrollHandle,
     highlighted: usize,
     last_filter: String,
+    _filter_sub: Subscription,
     on_checkout: BranchAction,
     on_create: BranchAction,
     on_dismiss: BranchPickerDismiss,
@@ -82,6 +84,17 @@ impl BranchPicker {
                 .with_placeholder_var("workspace", workspace_label)
                 .with_key_context("Composer Picker")
         });
+        // Keep the derived filter state in sync from the input's notifications
+        // so `render` only reads it.
+        let filter_sub = cx.observe(&filter, |picker: &mut Self, filter, cx| {
+            let needle = filter.read(cx).text().to_lowercase();
+            if needle != picker.last_filter {
+                picker.last_filter = needle;
+                picker.highlighted = 0;
+                picker.list_scroll.set_offset(point(px(0.), px(0.)));
+                cx.notify();
+            }
+        });
         let create_input = cx.new(|cx| {
             ComposerInput::new(cx)
                 .with_placeholder_key("branch_picker.new_branch_name")
@@ -98,6 +111,7 @@ impl BranchPicker {
             list_scroll: ScrollHandle::new(),
             highlighted: 0,
             last_filter: String::new(),
+            _filter_sub: filter_sub,
             on_checkout,
             on_create,
             on_dismiss,
@@ -288,16 +302,7 @@ impl Render for BranchPicker {
                 );
         }
 
-        let needle = self.filter.read(cx).text().to_lowercase();
-        if needle != self.last_filter {
-            self.last_filter = needle.clone();
-            self.highlighted = 0;
-            self.list_scroll.set_offset(point(px(0.), px(0.)));
-        }
-        let rows = self.filtered_branches(&needle);
-        if !rows.is_empty() {
-            self.highlighted = self.highlighted.min(rows.len() - 1);
-        }
+        let rows = self.filtered_branches(&self.last_filter);
 
         let mut list = div()
             .id("branch-picker-list")

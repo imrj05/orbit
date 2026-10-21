@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Settings → Privacy → Temporary files** lists Orbit's scratch entries in
+  its `orbit-pi` folder inside the system temp directory, with each file's size
+  and age, an **Open folder** action, and **Clean up now**. The list covers
+  bug-report screenshots, update downloads, and helper scripts, plus older
+  top-level `orbit-*` leftovers, except entries a live Orbit process still
+  needs.
+- A separate **AI scratch files** group lists pi's own `pi-*` entries (shell
+  output, codemode images, share/editor working files) and removes only those
+  last used more than an hour ago. Neither section touches your workspace or
+  pi's session store.
+
 ## [0.2.11] - 2026-10-21
 
 ### Added

@@ -346,11 +346,6 @@ pub struct GitPanel {
     /// `origin` mapped to a commit-permalink base (GitHub/GitLab/Bitbucket),
     /// when the repo has one. `None` hides every commit link.
     remote_web: Option<git::RemoteWeb>,
-    /// Leading inset for the header, refreshed by the app each render. Wider
-    /// when the sessions sidebar is collapsed: the page then owns the window's
-    /// left edge, so its Back affordance has to clear the OS window buttons
-    /// and the titlebar's left controls overlaid at the same height.
-    chrome_leading: f32,
     /// Opens a changed file's diff in the Review pane (installed by the app).
     on_open_file: Option<OpenFile>,
     /// Opens a file in the Files editor (installed by the app).
@@ -558,7 +553,6 @@ impl GitPanel {
             refresh_spin_until: None,
             status: None,
             remote_web: None,
-            chrome_leading: 12.,
             on_open_file: None,
             on_open_path: None,
             on_close: None,
@@ -869,18 +863,6 @@ impl GitPanel {
         });
         self.review
             .update(cx, |pane, cx| pane.set_section_actions(Some(actions), cx));
-    }
-
-    /// Set by `OrbitApp` on every render: how far the header's leading edge sits
-    /// from the page's left edge. It widens when the sessions sidebar is
-    /// collapsed, because the page then spans the window and its own Back
-    /// affordance would otherwise sit under the macOS traffic lights (and the
-    /// overlaid sidebar/history controls).
-    pub fn set_chrome_leading(&mut self, leading: f32, cx: &mut Context<Self>) {
-        if (self.chrome_leading - leading).abs() > 0.5 {
-            self.chrome_leading = leading;
-            cx.notify();
-        }
     }
 
     /// Install the callback that leaves the Git page (Back button).
@@ -3311,15 +3293,20 @@ impl GitPanel {
             .border_color(theme.border)
             .child(self.branch_controls(theme, cx))
             .child(div().flex_1())
-            .children(self.status.as_ref().map(|(message, _)| {
-                div()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.text_3)
-                    .child(message.clone())
-            }))
+            .children(
+                self.status
+                    .as_ref()
+                    .filter(|(_, at)| at.elapsed() <= Duration::from_secs(6))
+                    .map(|(message, _)| {
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_3)
+                            .child(message.clone())
+                    }),
+            )
             .children(self.github_account_chip(theme))
             .child(self.branch_more_controls(theme, cx))
             .child(self.sync_controls(theme, cx))
@@ -7098,14 +7085,6 @@ impl Render for GitPanel {
             return div().into_any_element();
         }
         let theme = *theme::get(cx);
-        // Expire a stale status line.
-        if self
-            .status
-            .as_ref()
-            .is_some_and(|(_, at)| at.elapsed() > Duration::from_secs(6))
-        {
-            self.status = None;
-        }
         let content = match self.tab {
             GitTab::Changes => self.changes_tab(theme, window, cx),
             GitTab::History => self.history_tab(theme, cx),

@@ -1089,23 +1089,6 @@ pub(crate) fn render_side_row(
                         )
                     }),
             );
-            // The open session's marker: a short ember rail on the leading
-            // edge. The active fill and the hover/cursor washes sit within a
-            // few points of each other, so the rail — not the tint — is what
-            // makes "this is the session you are viewing" unmistakable, and
-            // the row's fill and ink can stay quiet beside it.
-            if active {
-                card = card.child(
-                    div()
-                        .absolute()
-                        .left(DynamicSpacing::Base06.px(&theme))
-                        .top_0()
-                        .bottom_0()
-                        .flex()
-                        .items_center()
-                        .child(div().w(px(2.)).h(px(16.)).rounded_full().bg(theme.accent)),
-                );
-            }
             row = row.child(card);
             row.into_any_element()
         }

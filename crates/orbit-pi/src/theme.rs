@@ -664,12 +664,18 @@ impl FontPrefs {
 
 /// Current UI face family (readable without `cx`).
 pub fn ui_font_family() -> SharedString {
-    UI_FONT_FAMILY.read().unwrap().clone()
+    UI_FONT_FAMILY
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
 }
 
 /// Current code/mono face family (readable without `cx`).
 pub fn code_font_family() -> SharedString {
-    CODE_FONT_FAMILY.read().unwrap().clone()
+    CODE_FONT_FAMILY
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
 }
 
 /// A named entry in the curated Interface / Code font pickers. `family` is
@@ -2990,8 +2996,12 @@ pub fn init(cx: &mut App) {
     cx.set_global(prefs);
     cx.set_global(Theme::for_id(prefs.resolve(cx.window_appearance())).with_ui(UiPrefs::load()));
     let prefs = FontPrefs::load();
-    *UI_FONT_FAMILY.write().unwrap() = prefs.ui_font_family;
-    *CODE_FONT_FAMILY.write().unwrap() = prefs.code_font_family;
+    *UI_FONT_FAMILY
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = prefs.ui_font_family;
+    *CODE_FONT_FAMILY
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = prefs.code_font_family;
 }
 
 /// Current theme. Panics if [`init`] has not run.
@@ -3007,8 +3017,12 @@ pub fn reduce_motion(cx: &App) -> bool {
 
 /// Apply new UI / code font families to the statics and persist them.
 pub fn set_font_prefs(prefs: FontPrefs) {
-    *UI_FONT_FAMILY.write().unwrap() = prefs.ui_font_family.clone();
-    *CODE_FONT_FAMILY.write().unwrap() = prefs.code_font_family.clone();
+    *UI_FONT_FAMILY
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = prefs.ui_font_family.clone();
+    *CODE_FONT_FAMILY
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = prefs.code_font_family.clone();
     prefs.persist();
 }
 

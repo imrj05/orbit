@@ -324,6 +324,23 @@ the CLI is installed and authenticated, falling back to GitHub's new-issue page
 with the title, body, and label prefilled. `gh` keeps ownership of the token:
 Orbit still never stores one (`bug_report.rs`).
 
+Settings → Privacy pairs session retention with a **Temporary files** section.
+Orbit groups its scratch files under `<system temp>/orbit-pi/` — bug-report
+screenshots, update downloads, and login helpers — and the section lists that
+folder's contents plus older `orbit-*` entries left directly in the temp root,
+showing each file's size and age, with **Open folder** and **Clean up now**.
+Cleanup skips entries a live Orbit process may still be using — the current
+process's own update staging and `.command` files, plus any embedded pid that
+is still alive on Unix — and reports removed, skipped, and failed counts as one
+toast (`temp_files.rs`, `temp_ui.rs`).
+
+A second **AI scratch files** group covers pi's own `pi-*` temp entries written
+directly into the temp root: shell output logs, codemode images, MCP output,
+and share/editor working files. Its cleanup removes only entries last modified
+more than an hour ago, so a live run keeps its logs and image paths. The two
+groups have independent cleanup actions and neither touches pi's session store
+or anything in the workspace.
+
 Composer sending is configurable in Settings → Agent → Behavior: Enter queues a follow-up
 by default or steers the running task, with Alt/Option+Enter selecting the opposite mode.
 The explicit ⌘⇧Enter / Ctrl+Shift+Enter steering shortcut stays fixed. The choice is a

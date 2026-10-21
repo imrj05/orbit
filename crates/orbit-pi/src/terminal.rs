@@ -932,7 +932,6 @@ pub struct TerminalView {
     font_size: Pixels,
     cell_width: Pixels,
     cell_height: Pixels,
-    measured: bool,
     cursor_on: bool,
     blink_ticks: u32,
     selecting: bool,
@@ -986,7 +985,7 @@ impl TerminalView {
             }
         });
 
-        Self {
+        let mut view = Self {
             session: None,
             error: None,
             focus_handle,
@@ -999,13 +998,29 @@ impl TerminalView {
             font_size: px(13.),
             cell_width: px(CELL_WIDTH_FALLBACK),
             cell_height: px(13. * LINE_HEIGHT_RATIO),
-            measured: false,
             cursor_on: true,
             blink_ticks: 0,
             selecting: false,
             scroll_accumulator: 0.0,
             grid_bounds: Rc::new(Cell::new(None)),
             _task: task,
+        };
+        view.measure_font(cx);
+        view
+    }
+
+    /// Resolve the face's advance once, from the app's text system, so the
+    /// grid math matches the cell box gpui actually shapes with.
+    fn measure_font(&mut self, cx: &App) {
+        let font_size = theme::get(cx).term_px(13.0);
+        let font = terminal_font(cx);
+        let font_id = cx.text_system().resolve_font(&font);
+        if let Ok(advance) = cx.text_system().advance(font_id, font_size, 'M') {
+            if advance.width > px(0.) {
+                self.font_size = font_size;
+                self.cell_width = advance.width;
+                self.cell_height = px(f32::from(font_size) * LINE_HEIGHT_RATIO);
+            }
         }
     }
 
@@ -1292,7 +1307,7 @@ impl TerminalView {
     /// drives an exact shell (say `/bin/cat`) instead of the login shell. Its
     /// only caller runs on Unix, so Windows test builds do not carry it.
     fn with_session(session: TerminalSession, cx: &mut Context<Self>) -> Self {
-        Self {
+        let mut view = Self {
             session: Some(session),
             error: None,
             focus_handle: cx.focus_handle().tab_stop(true),
@@ -1305,36 +1320,22 @@ impl TerminalView {
             font_size: px(13.),
             cell_width: px(CELL_WIDTH_FALLBACK),
             cell_height: px(13. * LINE_HEIGHT_RATIO),
-            measured: false,
             cursor_on: true,
             blink_ticks: 0,
             selecting: false,
             scroll_accumulator: 0.,
             grid_bounds: Rc::new(Cell::new(None)),
             _task: Task::ready(()),
-        }
+        };
+        view.measure_font(cx);
+        view
     }
 }
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = *theme::get(cx);
-        let font_size = theme.term_px(13.0);
         let font = terminal_font(cx);
-
-        // Measure the advance once per font/size; the grid math depends on the
-        // cell box matching the face gpui actually shapes with.
-        if !self.measured {
-            let font_id = window.text_system().resolve_font(&font);
-            if let Ok(advance) = window.text_system().advance(font_id, font_size, 'M') {
-                if advance.width > px(0.) {
-                    self.font_size = font_size;
-                    self.cell_width = advance.width;
-                    self.cell_height = px(f32::from(font_size) * LINE_HEIGHT_RATIO);
-                    self.measured = true;
-                }
-            }
-        }
 
         let background = Palette::from_theme(&theme).background;
         let focused = self.focus_handle.is_focused(window);

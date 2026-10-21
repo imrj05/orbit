@@ -841,7 +841,14 @@ fn write_json_secure(path: &Path, root: &Value) -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).map_err(|err| {
+            let _ = std::fs::remove_file(&tmp);
+            tr!(
+                "errors.could_not_write",
+                path = tmp.display().to_string(),
+                error = err
+            )
+        })?;
     }
     std::fs::rename(&tmp, path).map_err(|err| {
         let _ = std::fs::remove_file(&tmp);

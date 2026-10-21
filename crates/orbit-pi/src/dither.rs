@@ -340,7 +340,9 @@ fn cached(dir: &Path) -> Option<Arc<RenderImage>> {
         cell: tuning.cell,
     };
 
-    let cache = CACHE.read().expect("dither cache");
+    let cache = CACHE
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(cached) = cache.as_ref() {
         if cached.key == key {
             return cached.image.clone();
@@ -358,7 +360,9 @@ fn cached(dir: &Path) -> Option<Arc<RenderImage>> {
         }
         Arc::new(RenderImage::new(vec![Frame::new(bgra)]))
     });
-    *CACHE.write().expect("dither cache") = Some(Cached {
+    *CACHE
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Cached {
         key,
         image: image.clone(),
     });

@@ -227,15 +227,6 @@ impl ProjectPanel {
         }
     }
 
-    /// Reserve the window-control inset in the header (Windows only, and only
-    /// while this dock is the window's rightmost column).
-    pub fn set_reserve_controls(&mut self, reserve: bool, cx: &mut Context<Self>) {
-        if reserve != self.reserve_controls {
-            self.reserve_controls = reserve;
-            cx.notify();
-        }
-    }
-
     pub fn toggle(&mut self, cx: &mut Context<Self>) {
         self.open = !self.open;
         if !self.open {

@@ -259,6 +259,7 @@ impl OrbitApp {
                 if result.is_ok() {
                     app.latest_turn = Some(turn);
                 }
+                app.sync_review_context(cx);
                 app.sidepane
                     .update(cx, |pane, cx| pane.mark_review_stale(cx));
                 app.git_panel
@@ -343,6 +344,7 @@ impl OrbitApp {
                     return;
                 }
                 app.latest_turn = latest;
+                app.sync_review_context(cx);
                 if let Some(latest) = latest {
                     // Continue numbering after the recovered turn so new refs
                     // never clobber the persisted ones.
@@ -573,6 +575,7 @@ impl OrbitApp {
         self.sidepane.update(cx, |pane, cx| pane.close(cx));
         self.project_panel.update(cx, |panel, cx| panel.close(cx));
         self.terminal_panel.update(cx, |panel, cx| panel.close(cx));
+        self.sync_terminal_active(cx);
     }
 
     pub(super) fn on_new_session(
@@ -674,7 +677,7 @@ impl OrbitApp {
         self.workflow_pending = None;
         self.workflow_mode = WorkflowMode::default();
         self.add_workspace(cwd.clone(), cx);
-        self.set_current_workspace(cwd.clone());
+        self.set_current_workspace(cwd.clone(), cx);
 
         match self.extensions.spawn(&cwd, true, &self.mcp.secret_env()) {
             Ok(client) => {
@@ -877,7 +880,7 @@ impl OrbitApp {
         self.seed_session_name_input(cx);
         // Opening a session keeps its folder in Orbit's own sidebar list.
         self.add_workspace(session.cwd.clone(), cx);
-        self.set_current_workspace(session.cwd.clone());
+        self.set_current_workspace(session.cwd.clone(), cx);
         self.current_session_path = Some(session.path.clone());
         if push {
             self.session_history.truncate(self.history_index + 1);
@@ -1107,6 +1110,7 @@ impl OrbitApp {
         // (see `close_git_for_review`).
         self.sidepane.update(cx, |pane, cx| pane.close(cx));
         self.git_panel.update(cx, |panel, cx| panel.show(cx));
+        self.sync_terminal_active(cx);
         cx.notify();
     }
 
@@ -1130,6 +1134,7 @@ impl OrbitApp {
     pub(super) fn close_git(&mut self, cx: &mut Context<Self>) {
         self.git_open = false;
         self.git_panel.update(cx, |panel, cx| panel.hide(cx));
+        self.sync_terminal_active(cx);
         cx.notify();
     }
 
@@ -1140,6 +1145,7 @@ impl OrbitApp {
         if self.git_open {
             self.git_open = false;
             self.git_panel.update(cx, |panel, cx| panel.hide(cx));
+            self.sync_terminal_active(cx);
             cx.notify();
         }
     }
@@ -1159,6 +1165,7 @@ impl OrbitApp {
         // Files is another main-area feature; leave it for the Usage card.
         self.close_files(cx);
         self.usage.update(cx, |page, cx| page.open(cx));
+        self.sync_terminal_active(cx);
         cx.notify();
     }
 
@@ -1166,6 +1173,7 @@ impl OrbitApp {
     pub(super) fn close_usage(&mut self, cx: &mut Context<Self>) {
         self.usage_open = false;
         self.usage.update(cx, |page, cx| page.close(cx));
+        self.sync_terminal_active(cx);
         cx.notify();
     }
 
@@ -2445,6 +2453,7 @@ impl OrbitApp {
         self.worktrees_open = false;
         self.file_viewer
             .update(cx, |viewer, cx| viewer.show(path, display, cx));
+        self.sync_terminal_active(cx);
         cx.notify();
     }
 
@@ -2614,6 +2623,7 @@ impl OrbitApp {
     /// Leave the Files surface and return to the chat.
     pub(super) fn close_files(&mut self, cx: &mut Context<Self>) {
         self.file_viewer.update(cx, |viewer, cx| viewer.hide(cx));
+        self.sync_terminal_active(cx);
         cx.notify();
     }
 

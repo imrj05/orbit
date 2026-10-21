@@ -406,9 +406,9 @@ impl OrbitApp {
             let resumed = Duration::from_secs_f32(self.backdrop_phase);
             self.backdrop_clock = Some(Instant::now() - resumed);
         }
-        let clock = self
-            .backdrop_clock
-            .expect("the backdrop clock was armed just above");
+        let Some(clock) = self.backdrop_clock else {
+            return false;
+        };
         self.backdrop_phase = clock.elapsed().as_secs_f32();
         true
     }
@@ -740,6 +740,7 @@ impl OrbitApp {
                         self.reset_quota_entries();
                     }
                 }
+                self.sync_review_context(cx);
                 *refresh_sessions = true;
                 self.send(CommandBody::GetMessages, "get_messages");
                 self.send(CommandBody::GetState, "get_state");
@@ -765,6 +766,8 @@ impl OrbitApp {
                         self.model_provider = provider.to_string();
                     }
                 }
+                // The Git page labels its context with the provider/model.
+                self.sync_review_context(cx);
                 if let Some(level) = data
                     .get("thinkingLevel")
                     .and_then(serde_json::Value::as_str)
@@ -781,6 +784,7 @@ impl OrbitApp {
                         // the bridge cursor must start over.
                         self.reset_quota_entries();
                         self.recover_latest_turn(cx);
+                        self.sync_review_context(cx);
                     }
                 }
                 // Agent control surface: streaming/compaction state, queue
@@ -902,6 +906,8 @@ impl OrbitApp {
                             .collect()
                     })
                     .unwrap_or_default();
+                // A `/` menu already open picks up the fresh command list.
+                self.sync_autocomplete(cx);
             }
             "get_session_stats" => {
                 self.context = ContextUsage::from_stats(data);
@@ -916,6 +922,7 @@ impl OrbitApp {
                     self.default_model_armed = false;
                     self.reset_turns();
                     self.reset_queue();
+                    self.sync_review_context(cx);
                     // Load the session *before* the slower auth/quota probes,
                     // which would otherwise queue ahead of `get_messages` and
                     // push the transcript out by a network round trip.
@@ -938,6 +945,7 @@ impl OrbitApp {
                 self.extension_widgets.clear();
                 self.reset_turns();
                 self.reset_queue();
+                self.sync_review_context(cx);
                 *refresh_sessions = true;
                 // A fresh session is born on the default model; `set_model`
                 // is pushed once `get_state` reports the new id (see
