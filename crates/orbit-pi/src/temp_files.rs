@@ -240,6 +240,12 @@ fn clean_entries(entries: &[TempEntry]) -> CleanOutcome {
                 outcome.removed += 1;
                 outcome.bytes += entry.bytes;
             }
+            // The snapshot is older than the click by however long the page
+            // stayed open. Something already gone is not a failure, and freed
+            // nothing, so it counts as removed without adding to the total.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                outcome.removed += 1;
+            }
             Err(error) => outcome.failed.push((entry.path.clone(), error.to_string())),
         }
     }
@@ -474,6 +480,25 @@ mod tests {
         assert_eq!(outcome.skipped_active, vec![recent.clone()]);
         assert!(recent.exists());
         assert!(!old.exists());
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn clean_treats_a_vanished_entry_as_removed() {
+        let root = scratch();
+        let dir = app_dir(&root);
+        std::fs::create_dir_all(&dir).unwrap();
+        let gone = dir.join("bug-report-1");
+        std::fs::write(&gone, b"shot").unwrap();
+
+        let files = TempFiles::scan_in(&root, &dir);
+        std::fs::remove_file(&gone).unwrap();
+        let outcome = clean(&files);
+
+        assert_eq!(outcome.removed, 1);
+        assert_eq!(outcome.bytes, 0);
+        assert!(outcome.failed.is_empty());
 
         std::fs::remove_dir_all(root).ok();
     }

@@ -407,10 +407,6 @@ pub struct OrbitApp {
     /// index, so it survives filtering. `<Enter>` picks it; the list keeps
     /// it in view.
     settings_select_highlight: Option<usize>,
-    /// Theme dropdown only: whether the user asked for the whole palette
-    /// catalog instead of the curated set. Reset when Settings opens, so every
-    /// visit starts from the short list.
-    settings_themes_expanded: bool,
     /// Scroll handle for the settings dropdown's option list.
     settings_select_scroll: UniformListScrollHandle,
     /// Settings → Report a bug: the issue title.
@@ -1263,10 +1259,26 @@ impl OrbitApp {
             error: (!connect_error.is_empty()).then(|| connect_error.clone()),
         };
 
+        // A palette switch must repaint every surface, including the child
+        // entities GPUI renders independently of this view. The app itself
+        // observes the global; the panels that own their own element trees are
+        // notified explicitly so a theme change is never left half-applied.
         let theme_sub = cx.observe_global::<Theme>(|this, cx| {
             this.input.update(cx, |_, cx| cx.notify());
             if let Some((_, selector)) = &this.model_selector {
                 selector.update(cx, |_, cx| cx.notify());
+            }
+            this.project_panel.update(cx, |_, cx| cx.notify());
+            this.file_viewer.update(cx, |_, cx| cx.notify());
+            this.sidepane.update(cx, |_, cx| cx.notify());
+            this.terminal_panel.update(cx, |_, cx| cx.notify());
+            this.git_panel.update(cx, |_, cx| cx.notify());
+            this.usage.update(cx, |_, cx| cx.notify());
+            if let Some(picker) = &this.branch_picker {
+                picker.update(cx, |_, cx| cx.notify());
+            }
+            if let Some(picker) = &this.workspace_picker {
+                picker.update(cx, |_, cx| cx.notify());
             }
             cx.notify();
         });
@@ -1569,7 +1581,6 @@ impl OrbitApp {
             settings_search: settings_search.clone(),
             _settings_search_sub: settings_search_sub,
             settings_select_highlight: None,
-            settings_themes_expanded: false,
             settings_select_scroll: UniformListScrollHandle::new(),
             bug_report_title,
             bug_report_what,
@@ -2034,10 +2045,12 @@ impl OrbitApp {
             .update(cx, |panel, cx| panel.set_workspace(workspace.clone(), cx));
         let session = self.session_id.clone();
         let turn = self.latest_turn;
-        self.sidepane
-            .update(cx, |pane, cx| pane.set_turn_context(session.clone(), turn, cx));
-        self.git_panel
-            .update(cx, |panel, cx| panel.set_review_turn_context(session, turn, cx));
+        self.sidepane.update(cx, |pane, cx| {
+            pane.set_turn_context(session.clone(), turn, cx)
+        });
+        self.git_panel.update(cx, |panel, cx| {
+            panel.set_review_turn_context(session, turn, cx)
+        });
     }
 
     /// Whether the terminal panel should poll: visible only while no full-page
@@ -2470,7 +2483,11 @@ fn parse_workspace_store(value: &Value) -> WorkspaceStore {
                     icon: map.get("icon").and_then(Value::as_str).map(str::to_string),
                     tint: map.get("tint").and_then(Value::as_str).map(str::to_string),
                 };
-                (sessions::canonical_workspace_path(Path::new(raw)), added, mark)
+                (
+                    sessions::canonical_workspace_path(Path::new(raw)),
+                    added,
+                    mark,
+                )
             }
             _ => continue,
         };
@@ -3051,6 +3068,8 @@ mod popup_layout_tests;
 #[cfg(test)]
 mod refresh_tests;
 #[cfg(test)]
+mod send_progress_tests;
+#[cfg(test)]
 mod session_default_apply_tests;
 #[cfg(test)]
 mod session_park_tests;
@@ -3067,15 +3086,15 @@ mod sidebar_sort_tests;
 #[cfg(test)]
 mod sidepane_full_width_tests;
 #[cfg(test)]
+mod theme_switch_tests;
+#[cfg(test)]
 mod titlebar_layout_tests;
 #[cfg(test)]
-mod worktree_howto_tests;
+mod window_watch_tests;
 #[cfg(test)]
 mod worktree_chip_tests;
 #[cfg(test)]
-mod send_progress_tests;
-#[cfg(test)]
-mod window_watch_tests;
+mod worktree_howto_tests;
 
 // `icon` and friends are part of the crate-wide UI kit; keep their original
 // `crate::app::…` paths stable for the other modules that import them.

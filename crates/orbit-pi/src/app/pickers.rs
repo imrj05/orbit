@@ -510,9 +510,9 @@ impl OrbitApp {
             CommandId::PrevTerminalTab => {
                 self.on_prev_terminal_tab(&crate::PrevTerminalTab, window, cx);
             }
-            CommandId::ToggleProjectPanel => {
-                self.project_panel.update(cx, |panel, cx| panel.toggle(cx));
-            }
+            // Route through the app so opening the tree also closes Review;
+            // the two docks are mutually exclusive.
+            CommandId::ToggleProjectPanel => self.toggle_project_panel(cx),
             CommandId::GitTabChanges => self.on_git_tab(0, window, cx),
             CommandId::GitTabHistory => self.on_git_tab(1, window, cx),
             CommandId::GitTabGraph => self.on_git_tab(2, window, cx),

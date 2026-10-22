@@ -828,7 +828,7 @@ mod tests {
         let crop_y = (scaled.height() as i64 - height as i64) / 2;
         image::imageops::replace(&mut out, &scaled, -crop_x, -crop_y);
 
-        // The view's bottom scrim: `bg_main` from transparent at the top of
+        // The view's bottom scrim: `background` from transparent at the top of
         // the fade to `fade_peak()` at the bottom edge.
         let page = [0x1a, 0x1a, 0x1a];
         let fade = (tuning.fade * height as f32).round() as u32;

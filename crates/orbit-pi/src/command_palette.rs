@@ -6,7 +6,7 @@
 //! first, then commands, then settings — in a single top-centered card. It
 //! refuses the split between the sidebar's session switcher, the composer's
 //! chip popovers, and the settings gear: one filter ranks all of them.
-//! OWN-WORLD: Orbit's raised-surface language (`menu_bg`, 1px `border_strong`,
+//! OWN-WORLD: Orbit's raised-surface language (`surface_elevated`, 1px `border_strong`,
 //! layered contact+ambient shadow, `overlay_strong` highlight, accent for the
 //! live session) lifted onto a dimmed modal layer — the same atoms as the
 //! sidebar palette and chip popovers, at window scale.
@@ -376,11 +376,21 @@ impl CommandPalette {
         self.activate(self.highlighted, &rows, window, cx);
     }
 
-    fn on_next(&mut self, _: &crate::PickerSelectNext, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_next(
+        &mut self,
+        _: &crate::PickerSelectNext,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.step(1, f32::from(window.viewport_size().height), cx);
     }
 
-    fn on_prev(&mut self, _: &crate::PickerSelectPrev, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_prev(
+        &mut self,
+        _: &crate::PickerSelectPrev,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.step(-1, f32::from(window.viewport_size().height), cx);
     }
 
@@ -759,11 +769,11 @@ impl Render for CommandPalette {
                     picker_entry(div(), &theme)
                         .h(picker::two_line_entry_height(&theme))
                         .flex_none()
-                        .text_color(theme.text_3)
+                        .text_color(theme.text_muted)
                         .child(icon(
                             "icons/search.svg",
                             context_menu::ICON.px(&theme),
-                            theme.text_3,
+                            theme.text_muted,
                         ))
                         .child(
                             div()
@@ -830,11 +840,11 @@ impl Render for CommandPalette {
             // search row
             .child(
                 picker_search_frame(div(), &theme)
-                    .text_color(theme.text)
+                    .text_color(theme.text_primary)
                     .child(icon(
                         "icons/search.svg",
                         input::ICON.px(&theme),
-                        theme.text_3,
+                        theme.text_muted,
                     ))
                     .child(div().flex_1().min_w_0().child(self.filter.clone())),
             )
@@ -851,7 +861,7 @@ impl Render for CommandPalette {
                     .border_t_1()
                     .border_color(theme.border)
                     .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.text_3)
+                    .text_color(theme.text_muted)
                     .child(tr!("command_palette.navigate"))
                     .child(tr!("command_palette.select"))
                     .child(tr!("command_palette.esc_close")),
@@ -924,14 +934,14 @@ fn render_row(
                 });
             }
         })
-        .when(highlighted, |row| row.bg(theme.overlay_strong))
+        .when(highlighted, |row| row.bg(theme.selection))
         .child(icon(
             item.icon,
             context_menu::ICON.px(&theme),
             if is_current_session {
-                theme.accent
+                theme.accent_text
             } else {
-                theme.text_2
+                theme.text_secondary
             },
         ))
         .child(
@@ -951,9 +961,9 @@ fn render_row(
                             FontWeight::NORMAL
                         })
                         .text_color(if highlighted {
-                            theme.text
+                            theme.text_primary
                         } else {
-                            theme.text_2
+                            theme.text_secondary
                         })
                         .child(item.label.clone()),
                 )
@@ -962,7 +972,11 @@ fn render_row(
                         div()
                             .flex_none()
                             .text_size(picker::SECONDARY_TEXT.px(&theme))
-                            .text_color(theme.text_3)
+                            .text_color(if highlighted {
+                                theme.text_secondary
+                            } else {
+                                theme.text_muted
+                            })
                             .child(detail),
                     )
                 }),
@@ -981,7 +995,7 @@ fn render_row(
                     .justify_center()
                     .bg(theme.overlay_strong)
                     .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.text_3)
+                    .text_color(theme.text_muted)
                     .child(SharedString::from(shortcut)),
             )
         })

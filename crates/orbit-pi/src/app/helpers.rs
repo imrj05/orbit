@@ -46,7 +46,7 @@ pub(crate) fn queue_row(kind: &str, text: &str, follow: bool, theme: Theme) -> A
         .flex()
         .items_start()
         .gap(px(10.))
-        .px(px(12.))
+        .px(DynamicSpacing::Base12.px(&theme))
         .py(px(7.))
         .border_t_1()
         .border_color(theme.border)
@@ -57,7 +57,11 @@ pub(crate) fn queue_row(kind: &str, text: &str, follow: bool, theme: Theme) -> A
                 .pt(px(1.))
                 .text_size(TextSize::XSmall.px(&theme))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(if follow { theme.text_3 } else { theme.accent })
+                .text_color(if follow {
+                    theme.text_muted
+                } else {
+                    theme.accent_text
+                })
                 .child(kind.to_uppercase()),
         )
         .child(
@@ -67,7 +71,7 @@ pub(crate) fn queue_row(kind: &str, text: &str, follow: bool, theme: Theme) -> A
                 .line_clamp(2)
                 .text_size(TextSize::Small.px(&theme))
                 .line_height(theme.ui_px(16.))
-                .text_color(theme.text)
+                .text_color(theme.text_primary)
                 .child(text.to_string()),
         )
         .into_any_element()
@@ -84,7 +88,7 @@ pub(crate) const BUTTON_GROUP: &str = "orbit-button";
 
 /// How far an icon lightens toward white when its button is hovered. Small
 /// enough that semantic icons (accent, danger) stay on-brand; enough that a
-/// muted `text_2`/`text_3` glyph visibly brightens.
+/// muted `text_secondary`/`text_muted` glyph visibly brightens.
 const ICON_HOVER_LIGHTEN: f32 = 0.12;
 
 /// The hover ink for an icon: the same hue, lightened toward white.
@@ -181,7 +185,7 @@ pub(crate) fn refresh_glyph(
         .path("icons/refresh.svg")
         .flex_none()
         .size(size)
-        .text_color(theme.accent);
+        .text_color(theme.accent_text);
     if theme.ui.reduce_motion {
         return svg.into_any_element();
     }
@@ -256,7 +260,7 @@ pub(crate) fn menu_header(label: impl Into<SharedString>, theme: &Theme) -> gpui
                 .gap(theme.rems(0.25))
                 .truncate()
                 .text_size(list::SUB_HEADER_TEXT.px(theme))
-                .text_color(theme.text_3)
+                .text_color(theme.text_muted)
                 .child(label.into()),
         )
 }
@@ -310,7 +314,11 @@ pub(crate) fn picker_entry<E: Styled>(el: E, theme: &Theme) -> E {
 /// and an icon inside it takes [`ButtonSize::icon_size`], so every button's
 /// glyph matches its frame. Callers keep colors, border, hover, press, and
 /// click handling.
-pub(crate) fn button_frame<E: Styled>(el: E, theme: &Theme, size: ButtonSize) -> E {
+pub(crate) fn button_frame<E: Styled + gpui::InteractiveElement>(
+    el: E,
+    theme: &Theme,
+    size: ButtonSize,
+) -> E {
     el.flex_none()
         .h(size.height(theme))
         .px(size.padding_x(theme))
@@ -322,6 +330,7 @@ pub(crate) fn button_frame<E: Styled>(el: E, theme: &Theme, size: ButtonSize) ->
         .whitespace_nowrap()
         .text_size(button::label_size(size).px(theme))
         .line_height(relative(1.))
+        .focus(|style| style.border_1().border_color(theme.focus_ring))
 }
 
 /// Where a segment sits inside a segmented control (a grouped row of
@@ -353,7 +362,7 @@ impl SegmentPosition {
 /// one control while each keeps a real button's size, padding, label, and
 /// [`button::RADIUS`]. Callers keep the colors, hover, press, and click
 /// handling, exactly as with a standalone button.
-pub(crate) fn segmented_segment<E: Styled>(
+pub(crate) fn segmented_segment<E: Styled + gpui::InteractiveElement>(
     el: E,
     theme: &Theme,
     size: ButtonSize,
@@ -373,13 +382,18 @@ pub(crate) fn segmented_segment<E: Styled>(
 /// [`ButtonSize`], [`button::radius`], the icon centered at
 /// [`ButtonSize::icon_size`]. Callers keep colors, hover, press, tooltip, and
 /// click handling.
-pub(crate) fn icon_button_frame<E: Styled>(el: E, theme: &Theme, size: ButtonSize) -> E {
+pub(crate) fn icon_button_frame<E: Styled + gpui::InteractiveElement>(
+    el: E,
+    theme: &Theme,
+    size: ButtonSize,
+) -> E {
     el.flex_none()
         .size(size.height(theme))
         .flex()
         .items_center()
         .justify_center()
         .rounded(button::radius(size).px(theme))
+        .focus(|style| style.border_1().border_color(theme.focus_ring))
 }
 
 /// A text field's box, Zed's `InputField`: at least 32px tall, `px_2`
@@ -440,7 +454,7 @@ pub(crate) fn empty_state(
                 .mt(DynamicSpacing::Base16.px(&theme))
                 .text_size(TextSize::Default.px(&theme))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.text)
+                .text_color(theme.text_primary)
                 .child(title.to_string()),
         );
     if let Some(detail) = detail {
@@ -451,7 +465,7 @@ pub(crate) fn empty_state(
                 .text_align(TextAlign::Center)
                 .text_size(TextSize::Small.px(&theme))
                 .line_height(theme.ui_px(17.))
-                .text_color(theme.text_3)
+                .text_color(theme.text_muted)
                 .child(detail.to_string()),
         );
     }
@@ -469,14 +483,14 @@ pub(crate) fn empty_state_glyph(theme: Theme, glyph: &'static str) -> AnyElement
         .rounded(Radius::XLarge.px(&theme))
         .border_1()
         .border_color(theme.border)
-        .bg(theme.bg_raised)
+        .bg(theme.surface_elevated)
         .flex()
         .items_center()
         .justify_center()
         .child(icon(
             glyph,
             IconSize::Custom(32. / 16.).px(&theme),
-            theme.text_2,
+            theme.text_secondary,
         ))
         .into_any_element()
 }
@@ -581,12 +595,12 @@ pub(crate) fn star_project_banner(
         .rounded(Radius::Large.px(&theme))
         .border_1()
         .border_color(theme.border)
-        .bg(theme.bg_raised)
+        .bg(theme.surface_elevated)
         .flex()
         .items_center()
         .gap(DynamicSpacing::Base08.px(&theme))
         .cursor_pointer()
-        .hover(|s| s.bg(theme.bg_hover).border_color(theme.border_strong))
+        .hover(|s| s.bg(theme.surface_hover).border_color(theme.border_strong))
         .active(|s| s.opacity(PRESS_DIM))
         .on_mouse_up(MouseButton::Left, |_, _, cx| {
             cx.open_url(env!("CARGO_PKG_REPOSITORY"));
@@ -594,7 +608,7 @@ pub(crate) fn star_project_banner(
         .child(icon(
             "icons/star.svg",
             ButtonSize::Medium.icon_size().px(&theme),
-            theme.accent,
+            theme.accent_text,
         ))
         .child(
             div()
@@ -607,14 +621,14 @@ pub(crate) fn star_project_banner(
                         .truncate()
                         .text_size(TextSize::Small.px(&theme))
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text)
+                        .text_color(theme.text_primary)
                         .child(tr!("sidebar.star_orbit")),
                 )
                 .child(
                     div()
                         .truncate()
                         .text_size(TextSize::XSmall.px(&theme))
-                        .text_color(theme.text_3)
+                        .text_color(theme.text_muted)
                         .child(tr!("sidebar.star_orbit_detail")),
                 ),
         )
@@ -684,7 +698,7 @@ pub(crate) fn header_ghost_button(
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .hover(|s| s.bg(theme.bg_hover)),
+            .hover(|s| s.bg(theme.surface_hover)),
     )
     .child(child)
 }
@@ -751,15 +765,15 @@ fn caption_button(
     label: String,
 ) -> impl IntoElement {
     let fill = if close {
-        theme.stop_red
+        theme.error
     } else {
-        theme.bg_hover
+        theme.surface_hover
     };
-    let mut glyph_el = icon(glyph, IconSize::Small.px(&theme), theme.text_2);
+    let mut glyph_el = icon(glyph, IconSize::Small.px(&theme), theme.text_secondary);
     if close {
         // The close glyph rides the caption's red hover; the shared button ink
         // lift already brightens it.
-        glyph_el = glyph_el.text_color(theme.text_2);
+        glyph_el = glyph_el.text_color(theme.text_secondary);
     }
     press(
         div()
@@ -976,7 +990,7 @@ pub(crate) fn runtime_text(theme: Theme, text: String) -> AnyElement {
         .min_w_0()
         .truncate()
         .text_size(TextSize::Small.px(&theme))
-        .text_color(theme.text)
+        .text_color(theme.text_primary)
         .child(text)
         .into_any_element()
 }
@@ -988,7 +1002,7 @@ pub(crate) fn runtime_path(theme: Theme, text: String) -> AnyElement {
         .truncate()
         .font_family(theme::code_font_family())
         .text_size(theme.code_px(11.5))
-        .text_color(theme.text_2)
+        .text_color(theme.text_secondary)
         .child(text)
         .into_any_element()
 }
@@ -999,7 +1013,7 @@ pub(crate) fn runtime_error(theme: Theme, text: String) -> AnyElement {
         .min_w_0()
         .truncate()
         .text_size(TextSize::Small.px(&theme))
-        .text_color(theme.crit)
+        .text_color(theme.error)
         .child(text)
         .into_any_element()
 }

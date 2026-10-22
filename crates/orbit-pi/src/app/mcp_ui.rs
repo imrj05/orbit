@@ -915,7 +915,11 @@ impl OrbitApp {
         Some(
             button_frame(div().id("status-mcp"), &theme, ButtonSize::Default)
                 .cursor_pointer()
-                .hover(|style| style.bg(theme.overlay).text_color(theme.text_2))
+                .hover(|style| {
+                    style
+                        .bg(theme.surface_hover)
+                        .text_color(theme.text_secondary)
+                })
                 .tip(tr!("mcp.command_open"))
                 .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                     entity.update(cx, |app, cx| {
@@ -927,10 +931,10 @@ impl OrbitApp {
                 .child(icon(
                     "icons/tools/mcp.svg",
                     ButtonSize::Default.icon_size().px(&theme),
-                    theme.text_3,
+                    theme.text_muted,
                 ))
                 .child(div().size(px(6.)).rounded_full().bg(dot))
-                .child(div().text_color(theme.text_2).child(label))
+                .child(div().text_color(theme.text_secondary).child(label))
                 .into_any_element(),
         )
     }
@@ -962,7 +966,7 @@ impl OrbitApp {
         }
         let (dot, label) = if failed > 0 {
             (
-                theme.crit,
+                theme.error,
                 tr!(
                     "mcp.chip_failed",
                     connected = connected,
@@ -972,17 +976,17 @@ impl OrbitApp {
             )
         } else if needs_auth > 0 {
             (
-                theme.warn,
+                theme.warning,
                 tr!("mcp.chip_auth", connected = connected, total = total),
             )
         } else if connected == total {
             (
-                theme.ok_green,
+                theme.success,
                 tr!("mcp.chip_connected", connected = connected, total = total),
             )
         } else {
             (
-                theme.text_3,
+                theme.text_muted,
                 tr!("mcp.chip_idle", connected = connected, total = total),
             )
         };
@@ -1019,16 +1023,16 @@ impl OrbitApp {
             .child(icon(
                 "icons/search.svg",
                 input::ICON.px(&theme),
-                theme.text_3,
+                theme.text_muted,
             ))
             .child(div().flex_1().min_w_0().child(self.mcp_filter.clone()));
 
         let refresh = icon_button_frame(div().id("mcp-refresh"), &theme, ButtonSize::Large)
             .border_1()
             .border_color(theme.border)
-            .raised(theme.bg_raised, &theme)
+            .raised(theme.surface_elevated, &theme)
             .cursor_pointer()
-            .hover(|style| style.raised(theme.bg_hover, &theme))
+            .hover(|style| style.raised(theme.surface_hover, &theme))
             .tip(tr!("mcp.refresh"))
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
@@ -1038,16 +1042,17 @@ impl OrbitApp {
                 "mcp-refresh-spin",
                 ButtonSize::Large.icon_size().px(&theme),
                 self.mcp.is_probing(),
-                theme.text_2,
+                theme.text_secondary,
                 theme,
             ));
 
         let add = button_frame(div().id("mcp-add"), &theme, ButtonSize::Large)
             .cursor_pointer()
             .font_weight(FontWeight::MEDIUM)
-            .raised(theme.send_bg, &theme)
-            .text_color(theme.send_fg)
-            .hover(|style| style.raised(theme.send_bg_hover, &theme))
+            .raised(theme.action, &theme)
+            .text_color(theme.action_fg)
+            .hover(|style| style.raised(theme.action_hover, &theme))
+            .active(|style| style.raised(theme.action_pressed, &theme))
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, window, cx| this.update(cx, |app, cx| app.mcp_add(window, cx))
@@ -1055,7 +1060,7 @@ impl OrbitApp {
             .child(icon(
                 "icons/plus.svg",
                 ButtonSize::Large.icon_size().px(&theme),
-                theme.send_fg,
+                theme.action_fg,
             ))
             .child(tr!("mcp.add_server"));
 
@@ -1094,7 +1099,7 @@ impl OrbitApp {
             .items_center()
             .gap(DynamicSpacing::Base08.px(&theme))
             .text_size(TextSize::Small.px(&theme))
-            .text_color(theme.text_3)
+            .text_color(theme.text_muted)
             .child(label)
             .when(!self.mcp.servers().is_empty(), |row| {
                 row.child(
@@ -1348,8 +1353,8 @@ impl OrbitApp {
             .gap(DynamicSpacing::Base16.px(&theme))
             .when(first, |row| row.rounded_t(Radius::XLarge.px(&theme)))
             .when(last, |row| row.rounded_b(Radius::XLarge.px(&theme)))
-            .when(selected, |row| row.bg(theme.overlay))
-            .hover(|row| row.bg(theme.bg_hover))
+            .when(selected, |row| row.bg(theme.selection))
+            .hover(|row| row.bg(theme.surface_hover))
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 let name = name.clone();
@@ -1379,7 +1384,7 @@ impl OrbitApp {
                             .truncate()
                             .text_size(TextSize::Default.px(&theme))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme.text)
+                            .text_color(theme.text_primary)
                             .child(server.name.clone()),
                     )
                     .child(mcp_chip(tr!(server.scope.label_key()), theme))
@@ -1389,7 +1394,7 @@ impl OrbitApp {
             left = left.child(
                 div()
                     .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.text_2)
+                    .text_color(theme.text_secondary)
                     .child(description.clone()),
             );
         }
@@ -1399,7 +1404,7 @@ impl OrbitApp {
                 .items_center()
                 .gap(DynamicSpacing::Base06.px(&theme))
                 .text_size(TextSize::Small.px(&theme))
-                .text_color(theme.text_3)
+                .text_color(theme.text_muted)
                 .child(tr!(
                     "mcp.transport_label",
                     transport = mcp_transport_summary(&server.def.transport)
@@ -1420,7 +1425,7 @@ impl OrbitApp {
                 div()
                     .max_w(px(560.))
                     .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.crit)
+                    .text_color(theme.error)
                     .truncate()
                     .tip(error.clone())
                     .child(error.clone()),
@@ -1430,7 +1435,7 @@ impl OrbitApp {
                     div()
                         .max_w(px(560.))
                         .text_size(TextSize::Small.px(&theme))
-                        .text_color(theme.text_3)
+                        .text_color(theme.text_muted)
                         .child(hint),
                 );
             }
@@ -1474,12 +1479,12 @@ impl OrbitApp {
                     .child(icon(
                         "icons/lock.svg",
                         IconSize::XSmall.px(&theme),
-                        theme.text_3,
+                        theme.text_muted,
                     ))
                     .child(
                         div()
                             .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_3)
+                            .text_color(theme.text_muted)
                             .child(tr!("mcp.oauth")),
                     )
                     .child(mcp_text_button(
@@ -1545,13 +1550,13 @@ impl OrbitApp {
                         .child(spinner(
                             ElementId::Name(format!("mcp-auth-{name}").into()),
                             IconSize::XSmall.px(&theme),
-                            theme.accent,
+                            theme.accent_text,
                             theme,
                         ))
                         .child(
                             div()
                                 .text_size(TextSize::Small.px(&theme))
-                                .text_color(theme.text_3)
+                                .text_color(theme.text_muted)
                                 .child(tr!("mcp.waiting_for_browser")),
                         )
                         .child(mcp_text_button(
@@ -1644,14 +1649,14 @@ impl OrbitApp {
                 spinner(
                     "mcp-empty-spinner",
                     IconSize::XLarge.px(&theme),
-                    theme.text_3,
+                    theme.text_muted,
                     theme,
                 )
             } else {
                 icon(
                     "icons/tools/mcp.svg",
                     IconSize::XLarge.px(&theme),
-                    theme.text_3,
+                    theme.text_muted,
                 )
                 .into_any_element()
             })
@@ -1659,7 +1664,7 @@ impl OrbitApp {
                 div()
                     .text_size(TextSize::Default.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text)
+                    .text_color(theme.text_primary)
                     .child(if loading {
                         tr!("mcp.checking")
                     } else {
@@ -1671,16 +1676,17 @@ impl OrbitApp {
                 .child(
                     div()
                         .text_size(TextSize::Small.px(&theme))
-                        .text_color(theme.text_2)
+                        .text_color(theme.text_secondary)
                         .child(tr!("mcp.empty_hint")),
                 )
                 .child(
                     button_frame(div().id("mcp-empty-add"), &theme, ButtonSize::Medium)
                         .cursor_pointer()
                         .font_weight(FontWeight::MEDIUM)
-                        .raised(theme.send_bg, &theme)
-                        .text_color(theme.send_fg)
-                        .hover(|style| style.raised(theme.send_bg_hover, &theme))
+                        .raised(theme.action, &theme)
+                        .text_color(theme.action_fg)
+                        .hover(|style| style.raised(theme.action_hover, &theme))
+                        .active(|style| style.raised(theme.action_pressed, &theme))
                         .on_mouse_up(MouseButton::Left, {
                             let this = this.clone();
                             move |_, window, cx| this.update(cx, |app, cx| app.mcp_add(window, cx))
@@ -1699,21 +1705,21 @@ impl OrbitApp {
             .py(DynamicSpacing::Base12.px(&theme))
             .rounded(Radius::XLarge.px(&theme))
             .border_1()
-            .border_color(theme.crit.opacity(0.35))
-            .bg(theme.crit.opacity(0.06))
+            .border_color(theme.error.opacity(0.35))
+            .bg(theme.error.opacity(0.06))
             .flex()
             .flex_col()
             .gap(DynamicSpacing::Base04.px(&theme))
             .child(
                 div()
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.crit)
+                    .text_color(theme.error)
                     .child(title),
             )
             .child(
                 div()
                     .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.text_2)
+                    .text_color(theme.text_secondary)
                     .child(detail.to_string()),
             )
             .into_any_element()
@@ -1732,7 +1738,7 @@ impl OrbitApp {
             .rounded(Radius::XLarge.px(&theme))
             .border_1()
             .border_color(theme.border_strong)
-            .bg(theme.bg_composer)
+            .bg(theme.surface_secondary)
             .flex()
             .items_center()
             .gap(DynamicSpacing::Base12.px(&theme))
@@ -1746,13 +1752,13 @@ impl OrbitApp {
                     .child(
                         div()
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text)
+                            .text_color(theme.text_primary)
                             .child(tr!("mcp.external_change_title")),
                     )
                     .child(
                         div()
                             .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_2)
+                            .text_color(theme.text_secondary)
                             .child(tr!("mcp.external_change_body")),
                     ),
             )
@@ -1794,13 +1800,13 @@ impl OrbitApp {
                     .child(
                         div()
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text)
+                            .text_color(theme.text_primary)
                             .child(tr!("mcp.restart_title")),
                     )
                     .child(
                         div()
                             .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_2)
+                            .text_color(theme.text_secondary)
                             .child(tr!("mcp.restart_body")),
                     ),
             )
@@ -1841,12 +1847,12 @@ impl OrbitApp {
                     .child(
                         input_label(label, &theme)
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_2),
+                            .text_color(theme.text_secondary),
                     )
                     .child(
                         input_field_frame(div(), &theme)
                             .w_full()
-                            .bg(theme.bg_main)
+                            .bg(theme.background)
                             .items_start()
                             .child(input),
                     );
@@ -1854,7 +1860,7 @@ impl OrbitApp {
                     column = column.child(
                         div()
                             .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_3)
+                            .text_color(theme.text_muted)
                             .child(hint),
                     );
                 }
@@ -1886,13 +1892,17 @@ impl OrbitApp {
                     if selected {
                         theme.accent.opacity(0.12)
                     } else {
-                        theme.bg_raised
+                        theme.surface_elevated
                     },
                     &theme,
                 )
-                .text_color(if selected { theme.accent } else { theme.text_2 })
+                .text_color(if selected {
+                    theme.accent_text
+                } else {
+                    theme.text_secondary
+                })
                 .cursor_pointer()
-                .hover(|style| style.raised(theme.bg_hover, &theme))
+                .hover(|style| style.raised(theme.surface_hover, &theme))
                 .on_mouse_up(MouseButton::Left, {
                     let this = this.clone();
                     move |_, _, cx| {
@@ -1917,13 +1927,13 @@ impl OrbitApp {
                 .child(
                     input_label(tr!("mcp.name"), &theme)
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme.text_2),
+                        .text_color(theme.text_secondary),
                 )
                 .child(
                     div()
                         .font_family(theme::code_font_family())
                         .text_size(TextSize::Default.px(&theme))
-                        .text_color(theme.text)
+                        .text_color(theme.text_primary)
                         .child(
                             editor
                                 .original
@@ -2039,19 +2049,19 @@ impl OrbitApp {
                                             "icons/chevron-right.svg"
                                         },
                                         IconSize::XSmall.px(&theme),
-                                        theme.text_3,
+                                        theme.text_muted,
                                     ))
                                     .child(
                                         div()
                                             .font_weight(FontWeight::MEDIUM)
-                                            .text_color(theme.text_2)
+                                            .text_color(theme.text_secondary)
                                             .child(tr!("mcp.oauth_settings")),
                                     ),
                             )
                             .child(
                                 div()
                                     .text_size(TextSize::Small.px(&theme))
-                                    .text_color(theme.text_3)
+                                    .text_color(theme.text_muted)
                                     .child(tr!("mcp.oauth_settings_hint")),
                             )
                             .children(editor.oauth_open.then_some(oauth_fields)),
@@ -2079,11 +2089,11 @@ impl OrbitApp {
                     .border_1()
                     .border_color(gpui::transparent_black())
                     .focusable()
-                    .focus(|style| style.border_color(theme.accent))
+                    .focus(|style| style.border_color(theme.focus_ring))
                     .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                     .cursor_pointer()
-                    .when(selected, |row| row.bg(theme.accent.opacity(0.10)))
-                    .hover(|row| row.bg(theme.bg_hover))
+                    .when(selected, |row| row.bg(theme.selection))
+                    .hover(|row| row.bg(theme.surface_hover))
                     .on_key_down({
                         let this = this.clone();
                         move |event, _, cx| {
@@ -2121,12 +2131,20 @@ impl OrbitApp {
                                     "icons/circle-dot.svg"
                                 },
                                 IconSize::XSmall.px(&theme),
-                                if selected { theme.accent } else { theme.text_3 },
+                                if selected {
+                                    theme.accent_text
+                                } else {
+                                    theme.text_muted
+                                },
                             ))
                             .child(
                                 div()
                                     .font_weight(FontWeight::MEDIUM)
-                                    .text_color(if selected { theme.text } else { theme.text_2 })
+                                    .text_color(if selected {
+                                        theme.text_primary
+                                    } else {
+                                        theme.text_secondary
+                                    })
                                     .child(tr!(mode.label_key())),
                             ),
                     )
@@ -2134,7 +2152,7 @@ impl OrbitApp {
                         div()
                             .pl(DynamicSpacing::Base24.px(&theme))
                             .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_3)
+                            .text_color(theme.text_muted)
                             .child(tr!(mode.description_key())),
                     ),
             );
@@ -2159,11 +2177,11 @@ impl OrbitApp {
                     .border_1()
                     .border_color(gpui::transparent_black())
                     .focusable()
-                    .focus(|style| style.border_color(theme.accent))
+                    .focus(|style| style.border_color(theme.focus_ring))
                     .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                     .cursor_pointer()
-                    .when(selected, |row| row.bg(theme.accent.opacity(0.10)))
-                    .hover(|row| row.bg(theme.bg_hover))
+                    .when(selected, |row| row.bg(theme.selection))
+                    .hover(|row| row.bg(theme.surface_hover))
                     .on_key_down({
                         let this = this.clone();
                         move |event, _, cx| {
@@ -2201,12 +2219,20 @@ impl OrbitApp {
                                     "icons/circle-dot.svg"
                                 },
                                 IconSize::XSmall.px(&theme),
-                                if selected { theme.accent } else { theme.text_3 },
+                                if selected {
+                                    theme.accent_text
+                                } else {
+                                    theme.text_muted
+                                },
                             ))
                             .child(
                                 div()
                                     .font_weight(FontWeight::MEDIUM)
-                                    .text_color(if selected { theme.text } else { theme.text_2 })
+                                    .text_color(if selected {
+                                        theme.text_primary
+                                    } else {
+                                        theme.text_secondary
+                                    })
                                     .child(tr!(scope.label_key())),
                             ),
                     )
@@ -2214,7 +2240,7 @@ impl OrbitApp {
                         div()
                             .pl(DynamicSpacing::Base24.px(&theme))
                             .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_3)
+                            .text_color(theme.text_muted)
                             .child(tr!(match scope {
                                 McpScope::Global => "mcp.scope_global_hint",
                                 McpScope::Project => "mcp.scope_project_hint",
@@ -2235,13 +2261,13 @@ impl OrbitApp {
                     .child(
                         input_label(tr!("mcp.transport"), &theme)
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_2),
+                            .text_color(theme.text_secondary),
                     )
                     .child(transport_chips)
                     .child(
                         div()
                             .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_3)
+                            .text_color(theme.text_muted)
                             .child(tr!(editor.kind.hint_key())),
                     ),
             )
@@ -2260,7 +2286,7 @@ impl OrbitApp {
                     .child(
                         input_label(tr!("mcp.exposure"), &theme)
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_2),
+                            .text_color(theme.text_secondary),
                     )
                     .child(exposure_list),
             )
@@ -2272,7 +2298,7 @@ impl OrbitApp {
                     .child(
                         input_label(tr!("mcp.scope"), &theme)
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_2),
+                            .text_color(theme.text_secondary),
                     )
                     .child(scope_list),
             );
@@ -2282,9 +2308,9 @@ impl OrbitApp {
                     .px(DynamicSpacing::Base08.px(&theme))
                     .py(DynamicSpacing::Base08.px(&theme))
                     .rounded(Radius::Large.px(&theme))
-                    .bg(theme.crit.opacity(0.1))
+                    .bg(theme.error.opacity(0.1))
                     .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.crit)
+                    .text_color(theme.error)
                     .child(error.clone()),
             );
         }
@@ -2292,20 +2318,25 @@ impl OrbitApp {
         let cancel = button_frame(div().id("mcp-editor-cancel"), &theme, ButtonSize::Large)
             .border_1()
             .border_color(theme.border)
-            .raised(theme.bg_raised, &theme)
+            .raised(theme.surface_elevated, &theme)
             .cursor_pointer()
-            .hover(|style| style.raised(theme.bg_hover, &theme))
+            .hover(|style| style.raised(theme.surface_hover, &theme))
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, _, cx| this.update(cx, |app, cx| app.mcp_editor_close(cx))
             })
-            .child(div().text_color(theme.text_2).child(tr!("mcp.cancel")));
+            .child(
+                div()
+                    .text_color(theme.text_secondary)
+                    .child(tr!("mcp.cancel")),
+            );
         let save = button_frame(div().id("mcp-editor-save"), &theme, ButtonSize::Large)
             .cursor_pointer()
             .font_weight(FontWeight::MEDIUM)
-            .raised(theme.send_bg, &theme)
-            .text_color(theme.send_fg)
-            .hover(|style| style.raised(theme.send_bg_hover, &theme))
+            .raised(theme.action, &theme)
+            .text_color(theme.action_fg)
+            .hover(|style| style.raised(theme.action_hover, &theme))
+            .active(|style| style.raised(theme.action_pressed, &theme))
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, _, cx| this.update(cx, |app, cx| app.mcp_editor_save(cx))
@@ -2341,13 +2372,13 @@ impl OrbitApp {
                             .text_size(modal::HEADLINE.px(&theme))
                             .line_height(modal::HEADLINE.line_height(&theme))
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text)
+                            .text_color(theme.text_primary)
                             .child(title),
                     )
                     .child(
                         div()
                             .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_3)
+                            .text_color(theme.text_muted)
                             .child(tr!("mcp.editor_subtitle")),
                     ),
             )
@@ -2495,8 +2526,8 @@ impl OrbitApp {
         let refresh = icon_button_frame(div().id("quota-mcp-refresh"), &theme, ButtonSize::Medium)
             .group(BUTTON_GROUP)
             .cursor_pointer()
-            .hover(|style| style.bg(theme.bg_hover))
-            .active(|style| style.bg(theme.active))
+            .hover(|style| style.bg(theme.surface_hover))
+            .active(|style| style.bg(theme.surface_active))
             .tip(tr!("mcp.refresh"))
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
@@ -2506,7 +2537,7 @@ impl OrbitApp {
                 "quota-mcp-refresh-spin",
                 ButtonSize::Medium.icon_size().px(&theme),
                 self.mcp.is_probing(),
-                theme.text_2,
+                theme.text_secondary,
                 theme,
             ));
         div()
@@ -2516,7 +2547,7 @@ impl OrbitApp {
             .children((total > 0).then(|| {
                 div()
                     .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.text_2)
+                    .text_color(theme.text_secondary)
                     .child(tr!(
                         "mcp.popup_connected",
                         connected = connected,
@@ -2570,20 +2601,20 @@ impl OrbitApp {
             .child(icon(
                 "icons/tools/mcp.svg",
                 IconSize::Medium.px(&theme),
-                theme.text_3,
+                theme.text_muted,
             ))
             .child(
                 div()
                     .text_size(TextSize::Small.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text)
+                    .text_color(theme.text_primary)
                     .child(tr!("mcp.empty_title")),
             )
             .child(
                 div()
                     .max_w(px(220.))
                     .text_size(TextSize::XSmall.px(&theme))
-                    .text_color(theme.text_3)
+                    .text_color(theme.text_muted)
                     .text_center()
                     .child(tr!("mcp.empty_hint")),
             )
@@ -2617,7 +2648,7 @@ impl OrbitApp {
             .as_ref()
             .is_some_and(|job| job.server == server.name);
         let tone = if pending {
-            theme.accent
+            theme.info
         } else {
             mcp_status_color(status, theme)
         };
@@ -2661,9 +2692,9 @@ impl OrbitApp {
                             .text_size(TextSize::Small.px(&theme))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(if server.def.enabled {
-                                theme.text
+                                theme.text_primary
                             } else {
-                                theme.text_2
+                                theme.text_secondary
                             })
                             .child(server.name.clone()),
                     ),
@@ -2674,7 +2705,7 @@ impl OrbitApp {
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_size(TextSize::XSmall.px(&theme))
-                    .text_color(theme.text_3)
+                    .text_color(theme.text_muted)
                     .child(mcp_popup_meta(server)),
             );
         if let Some(error) = &runtime.error {
@@ -2684,7 +2715,7 @@ impl OrbitApp {
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_size(TextSize::XSmall.px(&theme))
-                    .text_color(theme.crit)
+                    .text_color(theme.error)
                     .tip(error.clone())
                     .child(error.clone()),
             );
@@ -2699,7 +2730,7 @@ impl OrbitApp {
                 .child(
                     div()
                         .text_size(TextSize::XSmall.px(&theme))
-                        .text_color(theme.text_3)
+                        .text_color(theme.text_muted)
                         .child(tr!("mcp.waiting_for_browser")),
                 )
                 .child(mcp_popup_action(
@@ -2717,7 +2748,7 @@ impl OrbitApp {
                     .flex_none()
                     .font(crate::usage::view::num_font())
                     .text_size(TextSize::XSmall.px(&theme))
-                    .text_color(theme.text_2)
+                    .text_color(theme.text_secondary)
                     .child(tr!("mcp.popup_tools", count = runtime.tools.len()))
                     .into_any_element(),
                 McpServerStatus::NeedsAuth => mcp_popup_action(
@@ -2729,16 +2760,16 @@ impl OrbitApp {
                     move |app, cx| app.mcp_sign_in(name_sign_in.clone(), cx),
                 ),
                 McpServerStatus::Failed => {
-                    mcp_popup_status(tr!("mcp.status_failed"), theme.crit, theme)
+                    mcp_popup_status(tr!("mcp.status_failed"), theme.error, theme)
                 }
                 McpServerStatus::Disabled => {
-                    mcp_popup_status(tr!("mcp.disabled"), theme.text_3, theme)
+                    mcp_popup_status(tr!("mcp.disabled"), theme.text_muted, theme)
                 }
                 McpServerStatus::Connecting => {
-                    mcp_popup_status(tr!("mcp.status_connecting"), theme.text_3, theme)
+                    mcp_popup_status(tr!("mcp.status_connecting"), theme.text_muted, theme)
                 }
                 McpServerStatus::Disconnected | McpServerStatus::Unknown => {
-                    mcp_popup_status(tr!(status.label_key()), theme.text_3, theme)
+                    mcp_popup_status(tr!(status.label_key()), theme.text_muted, theme)
                 }
             }
         };
@@ -2757,7 +2788,7 @@ impl OrbitApp {
             .items_start()
             .gap(DynamicSpacing::Base08.px(&theme))
             .cursor_pointer()
-            .hover(|style| style.bg(theme.bg_hover))
+            .hover(|style| style.bg(theme.surface_hover))
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, _, cx| {
@@ -2801,7 +2832,7 @@ impl OrbitApp {
             .child(
                 div()
                     .text_size(TextSize::XSmall.px(&theme))
-                    .text_color(theme.text_3)
+                    .text_color(theme.text_muted)
                     .child(checked),
             )
             .into_any_element()
@@ -2852,17 +2883,18 @@ fn mcp_popup_action(
     .font_weight(FontWeight::MEDIUM);
     button = if primary {
         button
-            .raised(theme.send_bg, &theme)
-            .text_color(theme.send_fg)
-            .hover(|style| style.raised(theme.send_bg_hover, &theme))
+            .raised(theme.action, &theme)
+            .text_color(theme.action_fg)
+            .hover(|style| style.raised(theme.action_hover, &theme))
+            .active(|style| style.raised(theme.action_pressed, &theme))
     } else {
         button
             .raised(theme.overlay, &theme)
-            .text_color(theme.text_2)
+            .text_color(theme.text_secondary)
             .hover(|style| {
                 style
                     .raised(theme.overlay_strong, &theme)
-                    .text_color(theme.text)
+                    .text_color(theme.text_primary)
             })
     };
     press(button)
@@ -2887,12 +2919,12 @@ fn kind_label(kind: McpTransportKind) -> &'static str {
 /// with a glyph and a label.
 fn mcp_status_color(status: McpServerStatus, theme: Theme) -> Hsla {
     match status {
-        McpServerStatus::Connected => theme.ok_green,
-        McpServerStatus::Failed => theme.crit,
-        McpServerStatus::NeedsAuth => theme.warn,
-        McpServerStatus::Connecting => theme.accent,
+        McpServerStatus::Connected => theme.success,
+        McpServerStatus::Failed => theme.error,
+        McpServerStatus::NeedsAuth => theme.warning,
+        McpServerStatus::Connecting => theme.info,
         McpServerStatus::Disabled | McpServerStatus::Disconnected | McpServerStatus::Unknown => {
-            theme.text_3
+            theme.text_muted
         }
     }
 }
@@ -2962,13 +2994,13 @@ fn mcp_chip(label: String, theme: Theme) -> AnyElement {
         .h(DynamicSpacing::Base20.px(&theme))
         .px(DynamicSpacing::Base06.px(&theme))
         .rounded(Radius::Medium.px(&theme))
-        .bg(theme.bg_raised)
+        .bg(theme.surface_elevated)
         .border_1()
         .border_color(theme.border)
         .flex()
         .items_center()
         .text_size(TextSize::XSmall.px(&theme))
-        .text_color(theme.text_3)
+        .text_color(theme.text_muted)
         .child(label)
         .into_any_element()
 }
@@ -2995,7 +3027,7 @@ fn mcp_switch(
         .items_center()
         .cursor_pointer()
         .when(on, |t| t.bg(theme.accent).justify_end())
-        .when(!on, |t| t.bg(theme.bg_raised).justify_start())
+        .when(!on, |t| t.bg(theme.surface_elevated).justify_start())
         .hover(|t| t.border_color(theme.border_strong))
         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
             this.update(cx, |app, cx| action(app, cx));
@@ -3024,10 +3056,14 @@ fn mcp_icon_action(
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .hover(|style| style.bg(theme.bg_hover)),
+            .hover(|style| style.bg(theme.surface_hover)),
     )
     .tip(tip)
-    .child(icon(glyph_path, IconSize::Small.px(&theme), theme.text_3))
+    .child(icon(
+        glyph_path,
+        IconSize::Small.px(&theme),
+        theme.text_muted,
+    ))
     .on_mouse_up(MouseButton::Left, move |_, window, cx| {
         this.update(cx, |app, cx| action(app, window, cx));
     })
@@ -3054,16 +3090,17 @@ fn mcp_text_button(
     .font_weight(FontWeight::MEDIUM);
     button = if primary {
         button
-            .raised(theme.send_bg, &theme)
-            .text_color(theme.send_fg)
-            .hover(|style| style.raised(theme.send_bg_hover, &theme))
+            .raised(theme.action, &theme)
+            .text_color(theme.action_fg)
+            .hover(|style| style.raised(theme.action_hover, &theme))
+            .active(|style| style.raised(theme.action_pressed, &theme))
     } else {
         button
             .border_1()
             .border_color(theme.border)
-            .raised(theme.bg_raised, &theme)
-            .text_color(theme.text_2)
-            .hover(|style| style.raised(theme.bg_hover, &theme))
+            .raised(theme.surface_elevated, &theme)
+            .text_color(theme.text_secondary)
+            .hover(|style| style.raised(theme.surface_hover, &theme))
     };
     press(button)
         .child(label)
@@ -3193,9 +3230,12 @@ mod tests {
         }
         assert_eq!(
             mcp_status_color(McpServerStatus::Connected, theme),
-            theme.ok_green
+            theme.success
         );
-        assert_eq!(mcp_status_color(McpServerStatus::Failed, theme), theme.crit);
+        assert_eq!(
+            mcp_status_color(McpServerStatus::Failed, theme),
+            theme.error
+        );
     }
 
     #[test]

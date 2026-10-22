@@ -274,13 +274,13 @@ impl Render for WorkspacePicker {
                 .h(px(row_h(&theme)))
                 .flex_none()
                 .cursor_pointer()
-                .when(highlighted, |row| row.bg(theme.overlay_strong))
+                .when(highlighted, |row| row.bg(theme.selection))
                 // The current folder keeps the `active` fill at rest (the
                 // same "chosen" register the model picker uses); the accent
                 // check alone is never the only signal.
-                .when(!highlighted && is_current, |row| row.bg(theme.active))
+                .when(!highlighted && is_current, |row| row.bg(theme.selection))
                 .when(!highlighted && !is_current, |row| {
-                    row.hover(|s| s.bg(theme.overlay))
+                    row.hover(|s| s.bg(theme.surface_hover))
                 })
                 // Pointer movement moves the highlight; a scroll sliding rows
                 // under a stationary pointer must not hijack ↑/↓ navigation.
@@ -307,7 +307,7 @@ impl Render for WorkspacePicker {
                 .child(icon(
                     "icons/folder.svg",
                     context_menu::ICON.px(&theme),
-                    theme.text_3,
+                    theme.text_muted,
                 ))
                 .child(
                     div()
@@ -327,11 +327,11 @@ impl Render for WorkspacePicker {
                                     FontWeight::NORMAL
                                 })
                                 .text_color(if highlighted {
-                                    theme.text
+                                    theme.text_primary
                                 } else if is_current {
-                                    theme.active_fg
+                                    theme.selection_fg
                                 } else {
-                                    theme.text_2
+                                    theme.text_secondary
                                 })
                                 .child(entry.name.clone()),
                         )
@@ -344,7 +344,11 @@ impl Render for WorkspacePicker {
                                 // model picker's id line.
                                 .font_family(theme::code_font_family())
                                 .text_size(picker::SECONDARY_TEXT.px(&theme))
-                                .text_color(theme.text_3)
+                                .text_color(if highlighted || is_current {
+                                    theme.text_secondary
+                                } else {
+                                    theme.text_muted
+                                })
                                 .child(entry.path.to_string_lossy().into_owned()),
                         ),
                 )
@@ -353,7 +357,11 @@ impl Render for WorkspacePicker {
                         div()
                             .flex_none()
                             .text_size(picker::SECONDARY_TEXT.px(&theme))
-                            .text_color(theme.text_3)
+                            .text_color(if highlighted || is_current {
+                                theme.text_secondary
+                            } else {
+                                theme.text_muted
+                            })
                             .child(ago),
                     )
                 })
@@ -361,7 +369,7 @@ impl Render for WorkspacePicker {
                     row.child(icon(
                         "icons/check.svg",
                         context_menu::ICON.px(&theme),
-                        theme.accent,
+                        theme.accent_text,
                     ))
                 }),
             );
@@ -383,8 +391,8 @@ impl Render for WorkspacePicker {
             // search row — Zed's picker head.
             .child(
                 picker_search_frame(div(), &theme)
-                    .text_color(theme.text)
-                    .child(icon("icons/search.svg", input::ICON.px(&theme), theme.text_3))
+                    .text_color(theme.text_primary)
+                    .child(icon("icons/search.svg", input::ICON.px(&theme), theme.text_muted))
                     .child(div().flex_1().min_w_0().child(self.filter.clone())),
             )
             // section label — a count on the right, like every other list
@@ -401,7 +409,7 @@ impl Render for WorkspacePicker {
                                 .flex()
                                 .items_center()
                                 .text_size(list::SUB_HEADER_TEXT.px(&theme))
-                                .text_color(theme.text_3)
+                                .text_color(theme.text_muted)
                                 .child(rows.len().to_string()),
                         )
                     }),
@@ -412,11 +420,11 @@ impl Render for WorkspacePicker {
                     .py(picker::list_padding_y(&theme))
                     .child(
                         picker_entry(div(), &theme)
-                            .text_color(theme.text_3)
+                            .text_color(theme.text_muted)
                             .child(icon(
                                 "icons/search.svg",
                                 context_menu::ICON.px(&theme),
-                                theme.text_3,
+                                theme.text_muted,
                             ))
                             .child(
                                 div()
@@ -453,9 +461,9 @@ impl Render for WorkspacePicker {
                         picker_entry(div().id("workspace-browse-row"), &theme)
                             .h(px(row_h(&theme)))
                             .cursor_pointer()
-                            .when(browse_highlighted, |row| row.bg(theme.overlay_strong))
+                            .when(browse_highlighted, |row| row.bg(theme.selection))
                             .when(!browse_highlighted, |row| {
-                                row.hover(|s| s.bg(theme.overlay))
+                                row.hover(|s| s.bg(theme.surface_hover))
                             })
                             .on_mouse_move({
                                 let this = this.clone();
@@ -481,12 +489,12 @@ impl Render for WorkspacePicker {
                             .child(icon(
                                 "icons/arrow-up-right.svg",
                                 context_menu::ICON.px(&theme),
-                                theme.text_2,
+                                theme.text_secondary,
                             ))
                             .child(
                                 div()
                                     .flex_1()
-                                    .text_color(theme.text_2)
+                                    .text_color(theme.text_secondary)
                                     .child(tr!("workspace_picker.choose_folder")),
                             ),
                     ),

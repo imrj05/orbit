@@ -21,6 +21,9 @@ impl OrbitApp {
     /// Remove the listed temp entries and repaint from a fresh scan. Entries a
     /// live Orbit process still owns are reported, never touched.
     pub(super) fn clean_temp_files(&mut self, cx: &mut Context<Self>) {
+        // Re-scan first: the list was built when the page opened, so anything
+        // created since then would be missed by this pass.
+        self.temp_files = crate::temp_files::TempFiles::scan();
         let outcome = crate::temp_files::clean(&self.temp_files);
         self.finish_temp_cleanup(outcome, cx);
     }
@@ -28,6 +31,7 @@ impl OrbitApp {
     /// Remove pi's older scratch entries. Files touched within the freshness
     /// window are kept so a live run keeps its logs and image paths.
     pub(super) fn clean_ai_temp_files(&mut self, cx: &mut Context<Self>) {
+        self.temp_files = crate::temp_files::TempFiles::scan();
         let outcome = crate::temp_files::clean_ai(&self.temp_files);
         self.finish_temp_cleanup(outcome, cx);
     }
@@ -83,7 +87,11 @@ impl OrbitApp {
             &tr!("settings.temporary_files_location"),
             Some(&tr!("settings.temporary_files_location_description")),
             Some(&crate::skills::display_path(dir)),
-            Some(self.temporary_files_open_button(theme, dir.to_path_buf())),
+            Some(self.temporary_files_open_button(
+                theme,
+                "temporary-files-open",
+                dir.to_path_buf(),
+            )),
         )];
 
         if self.temp_files.is_empty() {
@@ -150,15 +158,23 @@ impl OrbitApp {
         self.setting_row(theme, &entry.name, None, Some(&meta), None)
     }
 
-    fn temporary_files_open_button(&self, theme: Theme, dir: PathBuf) -> AnyElement {
-        button_frame(div().id("temporary-files-open"), &theme, ButtonSize::Large)
+    /// The id is a parameter because both the Orbit folder and the temp root
+    /// render one of these, and two elements sharing an `ElementId` share their
+    /// hover and active state.
+    fn temporary_files_open_button(
+        &self,
+        theme: Theme,
+        id: &'static str,
+        dir: PathBuf,
+    ) -> AnyElement {
+        button_frame(div().id(id), &theme, ButtonSize::Large)
             .border_1()
             .border_color(theme.border)
-            .raised(theme.bg_raised, &theme)
+            .raised(theme.surface_elevated, &theme)
             .cursor_pointer()
-            .hover(|style| style.raised(theme.bg_hover, &theme))
-            .active(|style| style.raised(theme.active, &theme))
-            .text_color(theme.text_2)
+            .hover(|style| style.raised(theme.surface_hover, &theme))
+            .active(|style| style.raised(theme.surface_active, &theme))
+            .text_color(theme.text_secondary)
             .on_mouse_up(MouseButton::Left, move |_, _, _| {
                 let target = crate::temp_files::ensure_dir().unwrap_or_else(|_| dir.clone());
                 platform::open_path_default(&target);
@@ -171,11 +187,11 @@ impl OrbitApp {
         button_frame(div().id("temporary-files-clean"), &theme, ButtonSize::Large)
             .border_1()
             .border_color(theme.border)
-            .raised(theme.bg_raised, &theme)
+            .raised(theme.surface_elevated, &theme)
             .cursor_pointer()
-            .hover(|style| style.raised(theme.bg_hover, &theme))
-            .active(|style| style.raised(theme.active, &theme))
-            .text_color(theme.text_2)
+            .hover(|style| style.raised(theme.surface_hover, &theme))
+            .active(|style| style.raised(theme.surface_active, &theme))
+            .text_color(theme.text_secondary)
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                 this.update(cx, |app, cx| app.clean_temp_files(cx));
             })
@@ -197,7 +213,7 @@ impl OrbitApp {
             &tr!("settings.ai_scratch_files_location"),
             Some(&tr!("settings.ai_scratch_files_location_description")),
             Some(&crate::skills::display_path(&root)),
-            Some(self.temporary_files_open_button(theme, root)),
+            Some(self.temporary_files_open_button(theme, "ai-scratch-open", root)),
         )];
 
         if self.temp_files.ai_is_empty() {
@@ -249,11 +265,11 @@ impl OrbitApp {
         button_frame(div().id("ai-scratch-clean"), &theme, ButtonSize::Large)
             .border_1()
             .border_color(theme.border)
-            .raised(theme.bg_raised, &theme)
+            .raised(theme.surface_elevated, &theme)
             .cursor_pointer()
-            .hover(|style| style.raised(theme.bg_hover, &theme))
-            .active(|style| style.raised(theme.active, &theme))
-            .text_color(theme.text_2)
+            .hover(|style| style.raised(theme.surface_hover, &theme))
+            .active(|style| style.raised(theme.surface_active, &theme))
+            .text_color(theme.text_secondary)
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                 this.update(cx, |app, cx| app.clean_ai_temp_files(cx));
             })

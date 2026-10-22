@@ -138,7 +138,6 @@ export async function Hero() {
           />
           <div className="rise-window relative mx-auto w-full max-w-[1180px]">
             <Shot
-              variant="product"
               src="/screens/session.png"
               srcLight="/screens/session-light.png"
               priority

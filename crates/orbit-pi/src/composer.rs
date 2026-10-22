@@ -1577,7 +1577,7 @@ impl Element for TextElement {
             let placeholder = self.input.read(cx).resolved_placeholder();
             let mut run = base.clone();
             run.len = placeholder.len();
-            run.color = theme.text_3;
+            run.color = theme.text_muted;
             (placeholder, vec![run])
         } else if let Some(lang) = syntax {
             // Code files: paint the whole buffer with the same lexer the
@@ -1755,7 +1755,7 @@ impl Element for TextElement {
                         point(origin.x, origin.y + px(2.)),
                         size(px(2.), line_height - px(4.)),
                     ),
-                    theme.accent,
+                    theme.accent_text,
                 )
             })
         } else {
@@ -1782,7 +1782,7 @@ impl Element for TextElement {
                     ),
                     size(width, thumb_height),
                 ),
-                theme.text_3.opacity(0.45),
+                theme.text_muted.opacity(0.45),
             )
         });
 
@@ -1803,7 +1803,7 @@ impl Element for TextElement {
                     .join("\n");
                 let mut run = base.clone();
                 run.len = text.len();
-                run.color = theme.text_3.opacity(0.7);
+                run.color = theme.text_muted.opacity(0.7);
                 window
                     .text_system()
                     .shape_text(text.into(), font_size, &[run], None, None)
