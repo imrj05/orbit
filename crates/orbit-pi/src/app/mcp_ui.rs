@@ -1308,11 +1308,7 @@ impl OrbitApp {
                     self.mcp_toggle_server(name, cx);
                 }
             }
-            "escape" => {
-                if self.mcp_cursor.take().is_some() {
-                    cx.notify();
-                }
-            }
+            "escape" if self.mcp_cursor.take().is_some() => cx.notify(),
             _ => {}
         }
     }
