@@ -29,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   output, codemode images, share/editor working files) and removes only those
   last used more than an hour ago. Neither section touches your workspace or
   pi's session store.
+- **Linux arm64 builds** ship next to the x86_64 ones: a native `arm64` `.deb`
+  and an `aarch64` `.tar.gz`, built on the same release run and published as
+  their own update feed, so Orbit installs and updates natively on Arm machines
+  instead of only on x86_64.
 
 ### Removed
 
