@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Image attachments are compressed at ingest.** A large PNG/JPEG attached to a
+  prompt is downscaled (longest edge 1400 px, never upscaled) and re-encoded as
+  JPEG (quality steps down to fit a 512 KiB base64 payload), while images with an
+  alpha channel become lossless WebP so transparency survives. Images already
+  under both caps pass through untouched, and animated GIFs pass through so their
+  frames survive. The status line reports the before/after size when an image
+  shrank, and both the composer chip and bug-report screenshots use the
+  compressed bytes — so a visual-debugging session can no longer balloon the
+  request body (see `docs/provider-request-limits.md`).
+
 ## [0.2.10] - 2026-10-16
 
 ### Changed

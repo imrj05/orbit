@@ -1037,7 +1037,7 @@ impl OrbitApp {
                 break;
             }
             let index = self.attachments.len();
-            self.attachments.push(Attachment::from_image(image, index));
+            self.push_attachment(Attachment::from_image(image, index), cx);
         }
         if !pasted.is_empty() {
             cx.notify();
