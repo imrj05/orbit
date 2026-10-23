@@ -78,15 +78,13 @@ jobs:
           fi
           echo "No committed key material"
 
-  # Rust advisories, independent of GitHub's scheduled Dependabot sweep.
-  # Advisory-only for now: GHSA-38c5-483c-4qqp (grid 0.18.0, pulled in by
-  # taffy via gpui) has no compatible patched release, so a blocking job would
-  # be permanently red. Drop `continue-on-error` once taffy depends on
-  # grid >= 1.0.1, or add an explicit ignore for that advisory.
+  # Rust advisories, independent of GitHub's scheduled Dependabot sweep. This
+  # is what caught quinn-proto, rustls-webpki and webpki-roots, none of which
+  # Dependabot reported. Blocking: the lockfile is clean. It tracks RustSec
+  # only — GHSA-38c5-483c-4qqp (grid) is not in that database.
   audit:
     name: audit
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
