@@ -69,6 +69,27 @@ jobs:
     # - name: Setup runtime (example)
     #   uses: actions/setup-example@v1
 
+    # Rust extraction is ~10x slower than the other three languages because the
+    # extractor shells out to cargo: `LoadManifest` resolves the dependency
+    # graph against the sparse registry index (~1 min on a cold runner) and
+    # `ExtractLibrary` builds proc-macro dependencies from source (~1 min).
+    # Both are network/warm-cache bound and repeat byte-for-byte between runs,
+    # so the registry half is worth caching.
+    #
+    # Deliberately no `target/` cache (`cache-targets: false`): the extractor
+    # runs with `cargo_target_dir: None` (its own per-run scratch dir), and
+    # `build-mode: none` never compiles this workspace. Caching `target/` would
+    # cost a multi-GB restore for no reuse and evict ci.yml's per-OS builds.
+    - name: Cache cargo registry
+      if: matrix.language == 'rust'
+      uses: Swatinem/rust-cache@v2
+      with:
+        prefix-key: codeql-rust
+        cache-targets: "false"
+        # PR runs only read the cache; writing from them would churn the
+        # 10 GB budget every push and is keyed off the same Cargo.lock anyway.
+        save-if: ${{ github.ref == 'refs/heads/main' }}
+
     # Initializes the CodeQL tools for scanning.
     - name: Initialize CodeQL
       uses: github/codeql-action/init@v4
