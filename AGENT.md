@@ -31,12 +31,19 @@ pi as a child process, no web, no webview, no Node daemon.
 ```
 Cargo.toml              workspace: orbit-pi, orbit-rpc
 crates/orbit-pi/        GPUI app — window, shell, chat, settings
-  src/main.rs           bootstrap, assets, keybindings, heartbeat, native menu (localized)
+  src/main.rs           bootstrap, assets, keybindings, native menu (localized)
+  src/main_window.rs    opens the one main window and answers macOS's Dock reopen request
+                        (`Application::on_reopen`); owns the `Shell` global that parks the `OrbitApp`
+                        entity so a reopened window resumes the same session and pi process, and
+                        spawns the heartbeat on the app (not the window) so a parked session keeps
+                        draining while no window is open
   src/commands.rs       command registry (D13): keymap rows, palette metadata, and the shortcut reference
   src/i18n.rs           AppLanguage + locale detection; the `tr!`/`tr_cow!` macros
   locales/              translations: en.yml is the source of truth, one file per locale
                         (generated from en.yml + scripts/i18n_glossary*.py)
   src/app.rs            OrbitApp state model + shared types + controller wiring (module map in the file header)
+  src/backdrop.rs       the new-task page's backdrop: a painted ordered-dither field (8×8 Bayer screen,
+                        four dot sizes) with the app monogram screened into it and a light that crosses it
   src/app/runtime.rs    pi process lifecycle, status/error, provider auth
   src/app/events.rs     heartbeat event drain, RPC response routing, session/workspace watchers
   src/app/session.rs    prompt/queue/turn lifecycle, abort, session switching + navigation
@@ -92,7 +99,9 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/sidepane.rs       Review pane: virtualized diff, sticky file headers, tree, source menu
   src/git.rs            git plumbing: branch discovery, review diffs, status/staging/history/graph
   src/git_panel.rs      full-page Git surface: Changes / History / Graph + commit bar
-  src/terminal.rs       bottom terminal panel (⌘J): alacritty_terminal PTY + VT grid, GPUI canvas render, keys/selection/paste
+  src/terminal.rs       bottom terminal panel (⌘J): tabbed shells (one PTY per tab, background tabs keep
+                        running) with each tab's login-shell profile mark; alacritty_terminal VT grid,
+                        GPUI canvas render, keys/selection/paste
   src/theme/tokens.rs   Zed design tokens (DynamicSpacing, TextSize, IconSize, ButtonSize, ElevationIndex + elevation_1/2/3, component metrics) resolved through the Theme; see INTENT.md D11
   src/providers.rs      provider catalog + models.json / auth.json read/write for Settings → Providers (provider metadata introspected from pi-ai; curated table is the fallback)
   src/quota.rs          account quota/balance/spend reducer over the `quota.*` RPC and the bridge's session entries (no secrets, no I/O)
@@ -279,7 +288,7 @@ stack is gone; do not resurrect it.
 
 1. `OrbitApp::new` spawns `PiClient::spawn(cwd, None)` so sessions land in pi's default store (`~/.pi/agent/sessions/`), shared with the CLI. Tests pass `Some("/tmp/…")` via `--session-dir`.
 2. On connect it sends `get_state`, `get_available_models`, `get_available_thinking_levels`.
-3. `main.rs` starts a window `spawn` loop: every **90 ms** call `OrbitApp::tick` → `PiClient::drain_events` (`try_recv`, never blocking).
+3. `main_window.rs` opens the one window and starts its `spawn` loop: every **90 ms** call `OrbitApp::tick` → `PiClient::drain_events` (`try_recv`, never blocking). The loop is bound to the window, so a reopen restarts it; the `OrbitApp` entity itself is parked in the `Shell` global so the pi process and transcript outlive a close.
 4. Transcript data has two inlets into the same model: `get_messages` rebuilds; `message_start` / `message_update` / `message_end` mutate live.
 5. One `PiClient` = one child. Drop kills the process. `ProcessExited` is surfaced in the status line.
 6. A few seconds after launch the pi self-update check runs off-thread (`pi_update.rs`): a newer pi installs through `pi update self` and reports via toasts; up-to-date or offline stays quiet.
