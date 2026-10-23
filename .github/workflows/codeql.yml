@@ -82,7 +82,7 @@ jobs:
     # cost a multi-GB restore for no reuse and evict ci.yml's per-OS builds.
     - name: Cache cargo registry
       if: matrix.language == 'rust'
-      uses: Swatinem/rust-cache@v2
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       with:
         prefix-key: codeql-rust
         cache-targets: "false"
