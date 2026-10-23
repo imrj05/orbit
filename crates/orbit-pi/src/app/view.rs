@@ -315,10 +315,6 @@ impl Render for OrbitApp {
         });
 
         let workspace_label = self.workspace_label();
-        // Focus ring on the composer box: the border strengthens while the
-        // input is focused (focus changes refresh the window, so this
-        // tracks without extra wiring).
-        let composer_focused = self.input.read(cx).focus_handle(cx).is_focused(window);
         let review_workspace = self
             .current_workspace
             .clone()
@@ -985,8 +981,6 @@ impl Render for OrbitApp {
                                                 .border_1()
                                                 .border_color(if self.file_drag_hovered {
                                                     theme.accent
-                                                } else if composer_focused {
-                                                    theme.focus_ring
                                                 } else {
                                                     theme.border
                                                 })

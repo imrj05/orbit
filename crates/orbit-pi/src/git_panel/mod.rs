@@ -3889,7 +3889,7 @@ impl GitPanel {
         )
     }
 
-    fn changes_tab(&self, theme: Theme, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    fn changes_tab(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
         // The diff browser is the same view the Review pane shows; stashes
         // live on their own tab.
         div()
@@ -3898,11 +3898,11 @@ impl GitPanel {
             .flex()
             .flex_col()
             .child(self.review.clone())
-            .child(self.commit_bar(theme, window, cx))
+            .child(self.commit_bar(theme, cx))
             .into_any_element()
     }
 
-    fn commit_bar(&self, theme: Theme, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    fn commit_bar(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
         let busy = self.pending.is_some() || self.generating || self.operation_busy;
         let has_changes = !self.staged.is_empty() || !self.unstaged.is_empty();
         let can_commit = !busy
@@ -3913,7 +3913,6 @@ impl GitPanel {
         };
         let behind = self.ahead_behind.map(|(_, behind)| behind).unwrap_or(0);
         let actions = bar_actions(has_changes, ahead, has_upstream, self.has_commits, behind);
-        let message_focused = self.message.read(cx).focus_handle(cx).is_focused(window);
         let commit_and_push_label = tr!("git_panel.commit_and_push");
         let commit_label = if self.generating {
             tr!("git_panel.generating_short")
@@ -3952,11 +3951,7 @@ impl GitPanel {
                     .pb(DynamicSpacing::Base12.px(&theme))
                     .rounded(Radius::XXLarge.px(&theme))
                     .border_1()
-                    .border_color(if message_focused {
-                        theme.focus_ring
-                    } else {
-                        theme.border
-                    })
+                    .border_color(theme.border)
                     .bg(theme.surface_secondary)
                     .shadow(theme.composer_shadow())
                     .text_size(TextSize::Default.px(&theme))
@@ -6795,12 +6790,7 @@ impl GitPanel {
     }
 
     /// The New/Rename branch prompt.
-    fn branch_prompt_popup(
-        &self,
-        theme: Theme,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
+    fn branch_prompt_popup(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let prompt = self.branch_prompt.as_ref()?;
         let (title, confirm_label) = match prompt {
             BranchPrompt::New => (
@@ -6812,11 +6802,6 @@ impl GitPanel {
                 tr!("git_panel.rename_branch"),
             ),
         };
-        let focused = self
-            .branch_input
-            .read(cx)
-            .focus_handle(cx)
-            .is_focused(window);
         let card = div()
             .w_full()
             .max_w(px(420.))
@@ -6838,11 +6823,6 @@ impl GitPanel {
             )
             .child(
                 input_field_frame(div(), &theme)
-                    .border_color(if focused {
-                        theme.focus_ring
-                    } else {
-                        theme.border
-                    })
                     .bg(theme.surface_secondary)
                     .child(div().flex_1().min_w_0().child(self.branch_input.clone())),
             )
@@ -7115,13 +7095,13 @@ impl GitPanel {
 // (The `OpenFile` callback type is declared near the top of the module.)
 
 impl Render for GitPanel {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.open {
             return div().into_any_element();
         }
         let theme = *theme::get(cx);
         let content = match self.tab {
-            GitTab::Changes => self.changes_tab(theme, window, cx),
+            GitTab::Changes => self.changes_tab(theme, cx),
             GitTab::History => self.history_tab(theme, cx),
             GitTab::Graph => self.graph_tab(theme, cx),
             GitTab::Stashes => self.stashes_tab(theme, cx),
@@ -7156,7 +7136,7 @@ impl Render for GitPanel {
             .children(self.file_actions_menu(theme, cx))
             .children(self.stage_prompt_popup(theme, cx))
             .children(self.confirm_popup(theme, cx))
-            .children(self.branch_prompt_popup(theme, window, cx))
+            .children(self.branch_prompt_popup(theme, cx))
             .into_any_element()
     }
 }

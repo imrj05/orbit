@@ -3142,7 +3142,8 @@ pub(crate) use helpers::{
     button_frame, context_menu_entry, context_menu_separator, context_menu_surface, empty_state,
     file_badge, file_glyph, icon, icon_button_frame, icon_dyn, input_field_frame, menu_header,
     nerd_font_family, picker_entry, picker_search_frame, picker_surface, press,
-    provider_mark_color, refresh_glyph, spinner, EmptyFill, TipExt, BUTTON_GROUP, PRESS_DIM,
+    provider_mark_color, refresh_glyph, running_spinner, spinner, EmptyFill, TipExt, BUTTON_GROUP,
+    PRESS_DIM,
 };
 use sidebar::sessions_with_placeholder;
 

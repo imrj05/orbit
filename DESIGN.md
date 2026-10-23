@@ -391,9 +391,9 @@ the chat page has neither.
 - Sidebar rows: 28px tall, 6px radius, 14px icon (Small) in a fixed 20px slot, label in
   `text_2`/`text_3`; hover fills `bg_hover`; the active destination is marked by
   `active` fill with `active_fg`, never by accent color alone.
-- A running session row leads with an 11px spinner in the accent and its title carries a
-  shimmer — an accent highlight band swept left-to-right across the ink on a 2s loop. This is
-  the only per-row motion in the sidebar; a settled row is still.
+- A running session row leads with a small accent arc turning in place and its title
+  carries a shimmer — an accent highlight band swept left-to-right across the ink on a 2s
+  loop. This is the only per-row motion in the sidebar; a settled row is still.
 - Page headers: 44px, back affordance first, title in 15px/500, actions right-aligned
   as 28px ghost controls.
 

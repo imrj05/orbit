@@ -130,20 +130,42 @@ pub(crate) fn icon_dyn(path: SharedString, size: impl Into<Pixels>, color: Hsla)
         .group_hover(BUTTON_GROUP, move |style| style.text_color(hover))
 }
 
-/// The app's one loading spinner: `loader.svg` rotating once per 900 ms, and
-/// rendered static under reduce-motion so the perpetual loop can be turned
-/// off. `id` must be unique per instance — GPUI tracks the animation by it.
-///
-/// Every in-flight affordance (buttons, panels, session rows, tool cards)
-/// shares this so "working" reads identically everywhere.
+/// The app's shared loading spinner: `loader.svg` rotating once per 900 ms,
+/// and rendered static under reduce-motion so the perpetual loop can be turned
+/// off. In-flight affordances (buttons, panels, tool cards) share this so
+/// "working" reads identically everywhere. `id` must be unique per instance —
+/// GPUI tracks the animation by it.
 pub(crate) fn spinner(
     id: impl Into<ElementId>,
     size: impl Into<Pixels>,
     color: Hsla,
     theme: Theme,
 ) -> AnyElement {
+    spinning_icon("icons/loader.svg", id, size, color, theme)
+}
+
+/// The sidebar's running-session indicator: one minimal accent arc turning in
+/// place, so the row reads as in flight without adding a second ring. Shares
+/// the same 900 ms cadence as [`spinner`], and renders static under
+/// reduce-motion.
+pub(crate) fn running_spinner(
+    id: impl Into<ElementId>,
+    size: impl Into<Pixels>,
+    color: Hsla,
+    theme: Theme,
+) -> AnyElement {
+    spinning_icon("icons/running-spinner.svg", id, size, color, theme)
+}
+
+fn spinning_icon(
+    path: &'static str,
+    id: impl Into<ElementId>,
+    size: impl Into<Pixels>,
+    color: Hsla,
+    theme: Theme,
+) -> AnyElement {
     let svg = gpui::svg()
-        .path("icons/loader.svg")
+        .path(path)
         .flex_none()
         .size(size.into())
         .text_color(color);

@@ -994,7 +994,7 @@ pub(crate) fn render_side_row(
                             .items_center()
                             .gap(DynamicSpacing::Base06.px(&theme))
                             .when(running, |line| {
-                                line.child(crate::app::spinner(
+                                line.child(crate::app::running_spinner(
                                     ElementId::NamedInteger("side-spin".into(), *ix as u64),
                                     IconSize::XSmall.px(&theme),
                                     theme.accent_text,
