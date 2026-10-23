@@ -35,7 +35,7 @@ that stalls for that long fails with `Request timed out.`, not a 413/400.
 
 ## Fix
 
-**Orbit compresses images at attach time.** Since Orbit 0.2.10 (Unreleased),
+**Orbit compresses images at attach time.**
 images you attach or paste are downscaled to a 1400 px longest edge and
 re-encoded — opaque images as JPEG (quality steps down to keep the base64
 payload within 512 KiB), transparent images as lossless WebP — before they

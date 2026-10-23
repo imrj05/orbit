@@ -151,7 +151,7 @@ fn encode_webp(image: &DynamicImage) -> Option<Vec<u8>> {
 
 /// The base64 length of `raw_len` raw bytes (no `data:` prefix).
 fn base64_len(raw_len: usize) -> usize {
-    (raw_len + 2) / 3 * 4
+    raw_len.div_ceil(3) * 4
 }
 
 /// A compact human byte label for the compression status: `4.2 MB`, `176 KB`,

@@ -294,6 +294,15 @@ through untouched, and animated GIFs pass through so their frames survive. The
 composer chip and bug-report screenshots both read the compressed bytes, and the
 status line reports the before/after size when an image shrank.
 
+Session metadata is cached per file (`sessions.rs`) keyed on the file's
+`(mtime, length)`, so a turn settle or watcher reload re-reads only the session
+files that actually grew instead of rescanning the whole store; a reload that
+changed nothing is skipped. The transcript's tok/s readout is labeled `avg`
+because it averages output tokens over the whole request (prefill plus decode).
+The navigation rail's user-turn index is likewise cached in `Transcript` and
+rebuilt only when the message list changes, and debug builds log one local
+`[orbit:perf]` line per settle (window, cache, prompt, output, duration, rate).
+
 Every icon-only button carries the app's native tooltip — a localized label, usually
 with its shortcut appended (the send / stop button set the register) — across the top
 bar, sidebar, transcript copy / diff controls, composer add button, window caption
