@@ -1,5 +1,6 @@
 use super::helpers::*;
 use super::*;
+use gpui::Timer;
 
 impl OrbitApp {
     /// Record a status message; the status bar surfaces it briefly (see
@@ -560,6 +561,62 @@ impl OrbitApp {
     pub(super) fn runtime_restart(&mut self, cx: &mut Context<Self>) {
         self.drop_client();
         self.runtime_start(cx);
+    }
+
+    /// Decide whether an exit is worth respawning on its own, consuming one
+    /// attempt when it is. A process that stayed up for
+    /// [`AUTO_RESTART_HEALTHY_UPTIME`] resets the count first: that is a new
+    /// failure, not a crash loop, so the budget refills.
+    pub(super) fn take_auto_restart(&mut self) -> bool {
+        if self
+            .runtime
+            .started_at
+            .is_some_and(|at| at.elapsed() >= AUTO_RESTART_HEALTHY_UPTIME)
+        {
+            self.auto_restarts = 0;
+        }
+        if self.auto_restarts >= AUTO_RESTART_LIMIT {
+            return false;
+        }
+        self.auto_restarts += 1;
+        true
+    }
+
+    /// Whether the queued respawn should still happen. A Start or Stop while
+    /// it waits clears `exited` or fills `client`, so the user wins.
+    pub(super) fn should_auto_restart_now(&self) -> bool {
+        self.client.is_none() && self.runtime.exited
+    }
+
+    /// Handle the active process exiting: respawn it on its own, or — once the
+    /// retry budget is spent — raise the banner that points at the Reconnect
+    /// button (issue #76).
+    ///
+    /// One death can arrive as two events (the writer reports a dead stdin, the
+    /// reader its EOF), so an exit that finds a respawn already queued is
+    /// ignored: it must neither spend a second attempt nor raise a banner over
+    /// a recovery that is already on its way.
+    pub(super) fn on_process_exited(&mut self, cx: &mut Context<Self>) {
+        if self.auto_restart_scheduled {
+            return;
+        }
+        if !self.take_auto_restart() {
+            self.set_error(tr!("events.process_exited"));
+            return;
+        }
+        self.auto_restart_scheduled = true;
+        cx.spawn(async move |this, cx| {
+            Timer::after(AUTO_RESTART_DELAY).await;
+            let _ = this.update(cx, |app, cx| {
+                app.auto_restart_scheduled = false;
+                if app.should_auto_restart_now() {
+                    app.runtime_restart(cx);
+                } else {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     /// Register the active client under the session file pi reports. The

@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the raising command rather than by matching the banner's text. Failures whose
   wording never matched a command label — a failed write, or a banner raised
   under one language and read under another — used to stay up indefinitely.
+- A pi process that exits mid-session is respawned automatically, so the next
+  command or shortcut lands on a live process instead of a toast saying nothing
+  is running. The respawn is bounded (three consecutive tries, a budget a
+  healthy run refills) and yields to a Start or Stop in the meantime, so a pi
+  that is broken on startup shows the Reconnect banner instead of crash-looping.
 
 ## [0.2.12] - 2026-10-24
 

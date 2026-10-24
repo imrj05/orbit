@@ -120,6 +120,21 @@ const AGENT_ERROR_SOURCE: &str = "agent_error";
 /// bridge appends only on change, so this is a cheap idempotent read.
 const QUOTA_ENTRY_POLL_INTERVAL: Duration = Duration::from_secs(60);
 
+/// How long pi must have stayed up when it exits for that exit to count as a
+/// fresh failure rather than another lap of a crash loop. An automatic respawn
+/// resets its retry budget only against this: a process that answered commands
+/// for this long was healthy and simply died, while one that dies sooner never
+/// got going.
+const AUTO_RESTART_HEALTHY_UPTIME: Duration = Duration::from_secs(10);
+
+/// Consecutive automatic respawns before the app stops trying and hands
+/// recovery back to the Reconnect button (issue #76).
+const AUTO_RESTART_LIMIT: u8 = 3;
+
+/// Pause before an automatic respawn, so a crash loop backs off instead of
+/// spinning the CPU and the log.
+const AUTO_RESTART_DELAY: Duration = Duration::from_millis(400);
+
 /// Session start races the bridge's first fetch (it runs on `session_start`
 /// too), so the first few polls use a short interval until a snapshot lands
 /// — or the bootstrap budget runs out for an account with no providers.
@@ -196,6 +211,13 @@ pub struct OrbitApp {
     client: Option<PiClient>,
     /// Live state of the active pi process, surfaced in Settings → Runtime.
     runtime: RuntimeStatus,
+    /// Automatic respawns since the last run that stayed up for
+    /// [`AUTO_RESTART_HEALTHY_UPTIME`]. Counts a crash loop so a pi that dies
+    /// on every start cannot be restarted forever.
+    auto_restarts: u8,
+    /// True while a delayed respawn is queued, so a second exit event cannot
+    /// queue another one behind it.
+    auto_restart_scheduled: bool,
     /// Result of auto-applying pi's RPC patches before this launch, surfaced
     /// in Settings → Runtime. See [`crate::rpc_patches`].
     rpc_patches: crate::rpc_patches::PatchReport,
@@ -1589,6 +1611,8 @@ impl OrbitApp {
             retry_detail: None,
             error: None,
             error_source: None,
+            auto_restarts: 0,
+            auto_restart_scheduled: false,
             toasts: toast::Toasts::new(),
             pending_follow_up: None,
             session_name_input,
@@ -3102,6 +3126,8 @@ mod updater_ui;
 mod view;
 mod worktrees;
 
+#[cfg(test)]
+mod auto_restart_tests;
 #[cfg(test)]
 mod backdrop_layout_tests;
 #[cfg(test)]

@@ -328,7 +328,9 @@ impl OrbitApp {
                     self.runtime.alive = false;
                     self.runtime.exited = true;
                     self.auth.on_disconnect();
-                    self.set_error(tr!("events.process_exited"));
+                    // An exit the app can recover from on its own is a restart,
+                    // not a failure to leave on screen — see `on_process_exited`.
+                    self.on_process_exited(cx);
                 }
                 Event::MessageEnd { value } => {
                     // A failed LLM call ends the assistant message with
