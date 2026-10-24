@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the raising command rather than by matching the banner's text. Failures whose
   wording never matched a command label — a failed write, or a banner raised
   under one language and read under another — used to stay up indefinitely.
+- Commands pi runs itself no longer leave the app "working" forever. A slash
+  command pi hands to an extension (`/review`) answers `prompt` with
+  `disposition: "handled"` and starts no turn, but the composer had already
+  armed the live "Working for…" row at the send, so the row and the Stop button
+  stayed up with nothing that could ever clear them — cancelling the command's
+  custom UI could not help, because there was no run to settle.
 - Cancelling a run no longer reports it as a failure. pi answers a stopped
   automatic retry with `auto_retry_end { success: false }`, which the app read as
   a failed retry and left on screen as a banner; the request itself now decides,

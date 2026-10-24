@@ -757,6 +757,26 @@ impl OrbitApp {
             | "follow_up" => {
                 return;
             }
+            // A prompt pi hands to an *extension command* never starts a run:
+            // the answer is `{disposition: "handled"}` and no `agent_start` or
+            // `agent_settled` follows. The composer arms the live "Working
+            // for…" row optimistically at the send, so without this the row and
+            // the Stop button stay up for a turn that does not exist — the
+            // `/review` custom UI case in issue #76, where cancelling the
+            // surface could not help because there was nothing to settle.
+            // `started` and `queued` both mean a run is coming or continuing.
+            "prompt" => {
+                let handled = data
+                    .as_ref()
+                    .and_then(|data| data.get("disposition"))
+                    .and_then(Value::as_str)
+                    == Some("handled");
+                if handled {
+                    self.busy = false;
+                    self.transcript.abandon_reply();
+                }
+                return;
+            }
             // `compact` also has a result payload on success; clearing the
             // compacting state belongs before the data gate.
             "compact" => {

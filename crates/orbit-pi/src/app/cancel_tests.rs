@@ -262,3 +262,155 @@ fn cancelling_a_retry_does_not_report_a_failure(cx: &mut gpui::TestAppContext) {
         );
     });
 }
+
+/// A pi that answers a prompt with the disposition pi's RPC mode reports for
+/// it, and otherwise stays quiet — the shape of `/review`, which pi hands to an
+/// extension command, and of a prompt that really does start a turn.
+struct QuietPi {
+    dir: PathBuf,
+    bin: PathBuf,
+}
+
+impl QuietPi {
+    fn start(disposition: &str) -> Self {
+        static NEXT_SCRATCH: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "orbit-quiet-{}-{}",
+            std::process::id(),
+            NEXT_SCRATCH.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("create quiet-pi dir");
+        let bin = dir.join("fake-pi");
+        // The prompt answer is what pi writes through `preflightResult`; a
+        // handled command starts no run, so nothing else follows it.
+        let started = if disposition == "started" {
+            r#"      emit '{"id":"p1","type":"response","command":"prompt","success":true,"data":{"disposition":"started"}}'
+      emit '{"type":"agent_start"}'
+      emit '{"type":"turn_start"}'
+"#
+        } else {
+            r#"      emit '{"id":"p1","type":"response","command":"prompt","success":true,"data":{"disposition":"handled"}}'
+      emit '{"type":"extension_ui_request","id":"n1","method":"notify","message":"Review cancelled","notifyType":"info"}'
+"#
+        };
+        let script = format!(
+            r#"#!/bin/sh
+emit() {{ printf '%s\n' "$1"; }}
+while IFS= read -r line; do
+  case "$line" in
+    *'"type":"prompt"'*)
+{started}      ;;
+  esac
+done
+"#
+        );
+        std::fs::write(&bin, script).expect("write quiet pi");
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        Self { dir, bin }
+    }
+}
+
+impl Drop for QuietPi {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// The `/review` case from issue #76: pi answers `/review` as an *extension
+/// command* (`disposition: "handled"`) and starts no run — its toast arrives,
+/// so the command clearly worked, but the composer's optimistic "Working for…"
+/// row had nothing left to clear it and stayed up forever. Cancelling the
+/// custom UI could not help, because there was never a run to settle.
+#[gpui::test]
+fn a_command_pi_handled_stops_the_working_row(cx: &mut gpui::TestAppContext) {
+    let app = test_app(cx);
+    let fake = QuietPi::start("handled");
+    cx.update(|cx| {
+        app.update(cx, |app, _| {
+            let workspace = app
+                .current_workspace
+                .clone()
+                .or_else(|| std::env::current_dir().ok())
+                .unwrap_or_else(|| PathBuf::from("."));
+            let client =
+                PiClient::spawn_with_bin(fake.bin.to_str().expect("utf-8"), &workspace, None)
+                    .expect("spawn quiet pi");
+            app.adopt_client(client);
+            // What `submit` leaves behind: the clock starts at the send.
+            app.transcript.expect_reply();
+            app.busy = true;
+            app.send(
+                CommandBody::Prompt {
+                    message: "/review".into(),
+                    images: None,
+                    streaming_behavior: None,
+                },
+                "prompt",
+            );
+        });
+    });
+
+    pump_until(&app, cx, |app| !app.is_running());
+
+    app.update(cx, |app, _| {
+        assert!(
+            !app.is_running(),
+            "a handled command starts no turn, so nothing may stay \"working\""
+        );
+        assert!(
+            !app.transcript.is_awaiting_reply() && !app.transcript.is_streaming(),
+            "the live row must close when pi reports the prompt as handled"
+        );
+        assert!(
+            app.error.is_none(),
+            "handling a command is not a failure, got {:?}",
+            app.error
+        );
+    });
+}
+
+/// The control: the same answer with `disposition: "started"` is a real turn,
+/// and the working row must stay up until that turn settles.
+#[gpui::test]
+fn a_started_turn_keeps_the_working_row(cx: &mut gpui::TestAppContext) {
+    let app = test_app(cx);
+    let fake = QuietPi::start("started");
+    cx.update(|cx| {
+        app.update(cx, |app, _| {
+            let workspace = app
+                .current_workspace
+                .clone()
+                .or_else(|| std::env::current_dir().ok())
+                .unwrap_or_else(|| PathBuf::from("."));
+            let client =
+                PiClient::spawn_with_bin(fake.bin.to_str().expect("utf-8"), &workspace, None)
+                    .expect("spawn quiet pi");
+            app.adopt_client(client);
+            app.transcript.expect_reply();
+            app.busy = true;
+            app.send(
+                CommandBody::Prompt {
+                    message: "hello".into(),
+                    images: None,
+                    streaming_behavior: None,
+                },
+                "prompt",
+            );
+        });
+    });
+
+    pump_until(&app, cx, |app| app.busy);
+    // Give the response time to land; a started turn must not be un-armed by it.
+    for _ in 0..20 {
+        app.update(cx, |app, cx| {
+            app.tick(cx);
+        });
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    app.update(cx, |app, _| {
+        assert!(
+            app.is_running(),
+            "a started turn is still working; its row must not close at the response"
+        );
+    });
+}
