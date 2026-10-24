@@ -208,6 +208,9 @@ impl OrbitApp {
         self.auth.on_disconnect();
         self.quota.on_disconnect();
         self.reset_quota_entries();
+        // A `get_entries` still in flight dies with its process; without this the
+        // poll would stay blocked forever on a response that can never arrive.
+        self.quota_entries_inflight = false;
     }
 
     /// Forget the bridge cursor and schedule an immediate poll. Called when
