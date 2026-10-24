@@ -5826,6 +5826,13 @@ impl OrbitApp {
     }
 
     pub(super) fn abort_retry(&mut self, cx: &mut Context<Self>) {
+        // pi funnels `abort_retry` into `auto_retry_end { success: false,
+        // finalError: "Retry cancelled" }` (pi-core `_finishCancelledRetry`).
+        // Record the request — as Esc does — or that report reads as retries
+        // that failed, and the banner says so for a cancel the user asked for.
+        if self.retrying {
+            self.abort_requested = true;
+        }
         self.send(CommandBody::AbortRetry, "abort_retry");
         self.retrying = false;
         self.retry_detail = None;

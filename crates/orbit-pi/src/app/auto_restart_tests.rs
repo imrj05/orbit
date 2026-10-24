@@ -10,6 +10,8 @@
 
 use super::*;
 use crate::theme::{Theme, ThemeId};
+use std::os::unix::fs::PermissionsExt as _;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 fn test_app(cx: &mut gpui::TestAppContext) -> Entity<OrbitApp> {
     cx.update(|cx| {
@@ -166,4 +168,90 @@ fn a_queued_respawn_yields_to_a_stop(cx: &mut gpui::TestAppContext) {
             );
         });
     });
+}
+
+/// A pi stand-in that records every command it is handed, so a test can assert
+/// what the app said to a freshly spawned process.
+struct LoggingPi {
+    dir: PathBuf,
+    bin: PathBuf,
+    log: PathBuf,
+}
+
+impl LoggingPi {
+    fn start() -> Self {
+        static NEXT_SCRATCH: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "orbit-restart-{}-{}",
+            std::process::id(),
+            NEXT_SCRATCH.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("create logging-pi dir");
+        let bin = dir.join("fake-pi");
+        let log = dir.join("stdin.log");
+        std::fs::write(&log, "").expect("create log");
+        let script = format!(
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "{}"
+done
+"#,
+            log.display()
+        );
+        std::fs::write(&bin, script).expect("write logging pi");
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        Self { dir, bin, log }
+    }
+}
+
+impl Drop for LoggingPi {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// A restart — automatic after a crash, or the Restart/Reconnect button — must
+/// put the new process back on the session the window is showing. A fresh
+/// launch opens a *new* session, so without the reattach pi would answer on an
+/// empty one while the transcript kept rendering the old conversation, and the
+/// next prompt would reach a model with none of it.
+#[gpui::test]
+fn a_restart_points_the_new_process_back_at_the_session(cx: &mut gpui::TestAppContext) {
+    let app = test_app(cx);
+    let fake = LoggingPi::start();
+    let session = fake.dir.join("session.jsonl");
+    cx.update(|cx| {
+        app.update(cx, |app, _| {
+            let workspace = app
+                .current_workspace
+                .clone()
+                .or_else(|| std::env::current_dir().ok())
+                .unwrap_or_else(|| PathBuf::from("."));
+            let client =
+                PiClient::spawn_with_bin(fake.bin.to_str().expect("utf-8"), &workspace, None)
+                    .expect("spawn logging pi");
+            app.adopt_client(client);
+            app.current_session_path = Some(session.clone());
+            // What `runtime_restart` does once the new process is up.
+            app.reattach_current_session();
+        });
+    });
+
+    let expected = session.to_string_lossy().into_owned();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let log = std::fs::read_to_string(&fake.log).unwrap_or_default();
+        if log.contains("switch_session") {
+            assert!(
+                log.contains(&expected),
+                "the respawn must be pointed at the session on screen, got {log}"
+            );
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the restarted process was never told which session to open; got {log}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }

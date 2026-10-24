@@ -375,13 +375,14 @@ impl OrbitApp {
                     success,
                     data,
                     error,
-                    id: _,
+                    id,
                 } => {
                     self.on_response(
                         command,
                         *success,
                         data.as_ref(),
                         error.as_deref(),
+                        id,
                         &mut refresh_sessions,
                         cx,
                     );
@@ -676,12 +677,16 @@ impl OrbitApp {
         }
     }
 
+    /// Apply a command response to the app. The arguments are the response's
+    /// own fields; `id` is what tells one `prompt` from another.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn on_response(
         &mut self,
         command: &str,
         success: bool,
         data: Option<&serde_json::Value>,
         error: Option<&str>,
+        id: &str,
         refresh_sessions: &mut bool,
         cx: &mut Context<Self>,
     ) {
@@ -781,6 +786,15 @@ impl OrbitApp {
                     .and_then(|data| data.get("disposition"))
                     .and_then(Value::as_str)
                     == Some("handled");
+                // `prompt` is also how Orbit sends extension commands (the
+                // title regenerator), and pi answers those `handled` too. Only
+                // the composer's own prompt was armed for a run, so only its
+                // reply may unwind one — otherwise regenerating a title mid-run
+                // would abandon the live row of a run still streaming.
+                if self.prompt_in_flight.as_deref() != Some(id) {
+                    return;
+                }
+                self.prompt_in_flight = None;
                 if handled {
                     self.busy = false;
                     self.transcript.abandon_reply();

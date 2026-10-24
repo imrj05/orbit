@@ -24,7 +24,7 @@ use super::model::{
     local_day_start, local_month_start, next_bucket, Granularity, RangePreset, UsageIndex,
 };
 use super::page::{
-    BucketSort, ExportFormat, MenuKind, SeriesSort, SessionSort, UsagePage, PAGE_SIZES,
+    BucketSort, ExportFormat, MenuKind, SessionSort, UsagePage, PAGE_SIZES,
 };
 use super::table::FailureSort;
 use crate::theme::tokens::RaisedExt;
@@ -643,79 +643,6 @@ pub fn breakdown_page_size_menu(
         children,
         page,
     )
-}
-
-/// The usage-over-time table's column-visibility picker. Time is fixed.
-pub fn series_columns_menu(
-    page: &UsagePage,
-    cx: &mut gpui::Context<UsagePage>,
-    theme: Theme,
-) -> AnyElement {
-    let mut children: Vec<AnyElement> = vec![menu_title(&tr!("usage.columns"), theme)];
-    for column in SeriesSort::HIDEABLE {
-        let selected = page.series_column_visible(column);
-        let label = if column == SeriesSort::Value {
-            page.metric().label()
-        } else {
-            column.label()
-        };
-        let entity = cx.entity();
-        children.push(row(
-            ElementId::Name(SharedString::from(format!(
-                "usage-series-col-{}",
-                column.id()
-            ))),
-            &label,
-            None,
-            selected,
-            false,
-            theme,
-            move |_, _, cx| {
-                entity.update(cx, |page, cx| page.toggle_series_column(column, cx));
-            },
-            |_, _, _| {},
-        ));
-    }
-    let entity = cx.entity();
-    let show_all = footer_row(
-        "usage-series-columns-all",
-        &tr!("usage.show_all"),
-        theme,
-        move |_, _, cx| {
-            entity.update(cx, |page, cx| page.show_all_series_columns(cx));
-        },
-    );
-    children.push(menu_footer(theme, show_all, div().into_any_element()));
-    let page = cx.entity();
-    panel("usage-series-columns-menu", None, theme, children, page)
-}
-
-/// The usage-over-time table's rows-per-page picker.
-pub fn series_page_size_menu(
-    page: &UsagePage,
-    cx: &mut gpui::Context<UsagePage>,
-    theme: Theme,
-) -> AnyElement {
-    let current = page.series_page_size();
-    let mut children: Vec<AnyElement> = vec![menu_title(&tr!("usage.rows_per_page"), theme)];
-    for size in PAGE_SIZES {
-        let selected = size == current;
-        let entity = cx.entity();
-        children.push(row(
-            ElementId::NamedInteger("usage-series-page-size".into(), size as u64),
-            &size.to_string(),
-            None,
-            selected,
-            false,
-            theme,
-            move |_, _, cx| {
-                entity.update(cx, |page, cx| page.set_series_page_size(size, cx));
-            },
-            |_, _, _| {},
-        ));
-    }
-    let page = cx.entity();
-    panel("usage-series-page-size-menu", None, theme, children, page)
 }
 
 /// The Daily records table's column-visibility picker. Date is fixed.

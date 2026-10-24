@@ -7,7 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The Usage page is now one continuous page instead of a Simple | Details
+  switch: the Daily-activity calendar leads, then the Summary board, Usage
+  over time, Breakdown, and Records read top to bottom in one scroll, with
+  each section's own selector (chart metric, breakdown dimension, records
+  table) inside its card. Summary figures are larger, and the metric the
+  trend is currently plotting is picked out in the accent color on the board,
+  so the click-through from a figure to its chart reads before it is made.
+
+### Removed
+
+- Usage: the trend's duplicate Buckets data table, the Signals notes card,
+  and the Token health panels are gone. Their headline figures live on: cache
+  hit rate is a Summary metric, every metric still plots on the trend chart,
+  and the day/week/month table remains under Records. The JSON export no
+  longer carries the `insights` block.
+
 ### Fixed
+
+- The Usage page's daily-activity calendar no longer lets its hover readout
+  paint over the shade key. Hovering a day in the middle of the grid pushed
+  the readout past the bottom of the calendar, where it covered the "Less /
+  More" legend and the text under it. The readout now sits beside the day
+  under the pointer and is clamped inside the calendar, so the hovered day
+  stays visible and the readout never reaches the legend or the section
+  below.
 
 - A failed command or shortcut no longer leaves Orbit stuck on a banner that
   never clears and a session that answers nothing. A failed write to pi's stdin
@@ -33,16 +59,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `disposition: "handled"` and starts no turn, but the composer had already
   armed the live "Working for…" row at the send, so the row and the Stop button
   stayed up with nothing that could ever clear them — cancelling the command's
-  custom UI could not help, because there was no run to settle.
+  custom UI could not help, because there was no run to settle. Only the
+  composer's own prompt is unwound this way: the title regenerator sends a
+  `prompt` too, and regenerating a title mid-run used to close the live row and
+  the checkpoint turn of the run that was still streaming.
 - Cancelling a run no longer reports it as a failure. pi answers a stopped
   automatic retry with `auto_retry_end { success: false }`, which the app read as
   a failed retry and left on screen as a banner; the request itself now decides,
-  so a stop is a stop and an exhausted retry still reports.
+  so a stop is a stop and an exhausted retry still reports. That applies to the
+  Retry strip's Cancel button as well as to Escape.
 - A pi process that exits mid-session is respawned automatically, so the next
   command or shortcut lands on a live process instead of a toast saying nothing
   is running. The respawn is bounded (three consecutive tries, a budget a
   healthy run refills) and yields to a Start or Stop in the meantime, so a pi
   that is broken on startup shows the Reconnect banner instead of crash-looping.
+  It also comes back on the session that was open: a fresh launch opens a new
+  one, which would have left the transcript showing a conversation pi no longer
+  had and the next prompt reaching a model with none of it. Restart and
+  Reconnect do the same.
 
 ## [0.2.12] - 2026-10-24
 

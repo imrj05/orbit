@@ -45,7 +45,6 @@ pub enum TableKind {
     Buckets,
     Failures,
     Breakdown,
-    Series,
 }
 
 /// The sort state drawn on a column header. Three states, like a desktop grid:

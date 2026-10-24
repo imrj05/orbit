@@ -186,7 +186,9 @@ and modals read `DynamicSpacing` / `TextSize` / `Radius` / `ButtonSize`, and it 
 gpui spacing utility left; only bespoke geometry remains (avatar / dot / toggle sizes, fixed
 panel and modal widths). The Usage page and its `chart` / `heatmap` / `table` / `filters` /
 `tooltip` modules are likewise on the token scales for spacing, type, and radius; only their
-chart / table geometry is bespoke. Every single-line input box in the app routes through
+chart / table geometry is bespoke. The page itself is one continuous read — Daily activity
+(the trailing-year calendar), Summary, Usage over time, Breakdown, Records — with each
+section's selector inside its card rather than a page-level Simple | Details switch. Every single-line input box in the app routes through
 `input_field_frame` (or the `input::*` metrics directly, in the extension dialog) — the main
 composer, the file editor, and the inline tree rename are the deliberate exceptions, and each is
 its own component rather than an `InputField`. Every search box in the app shares one look — the
@@ -285,7 +287,8 @@ legacy app today:
 3. Model catalog from pi's own list; thinking levels per model
 4. Tool activity (bash, edit, todo, plan, search, mcp, thinking, question) + approval dialogs
 5. Git diff panel + file-change blocks
-6. Workbench pages — usage (charts + activity heatmap), skills, plugins, models, providers
+6. Workbench pages — usage (activity calendar + KPI board + trend chart + breakdowns +
+   record tables), skills, plugins, models, providers
    (CRUD + OAuth/quota), settings; Explorer + Files editor, integrated terminal, Git/GitHub,
    and the in-app updater with Version History
 7. Markdown — GFM, syntax-highlighted code, copy-able code blocks, image lightbox

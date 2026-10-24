@@ -223,6 +223,13 @@ pub struct OrbitApp {
     /// same shape an exhausted retry uses — so the request itself, not the
     /// wording, decides whether that is a failure (issue #76).
     abort_requested: bool,
+    /// pi's id for the composer's own `prompt`, while its answer is still
+    /// outstanding. pi answers a prompt two ways: it starts a run, or an
+    /// extension command takes it (`disposition: "handled"`) and nothing runs.
+    /// Only this prompt may be unwound on `handled` — the title regenerator
+    /// sends a `prompt` too, and tearing the live run down over its reply would
+    /// stop showing a run that is still streaming.
+    prompt_in_flight: Option<String>,
     /// Result of auto-applying pi's RPC patches before this launch, surfaced
     /// in Settings → Runtime. See [`crate::rpc_patches`].
     rpc_patches: crate::rpc_patches::PatchReport,
@@ -1619,6 +1626,7 @@ impl OrbitApp {
             auto_restarts: 0,
             auto_restart_scheduled: false,
             abort_requested: false,
+            prompt_in_flight: None,
             toasts: toast::Toasts::new(),
             pending_follow_up: None,
             session_name_input,

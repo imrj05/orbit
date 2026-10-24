@@ -117,12 +117,19 @@ impl OrbitApp {
     /// Send a command to pi. Returns `false` when the write failed (or
     /// there is no process) so callers can keep the user's input intact.
     pub(super) fn send(&mut self, body: CommandBody, label: &str) -> bool {
+        self.send_tracked(body, label).is_some()
+    }
+
+    /// [`Self::send`], returning pi's id for the command it queued. A caller
+    /// that must recognise that command's own reply (a `prompt` and its
+    /// `disposition`) keeps the id; everyone else drops it.
+    pub(super) fn send_tracked(&mut self, body: CommandBody, label: &str) -> Option<String> {
         let Some(client) = self.client.as_ref() else {
             self.toast_warning(tr!("runtime.pi_not_running"));
-            return false;
+            return None;
         };
         match client.send(body) {
-            Ok(_) => true,
+            Ok((id, _)) => Some(id),
             Err(err) => {
                 // Tagged with `label`: a later success on the same command
                 // clears this banner, so a transient write failure cannot
@@ -131,7 +138,7 @@ impl OrbitApp {
                     label,
                     tr!("runtime.send_failed", label = label, error = err),
                 );
-                false
+                None
             }
         }
     }
@@ -182,6 +189,9 @@ impl OrbitApp {
         self.client = None;
         self.runtime = RuntimeStatus::default();
         self.abort_requested = false;
+        // A prompt the departing process never answered cannot be recognised
+        // later, and the next process starts its own id sequence.
+        self.prompt_in_flight = None;
         // Extension widgets belonged to the departing process.
         self.extension_widgets.clear();
         // So did every custom UI surface: its extension is gone with the
@@ -579,10 +589,33 @@ impl OrbitApp {
         cx.notify();
     }
 
-    /// Stop then start the pi process (Restart button).
+    /// Stop then start the pi process (Restart button, and the automatic
+    /// respawn after an exit).
     pub(super) fn runtime_restart(&mut self, cx: &mut Context<Self>) {
         self.drop_client();
         self.runtime_start(cx);
+        self.reattach_current_session();
+    }
+
+    /// Point a just-spawned process back at the session the UI is showing. A
+    /// fresh launch opens a *new* session, so without this pi answers on an
+    /// empty one while the transcript still shows the old conversation and the
+    /// next prompt reaches a model with none of it — the same reattach the MCP
+    /// restart performs.
+    pub(super) fn reattach_current_session(&mut self) {
+        let Some(session_path) = self.current_session_path.clone() else {
+            return;
+        };
+        if self.client.is_none() {
+            // The spawn failed; its own banner says why.
+            return;
+        }
+        self.send(
+            CommandBody::SwitchSession {
+                session_path: session_path.to_string_lossy().into_owned(),
+            },
+            "switch_session",
+        );
     }
 
     /// Decide whether an exit is worth respawning on its own, consuming one

@@ -142,12 +142,12 @@ impl OrbitApp {
         // above the composer mirrors it.
         let running = self.is_running();
         let (body, label) = mode.command(running, text.clone(), Self::prompt_images(&attachments));
-        if !self.send(body, label) {
+        let Some(id) = self.send_tracked(body, label) else {
             // Keep the prompt and attachments so nothing is lost.
             self.attachments = attachments;
             cx.notify();
             return;
-        }
+        };
         if running {
             // Show it immediately; the next `queue_update` reconciles the list.
             match mode {
@@ -172,6 +172,9 @@ impl OrbitApp {
             self.add_workspace(cwd, cx);
         }
         self.begin_turn(cx);
+        // The composer's own prompt is the only one whose `handled` answer may
+        // tear down the working row (see `prompt_in_flight`).
+        self.prompt_in_flight = Some(id);
         // The turn is in flight from here, not from pi's `agent_start`: the
         // composer flips to Stop, the heartbeat polls at 60 Hz, and every
         // `is_running()` gate agrees, so a slow provider (or a pi that is still

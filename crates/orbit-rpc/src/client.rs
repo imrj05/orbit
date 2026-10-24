@@ -323,8 +323,10 @@ impl PiClient {
         })
     }
 
-    /// Send a command and get the receiver for its matched `response` event.
-    pub fn send(&self, body: CommandBody) -> Result<Receiver<Event>> {
+    /// Send a command and get the id pi will answer it under, plus the
+    /// receiver for that matched `response` event. Callers that must match a
+    /// reply to the exact command they sent keep the id.
+    pub fn send(&self, body: CommandBody) -> Result<(String, Receiver<Event>)> {
         if !self.writer_alive.load(Ordering::Relaxed) {
             return Err(anyhow!("pi is not reading its stdin"));
         }
@@ -343,7 +345,7 @@ impl PiClient {
             self.writer_alive.store(false, Ordering::Relaxed);
             return Err(anyhow!("pi process is not running: {err}"));
         }
-        Ok(rx)
+        Ok((id, rx))
     }
 
     /// Drop a command's response waiter, e.g. after its write never landed.
@@ -356,7 +358,7 @@ impl PiClient {
 
     /// Convenience for commands whose response we inspect immediately.
     pub fn send_blocking(&self, body: CommandBody, timeout: std::time::Duration) -> Result<Event> {
-        let rx = self.send(body)?;
+        let (_, rx) = self.send(body)?;
         rx.recv_timeout(timeout)
             .map_err(|e| anyhow!("no response within {timeout:?}: {e}"))
     }
@@ -407,15 +409,18 @@ impl PiClient {
     }
 
     /// Whether the writer thread can still put bytes on stdin, without
-    /// reaping the child. Used where a stale `alive` read must not kill a
-    /// session that is merely slow to answer.
+    /// reaping the child. Inspection hook for the dead-stdin tests — it says
+    /// nothing about the child itself, so it is not a liveness check; use
+    /// [`Self::is_alive`] for that.
+    #[doc(hidden)]
     pub fn writer_alive(&self) -> bool {
         self.writer_alive.load(Ordering::Relaxed)
     }
 
     /// How many sent commands are still waiting for their `response`. A write
-    /// that never landed must not leave a waiter behind, so this is the direct
-    /// check on that leak.
+    /// that never landed must not leave a waiter behind, so the dead-stdin
+    /// test checks this to catch that leak.
+    #[doc(hidden)]
     pub fn pending_responses(&self) -> usize {
         self.pending
             .lock()
