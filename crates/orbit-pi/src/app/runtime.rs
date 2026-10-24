@@ -184,6 +184,12 @@ impl OrbitApp {
         self.abort_requested = false;
         // Extension widgets belonged to the departing process.
         self.extension_widgets.clear();
+        // So did every custom UI surface: its extension is gone with the
+        // process, so nothing can answer it (issue #76).
+        self.custom_ui.clear();
+        self.custom_ui_focus_pending = false;
+        self.is_compacting = false;
+        self.title_generating = false;
         // A login in flight dies with its process; remember the provider so
         // the next `auth.list` can reconcile a completion that happened while
         // Orbit was reconnecting.

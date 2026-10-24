@@ -189,6 +189,11 @@ impl CustomUiSurfaces {
         self.entries.retain(|(entry_id, _)| entry_id != id);
     }
 
+    /// Drop every surface — the process that owned them is gone.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
     /// The newest surface (top of the stack), which owns focus.
     pub fn last(&self) -> Option<Entity<CustomUi>> {
         self.entries.last().map(|(_, ui)| ui.clone())

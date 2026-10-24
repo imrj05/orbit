@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the raising command rather than by matching the banner's text. Failures whose
   wording never matched a command label — a failed write, or a banner raised
   under one language and read under another — used to stay up indefinitely.
+- Extension UI left over a dead pi process is dropped with it. A `custom`
+  surface (what a command like `/review` opens) stayed on screen after the
+  process that owned it went away, swallowing keystrokes into a client that
+  could never answer it, and a compaction or title command in flight kept the
+  composer on Stop because `is_compacting` stayed set.
 - Commands pi runs itself no longer leave the app "working" forever. A slash
   command pi hands to an extension (`/review`) answers `prompt` with
   `disposition: "handled"` and starts no turn, but the composer had already

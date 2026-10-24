@@ -3151,6 +3151,8 @@ mod new_task_reconnect_tests;
 #[cfg(test)]
 mod popup_layout_tests;
 #[cfg(test)]
+mod process_exit_cleanup_tests;
+#[cfg(test)]
 mod refresh_tests;
 #[cfg(test)]
 mod send_progress_tests;

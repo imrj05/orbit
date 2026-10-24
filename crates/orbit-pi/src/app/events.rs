@@ -331,6 +331,16 @@ impl OrbitApp {
                     self.dialog_focus_pending = false;
                     self.approval = None;
                     self.approval_focus_pending = false;
+                    // Every custom surface belonged to that process too: the
+                    // promise behind it can no longer resolve, so a form left on
+                    // screen would swallow keystrokes forever. Compaction and the
+                    // title command also die with the process, and `is_compacting`
+                    // alone keeps `is_running()` true — the composer would stay on
+                    // Stop over a dead pi.
+                    self.custom_ui.clear();
+                    self.custom_ui_focus_pending = false;
+                    self.is_compacting = false;
+                    self.title_generating = false;
                     self.runtime.alive = false;
                     self.runtime.exited = true;
                     self.abort_requested = false;
@@ -774,6 +784,10 @@ impl OrbitApp {
                 if handled {
                     self.busy = false;
                     self.transcript.abandon_reply();
+                    // The checkpoint turn opened at the send never ran: close its
+                    // range now so the next prompt starts a fresh one instead of
+                    // inheriting this start in Review's **Last Turn**.
+                    self.finish_turn(cx);
                 }
                 return;
             }
