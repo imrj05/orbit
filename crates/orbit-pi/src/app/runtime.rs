@@ -190,6 +190,18 @@ impl OrbitApp {
         self.custom_ui_focus_pending = false;
         self.is_compacting = false;
         self.title_generating = false;
+        // A modal dialog or approval belonged to that process too: it can never
+        // be answered, and its keys would land in the next one.
+        self.dialog = None;
+        self.dialog_focus_pending = false;
+        self.approval = None;
+        self.approval_focus_pending = false;
+        // Queued messages were queued for a run that no longer exists, and the
+        // retry counter was counting that run's attempts.
+        self.reset_queue();
+        self.pending_follow_up = None;
+        self.retrying = false;
+        self.retry_detail = None;
         // A login in flight dies with its process; remember the provider so
         // the next `auth.list` can reconcile a completion that happened while
         // Orbit was reconnecting.

@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the raising command rather than by matching the banner's text. Failures whose
   wording never matched a command label — a failed write, or a banner raised
   under one language and read under another — used to stay up indefinitely.
+- Stopping or restarting pi now drops that process's modal dialog, approval
+  bar, queued messages, and retry counter with it; the dialog could never be
+  answered, and its reply would have gone to the process that replaced it.
 - Extension UI left over a dead pi process is dropped with it. A `custom`
   surface (what a command like `/review` opens) stayed on screen after the
   process that owned it went away, swallowing keystrokes into a client that

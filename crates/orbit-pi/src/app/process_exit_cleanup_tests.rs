@@ -145,3 +145,93 @@ fn a_dead_process_is_not_running_anything(cx: &mut gpui::TestAppContext) {
         );
     });
 }
+
+/// A pi that asks a question and then waits, so the app has a live dialog.
+struct AskingPi {
+    dir: PathBuf,
+    bin: PathBuf,
+}
+
+impl AskingPi {
+    fn start() -> Self {
+        static NEXT_SCRATCH: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "orbit-asking-{}-{}",
+            std::process::id(),
+            NEXT_SCRATCH.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("create asking-pi dir");
+        let bin = dir.join("fake-pi");
+        let script = r#"#!/bin/sh
+emit() { printf '%s\n' "$1"; }
+while IFS= read -r line; do
+  case "$line" in
+    *'"type":"prompt"'*)
+      emit '{"type":"agent_start"}'
+      emit '{"type":"extension_ui_request","id":"d1","method":"select","title":"Pick a preset","options":["deep","quick"]}'
+      ;;
+  esac
+done
+"#;
+        std::fs::write(&bin, script).expect("write asking pi");
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        Self { dir, bin }
+    }
+}
+
+impl Drop for AskingPi {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Stopping or restarting the process drops the surfaces that belonged to it.
+/// A modal left up over a stopped runtime can never be answered, and answering
+/// it would send the reply to the process that replaced it; queued chips and a
+/// retry counter describe a run that no longer exists.
+#[gpui::test]
+fn stopping_the_process_drops_its_dialog_and_queue(cx: &mut gpui::TestAppContext) {
+    let app = test_app(cx);
+    let fake = AskingPi::start();
+    cx.update(|cx| {
+        app.update(cx, |app, _| {
+            let workspace = app
+                .current_workspace
+                .clone()
+                .or_else(|| std::env::current_dir().ok())
+                .unwrap_or_else(|| PathBuf::from("."));
+            let client =
+                PiClient::spawn_with_bin(fake.bin.to_str().expect("utf-8"), &workspace, None)
+                    .expect("spawn asking pi");
+            app.adopt_client(client);
+            app.busy = true;
+            app.send(
+                CommandBody::Prompt {
+                    message: "hello".into(),
+                    images: None,
+                    streaming_behavior: None,
+                },
+                "prompt",
+            );
+        });
+    });
+
+    pump_until(&app, cx, |app| app.dialog.is_some());
+    app.update(cx, |app, cx| {
+        // Queue and retry state as a live run would leave them.
+        app.queue.follow_up.push("queued".into());
+        app.pending_follow_up = Some("queued".into());
+        app.retrying = true;
+        app.runtime_stop(cx);
+        assert!(app.client.is_none());
+        assert!(
+            app.dialog.is_none(),
+            "a dialog outlived the process that asked the question"
+        );
+        assert!(
+            app.queue.follow_up.is_empty() && app.pending_follow_up.is_none(),
+            "queued messages for a dead run stayed in the queue bar"
+        );
+        assert!(!app.retrying, "the retry counter outlived its run");
+    });
+}
