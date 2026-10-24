@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the raising command rather than by matching the banner's text. Failures whose
   wording never matched a command label — a failed write, or a banner raised
   under one language and read under another — used to stay up indefinitely.
+- Cancelling a run no longer reports it as a failure. pi answers a stopped
+  automatic retry with `auto_retry_end { success: false }`, which the app read as
+  a failed retry and left on screen as a banner; the request itself now decides,
+  so a stop is a stop and an exhausted retry still reports.
 - A pi process that exits mid-session is respawned automatically, so the next
   command or shortcut lands on a live process instead of a toast saying nothing
   is running. The respawn is bounded (three consecutive tries, a budget a

@@ -208,8 +208,13 @@ impl OrbitApp {
                 Event::AutoRetryEnd { value } => {
                     self.retrying = false;
                     self.retry_detail = None;
+                    let cancelled = std::mem::replace(&mut self.abort_requested, false);
                     let success = value.get("success").and_then(|v| v.as_bool());
-                    if success == Some(false) {
+                    // A retry the user stopped is a cancel, not a failed retry:
+                    // pi answers the abort with `success: false` and
+                    // `finalError: "Retry cancelled"`, and raising a banner for
+                    // it would report a failure the user asked for (issue #76).
+                    if success == Some(false) && !cancelled {
                         let error = value
                             .get("finalError")
                             .and_then(|v| v.as_str())
@@ -260,6 +265,7 @@ impl OrbitApp {
                     self.title_generating = false;
                 }
                 Event::AgentSettled => {
+                    self.abort_requested = false;
                     self.busy = false;
                     self.retrying = false;
                     self.retry_detail = None;
@@ -327,6 +333,7 @@ impl OrbitApp {
                     self.approval_focus_pending = false;
                     self.runtime.alive = false;
                     self.runtime.exited = true;
+                    self.abort_requested = false;
                     self.auth.on_disconnect();
                     // An exit the app can recover from on its own is a restart,
                     // not a failure to leave on screen — see `on_process_exited`.

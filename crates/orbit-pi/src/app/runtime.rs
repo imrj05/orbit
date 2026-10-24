@@ -181,6 +181,7 @@ impl OrbitApp {
         }
         self.client = None;
         self.runtime = RuntimeStatus::default();
+        self.abort_requested = false;
         // Extension widgets belonged to the departing process.
         self.extension_widgets.clear();
         // A login in flight dies with its process; remember the provider so

@@ -1,0 +1,264 @@
+//! Regression tests for issue #76, cancel half: running a prompt and then
+//! cancelling it still left the app showing "Working".
+//!
+//! The wire sequences below are what pi 1.4.0 emits, captured from a live
+//! `--mode rpc` process. An aborted turn lands as a `message_end` carrying
+//! `stopReason: "aborted"` + `errorMessage: "Request aborted"`, then `turn_end`,
+//! `agent_end`, `agent_settled`. A cancel must end as a *clean* stop — no
+//! failure banner — and the live "Working for…" row must close with it.
+#![cfg(unix)]
+
+use super::*;
+use crate::theme::{Theme, ThemeId};
+use std::os::unix::fs::PermissionsExt as _;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// How pi can end a turn, for the stand-in below.
+#[derive(Clone, Copy)]
+enum Ending {
+    /// The user cancelled: pi reports `aborted`, and must not read as a failure.
+    Aborted,
+    /// The user cancelled during an automatic retry: pi reports
+    /// `auto_retry_end { success: false, finalError: "Retry cancelled" }`
+    /// before settling (pi-core `_finishCancelledRetry`).
+    CancelledRetry,
+    /// The provider failed: pi reports `error`, and must read as a failure.
+    Failed,
+}
+
+impl Ending {
+    fn message_end(self) -> &'static str {
+        match self {
+            Ending::CancelledRetry | Ending::Aborted => {
+                r#"{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"aborted","errorMessage":"Request aborted"}}"#
+            }
+            Ending::Failed => {
+                r#"{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"provider 500"}}"#
+            }
+        }
+    }
+
+    fn turn_end(self) -> String {
+        self.message_end()
+            .replacen("\"type\":\"message_end\"", "\"type\":\"turn_end\"", 1)
+    }
+
+    /// The lines pi writes after the abort arrives, in order.
+    fn abort_lines(self) -> Vec<String> {
+        let mut lines = vec![self.message_end().to_string(), self.turn_end()];
+        if matches!(self, Ending::CancelledRetry) {
+            lines.push(
+                r#"{"type":"auto_retry_end","success":false,"attempt":1,"finalError":"Retry cancelled"}"#
+                    .to_string(),
+            );
+        }
+        lines.push(r#"{"type":"agent_end","willRetry":false}"#.to_string());
+        lines.push(r#"{"type":"agent_settled"}"#.to_string());
+        lines
+    }
+}
+
+/// A pi stand-in that speaks the captured turn sequence and nothing else.
+struct FakePi {
+    dir: PathBuf,
+    bin: PathBuf,
+}
+
+impl FakePi {
+    fn start(ending: Ending) -> Self {
+        // A per-test counter, not just the clock: two tests building a stand-in
+        // in the same microsecond would otherwise share one script file, and
+        // whichever wrote last would speak for both.
+        static NEXT_SCRATCH: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "orbit-cancel-{}-{}",
+            std::process::id(),
+            NEXT_SCRATCH.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("create fake-pi dir");
+        let bin = dir.join("fake-pi");
+        // One event per line, exactly as pi's RPC mode writes them: the prompt
+        // opens a turn, the abort closes it the way pi closed the live one.
+        let abort = ending
+            .abort_lines()
+            .iter()
+            .map(|line| format!("      emit '{line}'\n"))
+            .collect::<String>();
+        let script = format!(
+            r#"#!/bin/sh
+emit() {{ printf '%s\n' "$1"; }}
+while IFS= read -r line; do
+  case "$line" in
+    *'"type":"prompt"'*)
+      emit '{{"type":"agent_start"}}'
+      emit '{{"type":"turn_start"}}'
+      emit '{{"type":"message_start","message":{{"role":"assistant","content":[]}}}}'
+      ;;
+    *'"type":"abort"'*)
+{abort}      ;;
+  esac
+done
+"#
+        );
+        std::fs::write(&bin, script).expect("write fake pi");
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake pi");
+        Self { dir, bin }
+    }
+}
+
+impl Drop for FakePi {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+fn test_app(cx: &mut gpui::TestAppContext) -> Entity<OrbitApp> {
+    cx.update(|cx| {
+        cx.set_global(Theme::for_id(ThemeId::Orbit));
+        cx.new(OrbitApp::new)
+    })
+}
+
+/// Install `fake` as the active pi process, as a live spawn would.
+fn adopt_fake_pi(app: &mut OrbitApp, fake: &FakePi) {
+    let workspace = app
+        .current_workspace
+        .clone()
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let client = PiClient::spawn_with_bin(fake.bin.to_str().expect("utf-8 path"), &workspace, None)
+        .expect("spawn fake pi");
+    app.adopt_client(client);
+}
+
+/// Tick until `done` holds. Events arrive on the reader thread, so the first
+/// tick cannot be assumed to see them.
+fn pump_until(
+    app: &Entity<OrbitApp>,
+    cx: &mut gpui::TestAppContext,
+    done: impl Fn(&OrbitApp) -> bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let reached = app.update(cx, |app, cx| {
+            app.tick(cx);
+            done(app)
+        });
+        if reached {
+            return;
+        }
+        assert!(Instant::now() < deadline, "the app never reached the state");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Send a prompt the way `submit` does, then cancel it the way Esc does.
+fn prompt_then_cancel(app: &Entity<OrbitApp>, cx: &mut gpui::TestAppContext) {
+    app.update(cx, |app, _| {
+        // What `submit` leaves behind when the prompt goes out: the turn's clock
+        // starts at the send, not at the first token.
+        app.transcript.expect_reply();
+        app.busy = true;
+        app.send(
+            CommandBody::Prompt {
+                message: "count to 200".into(),
+                images: None,
+                streaming_behavior: None,
+            },
+            "prompt",
+        );
+    });
+    pump_until(app, cx, |app| app.busy && app.transcript.is_streaming());
+    app.update(cx, |app, _| {
+        // Exactly what Esc does.
+        app.request_abort();
+    });
+}
+
+/// A cancelled run stops showing as work in progress, and the cancel itself is
+/// not reported as a failure: pi sends `errorMessage: "Request aborted"` on the
+/// aborted message, and treating that as an error would put a red banner up for
+/// something the user asked for.
+#[gpui::test]
+fn cancelling_a_run_clears_the_working_state(cx: &mut gpui::TestAppContext) {
+    let app = test_app(cx);
+    let fake = FakePi::start(Ending::Aborted);
+    cx.update(|cx| {
+        app.update(cx, |app, _| adopt_fake_pi(app, &fake));
+    });
+
+    prompt_then_cancel(&app, cx);
+    pump_until(&app, cx, |app| !app.is_running());
+
+    app.update(cx, |app, _| {
+        assert!(
+            !app.is_running(),
+            "an aborted run must stop reading as work in progress"
+        );
+        assert!(
+            !app.transcript.is_awaiting_reply() && !app.transcript.is_streaming(),
+            "the live \"Working for…\" row must close with the run"
+        );
+        assert!(
+            app.error.is_none(),
+            "a cancel is not a failure, got {:?}",
+            app.error
+        );
+    });
+}
+
+/// The other direction, so the test above cannot pass vacuously: the same
+/// wire shape with `stopReason: "error"` does raise the banner and does close
+/// the working row.
+#[gpui::test]
+fn a_failed_turn_still_reports_the_failure(cx: &mut gpui::TestAppContext) {
+    let app = test_app(cx);
+    let fake = FakePi::start(Ending::Failed);
+    cx.update(|cx| {
+        app.update(cx, |app, _| adopt_fake_pi(app, &fake));
+    });
+
+    prompt_then_cancel(&app, cx);
+    pump_until(&app, cx, |app| !app.is_running());
+
+    app.update(cx, |app, _| {
+        assert_eq!(
+            app.error.as_deref(),
+            Some("Agent error: provider 500"),
+            "a failed turn is never swallowed"
+        );
+        assert!(
+            !app.is_running(),
+            "the failed turn still closes its working row"
+        );
+    });
+}
+
+/// Cancelling during an automatic retry is also a cancel, not a failure: pi
+/// answers the abort with `auto_retry_end { success: false, finalError:
+/// "Retry cancelled" }`, and reading that `success: false` as a failure left a
+/// banner saying the retries failed for something the user asked to stop.
+#[gpui::test]
+fn cancelling_a_retry_does_not_report_a_failure(cx: &mut gpui::TestAppContext) {
+    let app = test_app(cx);
+    let fake = FakePi::start(Ending::CancelledRetry);
+    cx.update(|cx| {
+        app.update(cx, |app, _| adopt_fake_pi(app, &fake));
+    });
+
+    prompt_then_cancel(&app, cx);
+    pump_until(&app, cx, |app| !app.is_running());
+
+    app.update(cx, |app, _| {
+        assert!(
+            !app.retrying,
+            "the cancelled retry must not leave the retry strip up"
+        );
+        assert!(
+            app.error.is_none(),
+            "cancelling a retry is not a failed retry, got {:?}",
+            app.error
+        );
+    });
+}

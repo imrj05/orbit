@@ -538,12 +538,28 @@ impl OrbitApp {
         // Interactive Esc: drop the pending queue first so its text can be
         // restored to the composer when the `clear_queue` response lands
         // (docs), then abort the run.
+        self.request_abort();
+        cx.notify();
+    }
+
+    /// Ask pi to stop the current run. The request is recorded, not just sent:
+    /// pi answers a cancelled automatic retry with `auto_retry_end { success:
+    /// false }`, and only this record tells that apart from a retry that
+    /// genuinely ran out (issue #76).
+    pub(super) fn request_abort(&mut self) {
         if !self.queue.is_empty() {
             self.restore_queue_on_clear = true;
             self.send(CommandBody::ClearQueue, "clear_queue");
         }
+        // Only a request with a run behind it may claim pi's cancelled-retry
+        // report: an Esc pressed on an idle composer must not swallow the
+        // failure of a retry that really does run out later. The request is
+        // deliberately not cleared by `AgentStart` — a prompt sent moments
+        // before the Esc still starts its run after the abort is written.
+        if self.is_running() {
+            self.abort_requested = true;
+        }
         self.send(CommandBody::Abort, "abort");
-        cx.notify();
     }
 
     pub(super) fn on_abort_mouse(

@@ -218,6 +218,11 @@ pub struct OrbitApp {
     /// True while a delayed respawn is queued, so a second exit event cannot
     /// queue another one behind it.
     auto_restart_scheduled: bool,
+    /// True once the user has asked to stop the current run. pi reports a
+    /// cancelled automatic retry as `auto_retry_end { success: false }` — the
+    /// same shape an exhausted retry uses — so the request itself, not the
+    /// wording, decides whether that is a failure (issue #76).
+    abort_requested: bool,
     /// Result of auto-applying pi's RPC patches before this launch, surfaced
     /// in Settings → Runtime. See [`crate::rpc_patches`].
     rpc_patches: crate::rpc_patches::PatchReport,
@@ -1613,6 +1618,7 @@ impl OrbitApp {
             error_source: None,
             auto_restarts: 0,
             auto_restart_scheduled: false,
+            abort_requested: false,
             toasts: toast::Toasts::new(),
             pending_follow_up: None,
             session_name_input,
@@ -3130,6 +3136,8 @@ mod worktrees;
 mod auto_restart_tests;
 #[cfg(test)]
 mod backdrop_layout_tests;
+#[cfg(test)]
+mod cancel_tests;
 #[cfg(test)]
 mod composer_layout_tests;
 #[cfg(test)]
