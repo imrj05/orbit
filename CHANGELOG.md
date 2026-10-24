@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A failed command or shortcut no longer leaves Orbit stuck on a banner that
+  never clears and a session that answers nothing. A failed write to pi's stdin
+  used to kill the writer thread for good while the process kept running, so
+  the app still reported it alive and every later command and shortcut went
+  into a pipe nobody read. The dead transport is now reported as an exit, so
+  the reconnect action appears instead of a zombie session, and the app no
+  longer leaves a response waiter behind for a command that never landed.
+- An error banner now clears when the thing that raised it succeeds, decided by
+  the raising command rather than by matching the banner's text. Failures whose
+  wording never matched a command label — a failed write, or a banner raised
+  under one language and read under another — used to stay up indefinitely.
+
 ## [0.2.12] - 2026-10-24
 
 ### Added

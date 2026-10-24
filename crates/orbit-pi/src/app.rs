@@ -111,6 +111,11 @@ const MAX_ATTACHMENTS: usize = 8;
 /// How long a status message stays visible in the status bar.
 const STATUS_MESSAGE_TTL: Duration = Duration::from_secs(6);
 
+/// Banner source tag for an error carried by an assistant message. Not a wire
+/// command, so it needs its own identity: the next clean `message_end` clears
+/// the banner by comparing this tag rather than the banner's translated text.
+const AGENT_ERROR_SOURCE: &str = "agent_error";
+
 /// How often the app polls pi for new quota-bridge session entries. The
 /// bridge appends only on change, so this is a cheap idempotent read.
 const QUOTA_ENTRY_POLL_INTERVAL: Duration = Duration::from_secs(60);
@@ -300,6 +305,12 @@ pub struct OrbitApp {
     /// dismissible red banner until cleared — a failure is never dropped
     /// (docs: #error-handling).
     error: Option<String>,
+    /// The wire command that raised [`error`](Self::error), when a command did.
+    /// A later success on the same command clears the banner by comparing this,
+    /// never by matching a translated prefix — so the clear still works after a
+    /// language change, and still works for failures whose text is not shaped
+    /// like a command label (issue #76).
+    error_source: Option<String>,
     /// The in-app toast stack: action confirmations and notifications that
     /// land while the window is frontmost. Rendered bottom-right over every
     /// surface (see [`toast_ui`]).
@@ -1577,6 +1588,7 @@ impl OrbitApp {
             retrying: false,
             retry_detail: None,
             error: None,
+            error_source: None,
             toasts: toast::Toasts::new(),
             pending_follow_up: None,
             session_name_input,
@@ -3124,6 +3136,8 @@ mod sidebar_remove_tests;
 mod sidebar_sort_tests;
 #[cfg(test)]
 mod sidepane_full_width_tests;
+#[cfg(test)]
+mod stale_error_tests;
 #[cfg(test)]
 mod theme_switch_tests;
 #[cfg(test)]

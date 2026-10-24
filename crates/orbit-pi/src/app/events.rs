@@ -336,13 +336,15 @@ impl OrbitApp {
                     // unsupported model). Surface it in the banner; the
                     // transcript renders the same text inline.
                     if let Some(error) = transcript::message_error(value) {
-                        self.set_error(tr!("events.agent_error", error = error));
-                    } else if self.error.as_deref().is_some_and(|error| {
-                        error.starts_with(tr!("events.agent_error_prefix").as_str())
-                    }) {
+                        self.set_error_from(
+                            AGENT_ERROR_SOURCE,
+                            tr!("events.agent_error", error = error),
+                        );
+                    } else {
                         // The next attempt produced a message — clear the
-                        // stale agent-error banner.
-                        self.error = None;
+                        // stale agent-error banner. Matched by source, so a
+                        // language change never strands it (issue #76).
+                        self.clear_error_from(AGENT_ERROR_SOURCE);
                     }
                     // Real edit stats from finalized tool calls.
                     let (a, r) = transcript::diff_from_message(value);
@@ -717,7 +719,7 @@ impl OrbitApp {
             return;
         }
         // A successful retry clears the banner it raised earlier.
-        self.clear_error_for(command);
+        self.clear_error_from(command);
         // Commands whose replies carry no payload (e.g. `set_thinking_level`
         // answers `{"success":true}` with no `data`). They still need their
         // follow-up state refresh, so they are matched BEFORE the

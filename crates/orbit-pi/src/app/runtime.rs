@@ -14,6 +14,18 @@ impl OrbitApp {
     /// status line, errors persist (in a red banner) until dismissed or
     /// superseded, so a failure is never silently lost.
     pub(super) fn set_error(&mut self, message: impl Into<String>) {
+        self.raise_error(message, None);
+    }
+
+    /// Record an error raised by a named source — a wire command, or a
+    /// non-command event such as a failed assistant message. A later success
+    /// on the same source retires the banner by comparing it, never by
+    /// matching the banner's translated text.
+    pub(super) fn set_error_from(&mut self, source: &str, message: impl Into<String>) {
+        self.raise_error(message, Some(source.to_string()));
+    }
+
+    fn raise_error(&mut self, message: impl Into<String>, source: Option<String>) {
         let message = message.into();
         // The banner renders on the chat and settings surfaces. The Git and
         // Usage pages own the main area, so an error raised while one of them
@@ -22,6 +34,7 @@ impl OrbitApp {
             self.toast_error(message.clone());
         }
         self.error = Some(message);
+        self.error_source = source;
     }
 
     /// Dismiss the current error banner.
@@ -32,16 +45,18 @@ impl OrbitApp {
         cx: &mut Context<Self>,
     ) {
         self.error = None;
+        self.error_source = None;
         cx.notify();
     }
 
     /// A successful command clears the banner it previously raised (e.g. a
-    /// retried `set_model`), so a fixed error doesn't linger.
-    pub(super) fn clear_error_for(&mut self, command: &str) {
-        if let Some(error) = &self.error {
-            if error.starts_with(&humanize_command(command)) {
-                self.error = None;
-            }
+    /// retried `set_model`), so a fixed error doesn't linger. A banner raised
+    /// by something else — another command, or an event that names no command —
+    /// is left alone.
+    pub(super) fn clear_error_from(&mut self, source: &str) {
+        if self.error_source.as_deref() == Some(source) {
+            self.error = None;
+            self.error_source = None;
         }
     }
 
@@ -54,10 +69,13 @@ impl OrbitApp {
         cx: &mut Context<Self>,
     ) {
         if command == "parse" {
-            self.set_error(tr!(
-                "runtime.protocol_error",
-                error = error.unwrap_or(&tr!("runtime.parse_failed"))
-            ));
+            self.set_error_from(
+                "parse",
+                tr!(
+                    "runtime.protocol_error",
+                    error = error.unwrap_or(&tr!("runtime.parse_failed"))
+                ),
+            );
             return;
         }
         // A rejected follow-up/steer never entered pi's queue: drop the
@@ -85,11 +103,14 @@ impl OrbitApp {
         }
         let fallback = tr!("runtime.unspecified_error");
         let detail = error.unwrap_or(&fallback);
-        self.set_error(tr!(
-            "helpers.command_failed_detail",
-            label = humanize_command(command),
-            detail = detail
-        ));
+        self.set_error_from(
+            command,
+            tr!(
+                "helpers.command_failed_detail",
+                label = humanize_command(command),
+                detail = detail
+            ),
+        );
     }
 
     /// Send a command to pi. Returns `false` when the write failed (or
@@ -102,7 +123,13 @@ impl OrbitApp {
         match client.send(body) {
             Ok(_) => true,
             Err(err) => {
-                self.set_error(tr!("runtime.send_failed", label = label, error = err));
+                // Tagged with `label`: a later success on the same command
+                // clears this banner, so a transient write failure cannot
+                // strand a red banner the user has no way to dismiss.
+                self.set_error_from(
+                    label,
+                    tr!("runtime.send_failed", label = label, error = err),
+                );
                 false
             }
         }
@@ -149,6 +176,7 @@ impl OrbitApp {
         // restart paths, and an explicit stop acknowledges it.
         if self.runtime.exited {
             self.error = None;
+            self.error_source = None;
         }
         self.client = None;
         self.runtime = RuntimeStatus::default();

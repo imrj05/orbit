@@ -20,6 +20,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, ChildStderr, ChildStdin, ChildStdout, Stdio},
     sync::{
+        atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, Sender},
         Arc, Mutex,
     },
@@ -94,6 +95,11 @@ pub struct PiClient {
     pending: Arc<Mutex<HashMap<String, Sender<Event>>>>,
     stderr_ring: Arc<Mutex<VecDeque<String>>>,
     next_id: std::sync::atomic::AtomicU64,
+    /// False once the writer thread has given up on stdin. The child can still
+    /// be running, so `try_wait` alone reads as alive forever: commands queue
+    /// onto a stdin nobody will ever drain, and the app looks live but deaf
+    /// (issue #76).
+    writer_alive: Arc<AtomicBool>,
 }
 
 struct Outgoing {
@@ -300,8 +306,9 @@ impl PiClient {
         let (events_tx, events_rx) = mpsc::channel::<Event>();
         let pending = Arc::new(Mutex::new(HashMap::<String, Sender<Event>>::new()));
         let stderr_ring: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
+        let writer_alive = Arc::new(AtomicBool::new(true));
 
-        Self::spawn_writer(stdin, commands_rx);
+        Self::spawn_writer(stdin, commands_rx, &writer_alive, &events_tx);
         Self::spawn_reader(stdout, &events_tx, &pending);
         Self::spawn_stderr_drain(stderr, &stderr_ring);
 
@@ -312,11 +319,15 @@ impl PiClient {
             pending,
             stderr_ring,
             next_id: std::sync::atomic::AtomicU64::new(1),
+            writer_alive,
         })
     }
 
     /// Send a command and get the receiver for its matched `response` event.
     pub fn send(&self, body: CommandBody) -> Result<Receiver<Event>> {
+        if !self.writer_alive.load(Ordering::Relaxed) {
+            return Err(anyhow!("pi is not reading its stdin"));
+        }
         let id = self.next_id_fetch();
         let command = crate::types::Command::new(id.clone(), body);
         let wire = command.to_wire()?;
@@ -324,11 +335,23 @@ impl PiClient {
         self.pending
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(id, tx);
-        self.commands_tx
-            .send(Outgoing { wire })
-            .map_err(|_| anyhow!("pi process is not running"))?;
+            .insert(id.clone(), tx);
+        if let Err(err) = self.commands_tx.send(Outgoing { wire }) {
+            // The writer thread is gone; a waiter nobody will ever resolve is a
+            // leak, and the child may still look alive for the rest of the run.
+            self.forget_pending(&id);
+            self.writer_alive.store(false, Ordering::Relaxed);
+            return Err(anyhow!("pi process is not running: {err}"));
+        }
         Ok(rx)
+    }
+
+    /// Drop a command's response waiter, e.g. after its write never landed.
+    fn forget_pending(&self, id: &str) {
+        self.pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(id);
     }
 
     /// Convenience for commands whose response we inspect immediately.
@@ -374,9 +397,30 @@ impl PiClient {
         self.child.id()
     }
 
-    /// True while the pi process is still running.
+    /// True while commands sent here can still reach pi: the process is running
+    /// **and** the writer thread has not given up on its stdin. Checking only
+    /// `try_wait` kept a broken-pipe child reporting alive, so every later
+    /// command was written into a stdin nobody read (issue #76).
     pub fn is_alive(&mut self) -> bool {
-        self.child.try_wait().map(|s| s.is_none()).unwrap_or(false)
+        self.writer_alive.load(Ordering::Relaxed)
+            && self.child.try_wait().map(|s| s.is_none()).unwrap_or(false)
+    }
+
+    /// Whether the writer thread can still put bytes on stdin, without
+    /// reaping the child. Used where a stale `alive` read must not kill a
+    /// session that is merely slow to answer.
+    pub fn writer_alive(&self) -> bool {
+        self.writer_alive.load(Ordering::Relaxed)
+    }
+
+    /// How many sent commands are still waiting for their `response`. A write
+    /// that never landed must not leave a waiter behind, so this is the direct
+    /// check on that leak.
+    pub fn pending_responses(&self) -> usize {
+        self.pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
     }
 
     fn next_id_fetch(&self) -> String {
@@ -390,12 +434,29 @@ impl PiClient {
         format!("orbit-{n}-{nanos:x}")
     }
 
-    fn spawn_writer(mut stdin: ChildStdin, commands_rx: Receiver<Outgoing>) {
+    fn spawn_writer(
+        mut stdin: ChildStdin,
+        commands_rx: Receiver<Outgoing>,
+        writer_alive: &Arc<AtomicBool>,
+        events_tx: &Sender<Event>,
+    ) {
+        let writer_alive = Arc::clone(writer_alive);
+        // A stdin nobody will drain again means the session is unreachable even
+        // while the child keeps running. Report it as an exit: the reader is
+        // blocked in `read_until` on a live process and would never notice, so
+        // without this the app holds a zombie it cannot command and offers no
+        // way back (issue #76).
+        let exit_tx = events_tx.clone();
         thread::Builder::new()
             .name("orbit-pi-writer".into())
             .spawn(move || {
                 while let Ok(outgoing) = commands_rx.recv() {
-                    if write_json_line(&mut stdin, &outgoing.wire).is_err() {
+                    if let Err(_err) = write_json_line(&mut stdin, &outgoing.wire) {
+                        // Terminal: stdin cannot be written again. Publish that
+                        // before exiting, so the app stops offering commands to
+                        // a process it can no longer reach.
+                        writer_alive.store(false, Ordering::Relaxed);
+                        let _ = exit_tx.send(Event::ProcessExited);
                         break;
                     }
                 }
