@@ -1821,6 +1821,59 @@ mod tests {
         (hi + 0.05) / (lo + 0.05)
     }
 
+    /// A built theme's ink against a built theme's surface. The palette tests
+    /// below use the raw hex `Palette`; a color *derived* at build time (the
+    /// sidebar's accent-leaning project ink) can only be checked on the resolved
+    /// `Theme`.
+    fn theme_contrast(ink: Hsla, surface: Hsla) -> f64 {
+        let lum = |color: Hsla| {
+            let to_lin = |v: f32| -> f64 {
+                let v = v.clamp(0.0, 1.0) as f64;
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            let rgba = gpui::Rgba::from(color);
+            0.2126 * to_lin(rgba.r) + 0.7152 * to_lin(rgba.g) + 0.0722 * to_lin(rgba.b)
+        };
+        let (l1, l2) = (lum(ink), lum(surface));
+        let (hi, lo) = if l1 > l2 { (l1, l2) } else { (l2, l1) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    /// The sidebar's project ink is derived, not authored: primary ink leaned
+    /// toward the accent. Both inputs clear AA, and a shortest-arc blend of two
+    /// inks lands between them, so the derived name ink must clear AA too — on
+    /// the sidebar surface and on the hover pill it is painted over.
+    #[test]
+    fn the_project_name_ink_stays_readable_in_every_palette() {
+        for id in ThemeId::ALL {
+            let theme = Theme::for_id(id);
+            let ink = crate::workspace_mark::default_label_ink(&theme);
+            // Untinted is the common case; a tinted project is the user's own
+            // choice and is checked against the same floor.
+            for (label, ink) in [
+                ("untinted", ink),
+                (
+                    "tinted",
+                    crate::workspace_mark::label_ink(&theme, Some("accent")),
+                ),
+            ] {
+                for (surface_label, surface) in
+                    [("sidebar", theme.surface), ("hover", theme.surface_hover)]
+                {
+                    let ratio = theme_contrast(ink, surface);
+                    assert!(
+                        ratio >= 4.5,
+                        "{id:?}: {label} project name on {surface_label} is {ratio:.2}:1"
+                    );
+                }
+            }
+        }
+    }
+
     /// Every palette must keep its foreground readable against the surfaces
     /// it is painted on. The bars are the delivered floor: ink clears AA on
     /// the canvas, the accent stays legible as text (`accent_text`, the role

@@ -255,3 +255,95 @@ fn a_restart_points_the_new_process_back_at_the_session(cx: &mut gpui::TestAppCo
         std::thread::sleep(Duration::from_millis(10));
     }
 }
+
+/// A pi stand-in that says one line on stderr and then keeps running, so the
+/// client still holds that line when the test models the exit.
+struct StderrPi {
+    dir: PathBuf,
+    bin: PathBuf,
+}
+
+impl StderrPi {
+    fn start(line: &str) -> Self {
+        static NEXT_SCRATCH: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "orbit-restart-stderr-{}-{}",
+            std::process::id(),
+            NEXT_SCRATCH.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("create stderr-pi dir");
+        let bin = dir.join("fake-pi");
+        let script = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"{}\" >&2\nexec cat > /dev/null\n",
+            line.replace('"', "\\\"")
+        );
+        std::fs::write(&bin, script).expect("write stderr pi");
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        Self { dir, bin }
+    }
+}
+
+impl Drop for StderrPi {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// The banner names the reason pi gave for dying. A GUI launch can fail
+/// before pi writes a single stdout line — the launcher exits with `env: node:
+/// No such file or directory` when its PATH has no node (issue #81) — and
+/// "pi process exited" with no cause sent the reporter hunting for a
+/// connection problem that was never a connection problem.
+#[gpui::test]
+fn an_exhausted_budget_names_the_process_stderr(cx: &mut gpui::TestAppContext) {
+    let app = test_app(cx);
+    let fake = StderrPi::start("env: node: No such file or directory");
+    cx.update(|cx| {
+        app.update(cx, |app, cx| {
+            let workspace = app
+                .current_workspace
+                .clone()
+                .or_else(|| std::env::current_dir().ok())
+                .unwrap_or_else(|| PathBuf::from("."));
+            let client =
+                PiClient::spawn_with_bin(fake.bin.to_str().expect("utf-8"), &workspace, None)
+                    .expect("spawn stderr pi");
+            app.client = Some(client);
+            // The stderr drain thread reads off-thread; wait for its line.
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while app
+                .client
+                .as_ref()
+                .is_none_or(|client| client.recent_stderr(8).is_empty())
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "the fake pi's stderr line never reached the client"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+
+            for _ in 0..AUTO_RESTART_LIMIT {
+                started_ago_keeping_the_client(app);
+                app.on_process_exited(cx);
+                app.auto_restart_scheduled = false;
+            }
+            started_ago_keeping_the_client(app);
+            app.on_process_exited(cx);
+
+            let banner = app.error.clone().expect("the budget is spent");
+            assert!(
+                banner.contains("env: node: No such file or directory"),
+                "the banner must carry pi's own words, got: {banner}"
+            );
+        });
+    });
+}
+
+/// [`started_ago`] without dropping the client: the stderr ring under test
+/// belongs to that process.
+fn started_ago_keeping_the_client(app: &mut OrbitApp) {
+    app.runtime.started_at = Some(Instant::now() - Duration::from_millis(50));
+    app.runtime.alive = false;
+    app.runtime.exited = true;
+}

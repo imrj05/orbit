@@ -677,7 +677,12 @@ pub(crate) fn render_side_row(
                                 .truncate()
                                 .text_size(TextSize::Default.px(&theme))
                                 .font_weight(FontWeight::MEDIUM)
-                                .text_color(theme.text_secondary)
+                                // The project's own hue when it has one, else
+                                // the primary ink — never the secondary a
+                                // session title wears, so a group header and
+                                // the rows under it stay distinguishable
+                                // (issue #78).
+                                .text_color(workspace_mark::label_ink(&theme, mark.tint.as_deref()))
                                 .child(label.clone()),
                         )
                         // Row actions, revealed on hover: a `…` menu

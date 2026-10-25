@@ -315,6 +315,9 @@ pub struct OrbitApp {
     /// Settings → Agent: auto session titles. Persisted to
     /// `~/.orbit-pi/auto-title.json`, which the bundled title extension reads.
     auto_title: crate::auto_title::AutoTitleConfig,
+    /// Settings → Agent: whether an agent call the reader has not toggled
+    /// opens. Persisted to `~/.orbit-pi/agent-calls.json` (issue #80).
+    agent_calls: crate::agent_call_display::AgentCallDisplay,
     /// Settings → Privacy: the session-retention policy. Persisted to
     /// `~/.orbit-pi/session-retention.json`; applied once per launch.
     retention: crate::session_retention::RetentionConfig,
@@ -1671,6 +1674,7 @@ impl OrbitApp {
             auto_compaction: true,
             auto_retry: true,
             auto_title: crate::auto_title::AutoTitleConfig::load(),
+            agent_calls: crate::agent_call_display::AgentCallDisplay::load(),
             retention: crate::session_retention::RetentionConfig::load(),
             retention_ran: false,
             temp_files: crate::temp_files::TempFiles::default(),
@@ -3160,6 +3164,8 @@ enum SettingsSelect {
     BackdropFade,
     /// The model the auto-title extension asks (Settings → Agent).
     TitleModel,
+    /// How agent call details open in the transcript (Settings → Agent).
+    AgentCalls,
     /// The model new sessions start on (Settings → Agent).
     DefaultModel,
     /// The default model's thinking level (Settings → Agent).

@@ -957,6 +957,7 @@ impl Render for OrbitApp {
                                     review_workspace.as_deref(),
                                     window.viewport_size().height,
                                     main_width,
+                                    self.agent_calls,
                                     Some(self.review_opener(cx)),
                                     Some(self.image_opener(cx)),
                                     self.search_hits(),

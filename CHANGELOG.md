@@ -16,9 +16,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   captions, and flatter elevation. The choice is persisted alongside the existing
   Light/Dark/System preference; switching back restores the previous Classic
   palette, and every Classic palette and geometry stays unchanged.
+- Settings → Agent → **Agent call details** chooses whether a tool call or
+  activity group you have not opened yourself follows the run (the previous
+  behavior: open while streaming, closed once the turn settles), stays always
+  expanded, or stays always collapsed. Opening or closing one call yourself
+  still wins over the setting, which only moves the default. Persisted to
+  `~/.orbit-pi/agent-calls.json`.
 
 ### Changed
 
+- Sidebar project names no longer look like the session titles under them. A
+  group header takes the palette's accent hue at body-ink brightness — a quiet
+  warm cast by default — or, when the project has a mark tint, that hue on its
+  name and not only on its icon. Session titles stay a step below at secondary
+  ink. The three sidebar levels now read as section label, project, session
+  instead of one wall of identically colored rows.
 - Standardized corner radii by component role: buttons and header chips use the
   button token, text fields and composers use the input token, cards/panels/
   popovers/dialogs use `panel::RADIUS`, list rows use `list_item::RADIUS`, and
@@ -97,6 +109,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one, which would have left the transcript showing a conversation pi no longer
   had and the next prompt reaching a model with none of it. Restart and
   Reconnect do the same.
+- A pi process that dies at launch now says why. The banner carries pi's own
+  last stderr line (redacted, clipped to one line) instead of only "pi process
+  exited", which read as a connection problem even when the launcher never
+  connected to anything. The case it was hiding: a bundled `.app` starts with a
+  minimal `PATH`, and pi's `#!/usr/bin/env node` launcher exits with
+  `env: node: No such file or directory` when `node` lives under nvm, fnm,
+  volta, mise, or asdf. The child `PATH` now includes those install dirs (the
+  newest nvm/fnm version, and pi's own managed node), and every spawn that
+  needs node — the RPC session, `pi update`, the MCP probe, the RPC patcher —
+  resolves it from a `.app` launch. Settings → Runtime's stderr panel redacts
+  known MCP secret values before showing the child's lines.
 
 ## [0.2.12] - 2026-10-24
 

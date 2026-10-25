@@ -410,6 +410,25 @@ re-reads `get_messages` so the live chat adopts pi's compacted projection
 (summary + kept entries) instead of holding the pre-compaction history until
 the session is reopened.
 
+Agent call details — an activity group or a tool card the reader has not opened
+themselves — default to following the run: open while the turn streams, closed
+once it settles. Settings → Agent → Agent call details can pin them always
+expanded or always collapsed instead. The mode is a global Orbit UI preference
+(`~/.orbit-pi/agent-calls.json`, `agent_call_display.rs`), not a pi setting; an
+explicit per-group or per-call toggle always wins, so the setting only moves the
+default and never fights the reader.
+
+The sessions sidebar reads as three levels, not one: the "Projects" section
+label in muted 12px, a project group header in the accent's hue at body-ink
+brightness — or in the project's own mark tint, when the user picked one — and
+session titles a step below at secondary. Before this a header and the rows
+under it shared the same ink at the same size, so a long list of projects and
+sessions was a wall of identically colored lines. Project names keep the body
+ink's lightness and vary only in hue and saturation (`workspace_mark::label_ink`,
+`name_ink`): that is what keeps a tinted name above the AA floor in every
+palette, since several curated tints are fill/glyph colors too dark to read as
+text. A tint the palette collapsed onto body ink falls back to the default hue.
+
 The keyboard layer is command-registry driven (`commands.rs`, D13): every app
 command declares its chord once, and the command palette, Settings →
 Shortcuts, and tooltips all render from that table. The palette gained session

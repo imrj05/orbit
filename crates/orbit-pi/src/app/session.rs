@@ -1,3 +1,4 @@
+use super::composer_ops::CompletionIntent;
 use super::helpers::*;
 use super::mcp_ui::QuotaPopupTab;
 use super::*;
@@ -95,7 +96,7 @@ impl OrbitApp {
                 return;
             }
         }
-        if self.commit_autocomplete_if_open(cx) {
+        if self.commit_autocomplete_if_open(CompletionIntent::Send, cx) {
             return;
         }
         let text = self.input.read(cx).text();
@@ -409,7 +410,7 @@ impl OrbitApp {
         // With the menu open, Tab accepts the highlighted entry; with it
         // closed, Tab is the workbench's focus-traversal key and must not be
         // swallowed by this binding.
-        if !self.commit_autocomplete_if_open(cx) {
+        if !self.commit_autocomplete_if_open(CompletionIntent::Accept, cx) {
             window.focus_next();
         }
     }
@@ -423,7 +424,7 @@ impl OrbitApp {
         if self.input.read(cx).is_composing() {
             return;
         }
-        if self.commit_autocomplete_if_open(cx) {
+        if self.commit_autocomplete_if_open(CompletionIntent::Send, cx) {
             return;
         }
         let text = self.input.read(cx).text();

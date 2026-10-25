@@ -41,6 +41,7 @@ use serde_json::Value;
 
 use orbit_rpc::MessageUsage;
 
+use crate::agent_call_display::AgentCallDisplay;
 use crate::app::{
     button_frame, file_badge, file_glyph, icon_button_frame, nerd_font_family, picker_entry,
     picker_surface, TipExt, BUTTON_GROUP,
@@ -177,6 +178,9 @@ pub(crate) struct TranscriptView {
     pub expanded_turns: Rc<RefCell<HashSet<usize>>>,
     pub expanded_files: Rc<RefCell<HashSet<usize>>>,
     pub expanded_activities: ExpandedActivities,
+    /// What an agent call the reader has not toggled should do (Settings →
+    /// Agent). See [`crate::agent_call_display`].
+    pub agent_calls: AgentCallDisplay,
     /// Per-tool detail-card open state, keyed `(message_ix, tool_ix)`.
     pub expanded_tools: ExpandedTools,
     pub copied: Rc<RefCell<HashMap<usize, Instant>>>,
@@ -1012,6 +1016,9 @@ struct RowPaint {
     /// frame; `None` when no Nerd Font is available (extension badges fall
     /// back).
     nerd: Option<SharedString>,
+    /// What an agent call the reader has not toggled should do — the
+    /// Settings → Agent preference (issue #80).
+    agent_calls: AgentCallDisplay,
     live: bool,
     live_elapsed: Option<Duration>,
     /// Live output rate for the streaming row (`None` until meaningful).
@@ -1065,6 +1072,9 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
     let expanded_turns = view.expanded_turns.clone();
     let expanded_files = view.expanded_files.clone();
     let expanded_activities = view.expanded_activities.clone();
+    // Copy: the mode is a three-way enum, so every row carries its own copy
+    // instead of sharing a cell.
+    let agent_calls = view.agent_calls;
     let expanded_tools = view.expanded_tools.clone();
     let copied = view.copied.clone();
     let copied_sections = view.copied_sections.clone();
@@ -1300,6 +1310,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
             row_count,
             theme: *theme::get(cx),
             nerd: nerd.clone(),
+            agent_calls,
             live,
             live_elapsed,
             live_tps,
@@ -2079,7 +2090,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
                     .borrow()
                     .get(&(ix, 0))
                     .copied()
-                    .unwrap_or(group_live);
+                    .unwrap_or_else(|| paint.agent_calls.open_by_default(group_live));
                 let group_has_work = message.steps[..group_end]
                     .iter()
                     .any(|step| !step.thinking.is_empty() || !step.tools.is_empty());
@@ -2092,6 +2103,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
                         group_live,
                         theme,
                         paint.nerd.as_ref(),
+                        paint.agent_calls,
                         paint.expanded_activities.clone(),
                         paint.expanded_tools.clone(),
                         paint.copied_sections.clone(),
@@ -2158,7 +2170,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
                 .borrow()
                 .get(&(ix, step_ix))
                 .copied()
-                .unwrap_or(group_live);
+                .unwrap_or_else(|| paint.agent_calls.open_by_default(group_live));
             content = content.child(render_activity_group(
                 ix,
                 step_ix..group_end,
@@ -2167,6 +2179,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
                 group_live,
                 theme,
                 paint.nerd.as_ref(),
+                paint.agent_calls,
                 paint.expanded_activities.clone(),
                 paint.expanded_tools.clone(),
                 paint.copied_sections.clone(),
@@ -2392,6 +2405,7 @@ fn render_activity_group(
     live: bool,
     theme: Theme,
     nerd: Option<&SharedString>,
+    agent_calls: AgentCallDisplay,
     expanded_activities: ExpandedActivities,
     expanded_tools: ExpandedTools,
     copied_sections: CopiedSections,
@@ -2558,6 +2572,11 @@ fn render_activity_group(
                 // earlier call is done and shows its check even while a
                 // later step streams.
                 let pulse = live && flat == last_tool;
+                // An explicit open wins; otherwise the reader's preference
+                // decides (a tool card has no run state of its own, so
+                // `follow_run` means closed — the pre-#80 behavior).
+                let explicit_open = expanded_tools.borrow().contains(&(ix, flat));
+                let tool_open = explicit_open || agent_calls.open_by_default(false);
                 render_activity_card(
                     tool,
                     pulse,
@@ -2565,7 +2584,7 @@ fn render_activity_group(
                     theme,
                     nerd,
                     (ix, flat),
-                    expanded_tools.borrow().contains(&(ix, flat)),
+                    tool_open,
                     expanded_tools.clone(),
                     copied_sections.clone(),
                     expanded_sections.clone(),
@@ -9055,6 +9074,7 @@ mod tests {
             turn_started: Rc::new(Cell::new(None)),
             expanded_turns: Rc::new(RefCell::new(HashSet::new())),
             expanded_files: Rc::new(RefCell::new(HashSet::new())),
+            agent_calls: crate::agent_call_display::AgentCallDisplay::FollowRun,
             expanded_activities: Rc::new(RefCell::new(HashMap::new())),
             expanded_tools: Rc::new(RefCell::new(HashSet::new())),
             copied: Rc::new(RefCell::new(HashMap::new())),
@@ -10019,6 +10039,137 @@ mod tests {
                 .iter()
                 .any(|uri| uri.starts_with("https://private-user-images")),
             "the expired signed URL must never be fetched: {requested:?}"
+        );
+    }
+
+    /// Issue #80: an agent call the reader never touched must obey Settings →
+    /// Agent instead of snapping shut when the run settles. `follow_run` is the
+    /// old behavior (open while live, closed once settled); the fixed modes
+    /// ignore the run state, and an explicit toggle still wins over both.
+    #[gpui::test]
+    fn agent_call_display_sets_the_untouched_default(cx: &mut gpui::TestAppContext) {
+        use crate::agent_call_display::AgentCallDisplay;
+
+        struct CallsView {
+            messages: Rc<RefCell<Vec<ChatMessage>>>,
+            state: TextSelectionState,
+            scroller: MessageScrollerState,
+            mode: AgentCallDisplay,
+            live: bool,
+            explicit_open: bool,
+            fold_open: bool,
+        }
+
+        impl gpui::Render for CallsView {
+            fn render(&mut self, _: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+                let mut view = test_view(
+                    self.state.clone(),
+                    self.messages.clone(),
+                    self.scroller.clone(),
+                );
+                view.agent_calls = self.mode;
+                if self.explicit_open {
+                    view.expanded_activities.borrow_mut().insert((0, 0), true);
+                }
+                if self.fold_open {
+                    view.expanded_turns.borrow_mut().insert(0);
+                }
+                if self.live {
+                    view.streaming.set(Some(0));
+                }
+                render_transcript(view, cx)
+            }
+        }
+
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+
+        // One turn that has worked but not yet spoken, so the group has work
+        // to fold. No answer text: that is what makes a group "live" — the
+        // run is still inside it.
+        let fixture = || {
+            let messages: Rc<RefCell<Vec<ChatMessage>>> =
+                Rc::new(RefCell::new(vec![ChatMessage {
+                    user: false,
+                    summary: None,
+                    steps: vec![Step {
+                        text: String::new(),
+                        tools: vec![ToolCall {
+                            name: "read_file".into(),
+                            summary: "src/main.rs".into(),
+                            path: Some("src/main.rs".into()),
+                            added: 0,
+                            removed: 0,
+                            id: None,
+                            args: Some(serde_json::json!({"path": "src/main.rs"})),
+                            output: Some("fn main() {}".into()),
+                            failed: false,
+                            facts: Default::default(),
+                        }],
+                        ..Step::default()
+                    }],
+                    images: Vec::new(),
+                    elapsed: None,
+                    finished_at: None,
+                    error: None,
+                    aborted: false,
+                }]));
+            let scroller = MessageScrollerState::new(1);
+            (messages, scroller)
+        };
+
+        // `true` means the activity group painted its body — the only way a
+        // tool card inside it exists at all. `fold_open` opens the settled
+        // turn fold, which is what makes pre-answer work visible once a run
+        // has finished.
+        let group_open = |cx: &mut gpui::VisualTestContext,
+                          mode: AgentCallDisplay,
+                          live: bool,
+                          fold_open: bool,
+                          explicit_open: bool| {
+            let (messages, scroller) = fixture();
+            let state: TextSelectionState = Rc::new(RefCell::new(TextSelection::new()));
+            let view = cx.update(|_, cx| {
+                cx.new(|_| CallsView {
+                    messages,
+                    state,
+                    scroller,
+                    mode,
+                    live,
+                    explicit_open,
+                    fold_open,
+                })
+            });
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(900.), px(1200.)),
+                |_, _| view.clone(),
+            );
+            cx.debug_bounds("tool-card-0-0").is_some()
+        };
+
+        // FollowRun keeps the pre-#80 behavior: open while live, shut after.
+        assert!(
+            group_open(cx, AgentCallDisplay::FollowRun, true, false, false),
+            "follow_run opens a live group"
+        );
+        assert!(
+            !group_open(cx, AgentCallDisplay::FollowRun, false, true, false),
+            "follow_run closes a settled group inside an open fold"
+        );
+        // The fixed modes ignore the run state entirely.
+        assert!(
+            group_open(cx, AgentCallDisplay::Expanded, false, true, false),
+            "always expanded keeps a settled group open"
+        );
+        assert!(
+            !group_open(cx, AgentCallDisplay::Collapsed, true, false, false),
+            "always collapsed keeps even a live group closed"
+        );
+        // An explicit toggle wins over both fixed modes.
+        assert!(
+            group_open(cx, AgentCallDisplay::Collapsed, false, true, true),
+            "an explicitly opened group stays open under always collapsed"
         );
     }
 }

@@ -4,6 +4,18 @@ use crate::theme::tokens::{
     context_menu, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
 };
 
+/// Why the completion gate was invoked. The gate behaves the same either way
+/// for a completion that changes the text; they differ only when accepting
+/// would be a no-op, which is the difference between "take this entry" and
+/// "send what I typed".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CompletionIntent {
+    /// Tab: accept the highlighted entry even if it changes nothing.
+    Accept,
+    /// Enter or a Send click: never let a no-op completion eat the send.
+    Send,
+}
+
 impl OrbitApp {
     /// The filtered menu entries for the active trigger (empty when none).
     pub(super) fn autocomplete_entries(&mut self, trigger: &Trigger) -> Vec<AcEntry> {
@@ -140,7 +152,19 @@ impl OrbitApp {
 
     /// Commit the highlighted entry (Enter/click): replace the trigger
     /// token with the completed `/name ` or `@path ` text.
-    pub(super) fn commit_autocomplete_if_open(&mut self, cx: &mut Context<Self>) -> bool {
+    /// The text a completion inserts, trailing space included.
+    fn entry_insert_text(entry: &AcEntry) -> String {
+        match entry {
+            AcEntry::Command { name, .. } => format!("/{name} "),
+            AcEntry::File { path } => format!("@{path} "),
+        }
+    }
+
+    pub(super) fn commit_autocomplete_if_open(
+        &mut self,
+        intent: CompletionIntent,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let (open, highlighted) = {
             let state = self.autocomplete.borrow();
             (state.open, state.highlighted)
@@ -155,6 +179,18 @@ impl OrbitApp {
         let Some(entry) = entries.into_iter().nth(highlighted) else {
             return false;
         };
+        // A completion that only restates the token already in the buffer
+        // (plus its trailing space) is not a completion — it is the user
+        // having finished the token and reaching for Send. Accepting it would
+        // swallow the keystroke or click: `@src/main.rs` with the menu open
+        // used to cost a second Enter, and a second click on Send.
+        let token = self.input.read(cx).text()[trigger.start..trigger.end].to_string();
+        let already_complete = token == Self::entry_insert_text(&entry).trim_end();
+        if already_complete {
+            // Tab still owns the key (it must not fall through to focus
+            // traversal); Enter and Send fall through to actually send.
+            return intent == CompletionIntent::Accept;
+        }
         self.commit_entry(entry, cx);
         true
     }
@@ -186,10 +222,16 @@ impl OrbitApp {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.autocomplete.borrow().open {
-            self.autocomplete_dismissed = true;
-            cx.notify();
+        if !self.autocomplete.borrow().open {
+            return;
         }
+        self.autocomplete_dismissed = true;
+        // Close it here rather than waiting for the next `sync_autocomplete`
+        // frame: a click that lands outside the menu (the Send button, say)
+        // must not race the heartbeat, or the same click sometimes sends and
+        // sometimes only accepts a completion.
+        self.autocomplete.borrow_mut().open = false;
+        cx.notify();
     }
 
     /// The autocomplete popup, anchored above the composer box (mirrors

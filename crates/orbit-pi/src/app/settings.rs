@@ -5140,6 +5140,12 @@ impl OrbitApp {
             .as_ref()
             .map(|client| client.recent_stderr(8))
             .unwrap_or_default();
+        // The panel is a window onto the child's raw stderr; a known MCP
+        // secret value in a failure line must not become readable here.
+        let stderr: Vec<String> = stderr
+            .iter()
+            .map(|line| self.mcp.redact_text(line))
+            .collect();
         let body: AnyElement = if stderr.is_empty() {
             div()
                 .px(DynamicSpacing::Base16.px(&theme))
@@ -5255,6 +5261,13 @@ impl OrbitApp {
                     Self::toggle_auto_retry,
                 )),
             ),
+            self.setting_row(
+                theme,
+                &tr!("settings.agent_call_details"),
+                Some(&tr!("settings.agent_call_details_hint")),
+                None,
+                Some(self.agent_calls_select(theme, this.clone(), cx)),
+            ),
         ];
 
         let mut sections = Vec::new();
@@ -5354,6 +5367,32 @@ impl OrbitApp {
             ],
         ));
         sections
+    }
+
+    /// Settings → Agent: how agent call details open in the transcript. An
+    /// explicit per-call toggle still wins; this only moves the default.
+    pub(super) fn agent_calls_select(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        use crate::agent_call_display::AgentCallDisplay;
+        let options: Vec<String> = AgentCallDisplay::OPTIONS
+            .into_iter()
+            .map(|mode| tr!(mode.label_key()))
+            .collect();
+        let selected = self.agent_calls.index();
+        self.select_control(
+            "agent-calls-select",
+            SettingsSelect::AgentCalls,
+            options[selected].clone(),
+            options,
+            selected,
+            theme,
+            this,
+            cx,
+        )
     }
 
     /// Flip auto session titles on/off and persist it for the extension.
@@ -6837,6 +6876,7 @@ impl OrbitApp {
             | SettingsSelect::BackdropCell
             | SettingsSelect::BackdropFade
             | SettingsSelect::TitleModel
+            | SettingsSelect::AgentCalls
             | SettingsSelect::DefaultModel
             | SettingsSelect::DefaultThinking
             | SettingsSelect::ActiveModel
@@ -7321,6 +7361,12 @@ impl OrbitApp {
                 cx.notify();
                 return true;
             }
+            SettingsSelect::AgentCalls => {
+                self.agent_calls = crate::agent_call_display::AgentCallDisplay::from_index(ix);
+                self.agent_calls.persist();
+                cx.notify();
+                return true;
+            }
             SettingsSelect::DefaultModel => {
                 let model = if ix == 0 {
                     None
@@ -7445,6 +7491,7 @@ impl OrbitApp {
             | SettingsSelect::BackdropCell
             | SettingsSelect::BackdropFade
             | SettingsSelect::TitleModel
+            | SettingsSelect::AgentCalls
             | SettingsSelect::DefaultModel
             | SettingsSelect::DefaultThinking
             | SettingsSelect::ActiveModel

@@ -881,10 +881,122 @@ pub fn augmented_path(bin_dir: Option<&Path>) -> OsString {
         }
     }
     dirs.extend(PATH_EXTRA_DIRS.iter().map(PathBuf::from));
+    if let Some(home) = home_dir() {
+        dirs.extend(home_bin_dirs(&home));
+    }
+    #[cfg(windows)]
+    dirs.extend(windows_search_dirs());
     if let Some(path) = std::env::var_os("PATH") {
         dirs.extend(std::env::split_paths(&path));
     }
     std::env::join_paths(dirs).unwrap_or_else(|_| std::env::var_os("PATH").unwrap_or_default())
+}
+
+/// The home-relative dirs a GUI launch cannot see: the same install dirs
+/// [`pi_bin_candidates`] probes, plus the `node` a version manager keeps
+/// outside `PATH`. pi's launcher ends in `#!/usr/bin/env node`, so a child
+/// PATH without one of these dies with `env: node: No such file or
+/// directory` — instantly, and with nothing on stdout (issue #81).
+fn home_bin_dirs(home: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = HOME_SEARCH_DIRS.iter().map(|sub| home.join(sub)).collect();
+    // pi's managed installer ships its own node. Its launcher prepends that
+    // dir itself, but every other pi invocation (update, mcp probe, patches)
+    // needs it on PATH too.
+    dirs.push(home.join(".local/share/pi-node/current/bin"));
+    // nvm and fnm keep node under a version directory, not a stable path.
+    // Newest first: an old node cannot run a current pi.
+    dirs.extend(newest_version_bin(
+        &home.join(".nvm/versions/node"),
+        Path::new("bin"),
+    ));
+    for root in [
+        home.join("Library/Application Support/fnm/node-versions"),
+        home.join(".local/share/fnm/node-versions"),
+    ] {
+        dirs.extend(newest_version_bin(&root, Path::new("installation/bin")));
+    }
+    dirs.retain(|dir| dir.is_dir());
+    dirs
+}
+
+/// The `bin` dir of the newest version under a version-manager root, when the
+/// root exists. Versions are compared numerically: lexically `v9` sorts above
+/// `v24`.
+fn newest_version_bin(root: &Path, suffix: &Path) -> Option<PathBuf> {
+    let mut newest: Option<(Vec<u64>, PathBuf)> = None;
+    for entry in fs::read_dir(root).ok()?.flatten() {
+        let version = version_key(&entry.file_name().to_string_lossy());
+        if version.is_empty() {
+            continue;
+        }
+        let dir = entry.path().join(suffix);
+        if !dir.is_dir() {
+            continue;
+        }
+        if newest.as_ref().is_none_or(|(best, _)| version > *best) {
+            newest = Some((version, dir));
+        }
+    }
+    newest.map(|(_, dir)| dir)
+}
+
+#[cfg(test)]
+mod augmented_path_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn scratch_home() -> PathBuf {
+        let unique = format!(
+            "orbit-rpc-home-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let home = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&home).unwrap();
+        home
+    }
+
+    /// A bundled `.app` cannot see nvm/fnm: their node lives under a version
+    /// dir no `PATH` entry points at. pi's launcher is `#!/usr/bin/env node`,
+    /// so the child PATH has to carry the newest one or pi dies before it can
+    /// say why (issue #81).
+    #[test]
+    fn the_node_a_version_manager_hides_is_on_the_path() {
+        let home = scratch_home();
+        for version in ["v9.11.2", "v24.1.0"] {
+            fs::create_dir_all(home.join(".nvm/versions/node").join(version).join("bin")).unwrap();
+        }
+        fs::create_dir_all(
+            home.join("Library/Application Support/fnm/node-versions/v22.4.1/installation/bin"),
+        )
+        .unwrap();
+
+        let dirs = home_bin_dirs(&home);
+        assert!(
+            dirs.contains(&home.join(".nvm/versions/node/v24.1.0/bin")),
+            "the newest nvm node is offered: {dirs:?}"
+        );
+        assert!(
+            !dirs.contains(&home.join(".nvm/versions/node/v9.11.2/bin")),
+            "v9 sorts above v24 lexically but must not win: {dirs:?}"
+        );
+        assert!(dirs.contains(
+            &home.join("Library/Application Support/fnm/node-versions/v22.4.1/installation/bin")
+        ));
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// Only real dirs go on a child's PATH, and a home with no version
+    /// manager is not an error.
+    #[test]
+    fn absent_install_dirs_are_skipped() {
+        let home = scratch_home();
+        assert!(home_bin_dirs(&home).is_empty());
+        let _ = fs::remove_dir_all(&home);
+    }
 }
 
 #[cfg(test)]

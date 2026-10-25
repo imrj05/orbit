@@ -4,8 +4,23 @@
 //! control is live) and the running state (which decides queue vs steer).
 
 use super::*;
+use crate::app::composer_ops::CompletionIntent;
 use crate::composer_send::SendMode;
 use crate::theme::{Theme, ThemeId};
+
+/// Put the composer on `text` with the completion menu open on a single known
+/// file. The catalog is seeded directly and stamped as belonging to the
+/// current workspace, so `ensure_mention_files` leaves it alone instead of
+/// re-scanning the real tree.
+fn open_menu_on(app: &mut OrbitApp, text: &str, cx: &mut Context<OrbitApp>) {
+    app.mention_files_workspace = app.current_workspace.clone();
+    app.mention_files = vec!["src/main.rs".to_string()];
+    app.input.update(cx, |input, cx| input.set_text(text, cx));
+    let mut state = app.autocomplete.borrow_mut();
+    state.open = true;
+    state.count = 1;
+    state.highlighted = 0;
+}
 
 fn app(cx: &mut gpui::TestAppContext) -> Entity<OrbitApp> {
     cx.update(|cx| {
@@ -95,6 +110,101 @@ fn the_send_state_follows_the_delivery_policy(cx: &mut gpui::TestAppContext) {
             assert_eq!(label, "follow_up");
             let (_, label) = SendMode::Steer.command(true, "hello".into(), None);
             assert_eq!(label, "steer");
+        });
+    });
+}
+
+/// Finishing a mention and reaching for Send must send. `@src/main.rs` with
+/// the menu still open used to "accept" the completion the user had already
+/// typed — replacing it with itself plus a space — so the first click on Send
+/// looked dead and the message never left.
+#[gpui::test]
+fn an_already_complete_mention_does_not_swallow_the_send(cx: &mut gpui::TestAppContext) {
+    let app = app(cx);
+    cx.update(|cx| {
+        app.update(cx, |app, cx| {
+            open_menu_on(app, "@src/main.rs", cx);
+
+            assert!(
+                !app.commit_autocomplete_if_open(CompletionIntent::Send, cx),
+                "an exact match must fall through so the send happens"
+            );
+            assert_eq!(
+                app.input.read(cx).text(),
+                "@src/main.rs",
+                "nothing was rewritten"
+            );
+        });
+    });
+}
+
+/// …but Tab still owns the key. Tab is focus traversal when the gate declines,
+/// so an exact match must report handled rather than moving focus behind the
+/// user's back.
+#[gpui::test]
+fn an_already_complete_mention_is_still_handled_for_tab(cx: &mut gpui::TestAppContext) {
+    let app = app(cx);
+    cx.update(|cx| {
+        app.update(cx, |app, cx| {
+            open_menu_on(app, "@src/main.rs", cx);
+            assert!(
+                app.commit_autocomplete_if_open(CompletionIntent::Accept, cx),
+                "Tab must not fall through to focus traversal"
+            );
+        });
+    });
+}
+
+/// A real completion still wins: typing `@src/ma` with `@src/main.rs`
+/// highlighted must complete the token, not send a half-typed mention.
+#[gpui::test]
+fn a_partial_mention_is_still_completed(cx: &mut gpui::TestAppContext) {
+    let app = app(cx);
+    cx.update(|cx| {
+        app.update(cx, |app, cx| {
+            open_menu_on(app, "@src/ma", cx);
+            app.autocomplete.borrow_mut().highlighted = 0;
+
+            assert!(
+                app.commit_autocomplete_if_open(CompletionIntent::Send, cx),
+                "a partial token is completed, not sent"
+            );
+            assert_eq!(app.input.read(cx).text(), "@src/main.rs ");
+        });
+    });
+}
+
+/// A click outside the menu closes it on the spot. Waiting for the next
+/// heartbeat made the same Send click commit sometimes and send other times,
+/// depending on how long the button was held.
+#[gpui::test]
+fn clicking_outside_closes_the_menu_immediately(cx: &mut gpui::TestAppContext) {
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| {
+        cx.set_global(Theme::for_id(ThemeId::Orbit));
+        cx.new(OrbitApp::new)
+    });
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            open_menu_on(app, "@src/main.rs", cx);
+            assert!(app.autocomplete.borrow().open);
+
+            app.on_autocomplete_outside_down(
+                &gpui::MouseDownEvent {
+                    button: gpui::MouseButton::Left,
+                    position: gpui::point(gpui::px(0.), gpui::px(0.)),
+                    modifiers: gpui::Modifiers::none(),
+                    click_count: 1,
+                    first_mouse: false,
+                },
+                window,
+                cx,
+            );
+
+            assert!(
+                !app.autocomplete.borrow().open,
+                "the menu is closed before the click reaches the button"
+            );
         });
     });
 }

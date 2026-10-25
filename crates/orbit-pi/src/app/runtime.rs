@@ -656,7 +656,7 @@ impl OrbitApp {
             return;
         }
         if !self.take_auto_restart() {
-            self.set_error(tr!("events.process_exited"));
+            self.set_error(self.process_exited_banner());
             return;
         }
         self.auto_restart_scheduled = true;
@@ -672,6 +672,32 @@ impl OrbitApp {
             });
         })
         .detach();
+    }
+
+    /// The banner for a dead process: pi's own last stderr line when it left
+    /// one, so "process exited" is not a dead end. A bundled `.app` is the
+    /// case that needs it most — a launch whose `PATH` cannot reach `node`
+    /// dies on the shim's `env: node: No such file or directory`, which used
+    /// to reach the user as nothing at all (issue #81).
+    ///
+    /// The line is redacted (MCP secret values never reach a banner) and
+    /// clipped, so a stack trace cannot take over the bar.
+    fn process_exited_banner(&self) -> String {
+        let detail = self
+            .client
+            .as_ref()
+            .and_then(|client| {
+                client
+                    .recent_stderr(8)
+                    .into_iter()
+                    .rev()
+                    .find(|line| !line.trim().is_empty())
+            })
+            .map(|line| clip_stderr_line(&self.mcp.redact_text(line.trim())));
+        match detail {
+            Some(detail) => tr!("events.process_exited_detail", error = detail),
+            None => tr!("events.process_exited"),
+        }
     }
 
     /// Register the active client under the session file pi reports. The
@@ -717,4 +743,16 @@ impl OrbitApp {
         self.lives.retain(|_, parked| alive(parked));
         self.pending_parks.retain(alive);
     }
+}
+
+/// One stderr line, capped so a multi-kilobyte stack trace cannot take over
+/// the error banner.
+fn clip_stderr_line(line: &str) -> String {
+    const MAX_CHARS: usize = 200;
+    if line.chars().count() <= MAX_CHARS {
+        return line.to_string();
+    }
+    let mut out: String = line.chars().take(MAX_CHARS).collect();
+    out.push('…');
+    out
 }
