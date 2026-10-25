@@ -658,6 +658,7 @@ impl Render for OrbitApp {
                                             .flex_1()
                                             .min_h_0()
                                             .px_2()
+                                            .pb_2()
                                             .relative()
                                             .child(
                                                 div()
@@ -712,45 +713,86 @@ impl Render for OrbitApp {
                             )
                             // footer — connection status, then the utility
                             // icons on the last edge, set off from the session
-                            // list by a hairline
+                            // list by a hairline. The gutter matches the
+                            // section label above so the column has one edge.
                             .child(
                                 div()
                                     .id("sidebar-footer")
                                     .debug_selector(|| "sidebar-footer".to_string())
                                     .h(px(44.))
-                                    .px_3()
+                                    .px(px(14.))
                                     .border_t_1()
                                     .border_color(theme.border)
                                     .flex()
                                     .items_center()
-                                    .child(
+                                    // Connection status — a dot alone while
+                                    // the runtime is live: "Connected" is the
+                                    // steady state, so a permanent label spends
+                                    // the row's best corner on a non-event. When
+                                    // it is not live the label appears and the
+                                    // pair reconnects on click.
+                                    .child(if self.runtime_is_live() {
                                         div()
+                                            .flex_none()
+                                            .size(px(6.))
+                                            .rounded_full()
+                                            .bg(theme.success)
+                                            .into_any_element()
+                                    } else {
+                                        div()
+                                            .id("sidebar-runtime-status")
                                             .flex()
+                                            .min_w_0()
                                             .items_center()
                                             .gap(DynamicSpacing::Base06.px(&theme))
-                                            .child(div().size(px(6.)).rounded_full().bg(
-                                                if self.client.is_some() {
-                                                    theme.success
-                                                } else {
-                                                    theme.error
-                                                },
-                                            ))
+                                            .cursor_pointer()
+                                            .tip(tr!("view.reconnect"))
+                                            .active(|s| s.opacity(PRESS_DIM))
+                                            .on_mouse_up(
+                                                MouseButton::Left,
+                                                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                                    this.runtime_restart(cx)
+                                                }),
+                                            )
                                             .child(
                                                 div()
+                                                    .flex_none()
+                                                    .size(px(6.))
+                                                    .rounded_full()
+                                                    .bg(theme.error),
+                                            )
+                                            .child(
+                                                div()
+                                                    .min_w_0()
+                                                    .truncate()
                                                     .text_size(TextSize::Small.px(&theme))
-                                                    .text_color(theme.text_muted)
-                                                    .child(if self.client.is_some() {
-                                                        tr!("status.connected")
-                                                    } else {
-                                                        tr!("status.offline")
-                                                    }),
-                                            ),
-                                    )
+                                                    .text_color(theme.text_secondary)
+                                                    .child(tr!("status.offline")),
+                                            )
+                                            .into_any_element()
+                                    })
                                     .child(div().flex_1())
                                     .when_some(
                                         self.sidebar_updater_button(theme, cx),
                                         |footer, button| {
-                                            footer.child(button).child(div().w(px(8.)))
+                                            // Reserve the pill's expanded width
+                                            // so its hover reveal grows into
+                                            // empty space, not over the label.
+                                            footer
+                                                .child(
+                                                    div()
+                                                        .flex_none()
+                                                        .w(theme.ui_px(
+                                                            super::updater_ui::
+                                                                UPDATER_PILL_EXPANDED_W,
+                                                        ))
+                                                        .h_full()
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_end()
+                                                        .child(button),
+                                                )
+                                                .child(div().w(px(8.)))
                                         },
                                     )
                                     .child(self.sidebar_footer_actions(theme, cx)),
@@ -3695,9 +3737,11 @@ impl OrbitApp {
         div()
             .flex()
             .items_center()
-            .gap_1()
+            .gap(DynamicSpacing::Base06.px(&theme))
             .child(search)
             .child(usage)
+            // Separates "where you go" from "how it is configured".
+            .child(div().flex_none().w(px(1.)).h(px(12.)).bg(theme.border))
             .child(settings)
     }
 
