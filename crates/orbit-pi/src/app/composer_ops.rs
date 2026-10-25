@@ -26,6 +26,56 @@ impl OrbitApp {
         }
     }
 
+    // ── per-session drafts ────────────────────────────────────────────
+
+    /// Stash the composer's unsent state under the *current* target (the
+    /// open session's file, or the New Task page's slot). An empty composer
+    /// drops the draft instead of parking a blank one. Call before leaving a
+    /// session for another.
+    pub(super) fn save_composer_draft(&mut self, cx: &mut Context<Self>) {
+        let draft = ComposerDraft {
+            text: self.input.read(cx).text(),
+            attachments: std::mem::take(&mut self.attachments),
+            pasted_texts: std::mem::take(&mut self.pasted_texts),
+        };
+        let draft = (!draft.is_empty()).then_some(draft);
+        match self.current_session_path.clone() {
+            Some(path) => match draft {
+                Some(draft) => {
+                    self.drafts.insert(path, draft);
+                }
+                None => {
+                    self.drafts.remove(&path);
+                }
+            },
+            None => self.new_task_draft = draft,
+        }
+    }
+
+    /// Restore the draft parked for `path` (or the New Task slot), clearing
+    /// the composer when there is none. Call after a session (or a fresh
+    /// task) becomes active.
+    pub(super) fn restore_composer_draft(&mut self, path: Option<&Path>, cx: &mut Context<Self>) {
+        let draft = match path {
+            Some(path) => self.drafts.remove(path),
+            None => self.new_task_draft.take(),
+        };
+        match draft {
+            Some(draft) => {
+                self.attachments = draft.attachments;
+                self.pasted_texts = draft.pasted_texts;
+                self.input
+                    .update(cx, |input, cx| input.set_text(draft.text, cx));
+            }
+            None => {
+                self.attachments.clear();
+                self.pasted_texts.clear();
+                self.input.update(cx, |input, cx| input.clear(cx));
+            }
+        }
+        cx.notify();
+    }
+
     /// (Re)build the workspace file cache when the workspace changed.
     pub(super) fn ensure_mention_files(&mut self) {
         if self.mention_files_workspace == self.current_workspace {
@@ -218,7 +268,7 @@ impl OrbitApp {
                 )
                 .h(row_h)
                 .cursor_pointer()
-                .when(selected, |row| row.bg(theme.selection))
+                .when(selected, |row| row.bg(theme.surface_selected))
                 .hover(|style| style.bg(theme.surface_hover))
                 .on_click(move |_, _, cx| {
                     this.update(cx, |app, cx| app.commit_entry(entry.clone(), cx))
@@ -302,7 +352,7 @@ impl OrbitApp {
 
     /// Attachment chips row shown above the input (pasted/picked images).
     pub(super) fn attachments_row(&self, cx: &Context<Self>) -> Option<AnyElement> {
-        if self.attachments.is_empty() {
+        if self.attachments.is_empty() && self.pasted_texts.is_empty() {
             return None;
         }
         let theme = *theme::get(cx);
@@ -311,71 +361,120 @@ impl OrbitApp {
             .flex()
             .flex_wrap()
             .gap(DynamicSpacing::Base06.px(&theme));
-        Some(
-            row.children(self.attachments.iter().enumerate().map(|(ix, a)| {
-                // Image attachments show the decoded image; the glyph is the
-                // fallback if a preview never decoded.
-                let visual: AnyElement = match &a.preview {
-                    Some(image) => div()
-                        .size(IconSize::Medium.px(&theme))
+        // Pasted text leads: it is content the user meant to send, and the
+        // images sit beside it as attachments.
+        let pasted_pills = self.pasted_texts.iter().enumerate().map(|(ix, paste)| {
+            let chip = div().id(ElementId::NamedInteger("pasted-text".into(), ix as u64));
+            button_frame(chip, &theme, ButtonSize::Medium)
+                .tip(paste.content.clone())
+                .border_1()
+                .border_color(theme.border)
+                .raised(theme.surface_elevated, &theme)
+                .cursor_pointer()
+                .hover(|s| s.raised(theme.overlay, &theme))
+                .child(icon(
+                    "icons/file.svg",
+                    IconSize::XSmall.px(&theme),
+                    theme.text_muted,
+                ))
+                .child(
+                    div()
+                        .max_w(px(160.))
+                        .truncate()
+                        .text_color(theme.text_secondary)
+                        .child(paste.title.clone()),
+                )
+                .child(
+                    div()
                         .flex_none()
-                        .rounded(Radius::Small.px(&theme))
-                        .overflow_hidden()
-                        .child(
-                            img(ImageSource::Image(image.clone()))
-                                .size_full()
-                                .object_fit(ObjectFit::Cover),
-                        )
-                        .into_any_element(),
-                    None => file_glyph(
-                        &a.name,
-                        theme.mode == ThemeMode::Dark,
-                        nerd_font_family(cx).as_ref(),
-                        IconSize::XSmall.px(&theme),
-                        icon(
-                            "icons/task.svg",
-                            IconSize::XSmall.px(&theme),
-                            theme.text_muted,
-                        )
-                        .into_any_element(),
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_muted)
+                        .child(tr!("composer.pasted_text", lines = paste.lines)),
+                )
+                .child(
+                    icon(
+                        "icons/x.svg",
+                        ButtonSize::Medium.icon_size().px(&theme),
+                        theme.text_muted,
                     )
                     .into_any_element(),
-                };
-                let chip = div().id(ElementId::NamedInteger("attachment".into(), ix as u64));
-                button_frame(chip, &theme, ButtonSize::Medium)
-                    .tip(tr!("composer.remove_attachment"))
-                    .border_1()
-                    .border_color(theme.border)
-                    .raised(theme.surface_elevated, &theme)
-                    .cursor_pointer()
-                    .hover(|s| s.raised(theme.overlay, &theme))
-                    .child(visual)
-                    .child(
-                        div()
-                            .max_w(px(160.))
-                            .truncate()
-                            .text_color(theme.text_secondary)
-                            .child(a.name.clone()),
-                    )
-                    .child(
-                        icon(
-                            "icons/x.svg",
-                            ButtonSize::Medium.icon_size().px(&theme),
-                            theme.text_muted,
+                )
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                        if ix < this.pasted_texts.len() {
+                            this.pasted_texts.remove(ix);
+                            cx.notify();
+                        }
+                    }),
+                )
+        });
+        Some(
+            row.children(pasted_pills)
+                .children(self.attachments.iter().enumerate().map(|(ix, a)| {
+                    // Image attachments show the decoded image; the glyph is the
+                    // fallback if a preview never decoded.
+                    let visual: AnyElement = match &a.preview {
+                        Some(image) => div()
+                            .size(IconSize::Medium.px(&theme))
+                            .flex_none()
+                            .rounded(Radius::Small.px(&theme))
+                            .overflow_hidden()
+                            .child(
+                                img(ImageSource::Image(image.clone()))
+                                    .size_full()
+                                    .object_fit(ObjectFit::Cover),
+                            )
+                            .into_any_element(),
+                        None => file_glyph(
+                            &a.name,
+                            theme.mode == ThemeMode::Dark,
+                            nerd_font_family(cx).as_ref(),
+                            IconSize::XSmall.px(&theme),
+                            icon(
+                                "icons/task.svg",
+                                IconSize::XSmall.px(&theme),
+                                theme.text_muted,
+                            )
+                            .into_any_element(),
                         )
                         .into_any_element(),
-                    )
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                            if ix < this.attachments.len() {
-                                this.attachments.remove(ix);
-                                cx.notify();
-                            }
-                        }),
-                    )
-            }))
-            .into_any_element(),
+                    };
+                    let chip = div().id(ElementId::NamedInteger("attachment".into(), ix as u64));
+                    button_frame(chip, &theme, ButtonSize::Medium)
+                        .tip(tr!("composer.remove_attachment"))
+                        .border_1()
+                        .border_color(theme.border)
+                        .raised(theme.surface_elevated, &theme)
+                        .cursor_pointer()
+                        .hover(|s| s.raised(theme.overlay, &theme))
+                        .child(visual)
+                        .child(
+                            div()
+                                .max_w(px(160.))
+                                .truncate()
+                                .text_color(theme.text_secondary)
+                                .child(a.name.clone()),
+                        )
+                        .child(
+                            icon(
+                                "icons/x.svg",
+                                ButtonSize::Medium.icon_size().px(&theme),
+                                theme.text_muted,
+                            )
+                            .into_any_element(),
+                        )
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                                if ix < this.attachments.len() {
+                                    this.attachments.remove(ix);
+                                    cx.notify();
+                                }
+                            }),
+                        )
+                }))
+                .into_any_element(),
         )
     }
 

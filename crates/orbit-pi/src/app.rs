@@ -637,6 +637,8 @@ pub struct OrbitApp {
     /// Shared `/`-command and `@`-file menu state between the composer
     /// (which owns ↑/↓) and this app (which owns Enter/Escape + rendering).
     autocomplete: SharedAutocomplete,
+    /// Sent-prompt log the chat composer's ↑/↓ recall pages through.
+    prompt_history: crate::composer::SharedPromptHistory,
     /// Dismissed via outside mouse-down; cleared when the trigger changes.
     autocomplete_dismissed: bool,
     /// Trigger (kind + query) the autocomplete highlight was synced against.
@@ -648,6 +650,14 @@ pub struct OrbitApp {
     mention_files_workspace: Option<PathBuf>,
     /// Images queued to ride along with the next prompt (pasted or picked).
     attachments: Vec<Attachment>,
+    /// Long pasted text collapsed into pills (sent as prompt text).
+    pasted_texts: Vec<PastedText>,
+    /// Unsent composer drafts, keyed by session file. Saved when a session is
+    /// parked, restored when it is re-opened — switching sessions never
+    /// carries one task's half-written prompt into another.
+    drafts: HashMap<PathBuf, ComposerDraft>,
+    /// The draft for the New Task page, which has no session file yet.
+    new_task_draft: Option<ComposerDraft>,
     /// Files are being dragged over the composer (external OS drag).
     file_drag_hovered: bool,
     /// Installed folder-capable apps for the header's "open in" control.
@@ -1001,7 +1011,52 @@ pub struct OrbitApp {
     mcp_external_check_at: Option<Instant>,
 }
 
+/// Long text pasted into the composer, collapsed into a pill instead of
+/// flooding the box (see `composer.rs`'s paste gate).
+#[derive(Clone)]
+struct PastedText {
+    /// First non-empty line, for the chip label.
+    title: String,
+    /// Total line count, for the chip label.
+    lines: usize,
+    /// The full pasted text, folded back into the prompt on submit.
+    content: String,
+}
+
+impl PastedText {
+    fn new(content: String) -> Self {
+        let title = content
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("")
+            .trim()
+            .chars()
+            .take(80)
+            .collect::<String>();
+        Self {
+            title,
+            lines: content.lines().count(),
+            content,
+        }
+    }
+}
+
+/// The composer's unsent state, parked with its session.
+#[derive(Clone, Default)]
+struct ComposerDraft {
+    text: String,
+    attachments: Vec<Attachment>,
+    pasted_texts: Vec<PastedText>,
+}
+
+impl ComposerDraft {
+    fn is_empty(&self) -> bool {
+        self.text.trim().is_empty() && self.attachments.is_empty() && self.pasted_texts.is_empty()
+    }
+}
+
 /// An image queued to ride along with the next prompt.
+#[derive(Clone)]
 struct Attachment {
     name: String,
     mime: String,
@@ -1162,10 +1217,12 @@ impl OrbitApp {
         let autocomplete: SharedAutocomplete = Rc::new(std::cell::RefCell::new(
             mentions::AutocompleteState::default(),
         ));
+        let prompt_history = crate::composer::PromptHistory::shared();
         let input = cx.new(|cx| {
             ComposerInput::new(cx)
                 .with_key_context("Composer ChatComposer")
                 .with_autocomplete(autocomplete.clone())
+                .with_prompt_history(prompt_history.clone())
         });
         // The chat input is the workbench's home tab stop; every other
         // ComposerInput (filters, rename fields, pickers) stays out of the
@@ -1743,12 +1800,16 @@ impl OrbitApp {
             session_usage: None,
             context_popup: ContextPopup::None,
             autocomplete,
+            prompt_history,
             autocomplete_dismissed: false,
             last_ac_trigger: None,
             slash_commands: Vec::new(),
             mention_files: Vec::new(),
             mention_files_workspace: None,
             attachments: Vec::new(),
+            pasted_texts: Vec::new(),
+            drafts: HashMap::new(),
+            new_task_draft: None,
             file_drag_hovered: false,
             open_in_apps: Rc::new(Vec::new()),
             open_in_menu_open: false,
@@ -3147,6 +3208,8 @@ mod backdrop_layout_tests;
 #[cfg(test)]
 mod cancel_tests;
 #[cfg(test)]
+mod composer_draft_tests;
+#[cfg(test)]
 mod composer_layout_tests;
 #[cfg(test)]
 mod devicons_tests;
@@ -3162,6 +3225,8 @@ mod popup_layout_tests;
 mod process_exit_cleanup_tests;
 #[cfg(test)]
 mod refresh_tests;
+#[cfg(test)]
+mod send_control_tests;
 #[cfg(test)]
 mod send_progress_tests;
 #[cfg(test)]

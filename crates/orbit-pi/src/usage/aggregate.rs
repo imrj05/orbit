@@ -689,7 +689,7 @@ pub struct ErrorStats {
 
 /// The informative half of a workspace path: its parent directory, with the
 /// home directory shortened to `~`.
-fn parent_hint(path: &str) -> String {
+pub(super) fn parent_hint(path: &str) -> String {
     let parent = std::path::Path::new(path)
         .parent()
         .map(|parent| parent.to_string_lossy().to_string())
@@ -1191,4 +1191,3 @@ fn breakdown(
     breakdown.finish();
     breakdown
 }
-

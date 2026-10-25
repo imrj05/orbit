@@ -20,7 +20,7 @@ use gpui::{
     Hsla, IntoElement, MouseButton, Pixels, Render, SharedString, Window,
 };
 
-use crate::theme::tokens::{DynamicSpacing, IconSize, Radius, TextSize};
+use crate::theme::tokens::{panel, DynamicSpacing, IconSize, TextSize};
 use crate::theme::Theme;
 
 /// A body row's height. Every table height is a whole number of these plus the
@@ -241,7 +241,7 @@ pub fn data_table(
 
     div()
         .w_full()
-        .rounded(Radius::XLarge.px(&theme))
+        .rounded(panel::RADIUS.px(&theme))
         .border_1()
         .border_color(theme.border)
         .overflow_hidden()

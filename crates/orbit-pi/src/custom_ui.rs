@@ -24,7 +24,7 @@ use serde_json::Value;
 use crate::app::{icon, icon_button_frame, TipExt};
 use crate::terminal::encode_key;
 use crate::theme;
-use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize};
+use crate::theme::tokens::{panel, ButtonSize, DynamicSpacing, IconSize, StyledExt, TextSize};
 use crate::widgets;
 
 /// Column budget the host offers the component: the card is exactly this many
@@ -394,7 +394,7 @@ impl Render for CustomUi {
             .my(px(10.))
             .px(px(10.))
             .py(DynamicSpacing::Base08.px(&theme))
-            .rounded(Radius::XLarge.px(&theme))
+            .rounded(panel::RADIUS.px(&theme))
             .bg(theme.code_bg)
             .border_1()
             .border_color(theme.border)

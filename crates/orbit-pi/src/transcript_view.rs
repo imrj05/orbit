@@ -51,8 +51,8 @@ use crate::message_scroller::{self, MessageScrollerState};
 use crate::shimmer::ShimmerText;
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
-    context_menu, picker, popover, BufferLineHeight, ButtonSize, DynamicSpacing, IconSize, Radius,
-    StyledExt, TextSize, BORDER_WIDTH,
+    context_menu, panel, picker, popover, BufferLineHeight, ButtonSize, DynamicSpacing, IconSize,
+    Radius, StyledExt, TextSize, BORDER_WIDTH,
 };
 use crate::theme::{self, Theme, ThemeMode};
 use crate::transcript::{ChatMessage, Step, SummaryRow, ToolCall, ToolFacts};
@@ -1836,9 +1836,9 @@ fn render_summary_card(row: &SummaryRow, paint: &RowPaint) -> AnyElement {
         .items_center()
         .gap(DynamicSpacing::Base08.px(&theme))
         // Square hover fill over a rounded card otherwise; see the tool card.
-        .rounded_t(Radius::XLarge.px(&theme))
+        .rounded_t(panel::RADIUS.px(&theme))
         .when(!expanded, |header| {
-            header.rounded_b(Radius::XLarge.px(&theme))
+            header.rounded_b(panel::RADIUS.px(&theme))
         })
         .cursor_pointer()
         .hover(|style| style.bg(theme.overlay_strong))
@@ -1887,7 +1887,7 @@ fn render_summary_card(row: &SummaryRow, paint: &RowPaint) -> AnyElement {
         .w_full()
         .min_w_0()
         .overflow_hidden()
-        .rounded(Radius::XLarge.px(&theme))
+        .rounded(panel::RADIUS.px(&theme))
         .border_1()
         .border_color(theme.border)
         .bg(theme.overlay)
@@ -1950,7 +1950,7 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint) -> impl IntoEleme
                                 (ix as u64) << 20 | image_ix as u64,
                             ))
                             .size(px(112.))
-                            .rounded(Radius::XLarge.px(&theme))
+                            .rounded(panel::RADIUS.px(&theme))
                             .border_1()
                             .border_color(theme.border)
                             .overflow_hidden()
@@ -1976,7 +1976,7 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint) -> impl IntoEleme
             column.child(
                 div()
                     .max_w(px(USER_BUBBLE_MAX_WIDTH))
-                    .rounded(Radius::XLarge.px(&theme))
+                    .rounded(panel::RADIUS.px(&theme))
                     .bg(theme.surface_elevated)
                     .text_color(theme.text_primary)
                     .px(DynamicSpacing::Base12.px(&theme))
@@ -2245,7 +2245,7 @@ fn render_assistant_error(error: &str, ix: usize, theme: Theme) -> AnyElement {
         .bg(theme.error.opacity(0.1))
         .border_1()
         .border_color(theme.error.opacity(0.45))
-        .rounded(Radius::XLarge.px(&theme))
+        .rounded(panel::RADIUS.px(&theme))
         .px(DynamicSpacing::Base12.px(&theme))
         .py(DynamicSpacing::Base08.px(&theme))
         .flex()
@@ -2696,7 +2696,7 @@ fn render_thinking_body(
     };
     let mut card = div()
         .debug_selector(move || format!("thought-card-{}-{}", key.0, key.1))
-        .rounded(Radius::XLarge.px(&theme))
+        .rounded(panel::RADIUS.px(&theme))
         .border_1()
         .border_color(theme.border)
         .bg(theme.overlay)
@@ -2941,7 +2941,7 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
         .w_full()
         .min_w_0()
         .overflow_hidden()
-        .rounded(Radius::XLarge.px(&theme))
+        .rounded(panel::RADIUS.px(&theme))
         .border_1()
         .border_color(theme.border)
         .bg(theme.overlay)
@@ -3055,7 +3055,7 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
                 .px(DynamicSpacing::Base08.px(&theme))
                 .py(DynamicSpacing::Base04.px(&theme))
                 .rounded(Radius::Medium.px(&theme))
-                .when(chosen, |row| row.bg(theme.selection));
+                .when(chosen, |row| row.bg(theme.surface_selected));
             // A plain number keeps the list readable at a glance.
             row = row.child(
                 div()
@@ -3216,7 +3216,7 @@ fn render_activity_card(
         .w_full()
         .min_w_0()
         .overflow_hidden()
-        .rounded(Radius::XLarge.px(&theme))
+        .rounded(panel::RADIUS.px(&theme))
         .border_1()
         .border_color(theme.border)
         .bg(theme.overlay)
@@ -3229,9 +3229,9 @@ fn render_activity_card(
                 .gap(DynamicSpacing::Base08.px(&theme))
                 .text_size(TextSize::Default.px(&theme))
                 .line_height(BufferLineHeight::Standard.relative())
-                .rounded_t(Radius::XLarge.px(&theme))
+                .rounded_t(panel::RADIUS.px(&theme))
                 .when(header_is_only_child, |row| {
-                    row.rounded_b(Radius::XLarge.px(&theme))
+                    row.rounded_b(panel::RADIUS.px(&theme))
                 })
                 .when(has_detail, |row| row.cursor_pointer())
                 .hover(|style| style.bg(theme.overlay_strong))
@@ -3520,7 +3520,7 @@ fn render_tool_error_strip(tool: &ToolCall, round_bottom: bool, theme: Theme) ->
         .border_t_1()
         .border_color(theme.border)
         .bg(theme.error.opacity(0.07))
-        .when(round_bottom, |s| s.rounded_b(Radius::XLarge.px(&theme)))
+        .when(round_bottom, |s| s.rounded_b(panel::RADIUS.px(&theme)))
         .px(DynamicSpacing::Base08.px(&theme))
         .py(DynamicSpacing::Base04.px(&theme))
         .flex()
@@ -3607,7 +3607,7 @@ fn render_tool_detail(
                 .border_color(theme.border)
                 // With no sections below it, the diff is the card's last
                 // child and carries its bottom radius.
-                .when(!has_sections, |d| d.rounded_b(Radius::XLarge.px(&theme)))
+                .when(!has_sections, |d| d.rounded_b(panel::RADIUS.px(&theme)))
                 .child(render_edit_diff(
                     rows,
                     key,
@@ -3631,7 +3631,7 @@ fn render_tool_detail(
             .flex_col()
             // The surface is always the card's last child, so it carries the
             // card's bottom radius (gpui clips children to a rectangle).
-            .rounded_b(Radius::XLarge.px(&theme))
+            .rounded_b(panel::RADIUS.px(&theme))
             // Without a diff above it, the surface owns the rule that
             // separates it from the card header.
             .when(diff.is_none(), |s| {
@@ -6313,7 +6313,7 @@ fn render_markdown_image(
             // `max_w_full` clamps the width. A definite height (including 0)
             // makes gpui compute the width *from* it instead — 0 × ratio —
             // and the loaded image collapses to nothing.
-            .rounded(Radius::XLarge.px(&theme))
+            .rounded(panel::RADIUS.px(&theme))
             .border_1()
             .border_color(theme.border)
             .object_fit(ObjectFit::Contain)
@@ -6334,7 +6334,7 @@ fn markdown_image_fallback(alt: &str, theme: Theme) -> AnyElement {
     div()
         .px(DynamicSpacing::Base08.px(&theme))
         .py(DynamicSpacing::Base08.px(&theme))
-        .rounded(Radius::XLarge.px(&theme))
+        .rounded(panel::RADIUS.px(&theme))
         .border_1()
         .border_color(theme.border)
         .bg(theme.overlay)
@@ -6359,7 +6359,7 @@ fn render_alert(
     div()
         .w_full()
         .min_w_0()
-        .rounded(Radius::XLarge.px(&theme))
+        .rounded(panel::RADIUS.px(&theme))
         .bg(color.opacity(0.08))
         .px(DynamicSpacing::Base12.px(&theme))
         .py(px(10.))
@@ -6603,7 +6603,7 @@ fn render_code_block(
         .bg(theme.overlay)
         // The title strip is the card's first child; gpui clips children to a
         // rectangle, so the strip carries the card's top radius itself.
-        .rounded_t(Radius::XLarge.px(&theme))
+        .rounded_t(panel::RADIUS.px(&theme))
         .border_b_1()
         .border_color(theme.border)
         .child(
@@ -6632,7 +6632,7 @@ fn render_code_block(
     let mut card = div()
         .w_full()
         .min_w_0()
-        .rounded(Radius::XLarge.px(&theme))
+        .rounded(panel::RADIUS.px(&theme))
         .border_1()
         .border_color(theme.border)
         .bg(theme.code_bg)
@@ -6983,7 +6983,7 @@ fn render_table(
         .max_w_full()
         .min_w_0()
         .overflow_hidden()
-        .rounded(Radius::XLarge.px(&theme))
+        .rounded(panel::RADIUS.px(&theme))
         .border_1()
         .border_color(theme.border)
         .child(
@@ -7214,7 +7214,7 @@ pub(crate) fn render_changed_files(
     let mut card = div()
         .w_full()
         .min_w_0()
-        .rounded(Radius::XLarge.px(&theme))
+        .rounded(panel::RADIUS.px(&theme))
         .border_1()
         .border_color(theme.border)
         .bg(theme.background)

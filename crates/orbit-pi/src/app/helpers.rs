@@ -1,7 +1,7 @@
 use super::*;
 use crate::platform::WindowCommand;
 use crate::theme::tokens::{
-    self, button, context_menu, input, list, list_item, picker, ButtonSize, DynamicSpacing,
+    self, button, context_menu, input, list, list_item, panel, picker, ButtonSize, DynamicSpacing,
     IconSize, Radius, StyledExt, TextSize,
 };
 use crate::usage::tooltip::Tooltip;
@@ -502,7 +502,7 @@ pub(crate) fn empty_state_glyph(theme: Theme, glyph: &'static str) -> AnyElement
     div()
         .size(px(64.))
         .flex_none()
-        .rounded(Radius::XLarge.px(&theme))
+        .rounded(panel::RADIUS.px(&theme))
         .border_1()
         .border_color(theme.border)
         .bg(theme.surface_elevated)
@@ -519,7 +519,7 @@ pub(crate) fn empty_state_glyph(theme: Theme, glyph: &'static str) -> AnyElement
 
 // ── top-bar chip primitives ──
 
-/// Shared height of every top-bar control — the quota pill, the "open in"
+/// Shared height of every top-bar control — the quota chip, the "open in"
 /// split, the diff chip and the icon buttons — so a row of mixed
 /// affordances reads as one instrument panel instead of assorted sizes.
 /// It is Zed's `ButtonSize::Medium` at the default UI size, held fixed
@@ -527,10 +527,13 @@ pub(crate) fn empty_state_glyph(theme: Theme, glyph: &'static str) -> AnyElement
 /// (`view::TITLEBAR_CONTROLS_W`).
 pub(crate) const HEADER_CTRL_H: f32 = 28.;
 
-/// Corner radius of the rectangular header chips: the full-size button
-/// radius ([`button::RADIUS`]) at the default UI size, fixed like the
-/// height. The quota pill keeps a full round so it still reads as a meter.
-pub(crate) const HEADER_CTRL_R: f32 = 8.;
+/// Corner radius of the rectangular header chips. Header chips are buttons, so
+/// they take [`button::RADIUS`] rather than a fixed 8px: that keeps them in
+/// step with the button scale when the Operational design system tightens it.
+/// Every header chip, including the quota meter, shares this corner.
+pub(crate) fn header_ctrl_radius(theme: &Theme) -> Pixels {
+    button::RADIUS.px(theme)
+}
 
 /// The glass fill every resting top-bar chip shares: the text-wash overlay
 /// with its alpha raised toward the top edge and eased off at the bottom,
@@ -614,7 +617,7 @@ pub(crate) fn star_project_banner(
         .debug_selector(move || element_id.to_string())
         .px(DynamicSpacing::Base08.px(&theme))
         .py(DynamicSpacing::Base06.px(&theme))
-        .rounded(Radius::Large.px(&theme))
+        .rounded(panel::RADIUS.px(&theme))
         .border_1()
         .border_color(theme.border)
         .bg(theme.surface_elevated)
@@ -659,10 +662,10 @@ pub(crate) fn star_project_banner(
 }
 
 /// Dress a top-bar chip: the [`header_fill`] glass in a hairline box, lifting
-/// on hover. The caller owns the size and the rounding — the quota pill stays
-/// `rounded_full` while the rest of the row takes [`HEADER_CTRL_R`], and a
-/// radius set here would override whichever it picked — and must not set a
-/// second hover of its own.
+/// on hover. The caller owns the size and the rounding — a control may opt into
+/// `rounded_full` when it is genuinely circular, while the rest of the row takes
+/// [`header_ctrl_radius`] — and a radius set here would override whichever it
+/// picked. The helper must not set a second hover of its own.
 pub(crate) fn header_chip<S: Styled + InteractiveElement>(el: S, theme: &Theme) -> S {
     let lifted = header_lifted(theme);
     el.border_1()
@@ -687,7 +690,7 @@ pub(crate) fn header_icon_button(
             .id(id)
             .group(BUTTON_GROUP)
             .size(px(HEADER_CTRL_H))
-            .rounded(px(HEADER_CTRL_R))
+            .rounded(header_ctrl_radius(theme))
             .flex()
             .items_center()
             .justify_center()
@@ -715,7 +718,7 @@ pub(crate) fn header_ghost_button(
             .id(id)
             .group(BUTTON_GROUP)
             .size(px(HEADER_CTRL_H))
-            .rounded(px(HEADER_CTRL_R))
+            .rounded(header_ctrl_radius(theme))
             .flex()
             .items_center()
             .justify_center()
@@ -1076,15 +1079,15 @@ mod tests {
     use super::*;
 
     /// `header_chip` dresses the surface (hairline, glass, hover lift) but
-    /// must leave the caller's rounding alone: the quota pill is
-    /// `rounded_full` while every other chip takes [`HEADER_CTRL_R`], so a
-    /// rest style that also set the corners would square the pill off.
+    /// must leave the caller's rounding alone: a circular control may use
+    /// `rounded_full` while the rectangular chips take [`header_ctrl_radius`],
+    /// so a rest style that also set the corners would square the circle off.
     #[test]
     fn chip_glass_keeps_the_callers_rounding() {
         let theme = Theme::dark();
         let round = div().rounded_full().style().corner_radii.clone();
         let square = div()
-            .rounded(px(HEADER_CTRL_R))
+            .rounded(header_ctrl_radius(&theme))
             .style()
             .corner_radii
             .clone();
@@ -1097,12 +1100,28 @@ mod tests {
             round
         );
         assert_eq!(
-            header_chip(div().rounded(px(HEADER_CTRL_R)), &theme)
+            header_chip(div().rounded(header_ctrl_radius(&theme)), &theme)
                 .style()
                 .corner_radii
                 .clone(),
             square
         );
+    }
+
+    /// Header chips are buttons: their corner must track the button scale, not
+    /// a fixed pixel value, so Operational's tighter radius reaches them too.
+    #[test]
+    fn header_radius_tracks_the_button_scale() {
+        for theme in [
+            Theme::dark(),
+            Theme::for_id(crate::theme::ThemeId::Operational),
+        ] {
+            assert_eq!(
+                header_ctrl_radius(&theme),
+                button::RADIUS.px(&theme),
+                "header chip radius drifted from the button radius"
+            );
+        }
     }
 
     /// A group of segments rounds only its outer corners: the first rounds

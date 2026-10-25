@@ -100,8 +100,8 @@ Usage — requests, tokens, cost, and cache, read from your own sessions:
 - **Privacy** — Settings → Privacy archives or deletes idle `pi` sessions on a schedule you choose
 - It also lists Orbit's own scratch files in the `orbit-pi` folder inside the system temp directory (bug-report screenshots, update downloads, helper scripts), with **Open folder** and **Clean up now**. Older top-level `orbit-*` leftovers are included, and entries a live Orbit process still needs are kept
 - A separate **AI scratch files** group lists pi's own `pi-*` temp entries (shell output, codemode images, share/editor working files) and removes only those last used more than an hour ago
-- Appearance — **Light / Dark / System**, independent light and dark theme palettes, a background image, fonts, sizes, spacing density, and **interface language** (English, 简体中文, 日本語, 한국어, Español, Français, Deutsch, Português do Brasil, Русский, Italiano, or the system language)
-- System follows OS appearance changes live; new installations use System, while existing theme choices are preserved
+- Appearance — **Light / Dark / System**, a persisted **Design system** choice (**Classic** keeps the existing palette and geometry; **Operational** applies the near-black, lime-accented Restrained Operational Minimalism system), independent light and dark theme palettes, a background image, fonts, sizes, spacing density, and **interface language** (English, 简体中文, 日本語, 한국어, Español, Français, Deutsch, Português do Brasil, Русский, Italiano, or the system language)
+- System follows OS appearance changes live; new installations use System, while existing theme choices are preserved. Switching design systems is opt-in and does not modify the Classic palettes or their geometry
 - With no image set, the new-task page carries a living ordered-dither field with the app monogram screened into it: it follows the palette, drifts slowly enough to breathe instead of strobe, and freezes under Reduce Motion
 - No telemetry: no analytics client, no identifier, and no queue (see [PRIVACY.md](PRIVACY.md))
 

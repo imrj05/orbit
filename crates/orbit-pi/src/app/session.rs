@@ -5,7 +5,7 @@ use crate::app::helpers::{segmented_segment, SegmentPosition};
 use crate::context_meter::context_ring;
 use crate::quota::{is_five_hour_window, note_should_render, QuotaHeadline};
 use crate::theme::tokens::{
-    input, popover, ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize,
+    input, panel, popover, ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize,
 };
 use crate::usage::tooltip::Tooltip;
 
@@ -102,14 +102,21 @@ impl OrbitApp {
         self.submit_as(text, mode, cx);
     }
 
-    /// Send the composer's current text/attachments as a steer; used by the
-    /// composer's steer control.
-    pub(super) fn steer_current(&mut self, cx: &mut Context<Self>) {
-        if self.input.read(cx).is_composing() {
-            return;
+    /// Fold collapsed pastes back into the prompt text. The typed text leads;
+    /// each pill follows as its own block, separated so the agent never reads
+    /// the paste as a continuation of the sentence above it.
+    pub(super) fn fold_pasted_texts(text: &str, pasted: &[PastedText]) -> String {
+        if pasted.is_empty() {
+            return text.to_string();
         }
-        let text = self.input.read(cx).text();
-        self.submit_as(text, SendMode::Steer, cx);
+        let mut folded = text.to_string();
+        for block in pasted {
+            if !folded.is_empty() {
+                folded.push_str("\n\n");
+            }
+            folded.push_str(&block.content);
+        }
+        folded
     }
 
     /// The image payload pi expects on `prompt` / `follow_up` / `steer`.
@@ -127,15 +134,18 @@ impl OrbitApp {
     }
 
     pub(super) fn submit_as(&mut self, text: String, mode: SendMode, cx: &mut Context<Self>) {
-        let text = text.trim().to_string();
+        // Collect any paste that raced the submit tick, then fold the long
+        // pastes back in: a pill is only a compact way to *hold* text.
+        self.drain_pasted_images(cx);
+        self.drain_pasted_texts(cx);
+        let text = Self::fold_pasted_texts(text.trim(), &self.pasted_texts);
         if text.is_empty() {
             return;
         }
-        // Collect any paste that raced the submit tick.
-        self.drain_pasted_images(cx);
         // pi's `follow_up`, `steer`, and `prompt` all carry images, so
         // attachments ride whatever we send.
         let attachments = std::mem::take(&mut self.attachments);
+        let pasted_texts = std::mem::take(&mut self.pasted_texts);
         // While the agent is running, steer redirects the live turn and
         // follow-up waits for it to settle. pi emits the user message into the
         // transcript when it is actually delivered; until then the queue bar
@@ -145,9 +155,12 @@ impl OrbitApp {
         let Some(id) = self.send_tracked(body, label) else {
             // Keep the prompt and attachments so nothing is lost.
             self.attachments = attachments;
+            self.pasted_texts = pasted_texts;
             cx.notify();
             return;
         };
+        // Sent, so the prompt joins the ↑/↓ recall log.
+        self.prompt_history.borrow_mut().record(&text);
         if running {
             // Show it immediately; the next `queue_update` reconciles the list.
             match mode {
@@ -673,6 +686,7 @@ impl OrbitApp {
         // A live session is parked so a run in flight keeps going in the
         // background. A dead one holds nothing worth keeping: drop it (its
         // exit banner goes with it) instead of parking a corpse.
+        self.save_composer_draft(cx);
         if self.runtime_is_live() {
             self.park_active_session();
         } else {
@@ -697,6 +711,8 @@ impl OrbitApp {
         self.workflow_mode = WorkflowMode::default();
         self.add_workspace(cwd.clone(), cx);
         self.set_current_workspace(cwd.clone(), cx);
+        // The New Task page has no file — its draft lives in its own slot.
+        self.restore_composer_draft(None, cx);
 
         match self.extensions.spawn(&cwd, true, &self.mcp.secret_env()) {
             Ok(client) => {
@@ -798,6 +814,8 @@ impl OrbitApp {
         // the now-parked run can settle instead of waiting on an unseen modal.
         self.cancel_open_dialog(cx);
         // ── park the outgoing session (running or idle) ──
+        // Its unsent composer text/attachments go with it, keyed to the file.
+        self.save_composer_draft(cx);
         self.park_active_session();
         self.busy = false;
         self.added = 0;
@@ -901,6 +919,9 @@ impl OrbitApp {
         self.add_workspace(session.cwd.clone(), cx);
         self.set_current_workspace(session.cwd.clone(), cx);
         self.current_session_path = Some(session.path.clone());
+        // The incoming session's own draft (if any) lands in the composer —
+        // never the previous session's half-written text.
+        self.restore_composer_draft(Some(&session.path.clone()), cx);
         if push {
             self.session_history.truncate(self.history_index + 1);
             let new_entry = self
@@ -1573,19 +1594,19 @@ impl OrbitApp {
         )
     }
 
-    /// The top-bar quota pill: the rolling 5-hour limit of the provider the
+    /// The top-bar quota chip: the rolling 5-hour limit of the provider the
     /// active model is using — provider mark, window label, percentage, and
     /// a context-style ring gauge — falling back to that provider's
     /// most-constrained window or balance, then to the account that will run
     /// out first. It stays provider-independent: everything comes from the
     /// normalized [`QuotaReport`] list, so a new adapter needs no UI change.
     /// `None` (hidden) when pi lacks `quota.*` or nothing has been reported.
-    pub(super) fn render_quota_pill(
+    pub(super) fn render_quota_chip(
         &self,
         compact: bool,
         cx: &Context<Self>,
     ) -> Option<AnyElement> {
-        // The pill is the only way into the usage popover, and the popover now
+        // The chip is the only way into the usage popover, and the popover now
         // carries the MCP status pane too. Render it when either side has
         // something to show, so an MCP-only setup is not left without the
         // control. `None` (hidden) when pi lacks `quota.*` and no MCP server
@@ -1602,7 +1623,7 @@ impl OrbitApp {
         // border) instead of the chip appearing from nothing. It shares the
         // top bar's chip glass, so the meter sits in the same row as the
         // buttons without looking like one.
-        let mut pill = press(header_chip(
+        let mut chip = press(header_chip(
             div()
                 .id("top-quota")
                 .group(BUTTON_GROUP)
@@ -1611,7 +1632,9 @@ impl OrbitApp {
                 // A Medium button's padding; the left keeps its extra 2px.
                 .pl(ButtonSize::Medium.padding_x(&theme) + DynamicSpacing::Base02.px(&theme))
                 .pr(ButtonSize::Medium.padding_x(&theme))
-                .rounded_full()
+                // The quota meter is a header chip: it takes the
+                // same button radius as the rest of the top-bar controls.
+                .rounded(header_ctrl_radius(&theme))
                 .flex()
                 .items_center()
                 .gap(DynamicSpacing::Base06.px(&theme))
@@ -1652,11 +1675,11 @@ impl OrbitApp {
 
         match self.quota.headline(&self.model_provider) {
             QuotaHeadline::Window { report, window } => {
-                pill = pill.child(provider_head(report)).child(divider());
+                chip = chip.child(provider_head(report)).child(divider());
                 // Drop the window label when the title bar is tight so the
                 // session name still has room to truncate instead of colliding.
                 if !compact {
-                    pill = pill.child(
+                    chip = chip.child(
                         div()
                             .max_w(px(72.))
                             .truncate()
@@ -1676,7 +1699,7 @@ impl OrbitApp {
                     // without the gauge — the same pairing the composer's
                     // context meter uses.
                     let tint = quota_tint(fraction, theme);
-                    pill = pill
+                    chip = chip
                         .child(
                             div()
                                 .font(crate::usage::view::num_font())
@@ -1696,7 +1719,7 @@ impl OrbitApp {
                 } else {
                     format!("{} {}", quota_amount(balance.amount), balance.currency)
                 };
-                pill = pill.child(provider_head(report)).child(divider()).child(
+                chip = chip.child(provider_head(report)).child(divider()).child(
                     div()
                         .font(crate::usage::view::num_font())
                         .text_size(TextSize::Small.px(&theme))
@@ -1705,13 +1728,13 @@ impl OrbitApp {
                         .child(text),
                 );
             }
-            // Nothing metered anywhere (notes, errors): the pill keeps the
+            // Nothing metered anywhere (notes, errors): the chip keeps the
             // popover reachable. With MCP servers configured it becomes the
             // MCP status chip — the pane behind it is now the only place
             // their state is visible from the top bar.
             QuotaHeadline::Quiet => match mcp_chip {
                 Some((dot, label)) => {
-                    pill = pill
+                    chip = chip
                         .child(icon(
                             "icons/tools/mcp.svg",
                             IconSize::Small.px(&theme),
@@ -1726,7 +1749,7 @@ impl OrbitApp {
                         );
                 }
                 None => {
-                    pill = pill
+                    chip = chip
                         .child(icon(
                             "icons/spark.svg",
                             IconSize::Small.px(&theme),
@@ -1742,12 +1765,12 @@ impl OrbitApp {
             },
         }
 
-        Some(pill.into_any_element())
+        Some(chip.into_any_element())
     }
 
     /// The quota popover: every connected provider's windows and balances,
     /// grouped by provider and read from the normalized model. Rendered only
-    /// while open; anchored under the pill.
+    /// while open; anchored under the chip.
     pub(super) fn render_quota_popup(&self, cx: &Context<Self>) -> Option<AnyElement> {
         if !self.quota_popup_open {
             return None;
@@ -1915,7 +1938,7 @@ impl OrbitApp {
             .overflow_hidden()
             .occlude()
             // Clicks inside the card (the refresh button) must not bubble to
-            // the pill that toggles this popover.
+            // the chip that toggles this popover.
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down_out({
@@ -1924,7 +1947,7 @@ impl OrbitApp {
                     this.update(cx, |app, cx| {
                         if app.quota_popup_open {
                             // Arm the click-through guard so this same
-                            // click's mouse-up on the pill cannot
+                            // click's mouse-up on the chip cannot
                             // immediately re-open the popover.
                             app.menu_dismissed_at = Some(Instant::now());
                             app.quota_popup_open = false;
@@ -2007,7 +2030,7 @@ impl OrbitApp {
 
     /// The Providers pane with nothing to show (no quota reports yet, or a
     /// pi without `quota.*`). Points at the other pane rather than sitting
-    /// empty — the pill that opened it is the MCP status chip in that case.
+    /// empty — the chip that opened it is the MCP status chip in that case.
     fn quota_popup_empty(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
         div()
             .w_full()
@@ -2204,7 +2227,7 @@ impl OrbitApp {
     }
 
     /// Open or close the top-bar usage popover. Opening picks the pane that
-    /// matches the pill the user clicked: when the pill is showing the MCP
+    /// matches the chip the user clicked: when the chip is showing the MCP
     /// status chip (nothing metered), the popover opens on the MCP pane
     /// instead of an empty provider list.
     pub(super) fn toggle_quota_popup(&mut self, cx: &mut Context<Self>) {
@@ -2929,7 +2952,7 @@ fn quota_provider_card(
     let mut block = div()
         .debug_selector(move || card_selector.clone())
         .w_full()
-        .rounded(Radius::XLarge.px(&theme))
+        .rounded(panel::RADIUS.px(&theme))
         .border_1()
         .border_color(theme.border)
         .bg(theme.overlay)

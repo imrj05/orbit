@@ -39,8 +39,8 @@ use crate::issue_message::{self, DraftKind};
 use crate::sidepane::{FileActions, SectionActions, SidePane};
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
-    button, context_menu, input, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius,
-    StyledExt, TextSize,
+    button, context_menu, input, panel, picker, popover, ButtonSize, DynamicSpacing, IconSize,
+    Radius, StyledExt, TextSize,
 };
 use crate::theme::{self, Theme, ThemeMode};
 use crate::usage::tooltip::Tooltip;
@@ -1705,7 +1705,8 @@ impl GitPanel {
                     picker_entry(div().id(id), &theme)
                         .cursor_pointer()
                         .when(selected, |row| {
-                            row.bg(theme.selection).text_color(theme.selection_fg)
+                            row.bg(theme.surface_selected)
+                                .text_color(theme.selection_fg)
                         })
                         .when(!selected, |row| {
                             row.text_color(theme.text_secondary)
@@ -3644,7 +3645,7 @@ impl GitPanel {
                 .bg(theme.error.opacity(0.1))
                 .border_1()
                 .border_color(theme.error.opacity(0.45))
-                .rounded(Radius::XLarge.px(&theme))
+                .rounded(panel::RADIUS.px(&theme))
                 .px(DynamicSpacing::Base12.px(&theme))
                 .py(DynamicSpacing::Base08.px(&theme))
                 .flex()
@@ -3824,7 +3825,7 @@ impl GitPanel {
                 .bg(theme.warning.opacity(0.1))
                 .border_1()
                 .border_color(theme.warning.opacity(0.45))
-                .rounded(Radius::XLarge.px(&theme))
+                .rounded(panel::RADIUS.px(&theme))
                 .px(DynamicSpacing::Base12.px(&theme))
                 .py(DynamicSpacing::Base08.px(&theme))
                 .flex()
@@ -3949,7 +3950,7 @@ impl GitPanel {
                     .px(DynamicSpacing::Base16.px(&theme))
                     .pt(DynamicSpacing::Base12.px(&theme))
                     .pb(DynamicSpacing::Base12.px(&theme))
-                    .rounded(Radius::XXLarge.px(&theme))
+                    .rounded(input::composer_radius(&theme))
                     .border_1()
                     .border_color(theme.border)
                     .bg(theme.surface_secondary)
@@ -3991,7 +3992,7 @@ impl GitPanel {
                                     .h(ButtonSize::Medium.height(&theme))
                                     .px(DynamicSpacing::Base06.px(&theme))
                                     .ml(px(-6.))
-                                    .rounded(Radius::Large.px(&theme))
+                                    .rounded(button::RADIUS.px(&theme))
                                     .flex()
                                     .items_center()
                                     .gap(DynamicSpacing::Base08.px(&theme))
@@ -4505,7 +4506,7 @@ impl GitPanel {
             .mb(DynamicSpacing::Base06.px(&theme))
             .px(DynamicSpacing::Base12.px(&theme))
             .py(DynamicSpacing::Base08.px(&theme))
-            .rounded(Radius::XLarge.px(&theme))
+            .rounded(panel::RADIUS.px(&theme))
             .border_1()
             .border_color(theme.border)
             .bg(theme.surface_elevated)
@@ -5230,7 +5231,7 @@ impl GitPanel {
             main = main.child(
                 div()
                     .p(DynamicSpacing::Base12.px(&theme))
-                    .rounded(Radius::XLarge.px(&theme))
+                    .rounded(panel::RADIUS.px(&theme))
                     .border_1()
                     .border_color(theme.border)
                     .bg(theme.surface_elevated)
@@ -5825,7 +5826,7 @@ impl GitPanel {
             content = content.child(
                 div()
                     .p(DynamicSpacing::Base12.px(&theme))
-                    .rounded(Radius::XLarge.px(&theme))
+                    .rounded(panel::RADIUS.px(&theme))
                     .border_1()
                     .border_color(theme.border)
                     .bg(theme.surface_elevated)
@@ -5838,7 +5839,7 @@ impl GitPanel {
         // Checks.
         if !pull.checks.is_empty() {
             let mut checks = div()
-                .rounded(Radius::XLarge.px(&theme))
+                .rounded(panel::RADIUS.px(&theme))
                 .border_1()
                 .border_color(theme.border)
                 .bg(theme.surface_elevated)
@@ -5901,7 +5902,7 @@ impl GitPanel {
         // Commits.
         if !pull.commits.is_empty() {
             let mut commits = div()
-                .rounded(Radius::XLarge.px(&theme))
+                .rounded(panel::RADIUS.px(&theme))
                 .border_1()
                 .border_color(theme.border)
                 .bg(theme.surface_elevated)
@@ -5941,7 +5942,7 @@ impl GitPanel {
         // Changed files.
         if !pull.files.is_empty() {
             let mut files = div()
-                .rounded(Radius::XLarge.px(&theme))
+                .rounded(panel::RADIUS.px(&theme))
                 .border_1()
                 .border_color(theme.border)
                 .bg(theme.surface_elevated)
@@ -6032,7 +6033,7 @@ impl GitPanel {
         // page sits in a card above the comment field, GitHub-style.
         if pull.is_open() {
             let merge_row = div()
-                .rounded(Radius::XLarge.px(&theme))
+                .rounded(panel::RADIUS.px(&theme))
                 .border_1()
                 .border_color(theme.border)
                 .bg(theme.surface_elevated)
@@ -6606,7 +6607,8 @@ impl GitPanel {
         let mut row = picker_entry(div().id(id).group("git-branch-row"), &theme)
             .cursor_pointer()
             .when(selected, |row| {
-                row.bg(theme.selection).text_color(theme.selection_fg)
+                row.bg(theme.surface_selected)
+                    .text_color(theme.selection_fg)
             })
             .when(!selected, |row| {
                 row.text_color(theme.text_secondary)
@@ -6721,7 +6723,7 @@ impl GitPanel {
                             button_frame(div().id(id), &theme, ButtonSize::Medium)
                                 .cursor_pointer()
                                 .when(selected, |s| {
-                                    s.bg(theme.selection).text_color(theme.selection_fg)
+                                    s.bg(theme.surface_selected).text_color(theme.selection_fg)
                                 })
                                 .when(!selected, |s| {
                                     s.text_color(theme.text_muted).hover(|s| {
@@ -7460,7 +7462,7 @@ fn detail_note(theme: Theme, label: &str) -> AnyElement {
         .mb(DynamicSpacing::Base06.px(&theme))
         .px(DynamicSpacing::Base12.px(&theme))
         .py(DynamicSpacing::Base08.px(&theme))
-        .rounded(Radius::XLarge.px(&theme))
+        .rounded(panel::RADIUS.px(&theme))
         .border_1()
         .border_color(theme.border)
         .bg(theme.surface_elevated)
@@ -7774,7 +7776,7 @@ fn issue_comment_card(comment: &gh::GhComment, theme: Theme) -> AnyElement {
     // Same rule as the review card: no body, no header separator.
     let has_body = !comment.body.trim().is_empty();
     div()
-        .rounded(Radius::XLarge.px(&theme))
+        .rounded(panel::RADIUS.px(&theme))
         .border_1()
         .border_color(theme.border)
         .bg(theme.surface_elevated)
@@ -8032,7 +8034,7 @@ fn review_card(review: &gh::GhReview, theme: Theme) -> AnyElement {
     // separate a body from the header, so it is dropped when there is none.
     let has_body = !review.body.trim().is_empty();
     div()
-        .rounded(Radius::XLarge.px(&theme))
+        .rounded(panel::RADIUS.px(&theme))
         .border_1()
         .border_color(theme.border)
         .bg(theme.surface_elevated)
@@ -8150,7 +8152,7 @@ fn graph_row(
         .gap(DynamicSpacing::Base08.px(&theme))
         .cursor_pointer()
         .hover(|s| s.bg(theme.surface_hover))
-        .when(selected, |s| s.bg(theme.selection))
+        .when(selected, |s| s.bg(theme.surface_selected))
         .on_click(listener)
         .child(graph_gutter(row, theme))
         .child(
@@ -8365,7 +8367,7 @@ fn commit_row(
         .gap(DynamicSpacing::Base08.px(&theme))
         .cursor_pointer()
         .hover(|s| s.bg(theme.surface_hover))
-        .when(selected, |row| row.bg(theme.selection))
+        .when(selected, |row| row.bg(theme.surface_selected))
         .on_click(listener)
         .child(history_marker(theme))
         .child(

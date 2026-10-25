@@ -117,6 +117,10 @@ impl OrbitApp {
         }
         // Images pasted in the composer become message attachments.
         self.drain_pasted_images(cx);
+        // Long pastes become collapsible pills above the composer.
+        self.drain_pasted_texts(cx);
+        // The placeholder names what Enter will do right now.
+        self.sync_composer_placeholder(cx);
         // Refresh the in-transcript find hits when the query or messages moved.
         self.sync_transcript_search(cx);
         // A drag that left the window clears gpui's active drag without any
@@ -1182,6 +1186,42 @@ impl OrbitApp {
         if !pasted.is_empty() {
             cx.notify();
         }
+    }
+
+    /// Move long pastes the composer set aside into pill attachments. Called
+    /// on tick and again at submit, so paste-then-Enter never loses the text.
+    pub(super) fn drain_pasted_texts(&mut self, cx: &mut Context<Self>) {
+        if !self.input.read(cx).has_pasted_texts() {
+            return;
+        }
+        let pasted = self
+            .input
+            .update(cx, |input, _| std::mem::take(&mut input.pasted_texts));
+        for text in pasted {
+            if self.pasted_texts.len() >= MAX_ATTACHMENTS {
+                self.set_status(tr!("composer_ops.max_attachments", count = MAX_ATTACHMENTS));
+                break;
+            }
+            self.pasted_texts.push(PastedText::new(text));
+        }
+        cx.notify();
+    }
+
+    /// Keep the chat composer's placeholder honest about what Enter does: an
+    /// idle send starts a prompt, a send mid-run queues a follow-up or steers
+    /// the live turn, depending on the configured send mode. The key changes
+    /// only when that answer changes, so the heartbeat stays quiet.
+    pub(super) fn sync_composer_placeholder(&mut self, cx: &mut Context<Self>) {
+        let key = if self.is_running() {
+            match theme::get(cx).ui.composer_send_mode {
+                SendMode::FollowUp => Some("composer.placeholder_follow_up"),
+                SendMode::Steer => Some("composer.placeholder_steer"),
+            }
+        } else {
+            None
+        };
+        self.input
+            .update(cx, |input, cx| input.set_placeholder_key(key, cx));
     }
 
     /// Post the "turn finished" notification for a settle. Nothing is posted

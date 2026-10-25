@@ -7,7 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Appearance → **Design system**, an opt-in switch between the existing **Classic**
+  design and the new **Operational** (Restrained Operational Minimalism) system.
+  Operational adds dark and light near-black/neutral palettes with a lime
+  interaction accent, a separate olive selected-row wash, tighter radii, 11px
+  captions, and flatter elevation. The choice is persisted alongside the existing
+  Light/Dark/System preference; switching back restores the previous Classic
+  palette, and every Classic palette and geometry stays unchanged.
+
 ### Changed
+
+- Standardized corner radii by component role: buttons and header chips use the
+  button token, text fields and composers use the input token, cards/panels/
+  popovers/dialogs use `panel::RADIUS`, list rows use `list_item::RADIUS`, and
+  badges/checkboxes use the small radius. Fixed the outliers (header controls,
+  the top-bar quota/usage chip, terminal and file-viewer tabs, the Worktrees
+  dismiss button, MCP row action, star-project banner, several alert/preview
+  cards, and the Git commit composer).
+  Operational now gives every standard field and composer one input radius;
+  Classic keeps its legacy composer silhouette.
 
 - The Usage page is now one continuous page instead of a Simple | Details
   switch: the Daily-activity calendar leads, then the Summary board, Usage

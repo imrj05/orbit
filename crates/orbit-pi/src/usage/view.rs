@@ -64,7 +64,7 @@ use crate::app::{
 use crate::composer::ComposerInput;
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
-    button, input, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
+    button, input, panel, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
 };
 use crate::theme::{self, Theme};
 
@@ -847,7 +847,7 @@ impl UsagePage {
             div()
                 .w_full()
                 .flex_none()
-                .rounded(Radius::XLarge.px(&theme))
+                .rounded(panel::RADIUS.px(&theme))
                 .border_1()
                 .border_color(theme.border)
                 .bg(theme.surface_elevated)
@@ -904,21 +904,21 @@ impl UsagePage {
                 div()
                     .h(px(168.))
                     .w_full()
-                    .rounded(Radius::XLarge.px(&theme))
+                    .rounded(panel::RADIUS.px(&theme))
                     .bg(theme.surface_secondary),
             )
             .child(
                 div()
                     .h(px(96.))
                     .w_full()
-                    .rounded(Radius::XLarge.px(&theme))
+                    .rounded(panel::RADIUS.px(&theme))
                     .bg(theme.surface_secondary),
             )
             .child(
                 div()
                     .h(px(72.))
                     .w_full()
-                    .rounded(Radius::XLarge.px(&theme))
+                    .rounded(panel::RADIUS.px(&theme))
                     .bg(theme.surface_secondary),
             );
 
@@ -979,7 +979,7 @@ impl UsagePage {
                 div()
                     .h(px(96.))
                     .w_full()
-                    .rounded(Radius::XLarge.px(&theme))
+                    .rounded(panel::RADIUS.px(&theme))
                     .bg(theme.surface_secondary),
             );
 
@@ -3071,7 +3071,7 @@ impl UsagePage {
                 .when(!last, |row| row.border_b_1().border_color(theme.border))
                 .hover(|style| style.bg(theme.surface_hover))
                 .when(selected == Some(row.session), |line| {
-                    line.bg(theme.selection)
+                    line.bg(theme.surface_selected)
                 })
                 .on_mouse_down(MouseButton::Left, {
                     let entity = entity.clone();
@@ -3692,7 +3692,7 @@ fn card(
         .id(SharedString::from(id))
         .flex_none()
         .w_full()
-        .rounded(Radius::XLarge.px(&theme))
+        .rounded(panel::RADIUS.px(&theme))
         .border_1()
         .border_color(theme.border)
         .bg(theme.surface_elevated)

@@ -203,8 +203,10 @@ dialogs — every on-scale `p/px/py/pl/pr/pt/pb/m*/gap(px(N))` site in the app n
 `DynamicSpacing`. What stays px on purpose: 1–2px optical nudges (dot / badge insets), the
 legacy 6–10px rhythm values with no token equivalent (10/14/18/22 — folded into the scale or
 retired by design, pending), and bespoke geometry (widths, heights, icon and dot sizes).
-The palette set is ten: the blue design holds **Orbit Azure** / **Orbit Azure Light** and is the
-appearance default, while **Orbit** / **Orbit Light** carry the original ember identity. Primary
+The palette set is twelve: ten Classic palettes plus the opt-in Operational pair. The blue design
+holds **Orbit Azure** / **Orbit Azure Light** and is the appearance default, while **Orbit** /
+**Orbit Light** carry the original ember identity. **Operational** / **Operational Light** are
+selected by the Design-system control, not by a Classic palette choice. Primary
 buttons fill from a role separate from the identity accent — `action` / `action_hover` /
 `action_pressed` with `action_fg` ink — because the ember palettes key their buttons to a light
 neutral with dark ink while Azure keys them to its accent; `accent` / `accent_hover` /
@@ -277,6 +279,21 @@ Orbit compatible with Git's own metadata format across versions.
 A missing worktree surfaces a notice rather than silently re-pointing a session at the
 main repository.
 
+### D15 — Design systems are an opt-in theme layer, not a fork
+**Choice:** `DesignSystem` (`Classic` / `Operational`) is persisted beside the existing
+Light/Dark/System preference and the remembered Classic palettes. `AppearancePrefs::resolve`
+selects a `ThemeId` from the chosen system; every component continues to read the same
+`Theme` semantic roles and token resolvers. Operational supplies its own palette, a
+separate `surface_selected` row wash, a fixed tighter radius ramp, 11px captions, and flatter
+elevation. Classic keeps the existing palettes, geometry, and shadow stack.
+**Rationale:** a second widget tree or parallel CSS-like layer would duplicate every surface
+and drift. A design-system-aware layer behind the existing semantic tokens gives the new
+visual language app-wide reach while leaving the current design pixel-identical.
+**Consequence:** new visual rules go through `Theme` / `theme/tokens.rs` and must branch on
+`DesignSystem` only when Classic's values must remain unchanged. New palettes join
+`ThemeId::ALL` and the palette-invariant tests; the Appearance Theme dropdown filters the
+catalog with `themes_for_system`, and the Design-system control is the normal way to switch.
+
 ## The feature parity contract
 
 Everything below must behave identically in the GPUI app (against the pi CLI) as it does in the
@@ -300,7 +317,7 @@ legacy app today:
 
 ### Implementation status (living)
 
-Done: streaming transcript + virtualization; markdown + highlighting; composer with steering, follow-ups, cancel, autocomplete, attachments; extension dialogs; diff/Review + Git page + GitHub issues/PRs (where `gh` is available); sessions (list/switch/new/delete/clone/cross-workspace) over an Orbit-owned project list (only folders the user added; removing one never touches pi) whose groups sort by activity, added date, name, or session count, with a **warm process pool** so re-opening a recent session is a resume, not a Node spawn; Git worktrees as first-class workspaces (`worktree.rs` + the Worktrees page: discovery, create from a new/existing branch, open/rename/move/lock/remove/prune/repair, configurable `.wt` root, optional async setup script with `ORBIT_ROOT_PATH`/`ORBIT_WORKTREE_PATH`, sessions rooted in and restored to the worktree — D14); Explorer project panel + editable Files surface; integrated terminal (⌘J); usage, skills, plugins, models, providers, settings pages; transcript find; image lightbox; theming (dark/light/system, ten palettes) + reduce-motion; localization (ten locales + System, D9); in-app signed updater + Version History; notifications; open-in-editor; signed/notarizable macOS packaging + best-effort Windows/Linux bundles (D5); CI; access modes (a guard, not a sandbox), workflow modes (Plan/Build/Ask per D8), and the auto-title / quota extension bridges (D10); Zed design tokens (D11) with context menus, the tooltip, the extension dialog, the floating modal cards (provider usage / API-key / editor, update dialog, custom UI), the sidebar session / workspace rows, the transcript's message / card chrome, the settings section / group / row chrome, UI type on `TextSize` across every surface, corner radii on `Radius`, and one-shot motion on `AnimationDuration` migrated onto them.
+Done: streaming transcript + virtualization; markdown + highlighting; composer with steering, follow-ups, cancel, autocomplete, attachments; extension dialogs; diff/Review + Git page + GitHub issues/PRs (where `gh` is available); sessions (list/switch/new/delete/clone/cross-workspace) over an Orbit-owned project list (only folders the user added; removing one never touches pi) whose groups sort by activity, added date, name, or session count, with a **warm process pool** so re-opening a recent session is a resume, not a Node spawn; Git worktrees as first-class workspaces (`worktree.rs` + the Worktrees page: discovery, create from a new/existing branch, open/rename/move/lock/remove/prune/repair, configurable `.wt` root, optional async setup script with `ORBIT_ROOT_PATH`/`ORBIT_WORKTREE_PATH`, sessions rooted in and restored to the worktree — D14); Explorer project panel + editable Files surface; integrated terminal (⌘J); usage, skills, plugins, models, providers, settings pages; transcript find; image lightbox; theming (dark/light/system, ten Classic palettes plus an opt-in Operational pair) + reduce-motion; localization (ten locales + System, D9); in-app signed updater + Version History; notifications; open-in-editor; signed/notarizable macOS packaging + best-effort Windows/Linux bundles (D5); CI; access modes (a guard, not a sandbox), workflow modes (Plan/Build/Ask per D8), and the auto-title / quota extension bridges (D10); Zed design tokens (D11) with context menus, the tooltip, the extension dialog, the floating modal cards (provider usage / API-key / editor, update dialog, custom UI), the sidebar session / workspace rows, the transcript's message / card chrome, the settings section / group / row chrome, UI type on `TextSize` across every surface, corner radii on `Radius`, and one-shot motion on `AnimationDuration` migrated onto them.
 
 Attached images are compressed when they are queued (`attachments.rs`): the
 longest edge is capped at 1400 px (never upscaled), opaque images are re-encoded

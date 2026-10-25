@@ -948,7 +948,8 @@ pub(crate) fn render_side_row(
                 .items_center()
                 .gap(DynamicSpacing::Base06.px(&theme))
                 .when(active, |card| {
-                    card.bg(theme.selection).text_color(theme.selection_fg)
+                    card.bg(theme.surface_selected)
+                        .text_color(theme.selection_fg)
                 })
                 .when(cursor && !active, |card| card.bg(theme.surface_hover))
                 .when(!active && !cursor, |card| {
@@ -1740,7 +1741,7 @@ fn workspace_appearance_picker(
                     .items_center()
                     .justify_center()
                     .cursor_pointer()
-                    .when(selected, |s| s.bg(theme.selection))
+                    .when(selected, |s| s.bg(theme.surface_selected))
                     .hover(|s| s.bg(theme.surface_hover))
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         cx.stop_propagation();
@@ -1876,7 +1877,8 @@ where
         .flex_none()
         .cursor_pointer()
         .when(active, |row| {
-            row.bg(theme.selection).text_color(theme.selection_fg)
+            row.bg(theme.surface_selected)
+                .text_color(theme.selection_fg)
         })
         .when(!active, |row| row.hover(|s| s.bg(theme.surface_hover)))
         .on_mouse_up(MouseButton::Left, move |_, _, cx| {

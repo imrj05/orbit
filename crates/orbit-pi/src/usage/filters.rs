@@ -23,9 +23,7 @@ use super::format;
 use super::model::{
     local_day_start, local_month_start, next_bucket, Granularity, RangePreset, UsageIndex,
 };
-use super::page::{
-    BucketSort, ExportFormat, MenuKind, SessionSort, UsagePage, PAGE_SIZES,
-};
+use super::page::{BucketSort, ExportFormat, MenuKind, SessionSort, UsagePage, PAGE_SIZES};
 use super::table::FailureSort;
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
@@ -224,7 +222,11 @@ fn search_row(query: &Entity<ComposerInput>, theme: Theme) -> AnyElement {
         .into_any_element()
 }
 
-/// One row in a menu.
+/// One row in a menu: the title, and — when the row carries one — the
+/// description on its own second line (a path, a count, a hint), with the
+/// check mark in a trailing column. Selection is carried by the check and the
+/// title's weight; only the highlighted row takes a fill, so a picked row
+/// never reads as a slab.
 #[allow(clippy::too_many_arguments)]
 fn row(
     id: ElementId,
@@ -237,23 +239,53 @@ fn row(
     on_hover: impl Fn(&bool, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     picker_entry(div().id(id), &theme)
-        .h(picker::entry_height(&theme))
+        .h(if sub.is_some() {
+            picker::two_line_entry_height(&theme)
+        } else {
+            picker::entry_height(&theme)
+        })
         .flex_none()
         .cursor_pointer()
-        .when(highlighted || selected, |row| row.bg(theme.selection))
-        .when(!highlighted && !selected, |row| {
+        .when(highlighted, |row| row.bg(theme.surface_hover))
+        .when(!highlighted, |row| {
             row.hover(|style| style.bg(theme.surface_hover))
         })
         .on_hover(on_hover)
         .on_mouse_down(MouseButton::Left, on_click)
         .child(
-            // A check mark column keeps labels aligned whether or not a row
-            // is selected; selection is also carried by the row's text weight.
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .truncate()
+                        .when(selected, |text| text.font_weight(FontWeight::MEDIUM))
+                        .text_color(if highlighted || selected {
+                            theme.text_primary
+                        } else {
+                            theme.text_secondary
+                        })
+                        .child(label.to_string()),
+                )
+                .children(sub.map(|sub| {
+                    div()
+                        .truncate()
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_muted)
+                        .child(sub.to_string())
+                })),
+        )
+        // A trailing slot keeps the check hugging the row's right edge, its
+        // column reserved whether or not the row is selected; selection is
+        // also carried by the title's weight.
+        .child(
             div()
                 .w(context_menu::ICON.px(&theme))
                 .flex_none()
                 .flex()
-                .items_center()
+                .justify_end()
                 .child(if selected {
                     icon(
                         "icons/check.svg",
@@ -265,29 +297,6 @@ fn row(
                     div().into_any_element()
                 }),
         )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .when(selected, |text| text.font_weight(FontWeight::MEDIUM))
-                .text_color(if highlighted || selected {
-                    theme.text_primary
-                } else {
-                    theme.text_secondary
-                })
-                .child(label.to_string()),
-        )
-        .children(sub.map(|sub| {
-            div()
-                .flex_none()
-                .max_w(px(120.))
-                .ml(context_menu::keybinding_gap(&theme) - context_menu::icon_gap(&theme))
-                .truncate()
-                .text_size(TextSize::Small.px(&theme))
-                .text_color(theme.text_muted)
-                .child(sub.to_string())
-        }))
         .into_any_element()
 }
 
@@ -298,7 +307,6 @@ fn footer_row(
     on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     button_frame(div().id(id), &theme, ButtonSize::Medium)
-        .flex_1()
         .cursor_pointer()
         .text_color(theme.text_muted)
         .hover(|style| {
@@ -312,11 +320,14 @@ fn footer_row(
 }
 
 fn menu_footer(theme: Theme, left: AnyElement, right: AnyElement) -> AnyElement {
+    // Ghost actions pinned to the two edges under a hairline, not two slabs.
     div()
+        .flex_none()
         .flex()
         .items_center()
+        .justify_between()
         .gap(DynamicSpacing::Base04.px(&theme))
-        .px(DynamicSpacing::Base04.px(&theme))
+        .px(DynamicSpacing::Base06.px(&theme))
         .py(DynamicSpacing::Base04.px(&theme))
         .border_t_1()
         .border_color(theme.border)
@@ -1162,7 +1173,9 @@ pub fn outline_button(
     .into_any_element()
 }
 
-/// Options for the workspace dimension, ranked by request count.
+/// Options for the workspace dimension, ranked by request count. The second
+/// line is the folder's parent (`~/Personal`) — the informative half of the
+/// path, as in the breakdown table.
 pub fn workspace_options(index: &UsageIndex) -> Vec<FilterOption> {
     let mut counts = vec![0u64; index.workspaces.len()];
     for record in &index.requests {
@@ -1176,7 +1189,7 @@ pub fn workspace_options(index: &UsageIndex) -> Vec<FilterOption> {
                 FilterOption {
                     id: ix as u16,
                     label: entry.label.clone(),
-                    sub: Some(entry.path.clone()),
+                    sub: Some(super::aggregate::parent_hint(&entry.path)),
                 },
             )
         })
