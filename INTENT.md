@@ -310,7 +310,7 @@ legacy app today:
    and the in-app updater with Version History
 7. Markdown — GFM, syntax-highlighted code, copy-able code blocks, image lightbox
 8. Theming — dark/light palettes, accent, font, density, reduce-motion. Persisted to **Orbit's own store** (`~/.orbit-pi/{theme,ui.json,fonts.json}`), not pi's settings: theme/UI state is Orbit's, and writing it into pi's config would fork pi's own source of truth. (Revised from "persisted to pi's settings".)
-9. Attachments — images for prompts, compressed at ingest (1400 px longest edge, 512 KiB base64, JPEG quality 75; alpha images become lossless WebP) so a large screenshot never rides the session history at full size
+9. Attachments — images for prompts, compressed at ingest (1400 px longest edge, 512 KiB base64, JPEG quality 75; alpha images become lossless WebP) so a large screenshot never rides the session history at full size; non-image files ride as `@path` mentions the agent opens with its tools, held as chips in one tray beside the images and pastes
 10. macOS native expectations — traffic lights, a native menu bar (Orbit/File/Edit/View, rebuilt
     on language change), native dialogs, keyboard operability. Orbit's actions are also exposed
     as keyboard/mouse surfaces (⌘P palette, shortcuts), not only through menus.
@@ -326,6 +326,24 @@ images with transparency become lossless WebP. Images already under both caps pa
 through untouched, and animated GIFs pass through so their frames survive. The
 composer chip and bug-report screenshots both read the compressed bytes, and the
 status line reports the before/after size when an image shrank.
+
+The composer holds every queued item in one attachment tray (`attachments_row` in
+`app/composer_ops.rs`): images, non-image files, and collapsed long pastes are the
+same chip — a leading 20px slot (image thumbnail, or the file type's devicons mark drawn
+bare, with no tinted square behind it, and centred by the glyph's ink because icon artwork
+is not centred in its font cell; the type's short label on a tinted square fills the slot
+when no Nerd Font is available), the name, one secondary fact (size or line count), and an
+always-visible remove button — and a tray of two or more grows a
+count header with a **Clear** action. Files do not ride the wire as bytes, because
+pi's `prompt` payload carries text and images only; they fold into the prompt text on
+send as `@path` mentions (`fold_attached_files` in `app/session.rs`), workspace-relative
+when possible and backticked when the path contains whitespace, so the agent opens
+them with its own tools. The sent user message reads that block back out of its own
+text (`split_attached_files`) and renders it as the same chips under the bubble, which
+is why a reloaded session shows the same thing as the live send — the presentation is
+derived from the message, not from local-only metadata. All three kinds share the
+eight-item `MAX_ATTACHMENTS` budget, which the composer's send button, the drain paths,
+and the pickers all read through one predicate.
 
 Session metadata is cached per file (`sessions.rs`) keyed on the file's
 `(mtime, length)`, so a turn settle or watcher reload re-reads only the session

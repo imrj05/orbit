@@ -25,12 +25,12 @@ use std::{
 
 use gpui::{
     anchored, canvas, deferred, div, img, linear_color_stop, linear_gradient, list, point,
-    prelude::*, px, Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem, CursorStyle,
-    DispatchPhase, Element, ElementId, Font, FontFeatures, FontStyle, FontWeight, GlobalElementId,
-    Hitbox, HitboxBehavior, Hsla, Image, ImageSource, InspectorElementId, InteractiveText,
-    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels,
-    ScrollHandle, ScrollWheelEvent, SharedString, StrikethroughStyle, StyledText, TextAlign,
-    TextLayout, TextRun, TransformationMatrix, UnderlineStyle, Window,
+    prelude::*, px, relative, Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem,
+    CursorStyle, DispatchPhase, Element, ElementId, Font, FontFeatures, FontStyle, FontWeight,
+    GlobalElementId, Hitbox, HitboxBehavior, Hsla, Image, ImageSource, InspectorElementId,
+    InteractiveText, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ObjectFit, Pixels, ScrollHandle, ScrollWheelEvent, SharedString, StrikethroughStyle,
+    StyledText, TextAlign, TextLayout, TextRun, TransformationMatrix, UnderlineStyle, Window,
 };
 
 use std::ops::Range;
@@ -43,8 +43,8 @@ use orbit_rpc::MessageUsage;
 
 use crate::agent_call_display::AgentCallDisplay;
 use crate::app::{
-    button_frame, file_badge, file_glyph, icon_button_frame, nerd_font_family, picker_entry,
-    picker_surface, TipExt, BUTTON_GROUP,
+    button_frame, file_badge, file_glyph, file_icon_tile, icon_button_frame, nerd_font_family,
+    picker_entry, picker_surface, OrbitApp, TipExt, BUTTON_GROUP,
 };
 use crate::context_meter::{format_tokens, hit_percent_label};
 use crate::highlight::{self, Token};
@@ -52,8 +52,8 @@ use crate::message_scroller::{self, MessageScrollerState};
 use crate::shimmer::ShimmerText;
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
-    context_menu, panel, picker, popover, BufferLineHeight, ButtonSize, DynamicSpacing, IconSize,
-    Radius, StyledExt, TextSize, BORDER_WIDTH,
+    button, context_menu, panel, picker, popover, BufferLineHeight, ButtonSize, DynamicSpacing,
+    IconSize, Radius, StyledExt, TextSize, BORDER_WIDTH,
 };
 use crate::theme::{self, Theme, ThemeMode};
 use crate::transcript::{ChatMessage, Step, SummaryRow, ToolCall, ToolFacts};
@@ -1303,41 +1303,44 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
                 )
                 .into_any_element();
         }
-        render_row(RowPaint {
-            messages: messages.clone(),
-            text_selection: text_selection.clone(),
-            ix,
-            row_count,
-            theme: *theme::get(cx),
-            nerd: nerd.clone(),
-            agent_calls,
-            live,
-            live_elapsed,
-            live_tps,
-            fold_open,
-            copied: copied_now,
-            suppress_footer: suppress_message_footer(summary_files.is_some(), ix, row_count),
-            expanded_turns: expanded_turns.clone(),
-            expanded_activities: expanded_activities.clone(),
-            copied_at: copied.clone(),
-            scroller: scroller.clone(),
-            expanded_tools: expanded_tools.clone(),
-            copied_sections: copied_sections.clone(),
-            expanded_sections: expanded_sections.clone(),
-            expanded_blocks: expanded_blocks.clone(),
-            thinking_scrolls: thinking_scrolls.clone(),
-            collapsed_thoughts: collapsed_thoughts.clone(),
-            thinking_detached: thinking_detached.clone(),
-            hovered_usage: hovered_usage.clone(),
-            image_opener: image_opener.clone(),
-            search_hit: search_hits
-                .as_ref()
-                .is_some_and(|hits| hits.borrow().contains(&ix)),
-            search_active: search_active
-                .as_ref()
-                .is_some_and(|active| active.get() == Some(ix)),
-            table_breakout,
-        })
+        render_row(
+            RowPaint {
+                messages: messages.clone(),
+                text_selection: text_selection.clone(),
+                ix,
+                row_count,
+                theme: *theme::get(cx),
+                nerd: nerd.clone(),
+                agent_calls,
+                live,
+                live_elapsed,
+                live_tps,
+                fold_open,
+                copied: copied_now,
+                suppress_footer: suppress_message_footer(summary_files.is_some(), ix, row_count),
+                expanded_turns: expanded_turns.clone(),
+                expanded_activities: expanded_activities.clone(),
+                copied_at: copied.clone(),
+                scroller: scroller.clone(),
+                expanded_tools: expanded_tools.clone(),
+                copied_sections: copied_sections.clone(),
+                expanded_sections: expanded_sections.clone(),
+                expanded_blocks: expanded_blocks.clone(),
+                thinking_scrolls: thinking_scrolls.clone(),
+                collapsed_thoughts: collapsed_thoughts.clone(),
+                thinking_detached: thinking_detached.clone(),
+                hovered_usage: hovered_usage.clone(),
+                image_opener: image_opener.clone(),
+                search_hit: search_hits
+                    .as_ref()
+                    .is_some_and(|hits| hits.borrow().contains(&ix)),
+                search_active: search_active
+                    .as_ref()
+                    .is_some_and(|active| active.get() == Some(ix)),
+                table_breakout,
+            },
+            cx,
+        )
         .into_any_element()
     })
     .w_full()
@@ -1754,7 +1757,7 @@ fn snippet(text: &str, max_graphemes: usize) -> String {
     }
 }
 
-fn render_row(paint: RowPaint) -> AnyElement {
+fn render_row(paint: RowPaint, cx: &gpui::App) -> AnyElement {
     let messages = paint.messages.borrow();
     let Some(message) = messages.get(paint.ix) else {
         return div().into_any_element();
@@ -1773,7 +1776,7 @@ fn render_row(paint: RowPaint) -> AnyElement {
     let inner = if let Some(summary) = message.summary.as_ref() {
         render_summary_card(summary, &paint)
     } else if message.user {
-        render_user_bubble(message, &paint).into_any_element()
+        render_user_bubble(message, &paint, cx).into_any_element()
     } else {
         render_assistant(message, &paint).into_any_element()
     };
@@ -1931,10 +1934,19 @@ fn render_summary_card(row: &SummaryRow, paint: &RowPaint) -> AnyElement {
 /// End-aligned user row: neutral raised bubble, persistent quiet
 /// footer below. Attached images render as a tile grid above the text
 /// bubble.
-fn render_user_bubble(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement {
+fn render_user_bubble(message: &ChatMessage, paint: &RowPaint, cx: &gpui::App) -> impl IntoElement {
     let theme = paint.theme;
     let ix = paint.ix;
     let text = message.text();
+    // A prompt that carried files ends with the mention block the composer
+    // folded in. Render that block as file rows — the same tile the composer
+    // tray uses — while the typed prose stays prose. The split is read back
+    // from the text itself, so a session reloaded from pi shows exactly what
+    // the live send showed.
+    let (body, attached) = match OrbitApp::split_attached_files(&text) {
+        Some((body, paths)) => (body, paths),
+        None => (text.as_str(), Vec::new()),
+    };
     div()
         .w_full()
         .min_w_0()
@@ -1983,7 +1995,7 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint) -> impl IntoEleme
                     })),
             )
         })
-        .when(!text.is_empty(), |column| {
+        .when(!body.trim().is_empty(), |column| {
             column.child(
                 div()
                     .max_w(px(USER_BUBBLE_MAX_WIDTH))
@@ -1995,7 +2007,7 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint) -> impl IntoEleme
                     .text_size(TextSize::Default.px(&theme))
                     .whitespace_normal()
                     .child(render_prose(
-                        &text,
+                        body,
                         ix,
                         0,
                         theme,
@@ -2005,6 +2017,23 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint) -> impl IntoEleme
                         paint.scroller.clone(),
                         None,
                     )),
+            )
+        })
+        // The files the prompt referenced, in the order they were folded.
+        .when(!attached.is_empty(), |column| {
+            column.child(
+                div()
+                    .max_w(px(USER_BUBBLE_MAX_WIDTH))
+                    .flex()
+                    .flex_wrap()
+                    .justify_end()
+                    .gap(DynamicSpacing::Base06.px(&theme))
+                    .children(
+                        attached
+                            .iter()
+                            .enumerate()
+                            .map(|(file_ix, path)| user_file_chip(cx, path, ix, file_ix, theme)),
+                    ),
             )
         })
         .child(render_message_footer(
@@ -2022,6 +2051,71 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint) -> impl IntoEleme
             paint.copied_at.clone(),
             paint.hovered_usage.clone(),
         ))
+}
+
+/// One attached file under a sent user message: the same 20px file-type tile
+/// the composer tray uses, beside the path the agent was given. The path is
+/// real selectable text, not decoration — what a reader copies out of the chip
+/// is what pi received.
+fn user_file_chip(
+    cx: &gpui::App,
+    path: &str,
+    ix: usize,
+    file_ix: usize,
+    theme: Theme,
+) -> AnyElement {
+    let key = ElementId::NamedInteger("user-file".into(), (ix as u64) << 16 | file_ix as u64);
+    let scope = text_scope();
+    let range = scope
+        .as_ref()
+        .and_then(|scope| scope.state.borrow().range_for(&key, path));
+    let runs = highlight_runs(
+        vec![code_run(path.len(), theme.text_secondary, &ui_font())],
+        range,
+        selection_color(theme),
+    );
+    div()
+        .debug_selector(move || format!("user-file-{ix}-{file_ix}"))
+        .flex_none()
+        .h(ButtonSize::Medium.height(&theme))
+        // One line box tall, exactly like `button_frame`: a taller inherited
+        // line height centres the box but leaves the glyphs sitting low in it,
+        // which reads as the icon being too high beside the path.
+        .line_height(relative(1.))
+        // Symmetric inset: the icon and the path's trailing edge sit the same
+        // distance from the chip's borders, so the pair reads centred.
+        .px(DynamicSpacing::Base06.px(&theme))
+        .gap(DynamicSpacing::Base06.px(&theme))
+        .rounded(button::radius(ButtonSize::Medium).px(&theme))
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.surface_elevated)
+        .flex()
+        .items_center()
+        .child(
+            div()
+                .debug_selector(move || format!("user-file-tile-{ix}-{file_ix}"))
+                .flex_none()
+                .child(file_icon_tile(cx, path, theme.ui_px(20.), theme)),
+        )
+        // A deep path is clipped, never allowed to push the bubble past its
+        // reading column; the full text still rides the selection and copy.
+        .child(
+            div()
+                .debug_selector(move || format!("user-file-text-{ix}-{file_ix}"))
+                .min_w_0()
+                .max_w(px(360.))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .child(SelectableText::new(
+                    key,
+                    StyledText::new(path.to_string()).with_runs(runs),
+                    path.to_string().into(),
+                    Vec::new(),
+                    scope,
+                )),
+        )
+        .into_any_element()
 }
 
 fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement {
@@ -9250,6 +9344,99 @@ mod tests {
         assert!(
             last_after.right() <= px(300.),
             "the last column must be reachable"
+        );
+    }
+
+    /// A prompt sent with attached files ends with the mention block the
+    /// composer folded in. It renders as file chips — the same 20px tile the
+    /// composer tray uses — instead of leaving a raw `@/path` line inside the
+    /// bubble, and because the block is read back out of the message text a
+    /// reloaded session shows the same chips.
+    #[gpui::test]
+    fn attached_files_render_as_chips_in_the_sent_message(cx: &mut gpui::TestAppContext) {
+        struct BubbleView {
+            messages: Rc<RefCell<Vec<ChatMessage>>>,
+            state: TextSelectionState,
+            scroller: MessageScrollerState,
+        }
+
+        impl gpui::Render for BubbleView {
+            fn render(&mut self, _: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+                let view = test_view(
+                    self.state.clone(),
+                    self.messages.clone(),
+                    self.scroller.clone(),
+                );
+                render_transcript(view, cx)
+            }
+        }
+
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let state: TextSelectionState = Rc::new(RefCell::new(TextSelection::new()));
+        let messages: Rc<RefCell<Vec<ChatMessage>>> = Rc::new(RefCell::new(vec![ChatMessage {
+            user: true,
+            summary: None,
+            steps: vec![Step {
+                text: "check the install process\n\n@/Users/someone/Downloads/APP-Install.md"
+                    .into(),
+                ..Step::default()
+            }],
+            images: Vec::new(),
+            elapsed: None,
+            finished_at: None,
+            error: None,
+            aborted: false,
+        }]));
+        let scroller = MessageScrollerState::new(1);
+        let view = cx.update(|_, cx| {
+            cx.new(|_| BubbleView {
+                messages,
+                state,
+                scroller,
+            })
+        });
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(600.)),
+            |_, _| view.clone(),
+        );
+
+        let chip = cx
+            .debug_bounds("user-file-0-0")
+            .expect("the folded mention block renders as a file chip");
+        let tile = cx.debug_bounds("user-file-tile-0-0").expect("file tile");
+        let text = cx.debug_bounds("user-file-text-0-0").expect("path text");
+
+        // The icon and the path share one centreline: a taller inherited line
+        // height used to centre the text's box while its glyphs sat low, making
+        // the tile read as sitting too high.
+        assert_eq!(
+            (tile.origin.y + tile.size.height / 2.).round(),
+            (text.origin.y + text.size.height / 2.).round(),
+            "the file tile and the path are vertically centred on each other"
+        );
+        assert_eq!(
+            (chip.origin.y + chip.size.height / 2.).round(),
+            (tile.origin.y + tile.size.height / 2.).round(),
+            "the tile is centred in the chip"
+        );
+        assert_eq!(tile.size, gpui::size(px(20.), px(20.)), "one tile size");
+        // Equal insets: the icon and the end of the path sit the same distance
+        // from the chip's left and right borders.
+        let left_inset = tile.origin.x - chip.origin.x;
+        let right_inset = (chip.origin.x + chip.size.width) - (text.origin.x + text.size.width);
+        assert!(
+            (left_inset - right_inset).abs() <= px(0.5),
+            "icon inset {left_inset:?} must match the path's {right_inset:?}"
+        );
+        // One 16px line box — the same `line_height(1.)` every button and chip
+        // uses — not the taller default whose extra leading leaves the glyphs
+        // sitting low in the box while the tile stays centred.
+        assert!(
+            text.size.height <= px(16.),
+            "the path renders in one button-height line box, got {:?}",
+            text.size.height
         );
     }
 

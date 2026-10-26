@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Attachments in the composer** — images, non-image files, and collapsed long
+  pastes now share one tray above the input. Each item is a chip leading with the
+  same 20px slot — the image thumbnail, or the file type's devicons mark — then its
+  name, its size or line count, and its own remove button; the text sits in one
+  `line_height(1.)` box and the chip's insets are symmetric, so the mark and the label
+  share one centreline with balanced edges. The file mark is drawn bare, with no tinted
+  square behind it — a rounded square behind a glyph whose art is itself a box read as
+  an avatar monogram, not a file icon — and it is centred by its *ink* rather than its
+  line box, because glyph artwork is not centred inside its font cell. The type's short
+  label (`MD`, `PDF`, `ZIP`, …) on a tinted square fills the slot when no Nerd Font or
+  no glyph is available; two or more chips add a count header with **Clear**, and all three kinds
+  share one eight-item budget that the send button and the paste/drop paths read
+  through a single predicate. Attaching a file queues it as a chip instead of
+  splicing its path into the middle of the message; on send it folds into the
+  prompt as an `@path` mention (relative to the workspace, backticked when the
+  path has whitespace) so the agent opens it with its own tools. The sent user
+  message reads that block back out of its own text and renders it as the same
+  file chips under the bubble — the path stays selectable — so an attachment no
+  longer appears as a raw `@/Users/…` line, and a reloaded session shows the same
+  chips because the split is derived from the message, not from local state.
+  Re-attaching the same path is a no-op, and a file-only message is sendable.
 - Appearance → **Design system**, an opt-in switch between the existing **Classic**
   design and the new **Operational** (Restrained Operational Minimalism) system.
   Operational adds dark and light near-black/neutral palettes with a lime

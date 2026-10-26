@@ -16,6 +16,14 @@ pub(super) enum CompletionIntent {
     Send,
 }
 
+/// The three text slots of an attachment chip: what it is called, its one
+/// secondary fact (size or line count), and the hover explanation.
+struct ChipContent {
+    name: String,
+    meta: String,
+    tip: SharedString,
+}
+
 impl OrbitApp {
     /// The filtered menu entries for the active trigger (empty when none).
     pub(super) fn autocomplete_entries(&mut self, trigger: &Trigger) -> Vec<AcEntry> {
@@ -48,6 +56,7 @@ impl OrbitApp {
         let draft = ComposerDraft {
             text: self.input.read(cx).text(),
             attachments: std::mem::take(&mut self.attachments),
+            files: std::mem::take(&mut self.files),
             pasted_texts: std::mem::take(&mut self.pasted_texts),
         };
         let draft = (!draft.is_empty()).then_some(draft);
@@ -75,12 +84,14 @@ impl OrbitApp {
         match draft {
             Some(draft) => {
                 self.attachments = draft.attachments;
+                self.files = draft.files;
                 self.pasted_texts = draft.pasted_texts;
                 self.input
                     .update(cx, |input, cx| input.set_text(draft.text, cx));
             }
             None => {
                 self.attachments.clear();
+                self.files.clear();
                 self.pasted_texts.clear();
                 self.input.update(cx, |input, cx| input.clear(cx));
             }
@@ -392,132 +403,239 @@ impl OrbitApp {
         )
     }
 
-    /// Attachment chips row shown above the input (pasted/picked images).
+    /// The attachment tray above the input: every queued image, file, and
+    /// pasted-text pill in one wrapped row. A tray holding more than one chip
+    /// gains a count header with a Clear action; a lone chip needs no label,
+    /// and its own remove control says everything else.
     pub(super) fn attachments_row(&self, cx: &Context<Self>) -> Option<AnyElement> {
-        if self.attachments.is_empty() && self.pasted_texts.is_empty() {
+        let total = self.attachment_slots_used();
+        if total == 0 {
             return None;
         }
         let theme = *theme::get(cx);
+        let mut tray = div()
+            .id("attachments")
+            .debug_selector(|| "attachments-row".to_string())
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(DynamicSpacing::Base08.px(&theme));
+
+        // The header appears only once there is a tray to count: a single
+        // chip is its own explanation.
+        if total > 1 {
+            tray = tray.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(DynamicSpacing::Base08.px(&theme))
+                    .child(
+                        div()
+                            .text_size(TextSize::XSmall.px(&theme))
+                            .text_color(theme.text_muted)
+                            .child(tr!("composer.attachments", count = total)),
+                    )
+                    .child(
+                        button_frame(div().id("attachments-clear"), &theme, ButtonSize::Compact)
+                            .debug_selector(|| "attachments-clear".to_string())
+                            .cursor_pointer()
+                            .hover(|style| style.bg(theme.surface_hover))
+                            .tip(tr!("composer.clear_attachments"))
+                            .child(icon(
+                                "icons/x.svg",
+                                IconSize::XSmall.px(&theme),
+                                theme.text_muted,
+                            ))
+                            .child(div().text_color(theme.text_muted).child(tr!("view.clear")))
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                    this.clear_attachments(cx);
+                                }),
+                            ),
+                    ),
+            );
+        }
+
         let row = div()
             .w_full()
             .flex()
             .flex_wrap()
             .gap(DynamicSpacing::Base06.px(&theme));
+
         // Pasted text leads: it is content the user meant to send, and the
-        // images sit beside it as attachments.
-        let pasted_pills = self.pasted_texts.iter().enumerate().map(|(ix, paste)| {
-            let chip = div().id(ElementId::NamedInteger("pasted-text".into(), ix as u64));
-            button_frame(chip, &theme, ButtonSize::Medium)
-                .tip(paste.content.clone())
-                .border_1()
-                .border_color(theme.border)
-                .raised(theme.surface_elevated, &theme)
-                .cursor_pointer()
-                .hover(|s| s.raised(theme.overlay, &theme))
+        // images and files sit beside it as attachments.
+        let pasted = self.pasted_texts.iter().enumerate().map(|(ix, paste)| {
+            // Content, not a file: the same tile as a file chip, in the neutral
+            // overlay wash, so the three chip kinds line up.
+            let visual = div()
+                .size(theme.ui_px(20.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(Radius::Small.px(&theme))
+                .bg(theme.overlay)
                 .child(icon(
                     "icons/file.svg",
-                    IconSize::XSmall.px(&theme),
+                    IconSize::Small.px(&theme),
                     theme.text_muted,
                 ))
-                .child(
-                    div()
-                        .max_w(px(160.))
-                        .truncate()
-                        .text_color(theme.text_secondary)
-                        .child(paste.title.clone()),
-                )
-                .child(
-                    div()
-                        .flex_none()
-                        .text_size(TextSize::Small.px(&theme))
-                        .text_color(theme.text_muted)
-                        .child(tr!("composer.pasted_text", lines = paste.lines)),
-                )
-                .child(
-                    icon(
-                        "icons/x.svg",
-                        ButtonSize::Medium.icon_size().px(&theme),
-                        theme.text_muted,
+                .into_any_element();
+            Self::attachment_chip(
+                &theme,
+                ElementId::NamedInteger("pasted-text".into(), ix as u64),
+                format!("pasted-text-{ix}"),
+                visual,
+                ChipContent {
+                    name: paste.title.clone(),
+                    meta: tr!("composer.pasted_text", lines = paste.lines),
+                    tip: paste.content.clone().into(),
+                },
+                cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                    if ix < this.pasted_texts.len() {
+                        this.pasted_texts.remove(ix);
+                        cx.notify();
+                    }
+                }),
+            )
+        });
+
+        let images = self.attachments.iter().enumerate().map(|(ix, a)| {
+            // The decoded preview is the chip's visual; the file-type badge is
+            // the fallback when a preview never decoded.
+            let visual: AnyElement = match &a.preview {
+                Some(image) => div()
+                    .size(theme.ui_px(20.))
+                    .flex_none()
+                    .rounded(Radius::Small.px(&theme))
+                    .overflow_hidden()
+                    .bg(theme.overlay)
+                    .child(
+                        img(ImageSource::Image(image.clone()))
+                            .size_full()
+                            .object_fit(ObjectFit::Cover),
                     )
                     .into_any_element(),
+                None => file_badge(&a.name, theme),
+            };
+            // A compressed image says so on hover, so the size label reads as
+            // what will ship rather than what was picked.
+            let tip = if a.compressed {
+                tr!(
+                    "composer_ops.image_compressed",
+                    original = crate::attachments::human_bytes(a.original_len),
+                    stored = crate::attachments::human_bytes(a.stored_len),
                 )
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                        if ix < this.pasted_texts.len() {
-                            this.pasted_texts.remove(ix);
-                            cx.notify();
-                        }
-                    }),
-                )
+            } else {
+                a.name.clone()
+            };
+            Self::attachment_chip(
+                &theme,
+                ElementId::NamedInteger("attachment".into(), ix as u64),
+                format!("attachment-{ix}"),
+                visual,
+                ChipContent {
+                    name: a.name.clone(),
+                    meta: crate::attachments::human_bytes(a.stored_len),
+                    tip: tip.into(),
+                },
+                cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                    if ix < this.attachments.len() {
+                        this.attachments.remove(ix);
+                        cx.notify();
+                    }
+                }),
+            )
         });
+
+        // Files last: a file is a reference the agent will open, and the path
+        // in its tooltip is the one it will open.
+        let files = self.files.iter().enumerate().map(|(ix, file)| {
+            let visual = file_icon_tile(cx, &file.name, theme.ui_px(20.), theme);
+            Self::attachment_chip(
+                &theme,
+                ElementId::NamedInteger("attached-file".into(), ix as u64),
+                format!("attached-file-{ix}"),
+                visual,
+                ChipContent {
+                    name: file.name.clone(),
+                    meta: crate::attachments::human_bytes(file.size as usize),
+                    tip: file.path.display().to_string().into(),
+                },
+                cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                    if ix < this.files.len() {
+                        this.files.remove(ix);
+                        cx.notify();
+                    }
+                }),
+            )
+        });
+
         Some(
-            row.children(pasted_pills)
-                .children(self.attachments.iter().enumerate().map(|(ix, a)| {
-                    // Image attachments show the decoded image; the glyph is the
-                    // fallback if a preview never decoded.
-                    let visual: AnyElement = match &a.preview {
-                        Some(image) => div()
-                            .size(IconSize::Medium.px(&theme))
-                            .flex_none()
-                            .rounded(Radius::Small.px(&theme))
-                            .overflow_hidden()
-                            .child(
-                                img(ImageSource::Image(image.clone()))
-                                    .size_full()
-                                    .object_fit(ObjectFit::Cover),
-                            )
-                            .into_any_element(),
-                        None => file_glyph(
-                            &a.name,
-                            theme.mode == ThemeMode::Dark,
-                            nerd_font_family(cx).as_ref(),
-                            IconSize::XSmall.px(&theme),
-                            icon(
-                                "icons/task.svg",
-                                IconSize::XSmall.px(&theme),
-                                theme.text_muted,
-                            )
-                            .into_any_element(),
-                        )
-                        .into_any_element(),
-                    };
-                    let chip = div().id(ElementId::NamedInteger("attachment".into(), ix as u64));
-                    button_frame(chip, &theme, ButtonSize::Medium)
-                        .tip(tr!("composer.remove_attachment"))
-                        .border_1()
-                        .border_color(theme.border)
-                        .raised(theme.surface_elevated, &theme)
-                        .cursor_pointer()
-                        .hover(|s| s.raised(theme.overlay, &theme))
-                        .child(visual)
-                        .child(
-                            div()
-                                .max_w(px(160.))
-                                .truncate()
-                                .text_color(theme.text_secondary)
-                                .child(a.name.clone()),
-                        )
-                        .child(
-                            icon(
-                                "icons/x.svg",
-                                ButtonSize::Medium.icon_size().px(&theme),
-                                theme.text_muted,
-                            )
-                            .into_any_element(),
-                        )
-                        .on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                                if ix < this.attachments.len() {
-                                    this.attachments.remove(ix);
-                                    cx.notify();
-                                }
-                            }),
-                        )
-                }))
+            tray.child(row.children(pasted).children(images).children(files))
                 .into_any_element(),
         )
+    }
+
+    /// One chip in the attachment tray: a leading visual, the name, a
+    /// secondary label, and an always-visible remove control. Images, files,
+    /// and pasted-text pills differ only in those three slots, so the frame
+    /// and its hover treatment live here once.
+    ///
+    /// The remove control is a real button on the chip's right edge rather
+    /// than the whole chip: a chip big enough to read the file name is also
+    /// big enough to delete by accident.
+    fn attachment_chip(
+        theme: &Theme,
+        id: ElementId,
+        debug: String,
+        visual: AnyElement,
+        content: ChipContent,
+        remove: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
+    ) -> AnyElement {
+        let remove_debug = format!("remove-{debug}");
+        button_frame(
+            div().id(id).debug_selector(move || debug),
+            theme,
+            ButtonSize::Medium,
+        )
+        .border_1()
+        .border_color(theme.border)
+        .raised(theme.surface_elevated, theme)
+        .hover(|style| style.border_color(theme.border_strong))
+        .child(visual)
+        .child(
+            div()
+                .min_w_0()
+                .max_w(px(180.))
+                .truncate()
+                .text_color(theme.text_secondary)
+                .tip(content.tip)
+                .child(content.name),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_size(TextSize::XSmall.px(theme))
+                .text_color(theme.text_muted)
+                .child(content.meta),
+        )
+        .child(
+            button_frame(div(), theme, ButtonSize::Compact)
+                .debug_selector(move || remove_debug)
+                .cursor_pointer()
+                .hover(|style| style.bg(theme.overlay_strong))
+                .tip(tr!("composer.remove_attachment"))
+                .child(icon(
+                    "icons/x.svg",
+                    IconSize::XSmall.px(theme),
+                    theme.text_muted,
+                ))
+                .on_mouse_up(MouseButton::Left, remove),
+        )
+        .into_any_element()
     }
 
     /// Files dragged over the window (external OS drag — gpui mirrors them
@@ -540,9 +658,10 @@ impl OrbitApp {
         }
     }
 
-    /// Files dropped anywhere on the window: images become attachments
-    /// (thumbnail chips above the composer); anything else is referenced by
-    /// path at the caret so the agent can read it with its tools.
+    /// Files dropped anywhere on the window: images become image attachments
+    /// (thumbnail chips above the composer), other files become file chips,
+    /// and a folder or unreadable path falls back to a plain reference at the
+    /// caret.
     pub(super) fn on_file_drop(
         &mut self,
         paths: &ExternalPaths,
@@ -555,27 +674,30 @@ impl OrbitApp {
             return;
         }
         for path in paths.paths() {
-            if self.attachments.len() >= MAX_ATTACHMENTS {
-                self.set_status(tr!("composer_ops.max_attachments", count = MAX_ATTACHMENTS));
+            if self.attachment_budget_exhausted() {
+                self.report_attachment_limit();
                 break;
             }
-            match Attachment::from_path(path) {
-                Some(attachment) => self.push_attachment(attachment, cx),
-                None => {
-                    self.input.update(cx, |input, cx| {
-                        input.insert_at_caret(&format!("{} ", path.display()), cx);
-                    });
-                    self.input.read(cx).focus(window);
-                }
+            if let Some(attachment) = Attachment::from_path(path) {
+                self.push_attachment(attachment, cx);
+                continue;
             }
+            if let Some(file) = AttachedFile::from_path(path) {
+                self.push_file(file, cx);
+                continue;
+            }
+            self.input.update(cx, |input, cx| {
+                input.insert_at_caret(&format!("{} ", path.display()), cx);
+            });
+            self.input.read(cx).focus(window);
         }
         cx.notify();
     }
 
     /// Add menu → "Attach image…": pick an image file and queue it.
     pub(super) fn attach_image(&mut self, cx: &mut Context<Self>) {
-        if self.attachments.len() >= MAX_ATTACHMENTS {
-            self.set_status(tr!("composer_ops.max_attachments", count = MAX_ATTACHMENTS));
+        if self.attachment_budget_exhausted() {
+            self.report_attachment_limit();
             cx.notify();
             return;
         }
@@ -606,10 +728,16 @@ impl OrbitApp {
         .detach();
     }
 
-    /// Add menu → "Attach file…": any file. Images become attachments;
-    /// anything else is referenced by path at the caret (same rule as a
-    /// file dropped on the window).
+    /// Add menu → "Attach file…": any file. Images become image attachments;
+    /// any other file becomes a file chip (same rule as a file dropped on the
+    /// window), and only a folder or unreadable path is referenced in the
+    /// text.
     pub(super) fn attach_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.attachment_budget_exhausted() {
+            self.report_attachment_limit();
+            cx.notify();
+            return;
+        }
         // See `attach_image` — never block the main thread on the native panel
         // while this entity is borrowed.
         let dialog = rfd::AsyncFileDialog::new().set_title(tr!("composer_ops.attach_file_title"));
@@ -621,15 +749,17 @@ impl OrbitApp {
             // Decode + compress off the UI thread; only the finished
             // attachment (and its preview) lands on the next update.
             let attachment = Attachment::from_path(&path);
+            let file = AttachedFile::from_path(&path);
             let _ = this.update_in(cx, |app, window, cx| {
-                match attachment {
-                    Some(attachment) => app.push_attachment(attachment, cx),
-                    None => {
-                        app.input.update(cx, |input, cx| {
-                            input.insert_at_caret(&format!("{} ", path.display()), cx);
-                        });
-                        app.input.read(cx).focus(window);
-                    }
+                if let Some(attachment) = attachment {
+                    app.push_attachment(attachment, cx);
+                } else if let Some(file) = file {
+                    app.push_file(file, cx);
+                } else {
+                    app.input.update(cx, |input, cx| {
+                        input.insert_at_caret(&format!("{} ", path.display()), cx);
+                    });
+                    app.input.read(cx).focus(window);
                 }
                 cx.notify();
             });

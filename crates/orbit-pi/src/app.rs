@@ -105,7 +105,8 @@ const CONTENT_MAX_W: f32 = 960.;
 
 /// Rows shown in the `/`-command and `@`-file autocomplete menu.
 const AUTOCOMPLETE_LIMIT: usize = 8;
-/// Images that may ride along with one prompt.
+/// Attachments — images, pasted-text pills, and files, together — that may
+/// ride along with one prompt.
 const MAX_ATTACHMENTS: usize = 8;
 
 /// How long a status message stays visible in the status bar.
@@ -653,6 +654,10 @@ pub struct OrbitApp {
     mention_files_workspace: Option<PathBuf>,
     /// Images queued to ride along with the next prompt (pasted or picked).
     attachments: Vec<Attachment>,
+    /// Non-image files queued for the next prompt. They travel to pi as
+    /// `@path` mentions in the prompt text; the chip is how the composer
+    /// holds them.
+    files: Vec<AttachedFile>,
     /// Long pasted text collapsed into pills (sent as prompt text).
     pasted_texts: Vec<PastedText>,
     /// Unsent composer drafts, keyed by session file. Saved when a session is
@@ -1044,17 +1049,59 @@ impl PastedText {
     }
 }
 
+/// A non-image file queued to ride along with the next prompt.
+///
+/// pi's `prompt` payload carries text and images only, so a file cannot ride
+/// the wire as bytes. It travels as an `@path` mention in the prompt text —
+/// the agent opens it with its own read tools — and the composer holds it as
+/// a chip so attaching a file reads like attaching a screenshot instead of
+/// splicing a path into the middle of the sentence being typed.
+#[derive(Clone)]
+struct AttachedFile {
+    /// Absolute path on disk (what the agent resolves).
+    path: PathBuf,
+    /// File name, for the chip label.
+    name: String,
+    /// Byte size, for the chip's secondary label.
+    size: u64,
+}
+
+impl AttachedFile {
+    /// Queue `path` when it names a regular file. `None` for directories and
+    /// unreadable paths, which fall back to a plain path reference at the
+    /// caret (an agent can still list a folder, but it is not an attachment).
+    fn from_path(path: &Path) -> Option<Self> {
+        let meta = std::fs::metadata(path).ok()?;
+        if !meta.is_file() {
+            return None;
+        }
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.display().to_string());
+        Some(Self {
+            path: path.to_path_buf(),
+            name,
+            size: meta.len(),
+        })
+    }
+}
+
 /// The composer's unsent state, parked with its session.
 #[derive(Clone, Default)]
 struct ComposerDraft {
     text: String,
     attachments: Vec<Attachment>,
+    files: Vec<AttachedFile>,
     pasted_texts: Vec<PastedText>,
 }
 
 impl ComposerDraft {
     fn is_empty(&self) -> bool {
-        self.text.trim().is_empty() && self.attachments.is_empty() && self.pasted_texts.is_empty()
+        self.text.trim().is_empty()
+            && self.attachments.is_empty()
+            && self.files.is_empty()
+            && self.pasted_texts.is_empty()
     }
 }
 
@@ -1152,11 +1199,30 @@ impl Attachment {
 }
 
 impl OrbitApp {
+    /// Every queued attachment — images, files, and pasted-text pills — counts
+    /// against one budget, so a message can never grow a tray no one budgeted
+    /// for by mixing kinds.
+    fn attachment_slots_used(&self) -> usize {
+        self.attachments.len() + self.files.len() + self.pasted_texts.len()
+    }
+
+    /// Whether the tray is full and one more attachment of any kind must be
+    /// turned away.
+    fn attachment_budget_exhausted(&self) -> bool {
+        self.attachment_slots_used() >= MAX_ATTACHMENTS
+    }
+
+    /// Report a full tray. One wording for every attachment kind, so the cap
+    /// reads as a rule about the composer rather than about images alone.
+    fn report_attachment_limit(&mut self) {
+        self.set_status(tr!("composer_ops.max_attachments", count = MAX_ATTACHMENTS));
+    }
+
     /// Queue one prepared attachment, honoring the cap and reporting
     /// compression so a large screenshot visibly shrinks before it ships.
     fn push_attachment(&mut self, attachment: Attachment, cx: &mut Context<Self>) {
-        if self.attachments.len() >= MAX_ATTACHMENTS {
-            self.set_status(tr!("composer_ops.max_attachments", count = MAX_ATTACHMENTS));
+        if self.attachment_budget_exhausted() {
+            self.report_attachment_limit();
             return;
         }
         if attachment.compressed {
@@ -1167,6 +1233,31 @@ impl OrbitApp {
             ));
         }
         self.attachments.push(attachment);
+        cx.notify();
+    }
+
+    /// Queue one non-image file. Re-attaching the same path is a no-op: the
+    /// prompt needs the mention once, and a duplicate chip would only look
+    /// like a mistake to remove.
+    fn push_file(&mut self, file: AttachedFile, cx: &mut Context<Self>) {
+        if self.files.iter().any(|queued| queued.path == file.path) {
+            cx.notify();
+            return;
+        }
+        if self.attachment_budget_exhausted() {
+            self.report_attachment_limit();
+            cx.notify();
+            return;
+        }
+        self.files.push(file);
+        cx.notify();
+    }
+
+    /// Drop every queued attachment and leave the typed text alone.
+    fn clear_attachments(&mut self, cx: &mut Context<Self>) {
+        self.attachments.clear();
+        self.files.clear();
+        self.pasted_texts.clear();
         cx.notify();
     }
 }
@@ -1811,6 +1902,7 @@ impl OrbitApp {
             mention_files: Vec::new(),
             mention_files_workspace: None,
             attachments: Vec::new(),
+            files: Vec::new(),
             pasted_texts: Vec::new(),
             drafts: HashMap::new(),
             new_task_draft: None,
@@ -3215,6 +3307,8 @@ mod view;
 mod worktrees;
 
 #[cfg(test)]
+mod attachment_tray_tests;
+#[cfg(test)]
 mod auto_restart_tests;
 #[cfg(test)]
 mod backdrop_layout_tests;
@@ -3276,8 +3370,8 @@ mod worktree_howto_tests;
 pub(crate) use crate::theme::tokens::RaisedExt;
 pub(crate) use helpers::{
     button_frame, context_menu_entry, context_menu_separator, context_menu_surface, empty_state,
-    file_badge, file_glyph, icon, icon_button_frame, icon_dyn, input_field_frame, menu_header,
-    nerd_font_family, picker_entry, picker_search_frame, picker_surface, press,
+    file_badge, file_glyph, file_icon_tile, icon, icon_button_frame, icon_dyn, input_field_frame,
+    menu_header, nerd_font_family, picker_entry, picker_search_frame, picker_surface, press,
     provider_mark_color, refresh_glyph, running_spinner, spinner, EmptyFill, TipExt, BUTTON_GROUP,
     PRESS_DIM,
 };

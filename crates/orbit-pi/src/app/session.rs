@@ -18,6 +18,36 @@ fn relative_display(root: &std::path::Path, path: &std::path::Path) -> String {
         .unwrap_or_else(|_| path.to_string_lossy().to_string())
 }
 
+/// The path mention one attached file folds into a prompt. Workspace-relative
+/// when the file lives inside the workspace (short, and portable between
+/// machines), absolute otherwise. Whitespace makes it a code span rather than
+/// an `@` token, which would end at the first space and split the path.
+fn attached_file_mention(file: &AttachedFile, cwd: Option<&Path>) -> String {
+    let shown = match cwd {
+        Some(cwd) => relative_display(cwd, &file.path),
+        None => file.path.to_string_lossy().replace('\\', "/"),
+    };
+    if shown.chars().any(char::is_whitespace) {
+        format!("`{shown}`")
+    } else {
+        format!("@{shown}")
+    }
+}
+
+/// The path on one line of a folded file block, or `None` when the line is not
+/// a file mention. `@path` is the mention the composer types; a backticked path
+/// is how [`attached_file_mention`] writes one that contains whitespace.
+fn attached_file_path(line: &str) -> Option<&str> {
+    if let Some(rest) = line.strip_prefix('@') {
+        return (!rest.is_empty() && !rest.chars().any(char::is_whitespace)).then_some(rest);
+    }
+    let inner = line.strip_prefix('`')?.strip_suffix('`')?;
+    // A backticked span is a path only when it reads like one — `` `npm test` ``
+    // is prose the person typed, not an attachment.
+    let path_like = inner.contains('/') || inner.contains('.');
+    (!inner.is_empty() && path_like).then_some(inner)
+}
+
 /// Minimum time a manual quota refresh keeps its spinner turning, so a reply
 /// that lands in a few milliseconds still reads as a deliberate refresh rather
 /// than a one-frame flicker.
@@ -120,6 +150,54 @@ impl OrbitApp {
         folded
     }
 
+    /// Fold queued file attachments into the prompt text. pi's `prompt`
+    /// payload carries images only, so a file rides as a path the agent opens
+    /// with its own tools. Each one gets its own line — an `@` token ends at
+    /// the first space, so a path with whitespace is backticked as a code span
+    /// instead of being cut in half.
+    pub(super) fn fold_attached_files(
+        text: &str,
+        files: &[AttachedFile],
+        cwd: Option<&Path>,
+    ) -> String {
+        if files.is_empty() {
+            return text.to_string();
+        }
+        let mentions = files
+            .iter()
+            .map(|file| attached_file_mention(file, cwd))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if text.is_empty() {
+            // A file on its own is the whole prompt — no leading blank block.
+            mentions
+        } else {
+            format!("{text}\n\n{mentions}")
+        }
+    }
+
+    /// Split a sent user message back into the prose the person typed and the
+    /// file mentions [`Self::fold_attached_files`] appended. The contract is
+    /// the fold's own shape — a blank line, then one `@path` (or backticked
+    /// path) per line — so a message that merely mentions a file mid-sentence
+    /// is left exactly as typed. `None` when the tail is not that block.
+    pub(crate) fn split_attached_files(text: &str) -> Option<(&str, Vec<&str>)> {
+        let (body, tail) = match text.rsplit_once("\n\n") {
+            Some(parts) => parts,
+            // A file-only message is the whole block.
+            None => ("", text),
+        };
+        let mut paths = Vec::new();
+        for line in tail.lines() {
+            paths.push(attached_file_path(line)?);
+        }
+        if paths.is_empty() {
+            None
+        } else {
+            Some((body, paths))
+        }
+    }
+
     /// The image payload pi expects on `prompt` / `follow_up` / `steer`.
     fn prompt_images(attachments: &[Attachment]) -> Option<Vec<Value>> {
         if attachments.is_empty() {
@@ -140,7 +218,15 @@ impl OrbitApp {
         self.drain_pasted_images(cx);
         self.drain_pasted_texts(cx);
         let text = Self::fold_pasted_texts(text.trim(), &self.pasted_texts);
-        if text.is_empty() {
+        // Files are folded as `@path` mentions, so a message may be nothing
+        // but attachments.
+        let files = std::mem::take(&mut self.files);
+        let text = Self::fold_attached_files(&text, &files, self.current_workspace.as_deref());
+        if text.trim().is_empty() {
+            // Nothing to send. A file on its own would have folded into its
+            // mention above, so the tray was empty too — put it back anyway,
+            // so no future fold can silently swallow an attachment.
+            self.files = files;
             return;
         }
         // pi's `follow_up`, `steer`, and `prompt` all carry images, so
@@ -156,6 +242,7 @@ impl OrbitApp {
         let Some(id) = self.send_tracked(body, label) else {
             // Keep the prompt and attachments so nothing is lost.
             self.attachments = attachments;
+            self.files = files;
             self.pasted_texts = pasted_texts;
             cx.notify();
             return;

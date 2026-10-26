@@ -823,6 +823,23 @@ The composer is a primary work surface.
 - Advanced controls belong behind contextual disclosure when they are not needed. A
   control that disappears keeps a keyboard or palette path — add that path before hiding
   the control, not after.
+- Attachments sit in one tray above the input, one chip per item (image, file, or
+  collapsed paste) with its own always-visible remove button — a chip large enough to
+  read a file name is large enough to delete by accident. The tray names its count and
+  offers one **Clear** action only once it holds more than one chip; a single chip is its
+  own explanation. Every chip leads with the same 20px slot — the image thumbnail, or the
+  file type's devicons mark — so the three kinds line up and a file never reads as a bare or
+  undersized mark. The mark is drawn bare: no tinted square is painted behind it. The chip
+  is already the highlighted surface, and a second rounded square behind a glyph whose art
+  is itself a box reads as an avatar monogram rather than a file icon. Glyph artwork also
+  sits off-centre inside its font cell, so the mark is nudged by its *ink* (the text
+  system's typographic bounds) rather than centred by its line box. When no Nerd Font or no
+  glyph is available the slot carries the type's short label (`MD`, `PDF`, `ZIP`, …) on a
+  tinted square instead, stepped down for longer labels. Chip text sits in one line box at
+  `line_height(1.)`, the same box every button uses, and the chip's insets are symmetric, so
+  the mark and the path share one centreline with balanced edges. Chips are buttons by role (button radius, hairline, elevated surface),
+  never pills, and a chip's hover describes the item while its remove button names the
+  removal.
 
 ## Explorer and File UX
 

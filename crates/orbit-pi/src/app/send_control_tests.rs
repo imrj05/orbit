@@ -68,6 +68,16 @@ fn an_attachment_alone_makes_the_send_control_live(cx: &mut gpui::TestAppContext
                 compressed: false,
             });
             assert!(app.send_has_payload(cx));
+
+            // A file chip is a payload too: it folds into the prompt as an
+            // `@path` mention, exactly like an image rides as bytes.
+            app.attachments.clear();
+            app.files.push(AttachedFile {
+                path: PathBuf::from("/tmp/notes.md"),
+                name: "notes.md".into(),
+                size: 12,
+            });
+            assert!(app.send_has_payload(cx));
         });
     });
 }

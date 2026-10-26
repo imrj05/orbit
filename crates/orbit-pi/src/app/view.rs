@@ -3918,12 +3918,10 @@ impl OrbitApp {
     }
 
     /// Whether the composer holds anything a send would deliver: typed text,
-    /// an image, or a collapsed paste. The one rule the control's enabled
-    /// state reads, so it can never disagree with `submit_as`.
+    /// an image, a file, or a collapsed paste. The one rule the control's
+    /// enabled state reads, so it can never disagree with `submit_as`.
     pub(super) fn send_has_payload(&self, cx: &Context<Self>) -> bool {
-        !self.input.read(cx).text().trim().is_empty()
-            || !self.attachments.is_empty()
-            || !self.pasted_texts.is_empty()
+        !self.input.read(cx).text().trim().is_empty() || self.attachment_slots_used() > 0
     }
 
     /// How many messages are waiting behind the live turn — a quiet count of

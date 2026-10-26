@@ -1179,8 +1179,8 @@ impl OrbitApp {
             .input
             .update(cx, |input, _| std::mem::take(&mut input.pasted_images));
         for image in &pasted {
-            if self.attachments.len() >= MAX_ATTACHMENTS {
-                self.set_status(tr!("composer_ops.max_attachments", count = MAX_ATTACHMENTS));
+            if self.attachment_budget_exhausted() {
+                self.report_attachment_limit();
                 break;
             }
             let index = self.attachments.len();
@@ -1201,8 +1201,8 @@ impl OrbitApp {
             .input
             .update(cx, |input, _| std::mem::take(&mut input.pasted_texts));
         for text in pasted {
-            if self.pasted_texts.len() >= MAX_ATTACHMENTS {
-                self.set_status(tr!("composer_ops.max_attachments", count = MAX_ATTACHMENTS));
+            if self.attachment_budget_exhausted() {
+                self.report_attachment_limit();
                 break;
             }
             self.pasted_texts.push(PastedText::new(text));
