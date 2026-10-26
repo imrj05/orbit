@@ -33,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   claimed, since there is no way to know whether it was already read elsewhere.
   Shape and hue both carry the state, so a finished turn and a failed one stay
   distinguishable without color.
+- **Onest interface font** — available in Settings → Appearance → Interface font,
+  bundled in Regular, Medium, SemiBold, and Bold weights for offline use.
 - Git page → commit bar → **model chip**: the **Generate** button now chooses its
   own model instead of always borrowing the chat session's. Commit messages are a
   short, cheap task, so a small local model is often enough, and a model with a
