@@ -72,6 +72,9 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/transcript.rs     virtualized messages (snapshot + stream)
   src/transcript_view.rs Waku-style transcript paint (rail, activity cards, copy); plain-GPUI message rows (no component library)
   src/message_scroller.rs tail-following list + jump-to-latest (original, plain gpui ListState)
+  src/mermaid/          native Mermaid subset renderer: flowchart parse + layered layout
+                        (flowchart.rs), gpui painting (render.rs), text metrics (measure.rs);
+                        see docs/mermaid.md — anything outside the subset keeps the source block
   src/composer.rs       multi-line EntityInputHandler (wraps, auto-grows, scrolls)
   src/model_selector.rs model / thinking picker popover
   src/notifications.rs  background notifications + channel prefs in ~/.orbit-pi/notifications.json: desktop banners (UNUserNotificationCenter; its delegate routes a clicked banner back to the session; osascript fallback when unbundled), system alert sound, and in-app toasts (the frontmost-window stand-in for the banner)
@@ -392,8 +395,10 @@ stack is gone; do not resurrect it.
 - Full screen-reader/focus accessibility work remains incomplete.
 - GPUI API changes must be handled deliberately because the pinned version is
   pre-1.0.
-- Mermaid is not natively rendered by GPUI; use the documented fallback until a
-  renderer is intentionally added.
+- Mermaid coverage is deliberately a subset: `flowchart`/`graph` renders
+  natively (`src/mermaid/`, `docs/mermaid.md`); every other diagram type keeps
+  the honest source block. Adding a type means a parser + layout in that module,
+  not a new pipeline.
 - Do not document roadmap work as shipped until it exists in the repository.
 
 ## How the app runs
@@ -512,7 +517,8 @@ current implementation; do not use this section as a changelog.
 - ✅ Git page (Changes / History / Graph + commit bar, commit-message generation). ✅ Providers: built-in catalog, API-key + OAuth, models.json CRUD, refresh. ✅ Skills, ✅ Plugins (+ search), ✅ **Models** page, ✅ Usage charts + filters + export. ✅ Theme/UI persistence (Orbit store). ✅ Explorer: left project panel (gitignore-aware tree, git badges, filter, hidden toggle) + full-page Files editor (editable, syntax-highlighted code/text with debounced autosave; markdown/image; binary/size guards) + file operations (New File/Folder, Rename, Delete-to-Trash).
 
 ### P5 — Mermaid + accessibility (partial)
-- ✅ Mermaid fences stay copyable code blocks with an honest label (never faked). ✅ Reduce-motion setting honored by shimmer/spinners/drop fade. ✅ tool approval (`tool_call` guard + access modes; not a sandbox). ⬜ focus rings / screen-reader labeling.
+- ✅ Mermaid `flowchart`/`graph` fences render natively (GPUI paths + text, D2 revised); other
+  diagram types keep the copyable source block with an honest label (never faked). ✅ Reduce-motion setting honored by shimmer/spinners/drop fade. ✅ tool approval (`tool_call` guard + access modes; not a sandbox). ⬜ focus rings / screen-reader labeling.
 
 ### P6 — Test & ship (partial)
 - ✅ Unit + live tests (skip cleanly without `pi`), ✅ 10k-message model-layer perf test, ✅ signed `.app`/DMG + optional notarization/stapling, ✅ GitHub Actions CI. ⬜ on-device scroll-perf benchmark, streaming state-machine edge coverage.
