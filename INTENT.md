@@ -354,6 +354,24 @@ The navigation rail's user-turn index is likewise cached in `Transcript` and
 rebuilt only when the message list changes, and debug builds log one local
 `[orbit:perf]` line per settle (window, cache, prompt, output, duration, rate).
 
+A sidebar session row is three lines because each line answers a different
+question: the title says *which session*, the message line says *what was asked*
+and the metadata strip says *when, where, and on what branch*. The message line
+shows only the remainder after the title's words (`preview_remainder`), since pi
+titles a session from its own first message — printing the message whole would
+make the row read the same sentence twice — and it drops out when nothing is
+left, so a named session (whose title shares no prefix with its message) shows
+the full prompt and an unnamed one shows the continuation. Branch metadata is a
+per-project cache (`OrbitApp::sidebar_branches`), filled off-thread by
+`git branch --show-current` + `rev-list --left-right` at launch and whenever the
+project list or the current checkout changes, so rendering a row never spawns
+git; a project that is not a repository, or is on a detached HEAD, has no branch
+item rather than an empty slot, and `↑n`/`↓n` appear only for non-zero counts
+(`divergence_labels`). Row actions are the right-click context menu's job — the
+session row carries no hover-revealed `…`, which is why the title owns the full
+line width and why the keyboard/palette delete path anchors its confirmation to
+the row itself.
+
 Every icon-only button carries the app's native tooltip — a localized label, usually
 with its shortcut appended (the send / stop button set the register) — across the top
 bar, sidebar, transcript copy / diff controls, composer add button, window caption

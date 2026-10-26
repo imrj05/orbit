@@ -49,9 +49,10 @@ Usage — requests, tokens, cost, and cache, read from your own sessions:
 **Sessions**
 
 - Grouped by project, persistent, reopenable, and cross-workspace
+- Each session row reads in three lines: the title, the prompt behind it, and a metadata strip with its age, workspace, and current branch (with `↑n`/`↓n` against upstream)
 - Orbit-owned project list — remove a workspace from the sidebar without deleting pi's sessions
 - Sort projects by last activity, recently added, name, or session count
-- Rename, pin, clone, or delete sessions, and copy a session id; pinned sessions sort first
+- Rename, pin, clone, or delete sessions, and copy a session id; pinned sessions sort first — right-click a row for its actions
 - Address sessions by position — **⌘1…⌘9** (**Ctrl+1…9**) opens the Nth visible session, **Ctrl+Tab / Ctrl+Shift+Tab** cycle them
 - Sessions written by the CLI or another window refresh the sidebar live
 - Background turn notifications — a desktop banner and alert sound when the window isn't frontmost, an in-app toast otherwise, and a heads-up when a run is waiting on an extension dialog

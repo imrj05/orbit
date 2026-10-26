@@ -84,6 +84,10 @@ impl OrbitApp {
         // refresh Review, the Git page, and the branch chip when the tree
         // changes.
         self.sync_workspace_watcher(cx);
+        // An added or removed project needs its branch for the sidebar row's
+        // metadata line; a compare of the project list, so it is free while
+        // nothing moved.
+        self.sync_sidebar_branches(cx);
         let workspace_dirty = self
             .workspace_watcher
             .as_ref()
@@ -462,11 +466,7 @@ impl OrbitApp {
         let Some(usage) = self.transcript.last_message_usage() else {
             return;
         };
-        let window = self
-            .context
-            .as_ref()
-            .map(|c| c.context_window)
-            .unwrap_or(0);
+        let window = self.context.as_ref().map(|c| c.context_window).unwrap_or(0);
         let cache_pct = usage
             .cache_read_percent()
             .map(|p| format!("{p:.1}%"))

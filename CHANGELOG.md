@@ -55,6 +55,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Session rows carry three lines.** Title, the first message, and a metadata
+  strip — age, workspace, and branch with `↑n`/`↓n` against its upstream (green
+  ahead, amber behind). The message line shows only the part of the prompt the
+  title does not already say, so a session pi titled from its own first message
+  reads as one sentence instead of two, and the line drops entirely when there
+  is nothing left. Branches are fetched off-thread per project (`git branch` +
+  `rev-list`, one pair at launch and whenever the project list or the current
+  checkout changes), so painting a row never shells out. A project that is not a
+  git repository has no branch item rather than an empty slot. The workspace
+  item appears in the flat list only — under a project header it would repeat
+  the header one line up.
+- **Session row actions moved to the right-click context menu.** The
+  hover-revealed `…` is gone, so the title owns the full line width; pin,
+  archive, copy path, reveal, clone, and delete are all on the context menu
+  (the palette still carries its own commands). The keyboard and palette delete
+  paths anchor the same confirmation to the row instead of to a button that no
+  longer exists.
 - Sidebar project names no longer look like the session titles under them. A
   group header takes the palette's accent hue at body-ink brightness — a quiet
   warm cast by default — or, when the project has a mark tint, that hue on its

@@ -1,7 +1,7 @@
 use super::helpers::*;
 use super::*;
 
-use gpui::{point, Pixels};
+use gpui::{point, Hsla, Pixels};
 
 use crate::sessions::cap_chars;
 use crate::shimmer::ShimmerText;
@@ -128,26 +128,30 @@ pub(crate) fn sessions_with_placeholder(
     rows
 }
 
-/// Whether a session row's second line says anything its title does not.
+/// The text a session row's second line shows: the first message, minus the
+/// part the title already says.
 ///
-/// pi titles a session from its first message, so on most rows the title *is*
-/// that message cut short and the preview is the same sentence carried on — a
-/// second line the eye reads and learns nothing from. The preview earns its
-/// place only when it diverges, which is the case this keeps: a session pi named
-/// itself ("Fix login bug") over the message it came from.
+/// pi titles a session from its first message, so on an unnamed row the title
+/// *is* that message cut short; printing the message whole would make line 2
+/// re-read line 1. What is left after the title's words is the rest of the
+/// sentence, which is exactly the part the title cannot show. A row pi named
+/// itself ("Fix login bug") shares no prefix with its message, so the message
+/// stands as it is. Empty when the message says nothing beyond the title — the
+/// row then drops the line and stays two lines tall.
 ///
 /// Compared on words rather than bytes, so the `…` a capped title ends with, its
 /// collapsed whitespace, or its trailing punctuation cannot make one sentence
 /// look like two.
-pub(crate) fn preview_adds_information(title: &str, preview: &str) -> bool {
+pub(crate) fn preview_remainder(title: &str, preview: &str) -> String {
     let preview_words: Vec<&str> = preview.split_whitespace().collect();
-    if preview_words.is_empty() {
-        return false;
-    }
     let title_words: Vec<&str> = title.split_whitespace().collect();
-    // A session with no title yet has nothing to repeat, so anything it has is
-    // news; only a real prefix means the preview is the title continued.
-    title_words.is_empty() || !continues_the_title(&title_words, &preview_words)
+    if title_words.is_empty() || !continues_the_title(&title_words, &preview_words) {
+        return preview.trim().to_string();
+    }
+    // The title's last word may be a fragment of the preview's (a character
+    // cap cuts mid-word), so drop that word whole rather than repeat a stub of
+    // it at the head of the line.
+    preview_words[title_words.len()..].join(" ")
 }
 
 /// Whether `preview` picks up exactly where `title` left off. `cap_chars` cuts
@@ -542,6 +546,31 @@ pub(crate) fn session_icon_status(active: bool, running: bool, archived: bool) -
     }
 }
 
+/// The two arrows a branch needs, as `(ahead, behind)` labels. A count of zero
+/// has no label, and a branch with no upstream has no labels at all — `↑0 ↓0`
+/// is a row of arrows that says nothing (`DESIGN.md` §Status Row).
+pub(crate) fn divergence_labels(
+    ahead_behind: Option<(usize, usize)>,
+) -> (Option<String>, Option<String>) {
+    let Some((ahead, behind)) = ahead_behind else {
+        return (None, None);
+    };
+    (
+        (ahead > 0).then(|| format!("↑{ahead}")),
+        (behind > 0).then(|| format!("↓{behind}")),
+    )
+}
+
+/// One fact on a session row's metadata line: quiet, small, and never wider
+/// than it needs to be.
+fn meta_text(text: String, color: Hsla, theme: &Theme) -> impl IntoElement + use<> {
+    div()
+        .flex_none()
+        .text_size(TextSize::XSmall.px(theme))
+        .text_color(color)
+        .child(text)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render_side_row(
     rows: &Rc<Vec<SideRow>>,
@@ -568,6 +597,9 @@ pub(crate) fn render_side_row(
     // Resolved per-workspace glyphs: the user's mark icon, or the folder
     // status (current / running / archived-only / idle).
     workspace_icons: &Rc<HashMap<PathBuf, SharedString>>,
+    // Branch per workspace, for the metadata line. Absent for a project that
+    // is not a git repository (or sits on a detached HEAD).
+    branches: &Rc<HashMap<PathBuf, BranchLine>>,
     session_menu: Option<&SessionMenu>,
     workspace_menu: Option<&WorkspaceMenu>,
     // Whether this row is the keyboard cursor (see `OrbitApp::sidebar_cursor`).
@@ -908,9 +940,9 @@ pub(crate) fn render_side_row(
                 .cursor_pointer()
                 .when_some(shortcut_hint, |row, hint| row.tip(hint))
                 // Right-click anywhere on the row opens its actions menu at
-                // the pointer, context-menu style (context menus are the
-                // secondary-action surface; the `…` button stays for
-                // discoverability).
+                // the pointer. That context menu is the row's only action
+                // surface — there is no hover-revealed '…' to compete with
+                // the title for the line.
                 .on_mouse_down(MouseButton::Right, {
                     let session = session.clone();
                     let this = this.clone();
@@ -941,13 +973,17 @@ pub(crate) fn render_side_row(
                         app.input.read(cx).focus(window);
                     });
                 });
+            // Three lines, one job each: what the session is, what was asked,
+            // and the quiet facts about where it happened. The metadata line
+            // is what the third line buys, so the card's padding steps down a
+            // notch to give some list density back.
             let mut card = div()
                 .group("srow")
                 .relative()
                 .w_full()
                 .pl(px(22.))
                 .pr(DynamicSpacing::Base08.px(&theme))
-                .py(DynamicSpacing::Base04.px(&theme))
+                .py(DynamicSpacing::Base02.px(&theme))
                 .rounded(list_item::RADIUS.px(&theme))
                 .flex()
                 .items_center()
@@ -960,15 +996,11 @@ pub(crate) fn render_side_row(
                 .when(!active && !cursor, |card| {
                     card.hover(|s| s.bg(theme.surface_hover))
                 });
-            // Text column: title + actions, then the first-message preview
-            // with the age. The title line is the row's anchor and is always
-            // there; the preview is an expansion on it, so a row whose preview
-            // is just the title continued drops to one line rather than
-            // spending a second line re-reading the same sentence. Rows are
-            // therefore one or two lines tall, and the age rides whichever
-            // line is last.
             let age = sessions::relative_time(session.modified);
-            let show_preview = preview_adds_information(&session.title, &session.first_message);
+            // The message line carries only what the title does not already
+            // say, so a row pi titled from its own first message never prints
+            // the same sentence twice ([`preview_remainder`]).
+            let preview = preview_remainder(&session.title, &session.first_message);
             // Flat list has no workspace headers — name the workspace on the
             // row instead. The glyph is the row's own status (open on the
             // active session, sync while running, archive when archived),
@@ -979,6 +1011,12 @@ pub(crate) fn render_side_row(
                 &mark,
                 session_icon_status(active, running, archived),
             );
+            let branch = branches.get(&session.cwd);
+            let meta_ink = if active {
+                theme.text_secondary
+            } else {
+                theme.text_muted
+            };
             card = card.child(
                 div()
                     .flex_1()
@@ -986,10 +1024,11 @@ pub(crate) fn render_side_row(
                     .flex()
                     .flex_col()
                     .justify_center()
-                    .gap(DynamicSpacing::Base02.px(&theme))
-                    // Line 1 — title with the row actions pinned to its
-                    // right: a small running spinner leads, the hover-revealed
-                    // `…` menu trails. Wrapped in a flex row so the
+                    .gap(DynamicSpacing::Base01.px(&theme))
+                    // Line 1 — the title, led by the running spinner (the one
+                    // live state) and trailed by the deliberate marks, so no
+                    // glyph of state sits between the reader and the first
+                    // word of the name. Wrapped in a flex row so the
                     // `flex_1 min_w_0` title takes the full column width and
                     // paints the name — instead of collapsing to "…" as a bare
                     // flex-column child.
@@ -1007,20 +1046,6 @@ pub(crate) fn render_side_row(
                                     theme,
                                 ))
                             })
-                            .when(pinned, |line| {
-                                line.child(icon(
-                                    "icons/pin.svg",
-                                    IconSize::Medium.px(&theme),
-                                    theme.text_muted,
-                                ))
-                            })
-                            .when(archived, |line| {
-                                line.child(icon(
-                                    "icons/archive.svg",
-                                    IconSize::Medium.px(&theme),
-                                    theme.text_muted,
-                                ))
-                            })
                             .child(title)
                             .when(active && show_workspace, |line| {
                                 line.child(
@@ -1031,152 +1056,118 @@ pub(crate) fn render_side_row(
                                         .child(tr!("sidebar.current")),
                                 )
                             })
-                            .child(session_menu_button(
-                                *ix,
-                                menu,
-                                session.path.clone(),
-                                session.title.clone(),
-                                deletable,
-                                this_for_menu,
-                                theme,
-                            ))
-                            .when(!show_preview && !show_workspace, |line| {
-                                line.child(
-                                    div()
-                                        .flex_none()
-                                        .text_size(TextSize::XSmall.px(&theme))
-                                        .text_color(theme.text_muted)
-                                        .child(age.clone()),
-                                )
+                            .when(pinned, |line| {
+                                line.child(icon(
+                                    "icons/pin.svg",
+                                    IconSize::Small.px(&theme),
+                                    theme.text_muted,
+                                ))
+                            })
+                            .when(archived, |line| {
+                                line.child(icon(
+                                    "icons/archive.svg",
+                                    IconSize::Small.px(&theme),
+                                    theme.text_muted,
+                                ))
                             }),
                     )
-                    // Line 2 — the workspace name (flat list only), the
-                    // first-message preview, and the age at the very end.
-                    .when(show_preview || show_workspace, |col| {
+                    // Line 2 — what was actually asked, one line. Present
+                    // only when it has words the title does not.
+                    .when(!preview.is_empty(), |col| {
                         col.child(
                             div()
                                 .w_full()
-                                .flex()
-                                .items_center()
-                                .gap(DynamicSpacing::Base06.px(&theme))
-                                .when(show_workspace, |line| {
-                                    line.child(icon_dyn(
-                                        workspace_icon,
-                                        IconSize::XSmall.px(&theme),
-                                        workspace_mark::tint_color(&theme, mark.tint.as_deref()),
-                                    ))
-                                    .child(
-                                        div()
-                                            .flex_none()
-                                            .max_w(px(120.))
-                                            .truncate()
-                                            .text_size(TextSize::XSmall.px(&theme))
-                                            .text_color(theme.text_secondary)
-                                            .child(workspace_label),
-                                    )
-                                })
-                                .when(show_preview, |line| {
-                                    line.child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .truncate()
-                                            .text_size(TextSize::Small.px(&theme))
-                                            .line_height(BufferLineHeight::Standard.relative())
-                                            .text_color(if active {
-                                                theme.text_secondary
-                                            } else {
-                                                theme.text_muted
-                                            })
-                                            .child(session.first_message.clone()),
-                                    )
-                                })
+                                .min_w_0()
+                                .truncate()
+                                .text_size(TextSize::Small.px(&theme))
+                                .line_height(BufferLineHeight::Standard.relative())
+                                .text_color(meta_ink)
+                                .child(preview),
+                        )
+                    })
+                    // Line 3 — when, where, and on what branch. The workspace
+                    // item appears in the flat list only: under a project
+                    // header the name is already one line up, and repeating it
+                    // here would spend the branch's width saying it twice. The
+                    // branch truncates last — it is the fact nothing else on
+                    // screen carries.
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .gap(DynamicSpacing::Base06.px(&theme))
+                            .child(icon(
+                                "icons/clock.svg",
+                                IconSize::XSmall.px(&theme),
+                                meta_ink,
+                            ))
+                            .child(meta_text(age, meta_ink, &theme))
+                            .when(show_workspace, |line| {
+                                line.child(icon_dyn(
+                                    workspace_icon,
+                                    IconSize::XSmall.px(&theme),
+                                    workspace_mark::tint_color(&theme, mark.tint.as_deref()),
+                                ))
                                 .child(
                                     div()
                                         .flex_none()
+                                        .max_w(px(70.))
+                                        .truncate()
                                         .text_size(TextSize::XSmall.px(&theme))
-                                        .text_color(if active {
-                                            theme.text_secondary
-                                        } else {
-                                            theme.text_muted
-                                        })
-                                        .child(age),
-                                ),
-                        )
-                    }),
+                                        .text_color(meta_ink)
+                                        .child(workspace_label),
+                                )
+                            })
+                            .when_some(branch, |line, branch| {
+                                let (ahead, behind) = divergence_labels(branch.ahead_behind);
+                                line.child(icon(
+                                    "icons/branch.svg",
+                                    IconSize::XSmall.px(&theme),
+                                    meta_ink,
+                                ))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_size(TextSize::XSmall.px(&theme))
+                                        .text_color(meta_ink)
+                                        .child(branch.name.clone()),
+                                )
+                                // Colour is never the only signal: the arrow
+                                // says which way the counts point, and both
+                                // read as text before they read as hue.
+                                .when_some(ahead, |line, ahead| {
+                                    line.child(meta_text(ahead, theme.success, &theme))
+                                })
+                                .when_some(
+                                    behind,
+                                    |line, behind| {
+                                        line.child(meta_text(behind, theme.warning, &theme))
+                                    },
+                                )
+                            }),
+                    ),
             );
+            // Row actions live on the right-click context menu — the same
+            // gesture the rest of the app uses for row actions — so there is
+            // no hover-revealed '…' and the title owns the whole line. The
+            // popup still needs a stable element to hang off: a zero-size
+            // anchor at the card's top-left, which is what the keyboard and
+            // palette paths (no pointer origin) anchor to.
+            card = card.children(menu.map(|menu| {
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size(px(0.))
+                    .child(session_menu_popup(menu, this_for_menu.clone(), theme))
+            }));
             row = row.child(card);
             row.into_any_element()
         }
     }
-}
-
-/// The hover-revealed '…' button on a quiet session row. Clicking it opens
-/// the row's actions popup; propagation stops so the row's open handler
-/// doesn't also fire.
-pub(crate) fn session_menu_button(
-    ix: usize,
-    menu: Option<&SessionMenu>,
-    path: PathBuf,
-    title: String,
-    deletable: bool,
-    this: Entity<OrbitApp>,
-    theme: Theme,
-) -> impl IntoElement + use<> {
-    let menu_open = menu.is_some();
-    let this_for_popup = this.clone();
-    icon_button_frame(
-        div().id(ElementId::NamedInteger("side-more".into(), ix as u64)),
-        &theme,
-        ButtonSize::Compact,
-    )
-    .group(BUTTON_GROUP)
-    .relative()
-    .tip(tr!("sidebar.more_actions"))
-    .cursor_pointer()
-    // Hidden until the row (or the button itself) is hovered, or while
-    // this row's menu is open. Icon-only, no background — a filled hover
-    // square reads as a patch covering the row's right edge.
-    .opacity(if menu_open { 1.0 } else { 0.0 })
-    .group_hover("srow", |s| s.opacity(1.))
-    .active(|s| s.opacity(PRESS_DIM))
-    .on_mouse_up(MouseButton::Left, move |_, window, cx| {
-        // Keep the click from also opening the session via the row.
-        cx.stop_propagation();
-        let (path, title, deletable) = (path.clone(), title.clone(), deletable);
-        this.update(cx, |app, cx| {
-            app.toggle_session_menu(
-                SessionMenu {
-                    path,
-                    title,
-                    deletable,
-                    confirm_delete: false,
-                    at: None,
-                },
-                window,
-                cx,
-            );
-        });
-    })
-    .child(icon(
-        "icons/more.svg",
-        ButtonSize::Compact.icon_size().px(&theme),
-        theme.text_muted,
-    ))
-    // The dropdown hangs off a zero-size anchor pinned to the button's
-    // top-left corner. The button centers its icon (`items_center` +
-    // `justify_center`), and Taffy lays absolutely-positioned children out
-    // with the container's alignment — without the pin, the popup's
-    // static position is pulled toward the button's center and it opens
-    // up-left of the trigger instead of just below it.
-    .children(menu.map(|menu| {
-        div()
-            .absolute()
-            .top_0()
-            .left_0()
-            .size(px(0.))
-            .child(session_menu_popup(menu, this_for_popup.clone(), theme))
-    }))
 }
 
 /// A session row's title. Quiet rows render as one truncated line; a running
@@ -1428,12 +1419,11 @@ pub(crate) fn session_menu_popup(
 
     // Float the popup: `anchored` takes it out of the layout (no other row
     // moves). A right-clicked menu lands at the pointer in window
-    // coordinates; the '…' button's menu pins its top-left corner just
-    // below the trigger (a `ButtonSize::Compact` button, so its height plus
-    // `popover::MENU_OFFSET` drops the top edge Zed's menu gap under it,
-    // left-aligned to the trigger — the standard app dropdown position). `deferred` paints it above the rest of the list — same
-    // convention as the composer chip pickers. `snap_to_window` keeps it
-    // inside the window near the edges.
+    // coordinates; a menu opened from the keyboard or the command palette
+    // (no pointer origin) drops just under the row's title line, left-aligned
+    // to its card — the standard app dropdown position. `deferred` paints it
+    // above the rest of the list — same convention as the composer chip
+    // pickers. `snap_to_window` keeps it inside the window near the edges.
     let anchor = if let Some(at) = menu.at {
         anchored().anchor(Corner::TopLeft).position(at)
     } else {
@@ -1442,7 +1432,7 @@ pub(crate) fn session_menu_popup(
             .anchor(Corner::TopLeft)
             .offset(point(
                 px(0.),
-                ButtonSize::Compact.height(&theme) + popover::MENU_OFFSET,
+                TextSize::Default.px(&theme) + DynamicSpacing::Base06.px(&theme),
             ))
     };
     anchor
@@ -2109,37 +2099,10 @@ pub(crate) fn empty_sessions_state(theme: Theme) -> impl IntoElement + use<> {
 
 // ── controller ────────────────────────────────────────────────────
 impl OrbitApp {
-    /// Open (or toggle closed) the row-actions popup for a session row.
-    pub(super) fn toggle_session_menu(
-        &mut self,
-        menu: SessionMenu,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        // Same-click dismissal must not re-open (see toggle_session_picker).
-        const GESTURE: Duration = Duration::from_millis(200);
-        if let Some(dismissed) = self.menu_dismissed_at.take() {
-            if dismissed.elapsed() < GESTURE {
-                return;
-            }
-        }
-        if self.session_menu.as_ref() == Some(&menu) {
-            self.session_menu = None;
-            cx.notify();
-            return;
-        }
-        self.dismiss_transient_popups(window, cx);
-        self.workspace_menu = None;
-        self.session_menu = Some(menu);
-        cx.notify();
-    }
-
     /// Open the session row menu from a right-click, floating it at the
-    /// pointer ([`SessionMenu::at`]). Unlike the `…` button's toggle this
-    /// always (re)positions the menu — a right-click while another row's menu
-    /// is up moves it to the new row instead of dismissing — and skips the
-    /// gesture guard, which only exists for the left-click dismiss/reopen
-    /// race.
+    /// pointer ([`SessionMenu::at`]). Always (re)positions the menu — a
+    /// right-click while another row's menu is up moves it to the new row
+    /// instead of dismissing.
     pub(super) fn open_session_menu_at(
         &mut self,
         menu: SessionMenu,
@@ -2333,7 +2296,7 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Same-click dismissal must not re-open (see toggle_session_menu).
+        // Same-click dismissal must not re-open (see toggle_workspace_menu).
         const GESTURE: Duration = Duration::from_millis(200);
         if let Some(dismissed) = self.menu_dismissed_at.take() {
             if dismissed.elapsed() < GESTURE {
@@ -2755,56 +2718,96 @@ mod tests {
         assert_eq!(clamp_cursor(1, 5), Some(1));
     }
 
-    /// The row keeps its second line only when the preview diverges from the
-    /// title. pi's auto-title is the first message, so the repeat is the common
-    /// case, not the edge.
+    /// The second line shows what the title cannot say. pi's auto-title is the
+    /// first message, so the title repeating the message is the common case,
+    /// not the edge — and the row must not spend a line on it.
     #[test]
-    fn a_preview_that_only_continues_the_title_is_not_worth_a_line() {
-        // pi's title is the message cut short: same sentence, nothing added.
-        assert!(!preview_adds_information(
-            "can you update the screenshot of the",
-            "can you update the screenshot of the app on the marketing page",
-        ));
-        // The placeholder case: title and preview are the same string.
-        assert!(!preview_adds_information(
-            "Explain the project structure.",
-            "Explain the project structure.",
-        ));
-        // A capped title ends with an ellipsis and the preview does not; that
-        // difference alone must not buy a second line.
-        assert!(!preview_adds_information(
-            "Fixing the OAuth redirect loop…",
-            "Fixing the OAuth redirect loop in the callback handler",
-        ));
+    fn the_message_line_carries_only_what_the_title_does_not() {
+        // pi's title is the message cut short: the line starts where it left
+        // off, so the row reads as one sentence instead of two copies.
+        assert_eq!(
+            preview_remainder(
+                "can you update the screenshot of the",
+                "can you update the screenshot of the app on the marketing page",
+            ),
+            "app on the marketing page"
+        );
+        // Title and message are the same string: nothing left to say.
+        assert_eq!(
+            preview_remainder(
+                "Explain the project structure.",
+                "Explain the project structure."
+            ),
+            ""
+        );
+        // A capped title ends with an ellipsis and the message does not; that
+        // difference alone is the cap's, not a second sentence.
+        assert_eq!(
+            preview_remainder(
+                "Fixing the OAuth redirect loop…",
+                "Fixing the OAuth redirect loop in the callback handler",
+            ),
+            "in the callback handler"
+        );
         // `cap_chars` cuts mid-word, so the title's last word is a fragment of
-        // the preview's. The fragment is the cap's, not the sentence's.
-        assert!(!preview_adds_information(
-            "can you update the screenshot of the ap…",
-            "can you update the screenshot of the app on the marketing page",
-        ));
+        // the message's. The fragment is dropped whole rather than repeated as
+        // a stub at the head of the line.
+        assert_eq!(
+            preview_remainder(
+                "can you update the screenshot of the ap…",
+                "can you update the screenshot of the app on the marketing page",
+            ),
+            "on the marketing page"
+        );
         // Collapsed whitespace and a newline are formatting, not content.
-        assert!(!preview_adds_information(
-            "Tidy the release notes",
-            "Tidy the   release\nnotes before tagging",
-        ));
+        assert_eq!(
+            preview_remainder(
+                "Tidy the release notes",
+                "Tidy the   release\nnotes before tagging"
+            ),
+            "before tagging"
+        );
     }
 
     #[test]
-    fn a_preview_that_says_something_new_keeps_its_line() {
-        // pi named the session itself: the message is new information.
-        assert!(preview_adds_information(
-            "Fix login bug",
-            "the oauth redirect is looping",
-        ));
+    fn a_message_that_says_something_new_keeps_its_whole_line() {
+        // pi named the session itself: the message is all new information.
+        assert_eq!(
+            preview_remainder("Fix login bug", "the oauth redirect is looping"),
+            "the oauth redirect is looping"
+        );
         // Sharing an opening word is not repeating a sentence.
-        assert!(preview_adds_information(
-            "Fix the login flow",
-            "The oauth redirect is looping in production",
-        ));
-        // No preview at all is nothing to show.
-        assert!(!preview_adds_information("Fix login bug", "   "));
-        assert!(!preview_adds_information("Fix login bug", ""));
+        assert_eq!(
+            preview_remainder(
+                "Fix the login flow",
+                "The oauth redirect is looping in production"
+            ),
+            "The oauth redirect is looping in production"
+        );
+        // No message at all is no line at all.
+        assert_eq!(preview_remainder("Fix login bug", "   "), "");
+        assert_eq!(preview_remainder("Fix login bug", ""), "");
         // A session with no title yet has nothing to repeat.
-        assert!(preview_adds_information("", "anything at all"));
+        assert_eq!(preview_remainder("", "anything at all"), "anything at all");
+    }
+
+    /// A branch arrow appears only for a count that exists: `↑0 ↓0` is a row of
+    /// arrows that says nothing.
+    #[test]
+    fn divergence_arrows_appear_only_for_a_non_zero_count() {
+        assert_eq!(divergence_labels(None), (None, None));
+        assert_eq!(divergence_labels(Some((0, 0))), (None, None));
+        assert_eq!(
+            divergence_labels(Some((2, 0))),
+            (Some("↑2".to_string()), None)
+        );
+        assert_eq!(
+            divergence_labels(Some((0, 1))),
+            (None, Some("↓1".to_string()))
+        );
+        assert_eq!(
+            divergence_labels(Some((3, 4))),
+            (Some("↑3".to_string()), Some("↓4".to_string()))
+        );
     }
 }

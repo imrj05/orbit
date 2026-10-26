@@ -208,6 +208,15 @@ struct BranchStatus {
     ahead_behind: Option<(usize, usize)>,
 }
 
+/// One workspace's branch, as a sidebar row's metadata line shows it. Filled
+/// off-thread by [`OrbitApp::refresh_sidebar_branches`]; the row reads it and
+/// never shells out to git.
+#[derive(Clone, PartialEq)]
+pub(crate) struct BranchLine {
+    pub(crate) name: String,
+    pub(crate) ahead_behind: Option<(usize, usize)>,
+}
+
 pub struct OrbitApp {
     client: Option<PiClient>,
     /// Live state of the active pi process, surfaced in Settings → Runtime.
@@ -373,6 +382,18 @@ pub struct OrbitApp {
     /// Generation of the newest branch fetch; a late result from an older
     /// fetch is discarded.
     branch_fetch: u64,
+    /// Branch per listed project, for the sidebar rows' metadata line. Keyed
+    /// by workspace path (the same canonical spelling the rows resolve their
+    /// session's `cwd` to). A workspace that is not a git repository — or is
+    /// on a detached HEAD — has no entry, and its row drops the item rather
+    /// than inventing one.
+    sidebar_branches: HashMap<PathBuf, BranchLine>,
+    /// The project list the newest [`Self::sidebar_branches`] scan covered.
+    /// Comparing it against `workspaces` is what makes an added or removed
+    /// project fill in on the next heartbeat without a watcher of its own.
+    sidebar_branches_for: Vec<PathBuf>,
+    /// Generation of the newest sidebar branch scan; a late result is dropped.
+    sidebar_branches_fetch: u64,
     /// Real line counts from edit/write tool calls this session.
     added: u64,
     removed: u64,
@@ -1789,6 +1810,9 @@ impl OrbitApp {
             workspace_logo,
             branch: None,
             branch_fetch: 0,
+            sidebar_branches: HashMap::new(),
+            sidebar_branches_for: Vec::new(),
+            sidebar_branches_fetch: 0,
             added: 0,
             removed: 0,
             focus: cx.focus_handle(),
@@ -2148,8 +2172,10 @@ impl OrbitApp {
             app.probe_auth();
         }
         // The branch chip tracks the launch workspace even before a session
-        // is open.
+        // is open, and every listed project gets its branch for the sidebar's
+        // metadata line.
         app.refresh_branch_status(cx);
+        app.refresh_sidebar_branches(cx);
         // Check for a newer pi in the background; a newer release installs
         // itself through pi's own updater (see `pi_update_ui`).
         app.check_pi_update_on_launch(cx);
@@ -2407,6 +2433,7 @@ impl OrbitApp {
             cx.notify();
             return;
         };
+        let row_cwd = cwd.clone();
         cx.spawn(async move |this, cx| {
             let branch = cx
                 .background_executor()
@@ -2417,7 +2444,22 @@ impl OrbitApp {
                     })
                 })
                 .await;
+            let line = branch.as_ref().map(|branch| BranchLine {
+                name: branch.name.clone(),
+                ahead_behind: branch.ahead_behind,
+            });
             let _ = this.update(cx, |app, cx| {
+                // The sidebar's metadata line shows the same fact for this
+                // workspace, so one fetch feeds both. It is not gated on the
+                // status bar's generation: a superseded read still told us
+                // the truth when it ran.
+                let previous = match &line {
+                    Some(line) => app.sidebar_branches.insert(row_cwd.clone(), line.clone()),
+                    None => app.sidebar_branches.remove(&row_cwd),
+                };
+                if previous.as_ref() != line.as_ref() {
+                    cx.notify();
+                }
                 // A newer fetch (workspace move or fresh git state) superseded
                 // this one; drop the stale result.
                 if app.branch_fetch != fetch {
@@ -2430,6 +2472,60 @@ impl OrbitApp {
             });
         })
         .detach();
+    }
+
+    /// Refetch every listed project's branch for the sidebar rows' metadata
+    /// line — one `git` pair per project, all off-thread. Called at launch and
+    /// whenever the project list itself changes; a bare `git checkout` in a
+    /// background project is picked up on the next of either, so the line can
+    /// lag a checkout made outside Orbit in a project that is not the current
+    /// one.
+    pub(super) fn refresh_sidebar_branches(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_branches_fetch = self.sidebar_branches_fetch.wrapping_add(1);
+        let fetch = self.sidebar_branches_fetch;
+        let workspaces = self.workspaces.clone();
+        self.sidebar_branches_for = workspaces.clone();
+        if workspaces.is_empty() {
+            self.sidebar_branches.clear();
+            cx.notify();
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let lines = cx
+                .background_executor()
+                .spawn(async move {
+                    workspaces
+                        .into_iter()
+                        .filter_map(|cwd| {
+                            let name = crate::git::current_branch(&cwd)?;
+                            let ahead_behind = crate::git::ahead_behind(&cwd);
+                            Some((cwd, BranchLine { name, ahead_behind }))
+                        })
+                        .collect::<HashMap<PathBuf, BranchLine>>()
+                })
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                // A newer scan (the project list moved again) superseded this
+                // one; drop the stale result.
+                if app.sidebar_branches_fetch != fetch {
+                    return;
+                }
+                if app.sidebar_branches != lines {
+                    app.sidebar_branches = lines;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Refill [`Self::sidebar_branches`] when the project list has changed
+    /// since the last scan. Cheap enough for the heartbeat: it compares one
+    /// small vector of paths and spawns nothing while they match.
+    pub(super) fn sync_sidebar_branches(&mut self, cx: &mut Context<Self>) {
+        if self.sidebar_branches_for != self.workspaces {
+            self.refresh_sidebar_branches(cx);
+        }
     }
 }
 

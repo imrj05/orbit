@@ -2304,7 +2304,7 @@ impl OrbitApp {
         cx: &mut Context<Self>,
     ) {
         // A dismissal from this same click's mouse-down must not
-        // immediately re-open (see `toggle_session_menu`).
+        // immediately re-open (see `toggle_workspace_menu`).
         const GESTURE: Duration = Duration::from_millis(200);
         if let Some(dismissed) = self.menu_dismissed_at.take() {
             if dismissed.elapsed() < GESTURE {

@@ -276,6 +276,10 @@ impl Render for OrbitApp {
         let live_paths: Rc<HashSet<PathBuf>> = Rc::new(self.lives.keys().cloned().collect());
         // Per-workspace sidebar marks (icon + tint), read by every header row.
         let marks: Rc<HashMap<PathBuf, WorkspaceMark>> = Rc::new(self.workspace_marks.clone());
+        // Branch per project, for the rows' metadata line. Fetched off-thread
+        // (`refresh_sidebar_branches`); render only reads it.
+        let branches: Rc<HashMap<PathBuf, crate::app::BranchLine>> =
+            Rc::new(self.sidebar_branches.clone());
         // Pinned header for the expanded workspace group currently at the top
         // of the session list: it stays there while that group's own sessions
         // scroll, and the next group's header pushes it away (see
@@ -306,6 +310,7 @@ impl Render for OrbitApp {
                     &live_paths,
                     &marks,
                     &workspace_icons,
+                    &branches,
                     session_menu.as_ref().as_ref(),
                     workspace_menu.as_ref().as_ref(),
                     sidebar_cursor == Some(sticky.ix),
@@ -695,6 +700,7 @@ impl Render for OrbitApp {
                                                                     &live_paths,
                                                                     &marks,
                                                                     &workspace_icons,
+                                                                    &branches,
                                                                     session_menu.as_ref().as_ref(),
                                                                     row_workspace_menu,
                                                                     sidebar_cursor == Some(ix),

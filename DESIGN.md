@@ -575,12 +575,20 @@ The sidebar is quiet infrastructure.
 - Sidebar sections use whitespace and labels rather than excessive containers.
 - A project group header carries a session count only when it is non-zero. A project
   with nothing in it already says so by having no rows under it.
-- A session row's title line is its anchor and is always there; the first-message
-  preview appears only when it says something the title does not
-  (`preview_adds_information`). pi titles a session from that message, so the title is
-  normally the same sentence cut short and the preview is the rest of it — a second line
-  the eye reads and learns nothing from. Rows are therefore one or two lines tall, and the
-  age rides whichever line is last.
+- A session row's title line is its anchor and is always there. Line 2 carries the
+  first message, minus the part the title already says (`preview_remainder`): pi titles a
+  session from that message, so the title is normally the same sentence cut short and the
+  remainder is the rest of it, not a repeat. A named session has no shared prefix, so its
+  whole message shows. Line 3 is the metadata strip — age, workspace (flat list only:
+  under a project header the name is already one line up), and branch with `↑n`/`↓n`
+  against its upstream. Rows are two or three lines tall; the message line drops when it
+  has nothing to add, so the strip is the only line that is always present below the
+  title. The branch truncates last, and a divergence count appears only when it is
+  non-zero.
+- A session row's actions live on its right-click context menu, the same gesture every
+  other row in the app uses. There is no hover-revealed `…` on a session row: the title
+  owns the full line width. The project group header keeps its own `…` (and `+`) because
+  a header is a section control, not a row.
 - Active navigation uses `selection`, not accent color alone.
 - Session state may use semantic indicators, but decorative animation is forbidden except
   for the currently running session treatment already defined above.
