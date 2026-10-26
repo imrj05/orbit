@@ -128,47 +128,6 @@ pub(crate) fn sessions_with_placeholder(
     rows
 }
 
-/// The text a session row's second line shows: the first message, minus the
-/// part the title already says.
-///
-/// pi titles a session from its first message, so on an unnamed row the title
-/// *is* that message cut short; printing the message whole would make line 2
-/// re-read line 1. What is left after the title's words is the rest of the
-/// sentence, which is exactly the part the title cannot show. A row pi named
-/// itself ("Fix login bug") shares no prefix with its message, so the message
-/// stands as it is. Empty when the message says nothing beyond the title — the
-/// row then drops the line and stays two lines tall.
-///
-/// Compared on words rather than bytes, so the `…` a capped title ends with, its
-/// collapsed whitespace, or its trailing punctuation cannot make one sentence
-/// look like two.
-pub(crate) fn preview_remainder(title: &str, preview: &str) -> String {
-    let preview_words: Vec<&str> = preview.split_whitespace().collect();
-    let title_words: Vec<&str> = title.split_whitespace().collect();
-    if title_words.is_empty() || !continues_the_title(&title_words, &preview_words) {
-        return preview.trim().to_string();
-    }
-    // The title's last word may be a fragment of the preview's (a character
-    // cap cuts mid-word), so drop that word whole rather than repeat a stub of
-    // it at the head of the line.
-    preview_words[title_words.len()..].join(" ")
-}
-
-/// Whether `preview` picks up exactly where `title` left off. `cap_chars` cuts
-/// on the character, not the word, so the title's last word is often a fragment
-/// of the preview's — that fragment, and the `…` that marks it, belong to the cap
-/// rather than to the sentence.
-fn continues_the_title(title: &[&str], preview: &[&str]) -> bool {
-    let Some((last, head)) = title.split_last() else {
-        return false;
-    };
-    if preview.len() < title.len() || head.iter().zip(preview).any(|(a, b)| a != b) {
-        return false;
-    }
-    let last = last.trim_end_matches(['…', '.']);
-    last.is_empty() || preview[title.len() - 1].starts_with(last)
-}
-
 /// Build the grouped sidebar session list from Orbit's own project list. A
 /// workspace appears because the user added it, not because pi happens to
 /// have sessions there; sessions in unlisted folders are omitted entirely
@@ -962,16 +921,13 @@ pub(crate) fn render_side_row(
             // deleted — the process would recreate the file mid-run.
             let deletable = !active && !running && !live_paths.contains(&session.path);
             // Running sessions lead with a small spinner and a shimmering
-            // title (shadcn's Marker + `shimmer`); row actions stay available
-            // on hover.
+            // title (shadcn's Marker + `shimmer`).
             let title = session_title(*ix, session.title.clone().into(), theme, active, running);
             // Indented under its workspace group so the list reads as a
             // tree. The open session takes the `selection` fill with `selection_fg`
-            // ink — the same selected-destination grammar as the nav rows;
-            // row actions are revealed on hover. A first-message preview adds
-            // a second line only when it says something the title does not
-            // ([`preview_adds_information`]); a title that is already the
-            // prompt stays one line.
+            // ink — the same selected-destination grammar as the nav rows.
+            // Row actions live on the right-click menu, so the card carries no
+            // hover-revealed control at all.
             // Outer item carries the inter-row spacing (padding) and the click
             // handler; the inner card holds the background/hover so the gap
             // between cards stays clear. Padding (not margin) is used because
@@ -1040,10 +996,11 @@ pub(crate) fn render_side_row(
                     card.hover(|s| s.bg(theme.surface_hover))
                 });
             let age = sessions::relative_time(session.modified);
-            // The message line carries only what the title does not already
-            // say, so a row pi titled from its own first message never prints
-            // the same sentence twice ([`preview_remainder`]).
-            let preview = preview_remainder(&session.title, &session.first_message);
+            // Line 2 is the prompt itself, whole and always: the title is capped
+            // and the row is narrower still, so a title that happens to be the
+            // same sentence is cut, not redundant — the message line is the
+            // only place the ask is readable.
+            let message = session.first_message.trim().to_string();
             // Flat list has no workspace headers — name the workspace on the
             // row instead. The glyph is the row's own status (open on the
             // active session, sync while running, archive when archived),
@@ -1144,18 +1101,23 @@ pub(crate) fn render_side_row(
                                 ))
                             }),
                     )
-                    // Line 2 — what was actually asked, one line. Present
-                    // only when it has words the title does not.
-                    .when(!preview.is_empty(), |col| {
+                    // Line 2 — what was actually asked, one line. An empty
+                    // message (a session with nothing sent yet) drops the line.
+                    // The text sits in a flex row with `flex_1 min_w_0` like the
+                    // title: `truncate()` on a bare block collapses the line to
+                    // its ellipsis instead of filling the column.
+                    .when(!message.is_empty(), |col| {
                         col.child(
-                            div()
-                                .w_full()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(TextSize::Small.px(&theme))
-                                .line_height(BufferLineHeight::Standard.relative())
-                                .text_color(meta_ink)
-                                .child(preview),
+                            div().w_full().flex().items_center().child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(TextSize::Small.px(&theme))
+                                    .line_height(BufferLineHeight::Standard.relative())
+                                    .text_color(meta_ink)
+                                    .child(message),
+                            ),
                         )
                     })
                     // Line 3 — when, where, and on what branch. The workspace
@@ -2795,79 +2757,6 @@ mod tests {
         assert_eq!(clamp_cursor(0, 0), None);
         assert_eq!(clamp_cursor(3, 2), Some(1));
         assert_eq!(clamp_cursor(1, 5), Some(1));
-    }
-
-    /// The second line shows what the title cannot say. pi's auto-title is the
-    /// first message, so the title repeating the message is the common case,
-    /// not the edge — and the row must not spend a line on it.
-    #[test]
-    fn the_message_line_carries_only_what_the_title_does_not() {
-        // pi's title is the message cut short: the line starts where it left
-        // off, so the row reads as one sentence instead of two copies.
-        assert_eq!(
-            preview_remainder(
-                "can you update the screenshot of the",
-                "can you update the screenshot of the app on the marketing page",
-            ),
-            "app on the marketing page"
-        );
-        // Title and message are the same string: nothing left to say.
-        assert_eq!(
-            preview_remainder(
-                "Explain the project structure.",
-                "Explain the project structure."
-            ),
-            ""
-        );
-        // A capped title ends with an ellipsis and the message does not; that
-        // difference alone is the cap's, not a second sentence.
-        assert_eq!(
-            preview_remainder(
-                "Fixing the OAuth redirect loop…",
-                "Fixing the OAuth redirect loop in the callback handler",
-            ),
-            "in the callback handler"
-        );
-        // `cap_chars` cuts mid-word, so the title's last word is a fragment of
-        // the message's. The fragment is dropped whole rather than repeated as
-        // a stub at the head of the line.
-        assert_eq!(
-            preview_remainder(
-                "can you update the screenshot of the ap…",
-                "can you update the screenshot of the app on the marketing page",
-            ),
-            "on the marketing page"
-        );
-        // Collapsed whitespace and a newline are formatting, not content.
-        assert_eq!(
-            preview_remainder(
-                "Tidy the release notes",
-                "Tidy the   release\nnotes before tagging"
-            ),
-            "before tagging"
-        );
-    }
-
-    #[test]
-    fn a_message_that_says_something_new_keeps_its_whole_line() {
-        // pi named the session itself: the message is all new information.
-        assert_eq!(
-            preview_remainder("Fix login bug", "the oauth redirect is looping"),
-            "the oauth redirect is looping"
-        );
-        // Sharing an opening word is not repeating a sentence.
-        assert_eq!(
-            preview_remainder(
-                "Fix the login flow",
-                "The oauth redirect is looping in production"
-            ),
-            "The oauth redirect is looping in production"
-        );
-        // No message at all is no line at all.
-        assert_eq!(preview_remainder("Fix login bug", "   "), "");
-        assert_eq!(preview_remainder("Fix login bug", ""), "");
-        // A session with no title yet has nothing to repeat.
-        assert_eq!(preview_remainder("", "anything at all"), "anything at all");
     }
 
     /// A branch arrow appears only for a count that exists: `↑0 ↓0` is a row of

@@ -83,15 +83,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Session rows carry three lines.** Title, the first message, and a metadata
   strip — age, workspace, and branch with `↑n`/`↓n` against its upstream (green
-  ahead, amber behind). The message line shows only the part of the prompt the
-  title does not already say, so a session pi titled from its own first message
-  reads as one sentence instead of two, and the line drops entirely when there
-  is nothing left. Branches are fetched off-thread per project (`git branch` +
-  `rev-list`, one pair at launch and whenever the project list or the current
-  checkout changes), so painting a row never shells out. A project that is not a
-  git repository has no branch item rather than an empty slot. The workspace
-  item appears in the flat list only — under a project header it would repeat
-  the header one line up.
+  ahead, amber behind). The message line always shows the prompt, because the
+  title is capped and the row is narrower still: a title that happens to be the
+  same sentence is cut short, not redundant, so the message is the only place
+  the ask reads end to end. Branches are fetched off-thread per project (`git
+  branch` + `rev-list`, one pair at launch and whenever the project list or the
+  current checkout changes), so painting a row never shells out. A project that
+  is not a git repository has no branch item rather than an empty slot. The
+  workspace item appears in the flat list only — under a project header it would
+  repeat the header one line up.
 - **Session row actions moved to the right-click context menu.** The
   hover-revealed `…` is gone, so the title owns the full line width; pin,
   archive, copy path, reveal, clone, and delete are all on the context menu

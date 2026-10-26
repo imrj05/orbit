@@ -576,15 +576,16 @@ The sidebar is quiet infrastructure.
 - A project group header carries a session count only when it is non-zero. A project
   with nothing in it already says so by having no rows under it.
 - A session row's title line is its anchor and is always there. Line 2 carries the
-  first message, minus the part the title already says (`preview_remainder`): pi titles a
-  session from that message, so the title is normally the same sentence cut short and the
-  remainder is the rest of it, not a repeat. A named session has no shared prefix, so its
-  whole message shows. Line 3 is the metadata strip — age, workspace (flat list only:
-  under a project header the name is already one line up), and branch with `↑n`/`↓n`
-  against its upstream. Rows are two or three lines tall; the message line drops when it
-  has nothing to add, so the strip is the only line that is always present below the
-  title. The branch truncates last, and a divergence count appears only when it is
-  non-zero.
+  first message, always: pi titles a session from that message, so the two often start the
+  same way, but the title is capped at 80 characters and the row shows far fewer — the
+  message line is the only place the ask reads to its end. Line 3 is the metadata strip —
+  age, workspace (flat list only: under a project header the name is already one line up),
+  and branch with `↑n`/`↓n` against its upstream. Rows are three lines tall and drop to two
+  only when nothing has been sent yet. The branch truncates last, and a divergence count
+  appears only when it is non-zero.
+- Every line of a session row is a truncating text run inside a flex row, with
+  `flex_1 min_w_0 truncate` on the text itself. `truncate()` on a bare block collapses to
+  its own ellipsis instead of filling the column.
 - A session row's actions live on its right-click context menu, the same gesture every
   other row in the app uses. There is no hover-revealed `…` on a session row: the title
   owns the full line width. The project group header keeps its own `…` (and `+`) because

@@ -373,11 +373,10 @@ rebuilt only when the message list changes, and debug builds log one local
 A sidebar session row is three lines because each line answers a different
 question: the title says *which session*, the message line says *what was asked*
 and the metadata strip says *when, where, and on what branch*. The message line
-shows only the remainder after the title's words (`preview_remainder`), since pi
-titles a session from its own first message — printing the message whole would
-make the row read the same sentence twice — and it drops out when nothing is
-left, so a named session (whose title shares no prefix with its message) shows
-the full prompt and an unnamed one shows the continuation. Branch metadata is a
+shows the prompt every time — pi titles a session from that message, so the two
+can start alike, but the title is capped at 80 characters while a row shows
+about thirty, so trimming the message to a "remainder" hid the end of the ask
+instead of de-duplicating it. Branch metadata is a
 per-project cache (`OrbitApp::sidebar_branches`), filled off-thread by
 `git branch --show-current` + `rev-list --left-right` at launch and whenever the
 project list or the current checkout changes, so rendering a row never spawns
