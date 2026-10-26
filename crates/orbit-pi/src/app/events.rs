@@ -960,6 +960,9 @@ impl OrbitApp {
                 // The model catalog arrived after the session: retry a default
                 // that could not be resolved yet.
                 self.apply_default_model(cx);
+                // The Git page sizes its commit-message prompt from the model's
+                // context window, which only the catalog knows.
+                self.sync_review_context(cx);
             }
             "get_available_thinking_levels" => {
                 self.available_thinking_levels = data

@@ -59,6 +59,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Git page's **Generate** button now writes a commit message that describes
+  what the commit actually records, including long files. Four things were
+  wrong: the prompt always read the index (`git diff --cached`) even when
+  *Include unstaged changes* was on, so most of a worktree commit arrived
+  labelled "context only, not part of this commit" and untracked files arrived
+  as a bare path with no diff at all; ORIGINAL CODE was the first 48 KiB of the
+  HEAD file with no line numbers, so a change deep inside a long file had no
+  surrounding code to read; diffs were capped per file but never in total, so
+  a set of long files overflowed the model's context window and silently
+  became the filename-based fallback; and every body line was rewritten into a
+  `- ` bullet, mangling the headings and footers a long change produces. The
+  prompt now picks its diff source from what the commit will record
+  (synthesizing untracked files' diffs), windows a line-numbered ORIGINAL CODE
+  excerpt around each hunk, sizes the whole prompt from the selected model's
+  context window so a commit of a hundred-plus files still gets a diff for every
+  one of them (and keeps each long diff's first and last hunks), and passes the
+  model's fenced message through verbatim. Regenerating now tells the model
+  about the previous attempt, so it stops repeating the message you rejected,
+  and a fallback is reported in the failure banner instead of being passed off
+  as generated. Set `ORBIT_COMMIT_PROMPT_DUMP=/tmp/prompt.txt` to write the exact
+  prompt the model sees.
+
 - The Usage page's daily-activity calendar no longer lets its hover readout
   paint over the shade key. Hovering a day in the middle of the grid pushed
   the readout past the bottom of the calendar, where it covered the "Less /

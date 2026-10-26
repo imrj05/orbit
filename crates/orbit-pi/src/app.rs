@@ -2192,8 +2192,15 @@ impl OrbitApp {
             .update(cx, |panel, cx| panel.set_workspace(workspace.clone(), cx));
         let provider = self.model_provider.clone();
         let model = self.model_id.clone();
+        // The commit-message prompt is sized from the model's window, so a big
+        // change set stays inside it. `None` until the catalog reports one.
+        let context_window = self
+            .available_models
+            .iter()
+            .find(|entry| entry.id == model && entry.provider == provider)
+            .and_then(|entry| entry.context_window);
         self.git_panel.update(cx, |panel, cx| {
-            panel.set_context(workspace.clone(), provider, model, cx);
+            panel.set_context(workspace.clone(), provider, model, context_window, cx);
         });
         self.project_panel
             .update(cx, |panel, cx| panel.set_workspace(workspace.clone(), cx));

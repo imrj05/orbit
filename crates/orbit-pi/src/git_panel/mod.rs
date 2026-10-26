@@ -166,10 +166,18 @@ pub struct GitPanel {
     /// Provider/model used for one-shot commit-message generation.
     provider: String,
     model: String,
+    /// The selected model's context window, when the catalog reports one. Sizes
+    /// the commit-message prompt so a big change set still fits.
+    context_window: Option<u64>,
 
     // ── commit bar ──
     message: Entity<crate::composer::ComposerInput>,
     include_unstaged: bool,
+    /// How many messages were generated for the current change set, and the
+    /// last one shown. A regeneration is told about both so it cannot quietly
+    /// repeat the message the user rejected.
+    generate_attempt: usize,
+    last_generated: Option<String>,
     pending: Option<GitAction>,
     generating: bool,
     /// A pending "stage unstaged changes first?" confirmation.
@@ -463,8 +471,11 @@ impl GitPanel {
             workspace: None,
             provider: String::new(),
             model: String::new(),
+            context_window: None,
             message,
             include_unstaged: false,
+            generate_attempt: 0,
+            last_generated: None,
             pending: None,
             generating: false,
             stage_prompt: None,
@@ -626,6 +637,7 @@ impl GitPanel {
         workspace: Option<PathBuf>,
         provider: String,
         model: String,
+        context_window: Option<u64>,
         cx: &mut Context<Self>,
     ) {
         if workspace != self.workspace {
@@ -671,6 +683,7 @@ impl GitPanel {
         }
         self.provider = provider;
         self.model = model;
+        self.context_window = context_window;
     }
 
     /// Install the callback that opens a changed file's diff in Review.
@@ -963,9 +976,19 @@ impl GitPanel {
                 panel.changes_loading = false;
                 match result {
                     Ok((rows, operation, conflicts)) => {
-                        panel.staged = rows.iter().filter(|row| row.staged()).cloned().collect();
-                        panel.unstaged =
+                        let staged: Vec<StatusRow> =
+                            rows.iter().filter(|row| row.staged()).cloned().collect();
+                        let unstaged: Vec<StatusRow> =
                             rows.iter().filter(|row| row.unstaged()).cloned().collect();
+                        // Only a changed change set retires the generated message:
+                        // the watcher refreshes on every save, and a regeneration
+                        // for the same diff must still see the rejected attempt.
+                        if staged != panel.staged || unstaged != panel.unstaged {
+                            panel.generate_attempt = 0;
+                            panel.last_generated = None;
+                        }
+                        panel.staged = staged;
+                        panel.unstaged = unstaged;
                         panel.git_operation = operation;
                         panel.conflicts = conflicts;
                         panel.install_review_actions(cx);
@@ -2536,45 +2559,71 @@ impl GitPanel {
         cx.notify();
         let provider = self.provider.clone();
         let model = self.model.clone();
-        let staged_rows = self.staged.clone();
         let include_unstaged = self.include_unstaged;
+        let attempt = self.generate_attempt;
+        let previous = self.last_generated.clone();
+        let context_window = self.context_window;
         cx.spawn(async move |this, cx| {
-            let result: Result<String, String> = cx
+            let result: Result<(String, Option<String>), String> = cx
                 .background_executor()
                 .spawn(async move {
-                    let staged = git::staged_patch(&cwd)?;
-                    let unstaged = if include_unstaged {
-                        git::unstaged_patch(&cwd).unwrap_or_default()
+                    // Read the status here rather than trusting the cached rows:
+                    // a commit flow stages its changes just before calling this,
+                    // and the cached rows would still be the pre-stage set.
+                    let rows = git::status_rows(&cwd)?;
+                    // The scope decides which patch the prompt describes, so the
+                    // message always matches what the commit records.
+                    let scope = if include_unstaged {
+                        commit_message::Scope::Worktree
                     } else {
-                        String::new()
+                        commit_message::Scope::Staged
                     };
+                    let rows: Vec<_> = rows
+                        .into_iter()
+                        .filter(|row| scope.matches(row))
+                        .collect();
+                    if rows.is_empty() {
+                        return Err(tr!("git.no_staged_changes"));
+                    }
                     let provider = (!provider.is_empty()).then_some(provider.as_str());
                     let model = (!model.is_empty()).then_some(model.as_str());
-                    match commit_message::generate(
-                        &cwd,
+                    let options = commit_message::Options {
                         provider,
                         model,
-                        &staged,
-                        &unstaged,
-                        &staged_rows,
-                    ) {
-                        Ok(message) => Ok(message),
-                        Err(_) => Ok(commit_message::heuristic(&staged_rows)),
+                        scope,
+                        attempt,
+                        previous: previous.as_deref(),
+                        context_window,
+                    };
+                    match commit_message::generate(&cwd, &options, &rows) {
+                        Ok(message) => Ok((message, None)),
+                        // Keep the button useful without a model, but say why:
+                        // a filename-derived fallback passed off as a generated
+                        // message is what makes a wrong message look like a bug.
+                        Err(err) => Ok((commit_message::heuristic(&rows), Some(err))),
                     }
                 })
                 .await;
             let _ = this.update(cx, |panel, cx| {
                 panel.generating = false;
                 match result {
-                    Ok(message) => {
+                    Ok((message, warning)) => {
                         let len = panel.message.read(cx).text().len();
                         panel
                             .message
                             .update(cx, |input, cx| input.replace_range(0..len, &message, cx));
-                        panel.set_status(tr!("git_panel.commit_message_ready"));
+                        panel.last_generated = Some(message.clone());
+                        panel.generate_attempt += 1;
                         if let Some(action) = action {
                             panel.run_git_action(action, Some(message), cx);
                             return;
+                        }
+                        match warning {
+                            Some(err) => panel.set_failure(tr!(
+                                "git_panel.commit_message_fallback",
+                                error = err
+                            )),
+                            None => panel.set_status(tr!("git_panel.commit_message_ready")),
                         }
                     }
                     Err(err) => panel.set_failure(err),
