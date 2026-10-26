@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Mermaid flowcharts render in the transcript.** A `flowchart`/`graph` fence
+  (TD/TB, BT, LR, RL) now paints as a diagram — nodes, shapes, orthogonal edges,
+  arrowheads, and edge labels — drawn with GPUI paths and text, so there is no
+  webview, no JavaScript, and no network involved. The fence is still a code
+  block underneath: the copy button and a **Show source** disclosure keep the
+  exact Mermaid source selectable, and anything outside the supported subset
+  (sequence/gantt/pie/class diagrams) keeps the existing source block rather
+  than drawing a partial graph. `subgraph … end` groups render as titled frames,
+  and an edge that skips a rank routes around the boxes instead of through them.
+  Layout is cached per fence and interface font, so a streaming run re-renders
+  the same diagram for free.
 - **A session that finishes while you are not looking stays marked.** Its sidebar
   row leads with a green check — or a red cross when the turn failed — until the
   session is actually shown in a foreground window. The mark is what is left
