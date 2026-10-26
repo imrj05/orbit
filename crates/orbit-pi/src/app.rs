@@ -217,6 +217,16 @@ pub(crate) struct BranchLine {
     pub(crate) ahead_behind: Option<(usize, usize)>,
 }
 
+/// Why a session row carries the "finished, not read" marker: a turn that
+/// answered, or one the agent failed. Kept distinct so a failure is never
+/// mistaken for a plain "done" (issue #83), and separate from the running,
+/// pinned, and archived glyphs so the mark never replaces one of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReviewMark {
+    Done,
+    Failed,
+}
+
 pub struct OrbitApp {
     client: Option<PiClient>,
     /// Live state of the active pi process, surfaced in Settings → Runtime.
@@ -516,6 +526,13 @@ pub struct OrbitApp {
     /// the transcript itself is the notification then. False when no window
     /// is open at all, so a run that settles then still notifies.
     window_active: bool,
+    /// Sessions whose last turn settled while the user was not reading them,
+    /// and why. The sidebar marks each until the session is actually shown in
+    /// a foreground window (issue #83). Memory-only on purpose: marking what
+    /// happened while Orbit was closed is a separate problem, and a mark that
+    /// outlived the process would be an unverifiable claim about a session the
+    /// user may already have read elsewhere.
+    awaiting_review: HashMap<PathBuf, ReviewMark>,
     /// A banner click asked for the window; the next paint brings it forward
     /// (`tick` has no `Window` to activate with).
     activate_window_pending: bool,
@@ -1860,6 +1877,7 @@ impl OrbitApp {
             notification_auth: notifications::DesktopAuth::Unknown,
             notification_auth_pending: false,
             window_active: true,
+            awaiting_review: HashMap::new(),
             activate_window_pending: false,
             _window_watchers: Vec::new(),
             session_history: Vec::new(),
@@ -3454,6 +3472,8 @@ mod sidebar_group_tests;
 mod sidebar_placeholder_tests;
 #[cfg(test)]
 mod sidebar_remove_tests;
+#[cfg(test)]
+mod sidebar_review_tests;
 #[cfg(test)]
 mod sidebar_sort_tests;
 #[cfg(test)]

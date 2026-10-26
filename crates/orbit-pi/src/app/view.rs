@@ -280,6 +280,11 @@ impl Render for OrbitApp {
         // (`refresh_sidebar_branches`); render only reads it.
         let branches: Rc<HashMap<PathBuf, crate::app::BranchLine>> =
             Rc::new(self.sidebar_branches.clone());
+        // Rows whose last turn settled while the user was elsewhere. The row
+        // paints the mark; it never replaces a running / pin / archive glyph
+        // (issue #83).
+        let review_marks: Rc<HashMap<PathBuf, crate::app::ReviewMark>> =
+            Rc::new(self.awaiting_review.clone());
         // Pinned header for the expanded workspace group currently at the top
         // of the session list: it stays there while that group's own sessions
         // scroll, and the next group's header pushes it away (see
@@ -311,6 +316,7 @@ impl Render for OrbitApp {
                     &marks,
                     &workspace_icons,
                     &branches,
+                    &review_marks,
                     session_menu.as_ref().as_ref(),
                     workspace_menu.as_ref().as_ref(),
                     sidebar_cursor == Some(sticky.ix),
@@ -701,6 +707,7 @@ impl Render for OrbitApp {
                                                                     &marks,
                                                                     &workspace_icons,
                                                                     &branches,
+                                                                    &review_marks,
                                                                     session_menu.as_ref().as_ref(),
                                                                     row_workspace_menu,
                                                                     sidebar_cursor == Some(ix),

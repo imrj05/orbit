@@ -223,7 +223,7 @@ diffs, paths, token counts in tables.
 **The Catalog.** Appearance exposes a curated Interface and Code catalog
 (`theme::UI_FONTS` / `CODE_FONTS`) of bundled OFL faces — Inter, Fixel Text,
 Geist Sans, Atkinson Hyperlegible, Source Sans 3, Roboto, Noto Sans, DM Sans,
-Manrope, and JetBrains Mono, Fira Code, Geist Mono, Commit Mono, Source Code
+Manrope, Onest, and JetBrains Mono, Fira Code, Geist Mono, Commit Mono, Source Code
 Pro, Cascadia Code, Roboto Mono, Iosevka, DM Mono, IBM Plex Mono, Inconsolata,
 Noto Sans Mono, Space Mono, Anonymous Pro, Martian Mono. Every family ships as
 statically instanced, subset TTFs at the 400–700 weights it offers, under
@@ -590,6 +590,14 @@ The sidebar is quiet infrastructure.
   owns the full line width. The project group header keeps its own `…` (and `+`) because
   a header is a section control, not a row.
 - Active navigation uses `selection`, not accent color alone.
+- A session whose turn settled while the user was not reading it keeps a mark on its
+  title line — a green check for a finished turn, a red cross for a failed one — until the
+  session is actually shown in a foreground window. The mark is separate from the running,
+  pin, and archive glyphs (it never replaces one), and a marked row stays visible under a
+  collapsed project group the way a running one does. Selecting a row in a background
+  window is not "shown": the mark survives until Orbit is frontmost with that session on
+  screen. Shape and hue both carry the state, so the check and the cross remain
+  distinguishable without color.
 - Session state may use semantic indicators, but decorative animation is forbidden except
   for the currently running session treatment already defined above.
 - Sidebar width and collapsed state should persist per workspace/window when practical.

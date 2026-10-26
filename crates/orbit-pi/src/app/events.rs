@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::sidebar::{clear_review_mark, should_mark_review};
 use crate::toast::ToastKind;
 
 /// One tick's worth of results from draining a background session.
@@ -88,6 +89,20 @@ impl OrbitApp {
         // metadata line; a compare of the project list, so it is free while
         // nothing moved.
         self.sync_sidebar_branches(cx);
+        // A review mark is spent the moment its session is really in front of
+        // the user — by click, by shortcut, by the window coming forward, or by
+        // a full-page surface closing. One rule on the heartbeat instead of a
+        // hook on each of those paths, so they cannot drift apart, and a
+        // selection made while Orbit is behind another app deliberately does
+        // not clear it (issue #83).
+        let in_front = self.transcript_in_front(cx);
+        if clear_review_mark(
+            &mut self.awaiting_review,
+            self.current_session_path.as_deref(),
+            in_front,
+        ) {
+            cx.notify();
+        }
         let workspace_dirty = self
             .workspace_watcher
             .as_ref()
@@ -301,7 +316,12 @@ impl OrbitApp {
                         .clone()
                         .or_else(|| self.session_name.clone());
                     let summary = self.transcript.latest_turn_summary();
-                    self.notify_turn_finished(path.as_deref(), title.as_deref(), summary.as_ref());
+                    self.notify_turn_finished(
+                        path.as_deref(),
+                        title.as_deref(),
+                        summary.as_ref(),
+                        cx,
+                    );
                 }
                 Event::CompactionStart { .. } => {
                     // The run-status strip carries the in-progress state;
@@ -547,7 +567,7 @@ impl OrbitApp {
         // saying. The settle also flips the sidebar's running loader, so the
         // final repaint is unconditional.
         for (path, title, summary) in finished {
-            self.notify_turn_finished(Some(&path), title.as_deref(), summary.as_ref());
+            self.notify_turn_finished(Some(&path), title.as_deref(), summary.as_ref(), cx);
             changed = true;
         }
         if changed || any_busy {
@@ -1227,19 +1247,40 @@ impl OrbitApp {
             .update(cx, |input, cx| input.set_placeholder_key(key, cx));
     }
 
-    /// Post the "turn finished" notification for a settle. Nothing is posted
+    /// Post the "turn finished" notification for a settle and leave the
+    /// session's row marked until the user actually reads it. Nothing is posted
     /// while the window is frontmost except the in-app toast, and a turn the
     /// user aborted holds no news. `session` is the file path that a banner
     /// click routes back to.
+    ///
+    /// Both settle paths meet here — the open session's and a parked background
+    /// run's — which is what makes the review mark cover every session that
+    /// finishes out of sight, not just the one on screen (issue #83).
     pub(super) fn notify_turn_finished(
         &mut self,
         session: Option<&Path>,
         title: Option<&str>,
         summary: Option<&transcript::TurnSummary>,
+        cx: &mut Context<Self>,
     ) {
         let Some(summary) = summary else { return };
         if summary.aborted {
             return;
+        }
+        // The mark outlives the toast: it is the only cue left once the toast
+        // has gone, and the only one that says *which* session it was.
+        if let Some(path) = session {
+            let in_front = self.transcript_in_front(cx);
+            if should_mark_review(in_front, path, self.current_session_path.as_deref()) {
+                let mark = if summary.failed {
+                    ReviewMark::Failed
+                } else {
+                    ReviewMark::Done
+                };
+                if self.awaiting_review.insert(path.to_path_buf(), mark) != Some(mark) {
+                    cx.notify();
+                }
+            }
         }
         let (subtitle, fallback, kind) = if summary.failed {
             (
@@ -1260,6 +1301,18 @@ impl OrbitApp {
             summary.body.as_str()
         };
         self.post_notification(session, title, &subtitle, body, kind);
+    }
+
+    /// Whether the transcript is the surface genuinely in front of the user:
+    /// the window is frontmost and no full-page surface has replaced the chat
+    /// area. A settle out of sight leaves a review mark even when the window is
+    /// active (issue #83).
+    fn transcript_in_front(&self, cx: &App) -> bool {
+        self.window_active
+            && !self.settings_open
+            && !self.git_open
+            && !self.usage_open
+            && !self.file_viewer.read(cx).is_open()
     }
 
     /// A run is blocked on an extension dialog — the one event a user cannot

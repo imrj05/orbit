@@ -317,6 +317,10 @@ legacy app today:
 
 ### Implementation status (living)
 
+Appearance's interface-font picker includes bundled Onest in Regular, Medium,
+SemiBold, and Bold weights; it works offline without an OS font installation.
+The default interface face and saved font preferences remain unchanged.
+
 Done: streaming transcript + virtualization; markdown + highlighting; composer with steering, follow-ups, cancel, autocomplete, attachments; extension dialogs; diff/Review + Git page + GitHub issues/PRs (where `gh` is available); sessions (list/switch/new/delete/clone/cross-workspace) over an Orbit-owned project list (only folders the user added; removing one never touches pi) whose groups sort by activity, added date, name, or session count, with a **warm process pool** so re-opening a recent session is a resume, not a Node spawn; Git worktrees as first-class workspaces (`worktree.rs` + the Worktrees page: discovery, create from a new/existing branch, open/rename/move/lock/remove/prune/repair, configurable `.wt` root, optional async setup script with `ORBIT_ROOT_PATH`/`ORBIT_WORKTREE_PATH`, sessions rooted in and restored to the worktree — D14); Explorer project panel + editable Files surface; integrated terminal (⌘J); usage, skills, plugins, models, providers, settings pages; transcript find; image lightbox; theming (dark/light/system, ten Classic palettes plus an opt-in Operational pair) + reduce-motion; localization (ten locales + System, D9); in-app signed updater + Version History; notifications; open-in-editor; signed/notarizable macOS packaging + best-effort Windows/Linux bundles (D5); CI; access modes (a guard, not a sandbox), workflow modes (Plan/Build/Ask per D8), and the auto-title / quota extension bridges (D10); Zed design tokens (D11) with context menus, the tooltip, the extension dialog, the floating modal cards (provider usage / API-key / editor, update dialog, custom UI), the sidebar session / workspace rows, the transcript's message / card chrome, the settings section / group / row chrome, UI type on `TextSize` across every surface, corner radii on `Radius`, and one-shot motion on `AnimationDuration` migrated onto them.
 
 Attached images are compressed when they are queued (`attachments.rs`): the
@@ -371,6 +375,19 @@ item rather than an empty slot, and `↑n`/`↓n` appear only for non-zero count
 session row carries no hover-revealed `…`, which is why the title owns the full
 line width and why the keyboard/palette delete path anchors its confirmation to
 the row itself.
+
+A turn that settles while the user is not reading it leaves a review mark on its
+row (`OrbitApp::awaiting_review`): a check for a finished turn, a cross for a
+failed one, cleared only when the session is genuinely in front of the user —
+`transcript_in_front` (window frontmost, no full-page surface covering the chat
+area), checked once on the heartbeat rather than from a hook on each path that
+can bring a session into view. That single rule is what keeps the issue's
+distinction honest: selecting a row in a background window does not spend the
+mark, and a settle in the open session while Orbit is behind another app still
+leaves one. Marks are memory-only — a cold start does not guess what was read
+elsewhere — and a marked row joins the open, running, and pinned rows in staying
+visible under a collapsed project group, so the result cannot scroll out of
+reach before it is seen.
 
 Every icon-only button carries the app's native tooltip — a localized label, usually
 with its shortcut appended (the send / stop button set the register) — across the top

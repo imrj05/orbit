@@ -55,6 +55,7 @@ Usage — requests, tokens, cost, and cache, read from your own sessions:
 - Rename, pin, clone, or delete sessions, and copy a session id; pinned sessions sort first — right-click a row for its actions
 - Address sessions by position — **⌘1…⌘9** (**Ctrl+1…9**) opens the Nth visible session, **Ctrl+Tab / Ctrl+Shift+Tab** cycle them
 - Sessions written by the CLI or another window refresh the sidebar live
+- A turn that ends while you are elsewhere leaves its session marked — green check for a finished turn, red cross for a failed one — until you open it
 - Background turn notifications — a desktop banner and alert sound when the window isn't frontmost, an in-app toast otherwise, and a heads-up when a run is waiting on an extension dialog
 
 **Safeguards**
@@ -103,7 +104,7 @@ Usage — requests, tokens, cost, and cache, read from your own sessions:
 - **Privacy** — Settings → Privacy archives or deletes idle `pi` sessions on a schedule you choose
 - It also lists Orbit's own scratch files in the `orbit-pi` folder inside the system temp directory (bug-report screenshots, update downloads, helper scripts), with **Open folder** and **Clean up now**. Older top-level `orbit-*` leftovers are included, and entries a live Orbit process still needs are kept
 - A separate **AI scratch files** group lists pi's own `pi-*` temp entries (shell output, codemode images, share/editor working files) and removes only those last used more than an hour ago
-- Appearance — **Light / Dark / System**, a persisted **Design system** choice (**Classic** keeps the existing palette and geometry; **Operational** applies the near-black, lime-accented Restrained Operational Minimalism system), independent light and dark theme palettes, a background image, fonts, sizes, spacing density, and **interface language** (English, 简体中文, 日本語, 한국어, Español, Français, Deutsch, Português do Brasil, Русский, Italiano, or the system language)
+- Appearance — **Light / Dark / System**, a persisted **Design system** choice (**Classic** keeps the existing palette and geometry; **Operational** applies the near-black, lime-accented Restrained Operational Minimalism system), independent light and dark theme palettes, a background image, bundled interface fonts (including Onest), code fonts, sizes, spacing density, and **interface language** (English, 简体中文, 日本語, 한국어, Español, Français, Deutsch, Português do Brasil, Русский, Italiano, or the system language)
 - System follows OS appearance changes live; new installations use System, while existing theme choices are preserved. Switching design systems is opt-in and does not modify the Classic palettes or their geometry
 - With no image set, the new-task page carries a living ordered-dither field with the app monogram screened into it: it follows the palette, drifts slowly enough to breathe instead of strobe, and freezes under Reduce Motion
 - No telemetry: no analytics client, no identifier, and no queue (see [PRIVACY.md](PRIVACY.md))
@@ -243,7 +244,7 @@ Every family in `crates/orbit-pi/assets/fonts/bundled/` ships under the SIL Open
 Font License 1.1: Anonymous Pro, Atkinson Hyperlegible, Cascadia Code, Commit
 Mono, DM Mono, DM Sans, Fira Code, Fixel Text, Geist, Geist Mono, IBM Plex Mono,
 Inconsolata, Inter, Iosevka, JetBrains Mono, Manrope, Martian Mono, Noto Sans,
-Noto Sans Mono, Roboto, Roboto Mono, Source Code Pro, Source Sans 3, and Space
+Noto Sans Mono, Onest, Roboto, Roboto Mono, Source Code Pro, Source Sans 3, and Space
 Mono. IBM Plex Sans and Lilex come from Zed's font set, also OFL 1.1.
 
 **Marketing site**

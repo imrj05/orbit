@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A session that finishes while you are not looking stays marked.** Its sidebar
+  row leads with a green check — or a red cross when the turn failed — until the
+  session is actually shown in a foreground window. The mark is what is left
+  after the toast has gone: with several sessions open, or after stepping away,
+  the finished one is findable instead of merely somewhere in the list. It is
+  independent of the running, pinned, and archived glyphs (it never replaces
+  one) and a marked row stays visible under a collapsed project group, the same
+  way a running row does. Opening the session spends the mark; selecting it
+  while Orbit is behind another app does not, because that is not reading it.
+  Marks live in memory only — what happened while Orbit was closed is not
+  claimed, since there is no way to know whether it was already read elsewhere.
+  Shape and hue both carry the state, so a finished turn and a failed one stay
+  distinguishable without color.
 - Git page → commit bar → **model chip**: the **Generate** button now chooses its
   own model instead of always borrowing the chat session's. Commit messages are a
   short, cheap task, so a small local model is often enough, and a model with a

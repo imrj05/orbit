@@ -194,6 +194,11 @@ pub(crate) fn build_sidebar_rows(
     // session stays visible under a collapsed group header, like the open
     // session, so active work is never lost behind a collapse.
     running_paths: &HashSet<PathBuf>,
+    // Sessions carrying a review mark. They stay visible under a collapsed
+    // group header for the same reason running ones do — the whole point of
+    // the mark is that the result is still unread, and a collapse that hides
+    // it turns the mark back into a search (issue #83).
+    review_paths: &HashSet<PathBuf>,
 ) -> Vec<SideRow> {
     let mut side_rows: Vec<SideRow> = Vec::new();
     for (label, cwd, ixs) in sidebar_groups(
@@ -218,6 +223,7 @@ pub(crate) fn build_sidebar_rows(
             pinned,
             active_path,
             running_paths,
+            review_paths,
         );
     }
     side_rows
@@ -310,6 +316,7 @@ fn emit_workspace_group(
     pinned: &HashSet<PathBuf>,
     active_path: &Option<PathBuf>,
     running_paths: &HashSet<PathBuf>,
+    review_paths: &HashSet<PathBuf>,
 ) {
     let collapsed = is_workspace_group_collapsed(
         &label,
@@ -332,7 +339,11 @@ fn emit_workspace_group(
         for &ix in ixs {
             let open = active_path.as_deref() == Some(sessions[ix].path.as_path());
             let running = running_paths.contains(&sessions[ix].path);
-            if open || running || pinned.contains(&sessions[ix].path) {
+            if open
+                || running
+                || pinned.contains(&sessions[ix].path)
+                || review_paths.contains(&sessions[ix].path)
+            {
                 side_rows.push(SideRow::Session(ix));
             }
         }
@@ -492,9 +503,9 @@ pub(crate) fn sticky_sidebar_header(list: &ListState, rows: &[SideRow]) -> Optio
     let header_ix = rows[..=scan_end]
         .iter()
         .rposition(|row| matches!(row, SideRow::Workspace { .. }))?;
-    // A collapsed group shows only its always-visible rows (the open, running
-    // or pinned sessions), so there is no long history to label — and pinning
-    // its header would mask the previous group's rows.
+    // A collapsed group shows only its always-visible rows (the open, running,
+    // pinned, or review-marked sessions), so there is no long history to label
+    // — and pinning its header would mask the previous group's rows.
     if matches!(
         rows.get(header_ix),
         Some(SideRow::Workspace {
@@ -561,6 +572,34 @@ pub(crate) fn divergence_labels(
     )
 }
 
+/// Whether a settled turn should leave a review mark on its row (issue #83).
+///
+/// `in_front` means the transcript is genuinely in front of the user right now:
+/// the window is frontmost and no full-page surface covers the chat area. A
+/// turn the user watched is not news — the transcript repainted in front of
+/// them. Everything else leaves a mark: a background run, a parked session, or
+/// a settle in the open session while Orbit sits behind another app (selecting
+/// a row in a background window is not "reading" it).
+pub(crate) fn should_mark_review(in_front: bool, settled: &Path, open: Option<&Path>) -> bool {
+    !(in_front && open == Some(settled))
+}
+
+/// Spend the open session's review mark once that session is really on screen.
+/// Returns whether anything changed, so the caller only repaints on a real
+/// change. One rule for every path that can bring a session into view — a
+/// click, a shortcut, the window coming forward, a page closing — keeps them
+/// from drifting apart.
+pub(crate) fn clear_review_mark(
+    marks: &mut HashMap<PathBuf, ReviewMark>,
+    open: Option<&Path>,
+    in_front: bool,
+) -> bool {
+    if !in_front {
+        return false;
+    }
+    open.is_some_and(|path| marks.remove(path).is_some())
+}
+
 /// One fact on a session row's metadata line: quiet, small, and never wider
 /// than it needs to be.
 fn meta_text(text: String, color: Hsla, theme: &Theme) -> impl IntoElement + use<> {
@@ -600,6 +639,10 @@ pub(crate) fn render_side_row(
     // Branch per workspace, for the metadata line. Absent for a project that
     // is not a git repository (or sits on a detached HEAD).
     branches: &Rc<HashMap<PathBuf, BranchLine>>,
+    // Sessions whose last turn settled while the user was looking elsewhere.
+    // They lead their row with a check or a cross until the session is shown
+    // in a foreground window (issue #83).
+    review_marks: &Rc<HashMap<PathBuf, ReviewMark>>,
     session_menu: Option<&SessionMenu>,
     workspace_menu: Option<&WorkspaceMenu>,
     // Whether this row is the keyboard cursor (see `OrbitApp::sidebar_cursor`).
@@ -1012,6 +1055,13 @@ pub(crate) fn render_side_row(
                 session_icon_status(active, running, archived),
             );
             let branch = branches.get(&session.cwd);
+            let review = review_marks
+                .get(&session.path)
+                .copied()
+                // A run in flight supersedes the mark: the spinner is the
+                // current truth, and the settle that ends this run sets a fresh
+                // one.
+                .filter(|_| !running);
             let meta_ink = if active {
                 theme.text_secondary
             } else {
@@ -1045,6 +1095,29 @@ pub(crate) fn render_side_row(
                                     theme.accent_text,
                                     theme,
                                 ))
+                            })
+                            // A turn that finished — or failed — while the
+                            // user was elsewhere. Shape and hue both carry the
+                            // distinction, so the mark still reads with the
+                            // colour taken away.
+                            .when_some(review, |line, mark| {
+                                let (glyph, ink, tip) = match mark {
+                                    ReviewMark::Done => (
+                                        "icons/circle-check.svg",
+                                        theme.success,
+                                        tr!("sidebar.review_finished"),
+                                    ),
+                                    ReviewMark::Failed => (
+                                        "icons/circle-x.svg",
+                                        theme.error,
+                                        tr!("sidebar.review_failed"),
+                                    ),
+                                };
+                                line.child(div().flex_none().tip(tip).child(icon(
+                                    glyph,
+                                    IconSize::XSmall.px(&theme),
+                                    ink,
+                                )))
                             })
                             .child(title)
                             .when(active && show_workspace, |line| {
@@ -2212,6 +2285,8 @@ impl OrbitApp {
                 // A deleted session must not leave a stale pin behind.
                 crate::pins::remove(&menu.path);
                 crate::archive::remove(&menu.path);
+                // Nor a review mark for a row that can never come back.
+                self.awaiting_review.remove(&menu.path);
             }
             self.sessions = sessions::load_sessions();
             self.prune_workflow_store();
@@ -2390,6 +2465,9 @@ impl OrbitApp {
             .filter(|(_, parked)| parked.busy)
             .map(|(path, _)| path.clone())
             .collect();
+        // A marked session is unread news; collapsing a group must not hide it
+        // (issue #83). The flat list has no collapse, so it needs no set.
+        let reviewed: HashSet<PathBuf> = self.awaiting_review.keys().cloned().collect();
         match self.sidebar_group_by {
             SidebarGroupBy::OneList => {
                 build_flat_sidebar_rows(sessions, pinned, &self.current_session_path, &running)
@@ -2406,6 +2484,7 @@ impl OrbitApp {
                 pinned,
                 &self.current_session_path,
                 &running,
+                &reviewed,
             ),
         }
     }
