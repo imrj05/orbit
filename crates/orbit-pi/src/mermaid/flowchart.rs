@@ -7,10 +7,11 @@
 //!
 //! Supported today: `graph`/`flowchart` with TD/TB, BT, LR and RL directions;
 //! the common node shapes; chained edges with `-->`, `---`, `-.->`, `==>` and
-//! their labelled forms; edge labels. Anything outside that — subgraph
-//! clustering, class/style directives, sequence/gantt/pie diagrams — makes
-//! [`parse`] return `None` so the transcript keeps showing the source rather
-//! than a diagram that silently dropped part of the graph.
+//! their labelled forms; edge labels; and `subgraph … end` clustering, drawn as
+//! a titled frame around its members. Anything outside that — class/style
+//! directives, sequence/gantt/pie diagrams, a statement the tokenizer cannot
+//! represent — makes [`parse`] return `None` so the transcript keeps showing
+//! the source rather than a diagram that silently dropped part of the graph.
 
 use std::collections::HashMap;
 
@@ -26,9 +27,17 @@ const MIN_H: f32 = 36.0;
 const RANK_GAP: f32 = 52.0;
 /// Space between siblings within one rank.
 const NODE_GAP: f32 = 26.0;
+/// How far outside the widest box a skip-rank edge's channel runs.
+const CHANNEL_GAP: f32 = 16.0;
 /// Breathing room around the whole drawing.
 const MARGIN: f32 = 10.0;
 const EDGE_LABEL_LINE_H: f32 = 16.0;
+/// A `subgraph` frame: inset around its members, a title strip above them, and
+/// extra space between two neighbouring clusters so their frames never touch.
+const CLUSTER_PAD_X: f32 = 12.0;
+const CLUSTER_PAD_Y: f32 = 12.0;
+const CLUSTER_HEAD: f32 = 32.0;
+const CLUSTER_GAP: f32 = 16.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
@@ -113,20 +122,42 @@ pub struct PlacedLabel {
     pub h: f32,
 }
 
+/// A `subgraph` frame: the box around its members and its title.
+#[derive(Clone, Debug)]
+pub struct PlacedCluster {
+    pub title: Vec<String>,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
 /// A laid-out flowchart, ready to paint: everything is absolute, so the
-/// renderer only draws.
+/// renderer only draws. Clusters come largest-first, so a nested frame paints
+/// over the one that contains it.
 #[derive(Clone, Debug)]
 pub struct Flowchart {
     pub width: f32,
     pub height: f32,
     pub nodes: Vec<PlacedNode>,
     pub edges: Vec<PlacedEdge>,
+    pub clusters: Vec<PlacedCluster>,
 }
 
 #[derive(Clone, Debug)]
 struct NodeDef {
     label: String,
     shape: NodeShape,
+    /// Every `subgraph` open where the node was first mentioned, outermost
+    /// first: a nested group's frame must be enclosed by its parent's.
+    clusters: Vec<usize>,
+}
+
+/// A `subgraph` declaration. Membership lives on the nodes, so a group with no
+/// members simply draws nothing.
+#[derive(Clone, Debug)]
+struct ClusterDef {
+    title: String,
 }
 
 #[derive(Clone, Debug)]
@@ -145,12 +176,12 @@ pub struct Parsed {
     direction: Direction,
     nodes: Vec<NodeDef>,
     edges: Vec<EdgeDef>,
+    clusters: Vec<ClusterDef>,
 }
 
 /// Statements Orbit ignores outright: they carry no geometry, so dropping
 /// them cannot make the drawing lie about the graph.
-const IGNORED: [&str; 9] = [
-    "end",
+const IGNORED: [&str; 8] = [
     "direction",
     "classDef",
     "class",
@@ -182,17 +213,30 @@ pub fn parse(source: &str) -> Option<Parsed> {
     let mut nodes: Vec<NodeDef> = Vec::new();
     let mut ids: HashMap<String, usize> = HashMap::new();
     let mut edges: Vec<EdgeDef> = Vec::new();
+    let mut clusters: Vec<ClusterDef> = Vec::new();
+    // Open subgraphs, innermost last. A node belongs to every group open where
+    // it is first mentioned; `end` closes the innermost.
+    let mut open: Vec<usize> = Vec::new();
     for statement in &statements {
-        let (word, _) = split_word(statement);
-        // Clustering is structure Orbit does not draw. Flattening it would
-        // hide the grouping the author wrote, so the fence falls back.
+        let (word, rest) = split_word(statement);
         if word.eq_ignore_ascii_case("subgraph") {
-            return None;
+            // `subgraph` alone is a valid (untitled) group in mermaid, so an
+            // empty rest is a heading-less cluster rather than a failure.
+            let title = parse_node(rest, 0)
+                .map(|(_, label, _, _)| label)
+                .unwrap_or_default();
+            clusters.push(ClusterDef { title });
+            open.push(clusters.len() - 1);
+            continue;
+        }
+        if word.eq_ignore_ascii_case("end") {
+            open.pop();
+            continue;
         }
         if IGNORED.iter().any(|k| k.eq_ignore_ascii_case(word)) {
             continue;
         }
-        parse_statement(statement, &mut nodes, &mut ids, &mut edges)?;
+        parse_statement(statement, &mut nodes, &mut ids, &mut edges, &open)?;
     }
     if nodes.is_empty() {
         return None;
@@ -201,6 +245,7 @@ pub fn parse(source: &str) -> Option<Parsed> {
         direction,
         nodes,
         edges,
+        clusters,
     })
 }
 
@@ -213,6 +258,7 @@ pub fn layout(parsed: &Parsed, measure: &dyn Fn(&str, f32) -> f32) -> Flowchart 
             height: 0.0,
             nodes: Vec::new(),
             edges: Vec::new(),
+            clusters: Vec::new(),
         };
     }
     let vertical = parsed.direction.vertical();
@@ -260,30 +306,51 @@ pub fn layout(parsed: &Parsed, measure: &dyn Fn(&str, f32) -> f32) -> Flowchart 
         })
         .collect();
 
+    let cluster_of: Vec<Option<usize>> = parsed
+        .nodes
+        .iter()
+        .map(|node| node.clusters.last().copied())
+        .collect();
     let rank = ranks(n, &parsed.edges);
-    let order = order_within_ranks(n, &rank, &parsed.edges);
+    let order = order_within_ranks(n, &rank, &parsed.edges, &cluster_of);
     let max_rank = rank.iter().copied().max().unwrap_or(0);
 
     // Rank extent along the flow axis, and total sibling span across it.
+    // Neighbours from different groups keep [`CLUSTER_GAP`] between them, so
+    // the frames drawn around them never touch.
     let mut extent = vec![0.0f32; max_rank + 1];
     let mut span = vec![0.0f32; max_rank + 1];
     for (i, node) in nodes.iter().enumerate() {
-        let (main, cross) = axis_sizes(node, vertical);
+        let (main, _) = axis_sizes(node, vertical);
         extent[rank[i]] = extent[rank[i]].max(main);
-        span[rank[i]] += cross;
     }
     for (r, siblings) in order.iter().enumerate() {
-        if siblings.len() > 1 {
-            span[r] += NODE_GAP * (siblings.len() - 1) as f32;
+        let mut total = 0.0f32;
+        for (ix, &node) in siblings.iter().enumerate() {
+            if ix > 0 {
+                total += NODE_GAP;
+                if cluster_of[siblings[ix - 1]] != cluster_of[node] {
+                    total += CLUSTER_GAP;
+                }
+            }
+            let (_, cross) = axis_sizes(&nodes[node], vertical);
+            total += cross;
         }
+        span[r] = total;
     }
     let widest = span.iter().copied().fold(0.0f32, f32::max);
 
     let mut main = 0.0f32;
+    // Where each rank sits along the flow axis, before mirroring: a skip-rank
+    // edge runs its channel inside these gaps.
+    let mut rank_main: Vec<(f32, f32)> = Vec::with_capacity(order.len());
     for (r, siblings) in order.iter().enumerate() {
         let mut cross = (widest - span[r]) / 2.0;
-        for &i in siblings {
+        for (ix, &i) in siblings.iter().enumerate() {
             let (node_main, node_cross) = axis_sizes(&nodes[i], vertical);
+            if ix > 0 && cluster_of[siblings[ix - 1]] != cluster_of[i] {
+                cross += CLUSTER_GAP;
+            }
             let main_at = main + (extent[r] - node_main) / 2.0;
             if vertical {
                 nodes[i].x = cross;
@@ -294,6 +361,7 @@ pub fn layout(parsed: &Parsed, measure: &dyn Fn(&str, f32) -> f32) -> Flowchart 
             }
             cross += node_cross + NODE_GAP;
         }
+        rank_main.push((main, main + extent[r]));
         main += extent[r] + RANK_GAP;
     }
     let flow_total = (main - RANK_GAP).max(0.0);
@@ -308,13 +376,119 @@ pub fn layout(parsed: &Parsed, measure: &dyn Fn(&str, f32) -> f32) -> Flowchart 
                 node.x = flow_total - node.x - node.w;
             }
         }
+        for range in &mut rank_main {
+            *range = (flow_total - range.1, flow_total - range.0);
+        }
     }
+
+    // Frames are built inside-out: a group's box covers its own nodes plus the
+    // boxes of the groups nested inside it, so an outer frame encloses the
+    // inner one instead of coinciding with it.
+    let cluster_count = parsed.clusters.len();
+    let mut depth = vec![0usize; cluster_count];
+    let mut parent: Vec<Option<usize>> = vec![None; cluster_count];
+    for node in &parsed.nodes {
+        for (level, &open) in node.clusters.iter().enumerate() {
+            depth[open] = depth[open].max(level);
+            if level > 0 {
+                parent[open].get_or_insert(node.clusters[level - 1]);
+            }
+        }
+    }
+    let mut frames: Vec<Option<PlacedCluster>> = vec![None; cluster_count];
+    let deepest = depth.iter().copied().max().unwrap_or(0);
+    for level in (0..=deepest).rev() {
+        for ix in 0..cluster_count {
+            if depth[ix] != level {
+                continue;
+            }
+            let mut extents: Vec<(f32, f32, f32, f32)> = nodes
+                .iter()
+                .enumerate()
+                .filter(|(node_ix, _)| parsed.nodes[*node_ix].clusters.contains(&ix))
+                .map(|(_, node)| (node.x, node.y, node.x + node.w, node.y + node.h))
+                .collect();
+            for (child, frame) in frames.iter().enumerate() {
+                if parent[child] == Some(ix) {
+                    if let Some(frame) = frame {
+                        extents.push((frame.x, frame.y, frame.x + frame.w, frame.y + frame.h));
+                    }
+                }
+            }
+            let Some(first) = extents.first() else {
+                continue;
+            };
+            let (mut left, mut top, mut right, mut bottom) = *first;
+            for (x0, y0, x1, y1) in &extents[1..] {
+                left = left.min(*x0);
+                top = top.min(*y0);
+                right = right.max(*x1);
+                bottom = bottom.max(*y1);
+            }
+            let x = left - CLUSTER_PAD_X;
+            let y = top - CLUSTER_HEAD;
+            frames[ix] = Some(PlacedCluster {
+                title: parsed.clusters[ix]
+                    .title
+                    .split('\n')
+                    .filter(|line| !line.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+                x,
+                y,
+                w: right + CLUSTER_PAD_X - x,
+                h: bottom + CLUSTER_PAD_Y - y,
+            });
+        }
+    }
+    let mut clusters: Vec<PlacedCluster> = frames.into_iter().flatten().collect();
+    // Largest first: a nested frame is drawn after the one containing it.
+    clusters.sort_by(|a, b| (b.w * b.h).total_cmp(&(a.w * a.h)));
+
+    // The channel a skip-rank edge routes through: just outside the widest node
+    // box on the cross axis, and kept inside a group's frame when one encloses
+    // it, so a long edge neither crosses a box nor leaves its group.
+    let widest_node = nodes
+        .iter()
+        .map(|node| {
+            if vertical {
+                node.x + node.w
+            } else {
+                node.y + node.h
+            }
+        })
+        .fold(0.0f32, f32::max);
+    let widest_frame = clusters
+        .iter()
+        .map(|frame| {
+            if vertical {
+                frame.x + frame.w
+            } else {
+                frame.y + frame.h
+            }
+        })
+        .fold(None::<f32>, |widest, edge| {
+            Some(widest.map_or(edge, |widest| widest.max(edge)))
+        });
+    let channel = match widest_frame {
+        Some(frame) if frame - CLUSTER_PAD_X / 2.0 > widest_node + 6.0 => {
+            (widest_node + CHANNEL_GAP).min(frame - CLUSTER_PAD_X / 2.0)
+        }
+        _ => widest_node + CHANNEL_GAP,
+    };
+
+    let route_ctx = RouteCtx {
+        vertical,
+        rank,
+        rank_main,
+        channel,
+    };
 
     let mut edges: Vec<PlacedEdge> = parsed
         .edges
         .iter()
         .map(|edge| {
-            let points = route(&nodes[edge.from], &nodes[edge.to], vertical);
+            let points = route(edge.from, edge.to, &nodes, &route_ctx);
             let label = edge
                 .label
                 .as_ref()
@@ -341,6 +515,10 @@ pub fn layout(parsed: &Parsed, measure: &dyn Fn(&str, f32) -> f32) -> Flowchart 
         include(node.x, node.y);
         include(node.x + node.w, node.y + node.h);
     }
+    for cluster in &clusters {
+        include(cluster.x, cluster.y);
+        include(cluster.x + cluster.w, cluster.y + cluster.h);
+    }
     for edge in &edges {
         for &(x, y) in &edge.points {
             include(x, y);
@@ -355,6 +533,10 @@ pub fn layout(parsed: &Parsed, measure: &dyn Fn(&str, f32) -> f32) -> Flowchart 
     for node in &mut nodes {
         node.x += dx;
         node.y += dy;
+    }
+    for cluster in &mut clusters {
+        cluster.x += dx;
+        cluster.y += dy;
     }
     for edge in &mut edges {
         for point in &mut edge.points {
@@ -372,6 +554,7 @@ pub fn layout(parsed: &Parsed, measure: &dyn Fn(&str, f32) -> f32) -> Flowchart 
         height: max.1 + dy + MARGIN,
         nodes,
         edges,
+        clusters,
     }
 }
 
@@ -439,7 +622,12 @@ fn ranks(n: usize, edges: &[EdgeDef]) -> Vec<usize> {
 /// Crossing reduction: four barycenter sweeps, alternating direction. Keeps
 /// the first-seen order as the tie-breaker so a diagram without crossings
 /// never gets shuffled.
-fn order_within_ranks(n: usize, rank: &[usize], edges: &[EdgeDef]) -> Vec<Vec<usize>> {
+fn order_within_ranks(
+    n: usize,
+    rank: &[usize],
+    edges: &[EdgeDef],
+    cluster_of: &[Option<usize>],
+) -> Vec<Vec<usize>> {
     let max_rank = rank.iter().copied().max().unwrap_or(0);
     let mut order: Vec<Vec<usize>> = vec![Vec::new(); max_rank + 1];
     for node in 0..n {
@@ -464,6 +652,12 @@ fn order_within_ranks(n: usize, rank: &[usize], edges: &[EdgeDef]) -> Vec<Vec<us
     for _ in 0..4 {
         barycenter_sweep(&mut order, &mut pos, &preds, 1..=max_rank);
         barycenter_sweep(&mut order, &mut pos, &succs, (0..max_rank).rev());
+    }
+    // A group's frame only encloses its own nodes when its members are
+    // contiguous within a rank; the sort is stable, so crossings still decide
+    // the order inside each group.
+    for siblings in &mut order {
+        siblings.sort_by_key(|&node| cluster_of[node].unwrap_or(usize::MAX));
     }
     order
 }
@@ -500,9 +694,33 @@ fn barycenter_sweep(
     }
 }
 
+/// What routing needs beyond the two node boxes.
+struct RouteCtx {
+    vertical: bool,
+    /// Rank of each node, aligned with the layout's node vector.
+    rank: Vec<usize>,
+    /// Each rank's extent along the flow axis, after mirroring.
+    rank_main: Vec<(f32, f32)>,
+    /// Cross-axis position outside every box and frame.
+    channel: f32,
+}
+
+impl RouteCtx {
+    /// True when the edge jumps over a rank, so a mid-gap dogleg would land
+    /// inside a node from the rank in between.
+    fn skips_a_rank(&self, from: usize, to: usize) -> bool {
+        self.rank[from].abs_diff(self.rank[to]) > 1
+    }
+}
+
 /// Route one edge: out of the source's leading side, into the target's
-/// trailing side, with a single orthogonal dogleg between them.
-fn route(from: &PlacedNode, to: &PlacedNode, vertical: bool) -> Vec<(f32, f32)> {
+/// trailing side, with a single orthogonal dogleg between them. An edge that
+/// skips a rank goes out to the channel instead, so every segment stays in a
+/// gap and no line is drawn through a box.
+fn route(from_ix: usize, to_ix: usize, nodes: &[PlacedNode], ctx: &RouteCtx) -> Vec<(f32, f32)> {
+    let from = &nodes[from_ix];
+    let to = &nodes[to_ix];
+    let vertical = ctx.vertical;
     let from_cx = from.x + from.w / 2.0;
     let from_cy = from.y + from.h / 2.0;
     let to_cx = to.x + to.w / 2.0;
@@ -529,6 +747,9 @@ fn route(from: &PlacedNode, to: &PlacedNode, vertical: bool) -> Vec<(f32, f32)> 
         } else {
             (to_cx, to.y + to.h)
         };
+        if ctx.skips_a_rank(from_ix, to_ix) {
+            return through_channel(start, end, downward, from_ix, to_ix, ctx);
+        }
         dogleg(start, end, true)
     } else {
         if (to.x - from.x).abs() < 1.0 {
@@ -549,7 +770,55 @@ fn route(from: &PlacedNode, to: &PlacedNode, vertical: bool) -> Vec<(f32, f32)> 
         } else {
             (to.x + to.w, to_cy)
         };
+        if ctx.skips_a_rank(from_ix, to_ix) {
+            return through_channel(start, end, rightward, from_ix, to_ix, ctx);
+        }
         dogleg(start, end, false)
+    }
+}
+
+/// A skip-rank edge: out of the source, along the gap past its own rank, across
+/// the channel (outside every box), then into the gap above the target's rank
+/// and down into the target.
+fn through_channel(
+    start: (f32, f32),
+    end: (f32, f32),
+    forward: bool,
+    from_ix: usize,
+    to_ix: usize,
+    ctx: &RouteCtx,
+) -> Vec<(f32, f32)> {
+    let half = RANK_GAP / 2.0;
+    let from_rank = ctx.rank_main[ctx.rank[from_ix]];
+    let to_rank = ctx.rank_main[ctx.rank[to_ix]];
+    let out = if forward {
+        from_rank.1 + half
+    } else {
+        from_rank.0 - half
+    };
+    let into = if forward {
+        to_rank.0 - half
+    } else {
+        to_rank.1 + half
+    };
+    if ctx.vertical {
+        vec![
+            start,
+            (start.0, out),
+            (ctx.channel, out),
+            (ctx.channel, into),
+            (end.0, into),
+            end,
+        ]
+    } else {
+        vec![
+            start,
+            (out, start.1),
+            (out, ctx.channel),
+            (into, ctx.channel),
+            (into, end.1),
+            end,
+        ]
     }
 }
 
@@ -649,9 +918,10 @@ fn parse_statement(
     nodes: &mut Vec<NodeDef>,
     ids: &mut HashMap<String, usize>,
     edges: &mut Vec<EdgeDef>,
+    open: &[usize],
 ) -> Option<()> {
     let (id, label, shape, mut i) = parse_node(statement, 0)?;
-    let mut prev = intern(nodes, ids, id, label, shape);
+    let mut prev = intern(nodes, ids, id, label, shape, open);
     loop {
         i = skip_spaces(statement, i);
         if i >= statement.len() {
@@ -660,7 +930,7 @@ fn parse_statement(
         let (style, head, both, label, next) = parse_edge(statement, i)?;
         i = skip_spaces(statement, next);
         let (id, label_shape, shape, next) = parse_node(statement, i)?;
-        let cur = intern(nodes, ids, id, label_shape, shape);
+        let cur = intern(nodes, ids, id, label_shape, shape, open);
         edges.push(EdgeDef {
             from: prev,
             to: cur,
@@ -680,6 +950,7 @@ fn intern(
     id: String,
     label: String,
     shape: NodeShape,
+    open: &[usize],
 ) -> usize {
     if let Some(&ix) = ids.get(&id) {
         // A later mention can spell the label or shape out; the first bare
@@ -692,7 +963,11 @@ fn intern(
         return ix;
     }
     let ix = nodes.len();
-    nodes.push(NodeDef { label, shape });
+    nodes.push(NodeDef {
+        label,
+        shape,
+        clusters: open.to_vec(),
+    });
     ids.insert(id, ix);
     ix
 }
@@ -949,7 +1224,6 @@ mod tests {
         assert!(parse("sequenceDiagram\n Alice->>Bob: hi").is_none());
         assert!(parse("flowchart SIDEWAYS\n A --> B").is_none());
         assert!(parse("graph TD\n A --> B\n A -->").is_none());
-        assert!(parse("graph TD\n subgraph one\n A --> B\n end").is_none());
     }
 
     #[test]
@@ -1048,5 +1322,180 @@ mod tests {
         let chart = laid_out("graph TD\n A --> B[Real label]\n B --> C");
         node(&chart, "Real label");
         assert!(chart.nodes.iter().all(|node| node.lines.join(" ") != "B"));
+    }
+
+    #[test]
+    fn a_subgraph_becomes_a_titled_frame_around_its_members() {
+        let chart = laid_out(
+            "flowchart TD\n subgraph one[\"First group\"]\n  A[a] --> B[b]\n end\n B --> C[c]",
+        );
+        assert_eq!(chart.clusters.len(), 1);
+        let frame = &chart.clusters[0];
+        assert_eq!(frame.title, vec!["First group".to_string()]);
+        for label in ["a", "b"] {
+            let node = node(&chart, label);
+            assert!(node.x >= frame.x && node.x + node.w <= frame.x + frame.w);
+            assert!(node.y >= frame.y && node.y + node.h <= frame.y + frame.h);
+        }
+        // The node outside the group sits below its frame.
+        let outside = node(&chart, "c");
+        assert!(outside.y >= frame.y + frame.h);
+    }
+
+    #[test]
+    fn a_subgraph_without_a_title_keeps_its_id_as_the_heading() {
+        let chart = laid_out("graph TD\n subgraph one\n A --> B\n end");
+        assert_eq!(chart.clusters[0].title, vec!["one".to_string()]);
+    }
+
+    #[test]
+    fn empty_and_nested_subgraphs_do_not_break_the_frame() {
+        // A stray `end` and a group with no members draw nothing; a nested
+        // group's frame sits inside its parent's and paints over it.
+        let chart = laid_out(
+            "graph TD\n end\n subgraph outer[Outer]\n subgraph inner[Inner]\n  A --> B\n end\n end",
+        );
+        assert_eq!(chart.clusters.len(), 2);
+        assert_eq!(chart.clusters[0].title, vec!["Outer".to_string()]);
+        assert_eq!(chart.clusters[1].title, vec!["Inner".to_string()]);
+        let (outer, inner) = (&chart.clusters[0], &chart.clusters[1]);
+        assert!(outer.w * outer.h > inner.w * inner.h, "largest frame first");
+        assert!(inner.x >= outer.x && inner.y >= outer.y);
+        assert!(inner.x + inner.w <= outer.x + outer.w);
+        assert!(inner.y + inner.h <= outer.y + outer.h);
+
+        let empty = laid_out("graph TD\n subgraph none[Empty]\n end\n A --> B");
+        assert!(empty.clusters.is_empty(), "an empty group draws no frame");
+    }
+
+    #[test]
+    fn different_groups_keep_their_frames_apart() {
+        // Two single-node groups with no edges between them share a rank.
+        let chart =
+            laid_out("graph TD\n subgraph one[One]\n  A\n end\n subgraph two[Two]\n  B\n end");
+        let (first, second) = (&chart.clusters[0], &chart.clusters[1]);
+        let (a, b) = (node(&chart, "A"), node(&chart, "B"));
+        assert_eq!(a.y, b.y);
+        assert!(
+            first.x + first.w <= second.x || second.x + second.w <= first.x,
+            "group frames overlap: {first:?} {second:?}"
+        );
+    }
+
+    /// No edge segment may run through a node box: a line drawn through a box
+    /// disappears behind it and reads as broken.
+    fn assert_edges_avoid_nodes(chart: &Flowchart) {
+        for (edge_ix, edge) in chart.edges.iter().enumerate() {
+            for window in edge.points.windows(2) {
+                let (a, b) = (window[0], window[1]);
+                let (x0, x1) = (a.0.min(b.0), a.0.max(b.0));
+                let (y0, y1) = (a.1.min(b.1), a.1.max(b.1));
+                for node in &chart.nodes {
+                    // Touching a border is how an edge meets its own node; a
+                    // segment that overlaps the box runs through it.
+                    let inside = x1 > node.x + 0.5
+                        && x0 < node.x + node.w - 0.5
+                        && y1 > node.y + 0.5
+                        && y0 < node.y + node.h - 0.5;
+                    assert!(
+                        !inside,
+                        "edge {edge_ix} {a:?}->{b:?} crosses {:?}",
+                        node.lines
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_skip_rank_edge_routes_around_the_boxes() {
+        // ALT and LIS share a rank; ALT --> MODE jumps over it, so a mid-gap
+        // dogleg would land inside LIS.
+        let chart = laid_out(
+            "flowchart TD\n HK[a] --> LIS[b]\n ALT[c]\n MODE{d}\n LIS --> MODE\n ALT --> MODE",
+        );
+        assert_edges_avoid_nodes(&chart);
+        let long = &chart.edges[2];
+        assert!(long.points.len() > 4, "a skip-rank edge takes the channel");
+        assert!(
+            long.points.iter().any(|p| p.0 > chart.width - 20.),
+            "the channel runs outside the widest box: {:?}",
+            long.points
+        );
+    }
+
+    /// The shape of a real agent answer: a whole trigger flow inside one
+    /// `subgraph`, quoted labels with `<br/>` and a `·` in the heading.
+    #[test]
+    fn a_trigger_flow_inside_a_subgraph_lays_out() {
+        let chart = laid_out(
+            r#"flowchart TD
+    subgraph T["1 · Trigger"]
+        HK["Global hotkey<br/>default ⌘+Space"] --> LIS["Hotkey listener<br/>plugin + CGEventTap"]
+        ALT["Tray · CLI · in-app button"]
+        MODE{"Trigger mode?"}
+        LIS --> MODE
+        ALT --> MODE
+        MODE -->|"Toggle"| TOG["Press start / press stop"]
+        MODE -->|"Push-to-talk"| PTT["Hold / release"]
+        MODE -->|"Hands-free"| HF["VAD splits on silence"]
+    end"#,
+        );
+        assert_eq!(chart.clusters.len(), 1);
+        assert_eq!(chart.nodes.len(), 7);
+        assert_eq!(chart.edges.len(), 6);
+        let frame = &chart.clusters[0];
+        assert_eq!(frame.title, vec!["1 · Trigger".to_string()]);
+        assert_eq!(node(&chart, "Global hotkey default ⌘+Space").lines.len(), 2);
+        for placed in &chart.nodes {
+            assert!(placed.x >= frame.x && placed.x + placed.w <= frame.x + frame.w);
+            assert!(placed.y >= frame.y && placed.y + placed.h <= frame.y + frame.h);
+        }
+        assert!(chart.width > 400. && chart.height > 300.);
+        assert_edges_avoid_nodes(&chart);
+    }
+}
+
+#[cfg(test)]
+mod probe {
+    use super::*;
+    #[test]
+    fn dump() {
+        let src = r#"flowchart TD
+    subgraph T["1 · Trigger"]
+        HK["Global hotkey<br/>default ⌘+Space"] --> LIS["Hotkey listener<br/>plugin + CGEventTap"]
+        ALT["Tray · CLI · in-app button"]
+        MODE{"Trigger mode?"}
+        LIS --> MODE
+        ALT --> MODE
+        MODE -->|"Toggle"| TOG["Press start / press stop"]
+        MODE -->|"Push-to-talk"| PTT["Hold / release"]
+        MODE -->|"Hands-free"| HF["VAD splits on silence"]
+    end"#;
+        let chart = layout(&parse(src).unwrap(), &|t: &str, s: f32| {
+            t.chars().count() as f32 * s * 0.55
+        });
+        println!("canvas {:.0}x{:.0}", chart.width, chart.height);
+        for c in &chart.clusters {
+            println!(
+                "frame {:?} {:.0},{:.0} {:.0}x{:.0}",
+                c.title, c.x, c.y, c.w, c.h
+            );
+        }
+        for n in &chart.nodes {
+            println!(
+                "node {:?} {:.0},{:.0} {:.0}x{:.0}",
+                n.lines, n.x, n.y, n.w, n.h
+            );
+        }
+        for e in &chart.edges {
+            println!(
+                "edge {:?}",
+                e.points
+                    .iter()
+                    .map(|p| (p.0.round(), p.1.round()))
+                    .collect::<Vec<_>>()
+            );
+        }
     }
 }

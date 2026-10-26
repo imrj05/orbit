@@ -1,9 +1,10 @@
 //! Painting a laid-out flowchart.
 //!
-//! Two layers: one canvas draws every edge and node shape (paths, arrowheads,
-//! quads), then absolutely positioned text elements draw the node and edge
-//! labels on top. Text stays real text — it inherits the window's font
-//! smoothing and subpixel positioning, which hand-painted glyphs would not.
+//! Two layers: one canvas draws every group frame, edge and node shape (paths,
+//! arrowheads, quads), then absolutely positioned text elements draw the group
+//! titles and the node and edge labels on top. Text stays real text — it
+//! inherits the window's font smoothing and subpixel positioning, which
+//! hand-painted glyphs would not.
 
 use gpui::{
     canvas, div, point, prelude::*, px, AnyElement, BorderStyle, Bounds, Corners, Edges, Hsla,
@@ -11,8 +12,8 @@ use gpui::{
 };
 
 use super::flowchart::{
-    EdgeHead, EdgeStyle, Flowchart, NodeShape, PlacedEdge, PlacedLabel, PlacedNode, LABEL_SIZE,
-    LINE_H,
+    EdgeHead, EdgeStyle, Flowchart, NodeShape, PlacedCluster, PlacedEdge, PlacedLabel, PlacedNode,
+    LABEL_SIZE, LINE_H,
 };
 use crate::theme::Theme;
 
@@ -54,6 +55,13 @@ pub fn render_diagram(chart: &Flowchart, theme: Theme) -> AnyElement {
                 .enumerate()
                 .map(|(ix, node)| node_label(node, ix, theme)),
         )
+        .children(
+            chart
+                .clusters
+                .iter()
+                .enumerate()
+                .map(|(ix, cluster)| cluster_title(cluster, ix, theme)),
+        )
         .children(chart.edges.iter().enumerate().filter_map(|(ix, edge)| {
             edge.label
                 .as_ref()
@@ -80,6 +88,27 @@ fn node_label(node: &PlacedNode, ix: usize, theme: Theme) -> AnyElement {
         .line_height(px(LINE_H))
         .text_color(theme.text_primary)
         .children(node.lines.iter().map(|line| {
+            div()
+                .whitespace_nowrap()
+                .child(SharedString::from(line.clone()))
+        }))
+        .into_any_element()
+}
+
+/// A `subgraph` heading, inside the top-left of its frame.
+fn cluster_title(cluster: &PlacedCluster, ix: usize, theme: Theme) -> AnyElement {
+    div()
+        .id(("mermaid-cluster", ix))
+        .absolute()
+        .left(px(cluster.x + 12.))
+        .top(px(cluster.y + 8.))
+        .flex()
+        .flex_col()
+        .items_start()
+        .text_size(px(LABEL_SIZE - 1.0))
+        .line_height(px(LINE_H - 2.0))
+        .text_color(theme.text_muted)
+        .children(cluster.title.iter().map(|line| {
             div()
                 .whitespace_nowrap()
                 .child(SharedString::from(line.clone()))
@@ -114,12 +143,37 @@ fn edge_label(label: &PlacedLabel, ix: usize, theme: Theme) -> AnyElement {
 
 fn paint(chart: &Flowchart, bounds: Bounds<Pixels>, theme: Theme, window: &mut Window) {
     let origin = bounds.origin;
+    for cluster in &chart.clusters {
+        paint_cluster(cluster, origin, theme, window);
+    }
     for edge in &chart.edges {
         paint_edge(edge, origin, theme, window);
     }
     for node in &chart.nodes {
         paint_node(node, origin, theme, window);
     }
+}
+
+/// A `subgraph` frame: a quiet wash behind its members with a hairline border.
+/// Mermaid draws these solid; the fill stays translucent so node boxes read as
+/// sitting above the group rather than in it.
+fn paint_cluster(
+    cluster: &PlacedCluster,
+    origin: gpui::Point<Pixels>,
+    theme: Theme,
+    window: &mut Window,
+) {
+    window.paint_quad(PaintQuad {
+        bounds: Bounds::new(
+            point(origin.x + px(cluster.x), origin.y + px(cluster.y)),
+            gpui::size(px(cluster.w), px(cluster.h)),
+        ),
+        corner_radii: Corners::all(px(10.)),
+        background: theme.overlay.opacity(0.5).into(),
+        border_widths: Edges::all(px(1.0)),
+        border_color: theme.border,
+        border_style: BorderStyle::Solid,
+    });
 }
 
 fn paint_edge(edge: &PlacedEdge, origin: gpui::Point<Pixels>, theme: Theme, window: &mut Window) {

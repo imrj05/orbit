@@ -72,8 +72,9 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/transcript.rs     virtualized messages (snapshot + stream)
   src/transcript_view.rs Waku-style transcript paint (rail, activity cards, copy); plain-GPUI message rows (no component library)
   src/message_scroller.rs tail-following list + jump-to-latest (original, plain gpui ListState)
-  src/mermaid/          native Mermaid subset renderer: flowchart parse + layered layout
-                        (flowchart.rs), gpui painting (render.rs), text metrics (measure.rs);
+  src/mermaid/          native Mermaid subset renderer: flowchart parse (incl. subgraph groups)
+                        + layered layout (flowchart.rs), gpui painting (render.rs), text metrics
+                        (measure.rs);
                         see docs/mermaid.md — anything outside the subset keeps the source block
   src/composer.rs       multi-line EntityInputHandler (wraps, auto-grows, scrolls)
   src/model_selector.rs model / thinking picker popover

@@ -27,13 +27,13 @@ silently drops structure the author wrote.
 | Edge labels | `A -->|label| B`, `A -- label --> B`, `A -. label .-> B`, `A == label ==> B` |
 | Chains | `A --> B --> C` on one statement |
 | Label markup | quotes stripped, `<br>`/`<br/>`/`<br />` become line breaks, `**bold**`/`` `code` `` markers removed |
+| Groups | `subgraph name["Title"] … end`, nested, drawn as a titled frame around their members |
 | Comments / separators | `%%` lines, `;` between statements (only outside brackets) |
-| Ignored directives | `classDef`, `class`, `style`, `linkStyle`, `click`, `direction`, `accTitle`, `accDescr`, `end` |
+| Ignored directives | `classDef`, `class`, `style`, `linkStyle`, `click`, `direction`, `accTitle`, `accDescr` |
 
 Everything else declines: `sequenceDiagram`, `classDiagram`, `stateDiagram`,
-`erDiagram`, `gantt`, `pie`, `journey`, `subgraph`/`end` clustering, and any
-statement the tokenizer cannot parse. `end` is only ignored because without
-`subgraph` support no valid statement pairs with it.
+`erDiagram`, `gantt`, `pie`, `journey`, and any statement the tokenizer cannot
+parse.
 
 ## Rendering shape
 
@@ -83,11 +83,19 @@ Layered ("Sugiyama-lite"):
    centred on the widest one; ranks stack with `RANK_GAP`.
 4. **Mirror** — `BT`/`RL` mirror the finished geometry, so edge anchors stay
    purely geometric.
-5. **Route** — out of the source's leading side, into the target's trailing
+5. **Group** — `subgraph` frames are built inside-out (a parent's box covers
+   its nested children's), and members are sorted contiguously inside each rank
+   so a frame only encloses its own nodes. Frames get `CLUSTER_GAP` of extra
+   space between them, so two neighbouring groups never overlap.
+6. **Route** — out of the source's leading side, into the target's trailing
    side, with one orthogonal dogleg between them. Same-rank and backward edges
-   leave sideways so they never cut through a node.
-6. **Trim** — bounds come from nodes, edge elbows, and labels, then everything
-   translates to `MARGIN`.
+   leave sideways so they never cut through a node. An edge that **skips a
+   rank** (A → C with B between) cannot dogleg in the middle — the midpoint is
+   inside B — so it runs out to a channel outside every box and frame, down,
+   and back in above the target's rank. Every segment stays in a gap; a test
+   asserts no edge overlaps a node box.
+7. **Trim** — bounds come from nodes, frames, edge elbows, and labels, then
+   everything translates to `MARGIN`.
 
 Node sizing comes from the measured text plus per-shape padding: a diamond is
 inflated so its text fits the inscribed area, a circle becomes a square, a
@@ -112,7 +120,12 @@ the layout is rows and columns rather than layered ranking.
 * Tall diagrams are not height-capped; a 40-rank flowchart makes a tall
   transcript row (the list measures it correctly, it is simply long).
 * Very wide diagrams scroll horizontally, like code blocks.
-* Back edges route between ranks rather than around the diagram's edge; readable,
-  not pretty.
+* Group frames are bounding boxes, not true cluster layout: a rank whose nodes
+  interleave two groups puts one group's frame around the other's nodes. The
+  contiguous-member sort makes that rare, not impossible.
+* A group title is drawn even when it would overlap an edge crossing the top of
+  its frame.
+* Back edges (cycles) route between ranks rather than around the diagram's
+  edge; readable, not pretty.
 * No `classDef`/`style` colours — a diagram uses the theme's code surface for
   every node, so it reads correctly in both appearances.

@@ -44,7 +44,8 @@ removed and is not a fallback.
 
 ### D2 — Mermaid diagrams
 **Choice (revised):** a **native GPUI renderer for a Mermaid subset** — option (c) below — shipped
-for `flowchart`/`graph` (TD/TB, BT, LR, RL; common node shapes; chained and labelled edges).
+for `flowchart`/`graph` (TD/TB, BT, LR, RL; common node shapes; chained and labelled edges;
+`subgraph` groups drawn as titled frames).
 Everything outside the subset keeps the code-block fallback. Fences are still parsed as ordinary
 code blocks, so the transcript's block model, copy path, and fold state are unchanged; the
 renderer upgrades a fence to a diagram at paint time and offers the source behind a disclosure.
@@ -56,11 +57,11 @@ wrote in Mermaid.
 **Reason:** no good native Rust Mermaid exists, so the renderer is ours; a full custom renderer is
 2–3 weeks and still won't cover gantt/pie — which is why the subset is explicit and the fallback is
 the default for anything outside it. **Never present a diagram that isn't rendered:** a fence the
-parser does not fully understand (another diagram type, `subgraph` clustering, an unparsable
-statement) falls back to the copyable source rather than drawing a partial graph. Layout is
+parser does not fully understand (another diagram type, an unparsable statement) falls back to the
+copyable source rather than drawing a partial graph. Layout is
 cached by source + interface font and needs no JS, no webview, and no network.
-**Cost of the subset:** sequence, class, state, gantt, pie, ER, journey, and subgraph clustering are
-not drawn yet; each is its own parser + layout in `src/mermaid/`.
+**Cost of the subset:** sequence, class, state, gantt, pie, ER, and journey are not drawn yet; each
+is its own parser + layout in `src/mermaid/`.
 
 ### D3 — Rollout: full commit to GPUI (supersedes the original staged plan)
 **Choice (revised):** the web stack (React/Vite/Tauri/Node daemon) was **removed from the repo** and the GPUI app is the only app. The original plan kept both apps alive until chat parity; that was superseded when the web stack was deleted at the user's direction.

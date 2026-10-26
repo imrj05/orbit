@@ -15,9 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   webview, no JavaScript, and no network involved. The fence is still a code
   block underneath: the copy button and a **Show source** disclosure keep the
   exact Mermaid source selectable, and anything outside the supported subset
-  (sequence/gantt/pie/class diagrams, `subgraph` clustering) keeps the existing
-  source block rather than drawing a partial graph. Layout is cached per fence
-  and interface font, so a streaming run re-renders the same diagram for free.
+  (sequence/gantt/pie/class diagrams) keeps the existing source block rather
+  than drawing a partial graph. `subgraph … end` groups render as titled frames,
+  and an edge that skips a rank routes around the boxes instead of through them.
+  Layout is cached per fence and interface font, so a streaming run re-renders
+  the same diagram for free.
 - Git page → commit bar → **model chip**: the **Generate** button now chooses its
   own model instead of always borrowing the chat session's. Commit messages are a
   short, cheap task, so a small local model is often enough, and a model with a
