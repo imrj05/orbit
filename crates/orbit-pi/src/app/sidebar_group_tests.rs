@@ -67,6 +67,28 @@ fn flat_rows_keep_the_open_session_first_while_a_run_writes() {
 }
 
 #[test]
+fn flat_rows_keep_pins_ahead_of_open_and_running_sessions() {
+    let sessions = vec![
+        store_session("running", "/work/alpha", 40),
+        store_session("idle", "/work/alpha", 30),
+        store_session("open", "/work/alpha", 20),
+        store_session("pinned", "/work/alpha", 10),
+    ];
+    let pinned = HashSet::from([sessions[3].path.clone()]);
+    let running = HashSet::from([sessions[0].path.clone()]);
+    let active = Some(sessions[2].path.clone());
+    let rows = build_flat_sidebar_rows(&sessions, &pinned, &active, &running);
+    assert_eq!(session_indices(&rows), vec![3, 2, 0, 1]);
+    let rows = build_flat_sidebar_rows(
+        &sessions,
+        &pinned,
+        &Some(sessions[3].path.clone()),
+        &running,
+    );
+    assert_eq!(session_indices(&rows), vec![3, 0, 1, 2]);
+}
+
+#[test]
 fn flat_rows_are_empty_without_sessions() {
     let rows = build_flat_sidebar_rows(&[], &HashSet::new(), &None, &HashSet::new());
     assert!(rows.is_empty());

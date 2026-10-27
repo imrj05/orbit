@@ -3440,6 +3440,7 @@ struct DefaultModelPushed {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SettingsSelect {
     Theme(ThemeMode),
+    AccentColor,
     Language,
     UiFontSize,
     TerminalFont,

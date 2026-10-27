@@ -1629,7 +1629,9 @@ fn persist_path() -> PathBuf {
 pub fn init(cx: &mut App) {
     let prefs = AppearancePrefs::load();
     cx.set_global(prefs);
-    cx.set_global(Theme::for_id(prefs.resolve(cx.window_appearance())).with_ui(UiPrefs::load()));
+    cx.set_global(
+        prefs.apply(Theme::for_id(prefs.resolve(cx.window_appearance())).with_ui(UiPrefs::load())),
+    );
     let prefs = FontPrefs::load();
     *UI_FONT_FAMILY
         .write()
@@ -1676,7 +1678,7 @@ pub fn set_ui_prefs(cx: &mut App, ui: UiPrefs) {
     crate::set_app_menus(cx);
     ui.persist();
     let id = get(cx).theme_id;
-    cx.set_global(Theme::for_id(id).with_ui(ui));
+    cx.set_global(appearance_prefs(cx).apply(Theme::for_id(id).with_ui(ui)));
 }
 
 #[cfg(test)]

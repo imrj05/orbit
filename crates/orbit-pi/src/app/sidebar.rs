@@ -188,23 +188,18 @@ pub(crate) fn build_sidebar_rows(
     side_rows
 }
 
-/// Order rank for a session row: the open session leads (0), then pinned
-/// rows (1), then live background runs (2), then everything else (3), which
-/// keeps the store's newest-first order among equals (the sort is stable).
-///
-/// The open session must *outrank* a background run, not merely share the top
-/// partition with it: `modified` moves on every `message` append, so two
-/// "leading" sessions still trade places on each watcher reload while both
-/// runs write. Ranking the open session first pins the row being read.
+/// Pinned sessions lead, followed by the open session, background runs, and
+/// other sessions. Within each rank the stable sort preserves activity order.
+/// Opening a session must not displace a deliberate pin.
 fn session_lead_rank(
     path: &Path,
     pinned: &HashSet<PathBuf>,
     active_path: &Option<PathBuf>,
     running_paths: &HashSet<PathBuf>,
 ) -> u8 {
-    if active_path.as_deref() == Some(path) {
+    if pinned.contains(path) {
         0
-    } else if pinned.contains(path) {
+    } else if active_path.as_deref() == Some(path) {
         1
     } else if running_paths.contains(path) {
         2
@@ -244,9 +239,9 @@ fn sidebar_groups(
     }
     // Order the groups for the active sort mode before any rows are laid out;
     // a group's own session order is independent (pinned-first, then recency).
-    sort_workspace_groups(&mut groups, sessions, sort, added_at, active_path);
-    // Leading sessions rise to the top of their project group by rank — the
-    // open one first, then pins, then live runs; recency order is preserved
+    sort_workspace_groups(&mut groups, sessions, sort, added_at);
+    // Leading sessions rise to the top of their project group by rank — pins,
+    // then the open session, then live runs; recency order is preserved
     // within each rank (the sort is stable). Doing this here rather than in
     // `load_sessions` keeps an Orbit-owned preference out of the pi-store
     // scan — and means a leading session can never be hidden by the
@@ -313,7 +308,20 @@ fn emit_workspace_group(
     // click, so a group with a long history reveals three rows at a time.
     let extra = expanded_session_groups.get(&label).copied().unwrap_or(0);
     let limit = SIDEBAR_GROUP_SESSIONS_VISIBLE.saturating_add(extra);
-    let visible = visible_sessions_in_group(ixs, sessions, limit, active_path);
+    let mut visible = visible_sessions_in_group(ixs, sessions, limit, active_path);
+    // Do not hide deliberate pins or live work behind the history cap, even
+    // when there are more protected rows than the default number of slots.
+    for &ix in ixs {
+        let path = &sessions[ix].path;
+        if (pinned.contains(path) || running_paths.contains(path)) && !visible.contains(&ix) {
+            visible.push(ix);
+        }
+    }
+    visible.sort_by_key(|ix| {
+        ixs.iter()
+            .position(|candidate| candidate == ix)
+            .unwrap_or(usize::MAX)
+    });
     for ix in &visible {
         side_rows.push(SideRow::Session(*ix));
     }
@@ -337,7 +345,7 @@ fn emit_workspace_group(
 
 /// Build the flat sidebar list: every listed project's sessions in one
 /// ungrouped list, with no workspace headers, show-more, or collapse rows.
-/// Rows lead by rank — the open session, then pins, then live background
+/// Rows lead by rank — pins, then the open session, then live background
 /// runs — and the rest keep the store's newest-first order (the sort is
 /// stable). Used when the user turns workspace grouping off; the same
 /// `SideRow::Session` rows mean the render and keyboard paths are unchanged.
@@ -384,9 +392,8 @@ pub(crate) fn filter_archived(
 ///
 /// `LastUpdated` keys on each group's newest session activity — the group is
 /// not necessarily in activity order after the pin sort, so it takes the max
-/// rather than the first row — and finally floats the open session's group to
-/// the top, so a background run elsewhere writing messages cannot displace
-/// the workspace being worked in. `DateAdded` keys on the persisted added-at
+/// rather than the first row. Opening a session does not override the selected
+/// workspace sort. `DateAdded` keys on the persisted added-at
 /// stamp. Ties break on the label so the order is stable across reloads, and
 /// unknown/empty keys sort last.
 fn sort_workspace_groups(
@@ -394,7 +401,6 @@ fn sort_workspace_groups(
     sessions: &[SessionInfo],
     sort: WorkspaceSort,
     added_at: &HashMap<PathBuf, SystemTime>,
-    active_path: &Option<PathBuf>,
 ) {
     if sort == WorkspaceSort::Manual {
         return;
@@ -413,12 +419,6 @@ fn sort_workspace_groups(
                     .cmp(&group_updated(&a.2, sessions))
                     .then_with(|| by_label(a, b))
             });
-            // The open session's group leads; a stable pass so the other
-            // groups keep their activity order.
-            if let Some(active) = active_path {
-                groups
-                    .sort_by_key(|(_, _, ixs)| !ixs.iter().any(|&ix| &sessions[ix].path == active));
-            }
         }
         WorkspaceSort::DateAdded => groups.sort_by(|a, b| {
             added_at
@@ -713,7 +713,7 @@ pub(crate) fn clear_review_mark(
 fn meta_text(text: String, color: Hsla, theme: &Theme) -> impl IntoElement + use<> {
     div()
         .flex_none()
-        .text_size(TextSize::XSmall.px(theme))
+        .text_size(TextSize::Small.px(theme))
         .text_color(color)
         .child(text)
 }
