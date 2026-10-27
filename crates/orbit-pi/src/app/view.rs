@@ -734,10 +734,7 @@ impl Render for OrbitApp {
                                             .into_any_element()
                                     }),
                             )
-                            // footer — connection status, then the utility
-                            // icons on the last edge, set off from the session
-                            // list by a hairline. The gutter matches the
-                            // section label above so the column has one edge.
+                            // Connection status and global actions share a quiet footer.
                             .child(
                                 div()
                                     .id("sidebar-footer")
@@ -748,51 +745,69 @@ impl Render for OrbitApp {
                                     .border_color(theme.border)
                                     .flex()
                                     .items_center()
-                                    // Connection status — a dot alone while
-                                    // the runtime is live: "Connected" is the
-                                    // steady state, so a permanent label spends
-                                    // the row's best corner on a non-event. When
-                                    // it is not live the label appears and the
-                                    // pair reconnects on click.
-                                    .child(if self.runtime_is_live() {
-                                        div()
-                                            .flex_none()
-                                            .size(px(6.))
-                                            .rounded_full()
-                                            .bg(theme.success)
-                                            .into_any_element()
-                                    } else {
+                                    .child({
+                                        let live = self.runtime_is_live();
+                                        let retrying = self.sidebar_runtime_retrying();
+                                        let (label, dot) = if live {
+                                            (tr!("status.connected"), theme.success)
+                                        } else if retrying {
+                                            (tr!("sidebar.status_retrying"), theme.warning)
+                                        } else {
+                                            (tr!("status.offline"), theme.error)
+                                        };
                                         div()
                                             .id("sidebar-runtime-status")
                                             .flex()
+                                            .flex_shrink()
                                             .min_w_0()
                                             .items_center()
                                             .gap(DynamicSpacing::Base06.px(&theme))
-                                            .cursor_pointer()
-                                            .tip(tr!("view.reconnect"))
-                                            .active(|s| s.opacity(PRESS_DIM))
-                                            .on_mouse_up(
-                                                MouseButton::Left,
-                                                cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                                                    this.runtime_restart(cx)
-                                                }),
-                                            )
-                                            .child(
-                                                div()
+                                            .when(!live && !retrying, |status| {
+                                                status
+                                                    .cursor_pointer()
+                                                    .tip(tr!("view.reconnect"))
+                                                    .hover(|s| s.text_color(theme.text_primary))
+                                                    .active(|s| s.opacity(PRESS_DIM))
+                                                    .on_mouse_up(
+                                                        MouseButton::Left,
+                                                        cx.listener(
+                                                            |this, _: &MouseUpEvent, _, cx| {
+                                                                this.runtime_restart(cx)
+                                                            },
+                                                        ),
+                                                    )
+                                            })
+                                            .text_color(theme.text_secondary)
+                                            .child({
+                                                let dot = div()
                                                     .flex_none()
                                                     .size(px(6.))
                                                     .rounded_full()
-                                                    .bg(theme.error),
-                                            )
+                                                    .bg(dot);
+                                                if retrying && !theme::reduce_motion(cx) {
+                                                    dot.with_animation(
+                                                        "sidebar-runtime-retrying",
+                                                        Animation::new(Duration::from_millis(900))
+                                                            .repeat(),
+                                                        |dot, phase| {
+                                                            let pulse = (phase
+                                                                * std::f32::consts::TAU)
+                                                                .cos();
+                                                            dot.opacity(0.7 + 0.3 * pulse)
+                                                        },
+                                                    )
+                                                    .into_any_element()
+                                                } else {
+                                                    dot.into_any_element()
+                                                }
+                                            })
                                             .child(
                                                 div()
                                                     .min_w_0()
                                                     .truncate()
                                                     .text_size(TextSize::Small.px(&theme))
-                                                    .text_color(theme.text_secondary)
-                                                    .child(tr!("status.offline")),
+                                                    .child(label),
                                             )
-                                            .into_any_element()
                                     })
                                     .child(div().flex_1())
                                     .when_some(
@@ -3786,8 +3801,6 @@ impl OrbitApp {
             .gap(DynamicSpacing::Base06.px(&theme))
             .child(search)
             .child(usage)
-            // Separates "where you go" from "how it is configured".
-            .child(div().flex_none().w(px(1.)).h(px(12.)).bg(theme.border))
             .child(settings)
     }
 

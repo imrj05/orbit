@@ -552,6 +552,11 @@ impl OrbitApp {
         matches!(self.runtime_state(), RuntimeState::Running)
     }
 
+    /// A queued retry may have been superseded by an explicit start or stop.
+    pub(super) fn sidebar_runtime_retrying(&self) -> bool {
+        self.auto_restart_scheduled && self.should_auto_restart_now()
+    }
+
     /// Spawn the pi process (Start button). No-op while one is running.
     pub(super) fn runtime_start(&mut self, cx: &mut Context<Self>) {
         if self.client.is_some() {
