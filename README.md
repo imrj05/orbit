@@ -60,7 +60,7 @@ Usage — requests, tokens, cost, and cache, read from your own sessions:
 - Address sessions by position — **⌘1…⌘9** (**Ctrl+1…9**) opens the Nth visible session, **Ctrl+Tab / Ctrl+Shift+Tab** cycle them
 - Sessions written by the CLI or another window refresh the sidebar live
 - Execution status for sessions observed during this app launch — Running, Waiting for approval/input, Retrying, Compacting, Completed, Failed, Stopped, Disconnected, or Idle. Open and background sessions use the same real pi events; outcomes remain after reading and switching. Historical or externally written sessions get no guessed status
-- A turn that ends while you are elsewhere leaves a separate unread dot until you open it in the foreground. Reading clears the dot, not the Completed/Failed status; unread and waiting sessions remain visible under collapsed project groups
+- A turn that ends while you are elsewhere leaves a separate unread mark on its row (a green eye plus "Needs review", or a red cross with a corner dot when it failed) until you open it in the foreground. Reading spends the mark and leaves the Completed/Failed state behind; unread and waiting sessions remain visible under collapsed project groups
 - Native approvals and input dialogs stay pending when you switch sessions, and return with their answers intact when you reopen the session
 - Background turn notifications — a desktop banner and alert sound when the window isn't frontmost, an in-app toast otherwise, and a heads-up when a run is waiting on an extension dialog
 
@@ -103,7 +103,7 @@ Usage — requests, tokens, cost, and cache, read from your own sessions:
 - Providers — pi's live catalog plus custom endpoints (`models.json`), with API-key or OAuth sign-in and usage meters
 - Plugins — install pi packages from npm, git, or a local path, global or per project; update checks and update/remove in place
 - Models — read from pi's own runtime, with a **default session model** and thinking level (Settings → Agent) applied to every new session; the choice lives in Orbit's own store and leaves pi's global settings alone
-- **Auto session titles** — a bundled pi extension names a session after its first turn, with a model picker and an on/off toggle in Settings → Agent
+- **Auto session titles** — a bundled pi extension names any session that has no title yet from its first exchange, with a model picker and an on/off toggle in Settings → Agent
 - **Report a bug** — Settings → Report a bug takes an issue type (bug / feature / other) and the bug context, then **Generate draft** writes the title and description with the app's active model
 - It files the issue against the project with your build details attached (Orbit version, app ID, OS and architecture, install kind, pi CLI, and `gh` account): through the `gh` CLI when it is signed in, or as a prefilled GitHub new-issue page otherwise
 - Screenshots attach too. They upload with `gh issue create --attach` when `gh` is signed in, and otherwise the web form opens with the images saved to a temp folder to drag in

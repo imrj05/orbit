@@ -402,19 +402,30 @@ partially entered answers, and background requests wait instead of being denied.
 Opening the session restores its surface; waiting sessions remain busy and visible
 under collapsed project groups. Custom terminal surfaces still cancel on departure.
 
-A turn that settles while the user is not reading it leaves a separate unread dot on its
-row (`OrbitApp::awaiting_review`), with a localized result/failure tooltip. The status
-label distinguishes successful and failed outcomes without relying on color. Only the
-dot clears when the session is genuinely in front of the user —
-`transcript_in_front` (window frontmost, no full-page surface covering the chat
-area), checked once on the heartbeat rather than from a hook on each path that
-can bring a session into view. That single rule is what keeps the issue's
-distinction honest: selecting a row in a background window does not spend the
-mark, and a settle in the open session while Orbit is behind another app still
-leaves one. Marks are memory-only — a cold start does not guess what was read
-elsewhere — and a marked row joins the open, running, and pinned rows in staying
-visible under a collapsed project group, so the result cannot scroll out of
-reach before it is seen.
+Session rows spend exactly one glyph on execution state, in a fixed 16px **status
+lane** at the leading edge of the row's state line (`status_lane`, `status_lane_icon`,
+`status_lane_ink`, `status_lane_words`): accent spinner while running, amber lock for
+an approval gate or chat glyph for a question, green check for a read result, green
+eye for an unread one, red cross for a failure or a dead process, mute stop for an
+aborted run, and no glyph at all for Idle / Unknown (the lane still reserves its
+width). Only the spinner animates. Blocked, unread, and failed states add words in
+place of the age, so colour is never the only signal; the tooltip names the rest.
+
+A turn that settles while the user is not reading it leaves a separate unread mark on
+its row (`OrbitApp::awaiting_review`) — a green eye with "Needs review", or a red cross
+with a small corner dot when the turn failed. The execution glyph underneath
+distinguishes Completed from Failed and remains after the mark is spent, so reading a
+result costs the mark, not the outcome. Only the mark clears when the session is
+genuinely in front of the user — `transcript_in_front` (window frontmost, and no
+full-page surface covering the chat area: Files, Git, Usage, Worktrees, or a
+full-width Review pane, the same rule the renderer uses to hide the chat column),
+checked once on the heartbeat rather than from a hook on each path that can bring a
+session into view. That single rule is what keeps the distinction honest: selecting a
+row in a background window does not spend the mark, and a settle behind a full-page
+surface or another app still leaves one. Marks are memory-only — a cold start does
+not guess what was read elsewhere — and a marked row joins the open, running, and
+pinned rows in staying visible under a collapsed project group, so the result cannot
+scroll out of reach before it is seen.
 
 Every icon-only button carries the app's native tooltip — a localized label, usually
 with its shortcut appended (the send / stop button set the register) — across the top

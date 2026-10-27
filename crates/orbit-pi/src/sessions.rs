@@ -362,6 +362,11 @@ pub(crate) struct SessionProvider {
     pub model: Option<String>,
 }
 
+/// First-pass filter for [`assistant_provider_in_line`]. Deliberately as loose as
+/// the role value itself: a false positive only costs the parse we would have
+/// done anyway, while a false negative would drop a provider from the row.
+const ASSISTANT_MARKER: &[u8] = b"assistant";
+
 /// One session's cached metadata, valid while the file's `(mtime, length)`
 /// are unchanged. A stale entry is dropped and recomputed on the next scan.
 #[derive(Clone)]
@@ -399,9 +404,12 @@ pub(crate) fn cached_session_providers(path: &Path) -> Vec<SessionProvider> {
         .unwrap_or_default()
 }
 
-/// Scan the full history initially, then only appended complete lines when the
-/// previous snapshot ended at a line boundary. Replacements and partial lines
-/// fall back to a full scan so older providers cannot be lost.
+/// Scan the full history on a cache miss, then only appended complete lines
+/// when the previous snapshot ended at a line boundary. An append that lands
+/// mid-line (the previous read ended inside a partially written record) falls
+/// back to a full scan, so a torn line can never be skipped. A file replaced by
+/// a *longer* one still passes the offset check and keeps the providers it had —
+/// an acceptable blind spot, because pi only ever appends to a session file.
 fn assistant_providers(path: &Path, len: u64) -> Vec<SessionProvider> {
     let Ok(mut file) = fs::File::open(path) else {
         return Vec::new();
@@ -442,6 +450,15 @@ fn assistant_providers(path: &Path, len: u64) -> Vec<SessionProvider> {
 }
 
 fn assistant_provider_in_line(line: &[u8]) -> Option<SessionProvider> {
+    // Cheap first: a session store holds multi-megabyte tool-result lines, and
+    // deserializing every one of them just to learn it is not an assistant
+    // message is the difference between a fast startup scan and a slow one.
+    if !line
+        .windows(ASSISTANT_MARKER.len())
+        .any(|window| window == ASSISTANT_MARKER)
+    {
+        return None;
+    }
     let value: Value = serde_json::from_slice(line).ok()?;
     if value.get("type")?.as_str()? != "message"
         || value["message"]["role"].as_str()? != "assistant"

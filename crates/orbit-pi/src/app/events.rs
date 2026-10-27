@@ -542,8 +542,13 @@ impl OrbitApp {
             changed |= drained.changed;
             any_busy |= drained.busy;
             let status = parked.execution.status();
-            if !status.is_in_progress() {
-                self.session_outcomes.insert(path.clone(), status);
+            // Record the outcome, but only when it moved: this runs per parked
+            // session on every heartbeat, and re-inserting the same value would
+            // dirty the map for nothing.
+            if !status.is_in_progress()
+                && self.session_outcomes.insert(path.clone(), status) != Some(status)
+            {
+                changed = true;
             }
             if !parked.client.is_alive() {
                 dead.push(path.clone());
@@ -1406,16 +1411,30 @@ impl OrbitApp {
         self.post_notification(session, title, &subtitle, body, kind);
     }
 
+    /// Whether a full-page surface has replaced the chat column: Files, Git,
+    /// Usage, Worktrees, or a full-width Review pane. Mirrors the renderer's own
+    /// rule in `view.rs` (`feature_open` / `pane_full`) — keep the two in step,
+    /// since a page that hides the transcript must also stop the review mark
+    /// from being spent.
+    fn chat_column_covered(&self, cx: &App) -> bool {
+        let pane = self.sidepane.read(cx);
+        // Same gate the renderer puts on a full-width Review pane: it only owns
+        // the page once its dependencies are ready and no page already has it.
+        let review_covers_chat =
+            pane.is_open() && pane.is_full_width() && self.dependencies_ready();
+        self.file_viewer.read(cx).is_open()
+            || self.git_open
+            || self.usage_open
+            || self.worktrees_open
+            || review_covers_chat
+    }
+
     /// Whether the transcript is the surface genuinely in front of the user:
     /// the window is frontmost and no full-page surface has replaced the chat
     /// area. A settle out of sight leaves a review mark even when the window is
     /// active (issue #83).
     fn transcript_in_front(&self, cx: &App) -> bool {
-        self.window_active
-            && !self.settings_open
-            && !self.git_open
-            && !self.usage_open
-            && !self.file_viewer.read(cx).is_open()
+        self.window_active && !self.settings_open && !self.chat_column_covered(cx)
     }
 
     /// A run is blocked on an extension dialog — the one event a user cannot
@@ -1506,5 +1525,49 @@ impl OrbitApp {
         // repository's worktree list, so keep it current on every workspace
         // move (one background `git worktree list`).
         self.refresh_worktrees(cx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The review mark is only spent when the chat column is genuinely in front
+    /// of the user. Every surface that replaces the chat area has to count as
+    /// "covered", or a settle behind it would look read (issue #83).
+    #[gpui::test]
+    fn a_full_page_surface_is_not_the_transcript_in_front(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::for_id(crate::theme::ThemeId::Orbit));
+            let app = cx.new(OrbitApp::new);
+            app.update(cx, |app, cx| {
+                app.window_active = true;
+                assert!(
+                    app.transcript_in_front(cx),
+                    "a frontmost window on the chat is the transcript in front"
+                );
+
+                app.git_open = true;
+                assert!(!app.transcript_in_front(cx), "the Git page covers it");
+                app.git_open = false;
+
+                app.usage_open = true;
+                assert!(!app.transcript_in_front(cx), "the Usage page covers it");
+                app.usage_open = false;
+
+                app.worktrees_open = true;
+                assert!(!app.transcript_in_front(cx), "the Worktrees page covers it");
+                app.worktrees_open = false;
+
+                app.settings_open = true;
+                assert!(!app.transcript_in_front(cx), "Settings covers it");
+                app.settings_open = false;
+
+                app.window_active = false;
+                assert!(!app.transcript_in_front(cx), "a background window is not");
+                app.window_active = true;
+                assert!(app.transcript_in_front(cx));
+            });
+        });
     }
 }

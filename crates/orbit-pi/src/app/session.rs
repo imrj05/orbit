@@ -947,6 +947,25 @@ impl OrbitApp {
         // The queue belongs to the session we just left; the target's state
         // re-establishes it from `get_state`/`queue_update`.
         self.reset_queue();
+        // Interaction state is per-session too. `park_active_session` hands it
+        // to the parked process when there is one; a session with no live
+        // process (or a parked one being dropped as stale) has nothing to hand
+        // over, and leaving its dialog, approval, questionnaire, or retry
+        // bookkeeping in place would show it on the incoming session.
+        self.execution = SessionExecution::default();
+        self.prompt_in_flight = None;
+        self.retrying = false;
+        self.is_compacting = false;
+        self.retry_detail = None;
+        self.dialog = None;
+        self.dialog_focus_pending = false;
+        self.approval = None;
+        self.approval_focus_pending = false;
+        self.ask = None;
+        self.ask_tool_id = None;
+        self.ask_questions.clear();
+        self.ask_replay = None;
+        self.ask_focus_pending = false;
 
         // ── activate the target ──
         // A parked process spawned before the latest MCP configuration change

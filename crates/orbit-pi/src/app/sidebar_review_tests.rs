@@ -76,9 +76,10 @@ fn a_settle_out_of_sight_leaves_a_mark() {
     // A background run, while the user reads another session in a frontmost
     // window.
     assert!(should_mark_review(true, &parked, Some(&open)));
-    // The open session, while Orbit is behind another app.
-    assert!(should_mark_review(false, &open, Some(&open)));
-    // A full-page surface covering the transcript counts as out of sight.
+    // The open session, while Orbit is behind another app — or while a
+    // full-page surface covers the chat area. Both arrive as `in_front: false`
+    // (see `transcript_in_front`), so the input is the same and the rule is the
+    // same: not in front means the settle is news.
     assert!(should_mark_review(false, &open, Some(&open)));
     // Nothing open at all (the window was closed): still news.
     assert!(should_mark_review(false, &parked, None));

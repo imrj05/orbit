@@ -718,9 +718,23 @@ fn meta_text(text: String, color: Hsla, theme: &Theme) -> impl IntoElement + use
         .child(text)
 }
 
-#[allow(clippy::too_many_arguments)]
-/// A chosen mark takes precedence over an automatically detected logo.
-fn project_icon(mark: &WorkspaceMark, logo: Option<&Arc<Image>>, theme: &Theme) -> AnyElement {
+/// A project's glyph, in precedence order: the user's picked mark, then an
+/// automatically detected logo, then `status_icon` (the workspace status resolved
+/// in `view.rs`: open / running / archived / plain folder), then the plain
+/// folder. A custom mark is an explicit choice, so neither a detected logo nor a
+/// status glyph overrides it.
+///
+/// `status_icon` is resolved per frame rather than here: a workspace's status is
+/// a whole-column fact (it is "running" when *any* of its sessions is), and a
+/// row must not re-derive it. `None` means the map had no entry, not "no
+/// status".
+fn project_icon(
+    mark: &WorkspaceMark,
+    logo: Option<&Arc<Image>>,
+    status_icon: Option<&SharedString>,
+    size: IconSize,
+    theme: &Theme,
+) -> AnyElement {
     let has_custom_icon = mark
         .icon
         .as_deref()
@@ -729,20 +743,24 @@ fn project_icon(mark: &WorkspaceMark, logo: Option<&Arc<Image>>, theme: &Theme) 
         if let Some(logo) = logo {
             return img(ImageSource::Image(logo.clone()))
                 .flex_none()
-                .size(IconSize::Small.px(theme))
+                .size(size.px(theme))
                 .rounded(px(3.))
                 .object_fit(ObjectFit::Contain)
                 .into_any_element();
         }
     }
+    let path = status_icon
+        .cloned()
+        .unwrap_or_else(|| workspace_mark::icon_path(mark.icon.as_deref()));
     icon_dyn(
-        workspace_mark::icon_path(mark.icon.as_deref()),
-        IconSize::Small.px(theme),
+        path,
+        size.px(theme),
         workspace_mark::tint_color(theme, mark.tint.as_deref()),
     )
     .into_any_element()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_side_row(
     rows: &Rc<Vec<SideRow>>,
     sessions_data: &Rc<Vec<SessionInfo>>,
@@ -766,15 +784,17 @@ pub(crate) fn render_side_row(
     // Per-workspace sidebar marks (icon + tint), keyed by path.
     marks: &Rc<HashMap<PathBuf, WorkspaceMark>>,
     // Resolved per-workspace glyphs: the user's mark icon, or the folder
-    // status (current / running / archived-only / idle).
-    _workspace_icons: &Rc<HashMap<PathBuf, SharedString>>,
+    // status (current / running / archived-only / idle). Computed once per
+    // frame alongside the list so a header row never re-derives it.
+    workspace_icons: &Rc<HashMap<PathBuf, SharedString>>,
     logos: &Rc<HashMap<PathBuf, Arc<Image>>>,
     // Branch per workspace, for the metadata line. Absent for a project that
     // is not a git repository (or sits on a detached HEAD).
     branches: &Rc<HashMap<PathBuf, BranchLine>>,
     // Sessions whose last turn settled while the user was looking elsewhere.
-    // An unread dot remains until the session is shown in a foreground window
-    // (issue #83); the execution label remains after that dot is cleared.
+    // An unread glyph (plus its "Needs review" label) remains until the
+    // session is shown in a foreground window (issue #83); the execution state
+    // remains after that mark is spent.
     review_marks: &Rc<HashMap<PathBuf, ReviewMark>>,
     session_statuses: &Rc<HashMap<PathBuf, SessionStatus>>,
     session_menu: Option<&SessionMenu>,
@@ -800,6 +820,7 @@ pub(crate) fn render_side_row(
             let menu = workspace_menu.filter(|m| m.label == label);
             let mark = marks.get(cwd).cloned().unwrap_or_default();
             let workspace_logo = logos.get(cwd);
+            let workspace_icon = workspace_icons.get(cwd);
             // Outer shell: inter-group spacing only — horizontal inset comes
             // from the list's `px_2`, so the hover pill lines up with the
             // session rows' (inside the same container) and the chevron lands
@@ -871,7 +892,13 @@ pub(crate) fn render_side_row(
                             IconSize::XSmall.px(&theme),
                             theme.text_muted,
                         ))
-                        .child(project_icon(&mark, workspace_logo, &theme))
+                        .child(project_icon(
+                            &mark,
+                            workspace_logo,
+                            workspace_icon,
+                            IconSize::Medium,
+                            &theme,
+                        ))
                         .child(
                             div()
                                 .flex_1()
@@ -1170,12 +1197,13 @@ pub(crate) fn render_side_row(
             // only place the ask is readable.
             let message = session.first_message.trim().to_string();
             // Flat list has no workspace headers — name the workspace on the
-            // row instead. The glyph is the row's own status (open on the
-            // active session, sync while running, archive when archived),
-            // falling back to the workspace mark / plain folder.
+            // row instead, with the workspace-status glyph the headers use
+            // (open / running / archived). This row's own run is the status
+            // lane's job, one column to the right.
             let workspace_label = sessions::workspace_label(&session.cwd);
             let mark = marks.get(&session.cwd).cloned().unwrap_or_default();
             let workspace_logo = logos.get(&session.cwd);
+            let workspace_icon = workspace_icons.get(&session.cwd);
             let branch = branches.get(&session.cwd);
             let providers = sessions::cached_session_providers(&session.path);
             let review = review_marks
@@ -1245,7 +1273,13 @@ pub(crate) fn render_side_row(
                                 .flex()
                                 .items_center()
                                 .gap(DynamicSpacing::Base06.px(&theme))
-                                .child(project_icon(&mark, workspace_logo, &theme))
+                                .child(project_icon(
+                                    &mark,
+                                    workspace_logo,
+                                    workspace_icon,
+                                    IconSize::Small,
+                                    &theme,
+                                ))
                                 .child(
                                     div()
                                         .flex_1()

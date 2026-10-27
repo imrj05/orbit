@@ -40,18 +40,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Layout is cached per fence and interface font, so a streaming run re-renders
   the same diagram for free.
 - **A session that finishes while you are not looking stays marked.** Its sidebar
-  row carries an unread dot until the session is actually shown in a foreground
-  window. A separate execution-status label distinguishes Completed from Failed
-  and remains after the dot clears. The mark is what is left
-  after the toast has gone: with several sessions open, or after stepping away,
-  the finished one is findable instead of merely somewhere in the list. It is
-  independent of the running, pinned, and archived glyphs (it never replaces
-  one) and a marked row stays visible under a collapsed project group, the same
-  way a running row does. Opening the session spends the mark; selecting it
-  while Orbit is behind another app does not, because that is not reading it.
-  Marks live in memory only — what happened while Orbit was closed is not
-  claimed, since there is no way to know whether it was already read elsewhere.
-  The status labels distinguish a finished turn from a failed one without color.
+  row carries an unread mark — a green eye and "Needs review" for a finished turn,
+  a red cross with a small corner dot for one that failed — until the session is
+  actually shown in a foreground window. That mark then gives way to the read
+  glyph, while a separate execution state distinguishes Completed from Failed and
+  remains after the mark is spent. The mark is what is left after the toast has
+  gone: with several sessions open, or after stepping away, the finished one is
+  findable instead of merely somewhere in the list. It is independent of the
+  running, pinned, and archived glyphs (it never replaces one) and a marked row
+  stays visible under a collapsed project group, the same way a running row does.
+  Opening the session spends the mark; selecting it while Orbit is behind another
+  app does not, because that is not reading it, and neither is settling behind a
+  full-page surface (Files, Git, Usage, Worktrees, or a full-width Review).
+  Marks live in memory only — what happened while Orbit was closed is not claimed,
+  since there is no way to know whether it was already read elsewhere. The labels
+  distinguish a finished turn from a failed one without relying on colour.
 - **Onest interface font** — available in Settings → Appearance → Interface font,
   bundled in Regular, Medium, SemiBold, and Bold weights for offline use.
 - Git page → commit bar → **model chip**: the **Generate** button now chooses its
@@ -151,6 +154,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Auto session titles now actually land.** The bundled title extension decided
+a session was worth naming only when its branch held *exactly one* user prompt at
+settle time, and it treated a settle with nothing to describe as final:
+
+  - sending a steering message or follow-up during the first run added a second
+    prompt, so the settle looked like a resumed session and no title was asked for;
+  - a session Orbit reopened from disk (its warm-process pool makes this the
+    normal case) was permanently ineligible, however untitled it was;
+  - one transient provider error was enough to lose the title for good — the
+    "retry on the next settle" path needed another settle with one prompt,
+    which a new prompt makes impossible, so the retry was dead code;
+  - a settle that arrived before the assistant had produced any text wrote the
+    session off for the life of the process.
+
+  The rule is now the one a reader expects: **any session without a name gets a
+title**, from its first exchange, on the first settle that has something to
+describe. An existing name is never replaced (that is the user's rename or an
+earlier title) except by the details popover's explicit **Generate title**. A
+settle with no reply yet leaves the session open for the next turn, and a
+transient failure is retried up to three times instead of once. A completed ask
+that produced no text is still final, so a model that keeps answering nothing is
+not asked on every turn.
 - The status bar no longer prints extension color codes as literal text. An
   entry set with `ctx.ui.setStatus()` that styled itself via `ctx.ui.theme.fg()`
   used to render the raw SGR escape (e.g. `[38;5;71m●[39m`), because the status

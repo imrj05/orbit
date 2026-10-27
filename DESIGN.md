@@ -591,14 +591,25 @@ The sidebar is quiet infrastructure.
   owns the full line width. The project group header keeps its own `…` (and `+`) because
   a header is a section control, not a row.
 - Active navigation uses `selection`, not accent color alone.
-- A session whose turn settled while the user was not reading it keeps a mark on its
-  title line — a green check for a finished turn, a red cross for a failed one — until the
-  session is actually shown in a foreground window. The mark is separate from the running,
-  pin, and archive glyphs (it never replaces one), and a marked row stays visible under a
-  collapsed project group the way a running one does. Selecting a row in a background
-  window is not "shown": the mark survives until Orbit is frontmost with that session on
-  screen. Shape and hue both carry the state, so the check and the cross remain
-  distinguishable without color.
+- Execution state lives in one **status lane**: a 16px slot at the leading edge of
+  the row's state line (the title line under a project header, the project line in
+  the flat list), so the list's activity is one vertical scan away instead of a
+  word competing with every title. The lane paints one glyph — a spinner while
+  running, a lock for an approval gate, a chat glyph for a question, a check when a
+  result has been read, an eye when it has not, a cross for a failure or a dead
+  process, a stop for an aborted run — and nothing at all for `Idle` / `Unknown`;
+  the slot keeps its width either way so every row's text stays on the same x. Only
+  the spinner moves. Attention states (blocked, needs review, failed) add words in
+  place of the age, so colour is never the only distinction.
+- A session whose turn settled while the user was not reading it keeps an **unread
+  mark** on its row — a green eye plus "Needs review" until the session is actually
+  shown in a foreground window, then a green check for the read result; a failed
+  background turn keeps a red cross with a small amber corner dot. The mark is
+  separate from the running, pin, and archive glyphs (it never replaces one), and a
+  marked row stays visible under a collapsed project group the way a running one
+  does. Selecting a row in a background window is not "shown": the mark survives
+  until Orbit is frontmost with that session on screen. Shape and label both carry
+  the state, so the marks remain distinguishable without colour.
 - Session state may use semantic indicators, but decorative animation is forbidden except
   for the currently running session treatment already defined above.
 - Sidebar width and collapsed state should persist per workspace/window when practical.

@@ -168,9 +168,14 @@ contrib/orbit-guard-extension/  Orbit's bundled pi extension (loaded with
                         the `~/.orbit-pi/access-allow.json` allowlist;
                         policy.test.mjs / index.test.mjs are `node --test`
 contrib/orbit-title-extension/  Orbit's bundled pi extension (loaded with
-                        `pi --extension`): after a session's first turn
-                        settles, asks a model for a short title from the
-                        first exchange and sets it with `pi.setSessionName`.
+                        `pi --extension`): when a turn settles, asks a model
+                        for a short title from the session's first exchange
+                        and sets it with `pi.setSessionName`. Any session
+                        without a name is titled (a resumed untitled one
+                        included); an existing name is only replaced by the
+                        details popover's explicit `/generate-title`, and a
+                        transient failure is retried on a later settle, up to
+                        three times.
                         Reads `~/.orbit-pi/auto-title.json` (the model is the
                         active session model unless Settings → Agent picks
                         one); title.js is the pure helper set and both

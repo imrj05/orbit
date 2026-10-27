@@ -350,9 +350,10 @@ impl Render for OrbitApp {
         let pane_open = self.sidepane.read(cx).is_open();
         let pane_visible =
             pane_open && !self.settings_open && !self.usage_open && self.dependencies_ready();
-        // Feature pages (Files / Git / Usage) own the main column, so a
-        // full-page Review pane yields to the one that just opened rather
-        // than covering it.
+        // Feature pages (Files / Git / Usage / Worktrees) own the main column, so a
+        // full-page Review pane yields to the one that just opened rather than
+        // covering it. `OrbitApp::chat_column_covered` (events.rs) answers the
+        // same question for the review-mark bookkeeping — keep them in step.
         let viewer_open = self.file_viewer.read(cx).is_open();
         let feature_open = viewer_open || self.git_open || self.usage_open || self.worktrees_open;
         // A page that opens under a full-page Review pane gets the window
