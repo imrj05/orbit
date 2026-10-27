@@ -1193,7 +1193,7 @@ impl Transcript {
                 false
             }
             // A settled run closes its working clock; the next run re-arms it.
-            Event::AgentSettled => {
+            Event::AgentSettled { .. } => {
                 self.end_live_run();
                 false
             }
@@ -3855,7 +3855,7 @@ mod tests {
         });
         assert_eq!(t.scroller.item_count(), 2);
         // Settle: the whole-task summary pins itself after the last message.
-        t.apply_event(&Event::AgentSettled);
+        t.apply_event(&Event::AgentSettled { aborted: false });
         assert!(t.tail_summary.get());
         assert_eq!(t.scroller.item_count(), 3);
         assert_eq!(t.changed_files_summary(), vec![("a.rs".into(), 2, 1)]);
@@ -3867,7 +3867,7 @@ mod tests {
         assert_eq!(t.scroller.item_count(), 3);
         // Settling again re-pins the summary — it aggregates the whole
         // task, which still includes the first turn's edit.
-        t.apply_event(&Event::AgentSettled);
+        t.apply_event(&Event::AgentSettled { aborted: false });
         assert!(t.tail_summary.get());
         assert_eq!(t.scroller.item_count(), 4);
     }
@@ -3907,7 +3907,7 @@ mod tests {
         });
         assert!(t.is_streaming());
         // Only the real settle pins the summary.
-        t.apply_event(&Event::AgentSettled);
+        t.apply_event(&Event::AgentSettled { aborted: false });
         assert!(t.tail_summary.get());
         assert_eq!(t.scroller.item_count(), 3);
         assert_eq!(t.changed_files_summary(), vec![("a.rs".into(), 2, 1)]);

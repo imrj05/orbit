@@ -96,6 +96,7 @@ impl OrbitApp {
         // leaving the composer on Stop and the transcript waiting for an answer
         // that is not coming (see `submit_as`).
         if command == "prompt" {
+            self.execution.fail();
             self.busy = false;
             self.transcript.abandon_reply();
             // pi is the authority on whether something else is still running;
@@ -179,6 +180,12 @@ impl OrbitApp {
 
     /// Tear down the active pi process (dropping `PiClient` kills the child).
     pub(super) fn drop_client(&mut self) {
+        if self.execution.status().is_in_progress() {
+            self.execution.stop();
+        }
+        if let Some(path) = &self.current_session_path {
+            self.remember_session_outcome(path.clone(), self.execution.status());
+        }
         // A process that exited on its own left its exit banner up; dropping
         // it supersedes that failure — a fresh process follows in the task /
         // restart paths, and an explicit stop acknowledges it.

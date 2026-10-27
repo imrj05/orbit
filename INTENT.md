@@ -387,9 +387,25 @@ session row carries no hover-revealed `…`, which is why the title owns the ful
 line width and why the keyboard/palette delete path anchors its confirmation to
 the row itself.
 
-A turn that settles while the user is not reading it leaves a review mark on its
-row (`OrbitApp::awaiting_review`): a check for a finished turn, a cross for a
-failed one, cleared only when the session is genuinely in front of the user —
+Session rows show execution status independently of read/unread state. The same
+`SessionExecution` reducer consumes the foreground and parked sessions' real pi
+events: Running, Waiting for approval/input, Retrying, Compacting, Completed,
+Failed, Stopped, Disconnected, or Idle when no outcome is known. Only
+`agent_settled` completes a run; `agent_end` may still lead to retries or queued
+work. The RPC parser preserves the settle's `aborted` bit, including stops before
+an assistant message exists. Outcomes survive reading, switching, and warm-process
+reaping for this app launch (`session_outcomes`); historical and externally written
+sessions carry no status label until observed, rather than guessing from old files. Tool errors alone do not fail the session.
+
+Native approval/dialog/questionnaire surfaces park with their session, including
+partially entered answers, and background requests wait instead of being denied.
+Opening the session restores its surface; waiting sessions remain busy and visible
+under collapsed project groups. Custom terminal surfaces still cancel on departure.
+
+A turn that settles while the user is not reading it leaves a separate unread dot on its
+row (`OrbitApp::awaiting_review`), with a localized result/failure tooltip. The status
+label distinguishes successful and failed outcomes without relying on color. Only the
+dot clears when the session is genuinely in front of the user —
 `transcript_in_front` (window frontmost, no full-page surface covering the chat
 area), checked once on the heartbeat rather than from a hook on each path that
 can bring a session into view. That single rule is what keeps the issue's

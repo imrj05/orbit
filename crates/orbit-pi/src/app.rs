@@ -46,6 +46,8 @@ use orbit_rpc::{
 };
 use serde_json::Value;
 
+use self::session_status::{SessionExecution, SessionStatus};
+
 use crate::access::AccessMode;
 use crate::ask::{AskPrompt, AskQuestion};
 use crate::auth::{AuthEffect, AuthManager, AuthSupport, LoginPhase, ProviderStatus};
@@ -172,6 +174,9 @@ struct ParkedSession {
     client: PiClient,
     transcript: Transcript,
     busy: bool,
+    execution: SessionExecution,
+    interaction: ParkedInteraction,
+    retry_detail: Option<RetryDetail>,
     added: u64,
     removed: u64,
     /// MCP config fingerprint this parked process was spawned with. A stale
@@ -188,6 +193,17 @@ struct ParkedSession {
     queue: PendingQueue,
     /// When this session was last parked; drives idle TTL reaping.
     parked_at: Instant,
+}
+
+/// Blocking input belongs to its session, not the window displaying it.
+#[derive(Default)]
+struct ParkedInteraction {
+    dialog: Option<Entity<Dialog>>,
+    approval: Option<ApprovalRequest>,
+    ask: Option<AskPrompt>,
+    ask_tool_id: Option<String>,
+    ask_questions: Vec<AskQuestion>,
+    ask_replay: Option<ask::AskReplay>,
 }
 
 /// An in-flight automatic retry (`auto_retry_start` → `auto_retry_end`):
@@ -264,6 +280,10 @@ pub struct OrbitApp {
     /// reply that names the file. Drained every tick like `lives`; re-keyed
     /// into `lives` as soon as the file is known (issue #46).
     pending_parks: Vec<ParkedSession>,
+    execution: SessionExecution,
+    /// Last observed outcomes survive warm-process reaping and reading a result.
+    /// Live states come from `execution` and `lives`, never from this cache.
+    session_outcomes: HashMap<PathBuf, SessionStatus>,
     transcript: Transcript,
     sessions: Vec<SessionInfo>,
     /// Debounced watcher over pi's session store — sessions written by the
@@ -1776,6 +1796,8 @@ impl OrbitApp {
                 .max(SIDEBAR_MIN_W)),
             lives: HashMap::new(),
             pending_parks: Vec::new(),
+            execution: SessionExecution::default(),
+            session_outcomes: HashMap::new(),
             transcript: Transcript::new(),
             sessions: sessions::load_sessions(),
             session_watcher: sessions::SessionWatcher::start(),
@@ -3402,6 +3424,7 @@ mod retention_ui;
 mod runtime;
 mod search;
 mod session;
+mod session_status;
 mod settings;
 mod sidebar;
 mod skills_ui;

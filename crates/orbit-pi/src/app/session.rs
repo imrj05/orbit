@@ -275,13 +275,15 @@ impl OrbitApp {
         self.begin_turn(cx);
         // The composer's own prompt is the only one whose `handled` answer may
         // tear down the working row (see `prompt_in_flight`).
-        self.prompt_in_flight = Some(id);
+        self.prompt_in_flight = Some(id.clone());
+        self.execution.prompt_id = Some(id);
         // The turn is in flight from here, not from pi's `agent_start`: the
         // composer flips to Stop, the heartbeat polls at 60 Hz, and every
         // `is_running()` gate agrees, so a slow provider (or a pi that is still
         // booting) can never look like a dropped keystroke. `agent_start`
         // re-sets the same flag, and every settle path clears it.
         self.busy = true;
+        self.execution.start();
         // Same for the transcript: the live "Working for…" row goes up now,
         // with its clock running from the send.
         self.transcript.expect_reply();
@@ -404,13 +406,41 @@ impl OrbitApp {
         let Some(client) = self.client.take() else {
             return;
         };
-        let busy = self.busy || self.transcript.is_streaming();
+        let busy = self.busy
+            || self.transcript.is_streaming()
+            || self.retrying
+            || self.is_compacting
+            || self.execution.status().is_in_progress();
+        if busy && !self.execution.status().is_in_progress() {
+            self.execution.start();
+        }
+        if let Some(path) = &self.current_session_path {
+            self.remember_session_outcome(path.clone(), self.execution.status());
+        }
+        let execution = std::mem::take(&mut self.execution);
+        let interaction = ParkedInteraction {
+            dialog: self.dialog.take(),
+            approval: self.approval.take(),
+            ask: self.ask.take(),
+            ask_tool_id: self.ask_tool_id.take(),
+            ask_questions: std::mem::take(&mut self.ask_questions),
+            ask_replay: self.ask_replay.take(),
+        };
+        self.dialog_focus_pending = false;
+        self.approval_focus_pending = false;
+        self.ask_focus_pending = false;
+        self.prompt_in_flight = None;
+        self.retrying = false;
+        self.is_compacting = false;
         let transcript = std::mem::replace(&mut self.transcript, Transcript::new());
         let widgets = std::mem::take(&mut self.extension_widgets);
         let parked = ParkedSession {
             client,
             transcript,
             busy,
+            execution,
+            interaction,
+            retry_detail: self.retry_detail.take(),
             added: self.added,
             removed: self.removed,
             mcp_stamp: self.mcp_stamp,
@@ -765,9 +795,9 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Leaving this session: cancel any open blocking dialog first, so a
-        // parked run never waits on a modal tied to the previous session.
-        self.cancel_open_dialog(cx);
+        // Custom terminal surfaces cannot run offscreen; native blocking
+        // requests are parked with their session and restored on return.
+        self.cancel_custom_surfaces(cx);
         // A new task owns the window: drop whatever surface was covering the
         // chat column before the fresh session paints.
         self.close_surfaces_for_new_task(cx);
@@ -778,9 +808,11 @@ impl OrbitApp {
         if self.runtime_is_live() {
             self.park_active_session();
         } else {
+            self.cancel_open_dialog(cx);
             self.drop_client();
         }
 
+        self.execution = SessionExecution::default();
         self.busy = false;
         self.transcript.clear();
         self.current_title = None;
@@ -898,9 +930,8 @@ impl OrbitApp {
         if self.current_session_path.as_ref() == Some(&session.path) {
             return;
         }
-        // A blocking dialog belongs to the session being left; cancel it so
-        // the now-parked run can settle instead of waiting on an unseen modal.
-        self.cancel_open_dialog(cx);
+        // Native dialogs and approvals stay pending with their own session.
+        self.cancel_custom_surfaces(cx);
         // ── park the outgoing session (running or idle) ──
         // Its unsent composer text/attachments go with it, keyed to the file.
         self.save_composer_draft(cx);
@@ -934,6 +965,33 @@ impl OrbitApp {
             self.adopt_client(parked.client);
             self.transcript = parked.transcript;
             self.busy = parked.busy;
+            self.execution = parked.execution;
+            self.prompt_in_flight = self.execution.prompt_id.clone();
+            self.retrying = self.execution.retrying;
+            self.is_compacting = self.execution.compacting;
+            self.retry_detail = parked.retry_detail;
+            self.dialog = parked.interaction.dialog;
+            self.approval = parked.interaction.approval;
+            self.ask = parked.interaction.ask;
+            self.ask_tool_id = parked.interaction.ask_tool_id;
+            self.ask_questions = parked.interaction.ask_questions;
+            self.ask_replay = parked.interaction.ask_replay;
+            self.dialog_focus_pending = self.dialog.is_some();
+            self.approval_focus_pending = self.approval.is_some();
+            self.approval_highlight = 0;
+            self.ask_focus_pending = self.ask.is_some();
+            // Requests received while parked have no UI entity yet. Reopen
+            // the saved request only when there is no existing surface.
+            if self.dialog.is_none() && self.approval.is_none() && self.ask.is_none() {
+                if let Some(request) = self.execution.pending_request.clone() {
+                    self.handle_extension_ui_request(
+                        request.id,
+                        &request.method,
+                        &request.value,
+                        cx,
+                    );
+                }
+            }
             self.added = parked.added;
             self.removed = parked.removed;
             self.extension_widgets = parked.widgets;
@@ -950,6 +1008,12 @@ impl OrbitApp {
             // transcript from disk in the same frame so the switch never waits
             // on pi boot. `get_messages` supersedes it moments later.
             self.extension_widgets.clear();
+            self.execution = SessionExecution::from_status(
+                self.session_outcomes
+                    .get(&session.path)
+                    .copied()
+                    .unwrap_or_default(),
+            );
             self.preview_session_transcript(session.path.clone(), cx);
             if !session.cwd.is_dir() {
                 // The session's workspace is gone (a removed worktree, a

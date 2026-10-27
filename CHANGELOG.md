@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Session execution status in the sidebar.** Open and background sessions show
+  Running, Waiting for approval/input, Retrying, Compacting, Completed, Failed,
+  Stopped, Disconnected, or Idle from real pi events. Completed/Failed/Stopped
+  remain after opening a result and after warm-process reaping for this launch.
+  Historical and external sessions have no guessed status until observed.
+  Only `agent_settled` finishes a run, and its abort flag distinguishes a stopped
+  run even when no assistant message was produced. Native approvals, dialogs,
+  and questionnaire answers now stay with their session when switching away;
+  requests arriving in the background wait for the user instead of being cancelled.
 - **Mermaid flowcharts render in the transcript.** A `flowchart`/`graph` fence
   (TD/TB, BT, LR, RL) now paints as a diagram — nodes, shapes, orthogonal edges,
   arrowheads, and edge labels — drawn with GPUI paths and text, so there is no
@@ -21,8 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Layout is cached per fence and interface font, so a streaming run re-renders
   the same diagram for free.
 - **A session that finishes while you are not looking stays marked.** Its sidebar
-  row leads with a green check — or a red cross when the turn failed — until the
-  session is actually shown in a foreground window. The mark is what is left
+  row carries an unread dot until the session is actually shown in a foreground
+  window. A separate execution-status label distinguishes Completed from Failed
+  and remains after the dot clears. The mark is what is left
   after the toast has gone: with several sessions open, or after stepping away,
   the finished one is findable instead of merely somewhere in the list. It is
   independent of the running, pinned, and archived glyphs (it never replaces
@@ -31,8 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while Orbit is behind another app does not, because that is not reading it.
   Marks live in memory only — what happened while Orbit was closed is not
   claimed, since there is no way to know whether it was already read elsewhere.
-  Shape and hue both carry the state, so a finished turn and a failed one stay
-  distinguishable without color.
+  The status labels distinguish a finished turn from a failed one without color.
 - **Onest interface font** — available in Settings → Appearance → Interface font,
   bundled in Regular, Medium, SemiBold, and Bold weights for offline use.
 - Git page → commit bar → **model chip**: the **Generate** button now chooses its

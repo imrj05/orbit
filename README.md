@@ -59,7 +59,9 @@ Usage — requests, tokens, cost, and cache, read from your own sessions:
 - Rename, pin, clone, or delete sessions, and copy a session id; pinned sessions sort first — right-click a row for its actions
 - Address sessions by position — **⌘1…⌘9** (**Ctrl+1…9**) opens the Nth visible session, **Ctrl+Tab / Ctrl+Shift+Tab** cycle them
 - Sessions written by the CLI or another window refresh the sidebar live
-- A turn that ends while you are elsewhere leaves its session marked — green check for a finished turn, red cross for a failed one — until you open it
+- Execution status for sessions observed during this app launch — Running, Waiting for approval/input, Retrying, Compacting, Completed, Failed, Stopped, Disconnected, or Idle. Open and background sessions use the same real pi events; outcomes remain after reading and switching. Historical or externally written sessions get no guessed status
+- A turn that ends while you are elsewhere leaves a separate unread dot until you open it in the foreground. Reading clears the dot, not the Completed/Failed status; unread and waiting sessions remain visible under collapsed project groups
+- Native approvals and input dialogs stay pending when you switch sessions, and return with their answers intact when you reopen the session
 - Background turn notifications — a desktop banner and alert sound when the window isn't frontmost, an in-app toast otherwise, and a heads-up when a run is waiting on an extension dialog
 
 **Safeguards**

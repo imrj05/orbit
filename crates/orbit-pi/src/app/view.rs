@@ -289,6 +289,7 @@ impl Render for OrbitApp {
         // (issue #83).
         let review_marks: Rc<HashMap<PathBuf, crate::app::ReviewMark>> =
             Rc::new(self.awaiting_review.clone());
+        let session_statuses = Rc::new(self.sidebar_session_statuses());
         // Pinned header for the expanded workspace group currently at the top
         // of the session list: it stays there while that group's own sessions
         // scroll, and the next group's header pushes it away (see
@@ -321,6 +322,7 @@ impl Render for OrbitApp {
                     &workspace_icons,
                     &branches,
                     &review_marks,
+                    &session_statuses,
                     session_menu.as_ref().as_ref(),
                     workspace_menu.as_ref().as_ref(),
                     sidebar_cursor == Some(sticky.ix),
@@ -712,6 +714,7 @@ impl Render for OrbitApp {
                                                                     &workspace_icons,
                                                                     &branches,
                                                                     &review_marks,
+                                                                    &session_statuses,
                                                                     session_menu.as_ref().as_ref(),
                                                                     row_workspace_menu,
                                                                     sidebar_cursor == Some(ix),

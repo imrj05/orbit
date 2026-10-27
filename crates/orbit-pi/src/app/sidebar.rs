@@ -599,9 +599,10 @@ pub(crate) fn render_side_row(
     // is not a git repository (or sits on a detached HEAD).
     branches: &Rc<HashMap<PathBuf, BranchLine>>,
     // Sessions whose last turn settled while the user was looking elsewhere.
-    // They lead their row with a check or a cross until the session is shown
-    // in a foreground window (issue #83).
+    // An unread dot remains until the session is shown in a foreground window
+    // (issue #83); the execution label remains after that dot is cleared.
     review_marks: &Rc<HashMap<PathBuf, ReviewMark>>,
+    session_statuses: &Rc<HashMap<PathBuf, SessionStatus>>,
     session_menu: Option<&SessionMenu>,
     workspace_menu: Option<&WorkspaceMenu>,
     // Whether this row is the keyboard cursor (see `OrbitApp::sidebar_cursor`).
@@ -911,6 +912,13 @@ pub(crate) fn render_side_row(
             // The open session runs live; parked (background) sessions run
             // in their own pi processes — both get the loader.
             let running = (active && agent_running) || running_paths.contains(&session.path);
+            // Files from other clients or earlier launches have no observed
+            // execution state. Do not label them idle or completed by guessing.
+            let status = session_statuses.get(&session.path).copied();
+            let animating = matches!(
+                status,
+                Some(SessionStatus::Running | SessionStatus::Retrying | SessionStatus::Compacting)
+            );
             let pinned = pinned_paths.contains(&session.path);
             let archived = archived_paths.contains(&session.path);
             let this = this.clone();
@@ -922,7 +930,7 @@ pub(crate) fn render_side_row(
             let deletable = !active && !running && !live_paths.contains(&session.path);
             // Running sessions lead with a small spinner and a shimmering
             // title (shadcn's Marker + `shimmer`).
-            let title = session_title(*ix, session.title.clone().into(), theme, active, running);
+            let title = session_title(*ix, session.title.clone().into(), theme, active, animating);
             // Indented under its workspace group so the list reads as a
             // tree. The open session takes the `selection` fill with `selection_fg`
             // ink — the same selected-destination grammar as the nav rows.
@@ -1045,7 +1053,7 @@ pub(crate) fn render_side_row(
                             .flex()
                             .items_center()
                             .gap(DynamicSpacing::Base06.px(&theme))
-                            .when(running, |line| {
+                            .when(animating, |line| {
                                 line.child(crate::app::running_spinner(
                                     ElementId::NamedInteger("side-spin".into(), *ix as u64),
                                     IconSize::XSmall.px(&theme),
@@ -1053,30 +1061,52 @@ pub(crate) fn render_side_row(
                                     theme,
                                 ))
                             })
-                            // A turn that finished — or failed — while the
-                            // user was elsewhere. Shape and hue both carry the
-                            // distinction, so the mark still reads with the
-                            // colour taken away.
+                            // Reading retires this dot, not the execution
+                            // label that distinguishes Completed from Failed.
                             .when_some(review, |line, mark| {
-                                let (glyph, ink, tip) = match mark {
-                                    ReviewMark::Done => (
-                                        "icons/circle-check.svg",
-                                        theme.success,
-                                        tr!("sidebar.review_finished"),
-                                    ),
-                                    ReviewMark::Failed => (
-                                        "icons/circle-x.svg",
-                                        theme.error,
-                                        tr!("sidebar.review_failed"),
-                                    ),
+                                let (ink, tip) = match mark {
+                                    ReviewMark::Done => {
+                                        (theme.success, tr!("sidebar.unread_result"))
+                                    }
+                                    ReviewMark::Failed => {
+                                        (theme.error, tr!("sidebar.unread_failure"))
+                                    }
                                 };
-                                line.child(div().flex_none().tip(tip).child(icon(
-                                    glyph,
-                                    IconSize::XSmall.px(&theme),
-                                    ink,
-                                )))
+                                line.child(
+                                    div()
+                                        .flex_none()
+                                        .tip(tip)
+                                        .size(DynamicSpacing::Base06.px(&theme))
+                                        .rounded_full()
+                                        .bg(ink),
+                                )
                             })
                             .child(title)
+                            .when_some(status, |line, status| {
+                                line.child(
+                                    div()
+                                        .flex_none()
+                                        .max_w(px(132.))
+                                        .truncate()
+                                        .text_size(TextSize::XSmall.px(&theme))
+                                        .text_color(match status {
+                                            SessionStatus::Completed => theme.success,
+                                            SessionStatus::Failed | SessionStatus::Disconnected => {
+                                                theme.error
+                                            }
+                                            SessionStatus::WaitingApproval
+                                            | SessionStatus::WaitingInput => theme.warning,
+                                            SessionStatus::Running
+                                            | SessionStatus::Retrying
+                                            | SessionStatus::Compacting => theme.accent_text,
+                                            SessionStatus::Idle | SessionStatus::Stopped => {
+                                                meta_ink
+                                            }
+                                        })
+                                        .tip(status.label())
+                                        .child(status.label()),
+                                )
+                            })
                             .when(active && show_workspace, |line| {
                                 line.child(
                                     div()
@@ -2249,6 +2279,7 @@ impl OrbitApp {
                 crate::archive::remove(&menu.path);
                 // Nor a review mark for a row that can never come back.
                 self.awaiting_review.remove(&menu.path);
+                self.session_outcomes.remove(&menu.path);
             }
             self.sessions = sessions::load_sessions();
             self.prune_workflow_store();

@@ -172,6 +172,13 @@ impl OrbitApp {
 
         let mut refresh_sessions = false;
         for event in &events {
+            self.execution.apply_event(event);
+            if matches!(event, Event::TurnStart | Event::AgentSettled { .. }) {
+                self.dialog = None;
+                self.dialog_focus_pending = false;
+                self.approval = None;
+                self.approval_focus_pending = false;
+            }
             match event {
                 Event::AgentStart => {
                     self.busy = true;
@@ -287,7 +294,7 @@ impl OrbitApp {
                     // `session_info_changed`, so drop the in-flight flag here.
                     self.title_generating = false;
                 }
-                Event::AgentSettled => {
+                Event::AgentSettled { aborted } => {
                     self.abort_requested = false;
                     self.busy = false;
                     self.retrying = false;
@@ -316,12 +323,14 @@ impl OrbitApp {
                         .clone()
                         .or_else(|| self.session_name.clone());
                     let summary = self.transcript.latest_turn_summary();
-                    self.notify_turn_finished(
-                        path.as_deref(),
-                        title.as_deref(),
-                        summary.as_ref(),
-                        cx,
-                    );
+                    if !aborted {
+                        self.notify_turn_finished(
+                            path.as_deref(),
+                            title.as_deref(),
+                            summary.as_ref(),
+                            cx,
+                        );
+                    }
                 }
                 Event::CompactionStart { .. } => {
                     // The run-status strip carries the in-progress state;
@@ -429,6 +438,10 @@ impl OrbitApp {
                 cx.notify();
             }
         }
+        self.busy = self.execution.status().is_in_progress();
+        if let Some(path) = &self.current_session_path {
+            self.remember_session_outcome(path.clone(), self.execution.status());
+        }
         if refresh_sessions {
             self.sessions = sessions::load_sessions();
             self.prune_workflow_store();
@@ -526,6 +539,10 @@ impl OrbitApp {
                 Self::drain_parked_session(parked, Some(path), &self.sessions, &mut finished);
             changed |= drained.changed;
             any_busy |= drained.busy;
+            let status = parked.execution.status();
+            if !status.is_in_progress() {
+                self.session_outcomes.insert(path.clone(), status);
+            }
             if !parked.client.is_alive() {
                 dead.push(path.clone());
             }
@@ -593,19 +610,28 @@ impl OrbitApp {
         let mut changed = false;
         let mut rekey = None;
         for event in parked.client.drain_events() {
+            let own_prompt = matches!(&event, Event::Response { id, command, .. }
+                if command == "prompt" && parked.execution.prompt_id.as_deref() == Some(id));
+            parked.execution.apply_event(&event);
+            if own_prompt && !parked.execution.status().is_in_progress() {
+                parked.transcript.abandon_reply();
+            }
+            changed = true;
             match &event {
                 Event::AgentStart => parked.busy = true,
                 // `agent_settled` is the real settle (queued steering /
                 // follow-up / retry can continue past `agent_end`).
-                Event::AgentSettled => {
+                Event::AgentSettled { aborted } => {
                     parked.busy = false;
+                    parked.interaction = ParkedInteraction::default();
+                    parked.retry_detail = None;
                     // A settled run has no queued continuation left; clear
                     // the mirror even if the final `queue_update` was missed.
                     parked.queue = PendingQueue::default();
                     // A pending session has no sidebar row yet, so there is
                     // no path to name in a notification; it is re-keyed
                     // moments later and notices from then on.
-                    if let Some(path) = path {
+                    if let Some(path) = path.filter(|_| !aborted) {
                         finished.push((
                             path.to_path_buf(),
                             sessions
@@ -618,6 +644,8 @@ impl OrbitApp {
                 }
                 Event::ProcessExited => {
                     parked.busy = false;
+                    parked.interaction = ParkedInteraction::default();
+                    parked.retry_detail = None;
                     parked.queue = PendingQueue::default();
                 }
                 // pi emits `queue_update` only when the queue changes, so a
@@ -626,12 +654,60 @@ impl OrbitApp {
                 Event::QueueUpdate { value } => {
                     parked.queue = PendingQueue::from_value(value);
                 }
-                // A parked session has no visible dialog surface; cancel
-                // so its blocked run can settle (an active session renders
-                // the dialog in `tick` above).
-                Event::ExtensionUiRequest { id, .. } => {
-                    let _ = parked.client.cancel_dialog(id);
+                // Native requests remain blocked until this session is opened.
+                // The reducer saved the raw request; no answer is fabricated.
+                Event::ExtensionUiRequest { id, method, .. } => {
+                    if matches!(method.as_str(), "select" | "input") {
+                        if let Some(replay) = parked.interaction.ask_replay.as_mut() {
+                            // These answers were already committed by the user;
+                            // replaying them must not wait for a foreground UI.
+                            let reply = replay.reply(id, method);
+                            let finished = replay.is_finished()
+                                || matches!(reply, crate::ask::AskReplayReply::Cancel);
+                            let payload = match reply {
+                                crate::ask::AskReplayReply::Value(value) => serde_json::json!({
+                                    "type": "extension_ui_response", "id": id, "value": value,
+                                }),
+                                crate::ask::AskReplayReply::Cancel => serde_json::json!({
+                                    "type": "extension_ui_response", "id": id, "cancelled": true,
+                                }),
+                            };
+                            if parked.client.send(CommandBody::Raw(payload)).is_ok() {
+                                parked.execution.respond(id);
+                            } else {
+                                parked.execution.apply_event(&Event::ProcessExited);
+                            }
+                            if finished {
+                                parked.interaction.ask_replay = None;
+                            }
+                        }
+                    } else if method == "custom" {
+                        let _ = parked.client.cancel_dialog(id);
+                    }
                     continue;
+                }
+                Event::AutoRetryEnd { .. } => parked.retry_detail = None,
+                Event::TurnStart => parked.interaction = ParkedInteraction::default(),
+                Event::ToolExecutionStart { value } => {
+                    if value
+                        .get("toolName")
+                        .and_then(Value::as_str)
+                        .is_some_and(crate::ask::is_ask_tool)
+                    {
+                        parked.interaction.ask_tool_id = value
+                            .get("toolCallId")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned);
+                        parked.interaction.ask_questions =
+                            crate::ask::questions_from_args(value.get("args"));
+                    }
+                }
+                Event::ToolExecutionEnd { value } => {
+                    if parked.interaction.ask_tool_id.as_deref()
+                        == value.get("toolCallId").and_then(Value::as_str)
+                    {
+                        parked.interaction = ParkedInteraction::default();
+                    }
                 }
                 Event::MessageEnd { value } => {
                     // Real edit stats from finalized tool calls.
@@ -677,6 +753,7 @@ impl OrbitApp {
             }
             changed |= parked.transcript.apply_event(&event);
         }
+        parked.busy = parked.execution.status().is_in_progress();
         ParkedDrain {
             changed,
             busy: parked.busy,
@@ -820,6 +897,7 @@ impl OrbitApp {
                 }
                 self.prompt_in_flight = None;
                 if handled {
+                    self.execution = SessionExecution::default();
                     self.busy = false;
                     self.transcript.abandon_reply();
                     // The checkpoint turn opened at the send never ran: close its
@@ -841,6 +919,7 @@ impl OrbitApp {
             // `clone` duplicates the session and moves the process onto the
             // copy. Adopt the new file/id when pi reports them, then reload.
             "clone" => {
+                self.execution = SessionExecution::default();
                 self.transcript.clear();
                 self.current_title = None;
                 self.reset_session_name(cx);
@@ -914,7 +993,10 @@ impl OrbitApp {
                 // Agent control surface: streaming/compaction state, queue
                 // modes, auto-compaction, and the session display name.
                 let state = SessionState::from_value(data);
-                self.busy = state.is_streaming || state.is_compacting;
+                self.execution.reconcile(&state);
+                self.busy = state.is_streaming
+                    || state.is_compacting
+                    || self.execution.status().is_in_progress();
                 self.is_compacting = state.is_compacting;
                 self.follow_up_mode = state.follow_up_mode;
                 self.auto_compaction = state.auto_compaction_enabled;
@@ -1060,6 +1142,9 @@ impl OrbitApp {
                 }
             }
             "new_session" => {
+                if !self.busy {
+                    self.execution = SessionExecution::default();
+                }
                 self.transcript.clear();
                 self.current_title = None;
                 self.reset_session_name(cx);
