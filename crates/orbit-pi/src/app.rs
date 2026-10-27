@@ -46,6 +46,8 @@ use orbit_rpc::{
 };
 use serde_json::Value;
 
+use self::session_status::{SessionExecution, SessionStatus};
+
 use crate::access::AccessMode;
 use crate::ask::{AskPrompt, AskQuestion};
 use crate::auth::{AuthEffect, AuthManager, AuthSupport, LoginPhase, ProviderStatus};
@@ -172,6 +174,9 @@ struct ParkedSession {
     client: PiClient,
     transcript: Transcript,
     busy: bool,
+    execution: SessionExecution,
+    interaction: ParkedInteraction,
+    retry_detail: Option<RetryDetail>,
     added: u64,
     removed: u64,
     /// MCP config fingerprint this parked process was spawned with. A stale
@@ -190,6 +195,17 @@ struct ParkedSession {
     parked_at: Instant,
 }
 
+/// Blocking input belongs to its session, not the window displaying it.
+#[derive(Default)]
+struct ParkedInteraction {
+    dialog: Option<Entity<Dialog>>,
+    approval: Option<ApprovalRequest>,
+    ask: Option<AskPrompt>,
+    ask_tool_id: Option<String>,
+    ask_questions: Vec<AskQuestion>,
+    ask_replay: Option<ask::AskReplay>,
+}
+
 /// An in-flight automatic retry (`auto_retry_start` → `auto_retry_end`):
 /// which attempt pi is waiting on, out of how many, and the transient
 /// provider error that triggered it.
@@ -206,6 +222,25 @@ struct RetryDetail {
 struct BranchStatus {
     name: String,
     ahead_behind: Option<(usize, usize)>,
+}
+
+/// One workspace's branch, as a sidebar row's metadata line shows it. Filled
+/// off-thread by [`OrbitApp::refresh_sidebar_branches`]; the row reads it and
+/// never shells out to git.
+#[derive(Clone, PartialEq)]
+pub(crate) struct BranchLine {
+    pub(crate) name: String,
+    pub(crate) ahead_behind: Option<(usize, usize)>,
+}
+
+/// Why a session row carries the "finished, not read" marker: a turn that
+/// answered, or one the agent failed. Kept distinct so a failure is never
+/// mistaken for a plain "done" (issue #83), and separate from the running,
+/// pinned, and archived glyphs so the mark never replaces one of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReviewMark {
+    Done,
+    Failed,
 }
 
 pub struct OrbitApp {
@@ -245,6 +280,10 @@ pub struct OrbitApp {
     /// reply that names the file. Drained every tick like `lives`; re-keyed
     /// into `lives` as soon as the file is known (issue #46).
     pending_parks: Vec<ParkedSession>,
+    execution: SessionExecution,
+    /// Last observed outcomes survive warm-process reaping and reading a result.
+    /// Live states come from `execution` and `lives`, never from this cache.
+    session_outcomes: HashMap<PathBuf, SessionStatus>,
     transcript: Transcript,
     sessions: Vec<SessionInfo>,
     /// Debounced watcher over pi's session store — sessions written by the
@@ -373,6 +412,20 @@ pub struct OrbitApp {
     /// Generation of the newest branch fetch; a late result from an older
     /// fetch is discarded.
     branch_fetch: u64,
+    /// Branch per listed project, for the sidebar rows' metadata line. Keyed
+    /// by workspace path (the same canonical spelling the rows resolve their
+    /// session's `cwd` to). A workspace that is not a git repository — or is
+    /// on a detached HEAD — has no entry, and its row drops the item rather
+    /// than inventing one.
+    sidebar_branches: HashMap<PathBuf, BranchLine>,
+    /// Project logos loaded off the UI thread for sidebar rows.
+    sidebar_logos: HashMap<PathBuf, Arc<Image>>,
+    /// The project list the newest [`Self::sidebar_branches`] scan covered.
+    /// Comparing it against `workspaces` is what makes an added or removed
+    /// project fill in on the next heartbeat without a watcher of its own.
+    sidebar_branches_for: Vec<PathBuf>,
+    /// Generation of the newest sidebar branch scan; a late result is dropped.
+    sidebar_branches_fetch: u64,
     /// Real line counts from edit/write tool calls this session.
     added: u64,
     removed: u64,
@@ -495,6 +548,13 @@ pub struct OrbitApp {
     /// the transcript itself is the notification then. False when no window
     /// is open at all, so a run that settles then still notifies.
     window_active: bool,
+    /// Sessions whose last turn settled while the user was not reading them,
+    /// and why. The sidebar marks each until the session is actually shown in
+    /// a foreground window (issue #83). Memory-only on purpose: marking what
+    /// happened while Orbit was closed is a separate problem, and a mark that
+    /// outlived the process would be an unverifiable claim about a session the
+    /// user may already have read elsewhere.
+    awaiting_review: HashMap<PathBuf, ReviewMark>,
     /// A banner click asked for the window; the next paint brings it forward
     /// (`tick` has no `Window` to activate with).
     activate_window_pending: bool,
@@ -540,6 +600,8 @@ pub struct OrbitApp {
     /// Which archived sessions the sidebar lists. Persisted beside the
     /// project list.
     sidebar_archived_filter: SidebarArchivedFilter,
+    /// Show the first-message preview beneath session titles. UI-only and persisted.
+    sidebar_show_first_message: bool,
     /// The sidebar's Projects-header view menu is open.
     sidebar_sort_menu: bool,
     /// Open row-actions menu on a workspace group header (which workspace's
@@ -730,6 +792,9 @@ pub struct OrbitApp {
     refreshing: bool,
     /// Whether the top-bar session-details popover is open.
     session_details_open: bool,
+    /// A row-menu rename waiting for the target session's state to load.
+    pending_session_rename: Option<PathBuf>,
+    session_rename_ready: bool,
     /// Whether the top bar's overflow ("more") menu is open. Holds the
     /// surfaces that no longer earn a permanent chip: Session details,
     /// Explorer, the Terminal, and the Git page.
@@ -1755,6 +1820,8 @@ impl OrbitApp {
                 .max(SIDEBAR_MIN_W)),
             lives: HashMap::new(),
             pending_parks: Vec::new(),
+            execution: SessionExecution::default(),
+            session_outcomes: HashMap::new(),
             transcript: Transcript::new(),
             sessions: sessions::load_sessions(),
             session_watcher: sessions::SessionWatcher::start(),
@@ -1806,6 +1873,10 @@ impl OrbitApp {
             workspace_logo,
             branch: None,
             branch_fetch: 0,
+            sidebar_branches: HashMap::new(),
+            sidebar_logos: HashMap::new(),
+            sidebar_branches_for: Vec::new(),
+            sidebar_branches_fetch: 0,
             added: 0,
             removed: 0,
             focus: cx.focus_handle(),
@@ -1853,6 +1924,7 @@ impl OrbitApp {
             notification_auth: notifications::DesktopAuth::Unknown,
             notification_auth_pending: false,
             window_active: true,
+            awaiting_review: HashMap::new(),
             activate_window_pending: false,
             _window_watchers: Vec::new(),
             session_history: Vec::new(),
@@ -1866,6 +1938,7 @@ impl OrbitApp {
             workspace_sort: workspace_store.sort,
             sidebar_group_by: workspace_store.group_by,
             sidebar_archived_filter: workspace_store.archived_filter,
+            sidebar_show_first_message: workspace_store.show_first_message,
             sidebar_sort_menu: false,
             workspace_menu: None,
             worktree_config,
@@ -1949,6 +2022,8 @@ impl OrbitApp {
             host,
             refreshing: false,
             session_details_open: false,
+            pending_session_rename: None,
+            session_rename_ready: false,
             header_more_open: false,
             title_generating: false,
             rename_saved_at: None,
@@ -2168,8 +2243,10 @@ impl OrbitApp {
             app.probe_auth();
         }
         // The branch chip tracks the launch workspace even before a session
-        // is open.
+        // is open, and every listed project gets its branch for the sidebar's
+        // metadata line.
         app.refresh_branch_status(cx);
+        app.refresh_sidebar_branches(cx);
         // Check for a newer pi in the background; a newer release installs
         // itself through pi's own updater (see `pi_update_ui`).
         app.check_pi_update_on_launch(cx);
@@ -2380,6 +2457,7 @@ impl OrbitApp {
             sort: self.workspace_sort,
             group_by: self.sidebar_group_by,
             archived_filter: self.sidebar_archived_filter,
+            show_first_message: self.sidebar_show_first_message,
         });
     }
 
@@ -2427,6 +2505,7 @@ impl OrbitApp {
             cx.notify();
             return;
         };
+        let row_cwd = cwd.clone();
         cx.spawn(async move |this, cx| {
             let branch = cx
                 .background_executor()
@@ -2437,7 +2516,22 @@ impl OrbitApp {
                     })
                 })
                 .await;
+            let line = branch.as_ref().map(|branch| BranchLine {
+                name: branch.name.clone(),
+                ahead_behind: branch.ahead_behind,
+            });
             let _ = this.update(cx, |app, cx| {
+                // The sidebar's metadata line shows the same fact for this
+                // workspace, so one fetch feeds both. It is not gated on the
+                // status bar's generation: a superseded read still told us
+                // the truth when it ran.
+                let previous = match &line {
+                    Some(line) => app.sidebar_branches.insert(row_cwd.clone(), line.clone()),
+                    None => app.sidebar_branches.remove(&row_cwd),
+                };
+                if previous.as_ref() != line.as_ref() {
+                    cx.notify();
+                }
                 // A newer fetch (workspace move or fresh git state) superseded
                 // this one; drop the stale result.
                 if app.branch_fetch != fetch {
@@ -2450,6 +2544,64 @@ impl OrbitApp {
             });
         })
         .detach();
+    }
+
+    /// Refetch every listed project's branch for the sidebar rows' metadata
+    /// line — one `git` pair per project, all off-thread. Called at launch and
+    /// whenever the project list itself changes; a bare `git checkout` in a
+    /// background project is picked up on the next of either, so the line can
+    /// lag a checkout made outside Orbit in a project that is not the current
+    /// one.
+    pub(super) fn refresh_sidebar_branches(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_branches_fetch = self.sidebar_branches_fetch.wrapping_add(1);
+        let fetch = self.sidebar_branches_fetch;
+        let workspaces = self.workspaces.clone();
+        self.sidebar_branches_for = workspaces.clone();
+        if workspaces.is_empty() {
+            self.sidebar_branches.clear();
+            self.sidebar_logos.clear();
+            cx.notify();
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let (lines, logos) = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut lines = HashMap::new();
+                    let mut logos = HashMap::new();
+                    for cwd in workspaces {
+                        if let Some(logo) = crate::workspace_logo::load(&cwd) {
+                            logos.insert(cwd.clone(), logo);
+                        }
+                        if let Some(name) = crate::git::current_branch(&cwd) {
+                            let ahead_behind = crate::git::ahead_behind(&cwd);
+                            lines.insert(cwd, BranchLine { name, ahead_behind });
+                        }
+                    }
+                    (lines, logos)
+                })
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                // A newer scan (the project list moved again) superseded this
+                // one; drop the stale result.
+                if app.sidebar_branches_fetch != fetch {
+                    return;
+                }
+                app.sidebar_logos = logos;
+                app.sidebar_branches = lines;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Refill [`Self::sidebar_branches`] when the project list has changed
+    /// since the last scan. Cheap enough for the heartbeat: it compares one
+    /// small vector of paths and spawns nothing while they match.
+    pub(super) fn sync_sidebar_branches(&mut self, cx: &mut Context<Self>) {
+        if self.sidebar_branches_for != self.workspaces {
+            self.refresh_sidebar_branches(cx);
+        }
     }
 }
 
@@ -2681,7 +2833,7 @@ fn workspaces_path() -> PathBuf {
 
 /// The parsed workspaces store. Keeping `added_at` beside the path list gives
 /// [`WorkspaceSort::DateAdded`] a stable key across relaunches.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct WorkspaceStore {
     workspaces: Vec<PathBuf>,
     added_at: HashMap<PathBuf, SystemTime>,
@@ -2692,6 +2844,22 @@ struct WorkspaceStore {
     group_by: SidebarGroupBy,
     /// Which archived sessions the sidebar lists.
     archived_filter: SidebarArchivedFilter,
+    /// Whether session rows include their first-message preview (on by default).
+    show_first_message: bool,
+}
+
+impl Default for WorkspaceStore {
+    fn default() -> Self {
+        Self {
+            workspaces: Vec::new(),
+            added_at: HashMap::new(),
+            marks: HashMap::new(),
+            sort: WorkspaceSort::default(),
+            group_by: SidebarGroupBy::default(),
+            archived_filter: SidebarArchivedFilter::default(),
+            show_first_message: true,
+        }
+    }
 }
 
 /// Read the project list, tolerating the pre-timestamp format where
@@ -2739,6 +2907,10 @@ fn parse_workspace_store(value: &Value) -> WorkspaceStore {
             .and_then(Value::as_str)
             .map(SidebarArchivedFilter::from_key)
             .unwrap_or_default(),
+        show_first_message: value
+            .get("show_first_message")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
         ..WorkspaceStore::default()
     };
     let Some(entries) = value.get("workspaces").and_then(Value::as_array) else {
@@ -2801,6 +2973,11 @@ fn persist_workspace_store(store: &WorkspaceStore) {
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
+    let _ = fs::write(path, workspace_store_json(store).to_string());
+}
+
+/// The persisted shape, separate from I/O so preference round trips are testable.
+fn workspace_store_json(store: &WorkspaceStore) -> Value {
     let workspaces: Vec<Value> = store
         .workspaces
         .iter()
@@ -2826,13 +3003,13 @@ fn persist_workspace_store(store: &WorkspaceStore) {
             Value::Object(entry)
         })
         .collect();
-    let payload = serde_json::json!({
+    serde_json::json!({
         "workspaces": workspaces,
         "sort": store.sort.as_str(),
         "group_by": store.group_by.as_str(),
         "archived_filter": store.archived_filter.as_str(),
-    });
-    let _ = fs::write(path, payload.to_string());
+        "show_first_message": store.show_first_message,
+    })
 }
 
 /// `~/.orbit-pi/last-workspace.json` — the folder the last task ran in. The
@@ -3308,6 +3485,7 @@ mod retention_ui;
 mod runtime;
 mod search;
 mod session;
+mod session_status;
 mod settings;
 mod sidebar;
 mod skills_ui;
@@ -3359,6 +3537,8 @@ mod sidebar_group_tests;
 mod sidebar_placeholder_tests;
 #[cfg(test)]
 mod sidebar_remove_tests;
+#[cfg(test)]
+mod sidebar_review_tests;
 #[cfg(test)]
 mod sidebar_sort_tests;
 #[cfg(test)]
