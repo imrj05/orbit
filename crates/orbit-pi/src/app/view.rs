@@ -209,6 +209,7 @@ impl Render for OrbitApp {
         let archived_paths: Rc<HashSet<PathBuf>> = Rc::new(archived_set);
         // Flat "one list" mode names each row's workspace instead of grouping.
         let show_workspace = self.sidebar_group_by == SidebarGroupBy::OneList;
+        let show_first_message = self.sidebar_show_first_message;
         // Parked (background) sessions mid-run — they keep their row under a
         // collapsed workspace header, like the open session, so a live task
         // is never hidden by a collapse. Also drives the running loader.
@@ -322,6 +323,7 @@ impl Render for OrbitApp {
                     &pinned,
                     &archived_paths,
                     show_workspace,
+                    show_first_message,
                     &live_paths,
                     &marks,
                     &workspace_icons,
@@ -669,6 +671,7 @@ impl Render for OrbitApp {
                                                 self.sidebar_group_by,
                                                 self.workspace_sort,
                                                 self.sidebar_archived_filter,
+                                                show_first_message,
                                                 self.sidebar_sort_menu,
                                                 cx.entity(),
                                                 theme,
@@ -716,6 +719,7 @@ impl Render for OrbitApp {
                                                                     &pinned,
                                                                     &archived_paths,
                                                                     show_workspace,
+                                                                    show_first_message,
                                                                     &live_paths,
                                                                     &marks,
                                                                     &workspace_icons,

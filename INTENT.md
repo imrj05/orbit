@@ -370,10 +370,22 @@ The navigation rail's user-turn index is likewise cached in `Transcript` and
 rebuilt only when the message list changes, and debug builds log one local
 `[orbit:perf]` line per settle (window, cache, prompt, output, duration, rate).
 
-A sidebar session row is three lines because each line answers a different
-question: the title says *which session*, the message line says *what was asked*
-and the metadata strip says *when, where, and on what branch*. The message line
-shows the prompt every time — pi titles a session from that message, so the two
+The sidebar keeps the title, prompt preview, age/status, branch/divergence,
+provider/model marks, and pin/archive indicators. Flat mode adds the workspace
+above the title; grouped mode names it once in the project header. Tinted project
+marks and count badges establish hierarchy, semantic status washes distinguish
+outcomes, and primary-ink titles lead secondary previews and muted metadata.
+The selected row keeps its theme selection fill with a subtle accent outline;
+the keyboard cursor adds a full focus outline even when that row is selected.
+Title, preview, and branch tooltips expose truncated text without widening the
+sidebar. Spacing and mark geometry follow the existing theme tokens, and the
+list remains virtualized with the same session data and action handlers.
+The sidebar view menu's **Show first message** toggle hides or restores the preview
+in both grouped and flat lists. It defaults to shown and persists as
+`show_first_message` in `workspaces.json`; missing or invalid values keep previews
+visible. Toggling remeasures rows while retaining the logical scroll anchor, and
+never edits session content or hides other metadata. When enabled, the message line
+shows the whole prompt — pi titles a session from that message, so the two
 can start alike, but the title is capped at 80 characters while a row shows
 about thirty, so trimming the message to a "remainder" hid the end of the ask
 instead of de-duplicating it. Branch metadata is a

@@ -600,6 +600,8 @@ pub struct OrbitApp {
     /// Which archived sessions the sidebar lists. Persisted beside the
     /// project list.
     sidebar_archived_filter: SidebarArchivedFilter,
+    /// Show the first-message preview beneath session titles. UI-only and persisted.
+    sidebar_show_first_message: bool,
     /// The sidebar's Projects-header view menu is open.
     sidebar_sort_menu: bool,
     /// Open row-actions menu on a workspace group header (which workspace's
@@ -1936,6 +1938,7 @@ impl OrbitApp {
             workspace_sort: workspace_store.sort,
             sidebar_group_by: workspace_store.group_by,
             sidebar_archived_filter: workspace_store.archived_filter,
+            sidebar_show_first_message: workspace_store.show_first_message,
             sidebar_sort_menu: false,
             workspace_menu: None,
             worktree_config,
@@ -2454,6 +2457,7 @@ impl OrbitApp {
             sort: self.workspace_sort,
             group_by: self.sidebar_group_by,
             archived_filter: self.sidebar_archived_filter,
+            show_first_message: self.sidebar_show_first_message,
         });
     }
 
@@ -2829,7 +2833,7 @@ fn workspaces_path() -> PathBuf {
 
 /// The parsed workspaces store. Keeping `added_at` beside the path list gives
 /// [`WorkspaceSort::DateAdded`] a stable key across relaunches.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct WorkspaceStore {
     workspaces: Vec<PathBuf>,
     added_at: HashMap<PathBuf, SystemTime>,
@@ -2840,6 +2844,22 @@ struct WorkspaceStore {
     group_by: SidebarGroupBy,
     /// Which archived sessions the sidebar lists.
     archived_filter: SidebarArchivedFilter,
+    /// Whether session rows include their first-message preview (on by default).
+    show_first_message: bool,
+}
+
+impl Default for WorkspaceStore {
+    fn default() -> Self {
+        Self {
+            workspaces: Vec::new(),
+            added_at: HashMap::new(),
+            marks: HashMap::new(),
+            sort: WorkspaceSort::default(),
+            group_by: SidebarGroupBy::default(),
+            archived_filter: SidebarArchivedFilter::default(),
+            show_first_message: true,
+        }
+    }
 }
 
 /// Read the project list, tolerating the pre-timestamp format where
@@ -2887,6 +2907,10 @@ fn parse_workspace_store(value: &Value) -> WorkspaceStore {
             .and_then(Value::as_str)
             .map(SidebarArchivedFilter::from_key)
             .unwrap_or_default(),
+        show_first_message: value
+            .get("show_first_message")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
         ..WorkspaceStore::default()
     };
     let Some(entries) = value.get("workspaces").and_then(Value::as_array) else {
@@ -2949,6 +2973,11 @@ fn persist_workspace_store(store: &WorkspaceStore) {
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
+    let _ = fs::write(path, workspace_store_json(store).to_string());
+}
+
+/// The persisted shape, separate from I/O so preference round trips are testable.
+fn workspace_store_json(store: &WorkspaceStore) -> Value {
     let workspaces: Vec<Value> = store
         .workspaces
         .iter()
@@ -2974,13 +3003,13 @@ fn persist_workspace_store(store: &WorkspaceStore) {
             Value::Object(entry)
         })
         .collect();
-    let payload = serde_json::json!({
+    serde_json::json!({
         "workspaces": workspaces,
         "sort": store.sort.as_str(),
         "group_by": store.group_by.as_str(),
         "archived_filter": store.archived_filter.as_str(),
-    });
-    let _ = fs::write(path, payload.to_string());
+        "show_first_message": store.show_first_message,
+    })
 }
 
 /// `~/.orbit-pi/last-workspace.json` — the folder the last task ran in. The

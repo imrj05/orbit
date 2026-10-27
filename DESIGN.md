@@ -573,15 +573,25 @@ The sidebar is quiet infrastructure.
 - Supported range: 200–320px.
 - Collapse/hide the sidebar before forcing the workspace to become cramped.
 - Sidebar sections use whitespace and labels rather than excessive containers.
+- Project marks sit on small theme-tinted tiles (the default inherits the accent;
+  custom tints and logos remain intact), with a quiet tonal session counter.
+  Session titles use primary ink and medium weight, stepping to semibold for the
+  selected session; previews use secondary ink and metadata stays muted. Real
+  execution states get semantic badge washes, never invented activity. Selection
+  combines the existing selected fill with a subtle accent outline; keyboard focus
+  has its own full-strength outline, including on the selected row. Resting rows
+  stay unboxed, and provider marks keep their individual hover targets.
 - A project group header carries a session count only when it is non-zero. A project
   with nothing in it already says so by having no rows under it.
-- A session row's title line is its anchor and is always there. Line 2 carries the
-  first message, always: pi titles a session from that message, so the two often start the
+- A session row's title line is its anchor and is always there. The sidebar view
+  menu's **Show first message** toggle controls the preview below it (on by default,
+  remembered across restarts in both grouped and flat lists). When enabled, it carries
+  the whole first message: pi titles a session from that message, so the two often start the
   same way, but the title is capped at 80 characters and the row shows far fewer — the
   message line is the only place the ask reads to its end. Line 3 is the metadata strip —
   age, workspace (flat list only: under a project header the name is already one line up),
   and branch with `↑n`/`↓n` against its upstream. Rows are three lines tall and drop to two
-  only when nothing has been sent yet. The branch truncates last, and a divergence count
+  when previews are hidden or nothing has been sent yet. The branch truncates last, and a divergence count
   appears only when it is non-zero.
 - Every line of a session row is a truncating text run inside a flex row, with
   `flex_1 min_w_0 truncate` on the text itself. `truncate()` on a bare block collapses to

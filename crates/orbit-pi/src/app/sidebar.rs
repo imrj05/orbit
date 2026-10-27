@@ -7,7 +7,7 @@ use crate::sessions::cap_chars;
 use crate::shimmer::ShimmerText;
 use crate::theme::tokens::{
     context_menu, list_item, picker, popover, BufferLineHeight, ButtonSize, DynamicSpacing,
-    IconSize, TextSize,
+    IconSize, Radius, TextSize,
 };
 use crate::workspace_mark::{self, WorkspaceMark};
 
@@ -735,29 +735,43 @@ fn project_icon(
     size: IconSize,
     theme: &Theme,
 ) -> AnyElement {
+    // Untinted projects inherit the theme accent; an explicitly neutral mark
+    // stays neutral. The wash belongs to the mark, not the entire session.
+    let tint = match mark.tint.as_deref() {
+        None => theme.accent_text,
+        key => workspace_mark::tint_color(theme, key),
+    };
+    let frame = div()
+        .flex_none()
+        .size(size.px(theme) + DynamicSpacing::Base08.px(theme))
+        .rounded(Radius::Small.px(theme))
+        .bg(tint.opacity(0.10))
+        .flex()
+        .items_center()
+        .justify_center();
     let has_custom_icon = mark
         .icon
         .as_deref()
         .is_some_and(|icon| workspace_mark::PROJECT_ICONS.contains(&icon));
     if !has_custom_icon {
         if let Some(logo) = logo {
-            return img(ImageSource::Image(logo.clone()))
-                .flex_none()
-                .size(size.px(theme))
-                .rounded(px(3.))
-                .object_fit(ObjectFit::Contain)
+            return frame
+                .child(
+                    img(ImageSource::Image(logo.clone()))
+                        .flex_none()
+                        .size(size.px(theme))
+                        .rounded(Radius::XSmall.px(theme))
+                        .object_fit(ObjectFit::Contain),
+                )
                 .into_any_element();
         }
     }
     let path = status_icon
         .cloned()
         .unwrap_or_else(|| workspace_mark::icon_path(mark.icon.as_deref()));
-    icon_dyn(
-        path,
-        size.px(theme),
-        workspace_mark::tint_color(theme, mark.tint.as_deref()),
-    )
-    .into_any_element()
+    frame
+        .child(icon_dyn(path, size.px(theme), tint))
+        .into_any_element()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -778,6 +792,7 @@ pub(crate) fn render_side_row(
     // Flat "one list" mode has no workspace headers, so each row names its
     // workspace instead.
     show_workspace: bool,
+    show_first_message: bool,
     // Every session with a live (running or warm-idle) pi process. Guards
     // delete, which would otherwise let an alive process recreate the file.
     live_paths: &Rc<HashSet<PathBuf>>,
@@ -830,9 +845,8 @@ pub(crate) fn render_side_row(
             // session count pinned to the very end, and the row actions (a `…`
             // menu, then the new-session `+`) fading in to the count's left on
             // hover (all flex_none, so nothing shifts when they appear). The
-            // name takes the session title's size — only bolder — so the group
-            // reads as their parent, not as another section label; the mark
-            // and chevron step up with it.
+            // name and tinted mark distinguish the group from its sessions;
+            // the count stays visible while the contextual actions reveal.
             div()
                 .w_full()
                 .pt(DynamicSpacing::Base12.px(&theme))
@@ -841,7 +855,7 @@ pub(crate) fn render_side_row(
                 .child(
                     div()
                         .w_full()
-                        .h(px(26.))
+                        .min_h(ButtonSize::Default.height(&theme))
                         .pl(DynamicSpacing::Base06.px(&theme))
                         .pr(DynamicSpacing::Base08.px(&theme))
                         .rounded(list_item::RADIUS.px(&theme))
@@ -849,7 +863,11 @@ pub(crate) fn render_side_row(
                         .items_center()
                         .gap(DynamicSpacing::Base06.px(&theme))
                         .cursor_pointer()
-                        .when(cursor, |s| s.bg(theme.surface_hover))
+                        .border_1()
+                        .border_color(theme.border.opacity(0.))
+                        .when(cursor, |s| {
+                            s.bg(theme.surface_hover).border_color(theme.focus_ring)
+                        })
                         .hover(|s| s.bg(theme.surface_hover))
                         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                             let label = label_for_click.clone();
@@ -906,11 +924,8 @@ pub(crate) fn render_side_row(
                                 .truncate()
                                 .text_size(TextSize::Default.px(&theme))
                                 .font_weight(FontWeight::MEDIUM)
-                                // The project's own hue when it has one, else
-                                // the primary ink — never the secondary a
-                                // session title wears, so a group header and
-                                // the rows under it stay distinguishable
-                                // (issue #78).
+                                // Keep the user's project hue on the name as
+                                // well as its mark (issue #78).
                                 .text_color(workspace_mark::label_ink(&theme, mark.tint.as_deref()))
                                 .child(label.clone()),
                         )
@@ -957,16 +972,22 @@ pub(crate) fn render_side_row(
                             )),
                         )
                         // Session count, pinned to the header's right edge.
-                        // Small, muted metadata — legible beside the parent row
-                        // without competing with the name. A project with
+                        // A small tonal counter, subordinate to the name. A project with
                         // nothing in it says so by having no rows under it;
                         // a `0` here would only be a number doing no work.
                         .when(*count > 0, |header| {
                             header.child(
                                 div()
                                     .flex_none()
-                                    .text_size(TextSize::Small.px(&theme))
-                                    .text_color(theme.text_muted)
+                                    .min_w(ButtonSize::Compact.height(&theme))
+                                    .px(DynamicSpacing::Base04.px(&theme))
+                                    .py(DynamicSpacing::Base02.px(&theme))
+                                    .rounded(Radius::Small.px(&theme))
+                                    .bg(theme.accent.opacity(0.08))
+                                    .text_center()
+                                    .text_size(TextSize::XSmall.px(&theme))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme.text_secondary)
                                     .child(format!("{count}")),
                             )
                         }),
@@ -1132,7 +1153,7 @@ pub(crate) fn render_side_row(
             let mut row = div()
                 .id(ElementId::NamedInteger("side-session".into(), *ix as u64))
                 .w_full()
-                .py(DynamicSpacing::Base01.px(&theme))
+                .py(DynamicSpacing::Base02.px(&theme))
                 .cursor_pointer()
                 .when_some(shortcut_hint, |row, hint| row.tip(hint))
                 // Right-click anywhere on the row opens its actions menu at
@@ -1175,23 +1196,30 @@ pub(crate) fn render_side_row(
                 .group("srow")
                 .relative()
                 .w_full()
-                .pl(DynamicSpacing::Base06.px(&theme))
-                .pr(DynamicSpacing::Base08.px(&theme))
-                .py(DynamicSpacing::Base06.px(&theme))
+                .px(DynamicSpacing::Base08.px(&theme))
+                .py(DynamicSpacing::Base08.px(&theme))
                 .rounded(list_item::RADIUS.px(&theme))
+                .border_1()
+                .border_color(theme.border.opacity(0.))
                 .flex()
                 .items_center()
                 .gap(DynamicSpacing::Base06.px(&theme))
                 .when(active, |card| {
                     card.bg(theme.surface_selected)
+                        .border_color(theme.accent.opacity(0.40))
                         .text_color(theme.selection_fg)
                 })
-                .when(cursor && !active, |card| card.bg(theme.surface_hover))
+                // Focus remains visible even on the selected session. Reserve
+                // the border in every state so hover/focus never shifts text.
+                .when(cursor, |card| {
+                    card.border_color(theme.focus_ring)
+                        .when(!active, |card| card.bg(theme.surface_hover))
+                })
                 .when(!active && !cursor, |card| {
                     card.hover(|s| s.bg(theme.surface_hover))
                 });
             let age = sessions::relative_time(session.modified);
-            // Line 2 is the prompt itself, whole and always: the title is capped
+            // When enabled, line 2 is the prompt itself: the title is capped
             // and the row is narrower still, so a title that happens to be the
             // same sentence is cut, not redundant — the message line is the
             // only place the ask is readable.
@@ -1231,6 +1259,7 @@ pub(crate) fn render_side_row(
             } else {
                 meta_ink
             };
+            let has_state = !matches!(lane, StatusLane::Idle | StatusLane::Unknown);
             let row_slot = div()
                 .flex_none()
                 .max_w(px(110.))
@@ -1245,7 +1274,11 @@ pub(crate) fn render_side_row(
                     .items_center()
                     .gap(DynamicSpacing::Base06.px(&theme))
                     .when(pinned, |line| {
-                        line.child(icon("icons/pin.svg", IconSize::XSmall.px(&theme), meta_ink))
+                        line.child(icon(
+                            "icons/pin.svg",
+                            IconSize::XSmall.px(&theme),
+                            theme.warning,
+                        ))
                     })
                     .when(archived, |line| {
                         line.child(icon(
@@ -1254,8 +1287,20 @@ pub(crate) fn render_side_row(
                             meta_ink,
                         ))
                     })
-                    .child(session_status_lane(*ix, lane, status, theme))
-                    .child(row_slot),
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(DynamicSpacing::Base02.px(&theme))
+                            .px(DynamicSpacing::Base04.px(&theme))
+                            .py(DynamicSpacing::Base01.px(&theme))
+                            .rounded(Radius::Small.px(&theme))
+                            .when(has_state, |badge| {
+                                badge.bg(status_lane_ink(lane, &theme).opacity(0.10))
+                            })
+                            .child(session_status_lane(*ix, lane, status, theme))
+                            .child(row_slot),
+                    ),
             );
             card = card.child(
                 div()
@@ -1264,7 +1309,7 @@ pub(crate) fn render_side_row(
                     .flex()
                     .flex_col()
                     .justify_center()
-                    .gap(DynamicSpacing::Base02.px(&theme))
+                    .gap(DynamicSpacing::Base04.px(&theme))
                     // Only the flat list needs a project header on each row.
                     .when(show_workspace, |col| {
                         col.child(
@@ -1286,7 +1331,11 @@ pub(crate) fn render_side_row(
                                         .min_w_0()
                                         .truncate()
                                         .text_size(TextSize::Small.px(&theme))
-                                        .text_color(meta_ink)
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(workspace_mark::label_ink(
+                                            &theme,
+                                            mark.tint.as_deref(),
+                                        ))
                                         .child(workspace_label),
                                 )
                                 .children(status_details.take()),
@@ -1305,7 +1354,12 @@ pub(crate) fn render_side_row(
                                 line.child(
                                     div()
                                         .flex_none()
+                                        .px(DynamicSpacing::Base04.px(&theme))
+                                        .py(DynamicSpacing::Base01.px(&theme))
+                                        .rounded(Radius::Small.px(&theme))
+                                        .bg(theme.accent.opacity(0.10))
                                         .text_size(TextSize::XSmall.px(&theme))
+                                        .font_weight(FontWeight::MEDIUM)
                                         .text_color(theme.accent_text)
                                         .child(tr!("sidebar.current")),
                                 )
@@ -1316,7 +1370,7 @@ pub(crate) fn render_side_row(
                     // The text sits in a flex row with `flex_1 min_w_0` like the
                     // title: `truncate()` on a bare block collapses the line to
                     // its ellipsis instead of filling the column.
-                    .when(!message.is_empty(), |col| {
+                    .when(show_first_message && !message.is_empty(), |col| {
                         col.child(
                             div().w_full().flex().items_center().child(
                                 div()
@@ -1325,7 +1379,8 @@ pub(crate) fn render_side_row(
                                     .truncate()
                                     .text_size(TextSize::Small.px(&theme))
                                     .line_height(BufferLineHeight::Standard.relative())
-                                    .text_color(meta_ink)
+                                    .text_color(theme.text_secondary)
+                                    .tip(message.clone())
                                     .child(message),
                             ),
                         )
@@ -1342,7 +1397,7 @@ pub(crate) fn render_side_row(
                                 line.child(icon(
                                     "icons/branch.svg",
                                     IconSize::XSmall.px(&theme),
-                                    meta_ink,
+                                    theme.syn_function,
                                 ))
                                 .child(
                                     div()
@@ -1351,6 +1406,7 @@ pub(crate) fn render_side_row(
                                         .truncate()
                                         .text_size(TextSize::XSmall.px(&theme))
                                         .text_color(meta_ink)
+                                        .tip(branch.name.clone())
                                         .child(branch.name.clone()),
                                 )
                                 // Colour is never the only signal: the arrow
@@ -1396,28 +1452,28 @@ pub(crate) fn render_side_row(
                                                     None => entry.provider.clone(),
                                                 };
                                                 let visible_count = providers.len().min(3);
-                                                // Each badge owns only its exposed half as a
+                                                // Each badge owns its exposed portion as a
                                                 // hover target; the last owns its full width.
                                                 div()
                                                     .relative()
                                                     .flex_none()
-                                                    .w(px(if index + 1 == visible_count {
-                                                        20.
+                                                    .w(if index + 1 == visible_count {
+                                                        IconSize::Medium.square(&theme)
                                                     } else {
-                                                        10.
-                                                    }))
-                                                    .h(px(20.))
+                                                        IconSize::Small.px(&theme)
+                                                    })
+                                                    .h(IconSize::Medium.square(&theme))
                                                     .tip(label)
                                                     .child(
                                                         div()
                                                             .absolute()
                                                             .left_0()
                                                             .top_0()
-                                                            .size(px(20.))
+                                                            .size(IconSize::Medium.square(&theme))
                                                             .rounded_full()
                                                             .bg(theme.surface)
                                                             .border_1()
-                                                            .border_color(theme.border_subtle)
+                                                            .border_color(tint.opacity(0.35))
                                                             .flex()
                                                             .items_center()
                                                             .justify_center()
@@ -1472,15 +1528,11 @@ fn session_title(
     active: bool,
     running: bool,
 ) -> AnyElement {
-    let color = if active {
-        theme.text_primary
-    } else {
-        theme.text_secondary
-    };
+    let color = theme.text_primary;
     let weight = if active {
-        FontWeight::MEDIUM
+        FontWeight::SEMIBOLD
     } else {
-        FontWeight::NORMAL
+        FontWeight::MEDIUM
     };
     let size = TextSize::Default.px(&theme);
     let line_height = BufferLineHeight::Standard.relative();
@@ -1493,6 +1545,7 @@ fn session_title(
             .line_height(line_height)
             .font_weight(weight)
             .text_color(color)
+            .tip(title.clone())
             .child(title)
             .into_any_element();
     }
@@ -2133,6 +2186,7 @@ pub(crate) fn sidebar_options_button(
     group_by: SidebarGroupBy,
     sort: WorkspaceSort,
     archived_filter: SidebarArchivedFilter,
+    show_first_message: bool,
     open: bool,
     this: Entity<OrbitApp>,
     theme: Theme,
@@ -2165,6 +2219,7 @@ pub(crate) fn sidebar_options_button(
                     group_by,
                     sort,
                     archived_filter,
+                    show_first_message,
                     this_for_popup,
                     theme,
                 ))
@@ -2236,12 +2291,13 @@ const OPTIONS_POPOVER_W: f32 = 300.;
 
 /// The sidebar-options menu, anchored below the header control. Uses the
 /// picker surface (search-less) and `picker_entry` rows so it matches the
-/// branch selector; an outside mouse-down dismisses it. Three sections:
-/// Group by, Order by, and Filter sessions.
+/// branch selector; an outside mouse-down dismisses it. Grouping, ordering,
+/// archive filtering, and the first-message preview preference live here.
 pub(crate) fn sidebar_options_popup(
     group_by: SidebarGroupBy,
     sort: WorkspaceSort,
     archived_filter: SidebarArchivedFilter,
+    show_first_message: bool,
     this: Entity<OrbitApp>,
     theme: Theme,
 ) -> AnyElement {
@@ -2304,7 +2360,17 @@ pub(crate) fn sidebar_options_popup(
                         theme,
                         move |app, cx| app.set_sidebar_archived_filter(option, cx),
                     )
-                })),
+                }))
+                .child(context_menu_separator(&theme))
+                .child(sidebar_choice_item(
+                    "sidebar-show-first-message",
+                    "icons/chat.svg",
+                    tr!("sidebar.show_first_message"),
+                    show_first_message,
+                    this.clone(),
+                    theme,
+                    |app, cx| app.toggle_sidebar_first_message(cx),
+                )),
         );
 
     anchored()
@@ -2621,6 +2687,19 @@ impl OrbitApp {
             self.persist_workspace_prefs();
         }
         self.clamp_sidebar_cursor(cx);
+        cx.notify();
+    }
+
+    /// Change preview visibility without touching the underlying session content.
+    pub(super) fn toggle_sidebar_first_message(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_show_first_message = !self.sidebar_show_first_message;
+        self.sidebar_sort_menu = false;
+        self.persist_workspace_prefs();
+        // Invalidate cached heights while keeping the reader on the same row.
+        let anchor = self.sidebar_list.logical_scroll_top();
+        let count = self.sidebar_list.item_count();
+        self.sidebar_list.splice(0..count, count);
+        self.sidebar_list.scroll_to(anchor);
         cx.notify();
     }
 

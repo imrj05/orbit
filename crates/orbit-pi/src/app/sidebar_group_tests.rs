@@ -108,6 +108,54 @@ fn workspace_store_defaults_to_grouped_and_hiding_archived() {
 }
 
 #[test]
+fn sidebar_first_message_is_visible_by_default() {
+    assert!(WorkspaceStore::default().show_first_message);
+    let legacy = parse_workspace_store(&serde_json::json!({ "workspaces": [] }));
+    assert!(legacy.show_first_message);
+}
+
+#[test]
+fn sidebar_first_message_ignores_malformed_preferences() {
+    for invalid in [
+        serde_json::json!("false"),
+        serde_json::json!(0),
+        Value::Null,
+    ] {
+        let store = parse_workspace_store(&serde_json::json!({
+            "show_first_message": invalid,
+        }));
+        assert!(store.show_first_message);
+    }
+}
+
+#[test]
+fn sidebar_first_message_hidden_choice_survives_a_round_trip() {
+    let store = WorkspaceStore {
+        show_first_message: false,
+        group_by: SidebarGroupBy::OneList,
+        archived_filter: SidebarArchivedFilter::Only,
+        ..WorkspaceStore::default()
+    };
+    let saved = workspace_store_json(&store);
+    assert_eq!(saved["show_first_message"], false);
+    let restored = parse_workspace_store(&saved);
+    assert!(!restored.show_first_message);
+    assert_eq!(restored.group_by, SidebarGroupBy::OneList);
+    assert_eq!(restored.archived_filter, SidebarArchivedFilter::Only);
+}
+
+#[test]
+fn sidebar_first_message_can_be_enabled_again() {
+    let mut store = parse_workspace_store(&serde_json::json!({
+        "show_first_message": false,
+    }));
+    store.show_first_message = true;
+    let saved = workspace_store_json(&store);
+    assert_eq!(saved["show_first_message"], true);
+    assert!(parse_workspace_store(&saved).show_first_message);
+}
+
+#[test]
 fn workspace_store_reads_the_view_choices() {
     let parsed = parse_workspace_store(&serde_json::json!({
         "workspaces": [],

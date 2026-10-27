@@ -53,7 +53,8 @@ Usage — requests, tokens, cost, and cache, read from your own sessions:
 **Sessions**
 
 - Grouped by project, persistent, reopenable, and cross-workspace
-- Each session row reads in three lines: the title, the prompt behind it, and a metadata strip with its age, workspace, and current branch (with `↑n`/`↓n` against upstream)
+- Session rows keep titles, prompt previews, age/status, branches (with `↑n`/`↓n` against upstream), and provider/model marks. Tinted project marks, semantic status badges, stronger title hierarchy, and distinct selection/focus outlines make the list easier to scan; flat mode adds the workspace above each title
+- **Show first message** in the sidebar view menu toggles prompt previews in grouped and flat lists; enabled by default and remembered across restarts, without hiding other session metadata
 - Orbit-owned project list — remove a workspace from the sidebar without deleting pi's sessions
 - Sort projects by last activity, recently added, name, or session count
 - Rename, pin, clone, or delete sessions, and copy a session id; pinned sessions sort first — right-click a row for its actions

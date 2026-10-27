@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Optional sidebar message previews.** The sidebar view menu's **Show first
+  message** toggle hides or restores the first-message line in grouped and flat
+  session lists. Enabled by default, remembered across restarts, and leaves titles,
+  metadata, session content, and actions intact.
+
 - **Branch pickers show when each branch last moved.** Every row carries the
   age of its tip commit (`3d ago`) in a right-aligned column: in the status-bar
   branch popover the dates read as a timeline, newest work first, with the
@@ -103,6 +108,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Refined session navigation.** Tinted project marks, tonal count and status
+  badges, clearer title/preview hierarchy, and distinct selection and keyboard
+  focus outlines. Provider marks overlap less, and truncated titles, prompts,
+  and branches have tooltips. Existing session information and actions remain.
 - **Session rows carry three lines.** Title, the first message, and a metadata
   strip — age, workspace, and branch with `↑n`/`↓n` against its upstream (green
   ahead, amber behind). The message line always shows the prompt, because the
