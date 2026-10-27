@@ -284,6 +284,7 @@ impl Render for OrbitApp {
         // (`refresh_sidebar_branches`); render only reads it.
         let branches: Rc<HashMap<PathBuf, crate::app::BranchLine>> =
             Rc::new(self.sidebar_branches.clone());
+        let logos = Rc::new(self.sidebar_logos.clone());
         // Rows whose last turn settled while the user was elsewhere. The row
         // paints the mark; it never replaces a running / pin / archive glyph
         // (issue #83).
@@ -320,6 +321,7 @@ impl Render for OrbitApp {
                     &live_paths,
                     &marks,
                     &workspace_icons,
+                    &logos,
                     &branches,
                     &review_marks,
                     &session_statuses,
@@ -712,6 +714,7 @@ impl Render for OrbitApp {
                                                                     &live_paths,
                                                                     &marks,
                                                                     &workspace_icons,
+                                                                    &logos,
                                                                     &branches,
                                                                     &review_marks,
                                                                     &session_statuses,

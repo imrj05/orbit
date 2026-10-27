@@ -418,6 +418,8 @@ pub struct OrbitApp {
     /// on a detached HEAD — has no entry, and its row drops the item rather
     /// than inventing one.
     sidebar_branches: HashMap<PathBuf, BranchLine>,
+    /// Project logos loaded off the UI thread for sidebar rows.
+    sidebar_logos: HashMap<PathBuf, Arc<Image>>,
     /// The project list the newest [`Self::sidebar_branches`] scan covered.
     /// Comparing it against `workspaces` is what makes an added or removed
     /// project fill in on the next heartbeat without a watcher of its own.
@@ -1850,6 +1852,7 @@ impl OrbitApp {
             branch: None,
             branch_fetch: 0,
             sidebar_branches: HashMap::new(),
+            sidebar_logos: HashMap::new(),
             sidebar_branches_for: Vec::new(),
             sidebar_branches_fetch: 0,
             added: 0,
@@ -2527,21 +2530,26 @@ impl OrbitApp {
         self.sidebar_branches_for = workspaces.clone();
         if workspaces.is_empty() {
             self.sidebar_branches.clear();
+            self.sidebar_logos.clear();
             cx.notify();
             return;
         }
         cx.spawn(async move |this, cx| {
-            let lines = cx
+            let (lines, logos) = cx
                 .background_executor()
                 .spawn(async move {
-                    workspaces
-                        .into_iter()
-                        .filter_map(|cwd| {
-                            let name = crate::git::current_branch(&cwd)?;
+                    let mut lines = HashMap::new();
+                    let mut logos = HashMap::new();
+                    for cwd in workspaces {
+                        if let Some(logo) = crate::workspace_logo::load(&cwd) {
+                            logos.insert(cwd.clone(), logo);
+                        }
+                        if let Some(name) = crate::git::current_branch(&cwd) {
                             let ahead_behind = crate::git::ahead_behind(&cwd);
-                            Some((cwd, BranchLine { name, ahead_behind }))
-                        })
-                        .collect::<HashMap<PathBuf, BranchLine>>()
+                            lines.insert(cwd, BranchLine { name, ahead_behind });
+                        }
+                    }
+                    (lines, logos)
                 })
                 .await;
             let _ = this.update(cx, |app, cx| {
@@ -2550,10 +2558,9 @@ impl OrbitApp {
                 if app.sidebar_branches_fetch != fetch {
                     return;
                 }
-                if app.sidebar_branches != lines {
-                    app.sidebar_branches = lines;
-                    cx.notify();
-                }
+                app.sidebar_logos = logos;
+                app.sidebar_branches = lines;
+                cx.notify();
             });
         })
         .detach();
