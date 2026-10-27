@@ -1582,6 +1582,33 @@ pub(crate) fn session_menu_popup(
             .flex_col()
             .py(picker::list_padding_y(&theme))
             .gap(DynamicSpacing::Base01.px(&theme))
+            .child(
+                picker_entry(div().id("menu-rename"), &theme)
+                    .h(picker::entry_height(&theme))
+                    .flex_none()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme.overlay))
+                    .text_color(theme.text_secondary)
+                    .on_mouse_down(MouseButton::Left, {
+                        let this = this.clone();
+                        move |_, window, cx| {
+                            cx.stop_propagation();
+                            this.update(cx, |app, cx| app.on_menu_rename_session(window, cx));
+                        }
+                    })
+                    .child(icon(
+                        "icons/pencil.svg",
+                        context_menu::ICON.px(&theme),
+                        theme.text_muted,
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(tr!("explorer.rename")),
+                    ),
+            )
             .child(menu_item(
                 "menu-pin",
                 "icons/pin.svg",
@@ -2392,6 +2419,34 @@ impl OrbitApp {
         self.sidebar_sort_menu = false;
     }
 
+    pub(super) fn on_menu_rename_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(menu) = self.session_menu.take() else {
+            return;
+        };
+        if self.current_session_path.as_ref() == Some(&menu.path) {
+            if self.pending_session_rename.is_none() {
+                self.begin_session_rename(window, cx);
+            }
+            cx.notify();
+            return;
+        }
+        let Some(session) = self
+            .sessions
+            .iter()
+            .find(|session| session.path == menu.path)
+            .cloned()
+        else {
+            cx.notify();
+            return;
+        };
+        self.switch_to_session(session, true, cx);
+        // A cold switch must finish before pi can safely accept a rename.
+        if self.runtime_is_live() {
+            self.pending_session_rename = Some(menu.path);
+        }
+        cx.notify();
+    }
+
     pub(super) fn on_menu_copy_path(&mut self, cx: &mut Context<Self>) {
         if let Some(menu) = &self.session_menu {
             cx.write_to_clipboard(ClipboardItem::new_string(
@@ -2975,6 +3030,79 @@ fn clamp_cursor(index: usize, count: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn row_rename_waits_for_the_target_session_state(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::for_id(crate::theme::ThemeId::Orbit));
+            let app = cx.new(OrbitApp::new);
+            app.update(cx, |app, cx| {
+                let path = PathBuf::from("/tmp/rename-target.jsonl");
+                app.current_session_path = Some(path.clone());
+                app.pending_session_rename = Some(path);
+                let mut refresh = false;
+                app.on_response(
+                    "get_state",
+                    true,
+                    Some(&serde_json::json!({"sessionFile": "/tmp/other.jsonl"})),
+                    None,
+                    "test",
+                    &mut refresh,
+                    cx,
+                );
+                assert!(!app.session_rename_ready);
+                assert!(app.pending_session_rename.is_some());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn row_rename_opens_after_target_session_state_arrives(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::for_id(crate::theme::ThemeId::Orbit));
+            let app = cx.new(OrbitApp::new);
+            app.update(cx, |app, cx| {
+                let path = PathBuf::from("/tmp/rename-target.jsonl");
+                app.current_session_path = Some(path.clone());
+                app.pending_session_rename = Some(path);
+                let mut refresh = false;
+                app.on_response(
+                    "get_state",
+                    true,
+                    Some(&serde_json::json!({"sessionFile": "/tmp/rename-target.jsonl"})),
+                    None,
+                    "test",
+                    &mut refresh,
+                    cx,
+                );
+                assert!(app.session_rename_ready);
+                assert!(app.pending_session_rename.is_none());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn failed_session_switch_cancels_pending_row_rename(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(crate::theme::Theme::for_id(crate::theme::ThemeId::Orbit));
+            let app = cx.new(OrbitApp::new);
+            app.update(cx, |app, cx| {
+                app.pending_session_rename = Some(PathBuf::from("/tmp/rename-target.jsonl"));
+                let mut refresh = false;
+                app.on_response(
+                    "switch_session",
+                    false,
+                    None,
+                    Some("failed"),
+                    "test",
+                    &mut refresh,
+                    cx,
+                );
+                assert!(app.pending_session_rename.is_none());
+                assert!(!app.session_rename_ready);
+            });
+        });
+    }
 
     #[test]
     fn cursor_clamps_to_the_visible_rows() {

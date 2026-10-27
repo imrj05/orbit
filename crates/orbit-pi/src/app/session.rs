@@ -710,6 +710,8 @@ impl OrbitApp {
     /// Explorer, the terminal, or Settings is up; without this the fresh task
     /// opens behind a panel that still covers the chat column.
     pub(super) fn close_surfaces_for_new_task(&mut self, cx: &mut Context<Self>) {
+        self.pending_session_rename = None;
+        self.session_rename_ready = false;
         self.settings_open = false;
         self.provider_editor = None;
         self.provider_key_editor = None;
@@ -917,6 +919,8 @@ impl OrbitApp {
         push: bool,
         cx: &mut Context<Self>,
     ) {
+        self.pending_session_rename = None;
+        self.session_rename_ready = false;
         // Opening a session means viewing the chat: leave whichever full-page
         // surface (GitHub / Usage) was covering the main area. Without this
         // the switch happens out of sight and the page stays up, so clicking
@@ -1457,6 +1461,9 @@ impl OrbitApp {
     /// The command palette's Rename Session: open the details popover (the
     /// header's info control owns the rename field) and put the caret in it.
     pub(super) fn begin_session_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pending_session_rename.is_some() {
+            return;
+        }
         self.quota_popup_open = false;
         self.session_details_open = true;
         self.seed_session_name_input(cx);
@@ -1764,7 +1771,7 @@ impl OrbitApp {
         // control. `None` (hidden) when pi lacks `quota.*` and no MCP server
         // is configured.
         let mcp_chip = self.mcp_chip_parts(*theme::get(cx));
-        if self.quota.reports().is_empty() && mcp_chip.is_none() {
+        if self.quota.usage_reports(&self.model_provider).is_empty() && mcp_chip.is_none() {
             return None;
         }
         let theme = *theme::get(cx);
@@ -1930,7 +1937,7 @@ impl OrbitApp {
         let theme = *theme::get(cx);
         let this = cx.entity();
 
-        let reports = self.quota.reports();
+        let reports = self.quota.usage_reports(&self.model_provider);
         // The user's hide list only shapes the popover; Settings still shows
         // every connected provider. Split once so the header count and the
         // "Hidden" group agree, and so a hidden provider is one click back.

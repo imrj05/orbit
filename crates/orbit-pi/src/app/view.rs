@@ -168,6 +168,10 @@ impl Render for OrbitApp {
         // so a frame that covers it (Settings, a feature page) stops the
         // heartbeat repainting for a field nobody can see.
         self.backdrop_live = false;
+        if self.session_rename_ready {
+            self.session_rename_ready = false;
+            self.begin_session_rename(window, cx);
+        }
         // A clicked banner asks for the window; bring it forward on the frame
         // that follows the click (macOS activates the app, but a minimized
         // window would otherwise stay behind).

@@ -357,6 +357,8 @@ impl OrbitApp {
                     self.refresh_context_stats();
                 }
                 Event::ProcessExited => {
+                    self.pending_session_rename = None;
+                    self.session_rename_ready = false;
                     self.busy = false;
                     self.retrying = false;
                     self.retry_detail = None;
@@ -819,6 +821,10 @@ impl OrbitApp {
         // `error` string. Surface it, unwind command-specific optimistic
         // state, and stop — success paths below assume `data` is valid.
         if !success {
+            if matches!(command, "switch_session" | "get_state") {
+                self.pending_session_rename = None;
+                self.session_rename_ready = false;
+            }
             self.on_command_failure(command, error, cx);
             match command {
                 "compact" => {
@@ -1012,6 +1018,18 @@ impl OrbitApp {
                         self.seed_session_name_input(cx);
                     }
                     _ => {}
+                }
+                if let Some(path) = self.pending_session_rename.as_ref() {
+                    if self.current_session_path.as_ref() == Some(path)
+                        && data
+                            .get("sessionFile")
+                            .and_then(Value::as_str)
+                            .is_some_and(|file| std::path::Path::new(file) == path)
+                    {
+                        self.pending_session_rename = None;
+                        self.session_rename_ready = true;
+                        cx.notify();
+                    }
                 }
                 self.sync_model_selector(cx);
                 self.refresh_context_stats();

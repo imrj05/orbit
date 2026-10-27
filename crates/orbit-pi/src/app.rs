@@ -784,6 +784,9 @@ pub struct OrbitApp {
     refreshing: bool,
     /// Whether the top-bar session-details popover is open.
     session_details_open: bool,
+    /// A row-menu rename waiting for the target session's state to load.
+    pending_session_rename: Option<PathBuf>,
+    session_rename_ready: bool,
     /// Whether the top bar's overflow ("more") menu is open. Holds the
     /// surfaces that no longer earn a permanent chip: Session details,
     /// Explorer, the Terminal, and the Git page.
@@ -1996,6 +1999,8 @@ impl OrbitApp {
             host,
             refreshing: false,
             session_details_open: false,
+            pending_session_rename: None,
+            session_rename_ready: false,
             header_more_open: false,
             title_generating: false,
             rename_saved_at: None,
