@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Branch pickers show when each branch last moved.** Every row carries the
+  age of its tip commit (`3d ago`) in a right-aligned column: in the status-bar
+  branch popover the dates read as a timeline, newest work first, with the
+  current branch marked by an accent glyph and a check in a slot every row
+  reserves so the dates never shift; the header counts what the filter found.
+  The Git panel's branch menu dates its Recent, Local, and Remote sections the
+  same way (the age is the row's last element, so all dates share one right
+  edge next to the `Current` marker or the hover delete), and remote refs now
+  carry their tip date in `list_refs`. Filtering still matches branch names.
+
 - **Session execution status in the sidebar.** Open and background sessions show
   Running, Waiting for approval/input, Retrying, Compacting, Completed, Failed,
   Stopped, Disconnected, or Idle from real pi events. Completed/Failed/Stopped

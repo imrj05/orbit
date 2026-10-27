@@ -604,9 +604,12 @@ impl OrbitApp {
             return;
         }
         let current = crate::git::current_branch(&cwd).unwrap_or_else(|| "HEAD".into());
-        let branches = crate::git::list_branches(&cwd).unwrap_or_else(|err| {
+        let branches = crate::git::list_branch_entries(&cwd).unwrap_or_else(|err| {
             self.toast_error(tr!("pickers.branch_list_failed", error = err));
-            vec![current.clone()]
+            vec![crate::git::BranchEntry {
+                name: current.clone(),
+                commit_date: None,
+            }]
         });
         let workspace_label = sessions::workspace_label(&cwd);
 
