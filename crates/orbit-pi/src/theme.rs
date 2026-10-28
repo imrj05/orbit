@@ -17,7 +17,7 @@ use serde_json::Value;
 
 use crate::highlight::TokenClass;
 
-mod appearance;
+pub(crate) mod appearance;
 pub use appearance::*;
 
 /// Zed's design tokens (spacing, type, icons, buttons, elevation, motion),
@@ -279,6 +279,48 @@ impl ThemeId {
     }
 }
 
+/// How the wallpaper affects the surfaces painted above it. `OPAQUE` keeps
+/// every palette exactly as it was before wallpaper existed; the wallpaper
+/// module replaces it with computed alphas once a processed image is ready.
+///
+/// The values live on [`Theme`] so paint sites that only receive a theme (the
+/// elevation helpers, transcript cards, settings boards) can make the same
+/// decision as the window renderer without threading an `App` through.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SurfaceTreatment {
+    /// A processed wallpaper is behind the UI.
+    pub active: bool,
+    /// The image spans the whole window, so the sidebar is translucent too.
+    pub full_window: bool,
+    /// Requested image-layer opacity, 0..=1.
+    pub image_opacity: f32,
+    /// Effective theme-coloured overlay over the image, 0..=1.
+    pub dim: f32,
+    /// Effective alpha for cards, menus, and dialogs.
+    pub card_alpha: f32,
+    /// Effective alpha for the sidebar/main-column surfaces.
+    pub panel_alpha: f32,
+}
+
+impl SurfaceTreatment {
+    /// The pre-wallpaper treatment: every surface is the palette's own
+    /// opaque colour.
+    pub const OPAQUE: Self = Self {
+        active: false,
+        full_window: false,
+        image_opacity: 1.0,
+        dim: 0.0,
+        card_alpha: 1.0,
+        panel_alpha: 1.0,
+    };
+}
+
+impl Default for SurfaceTreatment {
+    fn default() -> Self {
+        Self::OPAQUE
+    }
+}
+
 /// Semantic palette. Copy so list closures and hover styles can capture it
 /// without a lifetime.
 ///
@@ -296,6 +338,9 @@ pub struct Theme {
     pub design_system: DesignSystem,
     /// UI customization (General settings): language + font sizes.
     pub ui: UiPrefs,
+    /// Wallpaper-derived surface treatment. Opaque unless a wallpaper is
+    /// active and its processed image is ready.
+    pub wallpaper: SurfaceTreatment,
 
     // ── Surfaces ────────────────────────────────────────────────────────
     /// Root window and workspace canvas.
@@ -1444,6 +1489,34 @@ impl Theme {
         self
     }
 
+    /// Attach the wallpaper-derived surface treatment. The accent is applied
+    /// separately by [`crate::wallpaper::decorate`]; this only carries the
+    /// alphas paint sites read.
+    pub fn with_wallpaper(mut self, wallpaper: SurfaceTreatment) -> Self {
+        self.wallpaper = wallpaper;
+        self
+    }
+
+    /// The fill of a card-like surface (settings board, composer, menu,
+    /// dialog). With no active wallpaper this is exactly `base`.
+    pub fn card_fill(self, base: Hsla) -> Hsla {
+        if self.wallpaper.active {
+            base.opacity(self.wallpaper.card_alpha)
+        } else {
+            base
+        }
+    }
+
+    /// The fill of the sidebar and the main column. Hero-only wallpaper leaves
+    /// the sidebar opaque; full-window mode makes both translucent.
+    pub fn panel_fill(self, base: Hsla) -> Hsla {
+        if self.wallpaper.active && self.wallpaper.full_window {
+            base.opacity(self.wallpaper.panel_alpha)
+        } else {
+            base
+        }
+    }
+
     /// Scale an interface text size by the UI font size setting, the way
     /// rems resolve against the UI font size (`ui_font_size /
     /// DEFAULT_UI_FONT_SIZE`). Chrome sizes are authored at the 14px default,
@@ -1521,6 +1594,7 @@ impl Theme {
             mode,
             design_system: id.design_system(),
             ui,
+            wallpaper: SurfaceTreatment::OPAQUE,
             background: hex(p.background),
             surface: hex(p.surface),
             surface_secondary: hex(p.surface_secondary),
@@ -1627,11 +1701,10 @@ fn persist_path() -> PathBuf {
 
 /// Install the persisted appearance (System by default) and font preferences.
 pub fn init(cx: &mut App) {
+    crate::wallpaper::init();
     let prefs = AppearancePrefs::load();
     cx.set_global(prefs);
-    cx.set_global(
-        prefs.apply(Theme::for_id(prefs.resolve(cx.window_appearance())).with_ui(UiPrefs::load())),
-    );
+    rebuild_theme_with_ui(cx, UiPrefs::load());
     let prefs = FontPrefs::load();
     *UI_FONT_FAMILY
         .write()
@@ -1639,6 +1712,28 @@ pub fn init(cx: &mut App) {
     *CODE_FONT_FAMILY
         .write()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = prefs.code_font_family;
+}
+
+/// Rebuild the active theme from the persisted appearance, the supplied UI
+/// preferences, and the wallpaper treatment. Centralised so a palette change,
+/// an accent extraction, and a wallpaper opacity change all land on the same
+/// base palette instead of stacking overrides on an already-decorated theme.
+pub fn rebuild_theme_with_ui(cx: &mut App, ui: UiPrefs) {
+    let system = cx.window_appearance();
+    rebuild_theme_for(cx, ui, system);
+}
+
+/// Rebuild using the current UI preferences.
+pub fn rebuild_theme(cx: &mut App) {
+    let ui = get(cx).ui;
+    rebuild_theme_with_ui(cx, ui);
+}
+
+fn rebuild_theme_for(cx: &mut App, ui: UiPrefs, system: gpui::WindowAppearance) {
+    let prefs = appearance_prefs(cx);
+    let id = prefs.resolve(system);
+    let theme = prefs.apply(Theme::for_id(id).with_ui(ui));
+    cx.set_global(crate::wallpaper::decorate(theme));
 }
 
 /// Current theme. Panics if [`init`] has not run.
@@ -1677,8 +1772,7 @@ pub fn set_ui_prefs(cx: &mut App, ui: UiPrefs) {
     crate::i18n::set_language(ui.language);
     crate::set_app_menus(cx);
     ui.persist();
-    let id = get(cx).theme_id;
-    cx.set_global(appearance_prefs(cx).apply(Theme::for_id(id).with_ui(ui)));
+    rebuild_theme_with_ui(cx, ui);
 }
 
 #[cfg(test)]

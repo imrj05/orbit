@@ -36,11 +36,75 @@ const PLUGIN_REFRESH_FEEDBACK: Duration = Duration::from_millis(650);
 /// plus `popover::MENU_OFFSET`, so the two must move together.
 const SELECT_CHIP_SIZE: ButtonSize = ButtonSize::Medium;
 
-/// Backdrop blur slider geometry: the painted track width and handle
-/// diameter. The drag math reads the same pair, so the handle always lands
-/// under the pointer rather than a few pixels off it.
-const BLUR_TRACK_W: f32 = 184.;
-const BLUR_KNOB: f32 = 14.;
+/// Wallpaper slider geometry: the painted track width and handle diameter.
+/// The drag math reads the same pair, so the handle always lands under the
+/// pointer rather than a few pixels off it.
+const SLIDER_TRACK_W: f32 = 184.;
+const SLIDER_KNOB: f32 = 14.;
+
+/// The four continuous wallpaper controls. They share one painted slider and
+/// one pointer handler; only the range and the field they write differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WallpaperSlider {
+    ImageOpacity,
+    Blur,
+    Dim,
+    CardOpacity,
+}
+
+impl WallpaperSlider {
+    fn range(self) -> (f32, f32) {
+        match self {
+            Self::ImageOpacity => crate::wallpaper::IMAGE_OPACITY_RANGE,
+            Self::Blur => crate::wallpaper::BLUR_RANGE,
+            Self::Dim => crate::wallpaper::DIM_RANGE,
+            Self::CardOpacity => crate::wallpaper::CARD_OPACITY_RANGE,
+        }
+    }
+
+    fn value(self, settings: &crate::wallpaper::WallpaperSettings) -> f32 {
+        match self {
+            Self::ImageOpacity => settings.image_opacity,
+            Self::Blur => settings.blur,
+            Self::Dim => settings.dim,
+            Self::CardOpacity => settings.card_opacity,
+        }
+    }
+
+    fn set(self, settings: &mut crate::wallpaper::WallpaperSettings, value: f32) {
+        match self {
+            Self::ImageOpacity => settings.image_opacity = value,
+            Self::Blur => settings.blur = value,
+            Self::Dim => settings.dim = value,
+            Self::CardOpacity => settings.card_opacity = value,
+        }
+    }
+
+    fn ids(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Self::ImageOpacity => (
+                "wallpaper-opacity-slider",
+                "wallpaper-opacity-fill",
+                "wallpaper-opacity-knob",
+            ),
+            Self::Blur => (
+                "wallpaper-blur-slider",
+                "wallpaper-blur-fill",
+                "wallpaper-blur-knob",
+            ),
+            Self::Dim => (
+                "wallpaper-dim-slider",
+                "wallpaper-dim-fill",
+                "wallpaper-dim-knob",
+            ),
+            Self::CardOpacity => (
+                "wallpaper-card-slider",
+                "wallpaper-card-fill",
+                "wallpaper-card-knob",
+            ),
+        }
+    }
+}
 
 /// The settings nav in display order: section, nav icon, and label key.
 /// Grouped so the app's own preferences lead (General / Appearance /
@@ -276,23 +340,23 @@ const SETTINGS_SEARCH_INDEX: &[(SettingsSection, &str, &str)] = &[
     ),
     (
         SettingsSection::Appearance,
-        "settings.background_image",
-        "background image backdrop dither picture",
+        "settings.wallpaper",
+        "wallpaper background image photo desktop hero full window",
     ),
     (
         SettingsSection::Appearance,
-        "settings.blur",
-        "background blur backdrop soft",
+        "wallpaper.effect",
+        "wallpaper effect dither ascii halftone scanlines artwork",
     ),
     (
         SettingsSection::Appearance,
-        "settings.pixel_size",
-        "background pixel size backdrop dither cell",
+        "wallpaper.card_opacity",
+        "wallpaper card opacity translucent surface",
     ),
     (
         SettingsSection::Appearance,
-        "settings.bottom_fade",
-        "background fade backdrop gradient",
+        "wallpaper.derive_accent",
+        "wallpaper accent tint color extract",
     ),
     (
         SettingsSection::Appearance,
@@ -453,7 +517,7 @@ impl OrbitApp {
             .min_h_0()
             .flex()
             .relative()
-            .bg(theme.background)
+            .bg(theme.panel_fill(theme.background))
             .font_family(theme::ui_font_family())
             // ── nav column ──
             .child(
@@ -461,7 +525,7 @@ impl OrbitApp {
                     .w(px(240.))
                     .h_full()
                     .flex_shrink_0()
-                    .bg(theme.surface)
+                    .bg(theme.panel_fill(theme.surface))
                     .border_r_1()
                     .border_color(theme.border)
                     .flex()
@@ -4507,7 +4571,7 @@ impl OrbitApp {
         let last = rows.len().saturating_sub(1);
         let mut board = div()
             .w_full()
-            .bg(theme.surface_secondary)
+            .bg(theme.card_fill(theme.surface_secondary))
             .border_1()
             .border_color(theme.border)
             .rounded(panel::RADIUS.px(&theme))
@@ -5939,75 +6003,59 @@ impl OrbitApp {
 
     // ── Appearance ─────────────────────────────────────────────────────
 
-    /// The Appearance section: theme, background, type & density, and
-    /// layout. Grouped boards with hairline-separated rows, each section led
-    /// by a live preview so a change is legible on the page before you leave
-    /// it. The backdrop's tuning is its own board and appears only once an
-    /// image is configured — there is nothing to tune otherwise.
+    /// The Appearance section: theme, wallpaper, type & density, and layout.
+    /// Grouped boards with hairline-separated rows, each section led by a live
+    /// preview so a change is legible on the page before you leave it.
     pub(super) fn appearance_rows(
         &self,
         theme: Theme,
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
     ) -> Vec<AnyElement> {
-        let background = crate::dither::configured_label();
-        // The empty 84px strip is a hole: Theme already has live swatches,
-        // and the default dot grid is visible on the new-task page. Preview
-        // the processed image only once there is one to judge.
-        let mut theme_rows = Vec::new();
-        if background.is_some() {
-            theme_rows.push(self.backdrop_preview(theme));
-        }
-        // The design-system switch comes first: it selects the visual language
-        // (Classic or Operational) without touching the remembered palette in
-        // either system.
-        theme_rows.push(self.setting_row(
-            theme,
-            &tr!("settings.design_system"),
-            Some(&tr!("settings.design_system_description")),
-            None,
-            Some(self.design_system_control(theme, this.clone(), cx)),
-        ));
-        theme_rows.push(self.setting_row(
-            theme,
-            &tr!("settings.appearance"),
-            Some(&tr!("settings.appearance_mode_description")),
-            None,
-            Some(self.appearance_mode_control(theme, this.clone(), cx)),
-        ));
-        // One Theme control, not one per appearance mode. It shows and edits
-        // the palette currently in effect, so the pair of rows that made the
-        // user pick a mode before picking a colour is gone: flip Appearance to
-        // edit the other mode's palette, and each is remembered separately.
-        // The list is filtered to the active design system.
-        theme_rows.push(self.setting_row(
-            theme,
-            &tr!("settings.theme"),
-            None,
-            None,
-            Some(self.theme_select(theme.mode, theme, this.clone(), cx)),
-        ));
-        theme_rows.push(self.setting_row(
-            theme,
-            &tr!("settings.accent_color"),
-            None,
-            None,
-            Some(self.accent_color_control(theme, this.clone(), cx)),
-        ));
-        theme_rows.push(self.setting_row(
-            theme,
-            &tr!("settings.background_image"),
-            Some(&tr!("settings.a_dithered_image_behind_the_new_task_page")),
-            background.as_deref(),
-            Some(self.background_controls(theme, this.clone())),
-        ));
-        theme_rows.push(self.setting_row(
-            theme,
-            &tr!("language.title"),
-            Some(&tr!("language.description")),
-            None,
-            Some(self.language_select(theme, this.clone(), cx)),
-        ));
+        let theme_rows = vec![
+            // The design-system switch comes first: it selects the visual
+            // language (Classic or Operational) without touching the
+            // remembered palette in either system.
+            self.setting_row(
+                theme,
+                &tr!("settings.design_system"),
+                Some(&tr!("settings.design_system_description")),
+                None,
+                Some(self.design_system_control(theme, this.clone(), cx)),
+            ),
+            self.setting_row(
+                theme,
+                &tr!("settings.appearance"),
+                Some(&tr!("settings.appearance_mode_description")),
+                None,
+                Some(self.appearance_mode_control(theme, this.clone(), cx)),
+            ),
+            // One Theme control, not one per appearance mode. It shows and
+            // edits the palette currently in effect, and each mode's choice is
+            // remembered separately. The list is filtered to the active
+            // design system.
+            self.setting_row(
+                theme,
+                &tr!("settings.theme"),
+                None,
+                None,
+                Some(self.theme_select(theme.mode, theme, this.clone(), cx)),
+            ),
+            self.setting_row(
+                theme,
+                &tr!("settings.accent_color"),
+                None,
+                None,
+                Some(self.accent_color_control(theme, this.clone(), cx)),
+            ),
+            self.setting_row(
+                theme,
+                &tr!("language.title"),
+                Some(&tr!("language.description")),
+                None,
+                Some(self.language_select(theme, this.clone(), cx)),
+            ),
+        ];
         let mut sections = vec![
             self.settings_section(theme, &tr!("settings.theme_and_background"), theme_rows),
             self.settings_section(
@@ -6123,62 +6171,333 @@ impl OrbitApp {
                 ],
             ),
         ];
-        // Tuning only means something once there is an image to tune, so the
-        // board appears with it, directly under the background it belongs to.
-        if background.is_some() {
-            sections.insert(
-                1,
-                self.settings_section(
-                    theme,
-                    &tr!("settings.background_tuning"),
-                    vec![
-                        self.setting_row(
-                            theme,
-                            &tr!("settings.blur"),
-                            Some(&tr!(
-                                "settings.softens_the_picture_before_the_dither_pass_so_a_"
-                            )),
-                            None,
-                            Some(self.blur_slider(
-                                theme,
-                                this.clone(),
-                                crate::dither::tuning().blur,
-                            )),
-                        ),
-                        self.setting_row(
-                            theme,
-                            &tr!("settings.pixel_size"),
-                            Some(&tr!(
-                                "settings.the_dither_cell_edge_fine_cells_read_as_halftone"
-                            )),
-                            None,
-                            Some(self.tuning_select(
-                                SettingsSelect::BackdropCell,
-                                theme,
-                                this.clone(),
-                                cx,
-                            )),
-                        ),
-                        self.setting_row(
-                            theme,
-                            &tr!("settings.bottom_fade"),
-                            Some(&tr!(
-                                "settings.how_far_the_picture_fades_into_the_page_behind_t"
-                            )),
-                            None,
-                            Some(self.tuning_select(
-                                SettingsSelect::BackdropFade,
-                                theme,
-                                this.clone(),
-                                cx,
-                            )),
-                        ),
-                    ],
-                ),
-            );
-        }
+        // The wallpaper board sits directly under the theme card. Its own
+        // preview and controls are self-contained.
+        sections.insert(
+            1,
+            self.settings_section(
+                theme,
+                &tr!("settings.wallpaper"),
+                self.wallpaper_rows(theme, this.clone(), cx),
+            ),
+        );
         sections
     }
+
+    /// Appearance → the wallpaper board: preview, mode, image picker, effect,
+    /// and the continuous controls. The tuning rows only appear once an image
+    /// exists.
+    fn wallpaper_rows(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> Vec<AnyElement> {
+        let settings = crate::wallpaper::settings();
+        let this_for_controls = this.clone();
+        let mut rows = vec![
+            self.wallpaper_preview(theme, &settings),
+            self.setting_row(
+                theme,
+                &tr!("wallpaper.mode"),
+                Some(&tr!("wallpaper.mode_description")),
+                None,
+                Some(self.wallpaper_mode_select(theme, this_for_controls.clone(), cx)),
+            ),
+            self.setting_row(
+                theme,
+                &tr!("wallpaper.image"),
+                Some(&tr!("wallpaper.image_description")),
+                settings.display_label(),
+                Some(self.wallpaper_controls(theme, this_for_controls.clone())),
+            ),
+            self.setting_row(
+                theme,
+                &tr!("wallpaper.effect"),
+                Some(&tr!("wallpaper.effect_description")),
+                None,
+                Some(self.wallpaper_effect_select(theme, this_for_controls, cx)),
+            ),
+        ];
+        if let Some(error) = crate::wallpaper::last_error() {
+            rows.push(self.setting_row(theme, &tr!("wallpaper.error"), Some(&error), None, None));
+        }
+        if settings.path.is_some() {
+            rows.push(self.setting_row(
+                theme,
+                &tr!("wallpaper.image_opacity"),
+                Some(&tr!("wallpaper.image_opacity_description")),
+                None,
+                Some(self.wallpaper_slider(
+                    WallpaperSlider::ImageOpacity,
+                    theme,
+                    this.clone(),
+                    &settings,
+                )),
+            ));
+            if settings.mode != crate::wallpaper::WallpaperMode::Disabled {
+                rows.push(self.setting_row(
+                    theme,
+                    &tr!("wallpaper.blur"),
+                    Some(&tr!("wallpaper.blur_description")),
+                    None,
+                    Some(self.wallpaper_slider(
+                        WallpaperSlider::Blur,
+                        theme,
+                        this.clone(),
+                        &settings,
+                    )),
+                ));
+                rows.push(self.setting_row(
+                    theme,
+                    &tr!("wallpaper.dim"),
+                    Some(&tr!("wallpaper.dim_description")),
+                    None,
+                    Some(self.wallpaper_slider(
+                        WallpaperSlider::Dim,
+                        theme,
+                        this.clone(),
+                        &settings,
+                    )),
+                ));
+                rows.push(self.setting_row(
+                    theme,
+                    &tr!("wallpaper.card_opacity"),
+                    Some(&tr!("wallpaper.card_opacity_description")),
+                    None,
+                    Some(self.wallpaper_slider(
+                        WallpaperSlider::CardOpacity,
+                        theme,
+                        this.clone(),
+                        &settings,
+                    )),
+                ));
+                rows.push(self.setting_row(
+                    theme,
+                    &tr!("wallpaper.derive_accent"),
+                    Some(&tr!("wallpaper.derive_accent_description")),
+                    None,
+                    Some(self.settings_toggle(
+                        "wallpaper-accent",
+                        settings.derive_accent,
+                        theme,
+                        this,
+                        Self::toggle_wallpaper_accent,
+                    )),
+                ));
+            }
+        }
+        rows
+    }
+
+    fn wallpaper_preview(
+        &self,
+        theme: Theme,
+        settings: &crate::wallpaper::WallpaperSettings,
+    ) -> AnyElement {
+        let preview = div()
+            .id("wallpaper-preview")
+            .debug_selector(|| "wallpaper-preview".to_string())
+            .relative()
+            .w_full()
+            .h(px(84.))
+            .rounded(panel::RADIUS.px(&theme))
+            .border_1()
+            .border_color(theme.border)
+            .overflow_hidden()
+            .child(Self::dot_backdrop(theme))
+            .children(if settings.enabled() {
+                crate::wallpaper::preview(theme)
+            } else {
+                None
+            });
+        div()
+            .w_full()
+            .px(DynamicSpacing::Base16.px(&theme))
+            .py(DynamicSpacing::Base12.px(&theme))
+            .child(preview)
+            .into_any_element()
+    }
+
+    fn wallpaper_controls(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
+        let settings = crate::wallpaper::settings();
+        let choose_label = if settings.path.is_some() {
+            tr!("settings.replace_ellipsis")
+        } else {
+            tr!("settings.choose_image")
+        };
+        let mut controls = div()
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base08.px(&theme))
+            .child(self.runtime_button(
+                "wallpaper-choose",
+                &choose_label,
+                false,
+                theme,
+                this.clone(),
+                OrbitApp::wallpaper_choose,
+            ));
+        if settings.path.is_some() || settings.mode != crate::wallpaper::WallpaperMode::Disabled {
+            controls = controls.child(self.runtime_button(
+                "wallpaper-reset",
+                &tr!("wallpaper.reset_action"),
+                false,
+                theme,
+                this,
+                OrbitApp::wallpaper_reset,
+            ));
+        }
+        controls.into_any_element()
+    }
+
+    fn wallpaper_mode_select(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let settings = crate::wallpaper::settings();
+        let selected = crate::wallpaper::WallpaperMode::ALL
+            .iter()
+            .position(|mode| *mode == settings.mode)
+            .unwrap_or(0);
+        self.select_control(
+            "wallpaper-mode-select",
+            SettingsSelect::WallpaperMode,
+            wallpaper_mode_label(settings.mode),
+            crate::wallpaper::WallpaperMode::ALL
+                .iter()
+                .map(|mode| wallpaper_mode_label(*mode))
+                .collect(),
+            selected,
+            theme,
+            this,
+            cx,
+        )
+    }
+
+    fn wallpaper_effect_select(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let settings = crate::wallpaper::settings();
+        let selected = crate::wallpaper_fx::Effect::ALL
+            .iter()
+            .position(|effect| *effect == settings.effect)
+            .unwrap_or(0);
+        self.select_control(
+            "wallpaper-effect-select",
+            SettingsSelect::WallpaperEffect,
+            wallpaper_effect_label(settings.effect),
+            crate::wallpaper_fx::Effect::ALL
+                .iter()
+                .map(|effect| wallpaper_effect_label(*effect))
+                .collect(),
+            selected,
+            theme,
+            this,
+            cx,
+        )
+    }
+
+    fn wallpaper_slider(
+        &self,
+        kind: WallpaperSlider,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        settings: &crate::wallpaper::WallpaperSettings,
+    ) -> AnyElement {
+        let value = kind.value(settings);
+        let (lo, hi) = kind.range();
+        let norm = ((value - lo) / (hi - lo)).clamp(0., 1.);
+        let (slider_id, fill_id, knob_id) = kind.ids();
+        let track_w = px(SLIDER_TRACK_W);
+        let knob = px(SLIDER_KNOB);
+        let usable = track_w - knob;
+        let knob_left = usable * norm;
+        let center_x = knob_left + knob / 2.;
+        let display = if kind == WallpaperSlider::Blur {
+            format!("{value:.1}")
+        } else {
+            format!("{}%", (value * 100.).round() as u32)
+        };
+
+        let events = canvas(
+            |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+            move |bounds, hitbox, window, _cx| {
+                register_wallpaper_slider(this, kind, bounds, hitbox, window);
+            },
+        )
+        .absolute()
+        .inset_0()
+        .cursor_pointer();
+
+        div()
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base08.px(&theme))
+            .child(
+                div()
+                    .id(slider_id)
+                    .debug_selector(move || slider_id.to_string())
+                    .relative()
+                    .w(track_w)
+                    .h(DynamicSpacing::Base20.px(&theme))
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .h(px(4.))
+                            .rounded_full()
+                            .bg(theme.border),
+                    )
+                    .child(
+                        div()
+                            .id(fill_id)
+                            .debug_selector(move || fill_id.to_string())
+                            .absolute()
+                            .left_0()
+                            .h(px(4.))
+                            .w(center_x)
+                            .rounded_full()
+                            .bg(theme.accent),
+                    )
+                    .child(
+                        div()
+                            .id(knob_id)
+                            .debug_selector(move || knob_id.to_string())
+                            .absolute()
+                            .left(knob_left)
+                            .size(knob)
+                            .rounded_full()
+                            .border_1()
+                            .border_color(theme.border_strong)
+                            .bg(theme.toggle_knob),
+                    )
+                    .child(events),
+            )
+            .child(
+                div()
+                    .w(px(40.))
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_secondary)
+                    .child(display),
+            )
+            .into_any_element()
+    }
+
+    pub(super) fn toggle_wallpaper_accent(&mut self, cx: &mut Context<Self>) {
+        let mut settings = crate::wallpaper::settings();
+        settings.derive_accent = !settings.derive_accent;
+        self.set_wallpaper(settings, cx);
+    }
+
     /// One keyboard-focusable radio group for the visual language. The two
     /// choices are stable identities; the Theme row below lists only the
     /// palettes belonging to the chosen system.
@@ -6548,200 +6867,45 @@ impl OrbitApp {
             .into_any_element()
     }
 
-    /// Appearance → "Background image": pick an image for the dithered
-    /// page backdrop, or reset to the dot grid.
-    pub(super) fn background_controls(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
-        let label = crate::dither::configured_label();
-        let choose_label = if label.is_some() {
-            tr!("settings.replace_ellipsis")
-        } else {
-            tr!("settings.choose_image")
+    // ── Wallpaper ──────────────────────────────────────────────────────
+
+    /// Decode/process a wallpaper when the current setting has no matching
+    /// cache entry. Called from `render`; `wallpaper::begin` is idempotent, so
+    /// a frame that finds a load in flight does nothing.
+    pub(super) fn ensure_wallpaper(&mut self, cx: &mut Context<Self>) {
+        let light = crate::theme::get(cx).mode == crate::theme::ThemeMode::Light;
+        let Some(job) = crate::wallpaper::begin(light) else {
+            return;
         };
-        let mut controls = div()
-            .flex()
-            .items_center()
-            .gap(DynamicSpacing::Base08.px(&theme))
-            .child(self.runtime_button(
-                "background-choose",
-                &choose_label,
-                false,
-                theme,
-                this.clone(),
-                OrbitApp::background_choose,
-            ));
-        if label.is_some() {
-            controls = controls.child(self.runtime_button(
-                "background-reset",
-                "Reset",
-                false,
-                theme,
-                this,
-                OrbitApp::background_reset,
-            ));
-        }
-        controls.into_any_element()
+        cx.spawn(async move |this, cx| {
+            let worker = job.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move { worker.prepare() })
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                let current_light = crate::theme::get(cx).mode == crate::theme::ThemeMode::Light;
+                if crate::wallpaper::finish(job, result, current_light) {
+                    // The extracted accent and the computed surface alphas
+                    // are part of the theme, so the whole window repaints on
+                    // one global update.
+                    crate::theme::rebuild_theme(cx);
+                    cx.notify();
+                } else {
+                    // Settings changed while the image decoded. Ask again for
+                    // the new key instead of installing a stale result.
+                    app.ensure_wallpaper(cx);
+                }
+            });
+        })
+        .detach();
     }
 
-    /// Appearance → the backdrop's live preview: the real processed image
-    /// (blur + dither cell) under the real bottom fade, at strip scale.
-    /// Only mounted when an image is configured — without one the Theme
-    /// swatches already show the palette, and the empty strip was a hole.
-    pub(super) fn backdrop_preview(&self, theme: Theme) -> AnyElement {
-        let image = crate::dither::background();
-        let dithered = image.is_some();
-        div()
-            .w_full()
-            .px(DynamicSpacing::Base16.px(&theme))
-            .py(DynamicSpacing::Base12.px(&theme))
-            .child(
-                div()
-                    .id("background-preview")
-                    .debug_selector(|| "background-preview".to_string())
-                    .relative()
-                    .w_full()
-                    .h(px(84.))
-                    .rounded(panel::RADIUS.px(&theme))
-                    .border_1()
-                    .border_color(theme.border)
-                    .overflow_hidden()
-                    .when(!dithered, |strip| strip.child(Self::dot_backdrop(theme)))
-                    .children(Self::backdrop_image(image, crate::dither::tuning(), theme)),
-            )
-            .into_any_element()
-    }
-
-    /// Appearance → the backdrop blur: a continuous scrubber over
-    /// `0..=dither::BLUR_MAX` sigma. It replaces the old preset dropdown so
-    /// the wash under the picture can be dialled in rather than chosen from
-    /// five looks. The value snaps to `dither::BLUR_STEP`, so a drag rebuilds
-    /// the dither pass once per step instead of once per pixel.
-    pub(super) fn blur_slider(
-        &self,
-        theme: Theme,
-        this: Entity<OrbitApp>,
-        sigma: f32,
-    ) -> AnyElement {
-        let norm = crate::dither::blur_norm(sigma);
-        let track_w = px(BLUR_TRACK_W);
-        let knob = px(BLUR_KNOB);
-        let usable = track_w - knob;
-        let knob_left = usable * norm;
-        let center_x = knob_left + knob / 2.;
-
-        let events = canvas(
-            // One hitbox over the painted track; `is_hovered` respects the
-            // occluding select popups this board can anchor under it.
-            |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
-            move |bounds, hitbox, window, _cx| {
-                register_blur_slider(this, bounds, hitbox, window);
-            },
-        )
-        .absolute()
-        .inset_0()
-        .cursor_pointer();
-
-        div()
-            .flex()
-            .items_center()
-            .gap(DynamicSpacing::Base08.px(&theme))
-            .child(
-                div()
-                    .id("backdrop-blur-slider")
-                    .debug_selector(|| "backdrop-blur-slider".to_string())
-                    .relative()
-                    .w(track_w)
-                    .h(DynamicSpacing::Base20.px(&theme))
-                    .flex()
-                    .items_center()
-                    .child(
-                        div()
-                            .absolute()
-                            .left_0()
-                            .right_0()
-                            .h(px(4.))
-                            .rounded_full()
-                            .bg(theme.border),
-                    )
-                    .child(
-                        div()
-                            .id("backdrop-blur-fill")
-                            .debug_selector(|| "backdrop-blur-fill".to_string())
-                            .absolute()
-                            .left_0()
-                            .h(px(4.))
-                            .w(center_x)
-                            .rounded_full()
-                            .bg(theme.accent),
-                    )
-                    .child(
-                        div()
-                            .id("backdrop-blur-knob")
-                            .debug_selector(|| "backdrop-blur-knob".to_string())
-                            .absolute()
-                            .left(knob_left)
-                            .size(knob)
-                            .rounded_full()
-                            .border_1()
-                            .border_color(theme.border_strong)
-                            .bg(theme.toggle_knob),
-                    )
-                    .child(events),
-            )
-            .child(
-                div()
-                    .w(px(40.))
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.text_secondary)
-                    .child(format!("{}%", (norm * 100.).round() as u32)),
-            )
-            .into_any_element()
-    }
-
-    /// The background-tuning dropdowns (pixel size / bottom fade).
-    /// Each option is a named preset, never a raw number, so the chip reads
-    /// as a look — "Coarse", "Deep" — rather than a parameter.
-    pub(super) fn tuning_select(
-        &self,
-        kind: SettingsSelect,
-        theme: Theme,
-        this: Entity<OrbitApp>,
-        cx: &Context<Self>,
-    ) -> AnyElement {
-        use crate::dither::{CELL_LABELS, FADE_LABELS};
-        let tuning = crate::dither::tuning();
-        let (id, selected, labels): (&'static str, usize, &[&str]) = match kind {
-            SettingsSelect::BackdropCell => (
-                "backdrop-cell-select",
-                tuning.cell_index(),
-                &CELL_LABELS[..],
-            ),
-            SettingsSelect::BackdropFade => (
-                "backdrop-fade-select",
-                tuning.fade_index(),
-                &FADE_LABELS[..],
-            ),
-            _ => unreachable!(),
-        };
-        self.select_control(
-            id,
-            kind,
-            labels[selected].to_string(),
-            labels.iter().map(|label| label.to_string()).collect(),
-            selected,
-            theme,
-            this,
-            cx,
-        )
-    }
-
-    /// Pick the background image (native dialog), copy + process it, and
-    /// warm the dither cache so the first paint of the new-task page is
-    /// costless.
-    pub(super) fn background_choose(&mut self, cx: &mut Context<Self>) {
-        // Async panel only: see `OrbitApp::browse_for_folder` for why a
-        // blocking native dialog on the main thread aborts the app.
+    /// Pick a wallpaper (native dialog), copy it into the managed directory,
+    /// and process it off the UI thread.
+    pub(super) fn wallpaper_choose(&mut self, cx: &mut Context<Self>) {
         let dialog = rfd::AsyncFileDialog::new()
-            .set_title(tr!("settings.choose_background_title"))
+            .set_title(tr!("wallpaper.choose_title"))
             .add_filter(
                 tr!("settings.images_filter"),
                 &["png", "jpg", "jpeg", "webp", "gif", "bmp", "tiff"],
@@ -6751,13 +6915,58 @@ impl OrbitApp {
                 return;
             };
             let path = handle.path().to_path_buf();
+            let _ = this.update(cx, |app, cx| app.import_wallpaper(path, cx));
+        })
+        .detach();
+    }
+
+    fn import_wallpaper(&mut self, source: PathBuf, cx: &mut Context<Self>) {
+        let current = crate::wallpaper::settings();
+        let light = crate::theme::get(cx).mode == crate::theme::ThemeMode::Light;
+        self.set_status(tr!("wallpaper.importing"));
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(
+                    async move { crate::wallpaper::import_and_prepare(&source, &current, light) },
+                )
+                .await;
             let _ = this.update(cx, |app, cx| {
-                match crate::dither::choose_file(&path) {
-                    Ok(label) => {
-                        crate::dither::background();
-                        app.set_status(tr!("settings.background_set", label = label));
+                match result {
+                    Ok((imported, prepared)) => {
+                        let label = imported.label.clone().unwrap_or_default();
+                        // Keep controls the user may have changed while the
+                        // file decoded; only the path/label come from the
+                        // import. If effect, blur, or appearance moved, the
+                        // prepared key will not match and the normal loader
+                        // re-runs the pass for the new settings.
+                        let mut next = crate::wallpaper::settings();
+                        next.path = imported.path;
+                        next.label = imported.label;
+                        if next.mode == crate::wallpaper::WallpaperMode::Disabled {
+                            next.mode = crate::wallpaper::WallpaperMode::Hero;
+                        }
+                        match crate::wallpaper::update(next.clone()) {
+                            Ok(_) => {
+                                // Publish the cache entry for the imported
+                                // file before asking `render` to warm it; if
+                                // the key does not match (a racing edit) the
+                                // normal loader picks it up.
+                                let current_light =
+                                    crate::theme::get(cx).mode == crate::theme::ThemeMode::Light;
+                                if current_light == light {
+                                    crate::wallpaper::install(&next, Ok(prepared), light);
+                                }
+                                crate::theme::rebuild_theme(cx);
+                                app.ensure_wallpaper(cx);
+                                app.set_status(tr!("wallpaper.set", label = label));
+                            }
+                            Err(error) => {
+                                app.toast_error(tr!("wallpaper.could_not_save", error = error));
+                            }
+                        }
                     }
-                    Err(err) => app.set_status(err),
+                    Err(error) => app.toast_error(error),
                 }
                 cx.notify();
             });
@@ -6765,12 +6974,27 @@ impl OrbitApp {
         .detach();
     }
 
-    /// Drop the background (the dot grid returns) and forget the cache.
-    pub(super) fn background_reset(&mut self, cx: &mut Context<Self>) {
-        crate::dither::clear_all();
-        crate::dither::background();
-        self.set_status(tr!("settings.background_reset"));
+    pub(super) fn wallpaper_reset(&mut self, cx: &mut Context<Self>) {
+        match crate::wallpaper::reset() {
+            Ok(()) => {
+                crate::theme::rebuild_theme(cx);
+                self.set_status(tr!("wallpaper.reset"));
+            }
+            Err(error) => self.toast_error(tr!("wallpaper.could_not_save", error = error)),
+        }
         cx.notify();
+    }
+
+    fn set_wallpaper(&mut self, next: crate::wallpaper::WallpaperSettings, cx: &mut Context<Self>) {
+        match crate::wallpaper::update(next) {
+            Ok(true) => {
+                crate::theme::rebuild_theme(cx);
+                self.ensure_wallpaper(cx);
+                cx.notify();
+            }
+            Ok(false) => {}
+            Err(error) => self.toast_error(tr!("wallpaper.could_not_save", error = error)),
+        }
     }
 
     /// The real sidebar toggle, wired to the same state as the top bar.
@@ -6891,8 +7115,8 @@ impl OrbitApp {
             | SettingsSelect::Theme(_)
             | SettingsSelect::UiFontFamily
             | SettingsSelect::CodeFontFamily
-            | SettingsSelect::BackdropCell
-            | SettingsSelect::BackdropFade
+            | SettingsSelect::WallpaperMode
+            | SettingsSelect::WallpaperEffect
             | SettingsSelect::TitleModel
             | SettingsSelect::AgentCalls
             | SettingsSelect::DefaultModel
@@ -7524,28 +7748,24 @@ impl OrbitApp {
                 cx.notify();
                 return true;
             }
-            SettingsSelect::BackdropCell | SettingsSelect::BackdropFade => {
-                let mut tuning = crate::dither::tuning();
-                match kind {
-                    SettingsSelect::BackdropCell => {
-                        tuning.cell = crate::dither::CELL_SIZES
-                            .get(ix)
-                            .copied()
-                            .unwrap_or(tuning.cell);
-                    }
-                    SettingsSelect::BackdropFade => {
-                        tuning.fade = crate::dither::FADE_HEIGHTS
-                            .get(ix)
-                            .copied()
-                            .unwrap_or(tuning.fade);
-                    }
-                    _ => unreachable!(),
-                }
-                crate::dither::set_tuning(tuning);
-                // The cache is keyed on the tuning, so rebuild the pass now:
-                // this frame's preview and the next new-task paint both hit a
-                // warm cache instead of stalling on the first draw.
-                crate::dither::background();
+            SettingsSelect::WallpaperMode => {
+                let mode = crate::wallpaper::WallpaperMode::ALL
+                    .get(ix)
+                    .copied()
+                    .unwrap_or_default();
+                let mut settings = crate::wallpaper::settings();
+                settings.mode = mode;
+                self.set_wallpaper(settings, cx);
+                return true;
+            }
+            SettingsSelect::WallpaperEffect => {
+                let effect = crate::wallpaper_fx::Effect::ALL
+                    .get(ix)
+                    .copied()
+                    .unwrap_or_default();
+                let mut settings = crate::wallpaper::settings();
+                settings.effect = effect;
+                self.set_wallpaper(settings, cx);
                 return true;
             }
             SettingsSelect::RetentionMode => {
@@ -7589,8 +7809,8 @@ impl OrbitApp {
             | SettingsSelect::AccentColor
             | SettingsSelect::UiFontFamily
             | SettingsSelect::CodeFontFamily
-            | SettingsSelect::BackdropCell
-            | SettingsSelect::BackdropFade
+            | SettingsSelect::WallpaperMode
+            | SettingsSelect::WallpaperEffect
             | SettingsSelect::TitleModel
             | SettingsSelect::AgentCalls
             | SettingsSelect::DefaultModel
@@ -8333,14 +8553,30 @@ impl OrbitApp {
     }
 }
 
-/// Wire the backdrop blur slider's pointer handling. A press inside the
-/// track jumps the value to that point and begins a scrub; moves keep
-/// updating even outside the track (a scrub that overshoots still clamps to
-/// an end); release ends it. The handlers ride the slider canvas's prepaint
-/// (see `OrbitApp::blur_slider`), so `bounds` and `hitbox` are exactly the
-/// painted track's — not the window's or the settings column's.
-fn register_blur_slider(
+fn wallpaper_mode_label(mode: crate::wallpaper::WallpaperMode) -> String {
+    match mode {
+        crate::wallpaper::WallpaperMode::Disabled => tr!("wallpaper.mode_disabled"),
+        crate::wallpaper::WallpaperMode::Hero => tr!("wallpaper.mode_hero"),
+        crate::wallpaper::WallpaperMode::FullWindow => tr!("wallpaper.mode_full"),
+    }
+}
+
+fn wallpaper_effect_label(effect: crate::wallpaper_fx::Effect) -> String {
+    match effect {
+        crate::wallpaper_fx::Effect::None => tr!("wallpaper.effect_none"),
+        crate::wallpaper_fx::Effect::Dither => tr!("wallpaper.effect_dither"),
+        crate::wallpaper_fx::Effect::Ascii => tr!("wallpaper.effect_ascii"),
+        crate::wallpaper_fx::Effect::Halftone => tr!("wallpaper.effect_halftone"),
+        crate::wallpaper_fx::Effect::Scanlines => tr!("wallpaper.effect_scanlines"),
+    }
+}
+
+/// The wallpaper sliders' pointer handling: a press inside the track jumps
+/// the value to that point and begins a scrub; moves keep updating even
+/// outside the track; release ends it.
+fn register_wallpaper_slider(
     this: Entity<OrbitApp>,
+    kind: WallpaperSlider,
     bounds: Bounds<Pixels>,
     hitbox: Hitbox,
     window: &mut Window,
@@ -8357,7 +8593,7 @@ fn register_blur_slider(
                 return;
             }
             scrubbing.set(true);
-            apply_blur_at(&this, bounds, event.position.x, cx);
+            apply_wallpaper_slider_at(&this, kind, bounds, event.position.x, cx);
         }
     });
     window.on_mouse_event({
@@ -8367,44 +8603,35 @@ fn register_blur_slider(
             if phase != DispatchPhase::Capture || !scrubbing.get() {
                 return;
             }
-            apply_blur_at(&this, bounds, event.position.x, cx);
+            apply_wallpaper_slider_at(&this, kind, bounds, event.position.x, cx);
         }
     });
-    window.on_mouse_event({
-        move |event: &MouseUpEvent, phase, window, _cx| {
-            if phase != DispatchPhase::Capture
-                || event.button != MouseButton::Left
-                || !scrubbing.replace(false)
-            {
-                return;
-            }
-            window.refresh();
+    window.on_mouse_event(move |event: &MouseUpEvent, phase, window, _cx| {
+        if phase != DispatchPhase::Capture
+            || event.button != MouseButton::Left
+            || !scrubbing.replace(false)
+        {
+            return;
         }
+        window.refresh();
     });
 }
 
-/// Set the backdrop blur from a pointer x in window coordinates, clamped to
-/// the track and snapped to `dither::BLUR_STEP`. A no-op when the snapped
-/// value is unchanged, so a scrub across one step rebuilds the dither pass
-/// once rather than on every mouse move.
-fn apply_blur_at(this: &Entity<OrbitApp>, bounds: Bounds<Pixels>, x: Pixels, cx: &mut App) {
-    // The pointer tracks the handle's centre, which travels across the track
-    // minus the handle — the same span the painted knob uses.
-    let usable = (f32::from(bounds.size.width) - BLUR_KNOB).max(1.);
+fn apply_wallpaper_slider_at(
+    this: &Entity<OrbitApp>,
+    kind: WallpaperSlider,
+    bounds: Bounds<Pixels>,
+    x: Pixels,
+    cx: &mut App,
+) {
+    let usable = (f32::from(bounds.size.width) - SLIDER_KNOB).max(1.);
     let norm =
-        ((f32::from(x) - f32::from(bounds.origin.x) - BLUR_KNOB / 2.) / usable).clamp(0., 1.);
-    let sigma = crate::dither::blur_from_norm(norm);
-    let mut tuning = crate::dither::tuning();
-    if (tuning.blur - sigma).abs() < f32::EPSILON {
-        return;
-    }
-    tuning.blur = sigma;
-    if crate::dither::set_tuning(tuning) {
-        // Rebuild now so this frame's preview is the newly tuned pass; the
-        // cache key's blur field makes the next new-task paint hit it warm.
-        crate::dither::background();
-        this.update(cx, |_, cx| cx.notify());
-    }
+        ((f32::from(x) - f32::from(bounds.origin.x) - SLIDER_KNOB / 2.) / usable).clamp(0., 1.);
+    let (lo, hi) = kind.range();
+    let value = lo + (hi - lo) * norm;
+    let mut settings = crate::wallpaper::settings();
+    kind.set(&mut settings, value);
+    this.update(cx, |app, cx| app.set_wallpaper(settings, cx));
 }
 
 /// A keyboard chord painted as a keycap chip: the same 22px pill the command

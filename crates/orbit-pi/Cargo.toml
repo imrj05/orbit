@@ -63,8 +63,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # base64 payloads for prompt image attachments
 base64 = "0.22"
 devicons = "0.6"
-# Decode + resize the new-task background before the CPU dither pass — the
-# same `image` gpui already decodes through, so no new crate versions.
+# Decode, resize, blur, and apply artwork effects to the wallpaper off the UI
+# thread — the same `image` gpui already decodes through, so no new versions.
 image = "0.25"
 # Remote author avatars rendered by GPUI's image loader. `reqwest` is the
 # same zed-reqwest already in the graph via gpui, so no new crate versions;

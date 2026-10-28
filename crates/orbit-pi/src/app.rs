@@ -3448,8 +3448,8 @@ enum SettingsSelect {
     SpacingDensity,
     UiFontFamily,
     CodeFontFamily,
-    BackdropCell,
-    BackdropFade,
+    WallpaperMode,
+    WallpaperEffect,
     /// The model the auto-title extension asks (Settings → Agent).
     TitleModel,
     /// How agent call details open in the transcript (Settings → Agent).

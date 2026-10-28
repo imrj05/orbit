@@ -1191,7 +1191,7 @@ impl<E: Styled> RaisedExt for E {}
 
 fn elevated<E: Styled>(el: E, theme: &Theme, index: ElevationIndex, bordered: bool) -> E {
     let el = el
-        .bg(ElevationIndex::ElevatedSurface.bg(theme))
+        .bg(theme.card_fill(ElevationIndex::ElevatedSurface.bg(theme)))
         .rounded(panel::RADIUS.px(theme))
         .shadow(index.shadow(theme));
     if bordered {

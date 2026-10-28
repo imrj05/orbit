@@ -197,10 +197,14 @@ on the token scales throughout — its side nav, headers, sections, rows, toolba
 and modals read `DynamicSpacing` / `TextSize` / `Radius` / `ButtonSize`, and it has no `ui_px` or
 gpui spacing utility left; only bespoke geometry remains (avatar / dot / toggle sizes, fixed
 panel and modal widths). The Usage page and its `chart` / `heatmap` / `table` / `filters` /
-`tooltip` modules are likewise on the token scales for spacing, type, and radius; only their
-chart / table geometry is bespoke. The page itself is one continuous read — Daily activity
-(the trailing-year calendar), Summary, Usage over time, Breakdown, Records — with each
-section's selector inside its card rather than a page-level Simple | Details switch. Every single-line input box in the app routes through
+`tooltip` / `sparkline` modules are likewise on the token scales for spacing, type, and radius;
+only their chart / table geometry is bespoke. The page itself is one continuous read — Daily
+activity (the trailing-year calendar), Summary, Usage over time, Breakdown, Records — with each
+section's selector inside its card rather than a page-level Simple | Details switch. The
+Summary board is a row of KPI cards with a 40px line each (the bklit KPI-sparkline recipe):
+the four figures read the range at rest, and pointing at any line points the whole row at that
+bucket — figure, date, change, and secondary line — with the line drawn in on first paint,
+morphed when the range changes, and highlighted (no hover animation) where the pointer reads. Every single-line input box in the app routes through
 `input_field_frame` (or the `input::*` metrics directly, in the extension dialog) — the main
 composer, the file editor, and the inline tree rename are the deliberate exceptions, and each is
 its own component rather than an `InputField`. Every search box in the app shares one look — the

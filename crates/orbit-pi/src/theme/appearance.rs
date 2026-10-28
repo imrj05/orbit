@@ -121,46 +121,7 @@ impl AccentColor {
             _ => None,
         };
         if let Some(value) = value {
-            let base: gpui::Hsla = gpui::rgb(value).into();
-            let mut ink = base;
-            // The requested base remains unchanged for fills. Adjust only the
-            // text role to clear AA on the active palette's canvas and cards.
-            let surfaces = [
-                theme.background,
-                theme.surface,
-                theme.surface_secondary,
-                theme.surface_elevated,
-                theme.surface_hover,
-                theme.surface_active,
-            ];
-            while surfaces.iter().any(|surface| contrast(ink, *surface) < 4.5) {
-                ink.l = match theme.mode {
-                    ThemeMode::Dark => (ink.l + 0.005).min(1.0),
-                    ThemeMode::Light => (ink.l - 0.005).max(0.0),
-                };
-                if ink.l == 0.0 || ink.l == 1.0 {
-                    break;
-                }
-            }
-            let mut hover = base;
-            hover.l = (hover.l + 0.05).min(1.0);
-            let mut pressed = base;
-            pressed.l = (pressed.l + 0.09).min(1.0);
-            let foreground = gpui::rgb(0x000000).into();
-            theme.accent = base;
-            theme.accent_hover = hover;
-            theme.accent_pressed = pressed;
-            theme.accent_fg = foreground;
-            theme.accent_text = ink;
-            theme.focus_ring = ink;
-            theme.action = base;
-            theme.action_hover = hover;
-            theme.action_pressed = pressed;
-            theme.action_fg = foreground;
-            theme.surface_selected = base.opacity(0.14);
-            theme.selection = base.opacity(0.14);
-            theme.inline_code_bg = base.opacity(0.14);
-            return theme;
+            return with_accent(theme, gpui::rgb(value).into());
         }
         let id = match (self, theme.mode) {
             (Self::Default, _) => return theme,
@@ -188,6 +149,50 @@ impl AccentColor {
         theme.inline_code_bg = colors.inline_code_bg;
         theme
     }
+}
+
+/// Recolour a theme's interaction roles from one base hue. The fill keeps the
+/// requested colour; only the text role is lightened/darkened until it clears
+/// AA on the palette's canvas and card surfaces. Shared by the named accent
+/// choices and the wallpaper's extracted accent.
+pub(crate) fn with_accent(mut theme: Theme, base: gpui::Hsla) -> Theme {
+    let mut ink = base;
+    let surfaces = [
+        theme.background,
+        theme.surface,
+        theme.surface_secondary,
+        theme.surface_elevated,
+        theme.surface_hover,
+        theme.surface_active,
+    ];
+    while surfaces.iter().any(|surface| contrast(ink, *surface) < 4.5) {
+        ink.l = match theme.mode {
+            ThemeMode::Dark => (ink.l + 0.005).min(1.0),
+            ThemeMode::Light => (ink.l - 0.005).max(0.0),
+        };
+        if ink.l == 0.0 || ink.l == 1.0 {
+            break;
+        }
+    }
+    let mut hover = base;
+    hover.l = (hover.l + 0.05).min(1.0);
+    let mut pressed = base;
+    pressed.l = (pressed.l + 0.09).min(1.0);
+    let foreground = gpui::rgb(0x000000).into();
+    theme.accent = base;
+    theme.accent_hover = hover;
+    theme.accent_pressed = pressed;
+    theme.accent_fg = foreground;
+    theme.accent_text = ink;
+    theme.focus_ring = ink;
+    theme.action = base;
+    theme.action_hover = hover;
+    theme.action_pressed = pressed;
+    theme.action_fg = foreground;
+    theme.surface_selected = base.opacity(0.14);
+    theme.selection = base.opacity(0.14);
+    theme.inline_code_bg = base.opacity(0.14);
+    theme
 }
 
 fn contrast(a: gpui::Hsla, b: gpui::Hsla) -> f32 {
@@ -396,7 +401,7 @@ pub fn set_appearance_prefs(cx: &mut App, prefs: AppearancePrefs) -> io::Result<
     // Notify even when editing the inactive palette or choosing a mode that
     // resolves to the same palette, so the settings controls stay in sync.
     let ui = get(cx).ui;
-    cx.set_global(prefs.apply(Theme::for_id(prefs.resolve(cx.window_appearance())).with_ui(ui)));
+    super::rebuild_theme_with_ui(cx, ui);
     Ok(())
 }
 
@@ -404,7 +409,7 @@ fn apply_system_appearance(cx: &mut App, system: WindowAppearance) {
     let id = appearance_prefs(cx).resolve(system);
     if get(cx).theme_id != id {
         let ui = get(cx).ui;
-        cx.set_global(appearance_prefs(cx).apply(Theme::for_id(id).with_ui(ui)));
+        super::rebuild_theme_for(cx, ui, system);
     }
 }
 

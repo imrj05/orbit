@@ -101,6 +101,11 @@ fn feature_card(theme: Theme, body: AnyElement) -> AnyElement {
                 .rounded(panel::RADIUS.px(&theme))
                 .border_1()
                 .border_color(theme.border)
+                // The card frame exists over the wallpaper too; only its
+                // surface is translucent, never its text or controls.
+                .when(theme.wallpaper.active, |card| {
+                    card.bg(theme.card_fill(theme.surface_secondary))
+                })
                 .child(body),
         )
         .into_any_element()
@@ -186,6 +191,10 @@ impl Render for OrbitApp {
             self.close_model_selector(window, cx);
         }
         let theme = *theme::get(cx);
+        // Warm or refresh the wallpaper cache before the tree is built. The
+        // call is a no-op while a load is in flight and when the cache key is
+        // current; image work itself runs on the background executor.
+        self.ensure_wallpaper(cx);
         // Diagram layout sizes node boxes from shaped text, and the markdown
         // renderer it runs inside has no `window`; hand it the text system for
         // the duration of this frame.
@@ -546,6 +555,14 @@ impl Render for OrbitApp {
             .bg(theme.background)
             .text_color(theme.text_primary)
             .font_family(theme::ui_font_family())
+            // One wallpaper layer behind every surface. Hero-only places it in
+            // the main column instead (`new_task_backdrop`); full-window owns
+            // the whole root, so the sidebar's translucent fill reveals it.
+            .children(if theme.wallpaper.full_window {
+                crate::wallpaper::layer(theme, theme::reduce_motion(cx))
+            } else {
+                None
+            })
             // Dropping files anywhere in the window attaches them (the
             // composer highlights when the drag passes over it).
             .on_drop(cx.listener(Self::on_file_drop))
@@ -562,7 +579,7 @@ impl Render for OrbitApp {
                     .flex_none()
                     .h_full()
                     .overflow_hidden()
-                    .bg(theme.surface)
+                    .bg(theme.panel_fill(theme.surface))
                     .child(
                         div()
                             .id("sidebar")
@@ -1067,7 +1084,7 @@ impl Render for OrbitApp {
                                                 .id("composer-box")
                                                 .w_full()
                                                 .relative()
-                                                .bg(theme.surface_secondary)
+                                                .bg(theme.card_fill(theme.surface_secondary))
                                                 .border_1()
                                                 .border_color(if self.file_drag_hovered {
                                                     theme.accent
@@ -1167,10 +1184,19 @@ impl Render for OrbitApp {
                     .min_w_0()
                     .min_h_0()
                     .relative()
+                    // Full-window wallpaper shows through the main column; in
+                    // every other mode this resolves to the same opaque
+                    // background the window already paints.
+                    .bg(theme.panel_fill(theme.background))
                     .children(if feature_open || pane_full {
                         None
                     } else {
-                        self.new_task_backdrop(theme, self.backdrop_phase, empty)
+                        self.new_task_backdrop(
+                            theme,
+                            self.backdrop_phase,
+                            empty,
+                            theme::reduce_motion(cx),
+                        )
                     })
                     .children(if feature_open || pane_full {
                         None
@@ -2312,33 +2338,55 @@ impl OrbitApp {
         )
     }
 
-    /// The new-task backdrop layer: the configured dithered image, or the
-    /// default dot grid, absolutely filling the whole chat column below the
-    /// top bar — behind the empty state, the floating composer, and the
-    /// status bar alike, so the picture is continuous behind all three.
+    /// The new-task backdrop layer: the configured wallpaper, or the default
+    /// dot grid, absolutely filling the whole chat column below the top bar —
+    /// behind the empty state, the floating composer, and the status bar
+    /// alike, so the surface is continuous behind all three.
     ///
     /// It lives here rather than inside the empty state because the empty
     /// state is only the `flex_1` slot above the composer: a backdrop scoped
     /// to it ended at the composer's top edge and left the bottom of the
-    /// window on a flat slab, at every fade setting including "None". The
-    /// active chat paints the quiet [`Self::chat_backdrop`] wash instead —
-    /// the living field is the new-task page's own.
+    /// window on a flat slab. The active chat paints the quiet
+    /// [`Self::chat_backdrop`] wash instead — the living field is the
+    /// new-task page's own.
     pub(super) fn new_task_backdrop(
         &mut self,
         theme: Theme,
         phase: f32,
         empty: bool,
+        reduce_motion: bool,
     ) -> Option<AnyElement> {
         if !empty {
             return None;
         }
-        let backdrop = Self::dither_backdrop(theme);
-        let dithered = backdrop.is_some();
-        // Only the procedural field animates: a configured photo is a still,
-        // so the heartbeat must not repaint this page for it. `render` clears
-        // the flag before this runs, so a frame that skips the backdrop leaves
-        // it false.
-        self.backdrop_live = !dithered;
+        // A configured wallpaper owns this region. Full-window paints it at
+        // the root (behind the sidebar too); hero-only paints exactly this
+        // backdrop rect, below the shared top bar. With no wallpaper, the
+        // procedural dot field is the page's only backdrop.
+        let wallpaper = crate::wallpaper::settings();
+        if wallpaper.enabled() {
+            self.backdrop_live = false;
+            if wallpaper.mode == crate::wallpaper::WallpaperMode::FullWindow {
+                return None;
+            }
+            return Some(
+                div()
+                    .id("new-task-backdrop")
+                    .debug_selector(|| "new-task-backdrop".to_string())
+                    .absolute()
+                    .top(px(TOP_BAR_H))
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .children(crate::wallpaper::layer(theme, reduce_motion))
+                    .into_any_element(),
+            );
+        }
+        // The procedural field animates; a wallpaper is a still, so the
+        // heartbeat only runs on the no-wallpaper path. `render` clears the
+        // flag before this runs, so a frame that skips the backdrop leaves it
+        // false.
+        self.backdrop_live = true;
         Some(
             div()
                 .id("new-task-backdrop")
@@ -2348,10 +2396,7 @@ impl OrbitApp {
                 .left_0()
                 .right_0()
                 .bottom_0()
-                .when(!dithered, |layer| {
-                    layer.child(crate::backdrop::layer(theme, phase))
-                })
-                .children(backdrop)
+                .child(crate::backdrop::layer(theme, phase))
                 .into_any_element(),
         )
     }
@@ -2367,6 +2412,12 @@ impl OrbitApp {
     pub(super) fn chat_backdrop(&self, theme: Theme, empty: bool) -> Option<AnyElement> {
         if empty {
             // The new-task page shows its own living backdrop.
+            return None;
+        }
+        // Full-window wallpaper is the page's backdrop; the accent wash would
+        // only add a second tint over it. Hero-only never reaches the chat
+        // column, so the existing wash stays.
+        if theme.wallpaper.full_window {
             return None;
         }
         Some(
@@ -2412,69 +2463,15 @@ impl OrbitApp {
         )
     }
 
-    /// The configured dithered background image, absolutely filling its
-    /// parent — the new-task column, via [`Self::new_task_backdrop`].
-    pub(super) fn dither_backdrop(theme: Theme) -> Option<AnyElement> {
-        Self::backdrop_image(crate::dither::background(), crate::dither::tuning(), theme)
-    }
-
-    /// Wrap a dithered image so it fills its parent and nothing else, then
-    /// drop it into the page: a bottom gradient to `background` so the picture
-    /// fades out under the composer instead of ending on a hard edge. The
-    /// fade height comes from the backdrop's own tuning (Settings →
-    /// Appearance); `None` skips the gradient entirely rather than painting
-    /// a zero-height one.
-    ///
-    /// The wrapper clips: gpui's `ObjectFit::Cover` scales the image up and
-    /// centers it, returning bounds *larger* than the element whenever the
-    /// ratios differ — a 16:9 image in a narrower main area painted its
-    /// overflow over the sessions sidebar until this clip was added.
-    pub(super) fn backdrop_image(
-        image: Option<std::sync::Arc<gpui::RenderImage>>,
-        tuning: crate::dither::Tuning,
-        theme: Theme,
-    ) -> Option<AnyElement> {
-        image.map(|image| {
-            div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .right_0()
-                .bottom_0()
-                .overflow_hidden()
-                .child(img(image).size_full().object_fit(ObjectFit::Cover))
-                .when(tuning.fade > 0., |backdrop| {
-                    backdrop.child(
-                        div()
-                            .id("backdrop-fade")
-                            .debug_selector(|| "backdrop-fade".to_string())
-                            .absolute()
-                            .left_0()
-                            .right_0()
-                            .bottom_0()
-                            // Proportional, so the drop stays put as the window
-                            // resizes instead of turning into a band.
-                            .h(relative(tuning.fade))
-                            .bg(linear_gradient(
-                                180.,
-                                linear_color_stop(theme.background.opacity(0.), 0.),
-                                linear_color_stop(theme.background.opacity(tuning.fade_peak()), 1.),
-                            )),
-                    )
-                })
-                .into_any_element()
-        })
-    }
-
-    /// The dithered field at rest, for surfaces that show it as a thumbnail
-    /// (Settings → Appearance's backdrop strip) rather than the live page.
+    /// The dot field at rest, for surfaces that show it as a thumbnail
+    /// (Settings → Appearance's wallpaper preview) rather than the live page.
     pub(super) fn dot_backdrop(theme: Theme) -> impl IntoElement + use<> {
         crate::backdrop::layer(theme, 0.)
     }
 
     /// New-task empty state — minimal onboarding over the backdrop the caller
-    /// paints (the configured dithered image, or the dot grid): one headline,
-    /// a ghost workspace row, and the composer below for input.
+    /// paints (the configured wallpaper, or the dot grid): one headline, a
+    /// ghost workspace row, and the composer below for input.
     ///
     /// `main_width` comes from the caller (window minus sidebar/pane) because
     /// the field below gets a definite width: `w_full().max_w(_)` chains
@@ -2626,7 +2623,7 @@ impl OrbitApp {
                                                     } else {
                                                         theme.border
                                                     })
-                                                    .bg(theme.surface_elevated)
+                                                    .bg(theme.card_fill(theme.surface_elevated))
                                                     .flex()
                                                     .items_center()
                                                     .gap(px(10.))
@@ -4113,7 +4110,7 @@ impl OrbitApp {
                     .rounded(panel::RADIUS.px(&theme))
                     .border_1()
                     .border_color(theme.border)
-                    .bg(theme.surface_elevated)
+                    .bg(theme.card_fill(theme.surface_elevated))
                     .flex()
                     .items_center()
                     .gap(DynamicSpacing::Base08.px(&theme))
@@ -4163,7 +4160,7 @@ impl OrbitApp {
                     .rounded(panel::RADIUS.px(&theme))
                     .border_1()
                     .border_color(theme.border)
-                    .bg(theme.surface_elevated)
+                    .bg(theme.card_fill(theme.surface_elevated))
                     .flex()
                     .items_center()
                     .gap(DynamicSpacing::Base08.px(&theme))
@@ -4674,7 +4671,7 @@ impl OrbitApp {
             .rounded(panel::RADIUS.px(&theme))
             .border_1()
             .border_color(theme.accent.opacity(0.3))
-            .bg(theme.surface_elevated)
+            .bg(theme.card_fill(theme.surface_elevated))
             .flex()
             .items_center()
             .gap(px(10.))

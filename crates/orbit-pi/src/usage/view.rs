@@ -15,9 +15,10 @@
 //! hairlines inside the cards, tabular mono figures.
 //!
 //! **STORY.** One continuous read, top to bottom: the activity calendar sets
-//! the rhythm, the operator reads the four headline figures, reads the trend,
-//! then audits where the usage went (Breakdown) and the records behind it
-//! (Records). Every figure is pi's own session measurement; nothing is
+//! the rhythm, the operator reads the four headline figures — pointing at a
+//! card's line reads any day in the range across the whole row — reads the
+//! trend, then audits where the usage went (Breakdown) and the records behind
+//! it (Records). Every figure is pi's own session measurement; nothing is
 //! invented.
 //!
 //! **FIRST VIEWPORT.** 44px header + filter bar, then the Daily activity
@@ -33,14 +34,16 @@
 
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::{
-    anchored, deferred, div, prelude::*, px, relative, AnyElement, App, Context, Corner, Entity,
-    Font, FontFeatures, FontWeight, IntoElement, MouseButton, Render, SharedString, Window,
+    anchored, deferred, div, prelude::*, px, relative, Animation, AnimationExt, AnyElement, App,
+    Context, Corner, Entity, Font, FontFeatures, FontWeight, IntoElement, MouseButton, Render,
+    SharedString, Window,
 };
 
 use super::aggregate::{
-    Breakdown, BucketRow, ChartMetric, Direction, GroupRow, LatencyMetric, LatencyStats,
+    Breakdown, BucketRow, ChartMetric, GroupRow, LatencyMetric, LatencyStats,
     SessionRow, ToolRow, UsageSnapshot,
 };
 use super::chart;
@@ -48,6 +51,7 @@ use super::filters::{self, FilterOption};
 use super::format;
 use super::heatmap;
 use super::model::{next_bucket, Granularity, RangePreset, TimeFocus, UsageFilter, UsageIndex};
+use super::sparkline;
 use super::page::{
     BreakdownQueryResult, BreakdownSort, BreakdownTab, BucketQueryResult, BucketSort, DetailTab,
     FailureQueryResult, MenuKind, SessionQueryResult, SessionSort, ToolQueryResult, UsagePage,
@@ -1075,9 +1079,16 @@ impl UsagePage {
 
     // ── summary card ───────────────────────────────────────────────────────
 
-    /// The Summary card: the metric grid first, as full-bleed cells divided by
-    /// hairlines (a measurement board, not a grid of floating cards), then the
-    /// quieter secondary figures on the strip beneath.
+    /// The Summary card: the metric board first, as full-bleed cells divided
+    /// by hairlines (a measurement board, not a grid of floating cards), then
+    /// the quieter secondary figures on the strip beneath.
+    ///
+    /// Each cell is the bklit KPI card (bklit.com/recipes#kpi-sparklines): the
+    /// label with the scope it reads, the figure and its change, then the
+    /// range's 40px line. Pointing at any line points the whole row at that
+    /// bucket, so all four numbers, dates, and changes read the same day, and
+    /// only that point is highlighted; the pointer leaving the board snaps them
+    /// back to the range ([`sparkline`]).
     ///
     /// The grid is built as explicit rows of `flex_1` cells rather than one
     /// wrapping container of percentage-width cells: percentage widths inside a
@@ -1090,7 +1101,16 @@ impl UsagePage {
         cols: usize,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let cells = self.kpi_cells(snapshot);
+        let series = sparkline::kpi_values(&snapshot.series);
+        let cells = self.kpi_cells(snapshot, &series);
+        let previous = self.kpi_previous();
+        let reduced_motion = theme::reduce_motion(cx);
+        let on_hover: sparkline::HoverFn = {
+            let entity = cx.entity();
+            Rc::new(move |bucket, _, cx| {
+                entity.update(cx, |page, cx| page.set_kpi_hover(bucket, cx));
+            })
+        };
         let mut grid = div().w_full().flex().flex_col();
 
         for (row_ix, chunk) in cells.chunks(cols).enumerate() {
@@ -1098,7 +1118,7 @@ impl UsagePage {
             for (col_ix, cell) in chunk.iter().enumerate() {
                 let entity = cx.entity();
                 // The cell whose metric the trend below is plotting is the
-                // board's one accent (§19): a tick under the figure, so the
+                // board's one accent (§19): its figure and its line, so the
                 // click-through to the chart reads before it is made.
                 let active = cell.click == Some(self.metric());
                 let tint = match (cell.tone, active) {
@@ -1106,6 +1126,37 @@ impl UsagePage {
                     (CellTone::Normal, false) => theme.text_primary,
                     (CellTone::Muted, _) => theme.text_muted,
                 };
+                let line = if active { theme.accent } else { theme.text_secondary };
+                let change = cell.change.map(|pct| {
+                    let color = if pct.abs() < 0.05 {
+                        theme.text_muted
+                    } else if pct > 0.0 {
+                        theme.success
+                    } else {
+                        theme.error
+                    };
+                    (format::delta(Some(pct)), color)
+                });
+                let values = series
+                    .get(cell.metric.index())
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                let earlier = previous
+                    .and_then(|previous| previous.get(cell.metric.index()))
+                    .map(Vec::as_slice);
+                let spark = sparkline::sparkline(
+                    sparkline::Spark {
+                        id: cell.metric.id(),
+                        values,
+                        previous: earlier,
+                        hover: self.kpi_hover(),
+                        morph_serial: self.kpi_serial(),
+                        color: line,
+                        reduced_motion,
+                        theme,
+                    },
+                    on_hover.clone(),
+                );
                 let mut element = div()
                     .id(SharedString::from(format!("usage-kpi-{row_ix}-{col_ix}")))
                     .flex_1()
@@ -1125,21 +1176,60 @@ impl UsagePage {
                         cell.cursor_pointer()
                             .hover(|style| style.bg(theme.surface_hover))
                     })
+                    // The label and the scope it reads: the range at rest, the
+                    // bucket under the pointer.
                     .child(
                         div()
-                            .text_size(TextSize::Small.px(&theme))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_muted)
-                            .child(cell.label.clone()),
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .gap(DynamicSpacing::Base08.px(&theme))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(TextSize::Small.px(&theme))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme.text_muted)
+                                    .child(cell.label.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .font(num_font())
+                                    .text_size(TextSize::Small.px(&theme))
+                                    .text_color(theme.text_muted)
+                                    .child(cell.scope.clone()),
+                            ),
                     )
+                    // The figure the board is named for, and the change it
+                    // carries. The sign and the colour agree, so direction is
+                    // never colour-only (§62).
                     .child(
                         div()
-                            .font(num_font())
-                            .text_size(theme.ui_px(24.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(tint)
-                            .child(cell.value.clone()),
+                            .w_full()
+                            .flex()
+                            .items_baseline()
+                            .gap(DynamicSpacing::Base06.px(&theme))
+                            .child(
+                                div()
+                                    .font(num_font())
+                                    .text_size(theme.ui_px(24.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(tint)
+                                    .child(cell.value.clone()),
+                            )
+                            .children(change.map(|(text, color)| {
+                                div()
+                                    .font(num_font())
+                                    .text_size(TextSize::Small.px(&theme))
+                                    .text_color(color)
+                                    .child(text)
+                            })),
                     )
+                    // The board's active metric keeps its tick as well as the
+                    // accent line: a shape, not a hue alone (§19/§62).
                     .child(
                         div()
                             .h(px(2.))
@@ -1147,9 +1237,12 @@ impl UsagePage {
                             .rounded(px(1.))
                             .when(active, |tick| tick.bg(theme.accent)),
                     )
+                    .child(div().mt(px(2.)).child(spark))
                     .child(
                         div()
-                            .text_size(TextSize::Small.px(&theme))
+                            .min_w_0()
+                            .truncate()
+                            .text_size(TextSize::XSmall.px(&theme))
                             .text_color(theme.text_muted)
                             .child(cell.sub.clone()),
                     );
@@ -1194,82 +1287,140 @@ impl UsagePage {
 
     /// One cell per headline metric. A metric whose data does not exist says
     /// "Unavailable" and why — never a fabricated zero (§6/§44).
-    fn kpi_cells(&self, snapshot: &UsageSnapshot) -> Vec<KpiCell> {
+    ///
+    /// Every figure on a cell describes the same scope: at rest the range (the
+    /// period-over-period change and the range's secondary line), under the
+    /// pointer the bucket (its change from the bucket before it and its own
+    /// secondary line). Mixing the two would make the change describe a number
+    /// the card is not showing.
+    fn kpi_cells(&self, snapshot: &UsageSnapshot, series: &[Vec<f64>]) -> Vec<KpiCell> {
         let totals = &snapshot.summary.totals;
-        let mut cells = Vec::new();
-        cells.push(KpiCell {
-            label: tr!("usage.metric_requests"),
-            value: format::count(totals.requests),
-            sub: delta_sub(
-                snapshot,
-                ChartMetric::Requests,
-                &tr!("usage.sub_requests_in_range"),
-            ),
-            tone: CellTone::Normal,
-            click: Some(ChartMetric::Requests),
-        });
-        cells.push(KpiCell {
-            label: tr!("usage.metric_total_tokens"),
-            value: format::compact(totals.tokens.total),
-            sub: match totals.tokens_per_request() {
-                Some(avg) => tr!(
-                    "usage.sub_avg_per_request",
-                    value = format::compact(avg as u64)
-                ),
-                None => tr!("usage.sub_no_requests"),
-            },
-            tone: CellTone::Normal,
-            click: Some(ChartMetric::Tokens),
-        });
-        cells.push(match snapshot.cache.hit_rate {
-            Some(rate) => KpiCell {
-                label: tr!("usage.metric_cache_hit_rate"),
-                value: format::percent(rate),
-                sub: tr!(
-                    "usage.sub_read_written",
-                    read = format::compact(snapshot.cache.cache_read),
-                    written = format::compact(snapshot.cache.cache_write)
-                ),
-                tone: CellTone::Normal,
-                // Focus the cache analytics: plot cache volume over time.
-                click: Some(ChartMetric::Cache),
-            },
-            None => KpiCell {
-                label: tr!("usage.metric_cache_hit_rate"),
-                value: tr!("usage.unavailable"),
-                sub: tr!("usage.sub_no_cache_tokens"),
-                tone: CellTone::Muted,
-                click: None,
-            },
-        });
-        cells.push(match totals.avg_duration_ms() {
-            Some(avg) => KpiCell {
-                label: tr!("usage.metric_avg_response"),
-                value: format::duration_ms(avg),
-                sub: if snapshot.latency.has_percentiles() {
-                    tr!(
-                        "usage.sub_p95_measured",
-                        p95 = format::duration_ms(snapshot.latency.p95_ms as f64),
-                        count = format::count(snapshot.latency.samples)
-                    )
-                } else {
-                    tr!(
-                        "usage.sub_measured",
-                        count = format::count(snapshot.latency.samples)
-                    )
-                },
-                tone: CellTone::Normal,
-                click: Some(ChartMetric::Latency),
-            },
-            None => KpiCell {
-                label: tr!("usage.metric_avg_response"),
-                value: tr!("usage.unavailable"),
-                sub: tr!("usage.sub_no_request_gaps"),
-                tone: CellTone::Muted,
-                click: None,
-            },
-        });
-        cells
+        let points = &snapshot.series.points;
+        let hovered = self.kpi_hover().filter(|ix| *ix < points.len());
+        let point = hovered.and_then(|ix| points.get(ix));
+        let range_scope = snapshot.filter.range.label();
+
+        sparkline::KpiMetric::ALL
+            .into_iter()
+            .map(|metric| {
+                let values = series
+                    .get(metric.index())
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                let available = match metric {
+                    sparkline::KpiMetric::Requests | sparkline::KpiMetric::Tokens => true,
+                    sparkline::KpiMetric::CacheRate => snapshot.cache.hit_rate.is_some(),
+                    sparkline::KpiMetric::Latency => totals.avg_duration_ms().is_some(),
+                };
+                let (value, tone) = match metric {
+                    sparkline::KpiMetric::Requests => (
+                        format::count(point.map_or(totals.requests, |point| point.totals.requests)),
+                        CellTone::Normal,
+                    ),
+                    sparkline::KpiMetric::Tokens => (
+                        format::compact(
+                            point.map_or(totals.tokens.total, |point| point.totals.tokens.total),
+                        ),
+                        CellTone::Normal,
+                    ),
+                    sparkline::KpiMetric::CacheRate => {
+                        let rate = point
+                            .map_or(snapshot.cache.hit_rate, |point| point.totals.cache_hit_rate());
+                        match (rate, point) {
+                            (Some(rate), _) => (format::percent(rate), CellTone::Normal),
+                            // A bucket with no cache traffic has no rate; the
+                            // range as a whole may still have one.
+                            (None, Some(_)) => ("—".to_string(), CellTone::Muted),
+                            (None, None) => (tr!("usage.unavailable"), CellTone::Muted),
+                        }
+                    }
+                    sparkline::KpiMetric::Latency => {
+                        let average = point
+                            .map_or_else(|| totals.avg_duration_ms(), |point| {
+                                point.totals.avg_duration_ms()
+                            });
+                        match (average, point) {
+                            (Some(ms), _) => (format::duration_ms(ms), CellTone::Normal),
+                            (None, Some(_)) => ("—".to_string(), CellTone::Muted),
+                            (None, None) => (tr!("usage.unavailable"), CellTone::Muted),
+                        }
+                    }
+                };
+                let change = match hovered {
+                    Some(ix) => sparkline::point_delta(values, ix),
+                    None => range_delta(snapshot, metric),
+                };
+                let sub = match metric {
+                    sparkline::KpiMetric::Requests => match point {
+                        Some(point) => tr!(
+                            "usage.sub_in_bucket",
+                            value = format::count(point.totals.requests)
+                        ),
+                        None => tr!("usage.sub_requests_in_range"),
+                    },
+                    sparkline::KpiMetric::Tokens => {
+                        let per_request = point
+                            .map_or_else(|| totals.tokens_per_request(), |point| {
+                                point.totals.tokens_per_request()
+                            });
+                        match per_request {
+                            Some(avg) => tr!(
+                                "usage.sub_avg_per_request",
+                                value = format::compact(avg as u64)
+                            ),
+                            None => tr!("usage.sub_no_requests"),
+                        }
+                    }
+                    sparkline::KpiMetric::CacheRate => {
+                        let (read, written) = point.map_or(
+                            (snapshot.cache.cache_read, snapshot.cache.cache_write),
+                            |point| {
+                                (
+                                    point.totals.tokens.cache_read,
+                                    point.totals.tokens.cache_write,
+                                )
+                            },
+                        );
+                        if read + written == 0 {
+                            tr!("usage.sub_no_cache_tokens")
+                        } else {
+                            tr!(
+                                "usage.sub_read_written",
+                                read = format::compact(read),
+                                written = format::compact(written)
+                            )
+                        }
+                    }
+                    sparkline::KpiMetric::Latency => {
+                        let latency = point.map_or(&snapshot.latency, |point| &point.latency);
+                        if latency.samples == 0 {
+                            tr!("usage.sub_no_request_gaps")
+                        } else if latency.has_percentiles() {
+                            tr!(
+                                "usage.sub_p95_measured",
+                                p95 = format::duration_ms(latency.p95_ms as f64),
+                                count = format::count(latency.samples)
+                            )
+                        } else {
+                            tr!(
+                                "usage.sub_measured",
+                                count = format::count(latency.samples)
+                            )
+                        }
+                    }
+                };
+                KpiCell {
+                    metric,
+                    label: metric_label(metric),
+                    scope: point.map_or_else(|| range_scope.clone(), |point| point.label.clone()),
+                    value,
+                    change,
+                    sub,
+                    tone,
+                    click: available.then(|| metric.chart_metric()),
+                }
+            })
+            .collect()
     }
 
     /// Secondary readout under the board: the metrics that inform the headline
@@ -1546,6 +1697,7 @@ impl UsagePage {
                 hover,
                 selected,
                 theme,
+                crate::theme::reduce_motion(cx),
                 on_hover,
                 on_select,
             ));
@@ -1956,7 +2108,7 @@ impl UsagePage {
                 let result = self.tools_result(snapshot, cx);
                 (
                     tools_meta(snapshot),
-                    self.tools_chart(&chart_rows, result.calls, theme),
+                    self.tools_chart(&chart_rows, result.calls, theme, theme::reduce_motion(cx)),
                     self.tools_table(&result, theme, cx),
                     self.tools_totals(&result, theme),
                     self.breakdown_footer(result.page, result.page_size, result.total, theme, cx),
@@ -2308,7 +2460,7 @@ impl UsagePage {
                     .cursor_pointer()
                     .hover(|style| style.bg(theme.surface_hover))
                     .child(chart_label(&row.label, row.sub.as_deref(), theme))
-                    .child(bar_track(fraction, theme))
+                    .child(bar_track(fraction, theme, theme::reduce_motion(cx)))
                     .child(chart_value(
                         &format::compact(row.totals.tokens.total),
                         theme,
@@ -2331,7 +2483,13 @@ impl UsagePage {
     }
 
     /// The ranked bar chart above the Tools table: the busiest tools as bars.
-    fn tools_chart(&self, rows: &[ToolRow], total: u64, theme: Theme) -> AnyElement {
+    fn tools_chart(
+        &self,
+        rows: &[ToolRow],
+        total: u64,
+        theme: Theme,
+        reduced_motion: bool,
+    ) -> AnyElement {
         let mut chart = div()
             .w_full()
             .pb(DynamicSpacing::Base12.px(&theme))
@@ -2375,7 +2533,7 @@ impl UsagePage {
                         Some(row.class.label().as_str()),
                         theme,
                     ))
-                    .child(bar_track(fraction, theme))
+                    .child(bar_track(fraction, theme, reduced_motion))
                     .child(chart_value(&format::count(row.calls), theme))
                     .child(chart_share(&format::share(fraction), theme)),
             );
@@ -3910,7 +4068,8 @@ fn table_pager(
 fn chart_label(label: &str, sub: Option<&str>, theme: Theme) -> AnyElement {
     div()
         .w(px(180.))
-        .flex_none()
+        .min_w(px(64.))
+        .flex_shrink()
         .flex()
         .flex_col()
         .child(
@@ -3931,21 +4090,35 @@ fn chart_label(label: &str, sub: Option<&str>, theme: Theme) -> AnyElement {
 }
 
 /// A chart row's magnitude track and its accent fill.
-fn bar_track(fraction: f64, theme: Theme) -> AnyElement {
+fn bar_track(fraction: f64, theme: Theme, reduced_motion: bool) -> AnyElement {
+    let fraction = if fraction.is_finite() {
+        fraction.clamp(0.0, 1.0) as f32
+    } else {
+        0.0
+    };
+    let bar = div()
+        .h_full()
+        .w(relative(fraction))
+        .rounded(Radius::Full.px(&theme))
+        .bg(theme.accent);
+    let bar = if reduced_motion {
+        bar.into_any_element()
+    } else {
+        bar.with_animation(
+            "usage-breakdown-bar-reveal",
+            Animation::new(Duration::from_millis(450)).with_easing(|t| 1.0 - (1.0 - t).powi(3)),
+            move |bar, progress| bar.w(relative(fraction * progress)),
+        )
+        .into_any_element()
+    };
     div()
         .flex_1()
         .min_w(px(48.))
-        .h(px(8.))
+        .h(px(10.))
         .rounded(Radius::Full.px(&theme))
         .bg(theme.surface_secondary)
         .overflow_hidden()
-        .child(
-            div()
-                .h_full()
-                .w(relative(fraction.clamp(0.0, 1.0) as f32))
-                .rounded(Radius::Full.px(&theme))
-                .bg(theme.accent),
-        )
+        .child(bar)
         .into_any_element()
 }
 
@@ -4138,26 +4311,6 @@ fn summary_stat(label: String, value: String, theme: Theme) -> AnyElement {
         .into_any_element()
 }
 
-/// Secondary line for a KPI cell: the comparison when one exists, otherwise a
-/// plain fact about the range. Direction is carried by an arrow as well as the
-/// sign, so it never depends on color (§62).
-fn delta_sub(snapshot: &UsageSnapshot, metric: ChartMetric, fallback: &str) -> String {
-    let delta = snapshot.delta(metric);
-    if delta.unavailable {
-        return fallback.to_string();
-    }
-    // The sign already carries direction; the arrow only earns its place when
-    // there is no percentage to read.
-    match delta.pct {
-        Some(_) => tr!("usage.delta_vs_previous", delta = format::delta(delta.pct)),
-        None => match delta.direction {
-            Direction::Up => tr!("usage.delta_up_from_nothing"),
-            Direction::Down => tr!("usage.delta_down_from_last"),
-            Direction::Flat => tr!("usage.delta_no_change"),
-        },
-    }
-}
-
 /// Why a metric is not offered, phrased for the data that is missing.
 fn unavailable_reason(unavailable: &[&str]) -> String {
     let mut reasons: Vec<String> = Vec::new();
@@ -4178,13 +4331,42 @@ fn unavailable_reason(unavailable: &[&str]) -> String {
     }
 }
 
-/// The metric cell model: label, value, secondary line, and interaction.
+/// The metric cell model: the card's heading and the scope it reads, the
+/// figure, its change, the secondary line, and the interaction.
 struct KpiCell {
+    metric: sparkline::KpiMetric,
     label: String,
+    /// The range, or the bucket the pointer is reading.
+    scope: String,
     value: String,
+    /// Percent change from the previous period (at rest) or point (hovered).
+    change: Option<f64>,
     sub: String,
     tone: CellTone,
     click: Option<ChartMetric>,
+}
+
+/// The board's heading for a card, in the register the page has always used.
+fn metric_label(metric: sparkline::KpiMetric) -> String {
+    match metric {
+        sparkline::KpiMetric::Requests => tr!("usage.metric_requests"),
+        sparkline::KpiMetric::Tokens => tr!("usage.metric_total_tokens"),
+        sparkline::KpiMetric::CacheRate => tr!("usage.metric_cache_hit_rate"),
+        sparkline::KpiMetric::Latency => tr!("usage.metric_avg_response"),
+    }
+}
+
+/// The range's change for one card. The cache card shows a rate, so it compares
+/// against the previous window's rate — not the cache volume the trend's Cache
+/// metric counts.
+fn range_delta(snapshot: &UsageSnapshot, metric: sparkline::KpiMetric) -> Option<f64> {
+    if metric == sparkline::KpiMetric::CacheRate {
+        // The comparison window carries totals only, which is all a rate needs.
+        let previous = snapshot.previous.as_ref()?.totals.cache_hit_rate()?;
+        let current = snapshot.summary.totals.cache_hit_rate()?;
+        return (previous.abs() > f64::EPSILON).then(|| (current - previous) / previous * 100.0);
+    }
+    snapshot.delta(metric.chart_metric()).pct
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

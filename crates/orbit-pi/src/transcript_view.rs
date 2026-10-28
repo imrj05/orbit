@@ -1997,29 +1997,18 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint, cx: &gpui::App) -
             )
         })
         .when(!body.trim().is_empty(), |column| {
-            column.child(
-                div()
-                    .max_w(px(USER_BUBBLE_MAX_WIDTH))
-                    .rounded(panel::RADIUS.px(&theme))
-                    .bg(theme.surface_elevated)
-                    .text_color(theme.text_primary)
-                    .px(DynamicSpacing::Base12.px(&theme))
-                    .py(DynamicSpacing::Base08.px(&theme))
-                    .text_size(TextSize::Default.px(&theme))
-                    .whitespace_normal()
-                    .child(render_prose(
-                        body,
-                        ix,
-                        0,
-                        theme,
-                        paint.copied_sections.clone(),
-                        paint.expanded_blocks.clone(),
-                        true,
-                        true,
-                        paint.scroller.clone(),
-                        None,
-                    )),
-            )
+            column.child(user_message_bubble(body, theme).child(render_prose(
+                body,
+                ix,
+                0,
+                theme,
+                paint.copied_sections.clone(),
+                paint.expanded_blocks.clone(),
+                true,
+                true,
+                paint.scroller.clone(),
+                None,
+            )))
         })
         // The files the prompt referenced, in the order they were folded.
         .when(!attached.is_empty(), |column| {
@@ -2053,6 +2042,26 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint, cx: &gpui::App) -
             paint.copied_at.clone(),
             paint.hovered_usage.clone(),
         ))
+}
+
+fn user_message_bubble(body: &str, theme: Theme) -> gpui::Div {
+    div()
+        // Full-width Markdown blocks need a definite containing width;
+        // otherwise they can extend past a shrink-to-fit bubble.
+        .when(
+            parse_blocks_cached(body)
+                .iter()
+                .any(|block| matches!(block, Block::Code(..) | Block::Table { .. })),
+            |bubble| bubble.w_full(),
+        )
+        .max_w(px(USER_BUBBLE_MAX_WIDTH))
+        .rounded(panel::RADIUS.px(&theme))
+        .bg(theme.card_fill(theme.surface_elevated))
+        .text_color(theme.text_primary)
+        .px(DynamicSpacing::Base12.px(&theme))
+        .py(DynamicSpacing::Base08.px(&theme))
+        .text_size(TextSize::Default.px(&theme))
+        .whitespace_normal()
 }
 
 /// One attached file under a sent user message: the same 20px file-type tile
@@ -2091,7 +2100,7 @@ fn user_file_chip(
         .rounded(button::radius(ButtonSize::Medium).px(&theme))
         .border_1()
         .border_color(theme.border)
-        .bg(theme.surface_elevated)
+        .bg(theme.card_fill(theme.surface_elevated))
         .flex()
         .items_center()
         .child(
@@ -6878,6 +6887,7 @@ fn code_lines_body(
             "code-scroll".into(),
             (ix as u64) << 32 | block_key as u64,
         ))
+        .debug_selector(move || format!("code-scroll-{ix}-{block_key}"))
         .w_full()
         .min_w_0()
         .flex()
@@ -7541,7 +7551,7 @@ pub(crate) fn render_changed_files(
         .rounded(panel::RADIUS.px(&theme))
         .border_1()
         .border_color(theme.border)
-        .bg(theme.background)
+        .bg(theme.card_fill(theme.background))
         .overflow_hidden()
         .child(header)
         .child(rows);
@@ -8774,6 +8784,51 @@ mod tests {
             "height {:?}",
             bounds.size.height
         );
+    }
+
+    #[gpui::test]
+    fn user_message_code_block_stays_inside_bubble(cx: &mut gpui::TestAppContext) {
+        struct UserMessageView;
+        impl gpui::Render for UserMessageView {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                let theme = theme::Theme::for_id(theme::ThemeId::Orbit);
+                let text = "can you remove the\n\n### macOS — Gatekeeper warning\n\nIf macOS blocks the app, run once in Terminal after installing:\n\n```bash\nxattr -cr /Applications/Vox.app\n```\n\nfrom changelog now its signed app";
+                div().w_full().flex().flex_col().items_end().child(
+                    user_message_bubble(text, theme)
+                        .debug_selector(|| "test-bubble".into())
+                        .child(render_prose(
+                            text,
+                            0,
+                            0,
+                            theme,
+                            Rc::new(RefCell::new(HashMap::new())),
+                            Rc::new(RefCell::new(HashSet::new())),
+                            true,
+                            true,
+                            MessageScrollerState::new(1),
+                            None,
+                        )),
+                )
+            }
+        }
+
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let view = cx.update(|_, cx| cx.new(|_| UserMessageView));
+        for width in [320., 700.] {
+            let _ = cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(width), px(600.)),
+                |_, _| view.clone(),
+            );
+            let bubble = cx.debug_bounds("test-bubble").expect("message bubble");
+            let code = cx.debug_bounds("code-scroll-0-3").expect("code block");
+            assert!(
+                code.origin.x >= bubble.origin.x && code.right() <= bubble.right(),
+                "code {code:?} exceeds bubble {bubble:?}"
+            );
+            assert!(bubble.size.width <= px(width));
+        }
     }
 
     #[gpui::test]

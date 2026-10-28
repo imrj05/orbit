@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The Usage Summary board reads any day under the pointer.** Each headline
+  metric (requests, tokens, cache hit rate, average response) now carries a
+  40px sparkline of the selected range, following the bklit KPI-sparkline
+  recipe: the line draws itself in on first paint and a range change morphs the
+  old shape into the new one. Pointing at any card's line swaps the whole row's
+  figure, date, and change to that bucket (its change measured against the
+  bucket before it) and highlights that point immediately — hovering never
+  replays a transition. Leaving the board snaps every card back to the range.
+  Reduced motion paints the final frame. A bucket with no measurement for a card
+  reads as a gap and a dash, never a zero.
+
 ## [0.2.13] - 2026-10-27
 
 ### Added

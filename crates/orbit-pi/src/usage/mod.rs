@@ -28,6 +28,7 @@ pub mod format;
 pub mod heatmap;
 pub mod model;
 pub mod page;
+pub mod sparkline;
 pub mod table;
 pub mod tooltip;
 pub mod view;
