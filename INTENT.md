@@ -204,7 +204,9 @@ section's selector inside its card rather than a page-level Simple | Details swi
 Summary board is a row of KPI cards with a 40px line each (the bklit KPI-sparkline recipe):
 the four figures read the range at rest, and pointing at any line points the whole row at that
 bucket — figure, date, change, and secondary line — with the line drawn in on first paint,
-morphed when the range changes, and highlighted (no hover animation) where the pointer reads. Every single-line input box in the app routes through
+morphed when the range changes, and highlighted (no hover animation) where the pointer reads. The Breakdown section's four tabs share one legend row (the bklit
+legend with progress bars): a brand tile from the picker's own marks, the name and scope, the
+figure and share, and a share track; the table under it leads each name with the same mark. Every single-line input box in the app routes through
 `input_field_frame` (or the `input::*` metrics directly, in the extension dialog) — the main
 composer, the file editor, and the inline tree rename are the deliberate exceptions, and each is
 its own component rather than an `InputField`. Every search box in the app shares one look — the
@@ -528,6 +530,18 @@ footer, immediately left of the context-window indicator, without a newline hint
 These persistent hints, button tooltips, and the Shortcuts reference track the
 preference, with dedicated chat-only shortcut context to protect other fields.
 Non-blocking optional model questions remain outside this change.
+
+A message already queued can be changed before pi delivers it (issue #79). The queue
+bar gives each pending steer or follow-up its own **Edit** (an inline field on the row,
+⏎ saves, Esc cancels) and **Send now**. pi's protocol has no per-message queue command —
+`queue_update` reports bare strings and `clear_queue` drops everything — so either action
+rebuilds the queue: `clear_queue`, then re-queue every survivor in its original lane and
+order. "Send now" re-queues that message as the *first* steering message, which is pi's
+earliest delivery point short of aborting the run; the leading steer therefore offers no
+Send now, since it is already next. The mirror is updated optimistically and the
+`clear_queue` echo is skipped for that one rebuild, so the bar never blinks through the
+empty state; `queue_update` stays authoritative and re-anchors or closes an open field
+(`app/session.rs`, `app/view.rs`).
 
 Compaction and branch summaries are visible in the transcript: pi's
 `compactionSummary` / `branchSummary` context messages now render as boundary

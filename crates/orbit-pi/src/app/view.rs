@@ -4744,6 +4744,9 @@ impl OrbitApp {
     /// queued as follow-ups here and delivered once the task finishes;
     /// `queue_update` mirrors the list live. One raised card in the sibling
     /// strips' shape, a quiet label header, and flat hairline-separated rows.
+    ///
+    /// Each row can be edited in place or promoted ahead of the rest of the
+    /// queue (issue #79); one row at a time is open in an inline field.
     pub(super) fn queue_bar(&self, cx: &Context<Self>) -> Option<AnyElement> {
         if self.queue.is_empty() {
             return None;
@@ -4768,11 +4771,14 @@ impl OrbitApp {
         };
 
         let mut rows: Vec<AnyElement> = Vec::with_capacity(count);
-        for text in &self.queue.steering {
-            rows.push(queue_row(&tr!("view.queue_steer"), text, false, theme));
-        }
-        for text in &self.queue.follow_up {
-            rows.push(queue_row(&tr!("view.queue_follow_up"), text, true, theme));
+        for (lane, kind) in [
+            (QueueLane::Steer, tr!("view.queue_steer")),
+            (QueueLane::FollowUp, tr!("view.queue_follow_up")),
+        ] {
+            for (index, text) in self.queue.lane(lane).iter().enumerate() {
+                let target = QueuedMessage { lane, index };
+                rows.push(self.queue_row(target, &kind, text, theme, cx));
+            }
         }
 
         Some(
@@ -4789,6 +4795,11 @@ impl OrbitApp {
                 .flex_col()
                 // Clip the rows' hairline separators to the rounded corners.
                 .overflow_hidden()
+                // The inline editor's own key context, so Enter saves the
+                // message instead of submitting the composer.
+                .key_context("QueueEdit")
+                .on_action(cx.listener(Self::on_queue_edit_confirm))
+                .on_action(cx.listener(Self::on_queue_edit_cancel))
                 .child(
                     // A clock, `QUEUED · 2`, and the one action: a compact
                     // dismiss. No second button, no sentence in the header.
@@ -4839,6 +4850,263 @@ impl OrbitApp {
                 .children(rows)
                 .into_any_element(),
         )
+    }
+
+    /// One pending-message row: the lane label, the message, and that
+    /// message's two actions (edit, send now). Flat, with no border or fill of
+    /// its own — the bar around it is already the raised surface, and a card
+    /// inside a card doubles the chrome (DESIGN.md's card budget).
+    ///
+    /// The row under edit swaps its text for an inline field with Save and
+    /// Cancel, keeping its lane label so the message never loses its context.
+    fn queue_row(
+        &self,
+        target: QueuedMessage,
+        kind: &str,
+        text: &str,
+        theme: Theme,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        // The open editor, but only while its message is still queued: the
+        // target is an index into a list pi owns, so a delivery or a settle can
+        // strand it between events.
+        let edit = self
+            .queue_edit
+            .as_ref()
+            .filter(|edit| self.queued_message(edit.target).is_some());
+        let steer = target.lane == QueueLane::Steer;
+        // Only one row is edited at a time, and its siblings' actions would
+        // re-index under it, so they stay out of the way until it closes.
+        let actions_inert = edit.is_some();
+        // Steering is already delivered before the next model call, so the
+        // row that leads that lane is as early as the protocol can get.
+        let can_promote = !(steer && target.index == 0);
+        // One number for the row's element ids, steering rows first.
+        let slot = queue_row_slot(&self.queue, target);
+        let row_id = ElementId::NamedInteger("queue-row".into(), slot);
+
+        let label = div()
+            .flex_none()
+            .whitespace_nowrap()
+            .pt(px(1.))
+            .text_size(TextSize::XSmall.px(&theme))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(if steer {
+                theme.accent_text
+            } else {
+                theme.text_muted
+            })
+            .child(kind.to_uppercase());
+
+        let body: AnyElement = match edit {
+            Some(edit) if edit.target == target => {
+                let draft = edit.input.read(cx).text();
+                let save_live = !draft.trim().is_empty();
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap(DynamicSpacing::Base04.px(&theme))
+                    .child(
+                        input_field_frame(div(), &theme)
+                            .flex_1()
+                            .min_w_0()
+                            .bg(theme.background)
+                            .overflow_hidden()
+                            .child(edit.input.clone()),
+                    )
+                    .child(
+                        icon_button_frame(
+                            div().id(ElementId::NamedInteger("queue-edit-save".into(), slot)),
+                            &theme,
+                            ButtonSize::Compact,
+                        )
+                        .debug_selector(move || format!("queue-row-{slot}-edit-save"))
+                        .when(save_live, |button| {
+                            button
+                                .group(BUTTON_GROUP)
+                                .tip(tr!("view.queue_save"))
+                                .cursor_pointer()
+                                .text_color(theme.accent_text)
+                                .hover(|s| s.bg(theme.surface_hover))
+                                .on_mouse_up(
+                                    MouseButton::Left,
+                                    cx.listener(Self::on_queue_edit_save),
+                                )
+                        })
+                        .child(icon(
+                            "icons/check.svg",
+                            ButtonSize::Compact.icon_size().px(&theme),
+                            if save_live {
+                                theme.accent_text
+                            } else {
+                                theme.text_muted.opacity(0.5)
+                            },
+                        )),
+                    )
+                    .child(
+                        icon_button_frame(
+                            div().id(ElementId::NamedInteger("queue-edit-cancel".into(), slot)),
+                            &theme,
+                            ButtonSize::Compact,
+                        )
+                        .debug_selector(move || format!("queue-row-{slot}-edit-cancel"))
+                        .group(BUTTON_GROUP)
+                        .tip(tr!("view.queue_cancel"))
+                        .cursor_pointer()
+                        .text_color(theme.text_muted)
+                        .hover(|s| s.bg(theme.surface_hover).text_color(theme.text_primary))
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(Self::on_queue_edit_cancel_click),
+                        )
+                        .child(icon(
+                            "icons/x.svg",
+                            ButtonSize::Compact.icon_size().px(&theme),
+                            theme.text_muted,
+                        )),
+                    )
+                    .into_any_element()
+            }
+            _ => div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .items_start()
+                .gap(DynamicSpacing::Base04.px(&theme))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .line_clamp(2)
+                        .text_size(TextSize::Small.px(&theme))
+                        .line_height(theme.ui_px(16.))
+                        .text_color(theme.text_primary)
+                        .child(text.to_string()),
+                )
+                .when(!actions_inert, |row| {
+                    row.child(
+                        // Two quiet icon actions sit at the row's right edge,
+                        // in the same register as the header's clear control.
+                        div()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(px(2.))
+                            .child(
+                                icon_button_frame(
+                                    div().id(ElementId::NamedInteger("queue-edit".into(), slot)),
+                                    &theme,
+                                    ButtonSize::Compact,
+                                )
+                                .debug_selector(move || format!("queue-row-{slot}-edit"))
+                                .group(BUTTON_GROUP)
+                                .tip(tr!("view.queue_edit"))
+                                .cursor_pointer()
+                                .text_color(theme.text_muted)
+                                .hover(|s| s.bg(theme.surface_hover).text_color(theme.text_primary))
+                                .on_mouse_up(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _, window, cx| {
+                                        this.begin_queue_edit(target, window, cx);
+                                    }),
+                                )
+                                .child(icon(
+                                    "icons/pencil.svg",
+                                    ButtonSize::Compact.icon_size().px(&theme),
+                                    theme.text_muted,
+                                )),
+                            )
+                            .when(can_promote, |actions| {
+                                actions.child(
+                                    icon_button_frame(
+                                        div().id(ElementId::NamedInteger(
+                                            "queue-send-now".into(),
+                                            slot,
+                                        )),
+                                        &theme,
+                                        ButtonSize::Compact,
+                                    )
+                                    .debug_selector(move || format!("queue-row-{slot}-send-now"))
+                                    .group(BUTTON_GROUP)
+                                    .tip(tr!("view.queue_send_now"))
+                                    .cursor_pointer()
+                                    .text_color(theme.text_muted)
+                                    .hover(|s| {
+                                        s.bg(theme.surface_hover).text_color(theme.accent_text)
+                                    })
+                                    .on_mouse_up(
+                                        MouseButton::Left,
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.send_queued_now(target, cx)
+                                        }),
+                                    )
+                                    .child(icon(
+                                        "icons/arrow-up-right.svg",
+                                        ButtonSize::Compact.icon_size().px(&theme),
+                                        theme.text_muted,
+                                    )),
+                                )
+                            }),
+                    )
+                })
+                .into_any_element(),
+        };
+
+        div()
+            .id(row_id)
+            .debug_selector(move || match target.lane {
+                QueueLane::Steer => format!("queue-row-steer-{}", target.index),
+                QueueLane::FollowUp => format!("queue-row-follow-up-{}", target.index),
+            })
+            .w_full()
+            .flex()
+            .items_start()
+            .gap(px(10.))
+            .px(DynamicSpacing::Base12.px(&theme))
+            .py(px(7.))
+            .border_t_1()
+            .border_color(theme.border)
+            .child(label)
+            .child(body)
+            .into_any_element()
+    }
+
+    fn on_queue_edit_confirm(
+        &mut self,
+        _: &crate::QueueEditConfirm,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.commit_queue_edit(window, cx);
+    }
+
+    fn on_queue_edit_cancel(
+        &mut self,
+        _: &crate::QueueEditCancel,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.cancel_queue_edit(window, cx);
+    }
+
+    fn on_queue_edit_save(
+        &mut self,
+        _: &MouseUpEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.commit_queue_edit(window, cx);
+    }
+
+    fn on_queue_edit_cancel_click(
+        &mut self,
+        _: &MouseUpEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.cancel_queue_edit(window, cx);
     }
 
     /// The dismissible error banner: a command / protocol / extension failure

@@ -41,7 +41,7 @@ use gpui::{
     Window,
 };
 use orbit_rpc::{
-    CommandBody, ContextUsage, Event, PendingQueue, PiClient, QuotaReport, SessionState,
+    CommandBody, ContextUsage, Event, PendingQueue, PiClient, QueueLane, QuotaReport, SessionState,
     SessionUsage,
 };
 use serde_json::Value;
@@ -215,6 +215,29 @@ struct RetryDetail {
     error: String,
 }
 
+/// One queued message as the queue bar addresses it (issue #79).
+///
+/// pi's protocol gives a queued message no identity — `queue_update` carries
+/// bare strings — so the only handle Orbit has is where it sits: which lane,
+/// and its position in that lane's delivery order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct QueuedMessage {
+    pub(crate) lane: QueueLane,
+    pub(crate) index: usize,
+}
+
+/// The queued message currently open in the queue bar's inline editor, with
+/// the field holding the draft text and the subscription that repaints the
+/// Save control as the draft changes.
+struct QueueEdit {
+    target: QueuedMessage,
+    /// The text the field opened on. pi reports the queue as bare strings, so
+    /// this is how the editor re-finds its message after a `queue_update`.
+    original: String,
+    input: Entity<ComposerInput>,
+    _sub: Subscription,
+}
+
 /// The status bar's branch chip: the checked-out branch and its divergence
 /// from upstream. `ahead_behind` is `None` without an upstream — unknown is
 /// not the same fact as `↑0 ↓0`.
@@ -345,6 +368,12 @@ pub struct OrbitApp {
     /// A `clear_queue` was sent as part of Escape; restore the returned text
     /// into the composer when the response arrives (docs' interactive-Esc).
     restore_queue_on_clear: bool,
+    /// The queue the app itself replaced (an edit or a "send now", #79).
+    /// pi's `clear_queue` echo carries the *pre-replace* list, so that one
+    /// echo is skipped and the following `queue_update` reconciles instead.
+    queue_replaced: bool,
+    /// The queued message open in the queue bar's inline editor, if any.
+    queue_edit: Option<QueueEdit>,
     /// Settings → Agent: `set_follow_up_mode` value.
     follow_up_mode: String,
     /// Settings → Agent: `set_auto_compaction` value (read back from state).
@@ -1856,6 +1885,8 @@ impl OrbitApp {
             busy: false,
             queue: PendingQueue::default(),
             restore_queue_on_clear: false,
+            queue_replaced: false,
+            queue_edit: None,
             follow_up_mode: "one-at-a-time".into(),
             auto_compaction: true,
             auto_retry: true,
@@ -3553,6 +3584,8 @@ mod new_task_reconnect_tests;
 mod popup_layout_tests;
 #[cfg(test)]
 mod process_exit_cleanup_tests;
+#[cfg(test)]
+mod queue_edit_tests;
 #[cfg(test)]
 mod refresh_tests;
 #[cfg(test)]

@@ -36,45 +36,14 @@ pub(crate) fn humanize_command(command: &str) -> String {
     tr!("helpers.command_failed", label = label)
 }
 
-/// One pending-message row in the queue bar: a hairline-separated row — the
-/// kind label plus the message text. Deliberately flat, with no border or
-/// fill of its own: the bar around it is already the raised surface, and a
-/// card inside a card doubles the chrome (DESIGN.md's card budget).
-pub(crate) fn queue_row(kind: &str, text: &str, follow: bool, theme: Theme) -> AnyElement {
-    div()
-        .w_full()
-        .flex()
-        .items_start()
-        .gap(px(10.))
-        .px(DynamicSpacing::Base12.px(&theme))
-        .py(px(7.))
-        .border_t_1()
-        .border_color(theme.border)
-        .child(
-            div()
-                .flex_none()
-                .whitespace_nowrap()
-                .pt(px(1.))
-                .text_size(TextSize::XSmall.px(&theme))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(if follow {
-                    theme.text_muted
-                } else {
-                    theme.accent_text
-                })
-                .child(kind.to_uppercase()),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .line_clamp(2)
-                .text_size(TextSize::Small.px(&theme))
-                .line_height(theme.ui_px(16.))
-                .text_color(theme.text_primary)
-                .child(text.to_string()),
-        )
-        .into_any_element()
+/// A queued message's position in the whole strip, steering rows first — the
+/// one number element ids key on, so a row keeps its identity when the lanes
+/// are rendered in one pass.
+pub(crate) fn queue_row_slot(queue: &PendingQueue, target: QueuedMessage) -> u64 {
+    match target.lane {
+        QueueLane::Steer => target.index as u64,
+        QueueLane::FollowUp => (queue.steering.len() + target.index) as u64,
+    }
 }
 
 /// Render an embedded HugeIcons SVG tinted with the given color.

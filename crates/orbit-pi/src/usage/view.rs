@@ -38,24 +38,24 @@ use std::time::Duration;
 
 use gpui::{
     anchored, deferred, div, prelude::*, px, relative, Animation, AnimationExt, AnyElement, App,
-    Context, Corner, Entity, Font, FontFeatures, FontWeight, IntoElement, MouseButton, Render,
-    SharedString, Window,
+    Context, Corner, ElementId, Entity, Font, FontFeatures, FontWeight, Hsla, IntoElement,
+    MouseButton, Render, SharedString, Stateful, Window,
 };
 
 use super::aggregate::{
-    Breakdown, BucketRow, ChartMetric, GroupRow, LatencyMetric, LatencyStats,
-    SessionRow, ToolRow, UsageSnapshot,
+    Breakdown, BucketRow, ChartMetric, GroupRow, LatencyMetric, LatencyStats, SessionRow, ToolRow,
+    UsageSnapshot,
 };
 use super::chart;
 use super::filters::{self, FilterOption};
 use super::format;
 use super::heatmap;
 use super::model::{next_bucket, Granularity, RangePreset, TimeFocus, UsageFilter, UsageIndex};
-use super::sparkline;
 use super::page::{
     BreakdownQueryResult, BreakdownSort, BreakdownTab, BucketQueryResult, BucketSort, DetailTab,
     FailureQueryResult, MenuKind, SessionQueryResult, SessionSort, ToolQueryResult, UsagePage,
 };
+use super::sparkline;
 use super::table::{
     cell_shell, data_table, empty_cell, text_cell, Column, FailureSort, SortState, TableHandlers,
     TableKind, HEADER_H, ROW_H,
@@ -63,14 +63,18 @@ use super::table::{
 use super::tooltip::Tooltip;
 use crate::app::{
     button_frame, context_menu_separator, helpers::empty_state_glyph, icon, icon_button_frame,
-    picker_entry, picker_search_frame, picker_surface, press, TipExt, BUTTON_GROUP,
+    icon_dyn, picker_entry, picker_search_frame, picker_surface, press, provider_mark_color,
+    TipExt, BUTTON_GROUP,
 };
 use crate::composer::ComposerInput;
+use crate::model_selector::{leading_tile, provider_icon};
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
-    button, input, panel, picker, popover, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
+    button, context_menu, input, panel, picker, popover, ButtonSize, DynamicSpacing, IconSize,
+    Radius, TextSize,
 };
 use crate::theme::{self, Theme};
+use crate::transcript_view::activity_icon;
 
 /// Inner column width for a data surface (§58): wide enough for a full table,
 /// narrow enough that the eye does not have to travel a metre.
@@ -1126,7 +1130,11 @@ impl UsagePage {
                     (CellTone::Normal, false) => theme.text_primary,
                     (CellTone::Muted, _) => theme.text_muted,
                 };
-                let line = if active { theme.accent } else { theme.text_secondary };
+                let line = if active {
+                    theme.accent
+                } else {
+                    theme.text_secondary
+                };
                 let change = cell.change.map(|pct| {
                     let color = if pct.abs() < 0.05 {
                         theme.text_muted
@@ -1303,10 +1311,7 @@ impl UsagePage {
         sparkline::KpiMetric::ALL
             .into_iter()
             .map(|metric| {
-                let values = series
-                    .get(metric.index())
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]);
+                let values = series.get(metric.index()).map(Vec::as_slice).unwrap_or(&[]);
                 let available = match metric {
                     sparkline::KpiMetric::Requests | sparkline::KpiMetric::Tokens => true,
                     sparkline::KpiMetric::CacheRate => snapshot.cache.hit_rate.is_some(),
@@ -1324,8 +1329,9 @@ impl UsagePage {
                         CellTone::Normal,
                     ),
                     sparkline::KpiMetric::CacheRate => {
-                        let rate = point
-                            .map_or(snapshot.cache.hit_rate, |point| point.totals.cache_hit_rate());
+                        let rate = point.map_or(snapshot.cache.hit_rate, |point| {
+                            point.totals.cache_hit_rate()
+                        });
                         match (rate, point) {
                             (Some(rate), _) => (format::percent(rate), CellTone::Normal),
                             // A bucket with no cache traffic has no rate; the
@@ -1335,10 +1341,10 @@ impl UsagePage {
                         }
                     }
                     sparkline::KpiMetric::Latency => {
-                        let average = point
-                            .map_or_else(|| totals.avg_duration_ms(), |point| {
-                                point.totals.avg_duration_ms()
-                            });
+                        let average = point.map_or_else(
+                            || totals.avg_duration_ms(),
+                            |point| point.totals.avg_duration_ms(),
+                        );
                         match (average, point) {
                             (Some(ms), _) => (format::duration_ms(ms), CellTone::Normal),
                             (None, Some(_)) => ("—".to_string(), CellTone::Muted),
@@ -1359,10 +1365,10 @@ impl UsagePage {
                         None => tr!("usage.sub_requests_in_range"),
                     },
                     sparkline::KpiMetric::Tokens => {
-                        let per_request = point
-                            .map_or_else(|| totals.tokens_per_request(), |point| {
-                                point.totals.tokens_per_request()
-                            });
+                        let per_request = point.map_or_else(
+                            || totals.tokens_per_request(),
+                            |point| point.totals.tokens_per_request(),
+                        );
                         match per_request {
                             Some(avg) => tr!(
                                 "usage.sub_avg_per_request",
@@ -1402,10 +1408,7 @@ impl UsagePage {
                                 count = format::count(latency.samples)
                             )
                         } else {
-                            tr!(
-                                "usage.sub_measured",
-                                count = format::count(latency.samples)
-                            )
+                            tr!("usage.sub_measured", count = format::count(latency.samples))
                         }
                     }
                 };
@@ -2331,7 +2334,12 @@ impl UsagePage {
                 .hover(|style| style.bg(theme.surface_hover));
             for column in &columns {
                 let cell = match column.id {
-                    "name" => breakdown_name_cell(column, row, theme),
+                    "name" => breakdown_name_cell(
+                        column,
+                        row,
+                        self.breakdown_glyph(kind, row.id, theme),
+                        theme,
+                    ),
                     "requests" => text_cell(
                         column,
                         format::count(row.totals.requests),
@@ -2417,9 +2425,65 @@ impl UsagePage {
         )
     }
 
-    /// The ranked bar chart above a token dimension's table: the top rows as
-    /// magnitude bars, so the shape reads before the figures. Rows are clickable
-    /// to scope the page exactly like the table's rows.
+    /// The leading glyph of a breakdown row: the brand mark of a model's or a
+    /// provider's company, the folder of a workspace, or the tool's own glyph.
+    /// These are the marks the model picker and the transcript already draw, and
+    /// a model carries its provider's mark, as it does in the picker. `kind` is
+    /// the breakdown's own key.
+    fn breakdown_glyph(&self, kind: &str, id: u16, theme: Theme) -> (SharedString, Hsla) {
+        let brand = |provider: &str| {
+            (
+                provider_icon(provider),
+                provider_mark_color(provider, &theme, theme.text_secondary),
+            )
+        };
+        let cloud = || {
+            (
+                SharedString::new_static("icons/cloud.svg"),
+                theme.text_secondary,
+            )
+        };
+        let Some(index) = self.index() else {
+            return (
+                SharedString::new_static("icons/folder.svg"),
+                theme.text_secondary,
+            );
+        };
+        match kind {
+            "models" => index
+                .models
+                .get(id as usize)
+                .and_then(|model| index.providers.get(model.provider as usize))
+                .map_or_else(cloud, |provider| brand(provider.id.as_str())),
+            "providers" => index
+                .providers
+                .get(id as usize)
+                .map_or_else(cloud, |provider| brand(provider.id.as_str())),
+            "tools" => index.tools.get(id as usize).map_or_else(
+                || {
+                    (
+                        SharedString::new_static("icons/tools/tool.svg"),
+                        theme.text_secondary,
+                    )
+                },
+                |tool| {
+                    (
+                        SharedString::new_static(activity_icon(tool.id.as_str())),
+                        theme.text_secondary,
+                    )
+                },
+            ),
+            _ => (
+                SharedString::new_static("icons/folder.svg"),
+                theme.text_secondary,
+            ),
+        }
+    }
+
+    /// The ranked legend above a token dimension's table: the top rows as the
+    /// shared legend (glyph, name, figure and share, a track), so the shape reads
+    /// before the figures. Rows are clickable to scope the page exactly like the
+    /// table's rows, and a row already in scope reads as selected.
     fn breakdown_chart(
         &self,
         rows: &[GroupRow],
@@ -2428,6 +2492,8 @@ impl UsagePage {
         theme: Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let reduced_motion = theme::reduce_motion(cx);
+        let scope = self.filter();
         let mut chart = div()
             .w_full()
             .pb(DynamicSpacing::Base12.px(&theme))
@@ -2444,45 +2510,44 @@ impl UsagePage {
                 row.share
             };
             let target = row.id;
+            let selected = match kind {
+                "workspaces" => scope.workspaces.contains(&target),
+                "providers" => scope.providers.contains(&target),
+                _ => scope.models.contains(&target),
+            };
             let entity = cx.entity();
             chart = chart.child(
-                div()
-                    .id(SharedString::from(format!(
-                        "usage-breakdown-chart-{kind}-{}",
-                        row.label
-                    )))
-                    .px(DynamicSpacing::Base08.px(&theme))
-                    .py(DynamicSpacing::Base04.px(&theme))
-                    .rounded(Radius::Medium.px(&theme))
-                    .flex()
-                    .items_center()
-                    .gap(DynamicSpacing::Base08.px(&theme))
-                    .cursor_pointer()
-                    .hover(|style| style.bg(theme.surface_hover))
-                    .child(chart_label(&row.label, row.sub.as_deref(), theme))
-                    .child(bar_track(fraction, theme, theme::reduce_motion(cx)))
-                    .child(chart_value(
-                        &format::compact(row.totals.tokens.total),
-                        theme,
-                    ))
-                    .child(chart_share(&format::share(fraction), theme))
-                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                        entity.update(cx, |page, cx| {
-                            let mut filter = page.filter().clone();
-                            match kind {
-                                "workspaces" => toggle(&mut filter.workspaces, target),
-                                "providers" => toggle(&mut filter.providers, target),
-                                _ => toggle(&mut filter.models, target),
-                            }
-                            page.set_filter(filter, cx);
-                        });
-                    }),
+                legend_row(
+                    SharedString::from(format!("usage-breakdown-chart-{kind}-{target}")),
+                    LegendRow {
+                        glyph: self.breakdown_glyph(kind, target, theme),
+                        label: row.label.clone(),
+                        sub: row.sub.clone(),
+                        value: format::compact(row.totals.tokens.total),
+                        fraction,
+                        selected,
+                    },
+                    theme,
+                    reduced_motion,
+                )
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    entity.update(cx, |page, cx| {
+                        let mut filter = page.filter().clone();
+                        match kind {
+                            "workspaces" => toggle(&mut filter.workspaces, target),
+                            "providers" => toggle(&mut filter.providers, target),
+                            _ => toggle(&mut filter.models, target),
+                        }
+                        page.set_filter(filter, cx);
+                    });
+                }),
             );
         }
         chart.into_any_element()
     }
 
-    /// The ranked bar chart above the Tools table: the busiest tools as bars.
+    /// The ranked legend above the Tools table: the busiest tools, each with its
+    /// own glyph, its family, and its share of the calls.
     fn tools_chart(
         &self,
         rows: &[ToolRow],
@@ -2516,26 +2581,20 @@ impl UsagePage {
                     .unwrap_or_else(|| "—".into())
             );
             chart = chart.child(
-                div()
-                    .id(SharedString::from(format!(
-                        "usage-tools-chart-{}",
-                        row.label
-                    )))
-                    .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into())
-                    .px(DynamicSpacing::Base08.px(&theme))
-                    .py(DynamicSpacing::Base04.px(&theme))
-                    .rounded(Radius::Medium.px(&theme))
-                    .flex()
-                    .items_center()
-                    .gap(DynamicSpacing::Base08.px(&theme))
-                    .child(chart_label(
-                        &row.label,
-                        Some(row.class.label().as_str()),
-                        theme,
-                    ))
-                    .child(bar_track(fraction, theme, reduced_motion))
-                    .child(chart_value(&format::count(row.calls), theme))
-                    .child(chart_share(&format::share(fraction), theme)),
+                legend_row(
+                    SharedString::from(format!("usage-tools-chart-{}", row.tool)),
+                    LegendRow {
+                        glyph: self.breakdown_glyph("tools", row.tool, theme),
+                        label: row.label.clone(),
+                        sub: Some(row.class.label()),
+                        value: format::count(row.calls),
+                        fraction,
+                        selected: false,
+                    },
+                    theme,
+                    reduced_motion,
+                )
+                .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into()),
             );
         }
         chart.into_any_element()
@@ -2566,10 +2625,14 @@ impl UsagePage {
                 let cell = match column.id {
                     "tool" => cell_shell(column)
                         .gap(DynamicSpacing::Base08.px(&theme))
+                        .child({
+                            let (path, color) = self.breakdown_glyph("tools", row.tool, theme);
+                            icon_dyn(path, IconSize::Small.px(&theme), color)
+                        })
                         .child(
                             div()
                                 .flex_none()
-                                .max_w(px(column.width - 96.))
+                                .max_w(px(column.width - 120.))
                                 .truncate()
                                 .text_size(TextSize::Default.px(&theme))
                                 .text_color(theme.text_primary)
@@ -4064,91 +4127,6 @@ fn table_pager(
         .into_any_element()
 }
 
-/// A chart row's label column (name plus its secondary line).
-fn chart_label(label: &str, sub: Option<&str>, theme: Theme) -> AnyElement {
-    div()
-        .w(px(180.))
-        .min_w(px(64.))
-        .flex_shrink()
-        .flex()
-        .flex_col()
-        .child(
-            div()
-                .truncate()
-                .text_size(TextSize::Small.px(&theme))
-                .text_color(theme.text_primary)
-                .child(label.to_string()),
-        )
-        .children(sub.map(|sub| {
-            div()
-                .truncate()
-                .text_size(TextSize::XSmall.px(&theme))
-                .text_color(theme.text_muted)
-                .child(sub.to_string())
-        }))
-        .into_any_element()
-}
-
-/// A chart row's magnitude track and its accent fill.
-fn bar_track(fraction: f64, theme: Theme, reduced_motion: bool) -> AnyElement {
-    let fraction = if fraction.is_finite() {
-        fraction.clamp(0.0, 1.0) as f32
-    } else {
-        0.0
-    };
-    let bar = div()
-        .h_full()
-        .w(relative(fraction))
-        .rounded(Radius::Full.px(&theme))
-        .bg(theme.accent);
-    let bar = if reduced_motion {
-        bar.into_any_element()
-    } else {
-        bar.with_animation(
-            "usage-breakdown-bar-reveal",
-            Animation::new(Duration::from_millis(450)).with_easing(|t| 1.0 - (1.0 - t).powi(3)),
-            move |bar, progress| bar.w(relative(fraction * progress)),
-        )
-        .into_any_element()
-    };
-    div()
-        .flex_1()
-        .min_w(px(48.))
-        .h(px(10.))
-        .rounded(Radius::Full.px(&theme))
-        .bg(theme.surface_secondary)
-        .overflow_hidden()
-        .child(bar)
-        .into_any_element()
-}
-
-/// A chart row's value column.
-fn chart_value(value: &str, theme: Theme) -> AnyElement {
-    div()
-        .w(px(72.))
-        .flex_none()
-        .font(num_font())
-        .text_size(TextSize::Small.px(&theme))
-        .text_color(theme.text_primary)
-        .text_align(gpui::TextAlign::Right)
-        .child(value.to_string())
-        .into_any_element()
-}
-
-/// A chart row's share column.
-fn chart_share(share: &str, theme: Theme) -> AnyElement {
-    div()
-        .w(px(56.))
-        .flex_none()
-        .whitespace_nowrap()
-        .font(num_font())
-        .text_size(TextSize::Small.px(&theme))
-        .text_color(theme.text_muted)
-        .text_align(gpui::TextAlign::Right)
-        .child(share.to_string())
-        .into_any_element()
-}
-
 /// The totals line under a data table: filtered totals left, this page right.
 fn totals_row(filtered: &str, page: &str, theme: Theme) -> AnyElement {
     div()
@@ -4197,15 +4175,146 @@ pub(crate) fn num_font() -> Font {
     font
 }
 
-/// The name cell of a breakdown table: the row's label, with its secondary
-/// line (provider, parent folder) trailing in the quiet register.
-fn breakdown_name_cell(column: &Column, row: &GroupRow, theme: Theme) -> AnyElement {
-    cell_shell(column)
+/// One row of a breakdown legend, shared by every breakdown tab: the row's
+/// glyph, its name and scope, the figure and its share, and a track whose fill
+/// is the share — bklit's legend with progress bars.
+struct LegendRow {
+    glyph: (SharedString, Hsla),
+    label: String,
+    sub: Option<String>,
+    value: String,
+    /// Share of the breakdown's total, 0..=1.
+    fraction: f64,
+    /// The row's key is in the page's scope.
+    selected: bool,
+}
+
+/// A legend row is one click target. Hover washes it at once and a row in scope
+/// keeps its wash; neither transitions, so reading the list never waits.
+fn legend_row(
+    id: SharedString,
+    row: LegendRow,
+    theme: Theme,
+    reduced_motion: bool,
+) -> Stateful<gpui::Div> {
+    let (path, color) = row.glyph;
+    let bar = legend_bar(&id, row.fraction, theme, reduced_motion);
+    let head = div()
+        .w_full()
+        .flex()
+        .items_center()
         .gap(DynamicSpacing::Base08.px(&theme))
+        .child(leading_tile(
+            theme,
+            icon_dyn(path, context_menu::ICON.px(&theme), color).into_any_element(),
+        ))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(TextSize::Small.px(&theme))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.text_primary)
+                        .child(row.label),
+                )
+                .children(row.sub.map(|sub| {
+                    div()
+                        .truncate()
+                        .text_size(TextSize::XSmall.px(&theme))
+                        .text_color(theme.text_muted)
+                        .child(sub)
+                })),
+        )
         .child(
             div()
                 .flex_none()
-                .max_w(px(column.width - 24.))
+                .flex()
+                .items_baseline()
+                .gap(DynamicSpacing::Base06.px(&theme))
+                .font(num_font())
+                .child(
+                    div()
+                        .text_size(TextSize::Small.px(&theme))
+                        .text_color(theme.text_primary)
+                        .child(row.value),
+                )
+                .child(
+                    div()
+                        .text_size(TextSize::XSmall.px(&theme))
+                        .text_color(theme.text_muted)
+                        .child(format::share(row.fraction)),
+                ),
+        );
+    div()
+        .id(id)
+        .w_full()
+        .px(DynamicSpacing::Base08.px(&theme))
+        .py(DynamicSpacing::Base06.px(&theme))
+        .rounded(Radius::Medium.px(&theme))
+        .flex()
+        .flex_col()
+        .gap(DynamicSpacing::Base06.px(&theme))
+        .cursor_pointer()
+        .when(row.selected, |wash| wash.bg(theme.surface_selected))
+        .hover(|style| style.bg(theme.surface_hover))
+        .child(head)
+        .child(bar)
+}
+
+/// A legend row's share track. The fill grows from nothing on mount (the page's
+/// one reveal, 450ms) and holds still on every later repaint.
+fn legend_bar(id: &SharedString, fraction: f64, theme: Theme, reduced_motion: bool) -> AnyElement {
+    let fraction = if fraction.is_finite() {
+        fraction.clamp(0.0, 1.0) as f32
+    } else {
+        0.0
+    };
+    let fill = div()
+        .h_full()
+        .w(relative(fraction))
+        .rounded(Radius::Full.px(&theme))
+        .bg(theme.accent);
+    let fill = if reduced_motion {
+        fill.into_any_element()
+    } else {
+        fill.with_animation(
+            ElementId::Name(format!("{id}-reveal").into()),
+            Animation::new(Duration::from_millis(450)).with_easing(|t| 1.0 - (1.0 - t).powi(3)),
+            move |fill, progress| fill.w(relative(fraction * progress)),
+        )
+        .into_any_element()
+    };
+    div()
+        .w_full()
+        .h(px(6.))
+        .rounded(Radius::Full.px(&theme))
+        .bg(theme.surface_secondary)
+        .overflow_hidden()
+        .child(fill)
+        .into_any_element()
+}
+
+/// The name cell of a breakdown table: the row's label, with its secondary
+/// line (provider, parent folder) trailing in the quiet register.
+fn breakdown_name_cell(
+    column: &Column,
+    row: &GroupRow,
+    glyph: (SharedString, Hsla),
+    theme: Theme,
+) -> AnyElement {
+    let (path, color) = glyph;
+    cell_shell(column)
+        .gap(DynamicSpacing::Base08.px(&theme))
+        .child(icon_dyn(path, IconSize::Small.px(&theme), color))
+        .child(
+            div()
+                .flex_none()
+                .max_w(px(column.width - 48.))
                 .truncate()
                 .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.text_primary)

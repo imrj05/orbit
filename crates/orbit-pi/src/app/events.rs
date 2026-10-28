@@ -270,6 +270,9 @@ impl OrbitApp {
                     if confirmed {
                         self.pending_follow_up = None;
                     }
+                    // An open inline editor follows its message to whatever
+                    // position pi now reports, or closes once it is gone.
+                    self.reanchor_queue_edit(cx);
                 }
                 Event::ExtensionError { value } => {
                     let path = value
@@ -310,6 +313,7 @@ impl OrbitApp {
                     // A settled run has no queued continuation left; clear the
                     // bar even if the final `queue_update` was missed.
                     self.queue = PendingQueue::default();
+                    self.queue_edit = None;
                     // The run is over, so this is where a failure it ended on
                     // is reported — never per attempt. A stop the user asked
                     // for is not a failure, and its held error is dropped
@@ -382,6 +386,7 @@ impl OrbitApp {
                     self.retry_detail = None;
                     self.pending_follow_up = None;
                     self.queue = PendingQueue::default();
+                    self.queue_edit = None;
                     // The departing process's held agent error cannot belong
                     // to the next run.
                     self.pending_agent_error = None;
@@ -1223,8 +1228,16 @@ impl OrbitApp {
                     }
                 }
                 // `queue_update` mirrors the same fact; this keeps the row
-                // correct even if the event is missed.
-                self.queue = queue;
+                // correct even if the event is missed. A queue the app itself
+                // rebuilt is the exception: this echo carries the list from
+                // *before* the rebuild, so applying it would blink the old rows
+                // back in. The `queue_update`s that follow are authoritative.
+                if !std::mem::take(&mut self.queue_replaced) {
+                    self.queue = queue;
+                    // The dropped messages are gone, so an inline editor on one
+                    // of them has nothing left to save.
+                    self.reanchor_queue_edit(cx);
+                }
             }
             _ => {
                 let _ = success;
