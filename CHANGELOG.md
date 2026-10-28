@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Agent errors are reported for the turn, not for every attempt.** A retry
+  that recovers retires the failed attempt's card, banner, and "Agent error"
+  notification, so a turn that finished is announced as finished. A stop the
+  user asked for reads as the quiet "Stopped" marker even when it landed
+  while a provider request was in flight (pi records it as an error carrying
+  the SDK's abort text) or cancelled a retry. A turn that really ended on a
+  provider error still reports it.
 - **Review and Git changes refresh** after a file change or manual refresh arrives while a diff is still loading; diff failures are shown instead of leaving stale results silently visible.
 - **Bug-report screenshots** fall back to GitHub's web form when the CLI cannot upload them without repository write access or another preflight requirement. Orbit opens the saved screenshot folder for dragging into the form, preserves colliding filenames, and names compressed images for their actual format.
 

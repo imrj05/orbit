@@ -251,6 +251,13 @@ impl OrbitApp {
                             .map(str::to_string)
                             .unwrap_or_else(|| tr!("events.retries_exhausted"));
                         self.set_error(tr!("events.auto_retry_failed", error = error));
+                    } else if cancelled {
+                        // A retry the user stopped is a quiet stop, not the
+                        // failure the attempt before it left behind: retire
+                        // both its card and the held error so the settle that
+                        // follows reports neither (issue #96).
+                        self.pending_agent_error = None;
+                        self.transcript.mark_turn_aborted();
                     }
                 }
                 Event::QueueUpdate { value } => {
@@ -303,6 +310,17 @@ impl OrbitApp {
                     // A settled run has no queued continuation left; clear the
                     // bar even if the final `queue_update` was missed.
                     self.queue = PendingQueue::default();
+                    // The run is over, so this is where a failure it ended on
+                    // is reported — never per attempt. A stop the user asked
+                    // for is not a failure, and its held error is dropped
+                    // (issue #96).
+                    match (aborted, self.pending_agent_error.take()) {
+                        (false, Some(error)) => self.set_error_from(
+                            AGENT_ERROR_SOURCE,
+                            tr!("events.agent_error", error = error),
+                        ),
+                        _ => self.clear_error_from(AGENT_ERROR_SOURCE),
+                    }
                     refresh_sessions = true;
                     self.refresh_context_stats();
                     #[cfg(debug_assertions)]
@@ -364,6 +382,9 @@ impl OrbitApp {
                     self.retry_detail = None;
                     self.pending_follow_up = None;
                     self.queue = PendingQueue::default();
+                    // The departing process's held agent error cannot belong
+                    // to the next run.
+                    self.pending_agent_error = None;
                     // The run is gone; its dialog (if any) can never be
                     // answered, so drop it without a reply.
                     self.dialog = None;
@@ -391,18 +412,20 @@ impl OrbitApp {
                 Event::MessageEnd { value } => {
                     // A failed LLM call ends the assistant message with
                     // `stopReason: "error"` + `errorMessage` (e.g. an
-                    // unsupported model). Surface it in the banner; the
-                    // transcript renders the same text inline.
-                    if let Some(error) = transcript::message_error(value) {
-                        self.set_error_from(
-                            AGENT_ERROR_SOURCE,
-                            tr!("events.agent_error", error = error),
-                        );
-                    } else {
-                        // The next attempt produced a message — clear the
-                        // stale agent-error banner. Matched by source, so a
-                        // language change never strands it (issue #76).
-                        self.clear_error_from(AGENT_ERROR_SOURCE);
+                    // unsupported model). Hold it for the settle rather than
+                    // raising it now: pi retries a transient provider failure
+                    // on the same turn, and the next attempt may recover, so
+                    // only the settle knows whether the run really ended here
+                    // (issue #96).
+                    match transcript::message_error(value) {
+                        Some(error) => self.pending_agent_error = Some(error),
+                        None => {
+                            // The next attempt produced a message — retire the
+                            // stale agent-error banner. Matched by source, so a
+                            // language change never strands it (issue #76).
+                            self.pending_agent_error = None;
+                            self.clear_error_from(AGENT_ERROR_SOURCE);
+                        }
                     }
                     // Real edit stats from finalized tool calls.
                     let (a, r) = transcript::diff_from_message(value);

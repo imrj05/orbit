@@ -395,6 +395,11 @@ pub struct OrbitApp {
     /// Text of the last optimistic follow-up. Cleared once pi confirms it in
     /// `queue_update`; restored to the composer if the command fails.
     pending_follow_up: Option<String>,
+    /// The agent error the run's most recent failed attempt carried, held
+    /// until the run settles: pi retries a transient provider failure on the
+    /// same turn, so only the settle knows whether the run ended there. A
+    /// recovered retry and a user stop must not report it (issue #96).
+    pending_agent_error: Option<String>,
     /// Rename field in the session-details popover.
     session_name_input: Entity<ComposerInput>,
     status: String,
@@ -1870,6 +1875,7 @@ impl OrbitApp {
             prompt_in_flight: None,
             toasts: toast::Toasts::new(),
             pending_follow_up: None,
+            pending_agent_error: None,
             session_name_input,
             status: connect_error.clone(),
             status_at: (!connect_error.is_empty()).then(Instant::now),

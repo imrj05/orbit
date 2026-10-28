@@ -219,6 +219,8 @@ impl OrbitApp {
         self.pending_follow_up = None;
         self.retrying = false;
         self.retry_detail = None;
+        // A held agent error belonged to the departing run's attempt.
+        self.pending_agent_error = None;
         // A login in flight dies with its process; remember the provider so
         // the next `auth.list` can reconcile a completion that happened while
         // Orbit was reconnecting.
