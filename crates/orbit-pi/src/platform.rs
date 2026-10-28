@@ -37,6 +37,14 @@ pub struct ExternalApp {
 #[cfg(target_os = "macos")]
 const TERMY_BUNDLE_ID: &str = "com.lassevestergaard.termy";
 
+/// tmux ships no app bundle, so its menu row borrows Terminal.app's icon and
+/// window; [`open_path_in_app`] launches a session there instead of handing the
+/// terminal a folder.
+#[cfg(target_os = "macos")]
+const TMUX_APP_ID: &str = "tmux";
+
+/// The terminals run together after the file manager, and tmux closes them: it
+/// is the one entry that is not an app at all.
 #[cfg(target_os = "macos")]
 const OPEN_IN_CATALOG: &[(&str, &str, &[&str])] = &[
     ("vscode", "VS Code", &["com.microsoft.VSCode"]),
@@ -44,11 +52,21 @@ const OPEN_IN_CATALOG: &[(&str, &str, &[&str])] = &[
     ("zed", "Zed", &["dev.zed.Zed", "dev.zed.Zed-Preview"]),
     ("finder", "Finder", &["com.apple.finder"]),
     ("terminal", "Terminal", &["com.apple.Terminal"]),
+    ("rex", "Rex", &["com.superlogical.rex"]),
     ("termy", "Termy", &[TERMY_BUNDLE_ID]),
     ("iterm2", "iTerm2", &["com.googlecode.iterm2"]),
-    ("kitty", "Kitty", &["net.kovidgoyal.kitty"]),
     ("ghostty", "Ghostty", &["com.mitchellh.ghostty"]),
+    ("kitty", "Kitty", &["net.kovidgoyal.kitty"]),
+    ("alacritty", "Alacritty", &["org.alacritty"]),
+    ("wezterm", "WezTerm", &["com.github.wez.wezterm"]),
+    ("tabby", "Tabby", &["org.tabby"]),
+    ("hyper", "Hyper", &["co.zeit.hyper"]),
+    ("rio", "Rio", &["com.raphamorim.rio"]),
+    ("wave", "Wave", &["dev.commandline.waveterm"]),
     ("warp", "Warp", &["dev.warp.Warp-Stable", "dev.warp.Warp"]),
+    // Terminal.app is not installed *as tmux*: the bundle id only supplies the
+    // icon and the host window. Detection gates this row on the binary.
+    (TMUX_APP_ID, "tmux", &["com.apple.Terminal"]),
     ("xcode", "Xcode", &["com.apple.dt.Xcode"]),
     (
         "rider",
@@ -143,6 +161,11 @@ pub fn detect_open_in_apps() -> Vec<ExternalApp> {
     OPEN_IN_CATALOG
         .iter()
         .filter_map(|&(id, label, bundle_ids)| {
+            // A bundle id alone cannot say whether tmux is installed, so the
+            // multiplexer row is gated on the binary itself.
+            if id == TMUX_APP_ID && tmux_path().is_none() {
+                return None;
+            }
             bundle_ids.iter().find_map(|&bundle_id| {
                 let application_url = workspace
                     .URLForApplicationWithBundleIdentifier(&NSString::from_str(bundle_id))?;
@@ -560,6 +583,13 @@ pub fn open_path_in_app(path: &Path, app: &ExternalApp) {
     use objc2_app_kit::{NSWorkspace, NSWorkspaceOpenConfiguration};
     use objc2_foundation::{NSArray, NSString, NSURL};
 
+    // tmux has no window of its own and no folder-opening verb, so it runs in
+    // the system terminal instead of being handed the folder to open.
+    if app.id == TMUX_APP_ID {
+        open_tmux_session(path);
+        return;
+    }
+
     let bundle_id = app.target.as_str();
     let workspace = NSWorkspace::sharedWorkspace();
     let Some(application_url) =
@@ -589,6 +619,56 @@ fn termy_open_url(path: &Path) -> String {
     url.query_pairs_mut()
         .append_pair("dir", &path.to_string_lossy());
     url.into()
+}
+
+/// The installed `tmux` binary.
+///
+/// A GUI-launched app inherits launchd's bare `PATH`, which carries neither
+/// Homebrew nor MacPorts, so the probe lists the usual prefixes instead of
+/// trusting it. `PATH` is still consulted last, for a shell that exported a
+/// custom prefix.
+#[cfg(target_os = "macos")]
+fn tmux_path() -> Option<PathBuf> {
+    const PREFIXES: &[&str] = &[
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/opt/local/bin",
+        "/run/current-system/sw/bin",
+    ];
+    let known = PREFIXES
+        .iter()
+        .map(|prefix| Path::new(prefix).join("tmux"))
+        .find(|path| path.is_file());
+    known.or_else(|| {
+        std::env::split_paths(&std::env::var_os("PATH")?)
+            .map(|dir| dir.join("tmux"))
+            .find(|path| path.is_file())
+    })
+}
+
+/// Open a fresh tmux session rooted at `path` in the system terminal.
+///
+/// The session's first pane starts in the client's working directory, so the
+/// shell `cd`s there before `exec`ing tmux. The binary is named by absolute
+/// path: the terminal's own `PATH` is not guaranteed to have it either.
+#[cfg(target_os = "macos")]
+fn open_tmux_session(path: &Path) {
+    let Some(tmux) = tmux_path() else {
+        return;
+    };
+    let command = format!(
+        "cd {} && exec {} new-session",
+        shell_quote(path),
+        shell_quote(&tmux)
+    );
+    let _ = open_terminal_command(&command);
+}
+
+/// Quote `value` as one POSIX shell word, so a directory with spaces or a
+/// quote still reaches `cd` intact.
+#[cfg(target_os = "macos")]
+fn shell_quote(value: &Path) -> String {
+    format!("'{}'", value.to_string_lossy().replace('\'', r"'\''"))
 }
 
 #[cfg(windows)]
@@ -1600,6 +1680,63 @@ mod tests {
             .unwrap();
         assert_eq!(rider.1, "Rider");
         assert_eq!(rider.2, &["com.jetbrains.rider", "com.jetbrains.rider-EAP"]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn open_in_catalog_offers_every_terminal() {
+        for (id, label) in [
+            ("terminal", "Terminal"),
+            ("rex", "Rex"),
+            ("termy", "Termy"),
+            ("iterm2", "iTerm2"),
+            ("ghostty", "Ghostty"),
+            ("kitty", "Kitty"),
+            ("alacritty", "Alacritty"),
+            ("wezterm", "WezTerm"),
+            ("tabby", "Tabby"),
+            ("hyper", "Hyper"),
+            ("rio", "Rio"),
+            ("wave", "Wave"),
+            ("warp", "Warp"),
+            (TMUX_APP_ID, "tmux"),
+        ] {
+            let entry = OPEN_IN_CATALOG
+                .iter()
+                .find(|entry| entry.0 == id)
+                .unwrap_or_else(|| panic!("{id} is missing from the catalog"));
+            assert_eq!(entry.1, label);
+            assert!(!entry.2.is_empty());
+        }
+    }
+
+    /// The tmux row borrows Terminal.app's icon, so it must never be the
+    /// bundle id that decides whether the row exists — the binary does.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn open_in_tmux_row_follows_the_binary_not_the_bundle() {
+        let entry = OPEN_IN_CATALOG
+            .iter()
+            .find(|entry| entry.0 == TMUX_APP_ID)
+            .unwrap();
+        assert_eq!(entry.2, &["com.apple.Terminal"]);
+        let offered = detect_open_in_apps()
+            .iter()
+            .any(|app| app.id == TMUX_APP_ID);
+        assert_eq!(offered, tmux_path().is_some());
+    }
+
+    /// Paths handed to a `.command` script reach `cd` as written, spaces and
+    /// quotes included.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn open_in_shell_quotes_awkward_directories() {
+        assert_eq!(shell_quote(Path::new("/a/b")), "'/a/b'");
+        assert_eq!(
+            shell_quote(Path::new("/a/Game with spaces")),
+            "'/a/Game with spaces'"
+        );
+        assert_eq!(shell_quote(Path::new("/a/it's here")), r"'/a/it'\''s here'");
     }
 
     /// The icon the menu embeds must be exactly the pixel size the 18px slot

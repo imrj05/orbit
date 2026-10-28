@@ -23,7 +23,48 @@ fn scope(s: &str) -> String {
         _ => tr!("git_accounts.unknown"),
     }
 }
+fn gh_release_status(status: GhUpdateStatus, installed: &State<String>) -> String {
+    match status {
+        GhUpdateStatus::NotChecked => tr!("git_accounts.update_not_checked"),
+        GhUpdateStatus::Checking => tr!("git_accounts.update_checking"),
+        GhUpdateStatus::Failed => tr!("git_accounts.update_failed"),
+        GhUpdateStatus::Latest(latest) => {
+            let version = format!("{}.{}.{}", latest.0, latest.1, latest.2);
+            match installed {
+                State::Detected(current)
+                    if crate::gh::parse_version(current).is_some_and(|v| v < latest) =>
+                {
+                    tr!("git_accounts.update_available", version = version)
+                }
+                State::Detected(current) if crate::gh::parse_version(current) == Some(latest) => {
+                    tr!("git_accounts.update_current", version = version)
+                }
+                _ => tr!("git_accounts.update_latest", version = version),
+            }
+        }
+    }
+}
+
 impl OrbitApp {
+    fn check_gh_release(&mut self, cx: &mut Context<Self>) {
+        if self.gh_latest == GhUpdateStatus::Checking {
+            return;
+        }
+        self.gh_latest = GhUpdateStatus::Checking;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let latest = cx
+                .background_executor()
+                .spawn(async { crate::gh::latest_cli_version() })
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                app.gh_latest = latest.map_or(GhUpdateStatus::Failed, GhUpdateStatus::Latest);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     pub(super) fn refresh_git_accounts_for_workspace(&mut self, cx: &mut Context<Self>) {
         self.git_accounts_generation = self.git_accounts_generation.wrapping_add(1);
         let generation = self.git_accounts_generation;
@@ -82,7 +123,11 @@ impl OrbitApp {
             .into_any_element()
     }
 
-    pub(super) fn git_accounts_rows(&self, theme: Theme) -> Vec<AnyElement> {
+    pub(super) fn git_accounts_rows(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+    ) -> Vec<AnyElement> {
         let Some(snapshot) = &self.git_accounts_snapshot else {
             return vec![div()
                 .text_size(TextSize::Small.px(&theme))
@@ -133,6 +178,23 @@ impl OrbitApp {
             State::Detected(version) => tr!("git_accounts.version", version = version),
             other => state_text(other),
         };
+        let checking = self.gh_latest == GhUpdateStatus::Checking;
+        let check_button = button_frame(div().id("gh-check-updates"), &theme, ButtonSize::Medium)
+            .border_1()
+            .border_color(theme.border)
+            .raised(theme.surface_elevated, &theme)
+            .when(checking, |button| button.opacity(0.6))
+            .when(!checking, |button| {
+                button
+                    .cursor_pointer()
+                    .hover(|s| s.raised(theme.surface_hover, &theme))
+                    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                        this.update(cx, |app, cx| app.check_gh_release(cx));
+                    })
+            })
+            .text_color(theme.text_secondary)
+            .child(tr!("git_accounts.update_check"))
+            .into_any_element();
         sections.push(self.settings_section_desc(
             theme,
             &tr!("git_accounts.github"),
@@ -140,6 +202,28 @@ impl OrbitApp {
             vec![
                 row(tr!("git_accounts.cli"), gh),
                 row(tr!("git_accounts.auth_status"), tr!("git_accounts.unknown")),
+                self.setting_row(
+                    theme,
+                    &tr!("git_accounts.update_title"),
+                    Some(&tr!("git_accounts.update_check_note")),
+                    Some(&gh_release_status(self.gh_latest, &snapshot.gh)),
+                    Some(check_button),
+                ),
+                self.setting_row(
+                    theme,
+                    &tr!("git_accounts.update_manual"),
+                    Some(&tr!("git_accounts.update_manual_note")),
+                    None,
+                    None,
+                ),
+                row(
+                    tr!("git_accounts.update_homebrew"),
+                    "brew upgrade gh".to_owned(),
+                ),
+                row(
+                    tr!("git_accounts.update_winget"),
+                    "winget upgrade --id GitHub.cli --source winget".to_owned(),
+                ),
             ],
         ));
         let ssh_state = match &snapshot.ssh {
@@ -227,5 +311,35 @@ impl OrbitApp {
             ],
         ));
         sections
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn release_comparison_never_invents_an_installed_version() {
+        let latest = GhUpdateStatus::Latest((2, 100, 0));
+        assert_eq!(
+            gh_release_status(latest, &State::Detected("2.99.0".into())),
+            tr!("git_accounts.update_available", version = "2.100.0")
+        );
+        assert_eq!(
+            gh_release_status(latest, &State::Detected("2.100.0".into())),
+            tr!("git_accounts.update_current", version = "2.100.0")
+        );
+        assert_eq!(
+            gh_release_status(latest, &State::Unavailable),
+            tr!("git_accounts.update_latest", version = "2.100.0")
+        );
+        assert_eq!(
+            gh_release_status(latest, &State::Detected("2.101.0".into())),
+            tr!("git_accounts.update_latest", version = "2.100.0")
+        );
+        assert_eq!(
+            gh_release_status(GhUpdateStatus::Failed, &State::Unavailable),
+            tr!("git_accounts.update_failed")
+        );
     }
 }

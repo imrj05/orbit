@@ -509,6 +509,7 @@ pub struct OrbitApp {
     git_accounts_snapshot: Option<crate::git_accounts::Snapshot>,
     git_accounts_loading: bool,
     git_accounts_generation: u64,
+    gh_latest: GhUpdateStatus,
     /// Open dropdown on the settings surface (language / font sizes).
     settings_select: Option<SettingsSelect>,
     /// Filter text for the open settings dropdown.
@@ -1919,6 +1920,7 @@ impl OrbitApp {
             git_accounts_snapshot: None,
             git_accounts_loading: false,
             git_accounts_generation: 0,
+            gh_latest: GhUpdateStatus::NotChecked,
             settings_select: None,
             settings_filter,
             settings_search: settings_search.clone(),
@@ -3111,6 +3113,15 @@ struct WorkspaceMenu {
     at: Option<Point<Pixels>>,
     /// The menu is showing the icon/tint picker instead of the action list.
     picker: bool,
+}
+
+/// User-requested GitHub CLI release check, separate from local inspection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GhUpdateStatus {
+    NotChecked,
+    Checking,
+    Latest((u32, u32, u32)),
+    Failed,
 }
 
 /// Sections of the settings surface.

@@ -55,7 +55,13 @@ fn git_accounts_refresh_coalesces_and_invalidates_old_work(cx: &mut gpui::TestAp
             app.settings_section = SettingsSection::GitAccounts;
             assert!(!app.git_accounts_loading);
             assert!(app.git_accounts_snapshot.is_none());
+            assert_eq!(app.gh_latest, GhUpdateStatus::NotChecked);
             app.on_refresh(&crate::RefreshSessions, window, cx);
+            assert_eq!(
+                app.gh_latest,
+                GhUpdateStatus::NotChecked,
+                "local refresh must not check the network"
+            );
             assert!(app.git_accounts_loading);
             let first = app.git_accounts_generation;
             app.on_refresh(&crate::RefreshSessions, window, cx);

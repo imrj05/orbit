@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Every installed terminal is in the "open in" menu.** Rex, Ghostty, iTerm2, Kitty, Alacritty, WezTerm, Tabby, Hyper, Rio, Wave and Warp appear next to Terminal once their app is installed, and tmux appears when the binary is. tmux has no window of its own, so it opens a session at the workspace in the system terminal; the list scrolls instead of growing past the window.
+
+- **GitHub CLI release check:** Settings → Git Accounts can check the latest stable `gh` version on request and show manual update commands. Normal status refresh stays local; Orbit does not update the CLI or use credentials for the check.
+
 - **Bug-report draft model picker:** choose a model for Generate draft independently of the active session and Git commit-message model. The choice is remembered, with the active session model as the default.
 
 - **Git Accounts diagnostics** in Settings: inspect local author identity, GitHub CLI version, SSH agent fingerprints, conventional public-key file presence, generic and host-scoped credential-helper configuration, sanitized remote hosts and credential environment-variable presence without managing credentials or testing remote access. GitHub CLI authentication is shown as unknown because its status command may contact hosts and refresh credentials.

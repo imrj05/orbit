@@ -186,7 +186,7 @@ const SETTINGS_SEARCH_INDEX: &[(SettingsSection, &str, &str)] = &[
     (
         SettingsSection::GitAccounts,
         "git_accounts.title",
-        "git github account identity ssh credential authentication sign-in status",
+        "git github account identity ssh credential authentication sign-in status cli update version release",
     ),
     // General
     (
@@ -1065,7 +1065,7 @@ impl OrbitApp {
             SettingsSection::Runtime => self.runtime_rows(theme, this.clone(), cx),
             SettingsSection::Agent => self.agent_rows(theme, this.clone(), cx),
             SettingsSection::Worktrees => self.worktree_settings_rows(theme, this.clone(), cx),
-            SettingsSection::GitAccounts => self.git_accounts_rows(theme),
+            SettingsSection::GitAccounts => self.git_accounts_rows(theme, this.clone()),
             // Rendered by `skills_ui::render_skills_page`, not the card body.
             SettingsSection::Skills => Vec::new(),
             SettingsSection::Plugins => self.plugin_rows(theme, this.clone(), cx),

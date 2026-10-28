@@ -156,6 +156,57 @@ pub fn parse_version(raw: &str) -> Option<(u32, u32, u32)> {
     None
 }
 
+/// Latest stable GitHub CLI release. This anonymous request is made only on
+/// explicit user action, never during Git Accounts' local status refresh.
+pub(crate) fn latest_cli_version() -> Option<(u32, u32, u32)> {
+    let response = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .ok()?
+        .head("https://github.com/cli/cli/releases/latest")
+        .header("User-Agent", concat!("Orbit/", env!("CARGO_PKG_VERSION")))
+        .send()
+        .ok()?;
+    if !response.status().is_redirection() {
+        return None;
+    }
+    parse_latest_release_location(
+        response
+            .headers()
+            .get(reqwest::header::LOCATION)?
+            .to_str()
+            .ok()?,
+    )
+}
+
+fn parse_latest_release_location(location: &str) -> Option<(u32, u32, u32)> {
+    let url = url::Url::parse(location).ok()?;
+    if url.scheme() != "https"
+        || url.host_str() != Some("github.com")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return None;
+    }
+    let version = url.path().strip_prefix("/cli/cli/releases/tag/v")?;
+    let mut parts = version.split('.');
+    let parse = |s: &str| {
+        (!s.is_empty() && s.bytes().all(|c| c.is_ascii_digit()))
+            .then(|| s.parse().ok())
+            .flatten()
+    };
+    let result = (
+        parse(parts.next()?)?,
+        parse(parts.next()?)?,
+        parse(parts.next()?)?,
+    );
+    parts.next().is_none().then_some(result)
+}
+
 // ── Issues ─────────────────────────────────────────────────────────────
 
 /// A GitHub user as `gh` serializes it.
@@ -847,6 +898,29 @@ pub fn checkout_pull(cwd: &Path, number: u64) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "contacts GitHub"]
+    fn live_latest_cli_release_can_be_checked_anonymously() {
+        assert!(latest_cli_version().is_some());
+    }
+
+    #[test]
+    fn latest_release_location_is_strictly_validated() {
+        assert_eq!(
+            parse_latest_release_location("https://github.com/cli/cli/releases/tag/v2.103.3"),
+            Some((2, 103, 3))
+        );
+        for location in [
+            "https://example.com/cli/cli/releases/tag/v2.103.3",
+            "https://github.com/other/cli/releases/tag/v2.103.3",
+            "https://github.com/cli/cli/releases/tag/v2.103.3-rc1",
+            "https://github.com/cli/cli/releases/tag/v2.103.3?token=secret",
+            "https://github.com/cli/cli/releases/tag/v2.bad.3",
+        ] {
+            assert_eq!(parse_latest_release_location(location), None);
+        }
+    }
 
     #[test]
     fn parses_versions_from_gh_output() {
