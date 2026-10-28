@@ -181,6 +181,8 @@ impl OrbitApp {
             }
             match event {
                 Event::AgentStart => {
+                    self.extension_widgets
+                        .retain(|widget| widget.key != "orbit-follow-up-suggestions");
                     self.busy = true;
                 }
                 // An extension dialog blocks the run until the client answers.

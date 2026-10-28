@@ -31,7 +31,7 @@
       "windows": "Windows",
       "linux": "Linux"
     },
-    "shotAlt": "Une session Orbit terminée : les notes de l'agent sur le correctif du compositeur avec IME sous Windows et une carte « 4 fichiers modifiés » avec le nombre de lignes par fichier, au-dessus du compositeur."
+    "shotAlt": "Une session Orbit terminée : le résumé de l'agent sur la modification des options d'ouverture et une carte « 3 fichiers modifiés » avec le nombre de lignes par fichier, au-dessus du compositeur."
   },
   "trust": {
     "items": [
@@ -165,7 +165,7 @@
         "Espace de travail choisi parmi vos projets et mémorisé entre les sessions.",
         "Mode d'accès, modèle et niveau de raisonnement réglés à côté du compositeur."
       ],
-      "shotAlt": "La page Nouvelle tâche d'Orbit avec les bascules de mode Plan, Construire et Demander, un sélecteur d'espace de travail et le compositeur en dessous."
+      "shotAlt": "La page Nouvelle tâche d'Orbit avec un sélecteur d'espace de travail au-dessus du compositeur, et le mode de travail, le modèle et le niveau de raisonnement dans le compositeur."
     },
     "providers": {
       "label": "Modèles et fournisseurs",
@@ -241,7 +241,7 @@
         "Polices d'interface et de code, tailles, et un aperçu du terminal en direct.",
         "Recherchez tous les réglages depuis un seul champ."
       ],
-      "shotAlt": "Les réglages Apparence d'Orbit avec le choix du thème au-dessus des contrôles de police d'interface, de police de code et de taille."
+      "shotAlt": "Les réglages Apparence d'Orbit avec le système de design, le thème, la couleur d'accent, la langue et les contrôles de fond d'écran."
     },
     "native": {
       "label": "Natif",

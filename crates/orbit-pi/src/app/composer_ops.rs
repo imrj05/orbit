@@ -55,7 +55,9 @@ impl OrbitApp {
         if self
             .mention_fd_key
             .as_ref()
-            .is_some_and(|(cached_root, cached_query)| cached_root == &root && cached_query == query)
+            .is_some_and(|(cached_root, cached_query)| {
+                cached_root == &root && cached_query == query
+            })
         {
             return self.mention_fd_hits.clone();
         }
@@ -1073,6 +1075,8 @@ impl OrbitApp {
     /// the status line says so rather than implying it took.
     pub(super) fn set_access_mode(&mut self, mode: AccessMode, cx: &mut Context<Self>) {
         self.access_mode = mode;
+        self.extension_widgets
+            .retain(|widget| widget.key != "orbit-follow-up-suggestions");
         mode.persist();
         if self.extensions.guard().is_none() {
             self.toast_warning(tr!("access.mode_set_unavailable", mode = mode.label()));
@@ -1190,6 +1194,8 @@ impl OrbitApp {
     /// choice is held as pending and applied when the id arrives.
     pub(super) fn set_workflow_mode(&mut self, mode: WorkflowMode, cx: &mut Context<Self>) {
         self.workflow_mode = mode;
+        self.extension_widgets
+            .retain(|widget| widget.key != "orbit-follow-up-suggestions");
         match self.session_id.clone() {
             Some(id) => crate::workflow::persist_for(&id, mode),
             None => self.workflow_pending = Some(mode),

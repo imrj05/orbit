@@ -2108,3 +2108,8 @@ git_accounts.remotes: "Repository remotes"
 git_accounts.repository_note: "Remote hosts and transports do not prove access. Select a Git workspace to inspect its remotes."
 git_accounts.environment: "Environment"
 git_accounts.environment_note: "Variable presence is limited to Orbit’s process environment; your terminal may differ. Values are never displayed."
+
+settings.follow_up_suggestions: "Follow-up suggestions"
+settings.follow_up_suggestions_hint: "Suggest next messages after a run. Sends recent conversation and tool output to the selected model and may incur extra cost."
+settings.suggestions_model: "Suggestions model"
+settings.suggestions_model_hint: "Model used for follow-up suggestions; defaults to the active session model."

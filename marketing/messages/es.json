@@ -31,7 +31,7 @@
       "windows": "Windows",
       "linux": "Linux"
     },
-    "shotAlt": "Una sesión de Orbit terminada: las notas del agente sobre el arreglo del compositor con IME en Windows y una tarjeta «4 archivos cambiados» con el número de líneas por archivo, encima del compositor."
+    "shotAlt": "Una sesión de Orbit completada: el resumen del agente sobre el cambio en las opciones de abrir con y una tarjeta «3 archivos modificados» con el número de líneas por archivo, sobre el compositor."
   },
   "trust": {
     "items": [
@@ -165,7 +165,7 @@
         "Espacio de trabajo elegido entre tus proyectos y recordado entre sesiones.",
         "Modo de acceso, modelo y nivel de razonamiento junto al compositor."
       ],
-      "shotAlt": "La página Nueva tarea de Orbit con los interruptores de modo Plan, Construir y Preguntar, un selector de espacio de trabajo y el compositor debajo."
+      "shotAlt": "La página Nueva tarea de Orbit con un selector de espacio de trabajo sobre el compositor y el modo de flujo de trabajo, el modelo y el nivel de razonamiento en el compositor."
     },
     "providers": {
       "label": "Modelos y proveedores",
@@ -241,7 +241,7 @@
         "Fuentes de interfaz y de código, tamaños y una vista previa de terminal en vivo.",
         "Busca en todos los ajustes desde un solo campo."
       ],
-      "shotAlt": "Los ajustes de apariencia de Orbit con la elección de tema encima de los controles de fuente de interfaz, fuente de código y tamaños."
+      "shotAlt": "Los ajustes de Apariencia de Orbit con el sistema de diseño, el tema, el color de acento, el idioma y los controles de fondo."
     },
     "native": {
       "label": "Nativo",

@@ -31,7 +31,7 @@
       "windows": "Windows",
       "linux": "Linux"
     },
-    "shotAlt": "Eine abgeschlossene Orbit-Sitzung: die Notizen des Agenten zum Windows-IME-Fix im Composer und eine Karte „4 Dateien geändert“ mit Zeilenzahlen pro Datei, über dem Composer."
+    "shotAlt": "Eine abgeschlossene Orbit-Sitzung: die Zusammenfassung des Agenten zur Änderung der „Öffnen in“-Optionen und eine Karte „3 Dateien geändert“ mit Zeilenzahlen pro Datei, über dem Composer."
   },
   "trust": {
     "items": [
@@ -165,7 +165,7 @@
         "Workspace aus deinen Projekten gewählt, über Sitzungen hinweg gemerkt.",
         "Zugriffsmodus, Modell und Denkstufe neben dem Composer."
       ],
-      "shotAlt": "Orbits Seite „Neue Aufgabe“ mit den Modus-Schaltern Plan, Bauen und Fragen, einer Workspace-Auswahl und dem Composer darunter."
+      "shotAlt": "Orbits Seite „Neue Aufgabe“ mit einer Workspace-Auswahl über dem Composer sowie Workflow-Modus, Modell und Denkstufe im Composer."
     },
     "providers": {
       "label": "Modelle & Anbieter",
@@ -241,7 +241,7 @@
         "Oberflächen- und Codeschriften, Größen und eine Live-Terminalvorschau.",
         "Alle Einstellungen aus einem Feld durchsuchen."
       ],
-      "shotAlt": "Orbits Erscheinungsbild-Einstellungen mit Theme-Auswahl über Schriftart-, Codeschrift- und Größenreglern."
+      "shotAlt": "Orbits Erscheinungsbild-Einstellungen mit Design-System, Theme, Akzentfarbe, Sprache und Hintergrundbild-Steuerung."
     },
     "native": {
       "label": "Nativ",

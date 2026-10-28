@@ -1503,6 +1503,71 @@ impl OrbitApp {
             .flex_col()
             .gap(DynamicSpacing::Base06.px(&theme));
         for widget in items {
+            if widget.key == "orbit-follow-up-suggestions" {
+                if !self.suggestions.enabled
+                    || self.busy
+                    || !self.input.read(cx).text().is_empty()
+                    || self.attachment_slots_used() > 0
+                {
+                    continue;
+                }
+                let Some(payload) = widget
+                    .lines
+                    .first()
+                    .and_then(|line| serde_json::from_str::<Value>(line).ok())
+                else {
+                    continue;
+                };
+                if payload.get("mode").and_then(Value::as_str) != Some(self.access_mode.as_wire())
+                    || payload.get("workflow").and_then(Value::as_str)
+                        != Some(self.workflow_mode.as_wire())
+                {
+                    continue;
+                }
+                let Some(suggestions) = payload.get("suggestions").and_then(Value::as_array) else {
+                    continue;
+                };
+                let mut row = div().flex().flex_wrap().gap_2().pb_2();
+                for (index, suggestion) in suggestions.iter().take(3).enumerate() {
+                    let Some(text) = suggestion
+                        .as_str()
+                        .filter(|text| !text.is_empty() && text.len() <= 180)
+                    else {
+                        continue;
+                    };
+                    let text = text.to_owned();
+                    let selected = text.clone();
+                    let keyboard_text = text.clone();
+                    row = row.child(
+                        div()
+                            .id(ElementId::Name(format!("suggestion-{index}").into()))
+                            .focusable()
+                            .focus(|style| style.border_color(theme.focus_ring))
+                            .on_key_down(cx.listener(
+                                move |app, event: &gpui::KeyDownEvent, window, cx| {
+                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                        cx.stop_propagation();
+                                        app.insert_suggestion(&keyboard_text, window, cx);
+                                    }
+                                },
+                            ))
+                            .px_3()
+                            .py_2()
+                            .rounded(panel::RADIUS.px(&theme))
+                            .border_1()
+                            .border_color(theme.border)
+                            .text_color(theme.text_secondary)
+                            .cursor_pointer()
+                            .hover(|style| style.bg(theme.overlay))
+                            .on_click(cx.listener(move |app, _, window, cx| {
+                                app.insert_suggestion(&selected, window, cx);
+                            }))
+                            .child(text),
+                    );
+                }
+                column = column.child(row);
+                continue;
+            }
             let mut card = div()
                 .id(ElementId::Name(format!("ext-widget-{}", widget.key).into()))
                 .w_full()
@@ -1526,6 +1591,24 @@ impl OrbitApp {
             column = column.child(card);
         }
         Some(column.into_any_element())
+    }
+
+    fn insert_suggestion(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.suggestions.enabled
+            && !self.busy
+            && self.input.read(cx).text().is_empty()
+            && self.attachment_slots_used() == 0
+            && self
+                .extension_widgets
+                .iter()
+                .any(|widget| widget.key == "orbit-follow-up-suggestions")
+        {
+            self.input.update(cx, |input, cx| input.set_text(text, cx));
+            self.extension_widgets
+                .retain(|widget| widget.key != "orbit-follow-up-suggestions");
+            self.input.read(cx).focus(window);
+            cx.notify();
+        }
     }
 
     /// Bottom row inside the composer: the "+" add menu and the access-mode

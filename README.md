@@ -12,7 +12,7 @@ Sessions you create in Orbit and in the terminal are the same sessions (`~/.pi/a
 
 A live session — streaming transcript, tool rows, and the composer:
 
-![A completed Orbit session: the agent's notes on the Windows IME composer fix and a Changed 4 files card with per-file line counts, above the composer.](marketing/public/screens/session.png)
+![A completed Orbit session: the agent's summary of the open-in options change and a Changed 3 files card with per-file line counts, above the composer.](marketing/public/screens/session.png)
 
 Usage — requests, tokens, cost, and cache, read from your own sessions; point at any
 summary sparkline to read that day across the whole row:
@@ -21,15 +21,15 @@ summary sparkline to read that day across the whole row:
 
 | New task | Review |
 | --- | --- |
-| ![Orbit's new-task page with a workspace picker, the composer, and the access-mode menu open on Supervised, Auto-accept edits, and Full access.](marketing/public/screens/new-task.png) | ![The Orbit Review panel open beside a session, showing a selected file's diff on the left and the changed-file tree on the right.](marketing/public/screens/review.png) |
+| ![Orbit's new-task page with a workspace picker above the composer, and the workflow mode, model, and thinking level set in the composer.](marketing/public/screens/new-task.png) | ![The Orbit Review panel open beside a session, showing a selected file's diff on the left and the changed-file tree on the right.](marketing/public/screens/review.png) |
 | **Git** | **Providers** |
-| ![Orbit's Git page listing staged and changed files with line counts and a commit box.](marketing/public/screens/git.png) | ![Orbit's Providers page showing provider cards for Ollama, OpenCode Go, Bedrock, and Anthropic with usage meters.](marketing/public/screens/providers.png) |
+| ![Orbit's Git page listing changed files with line counts and a commit box.](marketing/public/screens/git.png) | ![Orbit's Providers page listing built-in and custom providers with auth status and model counts.](marketing/public/screens/providers.png) |
 | **Plugins** | **Skills** |
 | ![Orbit's Plugins page listing installed pi packages with update and remove actions.](marketing/public/screens/plugins.png) | ![Orbit's Skills page listing project and global skills with the selected skill's SKILL.md rendered on the right.](marketing/public/screens/skills.png) |
 | **Models** | **Appearance** |
-| ![Orbit's Models page listing models grouped by provider with context sizes and favorite toggles.](marketing/public/screens/models.png) | ![Orbit's Appearance settings with theme pickers, type and density previews, and font pickers.](marketing/public/screens/appearance.png) |
+| ![Orbit's Models page listing models grouped by provider with context sizes and favorite toggles.](marketing/public/screens/models.png) | ![Orbit's Appearance settings with the design system, theme, accent color, language, and wallpaper controls.](marketing/public/screens/appearance.png) |
 | **General** | **Agent** |
-| ![Orbit's General settings showing the connected pi agent, the local session store, the workspace, and notification toggles.](marketing/public/screens/general.png) | ![Orbit's Agent settings with follow-up delivery, auto-compaction, auto-retry, compact-now, and session rename.](marketing/public/screens/agent.png) |
+| ![Orbit's General settings showing the connected pi agent, the local session store, the workspace, and notification toggles.](marketing/public/screens/general.png) | ![Orbit's Agent settings with follow-up delivery, auto-compaction, auto-retry, and session titles.](marketing/public/screens/agent.png) |
 
 ## Features
 

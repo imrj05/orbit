@@ -384,6 +384,7 @@ pub struct OrbitApp {
     /// Settings → Agent: auto session titles. Persisted to
     /// `~/.orbit-pi/auto-title.json`, which the bundled title extension reads.
     auto_title: crate::auto_title::AutoTitleConfig,
+    suggestions: crate::auto_title::AutoTitleConfig,
     /// Settings → Agent: whether an agent call the reader has not toggled
     /// opens. Persisted to `~/.orbit-pi/agent-calls.json` (issue #80).
     agent_calls: crate::agent_call_display::AgentCallDisplay,
@@ -1891,6 +1892,7 @@ impl OrbitApp {
             auto_compaction: true,
             auto_retry: true,
             auto_title: crate::auto_title::AutoTitleConfig::load(),
+            suggestions: crate::auto_title::AutoTitleConfig::load_suggestions(),
             agent_calls: crate::agent_call_display::AgentCallDisplay::load(),
             retention: crate::session_retention::RetentionConfig::load(),
             retention_ran: false,
@@ -3513,6 +3515,7 @@ enum SettingsSelect {
     WallpaperEffect,
     /// The model the auto-title extension asks (Settings → Agent).
     TitleModel,
+    SuggestionsModel,
     /// The model used to generate a bug-report draft.
     ReportModel,
     /// How agent call details open in the transcript (Settings → Agent).

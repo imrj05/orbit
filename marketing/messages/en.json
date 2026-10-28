@@ -31,7 +31,7 @@
       "windows": "Windows",
       "linux": "Linux"
     },
-    "shotAlt": "A completed Orbit session: the agent's notes on the Windows IME composer fix and a Changed 4 files card with per-file line counts, above the composer."
+    "shotAlt": "A completed Orbit session: the agent's summary of the open-in options change and a Changed 3 files card with per-file line counts, above the composer."
   },
   "trust": {
     "items": [
@@ -165,7 +165,7 @@
         "Workspace picked from your projects, remembered across sessions.",
         "Access mode, model, and thinking level set beside the composer."
       ],
-      "shotAlt": "Orbit's New Task page with Plan, Build, and Ask mode toggles, a workspace picker, and the composer below."
+      "shotAlt": "Orbit's New Task page with a workspace picker above the composer, and the workflow mode, model, and thinking level set in the composer."
     },
     "providers": {
       "label": "Models & providers",
@@ -241,7 +241,7 @@
         "Interface and code fonts, sizes, and a live terminal preview.",
         "Search across every setting from one field."
       ],
-      "shotAlt": "Orbit's Appearance settings with theme choices above interface font, code font, and size controls."
+      "shotAlt": "Orbit's Appearance settings with the design system, theme, accent color, language, and wallpaper controls."
     },
     "native": {
       "label": "Native",

@@ -5388,6 +5388,33 @@ impl OrbitApp {
             ],
         ));
 
+        sections.push(self.settings_section(
+            theme,
+            &tr!("settings.follow_up_suggestions"),
+            vec![
+                self.setting_row(
+                    theme,
+                    &tr!("settings.follow_up_suggestions"),
+                    Some(&tr!("settings.follow_up_suggestions_hint")),
+                    None,
+                    Some(self.settings_toggle(
+                        "suggestions-toggle",
+                        self.suggestions.enabled,
+                        theme,
+                        this.clone(),
+                        Self::toggle_suggestions,
+                    )),
+                ),
+                self.setting_row(
+                    theme,
+                    &tr!("settings.suggestions_model"),
+                    Some(&tr!("settings.suggestions_model_hint")),
+                    None,
+                    Some(self.suggestions_model_select(theme, this.clone(), cx)),
+                ),
+            ],
+        ));
+
         // The model every new session starts on, and its thinking level.
         // Applied at session birth; existing sessions keep the model recorded
         // in their file.
@@ -5477,6 +5504,51 @@ impl OrbitApp {
         self.select_control(
             "title-model-select",
             SettingsSelect::TitleModel,
+            options[selected].clone(),
+            options,
+            selected,
+            theme,
+            this,
+            cx,
+        )
+    }
+
+    pub(super) fn toggle_suggestions(&mut self, cx: &mut Context<Self>) {
+        self.suggestions.enabled = !self.suggestions.enabled;
+        self.suggestions.persist_suggestions();
+        self.extension_widgets
+            .retain(|widget| widget.key != "orbit-follow-up-suggestions");
+        cx.notify();
+    }
+
+    pub(super) fn suggestions_model_select(
+        &self,
+        theme: Theme,
+        this: Entity<OrbitApp>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let mut options = vec![tr!("settings.active_session_model")];
+        options.extend(self.available_models.iter().map(|model| {
+            format!(
+                "{} · {}",
+                crate::providers::provider_display_name(&model.provider),
+                model.name
+            )
+        }));
+        let selected = self
+            .suggestions
+            .model
+            .as_ref()
+            .and_then(|wanted| {
+                self.available_models
+                    .iter()
+                    .position(|model| model.provider == wanted.provider && model.id == wanted.id)
+            })
+            .map(|ix| ix + 1)
+            .unwrap_or(0);
+        self.select_control(
+            "suggestions-model-select",
+            SettingsSelect::SuggestionsModel,
             options[selected].clone(),
             options,
             selected,
@@ -7126,6 +7198,7 @@ impl OrbitApp {
                 "%",
             ),
             SettingsSelect::Language
+            | SettingsSelect::SuggestionsModel
             | SettingsSelect::ReportModel
             | SettingsSelect::AccentColor
             | SettingsSelect::Theme(_)
@@ -7250,10 +7323,15 @@ impl OrbitApp {
     ) -> AnyElement {
         let open = self.settings_select == Some(kind);
         let model_provider = match kind {
-            SettingsSelect::TitleModel | SettingsSelect::ReportModel if selected == 0 => {
+            SettingsSelect::TitleModel
+            | SettingsSelect::SuggestionsModel
+            | SettingsSelect::ReportModel
+                if selected == 0 =>
+            {
                 Some(self.model_provider.as_str())
             }
             SettingsSelect::TitleModel
+            | SettingsSelect::SuggestionsModel
             | SettingsSelect::ReportModel
             | SettingsSelect::DefaultModel
                 if selected > 0 =>
@@ -7361,7 +7439,10 @@ impl OrbitApp {
         let empty = rows.is_empty();
         let model_rows = matches!(
             kind,
-            SettingsSelect::TitleModel | SettingsSelect::ReportModel | SettingsSelect::DefaultModel
+            SettingsSelect::TitleModel
+                | SettingsSelect::SuggestionsModel
+                | SettingsSelect::ReportModel
+                | SettingsSelect::DefaultModel
         )
         .then(|| {
             self.available_models
@@ -7698,6 +7779,24 @@ impl OrbitApp {
                 theme::set_font_prefs(prefs);
                 return true;
             }
+            SettingsSelect::SuggestionsModel => {
+                let model = if ix == 0 {
+                    None
+                } else {
+                    self.available_models
+                        .get(ix - 1)
+                        .map(|model| crate::auto_title::TitleModel {
+                            provider: model.provider.clone(),
+                            id: model.id.clone(),
+                        })
+                };
+                self.suggestions.model = model;
+                self.suggestions.persist_suggestions();
+                self.extension_widgets
+                    .retain(|widget| widget.key != "orbit-follow-up-suggestions");
+                cx.notify();
+                return true;
+            }
             SettingsSelect::TitleModel => {
                 let model = if ix == 0 {
                     None
@@ -7852,6 +7951,7 @@ impl OrbitApp {
                 ui.spacing_density = SPACING_DENSITIES.get(ix).copied().unwrap_or(100);
             }
             SettingsSelect::Theme(_)
+            | SettingsSelect::SuggestionsModel
             | SettingsSelect::ReportModel
             | SettingsSelect::AccentColor
             | SettingsSelect::UiFontFamily

@@ -13,9 +13,9 @@ function GitCard() {
         Git
       </p>
       <p className="text-[12px] text-ink-2">
-        <span className="text-ink">4 files changed</span>
+        <span className="text-ink">2 files changed</span>
         {" · "}
-        <span className="font-mono text-[11px]">+355 −34</span>
+        <span className="font-mono text-[11px]">+109 −2</span>
       </p>
     </div>
   );
