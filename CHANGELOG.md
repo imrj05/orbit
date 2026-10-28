@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Bug-report draft model picker:** choose a model for Generate draft independently of the active session and Git commit-message model. The choice is remembered, with the active session model as the default.
+
+- **Git Accounts diagnostics** in Settings: inspect local author identity, GitHub CLI version, SSH agent fingerprints, conventional public-key file presence, generic and host-scoped credential-helper configuration, sanitized remote hosts and credential environment-variable presence without managing credentials or testing remote access. GitHub CLI authentication is shown as unknown because its status command may contact hosts and refresh credentials.
+
+### Fixed
+
+- **Review and Git changes refresh** after a file change or manual refresh arrives while a diff is still loading; diff failures are shown instead of leaving stale results silently visible.
+- **Bug-report screenshots** fall back to GitHub's web form when the CLI cannot upload them without repository write access or another preflight requirement. Orbit opens the saved screenshot folder for dragging into the form, preserves colliding filenames, and names compressed images for their actual format.
+
 ### Changed
 
 - **The Usage Summary board reads any day under the pointer.** Each headline

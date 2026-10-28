@@ -522,6 +522,12 @@ impl CommandPalette {
                 "settings preferences agent steer follow-up compaction retry",
             ),
             (
+                SettingsSection::GitAccounts,
+                "icons/branch.svg",
+                tr!("git_accounts.title"),
+                "settings git github account identity ssh credential authentication sign-in status",
+            ),
+            (
                 SettingsSection::Providers,
                 "icons/cloud.svg",
                 tr!("settings.providers"),

@@ -501,6 +501,9 @@ pub struct OrbitApp {
     settings_open: bool,
     /// Active section within the settings surface.
     settings_section: SettingsSection,
+    git_accounts_snapshot: Option<crate::git_accounts::Snapshot>,
+    git_accounts_loading: bool,
+    git_accounts_generation: u64,
     /// Open dropdown on the settings surface (language / font sizes).
     settings_select: Option<SettingsSelect>,
     /// Filter text for the open settings dropdown.
@@ -526,7 +529,9 @@ pub struct OrbitApp {
     /// upload binaries, so these are written to disk and the web form is
     /// opened for the user to drag them in.
     bug_report_screenshots: Vec<Attachment>,
-    /// A draft is being generated off-thread with the active model.
+    /// Optional model override for bug-report drafting, separate from the session.
+    bug_report_model: crate::commit_model::CommitModelConfig,
+    /// A draft is being generated off-thread.
     bug_report_generating: bool,
     /// A report is being filed off-thread; the form's submit control is busy.
     bug_report_busy: bool,
@@ -1905,6 +1910,9 @@ impl OrbitApp {
             session_menu: None,
             settings_open: false,
             settings_section: SettingsSection::General,
+            git_accounts_snapshot: None,
+            git_accounts_loading: false,
+            git_accounts_generation: 0,
             settings_select: None,
             settings_filter,
             settings_search: settings_search.clone(),
@@ -1917,6 +1925,7 @@ impl OrbitApp {
             bug_report_steps,
             bug_report_kind: crate::issue_message::ReportKind::Bug,
             bug_report_screenshots: Vec::new(),
+            bug_report_model: crate::commit_model::CommitModelConfig::load_report(),
             bug_report_generating: false,
             bug_report_busy: false,
             bug_report_error: None,
@@ -2363,6 +2372,9 @@ impl OrbitApp {
         self.worktree_repo_root = None;
         self.worktree_fetch = self.worktree_fetch.wrapping_add(1);
         self.current_workspace = Some(cwd.clone());
+        if self.settings_open && self.settings_section == SettingsSection::GitAccounts {
+            self.refresh_git_accounts_for_workspace(cx);
+        }
         self.sync_review_context(cx);
     }
 
@@ -3105,6 +3117,7 @@ pub(crate) enum SettingsSection {
     Runtime,
     Agent,
     Worktrees,
+    GitAccounts,
     Providers,
     Models,
     Skills,
@@ -3452,6 +3465,8 @@ enum SettingsSelect {
     WallpaperEffect,
     /// The model the auto-title extension asks (Settings → Agent).
     TitleModel,
+    /// The model used to generate a bug-report draft.
+    ReportModel,
     /// How agent call details open in the transcript (Settings → Agent).
     AgentCalls,
     /// The model new sessions start on (Settings → Agent).
@@ -3476,6 +3491,7 @@ mod bug_report_ui;
 mod composer_ops;
 mod dialogs;
 mod events;
+mod git_accounts_ui;
 pub(crate) mod helpers;
 mod mcp_ui;
 mod open_in;

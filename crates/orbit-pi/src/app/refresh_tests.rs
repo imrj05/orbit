@@ -44,6 +44,35 @@ fn refresh_reaches_every_open_surface(cx: &mut gpui::TestAppContext) {
     });
 }
 
+#[gpui::test]
+fn git_accounts_refresh_coalesces_and_invalidates_old_work(cx: &mut gpui::TestAppContext) {
+    let app = test_app(cx);
+    let cx = cx.add_empty_window();
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.client = None;
+            app.settings_open = true;
+            app.settings_section = SettingsSection::GitAccounts;
+            assert!(!app.git_accounts_loading);
+            assert!(app.git_accounts_snapshot.is_none());
+            app.on_refresh(&crate::RefreshSessions, window, cx);
+            assert!(app.git_accounts_loading);
+            let first = app.git_accounts_generation;
+            app.on_refresh(&crate::RefreshSessions, window, cx);
+            assert_eq!(
+                app.git_accounts_generation, first,
+                "duplicate refresh must coalesce"
+            );
+            app.refresh_git_accounts_for_workspace(cx);
+            assert_ne!(
+                app.git_accounts_generation, first,
+                "workspace refresh invalidates older results"
+            );
+            assert!(app.git_accounts_snapshot.is_none());
+        });
+    });
+}
+
 /// A refresh with every page closed is a cheap no-op — it must not start a
 /// worktree list or touch the MCP manager just because ⌘R was pressed.
 #[gpui::test]

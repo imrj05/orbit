@@ -310,6 +310,10 @@ visual language app-wide reach while leaving the current design pixel-identical.
 `ThemeId::ALL` and the palette-invariant tests; the Appearance Theme dropdown filters the
 catalog with `themes_for_system`, and the Design-system control is the normal way to switch.
 
+### D16 — Git account diagnostics are local and read-only
+
+Settings → Git Accounts inspects effective Git author settings, normalized generic and host-scoped helper configuration, SSH agent public fingerprints, conventional public-key file presence, sanitized remote hosts, GitHub CLI version and the presence (not values) of selected environment variables. It does not manage credentials, execute helpers, inspect private keys or test remote access. Commit identity is not authentication, and helper or agent presence does not establish valid credentials or remote permissions. `gh auth status` may access the network and refresh credentials, so this local-only inspector does not run it and reports GitHub authentication as unknown. Desktop process environment can differ from the interactive shell; users resolve authentication manually in their own tools. No additional service or secret store is involved.
+
 ## The feature parity contract
 
 Everything below must behave identically in the GPUI app (against the pi CLI) as it does in the
@@ -332,6 +336,12 @@ legacy app today:
     as keyboard/mouse surfaces (⌘P palette, shortcuts), not only through menus.
 
 ### Implementation status (living)
+
+Settings → Git Accounts provides the local-only, read-only Git diagnostics described in D16; it does not check remote access or manage credentials.
+
+The Report a bug draft generator has a searchable model selector. It defaults to the active session model and saves an independent override in `~/.orbit-pi/bug-report-model.json`, leaving both the session and commit-message model unchanged.
+
+Review and the Git page re-read a diff when a change or manual refresh arrives during an in-flight load; failures are surfaced rather than silently leaving an old snapshot. Bug reports with screenshots fall back to the browser and open the saved screenshot folder when `gh` rejects an upload before issue creation, including its repository-write-access preflight.
 
 Appearance's interface-font picker includes bundled Onest in Regular, Medium,
 SemiBold, and Bold weights; it works offline without an OS font installation.
@@ -477,14 +487,13 @@ arrived; issue/PR drafts keep using the session model.
 The in-app bug report (Settings → Report a bug) picks an issue type (bug /
 feature / other, which sets the GitHub label and the generated section
 headings), takes free-form context at the top, and drafts the issue title and
-description from it with the app's active model — the same one-shot, tool-free
+description from it with the selected model (the active session model by default) — the same one-shot, tool-free
 `pi -p` call the Git page's generator uses (`issue_message.rs`), with a
 kind-aware prompt that returns a heading-free description so the form supplies
 the section headings; when pi is unavailable the draft falls back to the notes
 themselves. Screenshots are supported too: they upload with
-`gh issue create --attach` when `gh` is signed in (Orbit writes them to a temp
-directory first), and a `gh` missing that flag or a signed-out `gh` degrades to
-GitHub's prefilled web form with the images saved for the user to drag in.
+`gh issue create --attach` when `gh` supports the upload and the account has permission (Orbit writes them to a temp
+directory first). Otherwise, when the CLI reports a pre-creation limitation or is signed out, GitHub's prefilled web form and the saved image folder open for the user to drag the images in.
 Filing goes to `imrj05/orbit` with the machine's build details attached — Orbit
 version, app ID (`dev.orbit.pi`), OS and architecture, install kind, pi CLI
 version, and the signed-in `gh` account — through `gh issue create --repo` when

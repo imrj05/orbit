@@ -106,7 +106,7 @@ pub fn binary() -> String {
 
 /// A `gh` invocation rooted at `cwd`, with prompts disabled so it fails rather
 /// than blocking on a TTY that does not exist.
-fn command(cwd: &Path) -> Command {
+pub(crate) fn command(cwd: &Path) -> Command {
     let mut command = Command::new(binary());
     command.current_dir(cwd);
     command.env("GH_PROMPT_DISABLED", "1");

@@ -2953,6 +2953,9 @@ impl OrbitApp {
             match self.settings_section {
                 SettingsSection::Mcp => self.mcp_refresh(cx),
                 SettingsSection::Plugins => self.refresh_plugins(cx),
+                SettingsSection::GitAccounts if !self.git_accounts_loading => {
+                    self.refresh_git_accounts_for_workspace(cx)
+                }
                 _ => {}
             }
         }

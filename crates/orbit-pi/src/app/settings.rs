@@ -144,6 +144,11 @@ const SETTINGS_SECTIONS: &[(SettingsSection, &str, &str)] = &[
         "worktree.settings.title",
     ),
     (
+        SettingsSection::GitAccounts,
+        "icons/branch.svg",
+        "git_accounts.title",
+    ),
+    (
         SettingsSection::Providers,
         "icons/cloud.svg",
         "settings.providers",
@@ -178,6 +183,11 @@ const SETTINGS_SECTIONS: &[(SettingsSection, &str, &str)] = &[
 /// It lives beside the nav so a new section has one obvious place to
 /// register its searchable rows.
 const SETTINGS_SEARCH_INDEX: &[(SettingsSection, &str, &str)] = &[
+    (
+        SettingsSection::GitAccounts,
+        "git_accounts.title",
+        "git github account identity ssh credential authentication sign-in status",
+    ),
     // General
     (
         SettingsSection::General,
@@ -943,6 +953,9 @@ impl OrbitApp {
                 tr!("worktree.settings.title"),
                 tr!("worktree.settings.description"),
             ),
+            SettingsSection::GitAccounts => {
+                (tr!("git_accounts.title"), tr!("git_accounts.description"))
+            }
             SettingsSection::Skills => (tr!("settings.skills"), tr!("settings.skills_description")),
             SettingsSection::Plugins => {
                 (tr!("settings.plugins"), tr!("settings.plugins_description"))
@@ -1052,6 +1065,7 @@ impl OrbitApp {
             SettingsSection::Runtime => self.runtime_rows(theme, this.clone(), cx),
             SettingsSection::Agent => self.agent_rows(theme, this.clone(), cx),
             SettingsSection::Worktrees => self.worktree_settings_rows(theme, this.clone(), cx),
+            SettingsSection::GitAccounts => self.git_accounts_rows(theme),
             // Rendered by `skills_ui::render_skills_page`, not the card body.
             SettingsSection::Skills => Vec::new(),
             SettingsSection::Plugins => self.plugin_rows(theme, this.clone(), cx),
@@ -1140,6 +1154,7 @@ impl OrbitApp {
             SettingsSection::Plugins => Some(self.plugin_toolbar(theme, this, cx)),
             SettingsSection::Mcp => Some(self.mcp_toolbar(theme, this, cx)),
             SettingsSection::Models => Some(self.model_toolbar(theme, this, cx)),
+            SettingsSection::GitAccounts => Some(self.git_accounts_toolbar(theme, this)),
             _ => None,
         }
     }
@@ -7111,6 +7126,7 @@ impl OrbitApp {
                 "%",
             ),
             SettingsSelect::Language
+            | SettingsSelect::ReportModel
             | SettingsSelect::AccentColor
             | SettingsSelect::Theme(_)
             | SettingsSelect::UiFontFamily
@@ -7234,11 +7250,18 @@ impl OrbitApp {
     ) -> AnyElement {
         let open = self.settings_select == Some(kind);
         let model_provider = match kind {
-            SettingsSelect::TitleModel if selected == 0 => Some(self.model_provider.as_str()),
-            SettingsSelect::TitleModel | SettingsSelect::DefaultModel if selected > 0 => self
-                .available_models
-                .get(selected - 1)
-                .map(|model| model.provider.as_str()),
+            SettingsSelect::TitleModel | SettingsSelect::ReportModel if selected == 0 => {
+                Some(self.model_provider.as_str())
+            }
+            SettingsSelect::TitleModel
+            | SettingsSelect::ReportModel
+            | SettingsSelect::DefaultModel
+                if selected > 0 =>
+            {
+                self.available_models
+                    .get(selected - 1)
+                    .map(|model| model.provider.as_str())
+            }
             _ => None,
         };
         let chip_this = this.clone();
@@ -7338,7 +7361,7 @@ impl OrbitApp {
         let empty = rows.is_empty();
         let model_rows = matches!(
             kind,
-            SettingsSelect::TitleModel | SettingsSelect::DefaultModel
+            SettingsSelect::TitleModel | SettingsSelect::ReportModel | SettingsSelect::DefaultModel
         )
         .then(|| {
             self.available_models
@@ -7391,7 +7414,10 @@ impl OrbitApp {
                         });
                         let provider = model.map(|(provider, _)| provider.as_str()).or_else(|| {
                             (model_rows.is_some()
-                                && kind == SettingsSelect::TitleModel
+                                && matches!(
+                                    kind,
+                                    SettingsSelect::TitleModel | SettingsSelect::ReportModel
+                                )
                                 && orig_ix == 0)
                                 .then_some(active_provider.as_str())
                         });
@@ -7400,7 +7426,10 @@ impl OrbitApp {
                             .map(|(provider, _)| crate::providers::provider_display_name(provider))
                             .or_else(|| {
                                 (model_rows.is_some()
-                                    && kind == SettingsSelect::TitleModel
+                                    && matches!(
+                                        kind,
+                                        SettingsSelect::TitleModel | SettingsSelect::ReportModel
+                                    )
                                     && orig_ix == 0
                                     && !active_model.is_empty())
                                 .then(|| active_model.clone())
@@ -7685,6 +7714,23 @@ impl OrbitApp {
                 cx.notify();
                 return true;
             }
+            SettingsSelect::ReportModel => {
+                if ix == 0 {
+                    self.bug_report_model.model = None;
+                } else if let Some(model) = self.available_models.get(ix - 1) {
+                    self.bug_report_model.model = Some(crate::commit_model::CommitModel {
+                        provider: model.provider.clone(),
+                        id: model.id.clone(),
+                    });
+                } else {
+                    // An unavailable saved model is shown for honesty, but
+                    // clicking that row must not silently clear the choice.
+                    return true;
+                }
+                self.bug_report_model.persist_report();
+                cx.notify();
+                return true;
+            }
             SettingsSelect::AgentCalls => {
                 self.agent_calls = crate::agent_call_display::AgentCallDisplay::from_index(ix);
                 self.agent_calls.persist();
@@ -7806,6 +7852,7 @@ impl OrbitApp {
                 ui.spacing_density = SPACING_DENSITIES.get(ix).copied().unwrap_or(100);
             }
             SettingsSelect::Theme(_)
+            | SettingsSelect::ReportModel
             | SettingsSelect::AccentColor
             | SettingsSelect::UiFontFamily
             | SettingsSelect::CodeFontFamily
@@ -7899,6 +7946,11 @@ impl OrbitApp {
         cx: &mut Context<Self>,
     ) {
         self.settings_section = section;
+        if section != SettingsSection::ReportBug
+            && self.settings_select == Some(SettingsSelect::ReportModel)
+        {
+            self.settings_select = None;
+        }
         self.provider_remove_confirm = None;
         self.provider_editor = None;
         self.provider_key_editor = None;
@@ -7909,6 +7961,7 @@ impl OrbitApp {
         self.mcp_remove_confirm = None;
         match section {
             SettingsSection::General => self.refresh_notification_auth(cx),
+            SettingsSection::GitAccounts => self.refresh_git_accounts_for_workspace(cx),
             SettingsSection::Providers => {
                 // Paint from cached state now; the file re-read (models.json,
                 // auth.json) lands after this frame.
