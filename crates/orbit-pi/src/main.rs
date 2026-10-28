@@ -118,6 +118,7 @@ mod theme;
 mod toast;
 mod transcript;
 mod transcript_view;
+mod turn_review;
 mod updater;
 mod usage;
 mod wallpaper;

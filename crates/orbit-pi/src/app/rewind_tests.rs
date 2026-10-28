@@ -849,7 +849,7 @@ fn a_session_change_closes_the_rewind_picker(cx: &mut gpui::TestAppContext) {
             app.transcript.load_from(&conversation());
             app.open_rewind_picker(window, cx);
             assert!(app.rewind_picker.is_some());
-            app.reset_turns();
+            app.reset_turns(cx);
             assert!(app.rewind_picker.is_none());
             assert!(!app.rewind_fetching);
             assert!(app.rewind_preselect.is_none());
