@@ -3084,6 +3084,24 @@ impl OrbitApp {
         // since the list was last read.
         self.sessions = sessions::load_sessions();
         self.sync_session_menu(cx);
+        // The status bar's branch chip and every sidebar row's branch line.
+        self.refresh_branch_status(cx);
+        self.refresh_sidebar_branches(cx);
+
+        // Config-backed catalogs are re-read unconditionally, not just while
+        // their Settings page is open. A manual Refresh is a full resync: a
+        // plugin installed from a terminal, a provider edited into
+        // models.json, or a skill dropped into the workspace should be in
+        // Orbit's state even when the page that shows it is closed.
+        self.reload_custom_providers(cx);
+        self.refresh_plugins(cx);
+        self.refresh_skills(cx);
+        // MCP config, secrets, metadata, and runtime state. Re-reading is
+        // cheap; the probe (which starts servers) stays with the open page.
+        self.mcp.set_workspace(self.current_workspace.as_deref());
+        self.mcp.refresh();
+        self.mcp_external_change = false;
+
         // Worktrees for the active repository, when their page is up.
         if self.worktrees_open {
             self.refresh_worktrees(cx);
@@ -3102,25 +3120,30 @@ impl OrbitApp {
         if self.usage_open {
             self.usage.update(cx, |page, cx| page.refresh(cx));
         }
-        // Settings-backed catalogs: MCP config/status and installed packages
-        // are only meaningful while their section is on screen.
+        // Section-only probes and reads that would otherwise cost a process
+        // or a filesystem scan for data nothing is showing.
         if self.settings_open {
             match self.settings_section {
                 SettingsSection::Mcp => self.mcp_refresh(cx),
-                SettingsSection::Plugins => self.refresh_plugins(cx),
                 SettingsSection::GitAccounts if !self.git_accounts_loading => {
                     self.refresh_git_accounts_for_workspace(cx)
                 }
+                SettingsSection::Privacy => self.refresh_temp_files(cx),
+                SettingsSection::General => self.refresh_notification_auth(cx),
                 _ => {}
             }
         }
         // The running agent can change under us (re-auth, model list, a
-        // compaction moved the context estimate) — re-ask it directly.
+        // compaction moved the context estimate) — re-ask it directly. The
+        // primary state/catalog commands go first so the slow auth/quota
+        // probes never queue in front of them.
         if self.client.is_some() {
-            self.refresh_auth();
+            self.send(CommandBody::GetState, "get_state");
             self.refresh_catalogs();
             self.refresh_context_stats();
+            self.refresh_auth();
         }
+        self.toast_info(tr!("view.refreshed"));
         cx.notify();
     }
 

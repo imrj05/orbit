@@ -2,8 +2,8 @@ use super::helpers::*;
 use super::*;
 use crate::quota::note_should_render;
 use crate::theme::tokens::{
-    button, context_menu, input, modal, panel, picker, popover, BufferLineHeight, ButtonSize,
-    DynamicSpacing, IconSize, Radius, StyledExt, TextSize, BORDER_WIDTH,
+    button, button_shadow, context_menu, input, modal, panel, picker, popover, BufferLineHeight,
+    ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize, BORDER_WIDTH,
 };
 use gpui::{canvas, Bounds, DispatchPhase, Hitbox, HitboxBehavior, MouseMoveEvent};
 
@@ -36,20 +36,25 @@ const PLUGIN_REFRESH_FEEDBACK: Duration = Duration::from_millis(650);
 /// plus `popover::MENU_OFFSET`, so the two must move together.
 const SELECT_CHIP_SIZE: ButtonSize = ButtonSize::Medium;
 
-/// Wallpaper slider geometry: the painted track width and handle diameter.
-/// The drag math reads the same pair, so the handle always lands under the
-/// pointer rather than a few pixels off it.
+/// Wallpaper slider geometry: the painted track width, rail height, handle
+/// diameter, and the row they are centered in. The drag math reads the same
+/// width/handle pair, so the handle always lands under the pointer rather
+/// than a few pixels off it.
 const SLIDER_TRACK_W: f32 = 184.;
-const SLIDER_KNOB: f32 = 14.;
+const SLIDER_TRACK_H: f32 = 6.;
+const SLIDER_KNOB: f32 = 16.;
+const SLIDER_ROW_H: f32 = 24.;
 
-/// The four continuous wallpaper controls. They share one painted slider and
-/// one pointer handler; only the range and the field they write differ.
+/// The continuous wallpaper controls. They share one painted slider and one
+/// pointer handler; only the range and the field they write differ.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WallpaperSlider {
     ImageOpacity,
     Blur,
     Dim,
     CardOpacity,
+    EffectIntensity,
+    EffectScale,
 }
 
 impl WallpaperSlider {
@@ -59,6 +64,8 @@ impl WallpaperSlider {
             Self::Blur => crate::wallpaper::BLUR_RANGE,
             Self::Dim => crate::wallpaper::DIM_RANGE,
             Self::CardOpacity => crate::wallpaper::CARD_OPACITY_RANGE,
+            Self::EffectIntensity => crate::wallpaper::EFFECT_INTENSITY_RANGE,
+            Self::EffectScale => crate::wallpaper::EFFECT_SCALE_RANGE,
         }
     }
 
@@ -68,6 +75,8 @@ impl WallpaperSlider {
             Self::Blur => settings.blur,
             Self::Dim => settings.dim,
             Self::CardOpacity => settings.card_opacity,
+            Self::EffectIntensity => settings.effect_intensity,
+            Self::EffectScale => settings.effect_scale,
         }
     }
 
@@ -77,6 +86,14 @@ impl WallpaperSlider {
             Self::Blur => settings.blur = value,
             Self::Dim => settings.dim = value,
             Self::CardOpacity => settings.card_opacity = value,
+            Self::EffectIntensity => settings.effect_intensity = value,
+            Self::EffectScale => {
+                settings.effect_scale = if settings.effect == crate::wallpaper_fx::Effect::Dither {
+                    value.round().max(1.0)
+                } else {
+                    value
+                };
+            }
         }
     }
 
@@ -101,6 +118,16 @@ impl WallpaperSlider {
                 "wallpaper-card-slider",
                 "wallpaper-card-fill",
                 "wallpaper-card-knob",
+            ),
+            Self::EffectIntensity => (
+                "wallpaper-intensity-slider",
+                "wallpaper-intensity-fill",
+                "wallpaper-intensity-knob",
+            ),
+            Self::EffectScale => (
+                "wallpaper-scale-slider",
+                "wallpaper-scale-fill",
+                "wallpaper-scale-knob",
             ),
         }
     }
@@ -402,6 +429,11 @@ const SETTINGS_SEARCH_INDEX: &[(SettingsSection, &str, &str)] = &[
         SettingsSection::Appearance,
         "settings.spacing_density",
         "spacing density compact comfortable",
+    ),
+    (
+        SettingsSection::Appearance,
+        "settings.corner_rounding",
+        "corner rounding radius rounded shape",
     ),
     (
         SettingsSection::Appearance,
@@ -6212,6 +6244,18 @@ impl OrbitApp {
                     ),
                     self.setting_row(
                         theme,
+                        &tr!("settings.corner_rounding"),
+                        Some(&tr!("settings.corner_rounding_description")),
+                        None,
+                        Some(self.preset_select(
+                            SettingsSelect::CornerRounding,
+                            theme,
+                            this.clone(),
+                            cx,
+                        )),
+                    ),
+                    self.setting_row(
+                        theme,
                         &tr!("settings.spacing_density"),
                         None,
                         None,
@@ -6306,6 +6350,35 @@ impl OrbitApp {
                 Some(self.wallpaper_effect_select(theme, this_for_controls, cx)),
             ),
         ];
+        // Intensity and pixel size only mean something while an effect is
+        // replacing the photograph, so the rows appear with the effect instead
+        // of sitting inert next to `None`.
+        if settings.path.is_some() && settings.effect != crate::wallpaper_fx::Effect::None {
+            rows.push(self.setting_row(
+                theme,
+                &tr!("wallpaper.effect_intensity"),
+                Some(&tr!("wallpaper.effect_intensity_description")),
+                None,
+                Some(self.wallpaper_slider(
+                    WallpaperSlider::EffectIntensity,
+                    theme,
+                    this.clone(),
+                    &settings,
+                )),
+            ));
+            rows.push(self.setting_row(
+                theme,
+                &tr!("wallpaper.effect_pixel_size"),
+                Some(&tr!("wallpaper.effect_pixel_size_description")),
+                None,
+                Some(self.wallpaper_slider(
+                    WallpaperSlider::EffectScale,
+                    theme,
+                    this.clone(),
+                    &settings,
+                )),
+            ));
+        }
         if let Some(error) = crate::wallpaper::last_error() {
             rows.push(self.setting_row(theme, &tr!("wallpaper.error"), Some(&error), None, None));
         }
@@ -6506,10 +6579,23 @@ impl OrbitApp {
         let usable = track_w - knob;
         let knob_left = usable * norm;
         let center_x = knob_left + knob / 2.;
-        let display = if kind == WallpaperSlider::Blur {
-            format!("{value:.1}")
-        } else {
-            format!("{}%", (value * 100.).round() as u32)
+        let track_top = px((SLIDER_ROW_H - SLIDER_TRACK_H) / 2.);
+        let knob_top = px((SLIDER_ROW_H - SLIDER_KNOB) / 2.);
+        let display = match kind {
+            WallpaperSlider::Blur => format!("{value:.1}"),
+            WallpaperSlider::EffectScale => {
+                let value = if settings.effect == crate::wallpaper_fx::Effect::Dither {
+                    value.round().max(1.0)
+                } else {
+                    value
+                };
+                if (value.fract()).abs() < 0.05 {
+                    format!("{value:.0}×")
+                } else {
+                    format!("{value:.1}×")
+                }
+            }
+            _ => format!("{}%", (value * 100.).round() as u32),
         };
 
         let events = canvas(
@@ -6531,18 +6617,19 @@ impl OrbitApp {
                     .id(slider_id)
                     .debug_selector(move || slider_id.to_string())
                     .relative()
+                    .group("wallpaper-slider")
                     .w(track_w)
-                    .h(DynamicSpacing::Base20.px(&theme))
-                    .flex()
-                    .items_center()
+                    .h(px(SLIDER_ROW_H))
                     .child(
                         div()
                             .absolute()
                             .left_0()
                             .right_0()
-                            .h(px(4.))
+                            .top(track_top)
+                            .h(px(SLIDER_TRACK_H))
                             .rounded_full()
-                            .bg(theme.border),
+                            .bg(theme.surface_active)
+                            .group_hover("wallpaper-slider", |s| s.bg(theme.surface_hover)),
                     )
                     .child(
                         div()
@@ -6550,7 +6637,8 @@ impl OrbitApp {
                             .debug_selector(move || fill_id.to_string())
                             .absolute()
                             .left_0()
-                            .h(px(4.))
+                            .top(track_top)
+                            .h(px(SLIDER_TRACK_H))
                             .w(center_x)
                             .rounded_full()
                             .bg(theme.accent),
@@ -6561,19 +6649,23 @@ impl OrbitApp {
                             .debug_selector(move || knob_id.to_string())
                             .absolute()
                             .left(knob_left)
+                            .top(knob_top)
                             .size(knob)
                             .rounded_full()
                             .border_1()
                             .border_color(theme.border_strong)
-                            .bg(theme.toggle_knob),
+                            .bg(theme.toggle_knob)
+                            .shadow(button_shadow(&theme))
+                            .group_hover("wallpaper-slider", |s| s.border_color(theme.accent)),
                     )
                     .child(events),
             )
             .child(
                 div()
-                    .w(px(40.))
+                    .min_w(px(44.))
                     .text_size(TextSize::Small.px(&theme))
                     .text_color(theme.text_secondary)
+                    .text_align(TextAlign::Right)
                     .child(display),
             )
             .into_any_element()
@@ -7197,6 +7289,11 @@ impl OrbitApp {
                 theme.ui.spacing_density as f32,
                 "%",
             ),
+            SettingsSelect::CornerRounding => (
+                (0..=theme::MAX_CORNER_ROUNDING).map(|v| v as f32).collect(),
+                theme.ui.corner_rounding as f32,
+                "px",
+            ),
             SettingsSelect::Language
             | SettingsSelect::SuggestionsModel
             | SettingsSelect::ReportModel
@@ -7225,6 +7322,7 @@ impl OrbitApp {
                 SettingsSelect::TerminalFont => "terminal-font-select",
                 SettingsSelect::EditorFont => "editor-font-select",
                 SettingsSelect::SpacingDensity => "spacing-density-select",
+                SettingsSelect::CornerRounding => "corner-rounding-select",
                 _ => "settings-select",
             },
             kind,
@@ -7949,6 +8047,9 @@ impl OrbitApp {
             }
             SettingsSelect::SpacingDensity => {
                 ui.spacing_density = SPACING_DENSITIES.get(ix).copied().unwrap_or(100);
+            }
+            SettingsSelect::CornerRounding => {
+                ui.corner_rounding = (ix as u32).min(theme::MAX_CORNER_ROUNDING);
             }
             SettingsSelect::Theme(_)
             | SettingsSelect::SuggestionsModel

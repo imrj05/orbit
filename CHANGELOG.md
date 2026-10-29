@@ -29,6 +29,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Global Refresh is a full resync.** ⌘R, File → Refresh, and the command
+  palette entry now re-read the session list, branch lines, installed plugins,
+  workspace skills, custom providers, auth files, and MCP configuration even
+  when their Settings page is closed, and re-ask the running agent for its
+  state, model/thinking/command catalog, context stats, auth, and quota. The
+  refresh confirms with a toast, so a manual refresh never looks like a no-op.
+
+- **Follow-up suggestion chips stay inside the composer.** A long model
+  suggestion wraps to two lines inside its chip and the chip is capped at the
+  composer column's width, so the row can no longer push past the window edge
+  on a narrow window. Clicking a clamped chip still inserts the full text.
+
 - **Agent errors are reported for the turn, not for every attempt.** A retry
   that recovers retires the failed attempt's card, banner, and "Agent error"
   notification, so a turn that finished is announced as finished. A stop the

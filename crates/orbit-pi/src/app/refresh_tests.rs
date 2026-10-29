@@ -79,8 +79,8 @@ fn git_accounts_refresh_coalesces_and_invalidates_old_work(cx: &mut gpui::TestAp
     });
 }
 
-/// A refresh with every page closed is a cheap no-op — it must not start a
-/// worktree list or touch the MCP manager just because ⌘R was pressed.
+/// A refresh with every page closed still re-reads the config catalogs, but
+/// it must not start a worktree list just because ⌘R was pressed.
 #[gpui::test]
 fn refresh_is_quiet_with_no_page_open(cx: &mut gpui::TestAppContext) {
     let app = test_app(cx);
@@ -90,8 +90,48 @@ fn refresh_is_quiet_with_no_page_open(cx: &mut gpui::TestAppContext) {
             app.client = None;
             app.worktrees_open = false;
             app.settings_open = false;
+            app.mcp_probe_at = None;
             app.on_refresh(&crate::RefreshSessions, window, cx);
             assert!(!app.worktrees_busy, "no worktree list without the page");
+            assert!(
+                app.mcp_probe_at.is_none(),
+                "no MCP server probe without the page"
+            );
         });
     });
+}
+
+/// The global Refresh is a full resync, not a repaint of whichever Settings
+/// page happens to be open: packages written to the workspace's `.pi`
+/// settings are picked up with the Plugins page closed.
+#[gpui::test]
+fn refresh_rereads_plugins_with_the_plugins_page_closed(cx: &mut gpui::TestAppContext) {
+    let app = test_app(cx);
+    let cx = cx.add_empty_window();
+    let workspace = std::env::temp_dir().join(format!(
+        "orbit-refresh-plugins-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let settings = workspace.join(".pi/settings.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(&settings, r#"{"packages":["local:./extensions/demo"]}"#).unwrap();
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.client = None;
+            app.settings_open = false;
+            app.current_workspace = Some(workspace.clone());
+            assert!(app.plugins.is_empty());
+
+            app.on_refresh(&crate::RefreshSessions, window, cx);
+
+            assert!(
+                app.plugins
+                    .iter()
+                    .any(|package| package.source == "local:./extensions/demo"),
+                "Refresh must re-read the workspace plugin list"
+            );
+        });
+    });
+    let _ = std::fs::remove_dir_all(&workspace);
 }

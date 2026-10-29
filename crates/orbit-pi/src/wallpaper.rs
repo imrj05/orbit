@@ -12,9 +12,9 @@
 //! Image work (decode, artwork effect, downscale, blur, brightness sampling,
 //! accent extraction) runs on the background executor; the UI thread only
 //! moves the finished BGRA buffer into a [`RenderImage`]. The cache is keyed
-//! on the file's `(path, mtime, len)`, the blur radius, the artwork effect,
-//! and the active appearance, so changing opacity, dimming, card opacity, or
-//! the accent toggle never re-runs the pass.
+//! on the file's `(path, mtime, len)`, the blur radius, the artwork effect
+//! and its intensity and pixel size, and the active appearance, so changing
+//! opacity, dimming, card opacity, or the accent toggle never re-runs the pass.
 //!
 //! Readability is part of the pipeline, not a fixed alpha: [`surfaces`]
 //! composites representative wallpaper samples with the active palette and
@@ -69,6 +69,19 @@ pub const IMAGE_OPACITY_RANGE: (f32, f32) = (0.0, 1.0);
 pub const BLUR_RANGE: (f32, f32) = (0.0, 40.0);
 pub const DIM_RANGE: (f32, f32) = (0.0, 0.9);
 pub const CARD_OPACITY_RANGE: (f32, f32) = (0.35, 1.0);
+/// How strongly the artwork effect replaces the photograph. `0` keeps the
+/// source, `1` is the effect at full strength.
+pub const EFFECT_INTENSITY_RANGE: (f32, f32) = (0.0, 1.0);
+/// Pixel-size multiplier for the artwork effect's cells, dots, glyphs, and
+/// scanline spacing. `1` keeps the effect's native size.
+pub const EFFECT_SCALE_RANGE: (f32, f32) = wallpaper_fx::EFFECT_SCALE_RANGE;
+/// Slider step for effect intensity. Artwork effects run per pixel, so a
+/// visible step keeps a scrub from queueing a new full-image pass on every
+/// pointer move.
+pub const EFFECT_INTENSITY_STEP: f32 = 0.05;
+/// Slider step for effect pixel size. Coarser than intensity because each
+/// step changes the sampling grid.
+pub const EFFECT_SCALE_STEP: f32 = 0.1;
 /// Slider step for the blur radius. A 0.5px step keeps a scrub cheap while
 /// still feeling continuous.
 pub const BLUR_STEP: f32 = 0.5;
@@ -114,6 +127,10 @@ pub struct WallpaperSettings {
     pub mode: WallpaperMode,
     /// Artwork treatment applied before the picture is cached.
     pub effect: Effect,
+    /// How strongly [`Self::effect`] replaces the photograph, 0..=1.
+    pub effect_intensity: f32,
+    /// Pixel-size multiplier for the effect's cells and glyphs, 0.5..=4.
+    pub effect_scale: f32,
     /// Absolute path to the app-managed copy (or a user path that was already
     /// inside the managed directory).
     pub path: Option<PathBuf>,
@@ -138,6 +155,8 @@ impl Default for WallpaperSettings {
         Self {
             mode: WallpaperMode::Disabled,
             effect: Effect::None,
+            effect_intensity: 1.0,
+            effect_scale: 1.0,
             path: None,
             label: None,
             image_opacity: 0.8,
@@ -176,6 +195,16 @@ impl WallpaperSettings {
                 settings.effect = effect;
             }
         }
+        settings.effect_intensity = clamp_json(
+            value.get("effect_intensity"),
+            EFFECT_INTENSITY_RANGE,
+            settings.effect_intensity,
+        );
+        settings.effect_scale = clamp_json(
+            value.get("effect_scale"),
+            EFFECT_SCALE_RANGE,
+            settings.effect_scale,
+        );
         settings.path = value
             .get("path")
             .and_then(Value::as_str)
@@ -215,6 +244,8 @@ impl WallpaperSettings {
             json!({
                 "mode": self.mode.as_str(),
                 "effect": self.effect.as_str(),
+                "effect_intensity": self.effect_intensity,
+                "effect_scale": self.effect_scale,
                 "path": self.path.as_ref().map(|path| path.to_string_lossy()),
                 "label": self.label,
                 "image_opacity": self.image_opacity,
@@ -298,6 +329,14 @@ pub fn update(next: WallpaperSettings) -> io::Result<bool> {
     let next = WallpaperSettings {
         image_opacity: clamp(next.image_opacity, IMAGE_OPACITY_RANGE),
         blur: (next.blur / BLUR_STEP).round() * BLUR_STEP,
+        effect_intensity: clamp(
+            (next.effect_intensity / EFFECT_INTENSITY_STEP).round() * EFFECT_INTENSITY_STEP,
+            EFFECT_INTENSITY_RANGE,
+        ),
+        effect_scale: clamp(
+            (next.effect_scale / EFFECT_SCALE_STEP).round() * EFFECT_SCALE_STEP,
+            EFFECT_SCALE_RANGE,
+        ),
         dim: clamp(next.dim, DIM_RANGE),
         card_opacity: clamp(next.card_opacity, CARD_OPACITY_RANGE),
         ..next
@@ -339,7 +378,14 @@ pub fn import_and_prepare(
     let decoded =
         image::open(source).map_err(|error| tr!("wallpaper.could_not_read", error = error))?;
     let (path, label) = copy_into_managed(source)?;
-    let prepared = prepare_image(decoded, current.blur, current.effect, light);
+    let prepared = prepare_image(
+        decoded,
+        current.blur,
+        current.effect,
+        current.effect_intensity,
+        current.effect_scale,
+        light,
+    );
     let mut next = current.clone();
     next.path = Some(path);
     next.label = Some(label);
@@ -434,14 +480,35 @@ pub struct Prepared {
 /// Decode, apply the artwork effect, downscale, blur, and sample an image.
 /// Runs off the UI thread; `light` selects the paper colour for effects that
 /// print (ASCII, halftone, scanlines).
-pub fn prepare(path: &Path, blur: f32, effect: Effect, light: bool) -> Result<Prepared, String> {
+pub fn prepare(
+    path: &Path,
+    blur: f32,
+    effect: Effect,
+    effect_intensity: f32,
+    effect_scale: f32,
+    light: bool,
+) -> Result<Prepared, String> {
     let decoded =
         image::open(path).map_err(|error| tr!("wallpaper.could_not_read", error = error))?;
-    Ok(prepare_image(decoded, blur, effect, light))
+    Ok(prepare_image(
+        decoded,
+        blur,
+        effect,
+        effect_intensity,
+        effect_scale,
+        light,
+    ))
 }
 
-fn prepare_image(decoded: image::DynamicImage, blur: f32, effect: Effect, light: bool) -> Prepared {
-    let max_edge = if effect == Effect::None {
+fn prepare_image(
+    decoded: image::DynamicImage,
+    blur: f32,
+    effect: Effect,
+    effect_intensity: f32,
+    effect_scale: f32,
+    light: bool,
+) -> Prepared {
+    let max_edge = if effect == Effect::None || effect_intensity <= 0.0 {
         MAX_EDGE
     } else {
         EFFECT_MAX_EDGE
@@ -449,7 +516,13 @@ fn prepare_image(decoded: image::DynamicImage, blur: f32, effect: Effect, light:
     let fitted = fit(decoded, max_edge);
     // The effect is applied before sampling: the contrast guard must measure
     // the posterized picture that is actually painted, not the source photo.
-    let rgba = wallpaper_fx::apply(fitted.to_rgba8(), effect, light);
+    let rgba = wallpaper_fx::apply(
+        fitted.to_rgba8(),
+        effect,
+        light,
+        effect_intensity,
+        effect_scale,
+    );
     let (width, height) = rgba.dimensions();
     let brightness = sample_brightness(&rgba);
     let accent = extract_accent(&rgba);
@@ -595,9 +668,11 @@ struct CacheKey {
     /// `blur × 100`, so the key is `Eq` and a scrub across one step hashes
     /// exactly like the painted result.
     blur: u32,
-    /// Artwork effect and the appearance it prints in. Both change pixels, so
-    /// both invalidate the cache.
+    /// Artwork effect, its intensity, and the appearance it prints in. All
+    /// three change pixels, so all three invalidate the cache.
     effect: u8,
+    intensity: u32,
+    scale: u32,
     light: bool,
 }
 
@@ -610,12 +685,21 @@ pub struct WallpaperJob {
     path: PathBuf,
     blur: f32,
     effect: Effect,
+    effect_intensity: f32,
+    effect_scale: f32,
     light: bool,
 }
 
 impl WallpaperJob {
     pub fn prepare(&self) -> Result<Prepared, String> {
-        prepare(&self.path, self.blur, self.effect, self.light)
+        prepare(
+            &self.path,
+            self.blur,
+            self.effect,
+            self.effect_intensity,
+            self.effect_scale,
+            self.light,
+        )
     }
 }
 
@@ -659,6 +743,8 @@ fn key_for(settings: &WallpaperSettings, light: bool) -> Option<CacheKey> {
         len,
         blur: (settings.blur * 100.).round() as u32,
         effect: settings.effect as u8,
+        intensity: (settings.effect_intensity * 100.).round() as u32,
+        scale: (settings.effect_scale * 10.).round() as u32,
         light,
     })
 }
@@ -692,6 +778,8 @@ pub fn begin(light: bool) -> Option<WallpaperJob> {
         path: settings.path.clone()?,
         blur: settings.blur,
         effect: settings.effect,
+        effect_intensity: settings.effect_intensity,
+        effect_scale: settings.effect_scale,
         light,
     })
 }
@@ -805,6 +893,8 @@ pub fn install(
             path,
             blur: settings.blur,
             effect: settings.effect,
+            effect_intensity: settings.effect_intensity,
+            effect_scale: settings.effect_scale,
             light,
         },
         result,
@@ -1107,6 +1197,8 @@ mod tests {
                 "path": "/tmp/photo.png",
                 "image_opacity": 4.0,
                 "blur": -2.0,
+                "effect_intensity": 9.0,
+                "effect_scale": 0.0,
                 "dim": 5.0,
                 "card_opacity": 0.0,
                 "derive_accent": false
@@ -1116,6 +1208,8 @@ mod tests {
         assert_eq!(parsed.label, None);
         assert_eq!(parsed.image_opacity, 1.0);
         assert_eq!(parsed.blur, 0.0);
+        assert_eq!(parsed.effect_intensity, 1.0);
+        assert_eq!(parsed.effect_scale, EFFECT_SCALE_RANGE.0);
         assert_eq!(parsed.dim, DIM_RANGE.1);
         assert_eq!(parsed.card_opacity, CARD_OPACITY_RANGE.0);
         assert!(!parsed.derive_accent);
@@ -1128,6 +1222,8 @@ mod tests {
         let settings = WallpaperSettings {
             mode: WallpaperMode::Hero,
             effect: Effect::Halftone,
+            effect_intensity: 0.65,
+            effect_scale: 2.5,
             path: Some(PathBuf::from("/tmp/a.png")),
             label: Some("a.png".into()),
             image_opacity: 0.42,
@@ -1173,7 +1269,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let source = dir.join("wide.png");
         solid(3000, 10, [220, 40, 30, 255]).save(&source).unwrap();
-        let prepared = prepare(&source, 0., Effect::None, false).unwrap();
+        let prepared = prepare(&source, 0., Effect::None, 1., 1., false).unwrap();
         assert!(prepared.width <= MAX_EDGE);
         assert!(prepared.height <= MAX_EDGE);
         let accent = prepared.accent.expect("red is a saturated accent");
@@ -1191,7 +1287,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let source = dir.join("photo.png");
         solid(64, 64, [120, 80, 40, 255]).save(&source).unwrap();
-        let prepared = prepare(&source, 6., Effect::None, false).unwrap();
+        let prepared = prepare(&source, 6., Effect::None, 1., 1., false).unwrap();
         let (width, height, bytes) = prepared.blurred.expect("blur is requested");
         assert!(width <= BLUR_MAX_EDGE && height <= BLUR_MAX_EDGE);
         assert_eq!(bytes.len(), (width * height * 4) as usize);
@@ -1204,8 +1300,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let source = dir.join("broken.png");
         std::fs::write(&source, b"not an image").unwrap();
-        assert!(prepare(&source, 0., Effect::None, false).is_err());
-        assert!(prepare(&dir.join("missing.png"), 0., Effect::None, false).is_err());
+        assert!(prepare(&source, 0., Effect::None, 1., 1., false).is_err());
+        assert!(prepare(&dir.join("missing.png"), 0., Effect::None, 1., 1., false).is_err());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1349,6 +1445,20 @@ mod tests {
         settings.effect = Effect::Ascii;
         let ascii = key_for(&settings, false).unwrap();
         assert_ne!(first, ascii, "the artwork effect is part of the identity");
+        settings.effect_intensity = 0.5;
+        let softened = key_for(&settings, false).unwrap();
+        assert_ne!(
+            ascii, softened,
+            "the effect intensity is part of the identity"
+        );
+        settings.effect_intensity = 1.0;
+        settings.effect_scale = 2.5;
+        let enlarged = key_for(&settings, false).unwrap();
+        assert_ne!(
+            ascii, enlarged,
+            "the effect pixel size is part of the identity"
+        );
+        settings.effect_scale = 1.0;
         settings.effect = Effect::None;
         let light = key_for(&settings, true).unwrap();
         assert_ne!(first, light, "the appearance is part of the identity");

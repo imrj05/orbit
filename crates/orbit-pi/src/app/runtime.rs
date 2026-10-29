@@ -440,11 +440,13 @@ impl OrbitApp {
     /// process without clearing what the card already knows. Used when the
     /// Providers page opens and on Refresh.
     pub(super) fn refresh_auth(&mut self) {
+        // Quota is its own namespace: a pi build without `auth.*` can still
+        // report usage, so refresh it before the auth capability early return.
+        self.refresh_quota();
         if self.auth.support() == AuthSupport::Unsupported {
             return;
         }
         self.send(CommandBody::AuthList, "auth.list");
-        self.refresh_quota();
         if self.auth.is_busy() {
             // A login is mid-flight; don't disturb it with status refreshes.
             return;

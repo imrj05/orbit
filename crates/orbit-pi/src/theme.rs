@@ -456,6 +456,8 @@ pub struct UiPrefs {
     pub editor_font_size: f32,
     /// Global spacing multiplier, percent ("Spacing Density").
     pub spacing_density: u32,
+    /// Extra rounding in pixels for shared rectangular component shapes.
+    pub corner_rounding: u32,
     /// Honor reduce-motion: perpetual/looping animations (spinners, the
     /// running-session shimmer, the drop-overlay fade) render static.
     pub reduce_motion: bool,
@@ -470,6 +472,8 @@ pub const DEFAULT_UI_FONT_SIZE: f32 = 14.;
 pub const FONT_SIZES: [f32; 8] = [11., 12., 13., 14., 15., 16., 18., 20.];
 /// Selectable spacing densities, percent.
 pub const SPACING_DENSITIES: [u32; 9] = [80, 85, 90, 95, 100, 105, 110, 115, 120];
+/// Maximum additional rounding for shared component corners, in pixels.
+pub const MAX_CORNER_ROUNDING: u32 = 14;
 
 impl Default for UiPrefs {
     fn default() -> Self {
@@ -479,6 +483,7 @@ impl Default for UiPrefs {
             terminal_font_size: 13.,
             editor_font_size: 13.,
             spacing_density: 100,
+            corner_rounding: 0,
             reduce_motion: false,
             composer_send_mode: crate::composer_send::SendMode::default(),
         }
@@ -556,6 +561,11 @@ impl UiPrefs {
                 prefs.spacing_density = density;
             }
         }
+        if let Some(rounding) = value.get("corner_rounding").and_then(Value::as_u64) {
+            if rounding <= MAX_CORNER_ROUNDING as u64 {
+                prefs.corner_rounding = rounding as u32;
+            }
+        }
         if let Some(reduce) = value.get("reduce_motion").and_then(Value::as_bool) {
             prefs.reduce_motion = reduce;
         }
@@ -584,6 +594,7 @@ impl UiPrefs {
             "terminal_font_size": self.terminal_font_size,
             "editor_font_size": self.editor_font_size,
             "spacing_density": self.spacing_density,
+            "corner_rounding": self.corner_rounding,
             "reduce_motion": self.reduce_motion,
             "composer_send_mode": self.composer_send_mode.as_str(),
         })
@@ -2474,6 +2485,27 @@ mod tests {
         }));
         assert_eq!(legacy.ui_font_size, 16.);
         assert_eq!(legacy.editor_font_size, 15.);
+    }
+
+    #[test]
+    fn corner_rounding_round_trips_and_rejects_invalid_values() {
+        for rounding in 0..=MAX_CORNER_ROUNDING {
+            let prefs = UiPrefs {
+                corner_rounding: rounding,
+                ..UiPrefs::default()
+            };
+            assert_eq!(
+                UiPrefs::from_value(&prefs.to_value()).corner_rounding,
+                rounding
+            );
+        }
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"corner_rounding": 15}),
+            serde_json::json!({"corner_rounding": -1}),
+        ] {
+            assert_eq!(UiPrefs::from_value(&value).corner_rounding, 0);
+        }
     }
 
     #[test]

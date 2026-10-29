@@ -483,3 +483,87 @@ fn an_edited_row_holds_its_inline_field(cx: &mut gpui::TestAppContext) {
     assert!(cancel.left() > save.left(), "cancel follows save");
     assert!((edited.right() - px(12.) - cancel.right()).abs() <= px(1.));
 }
+
+struct SuggestionsProbe {
+    app: Entity<OrbitApp>,
+    width: Pixels,
+}
+
+impl Render for SuggestionsProbe {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.app.update(cx, |app, cx| {
+            div()
+                .w(self.width)
+                .children(app.extension_widgets_above(cx))
+        })
+    }
+}
+
+/// Follow-up suggestions are chips above the composer. A long model answer
+/// must wrap inside the composer column instead of widening the row past the
+/// column (which clipped the chips against the window edge on narrow windows).
+#[gpui::test]
+fn follow_up_suggestions_stay_inside_the_composer_column(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+    use crate::widgets::{ExtensionWidget, WidgetPlacement};
+
+    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| {
+        cx.new(|cx| {
+            let mut app = OrbitApp::new(cx);
+            app.branch = None;
+            app.status_at = None;
+            app.suggestions.enabled = true;
+            app.access_mode = crate::access::AccessMode::FullAccess;
+            app.workflow_mode = crate::workflow::WorkflowMode::Build;
+            app.busy = false;
+            app.input.update(cx, |input, cx| input.set_text("", cx));
+            let payload = serde_json::json!({
+                "mode": "full-access",
+                "workflow": "build",
+                "suggestions": [
+                    "Refactor the session restore path so a parked process cannot be resumed after its worktree has been removed, then add a regression test for the missing-directory case.",
+                    "Show me every call site that writes to the settings file and group them by whether they can run concurrently with the app heartbeat.",
+                    "Tighten the composer layout so long follow-up suggestion text wraps inside the column instead of clipping at the window edge."
+                ]
+            })
+            .to_string();
+            app.extension_widgets = vec![ExtensionWidget {
+                key: "orbit-follow-up-suggestions".into(),
+                placement: WidgetPlacement::AboveEditor,
+                lines: vec![payload],
+            }];
+            app
+        })
+    });
+
+    let width = px(360.);
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(width, px(500.)),
+        |_, cx| {
+            cx.new(|_| SuggestionsProbe {
+                app: app.clone(),
+                width,
+            })
+        },
+    );
+
+    for (index, selector) in [
+        "follow-up-suggestion-0",
+        "follow-up-suggestion-1",
+        "follow-up-suggestion-2",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let chip = cx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("suggestion {index} laid out"));
+        assert!(
+            chip.left() >= px(0.) && chip.right() <= width + px(1.),
+            "suggestion {index} must stay inside the composer column: {chip:?} vs width {width:?}"
+        );
+    }
+}

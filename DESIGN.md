@@ -405,9 +405,9 @@ under one grammar — ordered dither, the same screen the wallpaper's `Dither` e
   turn. The mark paints one step quieter than the grain around it (`MARK_INK`), and a
   layer too small to hold it drops it rather than stretching a wordmark into mush.
 - **A wallpaper configured:** the processed image (`wallpaper`), with an optional artwork
-  effect (`None`, `Dither`, `ASCII`, `Halftone`, or `Scanlines`) and a theme-coloured dim
-  overlay. Hero mode paints it only in the main column; full-window mode paints it behind
-  the sidebar too, with translucent surfaces above.
+  effect (`None`, `Dither`, `ASCII`, `Halftone`, or `Scanlines`), an effect intensity, an
+  effect pixel size, and a theme-coloured dim overlay. Hero mode paints it only in the main
+  column; full-window mode paints it behind the sidebar too, with translucent surfaces above.
 
 Both are the page's floor, not an illustration: nothing on the page depends on them, and
 the chat page has neither.

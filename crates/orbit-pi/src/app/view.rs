@@ -1527,7 +1527,7 @@ impl OrbitApp {
                 let Some(suggestions) = payload.get("suggestions").and_then(Value::as_array) else {
                     continue;
                 };
-                let mut row = div().flex().flex_wrap().gap_2().pb_2();
+                let mut row = div().w_full().flex().flex_wrap().gap_2().pb_2();
                 for (index, suggestion) in suggestions.iter().take(3).enumerate() {
                     let Some(text) = suggestion
                         .as_str()
@@ -1541,6 +1541,7 @@ impl OrbitApp {
                     row = row.child(
                         div()
                             .id(ElementId::Name(format!("suggestion-{index}").into()))
+                            .debug_selector(move || format!("follow-up-suggestion-{index}"))
                             .focusable()
                             .focus(|style| style.border_color(theme.focus_ring))
                             .on_key_down(cx.listener(
@@ -1551,6 +1552,9 @@ impl OrbitApp {
                                     }
                                 },
                             ))
+                            .min_w_0()
+                            .max_w(relative(1.))
+                            .overflow_hidden()
                             .px_3()
                             .py_2()
                             .rounded(panel::RADIUS.px(&theme))
@@ -1562,7 +1566,10 @@ impl OrbitApp {
                             .on_click(cx.listener(move |app, _, window, cx| {
                                 app.insert_suggestion(&selected, window, cx);
                             }))
-                            .child(text),
+                            // Keep a model's occasional long sentence from
+                            // growing the chip past the composer column; the
+                            // full text still inserts on click.
+                            .child(div().line_clamp(2).child(text)),
                     );
                 }
                 column = column.child(row);
