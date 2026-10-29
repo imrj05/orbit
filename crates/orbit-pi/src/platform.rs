@@ -1617,11 +1617,11 @@ pub fn titlebar_options() -> TitlebarOptions {
 pub fn clipboard_image_png() -> Option<Vec<u8>> {
     #[cfg(windows)]
     {
-        return windows_clipboard_png();
+        windows_clipboard_png()
     }
     #[cfg(target_os = "macos")]
     {
-        return macos_clipboard_png();
+        macos_clipboard_png()
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
@@ -1669,6 +1669,7 @@ fn png_without_padding(bytes: &[u8]) -> Option<Vec<u8>> {
 
 /// A device-independent bitmap (`CF_DIB` / `CF_DIBV5`, a BMP without its
 /// 14-byte file header) re-encoded as PNG.
+#[cfg(any(windows, test))]
 pub(crate) fn dib_to_png(dib: &[u8]) -> Option<Vec<u8>> {
     raster_to_png(&dib_to_bmp(dib)?)
 }
@@ -1676,6 +1677,7 @@ pub(crate) fn dib_to_png(dib: &[u8]) -> Option<Vec<u8>> {
 /// Prepend a `BITMAPFILEHEADER` so the `image` crate's BMP decoder can read a
 /// raw DIB. The pixel offset accounts for a palette and for the bitfield masks
 /// that follow a classic 40-byte header; V4/V5 headers already contain theirs.
+#[cfg(any(windows, test))]
 fn dib_to_bmp(dib: &[u8]) -> Option<Vec<u8>> {
     if dib.len() < 40 {
         return None;
