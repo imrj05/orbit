@@ -603,38 +603,6 @@ fn report_model_options(
     (options, selected)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::commit_model::CommitModel;
-
-    #[test]
-    fn report_model_options_preserve_the_default_and_unavailable_pick() {
-        let models = vec![ModelEntry {
-            id: "local-model".into(),
-            name: "Local model".into(),
-            provider: "ollama".into(),
-            context_window: None,
-            thinking_levels: vec![],
-        }];
-        let (_, default_index) = report_model_options(&models, None);
-        assert_eq!(default_index, 0);
-        let selected = CommitModel {
-            provider: "ollama".into(),
-            id: "local-model".into(),
-        };
-        let (_, index) = report_model_options(&models, Some(&selected));
-        assert_eq!(index, 1);
-        let missing = CommitModel {
-            provider: "custom".into(),
-            id: "missing-model".into(),
-        };
-        let (options, index) = report_model_options(&models, Some(&missing));
-        assert_eq!(index, 2);
-        assert!(options[index].contains("missing-model"));
-    }
-}
-
 /// The locale key for the report kind's segmented-control label.
 fn report_kind_key(kind: ReportKind) -> &'static str {
     match kind {
@@ -733,4 +701,36 @@ fn bug_field(
 fn stretch<E: Styled>(mut el: E) -> E {
     el.style().align_items = Some(gpui::AlignItems::Stretch);
     el
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commit_model::CommitModel;
+
+    #[test]
+    fn report_model_options_preserve_the_default_and_unavailable_pick() {
+        let models = vec![ModelEntry {
+            id: "local-model".into(),
+            name: "Local model".into(),
+            provider: "ollama".into(),
+            context_window: None,
+            thinking_levels: vec![],
+        }];
+        let (_, default_index) = report_model_options(&models, None);
+        assert_eq!(default_index, 0);
+        let selected = CommitModel {
+            provider: "ollama".into(),
+            id: "local-model".into(),
+        };
+        let (_, index) = report_model_options(&models, Some(&selected));
+        assert_eq!(index, 1);
+        let missing = CommitModel {
+            provider: "custom".into(),
+            id: "missing-model".into(),
+        };
+        let (options, index) = report_model_options(&models, Some(&missing));
+        assert_eq!(index, 2);
+        assert!(options[index].contains("missing-model"));
+    }
 }
