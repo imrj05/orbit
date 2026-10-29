@@ -9,7 +9,6 @@ export async function Usage({ locale }: { locale: Locale }) {
   return (
     <Story
       id="usage"
-      label={t("label")}
       title={t("title")}
       copy={t("copy")}
       points={t.raw("points") as string[]}

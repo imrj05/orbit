@@ -9,7 +9,6 @@ export async function Plugins({ locale }: { locale: Locale }) {
   return (
     <Story
       id="plugins"
-      label={t("label")}
       title={t("title")}
       copy={t("copy")}
       points={t.raw("points") as string[]}

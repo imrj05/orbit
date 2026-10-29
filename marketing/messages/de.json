@@ -133,7 +133,7 @@
     },
     "latest": "Neueste",
     "release": "Version {tag}",
-    "copyright": "© {year} Orbit · dieselben Sitzungen wie im Terminal"
+    "copyright": "© {year} Orbit"
   },
   "download": {
     "download": "Herunterladen",
@@ -149,12 +149,14 @@
         "Zusammengefasstes Streaming, GFM-Markdown und Syntax-Hervorhebung, die nur neu malt.",
         "Prompt, steuern, einreihen oder abbrechen — alles gegen den laufenden pi-Prozess.",
         "Jeder Werkzeugaufruf klappt zu Argumenten, Ausgabe und Inline-Diffs auf."
-      ]
+      ],
+      "shotAlt": "Orbits Sitzungs-Transkript mit einer Karte der geänderten Dateien."
     },
     "sessions": {
       "label": "Sitzungen",
       "title": "Sitzungen leben dort, wo pi sie ablegt.",
-      "copy": "Deine Liste wird direkt aus pi gelesen und nach Projekt gruppiert — dieselben Sitzungen, die das Terminal sieht. Öffne, klone oder verstecke einen Workspace, ohne etwas auf der Festplatte anzufassen; aktuelle Sitzungen bleiben warm."
+      "copy": "Deine Liste wird direkt aus pi gelesen und nach Projekt gruppiert — dieselben Sitzungen, die das Terminal sieht. Öffne, klone oder verstecke einen Workspace, ohne etwas auf der Festplatte anzufassen; aktuelle Sitzungen bleiben warm.",
+      "shotAlt": "Orbits Sitzungsleiste mit den letzten Sitzungen samt Projekt, Branch und Status."
     },
     "newTask": {
       "label": "Neue Aufgabe",
@@ -251,7 +253,8 @@
         "Beaufsichtigt — fragt vor jeder Bearbeitung und jedem Befehl.",
         "Bearbeitungen automatisch übernehmen — wendet Dateiänderungen an, fragt weiter vor Befehlen.",
         "Vollzugriff — läuft ohne Rückfragen, bewusst pro Aufgabe gewählt."
-      ]
+      ],
+      "shotAlt": "Orbits Composer mit Zugriffsmodus, Workflow, Modell und Denkstufe."
     },
     "contributors": {
       "label": "Mitwirkende",
@@ -268,7 +271,9 @@
       "platforms": {
         "reddit": "Reddit",
         "x": "X"
-      }
+      },
+      "pause": "Pause",
+      "resume": "Fortsetzen"
     }
   },
   "docs": {

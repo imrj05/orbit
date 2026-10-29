@@ -1,5 +1,5 @@
-import { ComposerMock, ToolsMock, TranscriptMock } from "@/components/sections/mocks";
-import { MockFrame, Story } from "@/components/sections/story";
+import { Shot } from "@/components/shot";
+import { Story } from "@/components/sections/story";
 import { getT } from "@/i18n/t";
 import type { Locale } from "@/i18n/config";
 
@@ -9,20 +9,18 @@ export async function Agent({ locale }: { locale: Locale }) {
   return (
     <Story
       id="agent"
-      label={t("label")}
       title={t("title")}
       copy={t("copy")}
       points={t.raw("points") as string[]}
       visual={
-        <MockFrame>
-          <div className="flex flex-col gap-5">
-            <ComposerMock />
-            <div className="h-px bg-edge-subtle" />
-            <TranscriptMock />
-            <div className="h-px bg-edge-subtle" />
-            <ToolsMock />
-          </div>
-        </MockFrame>
+        <Shot
+          src="/screens/agent-detail.png"
+          srcLight="/screens/agent-detail-light.png"
+          alt={t("shotAlt")}
+          width={1200}
+          height={900}
+          sizes="(max-width: 1024px) 100vw, 560px"
+        />
       }
     />
   );

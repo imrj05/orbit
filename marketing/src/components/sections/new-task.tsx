@@ -9,7 +9,6 @@ export async function NewTask({ locale }: { locale: Locale }) {
   return (
     <Story
       id="new-task"
-      label={t("label")}
       title={t("title")}
       copy={t("copy")}
       points={t.raw("points") as string[]}

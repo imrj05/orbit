@@ -1,5 +1,5 @@
-import { ApprovalMock } from "@/components/sections/mocks";
-import { MockFrame, Story } from "@/components/sections/story";
+import { Shot } from "@/components/shot";
+import { Story } from "@/components/sections/story";
 import { getT } from "@/i18n/t";
 import type { Locale } from "@/i18n/config";
 
@@ -9,14 +9,18 @@ export async function Native({ locale }: { locale: Locale }) {
   return (
     <Story
       id="native"
-      label={t("label")}
       title={t("title")}
       copy={t("copy")}
       points={t.raw("points") as string[]}
       visual={
-        <MockFrame>
-          <ApprovalMock />
-        </MockFrame>
+        <Shot
+          src="/screens/native-access.png"
+          srcLight="/screens/native-access-light.png"
+          alt={t("shotAlt")}
+          width={2439}
+          height={1368}
+          sizes="(max-width: 1024px) 100vw, 560px"
+        />
       }
     />
   );

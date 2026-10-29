@@ -133,7 +133,7 @@
     },
     "latest": "Dernière",
     "release": "Version {tag}",
-    "copyright": "© {year} Orbit · les mêmes sessions que le terminal"
+    "copyright": "© {year} Orbit"
   },
   "download": {
     "download": "Télécharger",
@@ -149,12 +149,14 @@
         "Streaming regroupé, Markdown GFM et coloration syntaxique qui ne fait que repeindre.",
         "Demander, orienter, mettre en file ou annuler — toujours sur le processus pi en cours.",
         "Chaque appel d'outil se déplie en arguments, sortie et diffs intégrés."
-      ]
+      ],
+      "shotAlt": "Le transcript de la session d'Orbit avec une carte des fichiers modifiés."
     },
     "sessions": {
       "label": "Sessions",
       "title": "Les sessions vivent là où pi les a mises.",
-      "copy": "Votre liste est lue directement dans pi et groupée par projet — les mêmes sessions que voit le terminal. Rouvrez, clonez ou masquez un espace de travail sans rien toucher sur le disque ; les sessions récentes restent chaudes."
+      "copy": "Votre liste est lue directement dans pi et groupée par projet — les mêmes sessions que voit le terminal. Rouvrez, clonez ou masquez un espace de travail sans rien toucher sur le disque ; les sessions récentes restent chaudes.",
+      "shotAlt": "La barre latérale des sessions d'Orbit avec les sessions récentes, leur projet, branche et statut."
     },
     "newTask": {
       "label": "Nouvelle tâche",
@@ -251,7 +253,8 @@
         "Supervisé — demande avant chaque édition et chaque commande.",
         "Accepter les éditions — applique les modifications de fichiers, demande encore avant les commandes.",
         "Accès complet — s'exécute sans demander, choisi délibérément par tâche."
-      ]
+      ],
+      "shotAlt": "Le compositeur d'Orbit avec le mode d'accès, le workflow, le modèle et le niveau de raisonnement."
     },
     "contributors": {
       "label": "Contributeurs",
@@ -268,7 +271,9 @@
       "platforms": {
         "reddit": "Reddit",
         "x": "X"
-      }
+      },
+      "pause": "Pause",
+      "resume": "Reprendre"
     }
   },
   "docs": {

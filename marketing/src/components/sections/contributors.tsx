@@ -2,7 +2,7 @@ import Image from "next/image";
 import { GithubIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
-import { Band, ButtonLink, SectionLabel, Shell } from "@/components/ui";
+import { Band, ButtonLink, Shell } from "@/components/ui";
 
 import { getT } from "@/i18n/t";
 import type { Locale } from "@/i18n/config";
@@ -35,8 +35,7 @@ export async function Contributors({ locale }: { locale: Locale }) {
         className="scroll-mt-20 py-20 text-center sm:py-28"
       >
         <div className="flex flex-col items-center">
-          <SectionLabel>{t("label")}</SectionLabel>
-          <h2 className="mt-4 max-w-[22ch] text-balance text-[clamp(26px,2.8vw,34px)] font-semibold leading-[1.18] tracking-[-0.024em] text-ink">
+          <h2 className="mt-0 max-w-[22ch] text-balance text-[clamp(30px,3.2vw,40px)] font-semibold leading-[1.18] tracking-[-0.024em] text-ink">
             {t("heading")}
           </h2>
           <p className="mt-4 max-w-[46ch] text-[14.5px] leading-[1.75] text-ink-2">

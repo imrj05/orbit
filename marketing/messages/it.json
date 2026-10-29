@@ -133,7 +133,7 @@
     },
     "latest": "Ultima",
     "release": "Versione {tag}",
-    "copyright": "© {year} Orbit · le stesse sessioni del terminale"
+    "copyright": "© {year} Orbit"
   },
   "download": {
     "download": "Scarica",
@@ -149,12 +149,14 @@
         "Streaming raggruppato, Markdown GFM e evidenziazione della sintassi che ridipinge soltanto.",
         "Chiedi, guida, accoda o annulla — sempre sul processo pi in esecuzione.",
         "Ogni chiamata a uno strumento si apre in argomenti, output e diff in linea."
-      ]
+      ],
+      "shotAlt": "Il transcript della sessione di Orbit con una scheda dei file modificati."
     },
     "sessions": {
       "label": "Sessioni",
       "title": "Le sessioni vivono dove pi le ha messe.",
-      "copy": "Il tuo elenco è letto direttamente da pi e raggruppato per progetto — le stesse sessioni che vede il terminale. Riapri, clona o nascondi uno spazio di lavoro senza toccare nulla su disco; le sessioni recenti restano calde."
+      "copy": "Il tuo elenco è letto direttamente da pi e raggruppato per progetto — le stesse sessioni che vede il terminale. Riapri, clona o nascondi uno spazio di lavoro senza toccare nulla su disco; le sessioni recenti restano calde.",
+      "shotAlt": "La barra laterale delle sessioni di Orbit con le sessioni recenti, progetto, branch e stato."
     },
     "newTask": {
       "label": "Nuova attività",
@@ -251,7 +253,8 @@
         "Supervisionato — chiede prima di ogni modifica e di ogni comando.",
         "Accetta modifiche — applica le modifiche ai file, chiede ancora prima dei comandi.",
         "Accesso completo — esegue senza chiedere, scelto di proposito per attività."
-      ]
+      ],
+      "shotAlt": "Il compositore di Orbit con modalità di accesso, workflow, modello e livello di ragionamento."
     },
     "contributors": {
       "label": "Contributori",
@@ -268,7 +271,9 @@
       "platforms": {
         "reddit": "Reddit",
         "x": "X"
-      }
+      },
+      "pause": "Pausa",
+      "resume": "Riprendi"
     }
   },
   "docs": {

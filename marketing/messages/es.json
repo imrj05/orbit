@@ -133,7 +133,7 @@
     },
     "latest": "Última",
     "release": "Versión {tag}",
-    "copyright": "© {year} Orbit · las mismas sesiones que la terminal"
+    "copyright": "© {year} Orbit"
   },
   "download": {
     "download": "Descargar",
@@ -149,12 +149,14 @@
         "Streaming agrupado, Markdown GFM y resaltado de sintaxis que solo repinta.",
         "Pedir, dirigir, encolar o cancelar — todo contra el proceso de pi en vivo.",
         "Cada llamada a herramienta se despliega en argumentos, salida y diffs en línea."
-      ]
+      ],
+      "shotAlt": "El transcript de la sesión de Orbit con una tarjeta de archivos modificados."
     },
     "sessions": {
       "label": "Sesiones",
       "title": "Las sesiones viven donde pi las dejó.",
-      "copy": "Tu lista se lee directamente de pi y se agrupa por proyecto — las mismas sesiones que ve la terminal. Reabre, clona u oculta un espacio de trabajo sin tocar nada en el disco; las sesiones recientes se mantienen calientes."
+      "copy": "Tu lista se lee directamente de pi y se agrupa por proyecto — las mismas sesiones que ve la terminal. Reabre, clona u oculta un espacio de trabajo sin tocar nada en el disco; las sesiones recientes se mantienen calientes.",
+      "shotAlt": "La barra lateral de sesiones de Orbit con las sesiones recientes, su proyecto, rama y estado."
     },
     "newTask": {
       "label": "Nueva tarea",
@@ -251,7 +253,8 @@
         "Supervisado — pregunta antes de cada edición y de cada comando.",
         "Aceptar ediciones — aplica cambios de archivos, sigue preguntando antes de los comandos.",
         "Acceso completo — se ejecuta sin preguntar, elegido a propósito en cada tarea."
-      ]
+      ],
+      "shotAlt": "El compositor de Orbit con el modo de acceso, el flujo de trabajo, el modelo y el nivel de razonamiento."
     },
     "contributors": {
       "label": "Colaboradores",
@@ -268,7 +271,9 @@
       "platforms": {
         "reddit": "Reddit",
         "x": "X"
-      }
+      },
+      "pause": "Pausar",
+      "resume": "Reanudar"
     }
   },
   "docs": {

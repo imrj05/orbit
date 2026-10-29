@@ -2,7 +2,7 @@ import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 import { JsonLd } from "@/components/json-ld";
-import { Band, SectionLabel, Shell } from "@/components/ui";
+import { Band, Shell } from "@/components/ui";
 import { getT } from "@/i18n/t";
 import type { Locale } from "@/i18n/config";
 import { SITE } from "@/lib/site";
@@ -37,8 +37,7 @@ export async function Faq({ locale }: { locale: Locale }) {
 
         <div className="mx-auto max-w-[760px]">
           <div className="flex flex-col items-center text-center">
-            <SectionLabel>{t("label")}</SectionLabel>
-            <h2 className="mt-4 max-w-[24ch] text-balance text-[clamp(26px,2.8vw,34px)] font-semibold leading-[1.18] tracking-[-0.024em] text-ink">
+              <h2 className="mt-0 max-w-[24ch] text-balance text-[clamp(30px,3.2vw,40px)] font-semibold leading-[1.18] tracking-[-0.024em] text-ink">
               {t("heading")}
             </h2>
             <p className="mt-4 max-w-[48ch] text-[14.5px] leading-[1.75] text-ink-2">

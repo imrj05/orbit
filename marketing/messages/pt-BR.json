@@ -133,7 +133,7 @@
     },
     "latest": "Mais recente",
     "release": "Versão {tag}",
-    "copyright": "© {year} Orbit · as mesmas sessões do terminal"
+    "copyright": "© {year} Orbit"
   },
   "download": {
     "download": "Baixar",
@@ -149,12 +149,14 @@
         "Streaming agrupado, Markdown GFM e realce de sintaxe que só repinta.",
         "Pedir, direcionar, enfileirar ou cancelar — sempre contra o processo do pi em execução.",
         "Cada chamada de ferramenta abre em argumentos, saída e diffs em linha."
-      ]
+      ],
+      "shotAlt": "O transcript da sessão do Orbit com um cartão de arquivos alterados."
     },
     "sessions": {
       "label": "Sessões",
       "title": "As sessões vivem onde o pi as deixou.",
-      "copy": "Sua lista é lida direto do pi e agrupada por projeto — as mesmas sessões que o terminal vê. Reabra, clone ou oculte um espaço de trabalho sem tocar em nada no disco; as sessões recentes ficam aquecidas."
+      "copy": "Sua lista é lida direto do pi e agrupada por projeto — as mesmas sessões que o terminal vê. Reabra, clone ou oculte um espaço de trabalho sem tocar em nada no disco; as sessões recentes ficam aquecidas.",
+      "shotAlt": "A barra lateral de sessões do Orbit com as sessões recentes, projeto, branch e status."
     },
     "newTask": {
       "label": "Nova tarefa",
@@ -251,7 +253,8 @@
         "Supervisionado — pergunta antes de cada edição e de cada comando.",
         "Aceitar edições — aplica edições de arquivos, ainda pergunta antes dos comandos.",
         "Acesso total — roda sem perguntar, escolhido de propósito por tarefa."
-      ]
+      ],
+      "shotAlt": "O compositor do Orbit com modo de acesso, fluxo de trabalho, modelo e nível de raciocínio."
     },
     "contributors": {
       "label": "Contribuidores",
@@ -268,7 +271,9 @@
       "platforms": {
         "reddit": "Reddit",
         "x": "X"
-      }
+      },
+      "pause": "Pausar",
+      "resume": "Retomar"
     }
   },
   "docs": {
