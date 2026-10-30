@@ -37,6 +37,14 @@ pub struct ExternalApp {
 #[cfg(target_os = "macos")]
 const TERMY_BUNDLE_ID: &str = "com.lassevestergaard.termy";
 
+/// tmux ships no app bundle, so its menu row borrows Terminal.app's icon and
+/// window; [`open_path_in_app`] launches a session there instead of handing the
+/// terminal a folder.
+#[cfg(target_os = "macos")]
+const TMUX_APP_ID: &str = "tmux";
+
+/// The terminals run together after the file manager, and tmux closes them: it
+/// is the one entry that is not an app at all.
 #[cfg(target_os = "macos")]
 const OPEN_IN_CATALOG: &[(&str, &str, &[&str])] = &[
     ("vscode", "VS Code", &["com.microsoft.VSCode"]),
@@ -44,11 +52,21 @@ const OPEN_IN_CATALOG: &[(&str, &str, &[&str])] = &[
     ("zed", "Zed", &["dev.zed.Zed", "dev.zed.Zed-Preview"]),
     ("finder", "Finder", &["com.apple.finder"]),
     ("terminal", "Terminal", &["com.apple.Terminal"]),
+    ("rex", "Rex", &["com.superlogical.rex"]),
     ("termy", "Termy", &[TERMY_BUNDLE_ID]),
     ("iterm2", "iTerm2", &["com.googlecode.iterm2"]),
-    ("kitty", "Kitty", &["net.kovidgoyal.kitty"]),
     ("ghostty", "Ghostty", &["com.mitchellh.ghostty"]),
+    ("kitty", "Kitty", &["net.kovidgoyal.kitty"]),
+    ("alacritty", "Alacritty", &["org.alacritty"]),
+    ("wezterm", "WezTerm", &["com.github.wez.wezterm"]),
+    ("tabby", "Tabby", &["org.tabby"]),
+    ("hyper", "Hyper", &["co.zeit.hyper"]),
+    ("rio", "Rio", &["com.raphamorim.rio"]),
+    ("wave", "Wave", &["dev.commandline.waveterm"]),
     ("warp", "Warp", &["dev.warp.Warp-Stable", "dev.warp.Warp"]),
+    // Terminal.app is not installed *as tmux*: the bundle id only supplies the
+    // icon and the host window. Detection gates this row on the binary.
+    (TMUX_APP_ID, "tmux", &["com.apple.Terminal"]),
     ("xcode", "Xcode", &["com.apple.dt.Xcode"]),
     (
         "rider",
@@ -143,6 +161,11 @@ pub fn detect_open_in_apps() -> Vec<ExternalApp> {
     OPEN_IN_CATALOG
         .iter()
         .filter_map(|&(id, label, bundle_ids)| {
+            // A bundle id alone cannot say whether tmux is installed, so the
+            // multiplexer row is gated on the binary itself.
+            if id == TMUX_APP_ID && tmux_path().is_none() {
+                return None;
+            }
             bundle_ids.iter().find_map(|&bundle_id| {
                 let application_url = workspace
                     .URLForApplicationWithBundleIdentifier(&NSString::from_str(bundle_id))?;
@@ -560,6 +583,13 @@ pub fn open_path_in_app(path: &Path, app: &ExternalApp) {
     use objc2_app_kit::{NSWorkspace, NSWorkspaceOpenConfiguration};
     use objc2_foundation::{NSArray, NSString, NSURL};
 
+    // tmux has no window of its own and no folder-opening verb, so it runs in
+    // the system terminal instead of being handed the folder to open.
+    if app.id == TMUX_APP_ID {
+        open_tmux_session(path);
+        return;
+    }
+
     let bundle_id = app.target.as_str();
     let workspace = NSWorkspace::sharedWorkspace();
     let Some(application_url) =
@@ -589,6 +619,56 @@ fn termy_open_url(path: &Path) -> String {
     url.query_pairs_mut()
         .append_pair("dir", &path.to_string_lossy());
     url.into()
+}
+
+/// The installed `tmux` binary.
+///
+/// A GUI-launched app inherits launchd's bare `PATH`, which carries neither
+/// Homebrew nor MacPorts, so the probe lists the usual prefixes instead of
+/// trusting it. `PATH` is still consulted last, for a shell that exported a
+/// custom prefix.
+#[cfg(target_os = "macos")]
+fn tmux_path() -> Option<PathBuf> {
+    const PREFIXES: &[&str] = &[
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/opt/local/bin",
+        "/run/current-system/sw/bin",
+    ];
+    let known = PREFIXES
+        .iter()
+        .map(|prefix| Path::new(prefix).join("tmux"))
+        .find(|path| path.is_file());
+    known.or_else(|| {
+        std::env::split_paths(&std::env::var_os("PATH")?)
+            .map(|dir| dir.join("tmux"))
+            .find(|path| path.is_file())
+    })
+}
+
+/// Open a fresh tmux session rooted at `path` in the system terminal.
+///
+/// The session's first pane starts in the client's working directory, so the
+/// shell `cd`s there before `exec`ing tmux. The binary is named by absolute
+/// path: the terminal's own `PATH` is not guaranteed to have it either.
+#[cfg(target_os = "macos")]
+fn open_tmux_session(path: &Path) {
+    let Some(tmux) = tmux_path() else {
+        return;
+    };
+    let command = format!(
+        "cd {} && exec {} new-session",
+        shell_quote(path),
+        shell_quote(&tmux)
+    );
+    let _ = open_terminal_command(&command);
+}
+
+/// Quote `value` as one POSIX shell word, so a directory with spaces or a
+/// quote still reaches `cd` intact.
+#[cfg(target_os = "macos")]
+fn shell_quote(value: &Path) -> String {
+    format!("'{}'", value.to_string_lossy().replace('\'', r"'\''"))
 }
 
 #[cfg(windows)]
@@ -1527,9 +1607,386 @@ pub fn titlebar_options() -> TitlebarOptions {
     }
 }
 
+/// Files copied by the native file manager, distinct from ordinary path text.
+pub fn clipboard_file_paths() -> Vec<std::path::PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{NSPasteboard, NSPasteboardTypeFileURL};
+
+        let Some(items) = NSPasteboard::generalPasteboard().pasteboardItems() else {
+            return Vec::new();
+        };
+        items
+            .iter()
+            .filter_map(|item| {
+                // SAFETY: NSPasteboardTypeFileURL is a system-defined constant.
+                let value = item.stringForType(unsafe { NSPasteboardTypeFileURL })?;
+                macos_file_url_path(&value)
+            })
+            .collect()
+    }
+    #[cfg(windows)]
+    {
+        windows_clipboard_file_paths()
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        Vec::new()
+    }
+}
+
+#[cfg(windows)]
+fn windows_clipboard_file_paths() -> Vec<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+    use windows_sys::Win32::UI::Shell::DragQueryFileW;
+
+    // CF_HDROP is the standard file-list clipboard format.
+    const CF_HDROP: u32 = 15;
+    // SAFETY: a null owner opens the clipboard for this thread.
+    if unsafe { OpenClipboard(std::ptr::null_mut()) } == 0 {
+        return Vec::new();
+    }
+    struct ClipboardGuard;
+    impl Drop for ClipboardGuard {
+        fn drop(&mut self) {
+            // SAFETY: this guard is created only after OpenClipboard succeeds.
+            unsafe { CloseClipboard() };
+        }
+    }
+    let _guard = ClipboardGuard;
+    // SAFETY: the clipboard is open and the handle remains valid until closed.
+    let handle = unsafe { GetClipboardData(CF_HDROP) };
+    if handle.is_null() {
+        return Vec::new();
+    }
+    let count = unsafe { DragQueryFileW(handle, u32::MAX, std::ptr::null_mut(), 0) };
+    (0..count)
+        .filter_map(|index| {
+            // SAFETY: querying the length requires no output buffer.
+            let len = unsafe { DragQueryFileW(handle, index, std::ptr::null_mut(), 0) };
+            if len == 0 {
+                return None;
+            }
+            let mut buffer = vec![0u16; len as usize + 1];
+            // SAFETY: the buffer has room for the path and terminating NUL.
+            let written = unsafe { DragQueryFileW(handle, index, buffer.as_mut_ptr(), len + 1) };
+            (written == len).then(|| {
+                std::path::PathBuf::from(std::ffi::OsString::from_wide(&buffer[..len as usize]))
+            })
+        })
+        .collect()
+}
+
+#[cfg(any(target_os = "linux", test))]
+pub fn clipboard_uri_list(text: &str) -> Option<Vec<std::path::PathBuf>> {
+    // GNOME Files publishes a file clipboard as `x-special/nautilus-clipboard`,
+    // a `copy`/`cut` verb, then the file URLs. Skipping only those header lines
+    // keeps the mixed-text guard: any other non-URL line still means "this is
+    // prose, not a file list".
+    const URI_LIST_HEADER: [&str; 3] = ["x-special/nautilus-clipboard", "copy", "cut"];
+    let mut paths = Vec::new();
+    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if line.starts_with('#') {
+            continue;
+        }
+        if paths.is_empty() && URI_LIST_HEADER.contains(&line) {
+            continue;
+        }
+        let url = url::Url::parse(line).ok()?;
+        if url.scheme() != "file" {
+            return None;
+        }
+        paths.push(url.to_file_path().ok()?);
+    }
+    (!paths.is_empty()).then_some(paths)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_file_url_path(value: &objc2_foundation::NSString) -> Option<std::path::PathBuf> {
+    use objc2_foundation::NSURL;
+
+    let url = NSURL::URLWithString(value)?;
+    if !url.isFileURL() {
+        return None;
+    }
+    let path = url.filePathURL()?.path()?;
+    Some(std::path::PathBuf::from(path.to_string()))
+}
+
+/// PNG bytes of a picture on the system clipboard.
+///
+/// GPUI's clipboard read is what `ComposerInput::paste` tries first. It misses
+/// the formats screenshot tools actually publish: a `CF_DIB` bitmap on Windows,
+/// and a TIFF on macOS that never gets read once the pasteboard also holds a
+/// path or a caption. Both platforms come back as PNG so the composer can hand
+/// the bytes to the existing attachment path. Linux has no fallback.
+pub fn clipboard_image_png() -> Option<Vec<u8>> {
+    #[cfg(windows)]
+    {
+        windows_clipboard_png()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos_clipboard_png()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        None
+    }
+}
+
+/// Decode an already-encoded picture (PNG, JPEG, GIF, TIFF, BMP) and return
+/// PNG bytes. A buffer that is already a PNG is returned without its trailing
+/// padding: the clipboard reports the allocation size, which is larger than
+/// the file.
+pub(crate) fn raster_to_png(bytes: &[u8]) -> Option<Vec<u8>> {
+    if let Some(png) = png_without_padding(bytes) {
+        return Some(png);
+    }
+    let decoded = image::load_from_memory(bytes).ok()?;
+    let mut png = Vec::new();
+    decoded
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .ok()?;
+    Some(png)
+}
+
+/// The PNG file inside `bytes`, dropping anything after the `IEND` chunk.
+fn png_without_padding(bytes: &[u8]) -> Option<Vec<u8>> {
+    if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return None;
+    }
+    // Signature, then chunks of length + type + data + CRC.
+    let mut index = 8usize;
+    while index + 8 <= bytes.len() {
+        let len = u32::from_be_bytes(bytes.get(index..index + 4)?.try_into().ok()?) as usize;
+        let kind = bytes.get(index + 4..index + 8)?;
+        let next = index.checked_add(12)?.checked_add(len)?;
+        if next > bytes.len() {
+            return None;
+        }
+        if kind == b"IEND" {
+            return Some(bytes[..next].to_vec());
+        }
+        index = next;
+    }
+    None
+}
+
+/// A device-independent bitmap (`CF_DIB` / `CF_DIBV5`, a BMP without its
+/// 14-byte file header) re-encoded as PNG.
+#[cfg(any(windows, test))]
+pub(crate) fn dib_to_png(dib: &[u8]) -> Option<Vec<u8>> {
+    raster_to_png(&dib_to_bmp(dib)?)
+}
+
+/// Prepend a `BITMAPFILEHEADER` so the `image` crate's BMP decoder can read a
+/// raw DIB. The pixel offset accounts for a palette and for the bitfield masks
+/// that follow a classic 40-byte header; V4/V5 headers already contain theirs.
+#[cfg(any(windows, test))]
+fn dib_to_bmp(dib: &[u8]) -> Option<Vec<u8>> {
+    if dib.len() < 40 {
+        return None;
+    }
+    let header_size = u32::from_le_bytes(dib.get(0..4)?.try_into().ok()?);
+    if header_size < 40 || dib.len() < header_size as usize {
+        return None;
+    }
+    let bit_count = u16::from_le_bytes(dib.get(14..16)?.try_into().ok()?);
+    let compression = u32::from_le_bytes(dib.get(16..20)?.try_into().ok()?);
+    // BI_RGB = 0, BI_BITFIELDS = 3, BI_ALPHABITFIELDS = 6. Only a 40-byte
+    // BITMAPINFOHEADER stores those masks after the header.
+    let mask_bytes = if header_size == 40 {
+        match compression {
+            3 => 12,
+            6 => 16,
+            _ => 0,
+        }
+    } else {
+        0
+    };
+    let palette_bytes = if bit_count <= 8 {
+        let colors_used = u32::from_le_bytes(dib.get(32..36)?.try_into().ok()?);
+        let colors = if colors_used == 0 {
+            1u32 << bit_count
+        } else {
+            colors_used
+        };
+        colors.saturating_mul(4)
+    } else {
+        0
+    };
+    let pixel_offset = 14u32
+        .saturating_add(header_size)
+        .saturating_add(mask_bytes)
+        .saturating_add(palette_bytes);
+    let file_size = u32::try_from(dib.len()).ok()?.checked_add(14)?;
+    let mut bmp = Vec::with_capacity(file_size as usize);
+    bmp.extend_from_slice(b"BM");
+    bmp.extend_from_slice(&file_size.to_le_bytes());
+    bmp.extend_from_slice(&0u32.to_le_bytes());
+    bmp.extend_from_slice(&pixel_offset.to_le_bytes());
+    bmp.extend_from_slice(dib);
+    Some(bmp)
+}
+
+/// Copy one clipboard format out and close the clipboard before decoding, so a
+/// slow PNG encode does not keep the clipboard locked.
+#[cfg(windows)]
+fn windows_clipboard_png() -> Option<Vec<u8>> {
+    use windows_sys::Win32::System::DataExchange::{
+        CloseClipboard, GetClipboardData, OpenClipboard, RegisterClipboardFormatW,
+    };
+    // `CF_DIB` / `CF_DIBV5` live in windows-sys's Ole module. That feature pulls
+    // in COM, which this read does not need; the format ids are stable.
+    const CF_DIB: u32 = 8;
+    const CF_DIBV5: u32 = 17;
+    use windows_sys::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+
+    struct Guard;
+    impl Guard {
+        fn open() -> Option<Self> {
+            // SAFETY: a null owner attaches the clipboard to this thread.
+            // `HWND` is already `*mut c_void`, so the null is that pointer.
+            if unsafe { OpenClipboard(std::ptr::null_mut()) } == 0 {
+                return None;
+            }
+            Some(Self)
+        }
+    }
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            // SAFETY: `open` succeeded, so this thread owns the clipboard.
+            unsafe { CloseClipboard() };
+        }
+    }
+
+    // SAFETY: `format` is a clipboard format id, and the returned handle is
+    // only read while this thread still holds the clipboard open.
+    unsafe fn copy_format(format: u32) -> Option<Vec<u8>> {
+        let handle = unsafe { GetClipboardData(format) };
+        if handle.is_null() {
+            return None;
+        }
+        let ptr = unsafe { GlobalLock(handle) };
+        if ptr.is_null() {
+            return None;
+        }
+        let size = unsafe { GlobalSize(handle) };
+        let bytes = if size == 0 {
+            None
+        } else {
+            Some(unsafe { std::slice::from_raw_parts(ptr as *const u8, size) }.to_vec())
+        };
+        unsafe { GlobalUnlock(handle) };
+        bytes
+    }
+
+    fn named(name: &str) -> Option<Vec<u8>> {
+        let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+        // SAFETY: `wide` is a null-terminated UTF-16 string. Registering a
+        // format only looks up its id; it does not write clipboard data.
+        let format = unsafe { RegisterClipboardFormatW(wide.as_ptr()) };
+        if format == 0 {
+            return None;
+        }
+        unsafe { copy_format(format) }
+    }
+
+    enum Raw {
+        Raster(Vec<u8>),
+        Dib(Vec<u8>),
+    }
+
+    let raw = {
+        let _guard = Guard::open()?;
+        if let Some(bytes) = named("PNG").or_else(|| named("image/png")) {
+            Raw::Raster(bytes)
+        } else if let Some(bytes) = named("JFIF").or_else(|| named("image/jpeg")) {
+            Raw::Raster(bytes)
+        } else if let Some(bytes) = named("GIF").or_else(|| named("image/gif")) {
+            Raw::Raster(bytes)
+        } else if let Some(bytes) = unsafe { copy_format(CF_DIBV5) }
+            .or_else(|| unsafe { copy_format(CF_DIB) })
+        {
+            Raw::Dib(bytes)
+        } else {
+            return None;
+        }
+    };
+    match raw {
+        Raw::Raster(bytes) => raster_to_png(&bytes),
+        Raw::Dib(bytes) => dib_to_png(&bytes),
+    }
+}
+
+/// Screenshot (⌘⌃⇧4) publishes TIFF. A copied picture is usually PNG, sometimes
+/// JPEG or GIF. The same picture is often offered as several of these; the
+/// first one that decodes wins.
+#[cfg(target_os = "macos")]
+fn macos_clipboard_png() -> Option<Vec<u8>> {
+    use objc2_app_kit::NSPasteboard;
+    use objc2_foundation::NSString;
+
+    let pasteboard = NSPasteboard::generalPasteboard();
+    for uti in ["public.png", "public.jpeg", "public.gif", "public.tiff"] {
+        let kind = NSString::from_str(uti);
+        let Some(data) = pasteboard.dataForType(&kind) else {
+            continue;
+        };
+        // SAFETY: `data` is a live `NSData` returned by the pasteboard.
+        let bytes = unsafe { data.as_bytes_unchecked() };
+        if bytes.is_empty() {
+            continue;
+        }
+        if let Some(png) = raster_to_png(bytes) {
+            return Some(png);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn clipboard_uri_list_accepts_files_but_not_plain_paths_or_mixed_text() {
+        assert_eq!(
+            clipboard_uri_list("file:///tmp/a%20b.png\r\nfile:///tmp/notes.txt\r\n"),
+            Some(vec!["/tmp/a b.png".into(), "/tmp/notes.txt".into()])
+        );
+        // GNOME Files prefixes the URLs with its own two-line header.
+        assert_eq!(
+            clipboard_uri_list("x-special/nautilus-clipboard\ncopy\nfile:///tmp/a%20b.png\n"),
+            Some(vec!["/tmp/a b.png".into()])
+        );
+        assert_eq!(clipboard_uri_list("/tmp/notes.txt"), None);
+        assert_eq!(
+            clipboard_uri_list("file:///tmp/a\nhttps://example.com"),
+            None
+        );
+        // A header-less line of prose means text, not a file list.
+        assert_eq!(clipboard_uri_list("here is a file\nfile:///tmp/a"), None);
+        // And the header is only skipped ahead of the URLs.
+        assert_eq!(clipboard_uri_list("file:///tmp/a\ncopy"), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finder_file_reference_url_resolves_to_real_path() {
+        use objc2_foundation::{NSString, NSURL};
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let path_string = NSString::from_str(path.to_str().unwrap());
+        let url = NSURL::fileURLWithPath(&path_string);
+        let reference = url.fileReferenceURL().expect("file reference URL");
+        let value = reference.absoluteString().expect("URL string");
+        assert!(value.to_string().contains("/.file/id="));
+        assert_eq!(macos_file_url_path(&value), Some(path));
+    }
 
     #[test]
     fn chord_labels_use_the_platform_vocabulary() {
@@ -1600,6 +2057,63 @@ mod tests {
             .unwrap();
         assert_eq!(rider.1, "Rider");
         assert_eq!(rider.2, &["com.jetbrains.rider", "com.jetbrains.rider-EAP"]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn open_in_catalog_offers_every_terminal() {
+        for (id, label) in [
+            ("terminal", "Terminal"),
+            ("rex", "Rex"),
+            ("termy", "Termy"),
+            ("iterm2", "iTerm2"),
+            ("ghostty", "Ghostty"),
+            ("kitty", "Kitty"),
+            ("alacritty", "Alacritty"),
+            ("wezterm", "WezTerm"),
+            ("tabby", "Tabby"),
+            ("hyper", "Hyper"),
+            ("rio", "Rio"),
+            ("wave", "Wave"),
+            ("warp", "Warp"),
+            (TMUX_APP_ID, "tmux"),
+        ] {
+            let entry = OPEN_IN_CATALOG
+                .iter()
+                .find(|entry| entry.0 == id)
+                .unwrap_or_else(|| panic!("{id} is missing from the catalog"));
+            assert_eq!(entry.1, label);
+            assert!(!entry.2.is_empty());
+        }
+    }
+
+    /// The tmux row borrows Terminal.app's icon, so it must never be the
+    /// bundle id that decides whether the row exists — the binary does.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn open_in_tmux_row_follows_the_binary_not_the_bundle() {
+        let entry = OPEN_IN_CATALOG
+            .iter()
+            .find(|entry| entry.0 == TMUX_APP_ID)
+            .unwrap();
+        assert_eq!(entry.2, &["com.apple.Terminal"]);
+        let offered = detect_open_in_apps()
+            .iter()
+            .any(|app| app.id == TMUX_APP_ID);
+        assert_eq!(offered, tmux_path().is_some());
+    }
+
+    /// Paths handed to a `.command` script reach `cd` as written, spaces and
+    /// quotes included.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn open_in_shell_quotes_awkward_directories() {
+        assert_eq!(shell_quote(Path::new("/a/b")), "'/a/b'");
+        assert_eq!(
+            shell_quote(Path::new("/a/Game with spaces")),
+            "'/a/Game with spaces'"
+        );
+        assert_eq!(shell_quote(Path::new("/a/it's here")), r"'/a/it'\''s here'");
     }
 
     /// The icon the menu embeds must be exactly the pixel size the 18px slot
@@ -1849,6 +2363,68 @@ mod tests {
             build: 17763,
         };
         assert!(unsupported_reason(floor).is_none());
+    }
+
+    /// A 32-bit screenshot is a DIB: a BMP with the 14-byte file header cut
+    /// off. Putting that header back must produce a PNG of the same size.
+    #[test]
+    fn dib_screenshot_bytes_become_a_png() {
+        let mut pixels = image::RgbaImage::new(2, 2);
+        pixels.put_pixel(0, 0, image::Rgba([10, 20, 30, 255]));
+        pixels.put_pixel(1, 1, image::Rgba([40, 50, 60, 255]));
+        let mut bmp = Vec::new();
+        image::DynamicImage::ImageRgba8(pixels)
+            .write_to(&mut std::io::Cursor::new(&mut bmp), image::ImageFormat::Bmp)
+            .expect("encode a bmp");
+        assert!(bmp.starts_with(b"BM"));
+        assert!(bmp.len() > 14);
+        let png = dib_to_png(&bmp[14..]).expect("a dib decodes");
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+        // Clipboard `GlobalSize` rounds past the bitmap. The extra bytes must
+        // not make the DIB undecodable.
+        let mut padded = bmp[14..].to_vec();
+        padded.extend_from_slice(&[0u8; 64]);
+        assert!(dib_to_png(&padded).is_some());
+        let decoded = image::load_from_memory(&png).expect("png decodes");
+        assert_eq!((decoded.width(), decoded.height()), (2, 2));
+        let sample = decoded.to_rgba8().get_pixel(0, 0).0;
+        assert_eq!(&sample[..3], &[10, 20, 30]);
+    }
+
+    /// macOS screenshots land on the pasteboard as TIFF. The same re-encode
+    /// the paste path uses must turn those bytes into a PNG.
+    #[test]
+    fn tiff_screenshot_bytes_become_a_png() {
+        let mut pixels = image::RgbImage::new(2, 2);
+        pixels.put_pixel(0, 0, image::Rgb([7, 8, 9]));
+        pixels.put_pixel(1, 0, image::Rgb([1, 2, 3]));
+        let mut tiff = Vec::new();
+        image::DynamicImage::ImageRgb8(pixels)
+            .write_to(
+                &mut std::io::Cursor::new(&mut tiff),
+                image::ImageFormat::Tiff,
+            )
+            .expect("encode a tiff");
+        let png = raster_to_png(&tiff).expect("a tiff decodes");
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+        let decoded = image::load_from_memory(&png).expect("png decodes");
+        assert_eq!((decoded.width(), decoded.height()), (2, 2));
+        assert_eq!(&decoded.to_rgb8().get_pixel(0, 0).0, &[7, 8, 9]);
+    }
+
+    /// An already-encoded PNG is not decoded and written again. Clipboard
+    /// allocations are larger than the file, so bytes after `IEND` are dropped.
+    #[test]
+    fn png_clipboard_bytes_pass_through() {
+        let image = image::RgbaImage::from_pixel(1, 1, image::Rgba([1, 2, 3, 255]));
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(image)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        assert_eq!(raster_to_png(&png).unwrap(), png);
+        let mut padded = png.clone();
+        padded.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(raster_to_png(&padded).unwrap(), png);
     }
 
     /// The probe answers with a real label on the machine running the tests.

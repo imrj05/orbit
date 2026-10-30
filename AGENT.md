@@ -230,7 +230,7 @@ Look-up order:
 | `ed25519-dalek` 2 | release-signature verification | https://docs.rs/ed25519-dalek/2 | Verify before writing bytes to disk. No skip or fallback path. |
 | `chrono` 0.4 | local timestamps | https://docs.rs/chrono/0.4 | `default-features = false` + `clock`; formatting only. |
 | `base64` 0.22 | image payloads over RPC | https://docs.rs/base64/0.22 | Prompt attachments only, never state files. |
-| `image` 0.25 | backdrop decode, resize, blur, dither | https://docs.rs/image/0.25 | Decode once into the cache (`dither::background()`), bounded by `MAX_EDGE`/`BLUR_MAX`; never re-decode per frame. |
+| `image` 0.25 | wallpaper decode, resize, blur, effect | https://docs.rs/image/0.25 | Decode once into the wallpaper cache (`wallpaper::prepare`), bounded by `MAX_EDGE`/`EFFECT_MAX_EDGE`; never re-decode per frame. |
 | `devicons` 0.6 | file-type glyphs | https://docs.rs/devicons/0.6 | Needs the bundled Nerd Font; resolve the family once per frame, fall back to text. |
 | `unicode-segmentation` 1 | grapheme clusters | https://docs.rs/unicode-segmentation/1 | Caret and selection math is grapheme-based; never index a string by byte. |
 | `futures` 0.3 | `BoxFuture` + oneshot for the image loader | https://docs.rs/futures/0.3 | Only the pieces gpui's traits need. |

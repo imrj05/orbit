@@ -10,6 +10,9 @@ third-party components under their own licenses, including:
 - Waku (MIT), by egoist — https://github.com/egoist/waku — the review-diff,
   turn-checkpoint, syntax-highlighting, and localization patterns adapted in
   crates/orbit-pi are derived from it under its MIT license
+- Tern (MIT), by your-moon — https://github.com/your-moon/tern — the wallpaper
+  artwork effects in crates/orbit-pi/src/wallpaper_fx.rs are adapted from its
+  `crates/tern/src/wallpaper_fx.rs`, itself adapted from zeron (MIT)
 - The HugeIcons icon set (MIT)
 - The skill-icons Tux mark used on the marketing site (MIT), by tandpfun —
   https://github.com/tandpfun/skill-icons

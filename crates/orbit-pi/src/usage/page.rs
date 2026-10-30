@@ -23,6 +23,7 @@ use super::aggregate::{
 };
 use super::collect::{now_ms, UsageScanner};
 use super::model::*;
+use super::sparkline;
 use super::table::{FailureRow, FailureSort, TableKind};
 
 /// Page sizes offered by the sessions table footer (§26).
@@ -785,6 +786,13 @@ pub struct UsagePage {
     hover_bucket: Option<usize>,
     /// The day under the pointer on the calendar heatmap, if any.
     hover_day: Option<usize>,
+    /// The bucket under the pointer on the Summary board's sparklines, shared
+    /// by all four cards so one hover reads the same day across the row.
+    kpi_hover: Option<usize>,
+    /// The board's previous sparkline shapes, and the generation that tells the
+    /// view to morph them into the current ones.
+    kpi_previous: Option<Vec<Vec<f64>>>,
+    kpi_serial: u64,
     loading: bool,
     refreshing: bool,
     last_request: Option<Instant>,
@@ -944,6 +952,9 @@ impl UsagePage {
             dismissed_at: None,
             hover_bucket: None,
             hover_day: None,
+            kpi_hover: None,
+            kpi_previous: None,
+            kpi_serial: 0,
             loading: true,
             refreshing: false,
             last_request: None,
@@ -989,6 +1000,7 @@ impl UsagePage {
         self.context_row = None;
         self.hover_bucket = None;
         self.hover_day = None;
+        self.clear_kpi_hover();
     }
 
     /// The user asked for fresh numbers.
@@ -1087,7 +1099,22 @@ impl UsagePage {
             self.snapshot = None;
             return;
         };
-        self.snapshot = Some(Rc::new(UsageSnapshot::compute(&index, &self.filter)));
+        // The board's lines morph from the shapes they are showing now, so the
+        // old snapshot is read before it is replaced (§18: motion follows the
+        // data, never a paint).
+        let previous = self
+            .snapshot
+            .as_ref()
+            .map(|snapshot| sparkline::kpi_values(&snapshot.series));
+        let snapshot = UsageSnapshot::compute(&index, &self.filter);
+        let next = sparkline::kpi_values(&snapshot.series);
+        if let Some(previous) = previous {
+            if !sparkline::same_values(&previous, &next) {
+                self.kpi_previous = Some(previous);
+                self.kpi_serial = self.kpi_serial.wrapping_add(1);
+            }
+        }
+        self.snapshot = Some(Rc::new(snapshot));
     }
 
     // ── reads used by the view ─────────────────────────────────────────────
@@ -1388,6 +1415,8 @@ impl UsagePage {
 
     pub fn set_filter(&mut self, filter: UsageFilter, cx: &mut Context<Self>) {
         self.filter = filter;
+        // The board's readout names a bucket of the old range.
+        self.clear_kpi_hover();
         // A narrower or different result set invalidates the current page (§28).
         self.page = 1;
         self.bucket_page = 1;
@@ -1421,6 +1450,34 @@ impl UsagePage {
             self.hover_bucket = bucket;
             cx.notify();
         }
+    }
+
+    /// The pointer entered a sparkline bucket on the Summary board (or left the
+    /// board). All four cards read the same bucket, the recipe's synced row.
+    /// Reading is immediate: the highlight and marker land on the bucket with
+    /// no transition.
+    pub fn set_kpi_hover(&mut self, bucket: Option<usize>, cx: &mut Context<Self>) {
+        if self.kpi_hover == bucket {
+            return;
+        }
+        self.kpi_hover = bucket;
+        cx.notify();
+    }
+
+    fn clear_kpi_hover(&mut self) {
+        self.kpi_hover = None;
+    }
+
+    pub fn kpi_hover(&self) -> Option<usize> {
+        self.kpi_hover
+    }
+
+    pub fn kpi_previous(&self) -> Option<&[Vec<f64>]> {
+        self.kpi_previous.as_deref()
+    }
+
+    pub fn kpi_serial(&self) -> u64 {
+        self.kpi_serial
     }
 
     /// The pointer entered a calendar day (or left the grid).

@@ -139,12 +139,6 @@ impl MessageScrollerState {
         self.splice(item_count..item_count, count)
     }
 
-    /// Prepend `count` rows while preserving the current scroll anchor.
-    #[allow(dead_code)]
-    pub fn prepend(&self, count: usize) -> bool {
-        self.splice(0..0, count)
-    }
-
     /// Mark rows in `range` for remeasurement (streaming growth).
     pub fn remeasure_items(&self, range: Range<usize>) -> bool {
         if !self.valid_range(&range) || range.start == range.end {
@@ -689,7 +683,7 @@ mod tests {
         let state = MessageScrollerState::new(3);
         assert!(state.append(2));
         assert_eq!(state.item_count(), 5);
-        assert!(state.prepend(1));
+        assert!(state.splice(0..0, 1));
         assert_eq!(state.item_count(), 6);
         assert!(!state.splice(5..7, 0));
         assert!(state.remeasure_items(0..6));

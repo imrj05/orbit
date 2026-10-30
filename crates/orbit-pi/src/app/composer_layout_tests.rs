@@ -41,9 +41,13 @@ impl Render for QueueBarProbe {
 }
 
 /// The queue strip above the composer is one grouped surface: a 30px label
-/// header plus one ~30px row per pending message. Pin that shape so the rows
+/// header plus one compact row per pending message. Pin that shape so the rows
 /// stay flat (no card nested inside the card) and the strip stays compact as
 /// messages accumulate.
+///
+/// A row carries its own edit / send-now controls (issue #79), so it stands
+/// 33px tall — the 18px icon buttons plus the row's 14px padding and hairline —
+/// instead of the bare message's 30px. Still one flat row, never a second card.
 #[gpui::test]
 fn queue_bar_is_one_compact_grouped_surface(cx: &mut gpui::TestAppContext) {
     use crate::theme::{Theme, ThemeId};
@@ -90,8 +94,8 @@ fn queue_bar_is_one_compact_grouped_surface(cx: &mut gpui::TestAppContext) {
     .expect("queue strip drawn");
     assert!((one.size.width - width).abs() <= px(1.));
     assert!(
-        one.size.height >= px(58.) && one.size.height <= px(64.),
-        "one row should be ~60px, was {}",
+        one.size.height >= px(58.) && one.size.height <= px(66.),
+        "one row should be ~63px, was {}",
         one.size.height
     );
 
@@ -99,6 +103,18 @@ fn queue_bar_is_one_compact_grouped_surface(cx: &mut gpui::TestAppContext) {
     let clear = cx.debug_bounds("clear-queue").expect("clear button drawn");
     assert!(clear.center().y < one.top() + px(30.));
     assert!((one.right() - px(12.) - clear.right()).abs() <= px(1.));
+
+    // The row's own actions sit on the row, at its right edge.
+    let edit = cx
+        .debug_bounds("queue-row-0-edit")
+        .expect("edit control drawn");
+    assert!(edit.center().y > one.top() + px(30.), "below the header");
+    assert!((one.right() - px(12.) - edit.right()).abs() <= px(30.));
+    // A follow-up can always jump the queue, whatever its position.
+    assert!(
+        cx.debug_bounds("queue-row-0-send-now").is_some(),
+        "a follow-up can always jump the queue"
+    );
 
     // A second message adds one hairline-separated row, not a second card.
     let two = draw(
@@ -111,9 +127,19 @@ fn queue_bar_is_one_compact_grouped_surface(cx: &mut gpui::TestAppContext) {
     .expect("queue strip drawn");
     let row = two.size.height - one.size.height;
     assert!(
-        row >= px(27.) && row <= px(33.),
-        "one more row should add ~30px, added {row}"
+        row >= px(29.) && row <= px(35.),
+        "one more row should add ~33px, added {row}"
     );
+    // Every row is editable…
+    assert!(cx.debug_bounds("queue-row-0-edit").is_some());
+    assert!(cx.debug_bounds("queue-row-1-edit").is_some());
+    // …but the leading steer is already pi's next delivery, so it offers no
+    // "send now" while the queued follow-up behind it does.
+    assert!(
+        cx.debug_bounds("queue-row-0-send-now").is_none(),
+        "the message pi delivers next has nowhere to be promoted to"
+    );
+    assert!(cx.debug_bounds("queue-row-1-send-now").is_some());
 }
 #[gpui::test]
 fn sending_hints_match_footer_metrics_and_share_the_context_row(cx: &mut gpui::TestAppContext) {
@@ -358,4 +384,199 @@ fn the_access_chip_names_the_mode_only_when_it_is_not_the_default(cx: &mut gpui:
             app.update(cx, |app, cx| app.close_access_menu(window, cx));
         });
     }
+}
+
+/// Editing a queued message turns that one row into a real field: the input
+/// sits inside the row (never over the bar's edge), Save and Cancel follow it,
+/// and the strip keeps its width. Issue #79's inline editor has no modal, so
+/// this is the whole affordance.
+#[gpui::test]
+fn an_edited_row_holds_its_inline_field(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+    use orbit_rpc::PendingQueue;
+
+    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| {
+        cx.new(|cx| {
+            let mut app = OrbitApp::new(cx);
+            app.branch = None;
+            app.status_at = None;
+            app.queue = PendingQueue {
+                steering: vec![],
+                follow_up: vec!["tighten the hero copy".into()],
+            };
+            app
+        })
+    });
+
+    let width = px(600.);
+    let draw = |cx: &mut gpui::VisualTestContext| {
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(width, px(400.)),
+            |_, cx| {
+                cx.new(|_| QueueBarProbe {
+                    app: app.clone(),
+                    width,
+                })
+            },
+        );
+    };
+
+    draw(cx);
+    let row = cx
+        .debug_bounds("queue-row-follow-up-0")
+        .expect("row laid out");
+
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.begin_queue_edit(
+                QueuedMessage {
+                    lane: QueueLane::Steer,
+                    index: 0,
+                },
+                window,
+                cx,
+            );
+        });
+    });
+    // The target above is a follow-up, not a steer: nothing opens.
+    assert!(app.read_with(cx, |app, _| app.queue_edit.is_none()));
+
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.begin_queue_edit(
+                QueuedMessage {
+                    lane: QueueLane::FollowUp,
+                    index: 0,
+                },
+                window,
+                cx,
+            );
+        });
+    });
+    draw(cx);
+    let field = cx
+        .debug_bounds("queue-edit-input")
+        .expect("the inline field is laid out");
+    let edited = cx
+        .debug_bounds("queue-row-follow-up-0")
+        .expect("the edited row is still laid out");
+    assert!(
+        field.left() >= edited.left() && field.right() <= edited.right(),
+        "the field sits inside its row"
+    );
+    assert!(
+        edited.size.height > row.size.height,
+        "the row grows to hold a real field ({:?} → {:?})",
+        row.size.height,
+        edited.size.height
+    );
+    // Save and Cancel ride the same row, at its right edge.
+    let save = cx
+        .debug_bounds("queue-row-0-edit-save")
+        .expect("save drawn");
+    let cancel = cx
+        .debug_bounds("queue-row-0-edit-cancel")
+        .expect("cancel drawn");
+    assert!(cancel.left() > save.left(), "cancel follows save");
+    assert!((edited.right() - px(12.) - cancel.right()).abs() <= px(1.));
+}
+
+struct SuggestionsProbe {
+    app: Entity<OrbitApp>,
+    width: Pixels,
+}
+
+impl Render for SuggestionsProbe {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.app.update(cx, |app, cx| {
+            div()
+                .w(self.width)
+                .children(app.extension_widgets_above(cx))
+        })
+    }
+}
+
+/// Long suggestions stay compact and inside the composer column, and the
+/// dismiss button removes only the suggestions without changing the input.
+#[gpui::test]
+fn follow_up_suggestions_stay_inside_the_composer_column(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+    use crate::widgets::{ExtensionWidget, WidgetPlacement};
+
+    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| {
+        cx.new(|cx| {
+            let mut app = OrbitApp::new(cx);
+            app.branch = None;
+            app.status_at = None;
+            app.suggestions.enabled = true;
+            app.access_mode = crate::access::AccessMode::FullAccess;
+            app.workflow_mode = crate::workflow::WorkflowMode::Build;
+            app.busy = false;
+            app.input.update(cx, |input, cx| input.set_text("", cx));
+            let payload = serde_json::json!({
+                "mode": "full-access",
+                "workflow": "build",
+                "suggestions": [
+                    "Refactor the session restore path so a parked process cannot be resumed after its worktree has been removed, then add a regression test for the missing-directory case.",
+                    "Show me every call site that writes to the settings file and group them by whether they can run concurrently with the app heartbeat.",
+                    "Tighten the composer layout so long follow-up suggestion text wraps inside the column instead of clipping at the window edge."
+                ]
+            })
+            .to_string();
+            app.extension_widgets = vec![ExtensionWidget {
+                key: "orbit-follow-up-suggestions".into(),
+                placement: WidgetPlacement::AboveEditor,
+                lines: vec![payload],
+            }];
+            app
+        })
+    });
+
+    let width = px(360.);
+    let probe = cx.update(|_, cx| cx.new(|_| SuggestionsProbe { app: app.clone(), width }));
+    let draw = |cx: &mut gpui::VisualTestContext| {
+        cx.draw(point(px(0.), px(0.)), gpui::size(width, px(500.)), |_, _| probe.clone());
+    };
+    draw(cx);
+
+    let mut previous = None;
+    for (index, selector) in [
+        "follow-up-suggestion-0",
+        "follow-up-suggestion-1",
+        "follow-up-suggestion-2",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let chip = cx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("suggestion {index} laid out"));
+        assert!(
+            chip.left() >= px(0.) && chip.right() <= width + px(1.),
+            "suggestion {index} must stay inside the composer column: {chip:?} vs width {width:?}"
+        );
+        assert!(chip.size.height <= px(32.), "suggestions stay single-line: {chip:?}");
+        let text_selector = ["follow-up-text-0", "follow-up-text-1", "follow-up-text-2"][index];
+        let text = cx.debug_bounds(text_selector).expect("suggestion text laid out");
+        assert!(text.size.width > px(30.), "suggestion text must have readable width: {text:?}");
+        if let Some(previous) = previous {
+            let previous: gpui::Bounds<Pixels> = previous;
+            assert_eq!(chip.top(), previous.top(), "suggestions share one row");
+            assert!(chip.left() >= previous.right(), "suggestions do not overlap");
+        }
+        previous = Some(chip);
+    }
+    assert!(cx.debug_bounds("dismiss-follow-up-suggestions").is_some());
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| app.dismiss_suggestions(window, cx));
+    });
+    cx.update(|_, cx| {
+        assert!(app.read(cx).extension_widgets.is_empty());
+        assert!(app.read(cx).input.read(cx).text().is_empty());
+    });
 }

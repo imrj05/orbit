@@ -12,23 +12,24 @@ Sessions you create in Orbit and in the terminal are the same sessions (`~/.pi/a
 
 A live session — streaming transcript, tool rows, and the composer:
 
-![A completed Orbit session: the agent's notes on the Windows IME composer fix and a Changed 4 files card with per-file line counts, above the composer.](marketing/public/screens/session.png)
+![A completed Orbit session: the agent's summary of the open-in options change and a Changed 3 files card with per-file line counts, above the composer.](marketing/public/screens/session.png)
 
-Usage — requests, tokens, cost, and cache, read from your own sessions:
+Usage — requests, tokens, cost, and cache, read from your own sessions; point at any
+summary sparkline to read that day across the whole row:
 
 ![Orbit's Usage page with request, token, cost, and cache metrics above a tokens-over-time chart.](marketing/public/screens/usage.png)
 
 | New task | Review |
 | --- | --- |
-| ![Orbit's new-task page with a workspace picker, the composer, and the access-mode menu open on Supervised, Auto-accept edits, and Full access.](marketing/public/screens/new-task.png) | ![The Orbit Review panel open beside a session, showing a selected file's diff on the left and the changed-file tree on the right.](marketing/public/screens/review.png) |
+| ![Orbit's new-task page with a workspace picker above the composer, and the workflow mode, model, and thinking level set in the composer.](marketing/public/screens/new-task.png) | ![The Orbit Review panel open beside a session, showing a selected file's diff on the left and the changed-file tree on the right.](marketing/public/screens/review.png) |
 | **Git** | **Providers** |
-| ![Orbit's Git page listing staged and changed files with line counts and a commit box.](marketing/public/screens/git.png) | ![Orbit's Providers page showing provider cards for Ollama, OpenCode Go, Bedrock, and Anthropic with usage meters.](marketing/public/screens/providers.png) |
+| ![Orbit's Git page listing changed files with line counts and a commit box.](marketing/public/screens/git.png) | ![Orbit's Providers page listing built-in and custom providers with auth status and model counts.](marketing/public/screens/providers.png) |
 | **Plugins** | **Skills** |
 | ![Orbit's Plugins page listing installed pi packages with update and remove actions.](marketing/public/screens/plugins.png) | ![Orbit's Skills page listing project and global skills with the selected skill's SKILL.md rendered on the right.](marketing/public/screens/skills.png) |
 | **Models** | **Appearance** |
-| ![Orbit's Models page listing models grouped by provider with context sizes and favorite toggles.](marketing/public/screens/models.png) | ![Orbit's Appearance settings with theme pickers, type and density previews, and font pickers.](marketing/public/screens/appearance.png) |
+| ![Orbit's Models page listing models grouped by provider with context sizes and favorite toggles.](marketing/public/screens/models.png) | ![Orbit's Appearance settings with the design system, theme, accent color, language, and wallpaper controls.](marketing/public/screens/appearance.png) |
 | **General** | **Agent** |
-| ![Orbit's General settings showing the connected pi agent, the local session store, the workspace, and notification toggles.](marketing/public/screens/general.png) | ![Orbit's Agent settings with follow-up delivery, auto-compaction, auto-retry, compact-now, and session rename.](marketing/public/screens/agent.png) |
+| ![Orbit's General settings showing the connected pi agent, the local session store, the workspace, and notification toggles.](marketing/public/screens/general.png) | ![Orbit's Agent settings with follow-up delivery, auto-compaction, auto-retry, and session titles.](marketing/public/screens/agent.png) |
 
 ## Features
 
@@ -38,6 +39,7 @@ Usage — requests, tokens, cost, and cache, read from your own sessions:
 - A send is in flight from the keystroke: pressing Enter flips the composer to Stop and starts the live “Working for…” row at the send, instead of waiting for pi’s first streamed token. A second Enter queues a follow-up rather than racing a second prompt, and a prompt pi rejects unwinds that state
 - **Enter behavior** — Settings → Agent → Behavior picks what Enter does: queue a follow-up (default) or steer the running task. Alt/Option+Enter uses the other mode, and ⌘⇧Enter / Ctrl+Shift+Enter always steers
 - Compact hints immediately left of the context-window indicator show both sending modes while the agent is working. Steering takes effect after the current response and tools finish; idle Enter sends normally, and Shift+Enter inserts a new line
+- **Edit queued messages, or send one now** — the queue bar above the composer gives every pending steer and follow-up its own **Edit** (inline field, ⏎ saves, Esc cancels) and **Send now**, which moves that message to the front of the steering lane so pi delivers it before the next model call
 - **Workflow modes** — scope a session to **Plan**, **Build**, or **Ask**: Plan and Ask are read-only (write tools disabled, bash gated), so you can explore and plan before switching to Build
 - GPU-rendered transcript — virtualized so cost is independent of message count, with stick-to-latest streaming and coalesced commits
 - GFM markdown and syntax-highlighted code; highlighting is paint-only so streaming code blocks never reflow
@@ -47,7 +49,7 @@ Usage — requests, tokens, cost, and cache, read from your own sessions:
   preview
 - In-transcript find (⌘F) and a full-window image lightbox
 - **Compressed image attachments** — images you attach or paste are downscaled and re-encoded at ingest (1400 px longest edge, 512 KiB base64, JPEG; transparency keeps lossless WebP), so a large screenshot no longer bloats the prompt or the session history; the status line reports the before/after size
-- **An attachment tray for images, files, and long pastes** — every queued item is one chip above the input showing what it is (image thumbnail or file-type badge), its name, its size or line count, and its own remove button; two or more chips add a count header with **Clear**. Dropping or picking a non-image file queues it as a file chip instead of splicing a path into the sentence, and on send it folds into the prompt as an `@path` mention the agent opens with its tools. The sent message shows those files as the same chips under the bubble (the path stays selectable), so a reloaded session looks like the live send. All three kinds share one eight-item budget
+- **An attachment tray for images, files, and long pastes** — every queued item is one chip above the input showing what it is (image thumbnail or file-type badge), its name, its size or line count, and its own remove button; two or more chips add a count header with **Clear**. Dropping or picking a non-image file, or pasting one copied in macOS Finder or Windows Explorer, queues it as a file chip instead of splicing a path into the sentence, and on send it folds into the prompt as an `@path` mention the agent opens with its tools. The sent message shows those files as the same chips under the bubble (the path stays selectable), so a reloaded session looks like the live send. Pasting an image file copied in Finder or Windows Explorer attaches its contents rather than its file icon. On Linux, file URI lists exposed as clipboard text are supported; file-only clipboard offers are not yet supported. All three kinds share one eight-item budget
 - Tool activity — bash, edit, read, and thinking rows drawn natively, expanding into Arguments/Output cards with per-section copy
 
 **Sessions**
@@ -74,7 +76,9 @@ Usage — requests, tokens, cost, and cache, read from your own sessions:
 
 **Review and Git**
 
-- Review side pane with selectable sources — **Last Turn** (exactly what one agent turn changed, from per-turn checkpoints), Uncommitted, Unstaged, Staged, Committed, and Branch, refreshed when a run settles
+Settings → **Git Accounts** inspects local Git author settings, generic and host-scoped credential helpers, SSH agent fingerprints and conventional public-key file presence, remote hosts and the GitHub CLI version without managing credentials. Git author identity is not authentication; a helper or loaded SSH key does not prove that a valid credential exists or that a remote accepts it. Remote access is not tested. The page does not run `gh auth status`, since it can contact hosts and refresh credentials, so GitHub CLI authentication remains unknown. An optional **Check for updates** action anonymously checks the latest stable GitHub CLI release and shows manual update commands; ordinary status refresh stays offline and Orbit does not run the update. Public-key file detection checks conventional names without opening their contents on Unix; it is unavailable on Windows. Environment-variable indicators reflect only Orbit’s process environment, which may differ from your terminal. Resolve authentication problems manually with your existing tools; credentials may be expired or lack permissions.
+
+- Review side pane with selectable sources — **Last Turn** (exactly what one agent turn changed, from per-turn checkpoints), Uncommitted, Unstaged, Staged, Committed, and Branch; changes arriving during a refresh trigger a follow-up read
 - Diff view controls: collapse or expand each file, wrap or pan long lines, unified or side-by-side rows, docked / full-page / minimized, and full keyboard operation (Tab focus stops, arrows, `n` / `p` between files, `[` / `]` between hunks)
 - Git page for Changes / History / Graph / Stashes: staging, commit (⌘↵), stash push/pop/apply/drop, sync, push (including force-with-lease), pull, fetch, merge, and rebase, with recovery actions for rejected pushes and conflicts
 - The commit bar's **Generate** button has its own model picker — a searchable chip beside it — so commit messages can run on a different (or smaller, local) model than the chat session, with **Active session model** restoring the default
@@ -105,15 +109,15 @@ Usage — requests, tokens, cost, and cache, read from your own sessions:
 - Plugins — install pi packages from npm, git, or a local path, global or per project; update checks and update/remove in place
 - Models — read from pi's own runtime, with a **default session model** and thinking level (Settings → Agent) applied to every new session; the choice lives in Orbit's own store and leaves pi's global settings alone
 - **Auto session titles** — a bundled pi extension names any session that has no title yet from its first exchange, with a model picker and an on/off toggle in Settings → Agent
-- **Report a bug** — Settings → Report a bug takes an issue type (bug / feature / other) and the bug context, then **Generate draft** writes the title and description with the app's active model
+- **Report a bug** — Settings → Report a bug takes an issue type (bug / feature / other) and the bug context, then **Generate draft** writes the title and description with the active session model or a separately selected model
 - It files the issue against the project with your build details attached (Orbit version, app ID, OS and architecture, install kind, pi CLI, and `gh` account): through the `gh` CLI when it is signed in, or as a prefilled GitHub new-issue page otherwise
-- Screenshots attach too. They upload with `gh issue create --attach` when `gh` is signed in, and otherwise the web form opens with the images saved to a temp folder to drag in
+- Screenshots attach too. They upload with `gh issue create --attach` when permitted; otherwise, if the CLI cannot upload them before creating an issue, the web form and saved screenshot folder open so you can drag them in
 - **Privacy** — Settings → Privacy archives or deletes idle `pi` sessions on a schedule you choose
 - It also lists Orbit's own scratch files in the `orbit-pi` folder inside the system temp directory (bug-report screenshots, update downloads, helper scripts), with **Open folder** and **Clean up now**. Older top-level `orbit-*` leftovers are included, and entries a live Orbit process still needs are kept
 - A separate **AI scratch files** group lists pi's own `pi-*` temp entries (shell output, codemode images, share/editor working files) and removes only those last used more than an hour ago
-- Appearance — **Light / Dark / System**, a persisted **Design system** choice (**Classic** keeps the existing palette and geometry; **Operational** applies the near-black, lime-accented Restrained Operational Minimalism system), independent light and dark theme palettes, a background image, bundled interface fonts (including Onest), code fonts, sizes, spacing density, and **interface language** (English, 简体中文, 日本語, 한국어, Español, Français, Deutsch, Português do Brasil, Русский, Italiano, or the system language)
+- Appearance — **Light / Dark / System**, a persisted **Design system** choice (**Classic** keeps the existing palette and geometry; **Operational** applies the near-black, lime-accented Restrained Operational Minimalism system), independent light and dark theme palettes, a customizable wallpaper (hero or full-window, with artwork effects, effect-intensity and pixel-size controls, and translucent surfaces), bundled interface fonts (including Onest), code fonts, sizes, spacing density, and **interface language** (English, 简体中文, 日本語, 한국어, Español, Français, Deutsch, Português do Brasil, Русский, Italiano, or the system language)
 - System follows OS appearance changes live; new installations use System, while existing theme choices are preserved. Switching design systems is opt-in and does not modify the Classic palettes or their geometry
-- With no image set, the new-task page carries a living ordered-dither field with the app monogram screened into it: it follows the palette, drifts slowly enough to breathe instead of strobe, and freezes under Reduce Motion
+- With no wallpaper set, the new-task page carries a living ordered-dither field with the app monogram screened into it: it follows the palette, drifts slowly enough to breathe instead of strobe, and freezes under Reduce Motion
 - No telemetry: no analytics client, no identifier, and no queue (see [PRIVACY.md](PRIVACY.md))
 
 **Native**

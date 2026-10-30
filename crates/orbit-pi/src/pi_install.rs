@@ -74,8 +74,8 @@ pub struct Installation {
 }
 
 impl Installation {
-    /// Nothing found — the shape used before the first probe and by tests.
-    #[allow(dead_code)]
+    /// Nothing found — the shape used by tests.
+    #[cfg(test)]
     pub fn not_installed() -> Self {
         Self {
             bin: None,

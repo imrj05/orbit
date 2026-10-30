@@ -3,217 +3,12 @@ use crate::theme::tokens::{Radius, TextSize};
 use crate::theme::ThemeId;
 use gpui::size;
 
-fn solid_image(width: u32, height: u32) -> std::sync::Arc<gpui::RenderImage> {
-    let buffer = image::RgbaImage::from_pixel(width, height, image::Rgba([120, 120, 120, 255]));
-    std::sync::Arc::new(gpui::RenderImage::new(vec![image::Frame::new(buffer)]))
-}
-
-/// gpui's `ObjectFit::Cover` scales the image up and centers it, so the
-/// painted bounds overflow the element whenever the ratios differ (a 16:9
-/// image in a narrower main area). Without a clip on the wrapper, that
-/// overflow painted over the sessions sidebar. This documents the gpui
-/// behavior the wrapper's `overflow_hidden` guards against.
-#[test]
-fn cover_bounds_overflow_the_element_on_a_ratio_mismatch() {
-    let element = gpui::bounds(point(px(240.), px(0.)), size(px(1000.), px(700.)));
-    let painted = ObjectFit::Cover.get_bounds(
-        element,
-        size(gpui::DevicePixels(1600), gpui::DevicePixels(900)),
-    );
-    assert!(
-        painted.origin.x < element.origin.x,
-        "cover must overflow left (painted {:?} vs element {:?})",
-        painted.origin.x,
-        element.origin.x
-    );
-    assert!(painted.size.width > element.size.width);
-}
-
-/// The backdrop wrapper fills the main area exactly — it must never claim
-/// the sidebar's column, however the image inside it is fitted.
-#[gpui::test]
-fn backdrop_wrapper_stays_inside_the_main_area(cx: &mut gpui::TestAppContext) {
-    let cx = cx.add_empty_window();
-    let _ = cx.draw(point(px(0.), px(0.)), size(px(1240.), px(700.)), |_, _| {
-        div()
-            .size_full()
-            .flex()
-            .child(
-                div()
-                    .id("backdrop-test-sidebar")
-                    .debug_selector(|| "backdrop-test-sidebar".to_string())
-                    .flex_none()
-                    .w(px(240.))
-                    .h_full(),
-            )
-            .child(
-                div()
-                    .id("backdrop-test-main")
-                    .debug_selector(|| "backdrop-test-main".to_string())
-                    .flex_1()
-                    .h_full()
-                    .relative()
-                    .children(OrbitApp::backdrop_image(
-                        Some(solid_image(1600, 900)),
-                        crate::dither::Tuning::default(),
-                        Theme::for_id(ThemeId::Orbit),
-                    )),
-            )
-    });
-    let sidebar = cx.debug_bounds("backdrop-test-sidebar").expect("sidebar");
-    let main = cx.debug_bounds("backdrop-test-main").expect("main");
-    assert_eq!(sidebar.origin.x, px(0.));
-    assert_eq!(sidebar.size.width, px(240.));
-    assert_eq!(main.origin.x, px(240.), "main starts after the sidebar");
-    assert_eq!(main.size.width, px(1000.));
-}
-
-/// Renders just the blur slider so its geometry can be read off the painted
-/// tree. The real `OrbitApp` is the value holder, exactly as in Settings.
-struct BlurSliderProbe {
-    app: Entity<OrbitApp>,
-    sigma: f32,
-}
-
-impl Render for BlurSliderProbe {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = *theme::get(cx);
-        let this = self.app.clone();
-        let sigma = self.sigma;
-        self.app
-            .update(cx, |app, _| app.blur_slider(theme, this, sigma))
-    }
-}
-
-/// The `Img` element sets its own `aspect_ratio` from the source. Inside a
-/// `size_full()` backdrop that must not win over the definite size the
-/// wrapper gives it — if it does, `ObjectFit::Cover` scales relative to the
-/// wrong box and the picture is placed/cropped wrong.
-#[gpui::test]
-fn backdrop_img_box_matches_its_wrapper(cx: &mut gpui::TestAppContext) {
-    use gpui::{point, size};
-
-    let cx = cx.add_empty_window();
-    let _ = cx.draw(point(px(0.), px(0.)), size(px(1075.), px(740.)), |_, _| {
-        div()
-            .id("backdrop-img-wrap")
-            .debug_selector(|| "backdrop-img-wrap".to_string())
-            .absolute()
-            .inset_0()
-            .overflow_hidden()
-            .child(
-                img(ImageSource::Render(solid_image(1600, 900)))
-                    .id("backdrop-img")
-                    .debug_selector(|| "backdrop-img".to_string())
-                    .size_full()
-                    .object_fit(ObjectFit::Cover),
-            )
-    });
-    let wrap = cx.debug_bounds("backdrop-img-wrap").expect("wrapper");
-    let image = cx.debug_bounds("backdrop-img").expect("image");
-    assert_eq!(
-        image.size, wrap.size,
-        "the image box must be the wrapper's box, not the source aspect ratio"
-    );
-}
-
-/// The blur slider's handle and fill are driven by the tuning's sigma: the
-/// handle's left edge is the normalized position across the usable track
-/// (track minus the knob), so 0 % is flush left and 100 % is flush right, and
-/// the accent fill always ends at the handle's centre. Pin the geometry so a
-/// future restyle cannot silently desync the control from the value it scrubs.
-#[gpui::test]
-fn blur_slider_handle_tracks_sigma(cx: &mut gpui::TestAppContext) {
-    use crate::dither::BLUR_MAX;
-    use crate::theme::{Theme, ThemeId};
-
-    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
-    let cx = cx.add_empty_window();
-    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
-
-    for (sigma, expected) in [(0., 0.), (BLUR_MAX / 2., 0.5), (BLUR_MAX, 1.)] {
-        let _ = cx.draw(point(px(0.), px(0.)), size(px(320.), px(60.)), |_, cx| {
-            cx.new(|_| BlurSliderProbe {
-                app: app.clone(),
-                sigma,
-            })
-        });
-        let track = cx.debug_bounds("backdrop-blur-slider").expect("track");
-        let knob = cx.debug_bounds("backdrop-blur-knob").expect("knob");
-        let fill = cx.debug_bounds("backdrop-blur-fill").expect("fill");
-        let usable = f32::from(track.size.width) - f32::from(knob.size.width);
-        let offset = f32::from(knob.origin.x) - f32::from(track.origin.x);
-        assert!(
-            (offset - usable * expected).abs() < 1.,
-            "sigma {sigma} put the knob at {offset}px, expected {}px",
-            usable * expected
-        );
-        let centre = offset + f32::from(knob.size.width) / 2.;
-        assert!(
-            (f32::from(fill.size.width) - centre).abs() < 1.,
-            "the accent fill must end at the knob centre: {} vs {centre}",
-            f32::from(fill.size.width)
-        );
-    }
-}
-
-/// The bottom fade is how the picture drops into the page, and its height is
-/// exactly what the Settings → Appearance control writes. Pin the wiring:
-/// 0.22 of a 700 px column is 154 px, anchored to the bottom edge.
-#[gpui::test]
-fn backdrop_fade_tracks_the_tuning(cx: &mut gpui::TestAppContext) {
-    let cx = cx.add_empty_window();
-    let _ = cx.draw(point(px(0.), px(0.)), size(px(1000.), px(700.)), |_, _| {
-        div()
-            .size_full()
-            .relative()
-            .children(OrbitApp::backdrop_image(
-                Some(solid_image(1600, 900)),
-                crate::dither::Tuning {
-                    blur: 0.,
-                    cell: 4,
-                    fade: crate::dither::FADE_HEIGHTS[3],
-                },
-                Theme::for_id(ThemeId::Orbit),
-            ))
-    });
-    let fade = cx.debug_bounds("backdrop-fade").expect("fade painted");
-    assert_eq!(fade.origin.y, px(546.), "fade must sit on the bottom edge");
-    assert_eq!(fade.size.height, px(154.), "fade height follows the tuning");
-}
-
-/// "None" is the real off switch for the gradient, not a zero-height ghost
-/// layer — DESIGN.md allows exactly one backdrop gradient, and a user who
-/// turns it off should not pay for it.
-#[gpui::test]
-fn backdrop_fade_none_paints_no_gradient(cx: &mut gpui::TestAppContext) {
-    let cx = cx.add_empty_window();
-    let _ = cx.draw(point(px(0.), px(0.)), size(px(1000.), px(700.)), |_, _| {
-        div()
-            .size_full()
-            .relative()
-            .children(OrbitApp::backdrop_image(
-                Some(solid_image(1600, 900)),
-                crate::dither::Tuning {
-                    blur: 0.,
-                    cell: 4,
-                    fade: 0.,
-                },
-                Theme::for_id(ThemeId::Orbit),
-            ))
-    });
-    assert!(
-        cx.debug_bounds("backdrop-fade").is_none(),
-        "fade None must not paint a gradient layer"
-    );
-}
-
 /// The new-task backdrop must span the whole chat column below the top bar.
 /// It used to live inside the empty-state slot — the `flex_1` region *above*
-/// the composer column — so the image stopped at the composer's top edge and
-/// left the bottom of the window on a flat slab at every fade setting,
-/// including "None". This pins the layer to the column instead, so the
-/// floating composer and the status bar below it paint over the picture.
+/// the composer column — so the backdrop stopped at the composer's top edge
+/// and left the bottom of the window on a flat slab. This pins the layer to
+/// the column instead, so the floating composer and the status bar below it
+/// paint over the backdrop.
 #[gpui::test]
 fn new_task_backdrop_spans_the_composer_region(cx: &mut gpui::TestAppContext) {
     let cx = cx.add_empty_window();
@@ -223,7 +18,7 @@ fn new_task_backdrop_spans_the_composer_region(cx: &mut gpui::TestAppContext) {
     });
     let _ = cx.draw(point(px(0.), px(0.)), size(px(1000.), px(700.)), |_, cx| {
         let theme = Theme::for_id(ThemeId::Orbit);
-        let backdrop = app.update(cx, |app, _| app.new_task_backdrop(theme, 0., true));
+        let backdrop = app.update(cx, |app, _| app.new_task_backdrop(theme, 0., true, false));
         div()
             .size_full()
             .flex()
@@ -351,6 +146,7 @@ fn new_task_backdrop_is_absent_on_a_session(cx: &mut gpui::TestAppContext) {
             app.update(cx, |app, _| app.new_task_backdrop(
                 Theme::for_id(ThemeId::Orbit),
                 0.,
+                false,
                 false
             ))
             .is_none(),

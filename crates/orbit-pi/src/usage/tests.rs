@@ -218,6 +218,49 @@ fn basic_aggregation_sums_input_and_output() {
 }
 
 #[test]
+fn the_summary_board_reads_each_bucket_and_keeps_an_unmeasured_bucket_as_a_gap() {
+    let now = anchor();
+    let day = 86_400_000;
+    let mut fixture = Fixture::default();
+    let session = fixture.session("/tmp/orbit", "cache", now - 5 * day, vec![]);
+    // Three days: one request with no cache traffic, one with a measured read,
+    // and a day with no requests at all.
+    fixture.request(session, ("anthropic", "claude"), now - 3 * day, 100, 20, 0, 0);
+    fixture.request(
+        session,
+        ("anthropic", "claude"),
+        now - 2 * day,
+        100,
+        20,
+        300,
+        0,
+    );
+    let index = fixture.build();
+    let snapshot = scope(&index, DateRange::for_preset(RangePreset::Last7, now));
+
+    let series = crate::usage::sparkline::kpi_values(&snapshot.series);
+    let requests = &series[crate::usage::sparkline::KpiMetric::Requests.index()];
+    let tokens = &series[crate::usage::sparkline::KpiMetric::Tokens.index()];
+    let cache = &series[crate::usage::sparkline::KpiMetric::CacheRate.index()];
+
+    assert_eq!(requests.iter().filter(|value| **value == 1.0).count(), 2);
+    assert_eq!(
+        tokens.iter().sum::<f64>(),
+        snapshot.summary.totals.tokens.total as f64
+    );
+    // A bucket whose provider reported no cache traffic is unknown, not 0%.
+    assert!(
+        cache.iter().any(|value| value.is_nan()),
+        "an unmeasured bucket must be a gap"
+    );
+    // cache_read / (input + cache_read + cache_write)
+    assert_eq!(
+        cache.iter().copied().find(|value| value.is_finite()),
+        Some(75.0)
+    );
+}
+
+#[test]
 fn requests_group_by_local_day_across_midnight() {
     let now = anchor();
     let midnight = day_start(now);

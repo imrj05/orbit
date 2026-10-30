@@ -489,6 +489,28 @@ mod tests {
         });
     }
 
+    /// The queue bar's inline editor owns Enter and Escape. Enter must save the
+    /// edited message rather than submit the composer, and Escape must close the
+    /// field rather than abort the run (issue #79) — both bindings are
+    /// registered after the composer's and the global abort's for that reason.
+    #[gpui::test]
+    fn the_queue_edit_field_owns_enter_and_escape(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            crate::bind_keys(cx);
+            let context = "Composer QueueEdit";
+            assert!(bound_action(cx, "enter", context)
+                .unwrap()
+                .as_any()
+                .is::<crate::QueueEditConfirm>());
+            assert!(bound_action(cx, "escape", context)
+                .unwrap()
+                .as_any()
+                .is::<crate::QueueEditCancel>());
+            // Caret keys stay live through the shared `Composer` context.
+            assert!(bound_action(cx, "left", context).is_some());
+        });
+    }
+
     #[test]
     fn idle_hints_show_only_send() {
         for default in [SendMode::FollowUp, SendMode::Steer] {

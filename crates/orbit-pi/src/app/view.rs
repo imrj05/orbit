@@ -101,6 +101,11 @@ fn feature_card(theme: Theme, body: AnyElement) -> AnyElement {
                 .rounded(panel::RADIUS.px(&theme))
                 .border_1()
                 .border_color(theme.border)
+                // The card frame exists over the wallpaper too; only its
+                // surface is translucent, never its text or controls.
+                .when(theme.wallpaper.active, |card| {
+                    card.bg(theme.card_fill(theme.surface_secondary))
+                })
                 .child(body),
         )
         .into_any_element()
@@ -186,6 +191,10 @@ impl Render for OrbitApp {
             self.close_model_selector(window, cx);
         }
         let theme = *theme::get(cx);
+        // Warm or refresh the wallpaper cache before the tree is built. The
+        // call is a no-op while a load is in flight and when the cache key is
+        // current; image work itself runs on the background executor.
+        self.ensure_wallpaper(cx);
         // Diagram layout sizes node boxes from shaped text, and the markdown
         // renderer it runs inside has no `window`; hand it the text system for
         // the duration of this frame.
@@ -543,9 +552,21 @@ impl Render for OrbitApp {
             .size_full()
             .flex()
             .relative()
-            .bg(theme.background)
+            .bg(if sidebar_shown {
+                theme.surface
+            } else {
+                theme.background
+            })
             .text_color(theme.text_primary)
             .font_family(theme::ui_font_family())
+            // One wallpaper layer behind every surface. Hero-only places it in
+            // the main column instead (`new_task_backdrop`); full-window owns
+            // the whole root, so the sidebar's translucent fill reveals it.
+            .children(if theme.wallpaper.full_window {
+                crate::wallpaper::layer(theme, theme::reduce_motion(cx))
+            } else {
+                None
+            })
             // Dropping files anywhere in the window attaches them (the
             // composer highlights when the drag passes over it).
             .on_drop(cx.listener(Self::on_file_drop))
@@ -562,7 +583,7 @@ impl Render for OrbitApp {
                     .flex_none()
                     .h_full()
                     .overflow_hidden()
-                    .bg(theme.surface)
+                    .bg(theme.panel_fill(theme.surface))
                     .child(
                         div()
                             .id("sidebar")
@@ -594,9 +615,21 @@ impl Render for OrbitApp {
                                     .bottom_0()
                                     .right_0()
                                     .w(px(6.))
+                                    .group("sidebar-resize")
                                     .cursor(CursorStyle::ResizeLeftRight)
-                                    .hover(|style| style.bg(theme.accent.opacity(0.4)))
-                                    .on_drag(SidebarResize, |_, _, _, cx| cx.new(|_| DragGhost)),
+                                    .on_drag(SidebarResize, |_, _, _, cx| cx.new(|_| DragGhost))
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .top(panel::RADIUS.px(&theme))
+                                            .bottom(panel::RADIUS.px(&theme))
+                                            .right_0()
+                                            .w(px(1.))
+                                            .bg(theme.border)
+                                            .group_hover("sidebar-resize", |style| {
+                                                style.bg(theme.accent.opacity(0.4))
+                                            }),
+                                    ),
                             )
                             // brand — the wordmark, centred over the nav
                             // column and held to a quiet size. White mark on
@@ -748,8 +781,10 @@ impl Render for OrbitApp {
                                 div()
                                     .id("sidebar-footer")
                                     .debug_selector(|| "sidebar-footer".to_string())
-                                    .h(px(44.))
-                                    .px(px(14.))
+                                    .h(px(48.))
+                                    .flex_none()
+                                    .px(px(12.))
+                                    .bg(theme.panel_fill(theme.surface_secondary))
                                     .border_t_1()
                                     .border_color(theme.border)
                                     .flex()
@@ -769,13 +804,19 @@ impl Render for OrbitApp {
                                             .flex()
                                             .flex_shrink()
                                             .min_w_0()
+                                            .h(px(28.))
                                             .items_center()
                                             .gap(DynamicSpacing::Base06.px(&theme))
                                             .when(!live && !retrying, |status| {
                                                 status
+                                                    .px(px(4.))
+                                                    .rounded(button::RADIUS.px(&theme))
                                                     .cursor_pointer()
                                                     .tip(tr!("view.reconnect"))
-                                                    .hover(|s| s.text_color(theme.text_primary))
+                                                    .hover(|s| {
+                                                        s.bg(theme.surface_hover)
+                                                            .text_color(theme.text_primary)
+                                                    })
                                                     .active(|s| s.opacity(PRESS_DIM))
                                                     .on_mouse_up(
                                                         MouseButton::Left,
@@ -851,7 +892,6 @@ impl Render for OrbitApp {
                     // doesn't slide open on launch.
                     panel
                         .w(px(if open { panel_w } else { 0. }))
-                        .when(open, |p| p.border_r_1().border_color(theme.border))
                         .into_any_element()
                 } else {
                     panel
@@ -865,12 +905,7 @@ impl Render for OrbitApp {
                                 } else {
                                     panel_w * (1.0 - d)
                                 };
-                                let el = el.w(px(w));
-                                if w > 0.5 {
-                                    el.border_r_1().border_color(theme.border)
-                                } else {
-                                    el
-                                }
+                                el.w(px(w))
                             },
                         )
                         .into_any_element()
@@ -1067,7 +1102,7 @@ impl Render for OrbitApp {
                                                 .id("composer-box")
                                                 .w_full()
                                                 .relative()
-                                                .bg(theme.surface_secondary)
+                                                .bg(theme.card_fill(theme.surface_secondary))
                                                 .border_1()
                                                 .border_color(if self.file_drag_hovered {
                                                     theme.accent
@@ -1167,10 +1202,22 @@ impl Render for OrbitApp {
                     .min_w_0()
                     .min_h_0()
                     .relative()
+                    // Full-window wallpaper shows through the main column; in
+                    // every other mode this resolves to the same opaque
+                    // background the window already paints.
+                    .bg(theme.panel_fill(theme.background))
+                    .when(sidebar_shown, |main| {
+                        main.rounded_l(panel::RADIUS.px(&theme))
+                    })
                     .children(if feature_open || pane_full {
                         None
                     } else {
-                        self.new_task_backdrop(theme, self.backdrop_phase, empty)
+                        self.new_task_backdrop(
+                            theme,
+                            self.backdrop_phase,
+                            empty,
+                            theme::reduce_motion(cx),
+                        )
                     })
                     .children(if feature_open || pane_full {
                         None
@@ -1477,6 +1524,134 @@ impl OrbitApp {
             .flex_col()
             .gap(DynamicSpacing::Base06.px(&theme));
         for widget in items {
+            if widget.key == "orbit-follow-up-suggestions" {
+                if !self.suggestions.enabled
+                    || self.busy
+                    || !self.input.read(cx).text().is_empty()
+                    || self.attachment_slots_used() > 0
+                {
+                    continue;
+                }
+                let Some(payload) = widget
+                    .lines
+                    .first()
+                    .and_then(|line| serde_json::from_str::<Value>(line).ok())
+                else {
+                    continue;
+                };
+                if payload.get("mode").and_then(Value::as_str) != Some(self.access_mode.as_wire())
+                    || payload.get("workflow").and_then(Value::as_str)
+                        != Some(self.workflow_mode.as_wire())
+                {
+                    continue;
+                }
+                let Some(suggestions) = payload.get("suggestions").and_then(Value::as_array) else {
+                    continue;
+                };
+                // One row of chips, side by side: a suggestion is a prompt
+                // the user scans and picks, not something to read in place.
+                let mut list = div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_row()
+                    .gap(DynamicSpacing::Base04.px(&theme));
+                let mut count = 0;
+                for (index, suggestion) in suggestions.iter().take(3).enumerate() {
+                    let Some(text) = suggestion
+                        .as_str()
+                        .filter(|text| !text.is_empty() && text.len() <= 180)
+                    else {
+                        continue;
+                    };
+                    let text = text.to_owned();
+                    let selected = text.clone();
+                    let keyboard_text = text.clone();
+                    count += 1;
+                    list = list.child(
+                        div()
+                            .id(ElementId::Name(format!("suggestion-{index}").into()))
+                            .debug_selector(move || format!("follow-up-suggestion-{index}"))
+                            .focusable()
+                            .focus(|style| style.border_color(theme.focus_ring))
+                            .on_key_down(cx.listener(
+                                move |app, event: &gpui::KeyDownEvent, window, cx| {
+                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                        cx.stop_propagation();
+                                        app.insert_suggestion(&keyboard_text, window, cx);
+                                    }
+                                },
+                            ))
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .flex()
+                            .items_center()
+                            .px(DynamicSpacing::Base08.px(&theme))
+                            .py(DynamicSpacing::Base04.px(&theme))
+                            .rounded(panel::RADIUS.px(&theme))
+                            .border_1()
+                            .border_color(theme.border)
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_secondary)
+                            .tip(text.clone())
+                            .cursor_pointer()
+                            .hover(|style| style.bg(theme.overlay))
+                            .on_click(cx.listener(move |app, _, window, cx| {
+                                app.insert_suggestion(&selected, window, cx);
+                            }))
+                            // The chip shows the start of the suggestion;
+                            // the complete text stays on hover, and the
+                            // suggestion is inserted unchanged on activation.
+                            .child(
+                                div()
+                                    .debug_selector(move || format!("follow-up-text-{index}"))
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(text),
+                            ),
+                    );
+                }
+                if count > 0 {
+                    let close = icon_button_frame(
+                        div().id("dismiss-follow-up-suggestions"),
+                        &theme,
+                        ButtonSize::Compact,
+                    )
+                    .debug_selector(|| "dismiss-follow-up-suggestions".to_string())
+                    .focusable()
+                    .focus(|style| style.border_1().border_color(theme.focus_ring))
+                    .tip(tr!("common.dismiss"))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(theme.overlay_strong))
+                    .child(icon(
+                        "icons/x.svg",
+                        ButtonSize::Compact.icon_size().px(&theme),
+                        theme.text_muted,
+                    ))
+                    .on_key_down(cx.listener(|app, event: &gpui::KeyDownEvent, window, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            cx.stop_propagation();
+                            app.dismiss_suggestions(window, cx);
+                        }
+                    }))
+                    .on_click(cx.listener(|app, _, window, cx| {
+                        app.dismiss_suggestions(window, cx);
+                    }));
+                    column = column.child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .items_start()
+                            .gap(DynamicSpacing::Base04.px(&theme))
+                            .pb(DynamicSpacing::Base04.px(&theme))
+                            .child(list)
+                            .child(close),
+                    );
+                }
+                continue;
+            }
             let mut card = div()
                 .id(ElementId::Name(format!("ext-widget-{}", widget.key).into()))
                 .w_full()
@@ -1500,6 +1675,37 @@ impl OrbitApp {
             column = column.child(card);
         }
         Some(column.into_any_element())
+    }
+
+    /// Drop the follow-up suggestion chips. Every path that changes what they
+    /// were generated for (a new run, a mode switch, a settings toggle) calls
+    /// this, so the key lives here alone.
+    pub(super) fn clear_follow_up_suggestions(&mut self) {
+        self.extension_widgets
+            .retain(|widget| widget.key != "orbit-follow-up-suggestions");
+    }
+
+    pub(super) fn dismiss_suggestions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.clear_follow_up_suggestions();
+        self.input.read(cx).focus(window);
+        cx.notify();
+    }
+
+    fn insert_suggestion(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.suggestions.enabled
+            && !self.busy
+            && self.input.read(cx).text().is_empty()
+            && self.attachment_slots_used() == 0
+            && self
+                .extension_widgets
+                .iter()
+                .any(|widget| widget.key == "orbit-follow-up-suggestions")
+        {
+            self.input.update(cx, |input, cx| input.set_text(text, cx));
+            self.clear_follow_up_suggestions();
+            self.input.read(cx).focus(window);
+            cx.notify();
+        }
     }
 
     /// Bottom row inside the composer: the "+" add menu and the access-mode
@@ -2312,33 +2518,55 @@ impl OrbitApp {
         )
     }
 
-    /// The new-task backdrop layer: the configured dithered image, or the
-    /// default dot grid, absolutely filling the whole chat column below the
-    /// top bar — behind the empty state, the floating composer, and the
-    /// status bar alike, so the picture is continuous behind all three.
+    /// The new-task backdrop layer: the configured wallpaper, or the default
+    /// dot grid, absolutely filling the whole chat column below the top bar —
+    /// behind the empty state, the floating composer, and the status bar
+    /// alike, so the surface is continuous behind all three.
     ///
     /// It lives here rather than inside the empty state because the empty
     /// state is only the `flex_1` slot above the composer: a backdrop scoped
     /// to it ended at the composer's top edge and left the bottom of the
-    /// window on a flat slab, at every fade setting including "None". The
-    /// active chat paints the quiet [`Self::chat_backdrop`] wash instead —
-    /// the living field is the new-task page's own.
+    /// window on a flat slab. The active chat paints the quiet
+    /// [`Self::chat_backdrop`] wash instead — the living field is the
+    /// new-task page's own.
     pub(super) fn new_task_backdrop(
         &mut self,
         theme: Theme,
         phase: f32,
         empty: bool,
+        reduce_motion: bool,
     ) -> Option<AnyElement> {
         if !empty {
             return None;
         }
-        let backdrop = Self::dither_backdrop(theme);
-        let dithered = backdrop.is_some();
-        // Only the procedural field animates: a configured photo is a still,
-        // so the heartbeat must not repaint this page for it. `render` clears
-        // the flag before this runs, so a frame that skips the backdrop leaves
-        // it false.
-        self.backdrop_live = !dithered;
+        // A configured wallpaper owns this region. Full-window paints it at
+        // the root (behind the sidebar too); hero-only paints exactly this
+        // backdrop rect, below the shared top bar. With no wallpaper, the
+        // procedural dot field is the page's only backdrop.
+        let wallpaper = crate::wallpaper::settings();
+        if wallpaper.enabled() {
+            self.backdrop_live = false;
+            if wallpaper.mode == crate::wallpaper::WallpaperMode::FullWindow {
+                return None;
+            }
+            return Some(
+                div()
+                    .id("new-task-backdrop")
+                    .debug_selector(|| "new-task-backdrop".to_string())
+                    .absolute()
+                    .top(px(TOP_BAR_H))
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .children(crate::wallpaper::layer(theme, reduce_motion))
+                    .into_any_element(),
+            );
+        }
+        // The procedural field animates; a wallpaper is a still, so the
+        // heartbeat only runs on the no-wallpaper path. `render` clears the
+        // flag before this runs, so a frame that skips the backdrop leaves it
+        // false.
+        self.backdrop_live = true;
         Some(
             div()
                 .id("new-task-backdrop")
@@ -2348,10 +2576,7 @@ impl OrbitApp {
                 .left_0()
                 .right_0()
                 .bottom_0()
-                .when(!dithered, |layer| {
-                    layer.child(crate::backdrop::layer(theme, phase))
-                })
-                .children(backdrop)
+                .child(crate::backdrop::layer(theme, phase))
                 .into_any_element(),
         )
     }
@@ -2367,6 +2592,12 @@ impl OrbitApp {
     pub(super) fn chat_backdrop(&self, theme: Theme, empty: bool) -> Option<AnyElement> {
         if empty {
             // The new-task page shows its own living backdrop.
+            return None;
+        }
+        // Full-window wallpaper is the page's backdrop; the accent wash would
+        // only add a second tint over it. Hero-only never reaches the chat
+        // column, so the existing wash stays.
+        if theme.wallpaper.full_window {
             return None;
         }
         Some(
@@ -2412,69 +2643,15 @@ impl OrbitApp {
         )
     }
 
-    /// The configured dithered background image, absolutely filling its
-    /// parent — the new-task column, via [`Self::new_task_backdrop`].
-    pub(super) fn dither_backdrop(theme: Theme) -> Option<AnyElement> {
-        Self::backdrop_image(crate::dither::background(), crate::dither::tuning(), theme)
-    }
-
-    /// Wrap a dithered image so it fills its parent and nothing else, then
-    /// drop it into the page: a bottom gradient to `background` so the picture
-    /// fades out under the composer instead of ending on a hard edge. The
-    /// fade height comes from the backdrop's own tuning (Settings →
-    /// Appearance); `None` skips the gradient entirely rather than painting
-    /// a zero-height one.
-    ///
-    /// The wrapper clips: gpui's `ObjectFit::Cover` scales the image up and
-    /// centers it, returning bounds *larger* than the element whenever the
-    /// ratios differ — a 16:9 image in a narrower main area painted its
-    /// overflow over the sessions sidebar until this clip was added.
-    pub(super) fn backdrop_image(
-        image: Option<std::sync::Arc<gpui::RenderImage>>,
-        tuning: crate::dither::Tuning,
-        theme: Theme,
-    ) -> Option<AnyElement> {
-        image.map(|image| {
-            div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .right_0()
-                .bottom_0()
-                .overflow_hidden()
-                .child(img(image).size_full().object_fit(ObjectFit::Cover))
-                .when(tuning.fade > 0., |backdrop| {
-                    backdrop.child(
-                        div()
-                            .id("backdrop-fade")
-                            .debug_selector(|| "backdrop-fade".to_string())
-                            .absolute()
-                            .left_0()
-                            .right_0()
-                            .bottom_0()
-                            // Proportional, so the drop stays put as the window
-                            // resizes instead of turning into a band.
-                            .h(relative(tuning.fade))
-                            .bg(linear_gradient(
-                                180.,
-                                linear_color_stop(theme.background.opacity(0.), 0.),
-                                linear_color_stop(theme.background.opacity(tuning.fade_peak()), 1.),
-                            )),
-                    )
-                })
-                .into_any_element()
-        })
-    }
-
-    /// The dithered field at rest, for surfaces that show it as a thumbnail
-    /// (Settings → Appearance's backdrop strip) rather than the live page.
+    /// The dot field at rest, for surfaces that show it as a thumbnail
+    /// (Settings → Appearance's wallpaper preview) rather than the live page.
     pub(super) fn dot_backdrop(theme: Theme) -> impl IntoElement + use<> {
         crate::backdrop::layer(theme, 0.)
     }
 
     /// New-task empty state — minimal onboarding over the backdrop the caller
-    /// paints (the configured dithered image, or the dot grid): one headline,
-    /// a ghost workspace row, and the composer below for input.
+    /// paints (the configured wallpaper, or the dot grid): one headline, a
+    /// ghost workspace row, and the composer below for input.
     ///
     /// `main_width` comes from the caller (window minus sidebar/pane) because
     /// the field below gets a definite width: `w_full().max_w(_)` chains
@@ -2626,7 +2803,7 @@ impl OrbitApp {
                                                     } else {
                                                         theme.border
                                                     })
-                                                    .bg(theme.surface_elevated)
+                                                    .bg(theme.card_fill(theme.surface_elevated))
                                                     .flex()
                                                     .items_center()
                                                     .gap(px(10.))
@@ -3756,7 +3933,7 @@ impl OrbitApp {
             .child(icon(
                 "icons/search.svg",
                 ButtonSize::Medium.icon_size().px(&theme),
-                theme.text_muted,
+                theme.text_secondary,
             ));
         // Usage — opens (or leaves) the Usage page (⌘U).
         let usage = icon_button_frame(div().id("sidebar-usage"), &theme, ButtonSize::Medium)
@@ -3778,7 +3955,7 @@ impl OrbitApp {
                 if self.usage_open {
                     theme.text_primary
                 } else {
-                    theme.text_muted
+                    theme.text_secondary
                 },
             ));
         // Settings — toggles the Settings surface (⌘,).
@@ -3801,7 +3978,7 @@ impl OrbitApp {
                 if self.settings_open {
                     theme.text_primary
                 } else {
-                    theme.text_muted
+                    theme.text_secondary
                 },
             ));
         div()
@@ -4113,7 +4290,7 @@ impl OrbitApp {
                     .rounded(panel::RADIUS.px(&theme))
                     .border_1()
                     .border_color(theme.border)
-                    .bg(theme.surface_elevated)
+                    .bg(theme.card_fill(theme.surface_elevated))
                     .flex()
                     .items_center()
                     .gap(DynamicSpacing::Base08.px(&theme))
@@ -4163,7 +4340,7 @@ impl OrbitApp {
                     .rounded(panel::RADIUS.px(&theme))
                     .border_1()
                     .border_color(theme.border)
-                    .bg(theme.surface_elevated)
+                    .bg(theme.card_fill(theme.surface_elevated))
                     .flex()
                     .items_center()
                     .gap(DynamicSpacing::Base08.px(&theme))
@@ -4674,7 +4851,7 @@ impl OrbitApp {
             .rounded(panel::RADIUS.px(&theme))
             .border_1()
             .border_color(theme.accent.opacity(0.3))
-            .bg(theme.surface_elevated)
+            .bg(theme.card_fill(theme.surface_elevated))
             .flex()
             .items_center()
             .gap(px(10.))
@@ -4747,6 +4924,9 @@ impl OrbitApp {
     /// queued as follow-ups here and delivered once the task finishes;
     /// `queue_update` mirrors the list live. One raised card in the sibling
     /// strips' shape, a quiet label header, and flat hairline-separated rows.
+    ///
+    /// Each row can be edited in place or promoted ahead of the rest of the
+    /// queue (issue #79); one row at a time is open in an inline field.
     pub(super) fn queue_bar(&self, cx: &Context<Self>) -> Option<AnyElement> {
         if self.queue.is_empty() {
             return None;
@@ -4771,11 +4951,14 @@ impl OrbitApp {
         };
 
         let mut rows: Vec<AnyElement> = Vec::with_capacity(count);
-        for text in &self.queue.steering {
-            rows.push(queue_row(&tr!("view.queue_steer"), text, false, theme));
-        }
-        for text in &self.queue.follow_up {
-            rows.push(queue_row(&tr!("view.queue_follow_up"), text, true, theme));
+        for (lane, kind) in [
+            (QueueLane::Steer, tr!("view.queue_steer")),
+            (QueueLane::FollowUp, tr!("view.queue_follow_up")),
+        ] {
+            for (index, text) in self.queue.lane(lane).iter().enumerate() {
+                let target = QueuedMessage { lane, index };
+                rows.push(self.queue_row(target, &kind, text, theme, cx));
+            }
         }
 
         Some(
@@ -4792,6 +4975,11 @@ impl OrbitApp {
                 .flex_col()
                 // Clip the rows' hairline separators to the rounded corners.
                 .overflow_hidden()
+                // The inline editor's own key context, so Enter saves the
+                // message instead of submitting the composer.
+                .key_context("QueueEdit")
+                .on_action(cx.listener(Self::on_queue_edit_confirm))
+                .on_action(cx.listener(Self::on_queue_edit_cancel))
                 .child(
                     // A clock, `QUEUED · 2`, and the one action: a compact
                     // dismiss. No second button, no sentence in the header.
@@ -4842,6 +5030,263 @@ impl OrbitApp {
                 .children(rows)
                 .into_any_element(),
         )
+    }
+
+    /// One pending-message row: the lane label, the message, and that
+    /// message's two actions (edit, send now). Flat, with no border or fill of
+    /// its own — the bar around it is already the raised surface, and a card
+    /// inside a card doubles the chrome (DESIGN.md's card budget).
+    ///
+    /// The row under edit swaps its text for an inline field with Save and
+    /// Cancel, keeping its lane label so the message never loses its context.
+    fn queue_row(
+        &self,
+        target: QueuedMessage,
+        kind: &str,
+        text: &str,
+        theme: Theme,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        // The open editor, but only while its message is still queued: the
+        // target is an index into a list pi owns, so a delivery or a settle can
+        // strand it between events.
+        let edit = self
+            .queue_edit
+            .as_ref()
+            .filter(|edit| self.queued_message(edit.target).is_some());
+        let steer = target.lane == QueueLane::Steer;
+        // Only one row is edited at a time, and its siblings' actions would
+        // re-index under it, so they stay out of the way until it closes.
+        let actions_inert = edit.is_some();
+        // Steering is already delivered before the next model call, so the
+        // row that leads that lane is as early as the protocol can get.
+        let can_promote = !(steer && target.index == 0);
+        // One number for the row's element ids, steering rows first.
+        let slot = queue_row_slot(&self.queue, target);
+        let row_id = ElementId::NamedInteger("queue-row".into(), slot);
+
+        let label = div()
+            .flex_none()
+            .whitespace_nowrap()
+            .pt(px(1.))
+            .text_size(TextSize::XSmall.px(&theme))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(if steer {
+                theme.accent_text
+            } else {
+                theme.text_muted
+            })
+            .child(kind.to_uppercase());
+
+        let body: AnyElement = match edit {
+            Some(edit) if edit.target == target => {
+                let draft = edit.input.read(cx).text();
+                let save_live = !draft.trim().is_empty();
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap(DynamicSpacing::Base04.px(&theme))
+                    .child(
+                        input_field_frame(div(), &theme)
+                            .flex_1()
+                            .min_w_0()
+                            .bg(theme.background)
+                            .overflow_hidden()
+                            .child(edit.input.clone()),
+                    )
+                    .child(
+                        icon_button_frame(
+                            div().id(ElementId::NamedInteger("queue-edit-save".into(), slot)),
+                            &theme,
+                            ButtonSize::Compact,
+                        )
+                        .debug_selector(move || format!("queue-row-{slot}-edit-save"))
+                        .when(save_live, |button| {
+                            button
+                                .group(BUTTON_GROUP)
+                                .tip(tr!("view.queue_save"))
+                                .cursor_pointer()
+                                .text_color(theme.accent_text)
+                                .hover(|s| s.bg(theme.surface_hover))
+                                .on_mouse_up(
+                                    MouseButton::Left,
+                                    cx.listener(Self::on_queue_edit_save),
+                                )
+                        })
+                        .child(icon(
+                            "icons/check.svg",
+                            ButtonSize::Compact.icon_size().px(&theme),
+                            if save_live {
+                                theme.accent_text
+                            } else {
+                                theme.text_muted.opacity(0.5)
+                            },
+                        )),
+                    )
+                    .child(
+                        icon_button_frame(
+                            div().id(ElementId::NamedInteger("queue-edit-cancel".into(), slot)),
+                            &theme,
+                            ButtonSize::Compact,
+                        )
+                        .debug_selector(move || format!("queue-row-{slot}-edit-cancel"))
+                        .group(BUTTON_GROUP)
+                        .tip(tr!("view.queue_cancel"))
+                        .cursor_pointer()
+                        .text_color(theme.text_muted)
+                        .hover(|s| s.bg(theme.surface_hover).text_color(theme.text_primary))
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(Self::on_queue_edit_cancel_click),
+                        )
+                        .child(icon(
+                            "icons/x.svg",
+                            ButtonSize::Compact.icon_size().px(&theme),
+                            theme.text_muted,
+                        )),
+                    )
+                    .into_any_element()
+            }
+            _ => div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .items_start()
+                .gap(DynamicSpacing::Base04.px(&theme))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .line_clamp(2)
+                        .text_size(TextSize::Small.px(&theme))
+                        .line_height(theme.ui_px(16.))
+                        .text_color(theme.text_primary)
+                        .child(text.to_string()),
+                )
+                .when(!actions_inert, |row| {
+                    row.child(
+                        // Two quiet icon actions sit at the row's right edge,
+                        // in the same register as the header's clear control.
+                        div()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(px(2.))
+                            .child(
+                                icon_button_frame(
+                                    div().id(ElementId::NamedInteger("queue-edit".into(), slot)),
+                                    &theme,
+                                    ButtonSize::Compact,
+                                )
+                                .debug_selector(move || format!("queue-row-{slot}-edit"))
+                                .group(BUTTON_GROUP)
+                                .tip(tr!("view.queue_edit"))
+                                .cursor_pointer()
+                                .text_color(theme.text_muted)
+                                .hover(|s| s.bg(theme.surface_hover).text_color(theme.text_primary))
+                                .on_mouse_up(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _, window, cx| {
+                                        this.begin_queue_edit(target, window, cx);
+                                    }),
+                                )
+                                .child(icon(
+                                    "icons/pencil.svg",
+                                    ButtonSize::Compact.icon_size().px(&theme),
+                                    theme.text_muted,
+                                )),
+                            )
+                            .when(can_promote, |actions| {
+                                actions.child(
+                                    icon_button_frame(
+                                        div().id(ElementId::NamedInteger(
+                                            "queue-send-now".into(),
+                                            slot,
+                                        )),
+                                        &theme,
+                                        ButtonSize::Compact,
+                                    )
+                                    .debug_selector(move || format!("queue-row-{slot}-send-now"))
+                                    .group(BUTTON_GROUP)
+                                    .tip(tr!("view.queue_send_now"))
+                                    .cursor_pointer()
+                                    .text_color(theme.text_muted)
+                                    .hover(|s| {
+                                        s.bg(theme.surface_hover).text_color(theme.accent_text)
+                                    })
+                                    .on_mouse_up(
+                                        MouseButton::Left,
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.send_queued_now(target, cx)
+                                        }),
+                                    )
+                                    .child(icon(
+                                        "icons/arrow-up-right.svg",
+                                        ButtonSize::Compact.icon_size().px(&theme),
+                                        theme.text_muted,
+                                    )),
+                                )
+                            }),
+                    )
+                })
+                .into_any_element(),
+        };
+
+        div()
+            .id(row_id)
+            .debug_selector(move || match target.lane {
+                QueueLane::Steer => format!("queue-row-steer-{}", target.index),
+                QueueLane::FollowUp => format!("queue-row-follow-up-{}", target.index),
+            })
+            .w_full()
+            .flex()
+            .items_start()
+            .gap(px(10.))
+            .px(DynamicSpacing::Base12.px(&theme))
+            .py(px(7.))
+            .border_t_1()
+            .border_color(theme.border)
+            .child(label)
+            .child(body)
+            .into_any_element()
+    }
+
+    fn on_queue_edit_confirm(
+        &mut self,
+        _: &crate::QueueEditConfirm,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.commit_queue_edit(window, cx);
+    }
+
+    fn on_queue_edit_cancel(
+        &mut self,
+        _: &crate::QueueEditCancel,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.cancel_queue_edit(window, cx);
+    }
+
+    fn on_queue_edit_save(
+        &mut self,
+        _: &MouseUpEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.commit_queue_edit(window, cx);
+    }
+
+    fn on_queue_edit_cancel_click(
+        &mut self,
+        _: &MouseUpEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.cancel_queue_edit(window, cx);
     }
 
     /// The dismissible error banner: a command / protocol / extension failure

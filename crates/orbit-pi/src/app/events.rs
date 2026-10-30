@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::composer_ops::QueuedPath;
 use crate::app::sidebar::{clear_review_mark, should_mark_review};
 use crate::toast::ToastKind;
 
@@ -135,6 +136,7 @@ impl OrbitApp {
             self.runtime.alive = client.is_alive();
         }
         // Images pasted in the composer become message attachments.
+        self.drain_pasted_files(cx);
         self.drain_pasted_images(cx);
         // Long pastes become collapsible pills above the composer.
         self.drain_pasted_texts(cx);
@@ -181,6 +183,7 @@ impl OrbitApp {
             }
             match event {
                 Event::AgentStart => {
+                    self.clear_follow_up_suggestions();
                     self.busy = true;
                 }
                 // An extension dialog blocks the run until the client answers.
@@ -251,6 +254,13 @@ impl OrbitApp {
                             .map(str::to_string)
                             .unwrap_or_else(|| tr!("events.retries_exhausted"));
                         self.set_error(tr!("events.auto_retry_failed", error = error));
+                    } else if cancelled {
+                        // A retry the user stopped is a quiet stop, not the
+                        // failure the attempt before it left behind: retire
+                        // both its card and the held error so the settle that
+                        // follows reports neither (issue #96).
+                        self.pending_agent_error = None;
+                        self.transcript.mark_turn_aborted();
                     }
                 }
                 Event::QueueUpdate { value } => {
@@ -263,6 +273,9 @@ impl OrbitApp {
                     if confirmed {
                         self.pending_follow_up = None;
                     }
+                    // An open inline editor follows its message to whatever
+                    // position pi now reports, or closes once it is gone.
+                    self.reanchor_queue_edit(cx);
                 }
                 Event::ExtensionError { value } => {
                     let path = value
@@ -303,6 +316,18 @@ impl OrbitApp {
                     // A settled run has no queued continuation left; clear the
                     // bar even if the final `queue_update` was missed.
                     self.queue = PendingQueue::default();
+                    self.queue_edit = None;
+                    // The run is over, so this is where a failure it ended on
+                    // is reported — never per attempt. A stop the user asked
+                    // for is not a failure, and its held error is dropped
+                    // (issue #96).
+                    match (aborted, self.pending_agent_error.take()) {
+                        (false, Some(error)) => self.set_error_from(
+                            AGENT_ERROR_SOURCE,
+                            tr!("events.agent_error", error = error),
+                        ),
+                        _ => self.clear_error_from(AGENT_ERROR_SOURCE),
+                    }
                     refresh_sessions = true;
                     self.refresh_context_stats();
                     #[cfg(debug_assertions)]
@@ -364,6 +389,10 @@ impl OrbitApp {
                     self.retry_detail = None;
                     self.pending_follow_up = None;
                     self.queue = PendingQueue::default();
+                    self.queue_edit = None;
+                    // The departing process's held agent error cannot belong
+                    // to the next run.
+                    self.pending_agent_error = None;
                     // The run is gone; its dialog (if any) can never be
                     // answered, so drop it without a reply.
                     self.dialog = None;
@@ -391,18 +420,20 @@ impl OrbitApp {
                 Event::MessageEnd { value } => {
                     // A failed LLM call ends the assistant message with
                     // `stopReason: "error"` + `errorMessage` (e.g. an
-                    // unsupported model). Surface it in the banner; the
-                    // transcript renders the same text inline.
-                    if let Some(error) = transcript::message_error(value) {
-                        self.set_error_from(
-                            AGENT_ERROR_SOURCE,
-                            tr!("events.agent_error", error = error),
-                        );
-                    } else {
-                        // The next attempt produced a message — clear the
-                        // stale agent-error banner. Matched by source, so a
-                        // language change never strands it (issue #76).
-                        self.clear_error_from(AGENT_ERROR_SOURCE);
+                    // unsupported model). Hold it for the settle rather than
+                    // raising it now: pi retries a transient provider failure
+                    // on the same turn, and the next attempt may recover, so
+                    // only the settle knows whether the run really ended here
+                    // (issue #96).
+                    match transcript::message_error(value) {
+                        Some(error) => self.pending_agent_error = Some(error),
+                        None => {
+                            // The next attempt produced a message — retire the
+                            // stale agent-error banner. Matched by source, so a
+                            // language change never strands it (issue #76).
+                            self.pending_agent_error = None;
+                            self.clear_error_from(AGENT_ERROR_SOURCE);
+                        }
                     }
                     // Real edit stats from finalized tool calls.
                     let (a, r) = transcript::diff_from_message(value);
@@ -1200,8 +1231,16 @@ impl OrbitApp {
                     }
                 }
                 // `queue_update` mirrors the same fact; this keeps the row
-                // correct even if the event is missed.
-                self.queue = queue;
+                // correct even if the event is missed. A queue the app itself
+                // rebuilt is the exception: this echo carries the list from
+                // *before* the rebuild, so applying it would blink the old rows
+                // back in. The `queue_update`s that follow are authoritative.
+                if !std::mem::take(&mut self.queue_replaced) {
+                    self.queue = queue;
+                    // The dropped messages are gone, so an inline editor on one
+                    // of them has nothing left to save.
+                    self.reanchor_queue_edit(cx);
+                }
             }
             _ => {
                 let _ = success;
@@ -1293,6 +1332,20 @@ impl OrbitApp {
             // A snapshot landed: no need for fast bootstrap polls.
             self.quota_entries_bootstrap = 0;
             cx.notify();
+        }
+    }
+
+    /// Queue copied files using the same attachment rules as file drops.
+    pub(super) fn drain_pasted_files(&mut self, cx: &mut Context<Self>) {
+        let paths = self
+            .input
+            .update(cx, |input, _| std::mem::take(&mut input.pasted_files));
+        for path in paths {
+            if self.attachment_budget_exhausted() {
+                self.report_attachment_limit();
+                break;
+            }
+            self.queue_path(QueuedPath::classify(&path), None, cx);
         }
     }
 

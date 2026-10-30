@@ -118,7 +118,8 @@ def main(apply: bool):
     files.sort()
 
     for path in files:
-        src = open(path, encoding="utf-8").read()
+        with open(path, encoding="utf-8") as source:
+            src = source.read()
         # Split off the test module so we never touch fixtures/assertions.
         cut = len(src)
         for marker in ("\n#[cfg(test)]", "\nmod tests {"):
@@ -158,7 +159,8 @@ def main(apply: bool):
         for _, pat in PATTERNS:
             head = pat.sub(repl, head)
         if apply:
-            open(path, "w", encoding="utf-8").write(head + tail)
+            with open(path, "w", encoding="utf-8") as output:
+                output.write(head + tail)
         else:
             for line in head.splitlines():
                 if 'tr!("' in line and line not in src:

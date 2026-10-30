@@ -1,19 +1,20 @@
 //! The usage timeline.
 //!
 //! The plot is drawn with GPUI's own `canvas`: a dashed grid, a filled area and
-//! a straight stroke, in the app's palette. Orbit keeps the parts a general
+//! a smooth stroke, in the app's palette. Orbit keeps the parts a general
 //! chart library cannot know: the compact y-axis figures, the hover marker and
 //! the readout card — the page's own interaction, in the page's own type
 //! (§18/§56).
 //!
-//! Restraint is the point (§17): one accent, straight segments, no rainbow.
+//! Restraint is the point (§17): one accent, no rainbow.
 //! The chart is a measurement, not a poster.
 
-use std::rc::Rc;
+use std::{cell::Cell, rc::Rc, time::Duration};
 
 use gpui::{
-    canvas, div, fill, point, prelude::*, px, relative, size, AnyElement, App, Bounds, ElementId,
-    FontWeight, Hsla, IntoElement, MouseButton, PathBuilder, SharedString, Window,
+    canvas, div, fill, linear_color_stop, linear_gradient, point, prelude::*, px, relative, size,
+    Animation, AnimationExt, AnyElement, App, Bounds, ContentMask, ElementId, FontWeight, Hsla,
+    IntoElement, MouseButton, PathBuilder, SharedString, Window,
 };
 
 use super::aggregate::{ChartMetric, LatencyMetric, TimeSeries};
@@ -98,15 +99,39 @@ pub fn timeline(
     hover: Option<usize>,
     selected: Option<usize>,
     theme: Theme,
+    reduced_motion: bool,
     on_hover: impl Fn(Option<usize>, &mut Window, &mut App) + 'static,
     on_select: impl Fn(usize, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     let values: Vec<f64> = series
         .points
         .iter()
-        .map(|point| point_value(metric, latency_metric, point))
+        .map(|point| {
+            let value = point_value(metric, latency_metric, point);
+            if value.is_finite() {
+                value.max(0.0)
+            } else {
+                0.0
+            }
+        })
         .collect();
-    let max = nice_max(values.iter().copied().fold(0.0, f64::max));
+    let band: Vec<Option<(f64, f64)>> = series
+        .points
+        .iter()
+        .map(|point| {
+            let latency = &point.latency;
+            (metric == ChartMetric::Latency && latency.has_percentiles())
+                .then_some((latency.p50_ms as f64, latency.p95_ms as f64))
+        })
+        .collect();
+    let max = nice_max(
+        values
+            .iter()
+            .copied()
+            .chain(band.iter().flatten().map(|(_, upper)| *upper))
+            .fold(0.0, f64::max),
+    );
+    let show_band = band.windows(2).any(|pair| pair.iter().all(Option::is_some));
     let hover = hover.filter(|ix| *ix < values.len());
     let selected = selected.filter(|ix| *ix < values.len());
     let count = values.len();
@@ -193,9 +218,11 @@ pub fn timeline(
         // The plot itself: grid, area and stroke, painted by the canvas.
         .child(div().absolute().inset_0().child(plot_canvas(
             values.clone(),
+            band,
             max,
             accent,
             theme.border,
+            reduced_motion,
         )))
         // The x labels, in the axis strip below the plot.
         .child(x_axis_labels(series, count, tick_margin, theme))
@@ -226,6 +253,15 @@ pub fn timeline(
         .flex()
         .flex_col()
         .child(div().w_full().flex().items_start().child(axis).child(plot))
+        .when(show_band, |chart| {
+            chart.child(
+                div()
+                    .pl(px(Y_AXIS_W))
+                    .text_size(TextSize::XSmall.px(&theme))
+                    .text_color(theme.text_muted)
+                    .child("P50–P95"),
+            )
+        })
 }
 
 /// The plot's geometry, painted directly: a dashed grid, the baseline, the
@@ -233,8 +269,17 @@ pub fn timeline(
 ///
 /// Points sit at their bucket's center, so the marker and the selection band —
 /// both positioned from the same fractions — land on the line (§73).
-fn plot_canvas(values: Vec<f64>, max: f64, accent: Hsla, grid: Hsla) -> AnyElement {
-    canvas(
+fn plot_canvas(
+    values: Vec<f64>,
+    band: Vec<Option<(f64, f64)>>,
+    max: f64,
+    accent: Hsla,
+    grid: Hsla,
+    reduced_motion: bool,
+) -> AnyElement {
+    let reveal = Rc::new(Cell::new(1.0_f32));
+    let paint_reveal = reveal.clone();
+    let canvas = canvas(
         |_, _, _| (),
         move |bounds: Bounds<gpui::Pixels>, _, window, _| {
             let width = f32::from(bounds.size.width);
@@ -269,33 +314,142 @@ fn plot_canvas(values: Vec<f64>, max: f64, accent: Hsla, grid: Hsla) -> AnyEleme
             let x_at = |i: usize| (i as f32 + 0.5) / n as f32 * width;
             let y_at = |v: f64| plot_h * (1.0 - (v / max.max(f64::EPSILON)).clamp(0.0, 1.0) as f32);
 
-            // Area: the line, down to the baseline and closed.
+            // Both paths use the same shape, so the fill and stroke meet exactly.
+            // Horizontal control tangents keep each segment within its endpoints,
+            // including at peaks and valleys, without inventing extra extrema.
+            let trace = |path: &mut PathBuilder| {
+                path.move_to(at(x_at(0), y_at(values[0])));
+                for i in 1..n {
+                    let x0 = x_at(i - 1);
+                    let x1 = x_at(i);
+                    let (a, b) = curve_controls(x0, y_at(values[i - 1]), x1, y_at(values[i]));
+                    path.cubic_bezier_to(at(x1, y_at(values[i])), at(a.0, a.1), at(b.0, b.1));
+                }
+            };
             let mut area = PathBuilder::fill();
-            area.move_to(at(x_at(0), y_at(values[0])));
-            for (i, v) in values.iter().enumerate().skip(1) {
-                area.line_to(at(x_at(i), y_at(*v)));
-            }
+            trace(&mut area);
             area.line_to(at(x_at(n - 1), plot_h));
             area.line_to(at(x_at(0), plot_h));
             area.close();
-            if let Ok(path) = area.build() {
-                window.paint_path(path, accent.opacity(0.14));
-            }
-
-            // The line itself.
-            let mut line = PathBuilder::stroke(px(1.));
-            line.move_to(at(x_at(0), y_at(values[0])));
-            for (i, v) in values.iter().enumerate().skip(1) {
-                line.line_to(at(x_at(i), y_at(*v)));
-            }
-            if let Ok(path) = line.build() {
-                window.paint_path(path, accent);
-            }
+            let mut line = PathBuilder::stroke(px(1.5));
+            trace(&mut line);
+            let mask = ContentMask {
+                bounds: Bounds::new(
+                    bounds.origin,
+                    size(px(width * paint_reveal.get()), px(plot_h + 2.)),
+                ),
+            };
+            window.with_content_mask(Some(mask), |window| {
+                if let Ok(path) = area.build() {
+                    window.paint_path(
+                        path,
+                        linear_gradient(
+                            180.,
+                            linear_color_stop(accent.opacity(0.22), 0.),
+                            linear_color_stop(accent.opacity(0.02), 1.),
+                        ),
+                    );
+                }
+                // Break the envelope wherever a bucket lacks enough samples;
+                // connecting across such gaps would imply unmeasured percentiles.
+                for range in band_runs(&band) {
+                    let mut envelope = PathBuilder::fill();
+                    let mut upper = PathBuilder::stroke(px(1.)).dash_array(&[px(4.), px(3.)]);
+                    let mut lower = PathBuilder::stroke(px(1.)).dash_array(&[px(4.), px(3.)]);
+                    let first = range.start;
+                    let (lo, hi) = band[first].expect("band run contains only measurements");
+                    envelope.move_to(at(x_at(first), y_at(hi)));
+                    upper.move_to(at(x_at(first), y_at(hi)));
+                    lower.move_to(at(x_at(first), y_at(lo)));
+                    for i in first + 1..range.end {
+                        let (prev_lo, prev_hi) = band[i - 1].expect("valid band run");
+                        let (lo, hi) = band[i].expect("valid band run");
+                        let x0 = x_at(i - 1);
+                        let x1 = x_at(i);
+                        for (path, from, to) in [
+                            (&mut envelope, prev_hi, hi),
+                            (&mut upper, prev_hi, hi),
+                            (&mut lower, prev_lo, lo),
+                        ] {
+                            let (a, b) = curve_controls(x0, y_at(from), x1, y_at(to));
+                            path.cubic_bezier_to(at(x1, y_at(to)), at(a.0, a.1), at(b.0, b.1));
+                        }
+                    }
+                    let last = range.end - 1;
+                    envelope.line_to(at(x_at(last), y_at(band[last].expect("valid band run").0)));
+                    for i in (first..last).rev() {
+                        let from = band[i + 1].expect("valid band run").0;
+                        let to = band[i].expect("valid band run").0;
+                        let (a, b) = curve_controls(x_at(i + 1), y_at(from), x_at(i), y_at(to));
+                        envelope.cubic_bezier_to(at(x_at(i), y_at(to)), at(a.0, a.1), at(b.0, b.1));
+                    }
+                    envelope.close();
+                    if let Ok(path) = envelope.build() {
+                        window.paint_path(
+                            path,
+                            linear_gradient(
+                                180.,
+                                linear_color_stop(accent.opacity(0.16), 0.),
+                                linear_color_stop(accent.opacity(0.04), 1.),
+                            ),
+                        );
+                    }
+                    for boundary in [upper, lower] {
+                        if let Ok(path) = boundary.build() {
+                            window.paint_path(path, accent.opacity(0.55));
+                        }
+                    }
+                }
+                if let Ok(path) = line.build() {
+                    window.paint_path(path, accent);
+                }
+            });
         },
     )
     .absolute()
-    .inset_0()
-    .into_any_element()
+    .inset_0();
+    if reduced_motion {
+        canvas.into_any_element()
+    } else {
+        canvas
+            .with_animation(
+                "usage-chart-reveal",
+                Animation::new(Duration::from_millis(1100))
+                    .with_easing(|t| 1.0 - (1.0 - t).powi(3)),
+                move |canvas, progress| {
+                    reveal.set(progress);
+                    canvas
+                },
+            )
+            .into_any_element()
+    }
+}
+
+/// Contiguous measured runs; a single bucket cannot form an envelope.
+fn band_runs(band: &[Option<(f64, f64)>]) -> Vec<std::ops::Range<usize>> {
+    let mut runs = Vec::new();
+    let mut start = 0;
+    while start < band.len() {
+        if band[start].is_none() {
+            start += 1;
+            continue;
+        }
+        let mut end = start + 1;
+        while end < band.len() && band[end].is_some() {
+            end += 1;
+        }
+        if end - start >= 2 {
+            runs.push(start..end);
+        }
+        start = end;
+    }
+    runs
+}
+
+/// Cubic control points for a monotone segment between consecutive buckets.
+pub(super) fn curve_controls(x0: f32, y0: f32, x1: f32, y1: f32) -> ((f32, f32), (f32, f32)) {
+    let third = (x1 - x0) / 3.0;
+    ((x0 + third, y0), (x1 - third, y1))
 }
 
 /// The x-axis labels, centered under their buckets. The first and last hug the
@@ -560,6 +714,23 @@ fn readout_row(label: &str, value: &str, theme: Theme) -> AnyElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn band_runs_do_not_bridge_missing_buckets() {
+        let p = Some((1.0, 2.0));
+        assert!(band_runs(&[]).is_empty());
+        assert!(band_runs(&[p, None, p]).is_empty());
+        assert_eq!(band_runs(&[None, p, p, None, p, p, p]), vec![1..3, 4..7]);
+    }
+
+    #[test]
+    fn curve_controls_stay_within_each_segment() {
+        for (y0, y1) in [(0., 10.), (10., 0.), (5., 5.)] {
+            let (a, b) = curve_controls(0., y0, 9., y1);
+            assert_eq!(a, (3., y0));
+            assert_eq!(b, (6., y1));
+        }
+    }
 
     #[test]
     fn axis_tops_are_friendly_numbers() {

@@ -218,7 +218,10 @@ impl OrbitApp {
             .cloned()
             .collect();
         let mut list = div()
+            .id("open-in-list")
             .w_full()
+            .max_h(picker::default_max_height(&theme))
+            .overflow_y_scroll()
             .py(picker::list_padding_y(&theme))
             .flex()
             .flex_col();
@@ -234,6 +237,7 @@ impl OrbitApp {
                     div().id(ElementId::Name(format!("open-in-{}", app.id).into())),
                     &theme,
                 )
+                .flex_none()
                 .cursor_pointer()
                 .when(selected, |row| row.bg(theme.surface_selected))
                 .hover(|style| style.bg(theme.surface_hover))

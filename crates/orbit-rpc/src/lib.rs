@@ -19,5 +19,6 @@ pub use client::{
 pub use types::{
     is_auth_event, parse_quota_reports, AssistantMessageEvent, AuthErrorCode, AuthEvent,
     AuthMethodCapability, AuthProvider, Command, CommandBody, ContextUsage, Event, MessageUsage,
-    PendingQueue, QuotaBalance, QuotaKind, QuotaReport, QuotaWindow, SessionState, SessionUsage,
+    PendingQueue, QueueLane, QuotaBalance, QuotaKind, QuotaReport, QuotaWindow, SessionState,
+    SessionUsage,
 };

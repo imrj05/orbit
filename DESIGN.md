@@ -382,13 +382,13 @@ and the toggle-switch track. Nothing else is a pill.
 
 Borders are 1px at `theme.border`; `border_strong` (ink at ~14% alpha) is reserved for
 focus and hover emphasis. Charts and graphs draw with 1.5px strokes; grid lines are 1px
-at low-opacity hairline. No drop-shadowed text, no gradients except the one backdrop
-fade on the new-task page and the raised-button fill (see Buttons).
+at low-opacity hairline. No drop-shadowed text, no gradients except the raised-button
+fill (see Buttons).
 
 ### New-task backdrop
 
 The new-task page is the one surface with a background treatment, and it has two forms
-under one grammar — ordered dither, the same Bayer pass the photo setting uses:
+under one grammar — ordered dither, the same screen the wallpaper's `Dither` effect uses:
 
 - **No image configured:** a painted halftone field (`backdrop`) — an 8×8 Bayer screen of
   four dot sizes over a soft density field, densest in a band behind the composer and
@@ -404,7 +404,10 @@ under one grammar — ordered dither, the same Bayer pass the photo setting uses
   of light crosses them every twenty seconds, filling each letter with the largest dot in
   turn. The mark paints one step quieter than the grain around it (`MARK_INK`), and a
   layer too small to hold it drops it rather than stretching a wordmark into mush.
-- **An image configured:** the dithered photo (`dither`), under the fade below.
+- **A wallpaper configured:** the processed image (`wallpaper`), with an optional artwork
+  effect (`None`, `Dither`, `ASCII`, `Halftone`, or `Scanlines`), an effect intensity, an
+  effect pixel size, and a theme-coloured dim overlay. Hero mode paints it only in the main
+  column; full-window mode paints it behind the sidebar too, with translucent surfaces above.
 
 Both are the page's floor, not an illustration: nothing on the page depends on them, and
 the chat page has neither.

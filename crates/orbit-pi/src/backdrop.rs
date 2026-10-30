@@ -5,12 +5,12 @@
 //! texture of printed paper, densest where the eye lands and thinning into the
 //! window's edges, without ever competing with the text on it.
 //!
-//! It is the same ordered-dither language the photo backdrop already speaks
-//! ([`crate::dither`]: the Aceternity-style Bayer pass), reduced to its
-//! simplest form: no image, just a soft density field quantized through an 8×8
-//! Bayer matrix into four dot sizes. Eight-by-eight rather than four-by-four
-//! because the coarser matrix reads as a crosshatch on a field this large; 64
-//! thresholds give a ramp smooth enough to look printed rather than patterned.
+//! It is the same ordered-dither language the wallpaper's `Dither` effect
+//! speaks, reduced to its simplest form: no image, just a soft density field
+//! quantized through an 8×8 Bayer matrix into four dot sizes. Eight-by-eight
+//! rather than four-by-four because the coarser matrix reads as a crosshatch
+//! on a field this large; 64 thresholds give a ramp smooth enough to look
+//! printed rather than patterned.
 //!
 //! The field covers the page edge to edge — a slow two-axis wave over a gentle
 //! downward bias, so the densest band sits behind the composer rather than
@@ -33,8 +33,7 @@
 //! mark about every twenty seconds. Reduce Motion freezes it on the frame it
 //! was showing, which is a perfectly good poster of itself.
 //!
-//! A configured background image (Settings → Appearance) replaces this
-//! entirely — see [`crate::dither`].
+//! A configured wallpaper (Settings → Appearance) replaces this entirely.
 
 use gpui::{
     canvas, div, fill, point, px, size, Background, Bounds, Corners, Hsla, IntoElement,

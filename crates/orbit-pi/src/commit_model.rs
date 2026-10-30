@@ -11,8 +11,9 @@
 //! ```
 //!
 //! No `model` key means "follow the session model", which is also the default.
-//! Parsing is lenient, so a hand-edited or half-written file can only fall back
-//! to that default.
+//! Bug-report drafts reuse the same preference shape in a separate file; the
+//! two choices never overwrite one another. Parsing is lenient, so a hand-edited
+//! or half-written file can only fall back to the default.
 
 use std::path::PathBuf;
 
@@ -34,7 +35,16 @@ pub(crate) struct CommitModelConfig {
 impl CommitModelConfig {
     /// Read `~/.orbit-pi/commit-model.json`, defaulting on any failure.
     pub fn load() -> Self {
-        std::fs::read_to_string(store_path())
+        Self::load_from(store_path())
+    }
+
+    /// Bug-report drafts use the same model shape but a separate preference.
+    pub fn load_report() -> Self {
+        Self::load_from(report_store_path())
+    }
+
+    fn load_from(path: PathBuf) -> Self {
+        std::fs::read_to_string(path)
             .map(|raw| Self::from_json(&raw))
             .unwrap_or_default()
     }
@@ -68,7 +78,15 @@ impl CommitModelConfig {
     /// Persist to `~/.orbit-pi/commit-model.json`. Best-effort: a failed write
     /// only means the next launch returns to the session model.
     pub fn persist(&self) {
-        let path = store_path();
+        self.persist_to(store_path());
+    }
+
+    /// Save the independent bug-report draft model preference.
+    pub fn persist_report(&self) {
+        self.persist_to(report_store_path());
+    }
+
+    fn persist_to(&self, path: PathBuf) {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -94,9 +112,44 @@ pub(crate) fn store_path() -> PathBuf {
         .join("commit-model.json")
 }
 
+/// The bug-report preference never changes the Git commit-message choice.
+fn report_store_path() -> PathBuf {
+    crate::platform::home_dir()
+        .join(".orbit-pi")
+        .join("bug-report-model.json")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn report_and_commit_preferences_use_separate_files() {
+        assert!(report_store_path().ends_with(".orbit-pi/bug-report-model.json"));
+        assert_ne!(report_store_path(), store_path());
+    }
+
+    #[test]
+    fn report_preference_round_trips_in_its_own_file() {
+        let path = std::env::temp_dir().join(format!(
+            "orbit-report-model-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let config = CommitModelConfig {
+            model: Some(CommitModel {
+                provider: "ollama".into(),
+                id: "small".into(),
+            }),
+        };
+        config.persist_to(path.clone());
+        assert_eq!(CommitModelConfig::load_from(path.clone()), config);
+        assert_eq!(config.resolve("anthropic", "session").unwrap().id, "small");
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn defaults_to_the_session_model() {

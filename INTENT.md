@@ -197,10 +197,16 @@ on the token scales throughout — its side nav, headers, sections, rows, toolba
 and modals read `DynamicSpacing` / `TextSize` / `Radius` / `ButtonSize`, and it has no `ui_px` or
 gpui spacing utility left; only bespoke geometry remains (avatar / dot / toggle sizes, fixed
 panel and modal widths). The Usage page and its `chart` / `heatmap` / `table` / `filters` /
-`tooltip` modules are likewise on the token scales for spacing, type, and radius; only their
-chart / table geometry is bespoke. The page itself is one continuous read — Daily activity
-(the trailing-year calendar), Summary, Usage over time, Breakdown, Records — with each
-section's selector inside its card rather than a page-level Simple | Details switch. Every single-line input box in the app routes through
+`tooltip` / `sparkline` modules are likewise on the token scales for spacing, type, and radius;
+only their chart / table geometry is bespoke. The page itself is one continuous read — Daily
+activity (the trailing-year calendar), Summary, Usage over time, Breakdown, Records — with each
+section's selector inside its card rather than a page-level Simple | Details switch. The
+Summary board is a row of KPI cards with a 40px line each (the bklit KPI-sparkline recipe):
+the four figures read the range at rest, and pointing at any line points the whole row at that
+bucket — figure, date, change, and secondary line — with the line drawn in on first paint,
+morphed when the range changes, and highlighted (no hover animation) where the pointer reads. The Breakdown section's four tabs share one legend row (the bklit
+legend with progress bars): a brand tile from the picker's own marks, the name and scope, the
+figure and share, and a share track; the table under it leads each name with the same mark. Every single-line input box in the app routes through
 `input_field_frame` (or the `input::*` metrics directly, in the extension dialog) — the main
 composer, the file editor, and the inline tree rename are the deliberate exceptions, and each is
 its own component rather than an `InputField`. Every search box in the app shares one look — the
@@ -306,6 +312,10 @@ visual language app-wide reach while leaving the current design pixel-identical.
 `ThemeId::ALL` and the palette-invariant tests; the Appearance Theme dropdown filters the
 catalog with `themes_for_system`, and the Design-system control is the normal way to switch.
 
+### D16 — Git account diagnostics are local and read-only
+
+Settings → Git Accounts inspects effective Git author settings, normalized generic and host-scoped helper configuration, SSH agent public fingerprints, conventional public-key file presence, sanitized remote hosts, GitHub CLI version and the presence (not values) of selected environment variables. Its separate, explicitly requested release check makes an anonymous request to GitHub for the latest stable `gh` version and shows manual package-manager commands; ordinary status refresh stays local and Orbit never runs the update. It does not manage credentials, execute helpers, inspect private keys or test remote access. Commit identity is not authentication, and helper or agent presence does not establish valid credentials or remote permissions. `gh auth status` may access the network and refresh credentials, so this local-only inspector does not run it and reports GitHub authentication as unknown. Desktop process environment can differ from the interactive shell; users resolve authentication manually in their own tools. No additional service or secret store is involved.
+
 ## The feature parity contract
 
 Everything below must behave identically in the GPUI app (against the pi CLI) as it does in the
@@ -329,11 +339,19 @@ legacy app today:
 
 ### Implementation status (living)
 
+Settings → Git Accounts provides the local-only, read-only Git diagnostics described in D16; it does not check remote access or manage credentials.
+
+The Report a bug draft generator has a searchable model selector. It defaults to the active session model and saves an independent override in `~/.orbit-pi/bug-report-model.json`, leaving both the session and commit-message model unchanged.
+
+Review and the Git page re-read a diff when a change or manual refresh arrives during an in-flight load; failures are surfaced rather than silently leaving an old snapshot. Bug reports with screenshots fall back to the browser and open the saved screenshot folder when `gh` rejects an upload before issue creation, including its repository-write-access preflight.
+
 Appearance's interface-font picker includes bundled Onest in Regular, Medium,
 SemiBold, and Bold weights; it works offline without an OS font installation.
 The default interface face and saved font preferences remain unchanged.
 
 Done: streaming transcript + virtualization; markdown + highlighting; composer with steering, follow-ups, cancel, autocomplete, attachments; extension dialogs; diff/Review + Git page + GitHub issues/PRs (where `gh` is available); sessions (list/switch/new/delete/clone/cross-workspace) over an Orbit-owned project list (only folders the user added; removing one never touches pi) whose groups sort by activity, added date, name, or session count, with a **warm process pool** so re-opening a recent session is a resume, not a Node spawn; Git worktrees as first-class workspaces (`worktree.rs` + the Worktrees page: discovery, create from a new/existing branch, open/rename/move/lock/remove/prune/repair, configurable `.wt` root, optional async setup script with `ORBIT_ROOT_PATH`/`ORBIT_WORKTREE_PATH`, sessions rooted in and restored to the worktree — D14); Explorer project panel + editable Files surface; integrated terminal (⌘J); usage, skills, plugins, models, providers, settings pages; transcript find; image lightbox; theming (dark/light/system, ten Classic palettes plus an opt-in Operational pair) + reduce-motion; localization (ten locales + System, D9); in-app signed updater + Version History; notifications; open-in-editor; signed/notarizable macOS packaging + best-effort Windows/Linux bundles (D5); CI; access modes (a guard, not a sandbox), workflow modes (Plan/Build/Ask per D8), and the auto-title / quota extension bridges (D10); Zed design tokens (D11) with context menus, the tooltip, the extension dialog, the floating modal cards (provider usage / API-key / editor, update dialog, custom UI), the sidebar session / workspace rows, the transcript's message / card chrome, the settings section / group / row chrome, UI type on `TextSize` across every surface, corner radii on `Radius`, and one-shot motion on `AnimationDuration` migrated onto them.
+
+Finder file URLs and Windows CF_HDROP lists take precedence over clipboard preview images: pasted image files enter the image queue, and other files enter the existing file-reference queue. On Linux, file URI lists exposed as clipboard text use the same queue; GPUI cannot currently read file-only clipboard offers. Plain path text stays text.
 
 Attached images are compressed when they are queued (`attachments.rs`): the
 longest edge is capped at 1400 px (never upscaled), opaque images are re-encoded
@@ -473,14 +491,13 @@ arrived; issue/PR drafts keep using the session model.
 The in-app bug report (Settings → Report a bug) picks an issue type (bug /
 feature / other, which sets the GitHub label and the generated section
 headings), takes free-form context at the top, and drafts the issue title and
-description from it with the app's active model — the same one-shot, tool-free
+description from it with the selected model (the active session model by default) — the same one-shot, tool-free
 `pi -p` call the Git page's generator uses (`issue_message.rs`), with a
 kind-aware prompt that returns a heading-free description so the form supplies
 the section headings; when pi is unavailable the draft falls back to the notes
 themselves. Screenshots are supported too: they upload with
-`gh issue create --attach` when `gh` is signed in (Orbit writes them to a temp
-directory first), and a `gh` missing that flag or a signed-out `gh` degrades to
-GitHub's prefilled web form with the images saved for the user to drag in.
+`gh issue create --attach` when `gh` supports the upload and the account has permission (Orbit writes them to a temp
+directory first). Otherwise, when the CLI reports a pre-creation limitation or is signed out, GitHub's prefilled web form and the saved image folder open for the user to drag the images in.
 Filing goes to `imrj05/orbit` with the machine's build details attached — Orbit
 version, app ID (`dev.orbit.pi`), OS and architecture, install kind, pi CLI
 version, and the signed-in `gh` account — through `gh issue create --repo` when
@@ -515,6 +532,18 @@ footer, immediately left of the context-window indicator, without a newline hint
 These persistent hints, button tooltips, and the Shortcuts reference track the
 preference, with dedicated chat-only shortcut context to protect other fields.
 Non-blocking optional model questions remain outside this change.
+
+A message already queued can be changed before pi delivers it (issue #79). The queue
+bar gives each pending steer or follow-up its own **Edit** (an inline field on the row,
+⏎ saves, Esc cancels) and **Send now**. pi's protocol has no per-message queue command —
+`queue_update` reports bare strings and `clear_queue` drops everything — so either action
+rebuilds the queue: `clear_queue`, then re-queue every survivor in its original lane and
+order. "Send now" re-queues that message as the *first* steering message, which is pi's
+earliest delivery point short of aborting the run; the leading steer therefore offers no
+Send now, since it is already next. The mirror is updated optimistically and the
+`clear_queue` echo is skipped for that one rebuild, so the bar never blinks through the
+empty state; `queue_update` stays authoritative and re-anchors or closes an open field
+(`app/session.rs`, `app/view.rs`).
 
 Compaction and branch summaries are visible in the transcript: pi's
 `compactionSummary` / `branchSummary` context messages now render as boundary

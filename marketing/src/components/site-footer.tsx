@@ -105,7 +105,7 @@ export async function SiteFooter({
               </div>
 
               {release ? (
-                <p className="mt-6 font-mono text-[11px] uppercase tracking-[0.12em] text-ink-3">
+                <p className="mt-6 text-[12px] text-ink-3">
                   {t("latest")}{" "}
                   <Link
                     href={localeHref(locale, `/changelog/${release.tag}`)}
@@ -123,7 +123,7 @@ export async function SiteFooter({
                   key={column.id}
                   aria-label={t(`columns.${column.id}`)}
                 >
-                  <p className="mb-4 font-mono text-[10.5px] uppercase tracking-[0.16em] text-ink-3">
+                  <p className="mb-4 text-[12px] font-medium text-ink-2">
                     {t(`columns.${column.id}`)}
                   </p>
                   <ul className="flex flex-col gap-3">
@@ -151,7 +151,7 @@ export async function SiteFooter({
           </div>
         </Band>
 
-        <Band className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-t border-edge-subtle py-6 font-mono text-[11px] uppercase tracking-[0.1em] text-ink-3">
+        <Band className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-t border-edge-subtle py-6 text-[12px] text-ink-3">
           <p>{t("copyright", { year })}</p>
           <p className="flex flex-wrap items-center gap-x-5 gap-y-2">
             {release ? (

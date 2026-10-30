@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Band, SectionLabel, Shell } from "@/components/ui";
+import { Band, Shell } from "@/components/ui";
 
 /**
  * A storytelling band: one clear statement and one large visual, alternating
@@ -7,7 +7,6 @@ import { Band, SectionLabel, Shell } from "@/components/ui";
  */
 export function Story({
   id,
-  label,
   title,
   copy,
   points,
@@ -15,7 +14,6 @@ export function Story({
   flip = false,
 }: {
   id: string;
-  label: string;
   title: string;
   copy: string;
   points?: string[];
@@ -30,8 +28,7 @@ export function Story({
         className="grid scroll-mt-20 grid-cols-1 items-center gap-12 py-20 sm:py-28 lg:grid-cols-2 lg:gap-16"
       >
         <div className={flip ? "lg:order-2" : ""}>
-          <SectionLabel>{label}</SectionLabel>
-          <h2 className="mt-4 max-w-[24ch] text-balance text-[clamp(26px,2.8vw,34px)] font-semibold leading-[1.18] tracking-[-0.024em] text-ink">
+          <h2 className="mt-0 max-w-[24ch] text-balance text-[clamp(30px,3.2vw,40px)] font-semibold leading-[1.18] tracking-[-0.024em] text-ink">
             {title}
           </h2>
           <p className="mt-4 max-w-[48ch] text-[14.5px] leading-[1.75] text-ink-2">
@@ -53,16 +50,5 @@ export function Story({
         <div className={flip ? "lg:order-1" : ""}>{visual}</div>
       </Band>
     </Shell>
-  );
-}
-
-/** A framed product surface for UI mocks — card elevation, nothing more. */
-export function MockFrame({ children }: { children: ReactNode }) {
-  return (
-    <div className="rounded-[14px] border border-edge-default bg-surface-1 p-1.5 shadow-card sm:p-2">
-      <div className="rounded-[10px] bg-window px-5 py-6 sm:px-6">
-        {children}
-      </div>
-    </div>
   );
 }

@@ -34,9 +34,8 @@ const MIN_CELL: f32 = 4.;
 /// its container edge to edge; past this height they only get wider, so a
 /// short span fills the row instead of growing into a wall.
 const MAX_CELL_H: f32 = 22.;
-/// The cells sit flush, edge to edge, so the days read as one dense lattice
-/// rather than a field of separated tiles.
-const GAP: f32 = 0.;
+/// A small gutter keeps individual days distinguishable at every intensity.
+const GAP: f32 = 2.;
 /// The weekday label column to the left of the grid.
 const ROW_LABEL_W: f32 = 28.;
 /// The month label strip above the grid.

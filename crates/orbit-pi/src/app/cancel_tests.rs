@@ -18,6 +18,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 enum Ending {
     /// The user cancelled: pi reports `aborted`, and must not read as a failure.
     Aborted,
+    /// The user pressed Stop while the provider request was in flight: the SDK
+    /// threw on the abort, so pi records `stopReason: "error"` with the abort
+    /// text rather than its own aborted message (issue #96, case 2).
+    AbortedInFlight,
     /// The user cancelled during an automatic retry: pi reports
     /// `auto_retry_end { success: false, finalError: "Retry cancelled" }`
     /// before settling (pi-core `_finishCancelledRetry`).
@@ -31,6 +35,9 @@ impl Ending {
         match self {
             Ending::CancelledRetry | Ending::Aborted => {
                 r#"{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"aborted","errorMessage":"Request aborted"}}"#
+            }
+            Ending::AbortedInFlight => {
+                r#"{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"This operation was aborted"}}"#
             }
             Ending::Failed => {
                 r#"{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"provider 500"}}"#
@@ -53,7 +60,16 @@ impl Ending {
             );
         }
         lines.push(r#"{"type":"agent_end","willRetry":false}"#.to_string());
-        lines.push(r#"{"type":"agent_settled"}"#.to_string());
+        // pi marks a run it was aborted out of, including the in-flight case.
+        lines.push(
+            match self {
+                Ending::Aborted | Ending::AbortedInFlight => {
+                    r#"{"type":"agent_settled","aborted":true}"#
+                }
+                _ => r#"{"type":"agent_settled"}"#,
+            }
+            .to_string(),
+        );
         lines
     }
 }
@@ -205,6 +221,37 @@ fn cancelling_a_run_clears_the_working_state(cx: &mut gpui::TestAppContext) {
             "a cancel is not a failure, got {:?}",
             app.error
         );
+    });
+}
+
+/// Stopping the run while the provider request is in flight is still a stop:
+/// the SDK throws on the abort, so pi records `stopReason: "error"` with
+/// `"This operation was aborted"` instead of its own aborted message. Reading
+/// that text as an agent failure put up the red banner and the "Agent error"
+/// notification for a stop the user asked for (issue #96, case 2).
+#[gpui::test]
+fn an_in_flight_stop_is_not_reported_as_a_failure(cx: &mut gpui::TestAppContext) {
+    let app = test_app(cx);
+    let fake = FakePi::start(Ending::AbortedInFlight);
+    cx.update(|cx| {
+        app.update(cx, |app, _| adopt_fake_pi(app, &fake));
+    });
+
+    prompt_then_cancel(&app, cx);
+    pump_until(&app, cx, |app| !app.is_running());
+
+    app.update(cx, |app, _| {
+        assert!(
+            app.error.is_none(),
+            "an in-flight stop is a cancel, not a failure, got {:?}",
+            app.error
+        );
+        let summary = app
+            .transcript
+            .latest_turn_summary()
+            .expect("a settled turn");
+        assert!(summary.aborted, "the turn must read as a stop");
+        assert!(!summary.failed, "a stop is never reported as failed");
     });
 }
 
@@ -523,5 +570,113 @@ fn the_cancel_retry_button_does_not_report_a_failure(cx: &mut gpui::TestAppConte
             "cancelling a retry is not a failed retry, got {:?}",
             app.error
         );
+    });
+}
+
+/// A pi that fails one attempt, retries it into the same turn, and finishes —
+/// the wire sequence issue #96 case 1 is about.
+struct RecoveringPi {
+    dir: PathBuf,
+    bin: PathBuf,
+}
+
+impl RecoveringPi {
+    fn start() -> Self {
+        static NEXT_SCRATCH: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "orbit-recover-{}-{}",
+            std::process::id(),
+            NEXT_SCRATCH.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("create recovering-pi dir");
+        let bin = dir.join("fake-pi");
+        let script = r#"#!/bin/sh
+emit() { printf '%s\n' "$1"; }
+while IFS= read -r line; do
+  case "$line" in
+    *'"type":"prompt"'*)
+      emit '{"type":"agent_start"}'
+      emit '{"type":"turn_start"}'
+      emit '{"type":"message_start","message":{"role":"assistant","content":[]}}'
+      emit '{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"Upstream response stream was interrupted"}}'
+      emit '{"type":"auto_retry_start","attempt":1,"maxAttempts":3,"errorMessage":"Upstream response stream was interrupted","delayMs":10}'
+      emit '{"type":"auto_retry_end","success":true,"attempt":1}'
+      emit '{"type":"message_start","message":{"role":"assistant","content":[]}}'
+      emit '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"the answer"}],"stopReason":"stop"}}'
+      emit '{"type":"turn_end"}'
+      emit '{"type":"agent_end","willRetry":false}'
+      emit '{"type":"agent_settled"}'
+      ;;
+  esac
+done
+"#
+        .to_string();
+        std::fs::write(&bin, script).expect("write recovering pi");
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        Self { dir, bin }
+    }
+}
+
+impl Drop for RecoveringPi {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// A retry that recovers is not a failed turn: the failed attempt's error must
+/// retire when the next attempt lands, so neither the banner nor the turn
+/// summary reports a failure the run never ended on (issue #96, case 1).
+#[gpui::test]
+fn a_recovered_retry_does_not_report_a_failure(cx: &mut gpui::TestAppContext) {
+    let app = test_app(cx);
+    let fake = RecoveringPi::start();
+    cx.update(|cx| {
+        app.update(cx, |app, _| {
+            let workspace = app
+                .current_workspace
+                .clone()
+                .or_else(|| std::env::current_dir().ok())
+                .unwrap_or_else(|| PathBuf::from("."));
+            let client =
+                PiClient::spawn_with_bin(fake.bin.to_str().expect("utf-8"), &workspace, None)
+                    .expect("spawn recovering pi");
+            app.adopt_client(client);
+            app.transcript.expect_reply();
+            app.busy = true;
+            app.send(
+                CommandBody::Prompt {
+                    message: "hello".into(),
+                    images: None,
+                    streaming_behavior: None,
+                },
+                "prompt",
+            );
+        });
+    });
+
+    // The stand-in writes the whole retried turn in one batch, so it can be
+    // over before the first tick: wait for the settled answer, not for a busy
+    // state that may already have passed.
+    pump_until(&app, cx, |app| {
+        !app.is_running()
+            && app
+                .transcript
+                .latest_turn_summary()
+                .is_some_and(|summary| summary.body == "the answer")
+    });
+
+    app.update(cx, |app, _| {
+        assert!(
+            app.error.is_none(),
+            "a retry that recovered is not a failure, got {:?}",
+            app.error
+        );
+        let summary = app
+            .transcript
+            .latest_turn_summary()
+            .expect("a settled turn");
+        assert_eq!(summary.body, "the answer");
+        assert!(!summary.failed, "the turn finished, so it is not failed");
+        assert!(!summary.aborted);
     });
 }

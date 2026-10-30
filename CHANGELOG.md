@@ -7,6 +7,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Edit a queued message, or send it now.** The queue bar above the composer
+  gives every pending steer or follow-up its own **Edit** and **Send now**
+  controls. Edit opens the row in place with Save and Cancel (⏎ saves,
+  Esc cancels) and rewrites just that message; Send now moves a queued message
+  into the steering lane at the front, so pi delivers it before the next model
+  call instead of behind the rest of the queue. pi has no per-message queue
+  command, so Orbit rebuilds the queue — clear, then re-queue the survivors in
+  their original lanes and order — and keeps the bar from blinking through the
+  empty state while it does.
+
+- **Every installed terminal is in the "open in" menu.** Rex, Ghostty, iTerm2, Kitty, Alacritty, WezTerm, Tabby, Hyper, Rio, Wave and Warp appear next to Terminal once their app is installed, and tmux appears when the binary is. tmux has no window of its own, so it opens a session at the workspace in the system terminal; the list scrolls instead of growing past the window.
+
+- **GitHub CLI release check:** Settings → Git Accounts can check the latest stable `gh` version on request and show manual update commands. Normal status refresh stays local; Orbit does not update the CLI or use credentials for the check.
+
+- **Bug-report draft model picker:** choose a model for Generate draft independently of the active session and Git commit-message model. The choice is remembered, with the active session model as the default.
+
+- **Git Accounts diagnostics** in Settings: inspect local author identity, GitHub CLI version, SSH agent fingerprints, conventional public-key file presence, generic and host-scoped credential-helper configuration, sanitized remote hosts and credential environment-variable presence without managing credentials or testing remote access. GitHub CLI authentication is shown as unknown because its status command may contact hosts and refresh credentials.
+
+### Fixed
+
+- Pasting files copied in macOS Finder resolves file-reference URLs to real paths and attaches image contents rather than the generic file icon. Windows file lists and Linux file URI lists exposed as text also use the attachment tray; other files use the existing file references.
+
+- **Global Refresh is a full resync.** ⌘R, File → Refresh, and the command
+  palette entry now re-read the session list, branch lines, installed plugins,
+  workspace skills, custom providers, auth files, and MCP configuration even
+  when their Settings page is closed, and re-ask the running agent for its
+  state, model/thinking/command catalog, context stats, auth, and quota. The
+  refresh confirms with a toast, so a manual refresh never looks like a no-op.
+
+- **Follow-up suggestion chips stay inside the composer.** A long model
+  suggestion wraps to two lines inside its chip and the chip is capped at the
+  composer column's width, so the row can no longer push past the window edge
+  on a narrow window. Clicking a clamped chip still inserts the full text.
+
+- **Agent errors are reported for the turn, not for every attempt.** A retry
+  that recovers retires the failed attempt's card, banner, and "Agent error"
+  notification, so a turn that finished is announced as finished. A stop the
+  user asked for reads as the quiet "Stopped" marker even when it landed
+  while a provider request was in flight (pi records it as an error carrying
+  the SDK's abort text) or cancelled a retry. A turn that really ended on a
+  provider error still reports it.
+- **Review and Git changes refresh** after a file change or manual refresh arrives while a diff is still loading; diff failures are shown instead of leaving stale results silently visible.
+- **Bug-report screenshots** fall back to GitHub's web form when the CLI cannot upload them without repository write access or another preflight requirement. Orbit opens the saved screenshot folder for dragging into the form, preserves colliding filenames, and names compressed images for their actual format.
+
+### Changed
+
+- **The Usage Summary board reads any day under the pointer.** Each headline
+  metric (requests, tokens, cache hit rate, average response) now carries a
+  40px sparkline of the selected range, following the bklit KPI-sparkline
+  recipe: the line draws itself in on first paint and a range change morphs the
+  old shape into the new one. Pointing at any card's line swaps the whole row's
+  figure, date, and change to that bucket (its change measured against the
+  bucket before it) and highlights that point immediately — hovering never
+  replays a transition. Leaving the board snaps every card back to the range.
+  Reduced motion paints the final frame. A bucket with no measurement for a card
+  reads as a gap and a dash, never a zero.
+
+- **Usage breakdown reads as one legend.** Models, providers, workspaces, and
+  tools share a single row design (bklit's legend with progress bars): a brand
+  tile — the model's or provider's mark from the model picker, the workspace
+  folder, or the tool's glyph from the transcript — then the name and its scope,
+  the figure with its share, and a track whose fill is the share. The same mark
+  leads each row in the table below. Clicking a row still scopes the page, and a
+  row in scope reads as selected. Hover washes the row at once, with no
+  transition.
+
 ## [0.2.13] - 2026-10-27
 
 ### Added

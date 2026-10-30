@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "A native workbench for the pi coding agent",
-    "description": "A native desktop workbench for the pi coding agent: your sessions, your models, your machine — chat, review, and commit in one window."
+    "description": "A native desktop workbench for the pi coding agent: your sessions, your models, your machine. Chat, review, and commit in one window."
   },
   "nav": {
     "home": "Orbit home",
@@ -16,7 +16,7 @@
       "changelog": "Changelog"
     },
     "github": "GitHub",
-    "stars": "GitHub — {count} stars"
+    "stars": "GitHub, {count} stars"
   },
   "switcher": {
     "label": "Language"
@@ -24,14 +24,14 @@
   "hero": {
     "releaseNotes": "Release notes",
     "heading": "A native workbench for the pi coding agent.",
-    "body": "Your sessions, your models, your machine. Chat, review, and commit in one window — the same sessions as the terminal, drawn natively.",
+    "body": "Your sessions, your models, your machine. Chat, review, and commit in one window. The same sessions as the terminal, drawn natively.",
     "github": "View on GitHub",
     "platforms": {
       "macos": "macOS 13+",
       "windows": "Windows",
       "linux": "Linux"
     },
-    "shotAlt": "A completed Orbit session: the agent's notes on the Windows IME composer fix and a Changed 4 files card with per-file line counts, above the composer."
+    "shotAlt": "A completed Orbit session: the agent's summary of the open-in options change and a Changed 3 files card with per-file line counts, above the composer."
   },
   "trust": {
     "items": [
@@ -60,7 +60,7 @@
     "items": [
       {
         "q": "Is Orbit free?",
-        "a": "Yes. Orbit is free and open source under the Apache-2.0 license — no account, no subscription, and no paywalled features. You bring your own model providers."
+        "a": "Yes. Orbit is free and open source under the Apache-2.0 license: no account, no subscription, and no paywalled features. You bring your own model providers."
       },
       {
         "q": "Does Orbit replace pi or bundle it?",
@@ -68,7 +68,7 @@
       },
       {
         "q": "Which platforms does Orbit support?",
-        "a": "macOS 13+, Windows, and Linux. Orbit is a native Rust and GPUI application — no Electron and no web view — so it starts fast and stays lightweight."
+        "a": "macOS 13+, Windows, and Linux. Orbit is a native Rust and GPUI application, with no Electron and no web view, so it starts fast and stays lightweight."
       },
       {
         "q": "How is Orbit different from the pi TUI or pi-web?",
@@ -80,7 +80,7 @@
       },
       {
         "q": "Where does my data go? Does Orbit send telemetry?",
-        "a": "Orbit is local-first: your code and sessions stay on your machine. The app collects no telemetry — no analytics client, no installation identifier, and no usage reporting."
+        "a": "Orbit is local-first: your code and sessions stay on your machine. The app collects no telemetry: no analytics client, no installation identifier, and no usage reporting."
       },
       {
         "q": "Can I run multiple pi sessions at once?",
@@ -90,7 +90,7 @@
   },
   "closer": {
     "heading": "Build with Orbit.",
-    "body": "Point Orbit at the projects you already run pi on. Same sessions, same models, same tools — drawn natively on the GPU.",
+    "body": "Point Orbit at the projects you already run pi on. Same sessions, same models, same tools, drawn natively on the GPU.",
     "github": "View on GitHub",
     "platforms": {
       "macos": "macOS",
@@ -100,7 +100,7 @@
     "releaseNotes": "Release notes · {tag}"
   },
   "footer": {
-    "tagline": "A native workbench for the pi coding agent. Your sessions, your models, your machine — chat, review, and commit in one window.",
+    "tagline": "A native workbench for the pi coding agent. Your sessions, your models, your machine. Chat, review, and commit in one window.",
     "columns": {
       "product": "Product",
       "resources": "Resources",
@@ -133,7 +133,7 @@
     },
     "latest": "Latest",
     "release": "Release {tag}",
-    "copyright": "© {year} Orbit · same sessions as the terminal"
+    "copyright": "© {year} Orbit"
   },
   "download": {
     "download": "Download",
@@ -144,33 +144,35 @@
     "agent": {
       "label": "The agent",
       "title": "Watch it think, call tools, and edit.",
-      "copy": "Thinking, tool calls, and file edits stream into a GPU-rendered transcript that never reflows. Steer mid-run or queue a follow-up from the composer — model and thinking effort are a keystroke away.",
+      "copy": "Thinking, tool calls, and file edits stream into a GPU-rendered transcript that never reflows. Steer mid-run or queue a follow-up from the composer; model and thinking effort are a keystroke away.",
       "points": [
         "Coalesced streaming, GFM markdown, and paint-only syntax highlighting.",
-        "Prompt, steer, queue, or cancel — all against the live pi process.",
+        "Prompt, steer, queue, or cancel, all against the live pi process.",
         "Every tool call expands into arguments, output, and inline diffs."
-      ]
+      ],
+      "shotAlt": "Orbit's session transcript with a changed-files card listing edited files."
     },
     "sessions": {
       "label": "Sessions",
       "title": "Sessions live where pi put them.",
-      "copy": "Your list is read straight from pi and grouped by project — the same sessions the terminal sees. Reopen, clone, or hide a workspace without touching anything on disk; recent sessions stay warm."
+      "copy": "Your list is read straight from pi and grouped by project, the same sessions the terminal sees. Reopen, clone, or hide a workspace without touching anything on disk; recent sessions stay warm.",
+      "shotAlt": "Orbit's sessions sidebar listing recent sessions with their project, branch, and status."
     },
     "newTask": {
       "label": "New task",
       "title": "Pick a workspace. Describe the task.",
-      "copy": "Choose Plan, Build, or Ask, point Orbit at a workspace, and say what you want. Model, thinking effort, and access mode sit right in the composer — press send and the run begins in a live session.",
+      "copy": "Choose Plan, Build, or Ask, point Orbit at a workspace, and say what you want. Model, thinking effort, and access mode sit right in the composer. Press send and the run begins in a live session.",
       "points": [
-        "Plan, Build, or Ask — one toggle before the run starts.",
+        "Plan, Build, or Ask: one toggle before the run starts.",
         "Workspace picked from your projects, remembered across sessions.",
         "Access mode, model, and thinking level set beside the composer."
       ],
-      "shotAlt": "Orbit's New Task page with Plan, Build, and Ask mode toggles, a workspace picker, and the composer below."
+      "shotAlt": "Orbit's New Task page with a workspace picker above the composer, and the workflow mode, model, and thinking level set in the composer."
     },
     "providers": {
       "label": "Models & providers",
       "title": "Every provider. Every model. One window.",
-      "copy": "pi's live catalog plus custom providers — sign in with a key or OAuth, then pick any model per task, with thinking effort set alongside it. Local models from Ollama sit next to the hosted ones.",
+      "copy": "pi's live catalog plus custom providers. Sign in with a key or OAuth, then pick any model per task, with thinking effort set alongside it. Local models from Ollama sit next to the hosted ones.",
       "points": [
         "Anthropic, OpenAI, Bedrock, OpenCode Go, and your own endpoints.",
         "Point Orbit at a local Ollama and everything stays on your machine.",
@@ -181,7 +183,7 @@
     "skills": {
       "label": "Skills",
       "title": "Teach it your team's playbook.",
-      "copy": "Skills are SKILL.md playbooks pi loads at startup — user-level and project-level. Browse them in Orbit, read the full instructions, and enable or disable any of them with one switch.",
+      "copy": "Skills are SKILL.md playbooks pi loads at startup, at user and project level. Browse them in Orbit, read the full instructions, and enable or disable any of them with one switch.",
       "points": [
         "Project and user skills, browsable with full SKILL.md preview.",
         "Enable or disable a skill without editing files.",
@@ -192,7 +194,7 @@
     "git": {
       "label": "Git",
       "title": "Read the diff before you switch apps.",
-      "copy": "The agent edits files behind the transcript. Orbit keeps a live diff in a right-hand panel and a full Git page beside it — stage, review, and commit without leaving the window.",
+      "copy": "The agent edits files behind the transcript. Orbit keeps a live diff in a right-hand panel and a full Git page beside it. Stage, review, and commit without leaving the window.",
       "points": [
         "A live git diff of the workspace, refreshed when a run settles.",
         "Generate a commit message, stage what you want, and push in place.",
@@ -203,7 +205,7 @@
     "usage": {
       "label": "Usage",
       "title": "Know what every run costs.",
-      "copy": "Requests, tokens, cost, and cache — read from pi's own meter, across the sessions on your machine. No third-party analytics, no guesswork about where the context went.",
+      "copy": "Requests, tokens, cost, and cache, read from pi's own meter, across the sessions on your machine. No third-party analytics, no guesswork about where the context went.",
       "points": [
         "Per-run and per-provider figures, with cached and context tokens.",
         "A 30-day view of tokens over time, kept entirely local."
@@ -213,7 +215,7 @@
     "mcp": {
       "label": "MCP",
       "title": "Wire in your tools over MCP.",
-      "copy": "Orbit manages Model Context Protocol servers for the agent — global or scoped to a project. Add a server, see its tool count and connection status, and flip a switch to enable or disable it.",
+      "copy": "Orbit manages Model Context Protocol servers for the agent, global or scoped to a project. Add a server, see its tool count and connection status, and flip a switch to enable or disable it.",
       "points": [
         "Global and project-scoped servers, side by side.",
         "Connection status and tool counts at a glance.",
@@ -224,34 +226,35 @@
     "plugins": {
       "label": "Plugins",
       "title": "Extend pi with packages.",
-      "copy": "Install pi packages from npm, git, or a local path — globally or for this project. Orbit shows what's configured and its version, updates it, and pi picks changes up at its next restart.",
+      "copy": "Install pi packages from npm, git, or a local path, globally or for this project. Orbit shows what's configured and its version, updates it, and pi picks changes up at its next restart.",
       "points": [
         "npm, git, or local-path packages, global or project scope.",
         "Install, update, and remove without leaving the window.",
-        "Loaded at startup — restart pi to apply changes."
+        "Loaded at startup. Restart pi to apply changes."
       ],
       "shotAlt": "Orbit's Plugins page listing installed pi packages with an install field above and update and remove actions per package."
     },
     "appearance": {
       "label": "Appearance",
       "title": "Make it feel like yours.",
-      "copy": "Light and dark themes, interface and code fonts, sizes, and language — Appearance covers the window itself, and every other setting is one search away.",
+      "copy": "Light and dark themes, interface and code fonts, sizes, and language. Appearance covers the window itself, and every other setting is one search away.",
       "points": [
         "Light and dark themes with per-theme palettes.",
         "Interface and code fonts, sizes, and a live terminal preview.",
         "Search across every setting from one field."
       ],
-      "shotAlt": "Orbit's Appearance settings with theme choices above interface font, code font, and size controls."
+      "shotAlt": "Orbit's Appearance settings with the design system, theme, accent color, language, and wallpaper controls."
     },
     "native": {
       "label": "Native",
       "title": "A real desktop app. You hold the keys.",
-      "copy": "Orbit is a native macOS, Windows, and Linux app — Rust and GPUI, keyboard-first, no web views. And every mutating tool call passes through an access mode you set per task, so the agent never runs ahead of you.",
+      "copy": "Orbit is a native macOS, Windows, and Linux app: Rust and GPUI, keyboard-first, no web views. Every mutating tool call passes through an access mode you set per task, so the agent never runs ahead of you.",
       "points": [
-        "Supervised — asks before every edit and every command.",
-        "Auto-accept edits — applies file edits, still asks before commands.",
-        "Full access — runs without prompting, picked deliberately per task."
-      ]
+        "Supervised: asks before every edit and every command.",
+        "Auto-accept edits: applies file edits, still asks before commands.",
+        "Full access: runs without prompting, picked deliberately per task."
+      ],
+      "shotAlt": "Orbit's composer with the access mode, workflow, model, and thinking controls."
     },
     "contributors": {
       "label": "Contributors",
@@ -268,7 +271,9 @@
       "platforms": {
         "reddit": "Reddit",
         "x": "X"
-      }
+      },
+      "pause": "Pause",
+      "resume": "Resume"
     }
   },
   "docs": {

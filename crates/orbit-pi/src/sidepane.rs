@@ -637,26 +637,36 @@ impl SidePane {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                // A newer load (e.g. the source changed while this ran) wins.
-                if this.load_generation != generation {
-                    return;
-                }
-                this.review_loading = false;
-                match parsed {
-                    Ok(snapshot) => {
-                        this.apply_snapshot(snapshot);
-                        this.review_error = None;
-                    }
-                    Err(error) => {
-                        if this.review.is_none() {
-                            this.review_error = Some(error);
-                        }
-                    }
-                }
-                cx.notify();
+                this.finish_review_load(generation, parsed, cx)
             });
         })
         .detach();
+    }
+
+    fn finish_review_load(
+        &mut self,
+        generation: u64,
+        parsed: Result<Snapshot, String>,
+        cx: &mut Context<Self>,
+    ) {
+        // A newer load (e.g. a workspace or source change) wins.
+        if self.load_generation != generation {
+            return;
+        }
+        self.review_loading = false;
+        match parsed {
+            Ok(snapshot) => {
+                self.apply_snapshot(snapshot);
+                self.review_error = None;
+            }
+            Err(error) => self.review_error = Some(error),
+        }
+        // A file event or manual refresh that arrived during the read must
+        // trigger another read, rather than leaving this older snapshot visible.
+        if self.review_stale && self.open {
+            self.load_review(cx);
+        }
+        cx.notify();
     }
 
     fn apply_snapshot(&mut self, snapshot: Snapshot) {
@@ -740,7 +750,9 @@ impl SidePane {
     }
 
     fn refresh_review(&mut self, cx: &mut Context<Self>) {
-        if !self.review_loading {
+        if self.review_loading {
+            self.review_stale = true;
+        } else {
             self.load_review(cx);
         }
     }
@@ -2410,6 +2422,32 @@ mod tests {
     }
 
     #[gpui::test]
+    fn change_during_load_is_retried_and_errors_are_visible(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.open = true;
+                pane.workspace = Some(PathBuf::from("/orbit-test-nonexistent-workspace"));
+                pane.review_loading = true;
+                pane.review_stale = false;
+                pane.load_generation = 10;
+                pane.mark_review_stale(cx);
+                let snapshot = crate::review::parse_collected(Source::Uncommitted, "", "", false);
+                pane.finish_review_load(10, Ok(snapshot), cx);
+                assert_eq!(
+                    pane.load_generation, 11,
+                    "a dirty in-flight load must be retried"
+                );
+                assert!(pane.review_loading);
+                assert!(!pane.review_stale);
+                pane.open = false;
+                pane.finish_review_load(11, Err("read failed".to_string()), cx);
+                assert_eq!(pane.review_error.as_deref(), Some("read failed"));
+            });
+        });
+    }
+
+    #[gpui::test]
     fn full_width_and_dock_share_one_restore_point(cx: &mut gpui::TestAppContext) {
         let pane = pane(cx);
         cx.update(|cx| {
@@ -2577,6 +2615,44 @@ mod tests {
                 assert!(pane.split);
             });
         });
+    }
+
+    #[gpui::test]
+    fn populated_diff_has_a_visible_viewport_in_dock_and_git_page(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let pane = cx.update(|_, cx| cx.new(SidePane::new));
+        for embedded in [false, true] {
+            cx.update(|_, cx| {
+                pane.update(cx, |pane, cx| {
+                    pane.open = true;
+                    pane.set_embedded(embedded, cx);
+                    pane.set_available_width(px(900.), cx);
+                    pane.apply_snapshot(crate::review::parse_collected(
+                        Source::Uncommitted,
+                        "1\t1\tsrc/lib.rs\n",
+                        &gap_patch(),
+                        true,
+                    ));
+                });
+            });
+            let _ = cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(900.), px(800.)),
+                |_, _| div().size_full().flex().flex_col().child(pane.clone()),
+            );
+            cx.update(|_, cx| {
+                let pane = pane.read(cx);
+                assert!(
+                    pane.diff_list.viewport_bounds().size.height > px(0.),
+                    "the diff list needs a visible viewport (embedded={embedded})"
+                );
+            });
+            assert!(
+                cx.debug_bounds("review-file-header").is_some(),
+                "a changed file header must render"
+            );
+        }
     }
 
     /// Every view mode lays out its real element tree without panicking —

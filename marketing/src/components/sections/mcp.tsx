@@ -9,7 +9,6 @@ export async function Mcp({ locale }: { locale: Locale }) {
   return (
     <Story
       id="mcp"
-      label={t("label")}
       title={t("title")}
       copy={t("copy")}
       points={t.raw("points") as string[]}

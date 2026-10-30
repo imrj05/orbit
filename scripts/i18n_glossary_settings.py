@@ -882,3 +882,202 @@ for _locale, _table in {
     },
 }.items():
     GLOSSARY.setdefault(_locale, {}).update(_table)
+
+# Wallpaper artwork intensity. Kept here so a future `gen_locales.py` run
+# preserves these translations instead of falling back to English.
+for _locale, _table in {
+    "zh-CN": {
+        "Effect intensity": "效果强度",
+        "How strongly the artwork treatment replaces the photograph. Lower values keep more of the image.": "艺术效果替代照片的强度。数值越低，保留的原图越多。",
+    },
+    "ja": {
+        "Effect intensity": "エフェクトの強さ",
+        "How strongly the artwork treatment replaces the photograph. Lower values keep more of the image.": "アートワーク効果が写真を置き換える強さ。低いほど元の画像が残ります。",
+    },
+    "ko": {
+        "Effect intensity": "효과 강도",
+        "How strongly the artwork treatment replaces the photograph. Lower values keep more of the image.": "아트워크 효과가 사진을 대체하는 정도입니다. 값이 낮을수록 원본 이미지가 더 많이 남습니다.",
+    },
+    "es": {
+        "Effect intensity": "Intensidad del efecto",
+        "How strongly the artwork treatment replaces the photograph. Lower values keep more of the image.": "Cuánto reemplaza el tratamiento artístico a la fotografía. Los valores bajos conservan más de la imagen.",
+    },
+    "fr": {
+        "Effect intensity": "Intensité de l’effet",
+        "How strongly the artwork treatment replaces the photograph. Lower values keep more of the image.": "Dans quelle mesure le traitement artistique remplace la photographie. Les valeurs basses conservent davantage l’image.",
+    },
+    "de": {
+        "Effect intensity": "Effektstärke",
+        "How strongly the artwork treatment replaces the photograph. Lower values keep more of the image.": "Wie stark die künstlerische Behandlung das Foto ersetzt. Niedrigere Werte behalten mehr vom Bild.",
+    },
+    "pt-BR": {
+        "Effect intensity": "Intensidade do efeito",
+        "How strongly the artwork treatment replaces the photograph. Lower values keep more of the image.": "Quanto o tratamento artístico substitui a fotografia. Valores menores preservam mais da imagem.",
+    },
+    "ru": {
+        "Effect intensity": "Интенсивность эффекта",
+        "How strongly the artwork treatment replaces the photograph. Lower values keep more of the image.": "Насколько художественная обработка заменяет фотографию. Меньшие значения сохраняют больше исходного изображения.",
+    },
+    "it": {
+        "Effect intensity": "Intensità dell’effetto",
+        "How strongly the artwork treatment replaces the photograph. Lower values keep more of the image.": "Quanto il trattamento artistico sostituisce la fotografia. I valori bassi conservano di più l’immagine.",
+    },
+}.items():
+    GLOSSARY.setdefault(_locale, {}).update(_table)
+
+# Queued-message actions and follow-up suggestions. These were translated in
+# the locale files before the settings glossary carried them; keeping the
+# strings here makes `gen_locales.py` idempotent instead of reverting them to
+# English on the next run.
+for _locale, _table in {
+    "zh-CN": {
+        "Edit this message": "编辑此消息",
+        "Send now — delivered before the next model call": "立即发送 — 在下次模型调用前送达",
+        "Save": "保存",
+        "Message text": "消息内容",
+        "Follow-up suggestions": "后续建议",
+        "Suggest next messages after a run. Sends recent conversation and tool output to the selected model and may incur extra cost.": "在运行结束后建议下一条消息。会将最近的对话和工具输出发送到所选模型，可能产生额外费用。",
+        "Suggestions model": "建议模型",
+        "Model used for follow-up suggestions; defaults to the active session model.": "用于后续建议的模型；默认使用当前会话的模型。",
+    },
+    "ja": {
+        "Edit this message": "このメッセージを編集",
+        "Send now — delivered before the next model call": "今すぐ送信 — 次のモデル呼び出しの前に届きます",
+        "Save": "保存",
+        "Message text": "メッセージ本文",
+        "Follow-up suggestions": "フォローアップ候補",
+        "Suggest next messages after a run. Sends recent conversation and tool output to the selected model and may incur extra cost.": "実行後に次のメッセージを提案します。直近の会話とツール出力を選択したモデルに送信するため、追加料金が発生する場合があります。",
+        "Suggestions model": "提案モデル",
+        "Model used for follow-up suggestions; defaults to the active session model.": "フォローアップ候補に使用するモデル。既定ではアクティブなセッションのモデルを使用します。",
+    },
+    "ko": {
+        "Edit this message": "이 메시지 편집",
+        "Send now — delivered before the next model call": "지금 보내기 — 다음 모델 호출 전에 전달됩니다",
+        "Save": "저장",
+        "Message text": "메시지 내용",
+        "Follow-up suggestions": "후속 제안",
+        "Suggest next messages after a run. Sends recent conversation and tool output to the selected model and may incur extra cost.": "실행이 끝난 뒤 다음 메시지를 제안합니다. 최근 대화와 도구 출력을 선택한 모델로 전송하므로 추가 비용이 발생할 수 있습니다.",
+        "Suggestions model": "제안 모델",
+        "Model used for follow-up suggestions; defaults to the active session model.": "후속 제안에 사용할 모델입니다. 기본값은 활성 세션의 모델입니다.",
+    },
+    "es": {
+        "Edit this message": "Editar este mensaje",
+        "Send now — delivered before the next model call": "Enviar ahora — se entrega antes de la próxima llamada al modelo",
+        "Save": "Guardar",
+        "Message text": "Texto del mensaje",
+        "Follow-up suggestions": "Sugerencias de seguimiento",
+        "Suggest next messages after a run. Sends recent conversation and tool output to the selected model and may incur extra cost.": "Sugiere los próximos mensajes tras una ejecución. Envía la conversación reciente y la salida de herramientas al modelo seleccionado y puede generar costes adicionales.",
+        "Suggestions model": "Modelo de sugerencias",
+        "Model used for follow-up suggestions; defaults to the active session model.": "Modelo usado para las sugerencias de seguimiento; por defecto, el modelo de la sesión activa.",
+    },
+    "fr": {
+        "Edit this message": "Modifier ce message",
+        "Send now — delivered before the next model call": "Envoyer maintenant — remis avant le prochain appel au modèle",
+        "Save": "Enregistrer",
+        "Message text": "Texte du message",
+        "Follow-up suggestions": "Suggestions de suivi",
+        "Suggest next messages after a run. Sends recent conversation and tool output to the selected model and may incur extra cost.": "Propose les prochains messages après une exécution. Envoie la conversation récente et la sortie des outils au modèle sélectionné et peut entraîner des coûts supplémentaires.",
+        "Suggestions model": "Modèle de suggestions",
+        "Model used for follow-up suggestions; defaults to the active session model.": "Modèle utilisé pour les suggestions de suivi ; par défaut, celui de la session active.",
+    },
+    "de": {
+        "Edit this message": "Diese Nachricht bearbeiten",
+        "Send now — delivered before the next model call": "Jetzt senden — wird vor dem nächsten Modellaufruf zugestellt",
+        "Save": "Speichern",
+        "Message text": "Nachrichtentext",
+        "Follow-up suggestions": "Folgevorschläge",
+        "Suggest next messages after a run. Sends recent conversation and tool output to the selected model and may incur extra cost.": "Schlägt nach einem Lauf die nächsten Nachrichten vor. Sendet die aktuelle Unterhaltung und Tool-Ausgaben an das ausgewählte Modell und kann zusätzliche Kosten verursachen.",
+        "Suggestions model": "Vorschlagsmodell",
+        "Model used for follow-up suggestions; defaults to the active session model.": "Modell für Folgevorschläge; standardmäßig das Modell der aktiven Sitzung.",
+    },
+    "pt-BR": {
+        "Edit this message": "Editar esta mensagem",
+        "Send now — delivered before the next model call": "Enviar agora — entregue antes da próxima chamada ao modelo",
+        "Save": "Salvar",
+        "Message text": "Texto da mensagem",
+        "Follow-up suggestions": "Sugestões de acompanhamento",
+        "Suggest next messages after a run. Sends recent conversation and tool output to the selected model and may incur extra cost.": "Sugere as próximas mensagens após uma execução. Envia a conversa recente e a saída de ferramentas ao modelo selecionado e pode gerar custo extra.",
+        "Suggestions model": "Modelo de sugestões",
+        "Model used for follow-up suggestions; defaults to the active session model.": "Modelo usado para sugestões de acompanhamento; por padrão, o modelo da sessão ativa.",
+    },
+    "ru": {
+        "Edit this message": "Изменить это сообщение",
+        "Send now — delivered before the next model call": "Отправить сейчас — доставлено до следующего вызова модели",
+        "Save": "Сохранить",
+        "Message text": "Текст сообщения",
+        "Follow-up suggestions": "Следующие подсказки",
+        "Suggest next messages after a run. Sends recent conversation and tool output to the selected model and may incur extra cost.": "Предлагает следующие сообщения после запуска. Отправляет недавнюю переписку и вывод инструментов выбранной модели и может привести к дополнительным расходам.",
+        "Suggestions model": "Модель подсказок",
+        "Model used for follow-up suggestions; defaults to the active session model.": "Модель для следующих подсказок; по умолчанию используется модель активного сеанса.",
+    },
+    "it": {
+        "Edit this message": "Modifica questo messaggio",
+        "Send now — delivered before the next model call": "Invia ora — consegnato prima della prossima chiamata al modello",
+        "Save": "Salva",
+        "Message text": "Testo del messaggio",
+        "Follow-up suggestions": "Suggerimenti successivi",
+        "Suggest next messages after a run. Sends recent conversation and tool output to the selected model and may incur extra cost.": "Suggerisce i prossimi messaggi dopo un'esecuzione. Invia la conversazione recente e l'output degli strumenti al modello selezionato e può comportare costi aggiuntivi.",
+        "Suggestions model": "Modello dei suggerimenti",
+        "Model used for follow-up suggestions; defaults to the active session model.": "Modello usato per i suggerimenti successivi; per impostazione predefinita, quello della sessione attiva.",
+    },
+}.items():
+    GLOSSARY.setdefault(_locale, {}).update(_table)
+
+# Shared component corner rounding.
+for _locale, (_label, _description) in {
+    "de": ("Eckenrundung", "Rundet gemeinsame Komponentenecken leicht ab. Kreise und gerade Kanten bleiben unverändert."),
+    "es": ("Redondeo de esquinas", "Añade un redondeo sutil a los componentes. Los círculos y bordes rectos no cambian."),
+    "fr": ("Arrondi des angles", "Arrondit légèrement les angles des composants. Les cercles et les bords droits restent inchangés."),
+    "it": ("Arrotondamento degli angoli", "Aggiunge un leggero arrotondamento ai componenti. Cerchi e bordi dritti rimangono invariati."),
+    "ja": ("角の丸み", "共通コンポーネントの角を少し丸くします。円と直角のエッジは変わりません。"),
+    "ko": ("모서리 둥글기", "공통 구성 요소의 모서리를 살짝 둥글게 합니다. 원과 직각 모서리는 그대로 유지됩니다."),
+    "pt-BR": ("Arredondamento dos cantos", "Adiciona um arredondamento sutil aos componentes. Círculos e bordas retas permanecem iguais."),
+    "ru": ("Скругление углов", "Слегка скругляет углы общих компонентов. Круги и прямые края не меняются."),
+    "zh-CN": ("圆角", "为通用组件的边角添加轻微圆角。圆形和直角边缘保持不变。"),
+}.items():
+    GLOSSARY.setdefault(_locale, {}).update({
+        "Corner rounding": _label,
+        "Add subtle rounding to shared component corners. Circles and square edges stay unchanged.": _description,
+    })
+
+# Wallpaper artwork pixel size. Kept here so `gen_locales.py` preserves the
+# translations instead of falling back to English.
+for _locale, _table in {
+    "zh-CN": {
+        "Effect pixel size": "效果像素大小",
+        "Scales the effect's cells, dots, glyphs, and scanline spacing. Lower is finer, higher is chunkier.": "缩放效果中的网点、半色调圆点、ASCII 字形和扫描线间距。数值越小越细腻，越大越粗犷。",
+    },
+    "ja": {
+        "Effect pixel size": "エフェクトのピクセルサイズ",
+        "Scales the effect's cells, dots, glyphs, and scanline spacing. Lower is finer, higher is chunkier.": "エフェクトのセル、ドット、グリフ、走査線の間隔を拡大縮小します。小さいほど繊細、大きいほど粗くなります。",
+    },
+    "ko": {
+        "Effect pixel size": "효과 픽셀 크기",
+        "Scales the effect's cells, dots, glyphs, and scanline spacing. Lower is finer, higher is chunkier.": "효과의 셀, 점, 글리프, 주사선 간격을 조절합니다. 작을수록 더 정교하고 클수록 더 거칩니다.",
+    },
+    "es": {
+        "Effect pixel size": "Tamaño de píxel del efecto",
+        "Scales the effect's cells, dots, glyphs, and scanline spacing. Lower is finer, higher is chunkier.": "Escala las celdas, puntos, glifos y el espaciado de las líneas del efecto. Menor es más fino, mayor es más grueso.",
+    },
+    "fr": {
+        "Effect pixel size": "Taille des pixels de l’effet",
+        "Scales the effect's cells, dots, glyphs, and scanline spacing. Lower is finer, higher is chunkier.": "Met à l’échelle les cellules, points, glyphes et l’espacement des lignes de l’effet. Plus petit est plus fin, plus grand est plus grossier.",
+    },
+    "de": {
+        "Effect pixel size": "Effekt-Pixelgröße",
+        "Scales the effect's cells, dots, glyphs, and scanline spacing. Lower is finer, higher is chunkier.": "Skaliert Zellen, Punkte, Glyphen und Scanline-Abstände des Effekts. Kleiner ist feiner, größer ist grober.",
+    },
+    "pt-BR": {
+        "Effect pixel size": "Tamanho do pixel do efeito",
+        "Scales the effect's cells, dots, glyphs, and scanline spacing. Lower is finer, higher is chunkier.": "Escala as células, pontos, glifos e o espaçamento das linhas do efeito. Menor é mais fino, maior é mais grosso.",
+    },
+    "ru": {
+        "Effect pixel size": "Размер пикселя эффекта",
+        "Scales the effect's cells, dots, glyphs, and scanline spacing. Lower is finer, higher is chunkier.": "Масштабирует ячейки, точки, глифы и расстояние между строками эффекта. Меньше — тоньше, больше — грубее.",
+    },
+    "it": {
+        "Effect pixel size": "Dimensione pixel dell’effetto",
+        "Scales the effect's cells, dots, glyphs, and scanline spacing. Lower is finer, higher is chunkier.": "Ridimensiona celle, punti, glifi e spaziatura delle linee dell’effetto. Più piccolo è più fine, più grande è più grezzo.",
+    },
+}.items():
+    GLOSSARY.setdefault(_locale, {}).update(_table)

@@ -33,6 +33,8 @@ const QUOTA_INDEX_JS: &str = include_str!("../../../contrib/orbit-quota-extensio
 const QUOTA_ADAPTERS_JS: &str = include_str!("../../../contrib/orbit-quota-extension/adapters.js");
 const GUARD_INDEX_JS: &str = include_str!("../../../contrib/orbit-guard-extension/index.js");
 const GUARD_POLICY_JS: &str = include_str!("../../../contrib/orbit-guard-extension/policy.js");
+const SUGGESTIONS_INDEX_JS: &str =
+    include_str!("../../../contrib/orbit-suggestions-extension/index.js");
 const TITLE_INDEX_JS: &str = include_str!("../../../contrib/orbit-title-extension/index.js");
 const TITLE_HELPERS_JS: &str = include_str!("../../../contrib/orbit-title-extension/title.js");
 const WORKFLOW_INDEX_JS: &str = include_str!("../../../contrib/orbit-workflow-extension/index.js");
@@ -51,6 +53,7 @@ pub(crate) struct BundledExtensions {
     /// The auto-title extension's `index.js`; `None` when it could not be
     /// written (sessions then keep their first-message title).
     title: Option<PathBuf>,
+    suggestions: Option<PathBuf>,
     /// The workflow extension's `index.js`; `None` when it could not be
     /// written (sessions then run unscoped and the mode chip is honest).
     workflow: Option<PathBuf>,
@@ -64,6 +67,7 @@ impl BundledExtensions {
             quota: install_quota_bridge(),
             guard: install_guard(),
             title: install_title_extension(),
+            suggestions: install_suggestions_extension(),
             workflow: install_workflow_extension(),
         }
     }
@@ -126,11 +130,17 @@ impl BundledExtensions {
 
     /// The installed bundled extension entry points, in load order.
     fn extension_paths(&self) -> Vec<PathBuf> {
-        [&self.quota, &self.guard, &self.title, &self.workflow]
-            .into_iter()
-            .flatten()
-            .cloned()
-            .collect()
+        [
+            &self.quota,
+            &self.guard,
+            &self.title,
+            &self.suggestions,
+            &self.workflow,
+        ]
+        .into_iter()
+        .flatten()
+        .cloned()
+        .collect()
     }
 }
 
@@ -173,6 +183,14 @@ fn install_title_extension() -> Option<PathBuf> {
         &home_dir()?,
         "title-extension",
         &[("index.js", TITLE_INDEX_JS), ("title.js", TITLE_HELPERS_JS)],
+    )
+}
+
+fn install_suggestions_extension() -> Option<PathBuf> {
+    install_extension(
+        &home_dir()?,
+        "suggestions-extension",
+        &[("index.js", SUGGESTIONS_INDEX_JS)],
     )
 }
 

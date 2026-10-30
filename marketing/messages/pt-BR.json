@@ -31,7 +31,7 @@
       "windows": "Windows",
       "linux": "Linux"
     },
-    "shotAlt": "Uma sessão do Orbit concluída: as anotações do agente sobre a correção do compositor com IME no Windows e um cartão “4 arquivos alterados” com a contagem de linhas por arquivo, acima do compositor."
+    "shotAlt": "Uma sessão do Orbit concluída: o resumo do agente sobre a mudança nas opções de abrir com e um cartão «3 arquivos alterados» com a contagem de linhas por arquivo, acima do compositor."
   },
   "trust": {
     "items": [
@@ -133,7 +133,7 @@
     },
     "latest": "Mais recente",
     "release": "Versão {tag}",
-    "copyright": "© {year} Orbit · as mesmas sessões do terminal"
+    "copyright": "© {year} Orbit"
   },
   "download": {
     "download": "Baixar",
@@ -149,12 +149,14 @@
         "Streaming agrupado, Markdown GFM e realce de sintaxe que só repinta.",
         "Pedir, direcionar, enfileirar ou cancelar — sempre contra o processo do pi em execução.",
         "Cada chamada de ferramenta abre em argumentos, saída e diffs em linha."
-      ]
+      ],
+      "shotAlt": "O transcript da sessão do Orbit com um cartão de arquivos alterados."
     },
     "sessions": {
       "label": "Sessões",
       "title": "As sessões vivem onde o pi as deixou.",
-      "copy": "Sua lista é lida direto do pi e agrupada por projeto — as mesmas sessões que o terminal vê. Reabra, clone ou oculte um espaço de trabalho sem tocar em nada no disco; as sessões recentes ficam aquecidas."
+      "copy": "Sua lista é lida direto do pi e agrupada por projeto — as mesmas sessões que o terminal vê. Reabra, clone ou oculte um espaço de trabalho sem tocar em nada no disco; as sessões recentes ficam aquecidas.",
+      "shotAlt": "A barra lateral de sessões do Orbit com as sessões recentes, projeto, branch e status."
     },
     "newTask": {
       "label": "Nova tarefa",
@@ -165,7 +167,7 @@
         "Espaço de trabalho escolhido entre os seus projetos e lembrado entre sessões.",
         "Modo de acesso, modelo e nível de raciocínio ao lado do compositor."
       ],
-      "shotAlt": "A página Nova tarefa do Orbit com os interruptores de modo Plano, Construir e Perguntar, um seletor de espaço de trabalho e o compositor abaixo."
+      "shotAlt": "A página Nova tarefa do Orbit com um seletor de espaço de trabalho acima do compositor e o modo de fluxo de trabalho, o modelo e o nível de raciocínio no compositor."
     },
     "providers": {
       "label": "Modelos e provedores",
@@ -241,7 +243,7 @@
         "Fontes de interface e de código, tamanhos e uma prévia do terminal ao vivo.",
         "Busque em todos os ajustes por um único campo."
       ],
-      "shotAlt": "As configurações de aparência do Orbit com a escolha de tema acima dos controles de fonte de interface, fonte de código e tamanhos."
+      "shotAlt": "As configurações de Aparência do Orbit com sistema de design, tema, cor de destaque, idioma e controles de papel de parede."
     },
     "native": {
       "label": "Nativo",
@@ -251,7 +253,8 @@
         "Supervisionado — pergunta antes de cada edição e de cada comando.",
         "Aceitar edições — aplica edições de arquivos, ainda pergunta antes dos comandos.",
         "Acesso total — roda sem perguntar, escolhido de propósito por tarefa."
-      ]
+      ],
+      "shotAlt": "O compositor do Orbit com modo de acesso, fluxo de trabalho, modelo e nível de raciocínio."
     },
     "contributors": {
       "label": "Contribuidores",
@@ -268,7 +271,9 @@
       "platforms": {
         "reddit": "Reddit",
         "x": "X"
-      }
+      },
+      "pause": "Pausar",
+      "resume": "Retomar"
     }
   },
   "docs": {

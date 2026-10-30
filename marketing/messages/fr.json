@@ -31,7 +31,7 @@
       "windows": "Windows",
       "linux": "Linux"
     },
-    "shotAlt": "Une session Orbit terminée : les notes de l'agent sur le correctif du compositeur avec IME sous Windows et une carte « 4 fichiers modifiés » avec le nombre de lignes par fichier, au-dessus du compositeur."
+    "shotAlt": "Une session Orbit terminée : le résumé de l'agent sur la modification des options d'ouverture et une carte « 3 fichiers modifiés » avec le nombre de lignes par fichier, au-dessus du compositeur."
   },
   "trust": {
     "items": [
@@ -133,7 +133,7 @@
     },
     "latest": "Dernière",
     "release": "Version {tag}",
-    "copyright": "© {year} Orbit · les mêmes sessions que le terminal"
+    "copyright": "© {year} Orbit"
   },
   "download": {
     "download": "Télécharger",
@@ -149,12 +149,14 @@
         "Streaming regroupé, Markdown GFM et coloration syntaxique qui ne fait que repeindre.",
         "Demander, orienter, mettre en file ou annuler — toujours sur le processus pi en cours.",
         "Chaque appel d'outil se déplie en arguments, sortie et diffs intégrés."
-      ]
+      ],
+      "shotAlt": "Le transcript de la session d'Orbit avec une carte des fichiers modifiés."
     },
     "sessions": {
       "label": "Sessions",
       "title": "Les sessions vivent là où pi les a mises.",
-      "copy": "Votre liste est lue directement dans pi et groupée par projet — les mêmes sessions que voit le terminal. Rouvrez, clonez ou masquez un espace de travail sans rien toucher sur le disque ; les sessions récentes restent chaudes."
+      "copy": "Votre liste est lue directement dans pi et groupée par projet — les mêmes sessions que voit le terminal. Rouvrez, clonez ou masquez un espace de travail sans rien toucher sur le disque ; les sessions récentes restent chaudes.",
+      "shotAlt": "La barre latérale des sessions d'Orbit avec les sessions récentes, leur projet, branche et statut."
     },
     "newTask": {
       "label": "Nouvelle tâche",
@@ -165,7 +167,7 @@
         "Espace de travail choisi parmi vos projets et mémorisé entre les sessions.",
         "Mode d'accès, modèle et niveau de raisonnement réglés à côté du compositeur."
       ],
-      "shotAlt": "La page Nouvelle tâche d'Orbit avec les bascules de mode Plan, Construire et Demander, un sélecteur d'espace de travail et le compositeur en dessous."
+      "shotAlt": "La page Nouvelle tâche d'Orbit avec un sélecteur d'espace de travail au-dessus du compositeur, et le mode de travail, le modèle et le niveau de raisonnement dans le compositeur."
     },
     "providers": {
       "label": "Modèles et fournisseurs",
@@ -241,7 +243,7 @@
         "Polices d'interface et de code, tailles, et un aperçu du terminal en direct.",
         "Recherchez tous les réglages depuis un seul champ."
       ],
-      "shotAlt": "Les réglages Apparence d'Orbit avec le choix du thème au-dessus des contrôles de police d'interface, de police de code et de taille."
+      "shotAlt": "Les réglages Apparence d'Orbit avec le système de design, le thème, la couleur d'accent, la langue et les contrôles de fond d'écran."
     },
     "native": {
       "label": "Natif",
@@ -251,7 +253,8 @@
         "Supervisé — demande avant chaque édition et chaque commande.",
         "Accepter les éditions — applique les modifications de fichiers, demande encore avant les commandes.",
         "Accès complet — s'exécute sans demander, choisi délibérément par tâche."
-      ]
+      ],
+      "shotAlt": "Le compositeur d'Orbit avec le mode d'accès, le workflow, le modèle et le niveau de raisonnement."
     },
     "contributors": {
       "label": "Contributeurs",
@@ -268,7 +271,9 @@
       "platforms": {
         "reddit": "Reddit",
         "x": "X"
-      }
+      },
+      "pause": "Pause",
+      "resume": "Reprendre"
     }
   },
   "docs": {

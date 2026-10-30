@@ -1,15 +1,15 @@
 //! Settings → Report a bug: an inline issue form.
 //!
 //! The form takes free-form context at the top and can draft the issue title
-//! and description from it with the app's active model, then files a GitHub
+//! and description using the selected model, then files a GitHub
 //! issue on the project repository with the machine's build details attached.
 //! The drafting lives in [`crate::issue_message`], the diagnostics and filing
 //! in [`crate::bug_report`], and both run off the UI thread because they shell
 //! out to `pi` and `gh`.
 //!
 //! Screenshots are written to a temp directory and uploaded with
-//! `gh issue create --attach`; a signed-out `gh` (or one without `--attach`)
-//! falls back to GitHub's web form, where the saved files are dragged in.
+//! `gh issue create --attach`; a signed-out `gh` or a preflight upload
+//! limitation falls back to GitHub's web form and the saved image folder.
 
 use super::helpers::*;
 use super::*;
@@ -34,17 +34,13 @@ impl OrbitApp {
             .flex()
             .items_center()
             .gap(DynamicSpacing::Base08.px(&theme))
-            .children(
-                (!self.model_label.is_empty() && self.model_label != "…").then(|| {
-                    div()
-                        .text_size(TextSize::XSmall.px(&theme))
-                        .text_color(theme.text_muted)
-                        .child(tr!(
-                            "bug_report.using_model",
-                            model = self.model_label.clone()
-                        ))
-                }),
+            .child(
+                div()
+                    .text_size(TextSize::XSmall.px(&theme))
+                    .text_color(theme.text_muted)
+                    .child(tr!("bug_report.draft_model")),
             )
+            .child(self.bug_report_model_select(theme, cx))
             .child(action_button(
                 "bug-report-generate",
                 &generate_label,
@@ -188,6 +184,22 @@ impl OrbitApp {
                 .into_any_element(),
         );
         rows
+    }
+
+    /// Pick a draft model without changing the session or commit model.
+    fn bug_report_model_select(&self, theme: Theme, cx: &Context<Self>) -> AnyElement {
+        let (options, selected) =
+            report_model_options(&self.available_models, self.bug_report_model.model.as_ref());
+        self.select_control(
+            "bug-report-model-select",
+            SettingsSelect::ReportModel,
+            options[selected].clone(),
+            options,
+            selected,
+            theme,
+            cx.entity(),
+            cx,
+        )
     }
 
     /// The Issue type control: a segmented Bug report / Feature request /
@@ -423,7 +435,7 @@ impl OrbitApp {
     }
 
     /// Draft the issue title and description from the context field with the
-    /// app's active model. The one-shot `pi` call runs off the UI thread; when
+    /// selected model. The one-shot `pi` call runs off the UI thread; when
     /// pi is unavailable the draft falls back to the notes themselves.
     pub(super) fn generate_bug_report_draft(&mut self, cx: &mut Context<Self>) {
         if self.bug_report_generating || self.bug_report_busy {
@@ -436,8 +448,14 @@ impl OrbitApp {
             return;
         }
         let cwd = self.workspace_dir();
-        let provider = self.model_provider.clone();
-        let model = self.model_id.clone();
+        let picked = self
+            .bug_report_model
+            .resolve(&self.model_provider, &self.model_id);
+        let provider = picked
+            .as_ref()
+            .map(|model| model.provider.clone())
+            .unwrap_or_default();
+        let model = picked.map(|model| model.id).unwrap_or_default();
         let kind = self.bug_report_kind;
         self.bug_report_generating = true;
         self.bug_report_error = None;
@@ -465,8 +483,8 @@ impl OrbitApp {
     }
 
     /// File the report on the background executor. The `gh` shell-out and the
-    /// host probes must never block a frame. With screenshots the report opens
-    /// GitHub's web form instead, because the API cannot attach binary files.
+    /// host probes must never block a frame. Screenshots use `gh` when its
+    /// upload preflight succeeds, otherwise the browser fallback is offered.
     pub(super) fn submit_bug_report(&mut self, cx: &mut Context<Self>) {
         if self.bug_report_busy {
             return;
@@ -489,7 +507,14 @@ impl OrbitApp {
         let screenshots: Vec<(String, Vec<u8>)> = self
             .bug_report_screenshots
             .iter()
-            .filter_map(|shot| shot.bytes().map(|bytes| (shot.name.clone(), bytes)))
+            .filter_map(|shot| {
+                shot.bytes().map(|bytes| {
+                    (
+                        crate::bug_report::screenshot_filename(&shot.name, &shot.mime),
+                        bytes,
+                    )
+                })
+            })
             .collect();
         self.bug_report_busy = true;
         self.bug_report_error = None;
@@ -524,6 +549,7 @@ impl OrbitApp {
                         if let Err(err) = platform::open_url(&url) {
                             app.bug_report_error = Some(tr!("bug_report.open_failed", error = err));
                         } else if let Some(directory) = screenshots {
+                            platform::open_path_default(&directory);
                             app.toast_info(tr!(
                                 "bug_report.screenshots_saved",
                                 dir = directory.to_string_lossy()
@@ -541,6 +567,40 @@ impl OrbitApp {
         })
         .detach();
     }
+}
+
+/// The active session choice stays first; a missing saved model remains
+/// visible rather than pretending that the session model is selected.
+fn report_model_options(
+    models: &[ModelEntry],
+    picked: Option<&crate::commit_model::CommitModel>,
+) -> (Vec<String>, usize) {
+    let mut options = vec![tr!("settings.active_session_model")];
+    options.extend(models.iter().map(|model| {
+        format!(
+            "{} · {}",
+            crate::providers::provider_display_name(&model.provider),
+            model.name
+        )
+    }));
+    let selected = match picked {
+        None => 0,
+        Some(wanted) => match models
+            .iter()
+            .position(|model| model.provider == wanted.provider && model.id == wanted.id)
+        {
+            Some(index) => index + 1,
+            None => {
+                options.push(format!(
+                    "{} · {}",
+                    crate::providers::provider_display_name(&wanted.provider),
+                    wanted.id
+                ));
+                options.len() - 1
+            }
+        },
+    };
+    (options, selected)
 }
 
 /// The locale key for the report kind's segmented-control label.
@@ -641,4 +701,36 @@ fn bug_field(
 fn stretch<E: Styled>(mut el: E) -> E {
     el.style().align_items = Some(gpui::AlignItems::Stretch);
     el
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commit_model::CommitModel;
+
+    #[test]
+    fn report_model_options_preserve_the_default_and_unavailable_pick() {
+        let models = vec![ModelEntry {
+            id: "local-model".into(),
+            name: "Local model".into(),
+            provider: "ollama".into(),
+            context_window: None,
+            thinking_levels: vec![],
+        }];
+        let (_, default_index) = report_model_options(&models, None);
+        assert_eq!(default_index, 0);
+        let selected = CommitModel {
+            provider: "ollama".into(),
+            id: "local-model".into(),
+        };
+        let (_, index) = report_model_options(&models, Some(&selected));
+        assert_eq!(index, 1);
+        let missing = CommitModel {
+            provider: "custom".into(),
+            id: "missing-model".into(),
+        };
+        let (options, index) = report_model_options(&models, Some(&missing));
+        assert_eq!(index, 2);
+        assert!(options[index].contains("missing-model"));
+    }
 }

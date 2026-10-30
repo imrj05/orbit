@@ -36,6 +36,24 @@ fn app(cx: &mut gpui::TestAppContext) -> Entity<OrbitApp> {
     })
 }
 
+#[gpui::test]
+fn pasted_file_paths_queue_real_image_and_file_attachments(cx: &mut gpui::TestAppContext) {
+    let app = app(cx);
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let image = root.join("../../assets/icons/icon.png");
+    let file = root.join("Cargo.toml");
+    cx.update(|cx| {
+        app.update(cx, |app, cx| {
+            app.input
+                .update(cx, |input, _| input.pasted_files.extend([image, file]));
+            app.drain_pasted_files(cx);
+            assert_eq!(app.attachments.len(), 1);
+            assert_eq!(app.files.len(), 1);
+            assert!(app.input.read(cx).pasted_files.is_empty());
+        });
+    });
+}
+
 /// The tray alone, so its shape can be read off the laid-out tree.
 struct TrayProbe {
     app: Entity<OrbitApp>,
@@ -154,4 +172,18 @@ fn a_file_attachment_records_the_name_and_size_it_will_reference(_cx: &mut gpui:
     );
 
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn pasted_and_attached_images_have_the_same_preview() {
+    let pixels = image::RgbaImage::from_pixel(2, 2, image::Rgba([12, 34, 56, 255]));
+    let mut bytes = Vec::new();
+    image::DynamicImage::ImageRgba8(pixels)
+        .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+        .expect("encode PNG");
+    let image = gpui::Image::from_bytes(gpui::ImageFormat::Png, bytes.clone());
+    let pasted = Attachment::from_image(&image, 0);
+    let attached = Attachment::from_bytes("image.png".into(), &bytes, gpui::ImageFormat::Png);
+    assert_eq!(pasted.preview.unwrap().bytes, attached.preview.unwrap().bytes);
+    assert_eq!(pasted.data, attached.data);
 }

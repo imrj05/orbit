@@ -33,7 +33,7 @@ use base64::Engine as _;
 use gpui::{
     anchored, deferred, div, img, linear_color_stop, linear_gradient, list, point, prelude::*, px,
     radians, relative, uniform_list, AnchoredPositionMode, Animation, AnimationExt, AnyElement,
-    App, ClipboardItem, Context, Corner, CursorStyle, DragMoveEvent, ElementId, Entity,
+    App, ClickEvent, ClipboardItem, Context, Corner, CursorStyle, DragMoveEvent, ElementId, Entity,
     ExternalPaths, FocusHandle, Focusable, FontWeight, Hsla, Image, ImageSource, IntoElement,
     ListAlignment, ListState, MouseButton, MouseDownEvent, MouseUpEvent, ObjectFit,
     PathPromptOptions, Pixels, Point, Render, Resource, ScrollStrategy, SharedString,
@@ -41,7 +41,7 @@ use gpui::{
     Window,
 };
 use orbit_rpc::{
-    CommandBody, ContextUsage, Event, PendingQueue, PiClient, QuotaReport, SessionState,
+    CommandBody, ContextUsage, Event, PendingQueue, PiClient, QueueLane, QuotaReport, SessionState,
     SessionUsage,
 };
 use serde_json::Value;
@@ -215,6 +215,29 @@ struct RetryDetail {
     error: String,
 }
 
+/// One queued message as the queue bar addresses it (issue #79).
+///
+/// pi's protocol gives a queued message no identity — `queue_update` carries
+/// bare strings — so the only handle Orbit has is where it sits: which lane,
+/// and its position in that lane's delivery order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct QueuedMessage {
+    pub(crate) lane: QueueLane,
+    pub(crate) index: usize,
+}
+
+/// The queued message currently open in the queue bar's inline editor, with
+/// the field holding the draft text and the subscription that repaints the
+/// Save control as the draft changes.
+struct QueueEdit {
+    target: QueuedMessage,
+    /// The text the field opened on. pi reports the queue as bare strings, so
+    /// this is how the editor re-finds its message after a `queue_update`.
+    original: String,
+    input: Entity<ComposerInput>,
+    _sub: Subscription,
+}
+
 /// The status bar's branch chip: the checked-out branch and its divergence
 /// from upstream. `ahead_behind` is `None` without an upstream — unknown is
 /// not the same fact as `↑0 ↓0`.
@@ -345,6 +368,12 @@ pub struct OrbitApp {
     /// A `clear_queue` was sent as part of Escape; restore the returned text
     /// into the composer when the response arrives (docs' interactive-Esc).
     restore_queue_on_clear: bool,
+    /// The queue the app itself replaced (an edit or a "send now", #79).
+    /// pi's `clear_queue` echo carries the *pre-replace* list, so that one
+    /// echo is skipped and the following `queue_update` reconciles instead.
+    queue_replaced: bool,
+    /// The queued message open in the queue bar's inline editor, if any.
+    queue_edit: Option<QueueEdit>,
     /// Settings → Agent: `set_follow_up_mode` value.
     follow_up_mode: String,
     /// Settings → Agent: `set_auto_compaction` value (read back from state).
@@ -355,6 +384,7 @@ pub struct OrbitApp {
     /// Settings → Agent: auto session titles. Persisted to
     /// `~/.orbit-pi/auto-title.json`, which the bundled title extension reads.
     auto_title: crate::auto_title::AutoTitleConfig,
+    suggestions: crate::auto_title::AutoTitleConfig,
     /// Settings → Agent: whether an agent call the reader has not toggled
     /// opens. Persisted to `~/.orbit-pi/agent-calls.json` (issue #80).
     agent_calls: crate::agent_call_display::AgentCallDisplay,
@@ -395,6 +425,11 @@ pub struct OrbitApp {
     /// Text of the last optimistic follow-up. Cleared once pi confirms it in
     /// `queue_update`; restored to the composer if the command fails.
     pending_follow_up: Option<String>,
+    /// The agent error the run's most recent failed attempt carried, held
+    /// until the run settles: pi retries a transient provider failure on the
+    /// same turn, so only the settle knows whether the run ended there. A
+    /// recovered retry and a user stop must not report it (issue #96).
+    pending_agent_error: Option<String>,
     /// Rename field in the session-details popover.
     session_name_input: Entity<ComposerInput>,
     status: String,
@@ -501,6 +536,10 @@ pub struct OrbitApp {
     settings_open: bool,
     /// Active section within the settings surface.
     settings_section: SettingsSection,
+    git_accounts_snapshot: Option<crate::git_accounts::Snapshot>,
+    git_accounts_loading: bool,
+    git_accounts_generation: u64,
+    gh_latest: GhUpdateStatus,
     /// Open dropdown on the settings surface (language / font sizes).
     settings_select: Option<SettingsSelect>,
     /// Filter text for the open settings dropdown.
@@ -526,7 +565,9 @@ pub struct OrbitApp {
     /// upload binaries, so these are written to disk and the web form is
     /// opened for the user to drag them in.
     bug_report_screenshots: Vec<Attachment>,
-    /// A draft is being generated off-thread with the active model.
+    /// Optional model override for bug-report drafting, separate from the session.
+    bug_report_model: crate::commit_model::CommitModelConfig,
+    /// A draft is being generated off-thread.
     bug_report_generating: bool,
     /// A report is being filed off-thread; the form's submit control is busy.
     bug_report_busy: bool,
@@ -1845,10 +1886,13 @@ impl OrbitApp {
             busy: false,
             queue: PendingQueue::default(),
             restore_queue_on_clear: false,
+            queue_replaced: false,
+            queue_edit: None,
             follow_up_mode: "one-at-a-time".into(),
             auto_compaction: true,
             auto_retry: true,
             auto_title: crate::auto_title::AutoTitleConfig::load(),
+            suggestions: crate::auto_title::AutoTitleConfig::load_suggestions(),
             agent_calls: crate::agent_call_display::AgentCallDisplay::load(),
             retention: crate::session_retention::RetentionConfig::load(),
             retention_ran: false,
@@ -1865,6 +1909,7 @@ impl OrbitApp {
             prompt_in_flight: None,
             toasts: toast::Toasts::new(),
             pending_follow_up: None,
+            pending_agent_error: None,
             session_name_input,
             status: connect_error.clone(),
             status_at: (!connect_error.is_empty()).then(Instant::now),
@@ -1905,6 +1950,10 @@ impl OrbitApp {
             session_menu: None,
             settings_open: false,
             settings_section: SettingsSection::General,
+            git_accounts_snapshot: None,
+            git_accounts_loading: false,
+            git_accounts_generation: 0,
+            gh_latest: GhUpdateStatus::NotChecked,
             settings_select: None,
             settings_filter,
             settings_search: settings_search.clone(),
@@ -1917,6 +1966,7 @@ impl OrbitApp {
             bug_report_steps,
             bug_report_kind: crate::issue_message::ReportKind::Bug,
             bug_report_screenshots: Vec::new(),
+            bug_report_model: crate::commit_model::CommitModelConfig::load_report(),
             bug_report_generating: false,
             bug_report_busy: false,
             bug_report_error: None,
@@ -2363,6 +2413,9 @@ impl OrbitApp {
         self.worktree_repo_root = None;
         self.worktree_fetch = self.worktree_fetch.wrapping_add(1);
         self.current_workspace = Some(cwd.clone());
+        if self.settings_open && self.settings_section == SettingsSection::GitAccounts {
+            self.refresh_git_accounts_for_workspace(cx);
+        }
         self.sync_review_context(cx);
     }
 
@@ -3095,6 +3148,15 @@ struct WorkspaceMenu {
     picker: bool,
 }
 
+/// User-requested GitHub CLI release check, separate from local inspection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GhUpdateStatus {
+    NotChecked,
+    Checking,
+    Latest((u32, u32, u32)),
+    Failed,
+}
+
 /// Sections of the settings surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SettingsSection {
@@ -3105,6 +3167,7 @@ pub(crate) enum SettingsSection {
     Runtime,
     Agent,
     Worktrees,
+    GitAccounts,
     Providers,
     Models,
     Skills,
@@ -3446,12 +3509,16 @@ enum SettingsSelect {
     TerminalFont,
     EditorFont,
     SpacingDensity,
+    CornerRounding,
     UiFontFamily,
     CodeFontFamily,
-    BackdropCell,
-    BackdropFade,
+    WallpaperMode,
+    WallpaperEffect,
     /// The model the auto-title extension asks (Settings → Agent).
     TitleModel,
+    SuggestionsModel,
+    /// The model used to generate a bug-report draft.
+    ReportModel,
     /// How agent call details open in the transcript (Settings → Agent).
     AgentCalls,
     /// The model new sessions start on (Settings → Agent).
@@ -3476,6 +3543,7 @@ mod bug_report_ui;
 mod composer_ops;
 mod dialogs;
 mod events;
+mod git_accounts_ui;
 pub(crate) mod helpers;
 mod mcp_ui;
 mod open_in;
@@ -3520,6 +3588,8 @@ mod new_task_reconnect_tests;
 mod popup_layout_tests;
 #[cfg(test)]
 mod process_exit_cleanup_tests;
+#[cfg(test)]
+mod queue_edit_tests;
 #[cfg(test)]
 mod refresh_tests;
 #[cfg(test)]

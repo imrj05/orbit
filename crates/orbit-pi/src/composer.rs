@@ -200,6 +200,8 @@ pub struct ComposerInput {
     /// Images pasted (or attached) since the app last drained them — the
     /// app turns these into message attachments.
     pub pasted_images: Vec<Image>,
+    /// File URLs copied from the system file manager, awaiting attachment.
+    pub pasted_files: Vec<std::path::PathBuf>,
     /// Long pasted text since the app last drained it — the app turns these
     /// into collapsible pills instead of flooding the box.
     pub pasted_texts: Vec<String>,
@@ -268,6 +270,7 @@ impl ComposerInput {
             prompt_history: None,
             pasted_texts: Vec::new(),
             pasted_images: Vec::new(),
+            pasted_files: Vec::new(),
             caret_visible: true,
             blink_active: false,
             blink_epoch: 0,
@@ -938,26 +941,52 @@ impl ComposerInput {
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(item) = cx.read_from_clipboard() else {
+        // Finder also supplies a generic file icon as an image; use the
+        // actual file URL before considering that preview.
+        let files = crate::platform::clipboard_file_paths();
+        if !files.is_empty() {
+            self.pasted_files.extend(files);
+            cx.notify();
             return;
-        };
+        }
+        let item = cx.read_from_clipboard();
         // Pasted images become message attachments ("Show pasted
         // images as attachments") — the app drains `pasted_images` and
         // renders chips above the composer.
-        let images: Vec<Image> = item
-            .entries()
-            .iter()
-            .filter_map(|entry| match entry {
-                ClipboardEntry::Image(image) => Some(image.clone()),
-                ClipboardEntry::String(_) => None,
+        let mut images: Vec<Image> = item
+            .as_ref()
+            .map(|item| {
+                item.entries()
+                    .iter()
+                    .filter_map(|entry| match entry {
+                        ClipboardEntry::Image(image) => Some(image.clone()),
+                        ClipboardEntry::String(_) => None,
+                    })
+                    .collect()
             })
-            .collect();
+            .unwrap_or_default();
+        // GPUI misses the formats screenshot tools actually write: a CF_DIB
+        // bitmap on Windows, and a TIFF that it never reaches on macOS once
+        // the pasteboard also carries a path or caption. Read that image
+        // before the text branch, or the shortcut pastes the caption and
+        // drops the picture.
+        if images.is_empty() {
+            if let Some(bytes) = crate::platform::clipboard_image_png() {
+                images.push(Image::from_bytes(gpui::ImageFormat::Png, bytes));
+            }
+        }
         if !images.is_empty() {
             self.pasted_images.extend(images);
             cx.notify();
             return;
         }
-        if let Some(text) = item.text() {
+        if let Some(text) = item.as_ref().and_then(|item| item.text()) {
+            #[cfg(target_os = "linux")]
+            if let Some(files) = crate::platform::clipboard_uri_list(&text) {
+                self.pasted_files.extend(files);
+                cx.notify();
+                return;
+            }
             // A long paste collapses into a pill above the composer — pasting
             // 200 lines of log must not turn the box into a scroll trap. The
             // app drains `pasted_texts` and folds the text back in on send.
@@ -1468,7 +1497,7 @@ fn next_char_boundary(text: &str, offset: usize) -> usize {
 /// (word / punctuation / whitespace) around `offset`. Returning the class run
 /// rather than only a word means double-clicking punctuation selects it too,
 /// matching native text views.
-fn word_range_at(text: &str, offset: usize) -> Range<usize> {
+pub(crate) fn word_range_at(text: &str, offset: usize) -> Range<usize> {
     if text.is_empty() {
         return 0..0;
     }

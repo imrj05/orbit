@@ -293,7 +293,7 @@ impl ChatMessage {
         }
         let user = role == "user";
         let error = message_error(value);
-        let aborted = !user && value.get("stopReason").and_then(Value::as_str) == Some("aborted");
+        let aborted = !user && is_user_stop(value);
         let mut message = ChatMessage {
             user,
             summary: None,
@@ -494,7 +494,7 @@ fn injected_skill_message(value: &Value) -> bool {
 /// Decode an image content block — `{"type":"image","data":<base64>,
 /// "mimeType":"image/png"}`, the shape this app prompts with — into a
 /// renderable image. Covers pi echoes and session reloads from disk.
-fn image_from_block(block: &Value) -> Option<Arc<Image>> {
+pub(crate) fn image_from_block(block: &Value) -> Option<Arc<Image>> {
     let mime = block
         .get("mimeType")
         .or_else(|| block.get("mime_type"))
@@ -529,7 +529,12 @@ fn tool_result_parts(value: &Value) -> Option<(String, Option<Value>, bool, Tool
         return None;
     }
     let id = value.get("toolCallId").and_then(Value::as_str)?.to_string();
-    let output = tool_result_output(value);
+    let output = match normalize_tool_result(value) {
+        Value::Object(output) if output.get("content").is_some_and(Value::is_array) => {
+            Some(Value::Object(output))
+        }
+        _ => tool_result_output(value),
+    };
     let failed = value
         .get("isError")
         .and_then(Value::as_bool)
@@ -550,6 +555,9 @@ fn normalize_tool_result(value: &Value) -> Value {
     match value {
         Value::String(_) => value.clone(),
         Value::Object(map) => match tool_result_output(value) {
+            _ if map.get("content").and_then(Value::as_array).is_some_and(|blocks| {
+                blocks.iter().any(|block| block.get("type").and_then(Value::as_str) == Some("image"))
+            }) => value.clone(),
             Some(text) => text,
             // Only pi's envelope — an *array* `content` that carries no text
             // yet (the empty array that streams before the first chunk) — is
@@ -563,7 +571,7 @@ fn normalize_tool_result(value: &Value) -> Value {
 }
 
 /// Tool result payloads: joined text blocks; images are skipped.
-fn tool_result_output(value: &Value) -> Option<Value> {
+pub(crate) fn tool_result_output(value: &Value) -> Option<Value> {
     let blocks = value.get("content").and_then(Value::as_array)?;
     let mut text = String::new();
     for block in blocks {
@@ -652,13 +660,11 @@ fn merge_step(slot: &mut ChatMessage, step: ChatMessage) {
     if finished_at.is_some() {
         slot.finished_at = finished_at;
     }
-    // A step that ended in an error labels the whole row.
-    if error.is_some() {
-        slot.error = error;
-    }
-    if aborted {
-        slot.aborted = true;
-    }
+    // A step landing on the row retires its error: pi only continues a turn
+    // by retrying an attempt that failed, so the row no longer stopped there.
+    // A turn that really ended on the error keeps the card (issue #96).
+    slot.error = error;
+    slot.aborted = aborted;
 }
 
 impl ChatMessage {
@@ -698,6 +704,12 @@ fn message_role(value: &Value) -> Option<&str> {
 /// ("Request was aborted"). Treating that as an error would render both the
 /// inline error card and the app banner on top of the transcript's own quiet
 /// "Stopped" marker. An aborted turn therefore reports no error here.
+///
+/// A stop that lands while a provider request is in flight never reaches pi as
+/// an aborted message — the SDK throws and pi records `stopReason: "error"`
+/// with the abort text ("This operation was aborted"). Cancellation text is
+/// the same stop regardless of which layer recorded it, so it reports no error
+/// either (issue #96).
 pub fn message_error(value: &Value) -> Option<String> {
     let value = value.get("message").unwrap_or(value);
     if value.get("role").and_then(Value::as_str) != Some("assistant") {
@@ -706,12 +718,30 @@ pub fn message_error(value: &Value) -> Option<String> {
     if value.get("stopReason").and_then(Value::as_str) == Some("aborted") {
         return None;
     }
+    let message = value.get("errorMessage").and_then(Value::as_str)?.trim();
+    if message.is_empty() || is_cancellation_text(message) {
+        return None;
+    }
+    Some(message.to_string())
+}
+
+/// Whether the finalized assistant message records a stop the user asked for:
+/// pi's own `stopReason: "aborted"`, or the provider throwing on a request the
+/// user interrupted, which pi records as an `error` carrying abort text.
+fn is_user_stop(value: &Value) -> bool {
+    if value.get("stopReason").and_then(Value::as_str) == Some("aborted") {
+        return true;
+    }
     value
         .get("errorMessage")
         .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|message| !message.is_empty())
-        .map(str::to_string)
+        .is_some_and(is_cancellation_text)
+}
+
+/// Provider/SDK text that names a cancellation rather than a failure.
+fn is_cancellation_text(message: &str) -> bool {
+    let text = message.to_ascii_lowercase();
+    text.contains("abort") || text.contains("cancel")
 }
 
 fn summarize_value(value: &Value) -> String {
@@ -834,8 +864,8 @@ type CopiedSections = Rc<RefCell<HashMap<(usize, usize, u8), Instant>>>;
 /// `(message_ix, flat_tool_ix, section)`.
 type ExpandedSections = Rc<RefCell<HashSet<(usize, usize, u8)>>>;
 /// Code blocks expanded past their collapsed preview, keyed
-/// `(message_ix, prose_salt, block_ix)` — the salt scopes the block index to
-/// the step/user prose run it was parsed from.
+/// `(message_ix, prose_namespace, block_ix)` — the namespace scopes the block
+/// index to the step/user prose run it was parsed from.
 type ExpandedBlocks = Rc<RefCell<HashSet<(usize, u64, usize)>>>;
 /// `toolCallId` -> `(message_ix, tool_ix, flat_tool_ix)` so tool results land
 /// on the right row.
@@ -1193,9 +1223,13 @@ impl Transcript {
                 false
             }
             // A settled run closes its working clock; the next run re-arms it.
-            Event::AgentSettled { .. } => {
+            Event::AgentSettled { aborted } => {
                 self.end_live_run();
-                false
+                // A run the user stopped is not a failed turn: an error card
+                // left by an attempt it was in the middle of (a cancelled
+                // retry, a request that threw on the abort) retires with the
+                // stop (issue #96).
+                *aborted && self.mark_turn_aborted()
             }
             // `agent_end` fires between loop iterations while queued
             // steering/follow-ups keep the run going — clear the live
@@ -1693,12 +1727,12 @@ impl Transcript {
                 if let Some(elapsed) = step_elapsed {
                     slot.elapsed = Some(elapsed);
                 }
-                if settled_error.is_some() {
-                    slot.error = settled_error;
-                }
-                if settled_aborted {
-                    slot.aborted = true;
-                }
+                // The settled attempt replaces the row's error: a retried
+                // attempt that succeeded retires the failed one's card, and
+                // an attempt that ended on an error still labels the row
+                // (issue #96).
+                slot.error = settled_error;
+                slot.aborted = settled_aborted;
                 if slot.finished_at.is_none() {
                     slot.finished_at = Some(now_millis());
                 }
@@ -2230,6 +2264,28 @@ impl Transcript {
     /// (prefill plus decode), or the client-measured fallback.
     pub fn last_message_duration(&self) -> Option<Duration> {
         self.messages.borrow().last().and_then(ChatMessage::generation_time)
+    }
+
+    /// Mark the settled turn as a user stop: the last assistant row keeps the
+    /// quiet "Stopped" marker instead of an error card an earlier attempt left
+    /// behind (a retry cancelled before it produced a message).
+    pub fn mark_turn_aborted(&mut self) -> bool {
+        let ix = {
+            let mut messages = self.messages.borrow_mut();
+            match messages.last_mut() {
+                Some(row) if row.is_assistant() => {
+                    if row.aborted && row.error.is_none() {
+                        return false;
+                    }
+                    row.aborted = true;
+                    row.error = None;
+                    messages.len() - 1
+                }
+                _ => return false,
+            }
+        };
+        self.remeasure_row(ix);
+        true
     }
 
     /// Summarize the turn that just settled for a background notification:
@@ -4206,6 +4262,32 @@ mod tests {
     }
 
     #[test]
+    fn image_tool_results_survive_live_and_snapshot_parsing() {
+        let content = json!([
+            {"type": "text", "text": "image read"},
+            {"type": "image", "mimeType": "image/png", "data": "aGVsbG8="}
+        ]);
+        let mut transcript = Transcript::new();
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": ""}),
+        });
+        transcript.apply_event(&Event::ToolExecutionStart {
+            value: json!({"toolCallId": "image1", "toolName": "read", "args": {"path": "image.png"}}),
+        });
+        transcript.apply_event(&Event::ToolExecutionEnd {
+            value: json!({"toolCallId": "image1", "result": {"content": content}, "isError": false}),
+        });
+        let messages = transcript.messages.borrow();
+        let output = messages[0].tools().next().unwrap().output.as_ref().unwrap();
+        assert_eq!(output["content"], content);
+        assert_eq!(tool_result_output(output), Some(json!("image read")));
+        let (_, snapshot, _, _) = tool_result_parts(&json!({
+            "role": "toolResult", "toolCallId": "image1", "content": content
+        })).unwrap();
+        assert_eq!(snapshot.unwrap()["content"], content);
+    }
+
+    #[test]
     fn tool_facts_read_pi_details() {
         // read/bash attach a `truncation` object only when the output was cut.
         let facts = ToolFacts::from_result(&json!({
@@ -4421,11 +4503,11 @@ mod tests {
         // detail card hides empty sections — never render the raw envelope.
         let value = normalize_tool_result(&json!({"content": [], "details": {}}));
         assert_eq!(value, json!(""));
-        // An image-only envelope (no text blocks) reads the same way.
-        let value = normalize_tool_result(
-            &json!({"content": [{"type": "image", "data": "…"}], "details": {}}),
-        );
-        assert_eq!(value, json!(""));
+        // An image-only envelope keeps its blocks so the card can paint the
+        // image; the detail section still never prints the envelope itself.
+        let images = json!({"content": [{"type": "image", "data": "…"}], "details": {}});
+        assert_eq!(normalize_tool_result(&images), images);
+        assert_eq!(tool_result_output(&images), None);
         // Structured payloads without pi's `content` envelope are untouched.
         let value = normalize_tool_result(&json!({"rows": []}));
         assert_eq!(value, json!({"rows": []}));
@@ -4529,6 +4611,102 @@ mod tests {
         }))
         .unwrap();
         assert!(!settled.aborted);
+    }
+
+    #[test]
+    fn a_recovered_retry_does_not_leave_the_turn_failed() {
+        // Case 1 of issue #96: pi retries a transient provider failure by
+        // streaming the next attempt into the same row. The failed attempt's
+        // card must retire with the retry, not label a turn that finished.
+        let mut transcript = Transcript::new();
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": ""}),
+        });
+        transcript.apply_event(&Event::MessageEnd {
+            value: json!({
+                "role": "assistant",
+                "content": [],
+                "stopReason": "error",
+                "errorMessage": "Stream ended without finish_reason"
+            }),
+        });
+        assert!(transcript.messages.borrow()[0].error.is_some());
+        // The retry lands on the same row and succeeds.
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": ""}),
+        });
+        transcript.apply_event(&Event::MessageUpdate {
+            usage: None,
+            assistant: Some(AssistantMessageEvent::TextDelta {
+                delta: "the answer".into(),
+            }),
+        });
+        transcript.apply_event(&Event::MessageEnd {
+            value: json!({
+                "role": "assistant",
+                "content": [{"type": "text", "text": "the answer"}],
+                "stopReason": "stop"
+            }),
+        });
+        transcript.apply_event(&Event::AgentSettled { aborted: false });
+        let summary = transcript.latest_turn_summary().expect("summary");
+        assert_eq!(summary.body, "the answer");
+        assert!(!summary.failed, "a recovered retry is not a failed turn");
+        assert!(!summary.aborted);
+        assert!(transcript.messages.borrow()[0].error.is_none());
+    }
+
+    #[test]
+    fn an_in_flight_abort_recorded_as_an_error_is_still_a_stop() {
+        // Case 2 of issue #96: a stop that lands while the provider request is
+        // in flight throws in the SDK, so pi records `stopReason: "error"`
+        // with the abort text rather than its own aborted message.
+        for text in [
+            "This operation was aborted",
+            "Request aborted",
+            "Operation aborted",
+            "Retry cancelled",
+        ] {
+            let value = json!({
+                "role": "assistant",
+                "content": [{"type": "text", "text": "partial"}],
+                "stopReason": "error",
+                "errorMessage": text
+            });
+            assert!(message_error(&value).is_none(), "{text} is a cancel");
+            let parsed = ChatMessage::from_value(&value).expect("assistant message");
+            assert!(parsed.aborted, "{text} must read as a stop");
+            assert!(parsed.error.is_none(), "{text} is not an error card");
+        }
+    }
+
+    #[test]
+    fn a_cancelled_retry_settles_into_a_quiet_stop() {
+        // A failed attempt put a card on the row, then the user cancelled the
+        // retry before it produced a message: the settle marks a stop, so the
+        // turn is not reported as failed.
+        let mut transcript = Transcript::new();
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": ""}),
+        });
+        transcript.apply_event(&Event::MessageEnd {
+            value: json!({
+                "role": "assistant",
+                "content": [],
+                "stopReason": "error",
+                "errorMessage": "provider 500"
+            }),
+        });
+        assert!(transcript.apply_event(&Event::AgentSettled { aborted: true }));
+        let messages = transcript.messages.borrow();
+        assert!(messages[0].aborted);
+        assert!(
+            messages[0].error.is_none(),
+            "a stop retires the card the cancelled attempt left"
+        );
+        drop(messages);
+        let summary = transcript.latest_turn_summary().expect("summary");
+        assert!(summary.aborted && !summary.failed);
     }
 
     #[test]

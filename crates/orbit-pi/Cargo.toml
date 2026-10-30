@@ -63,8 +63,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # base64 payloads for prompt image attachments
 base64 = "0.22"
 devicons = "0.6"
-# Decode + resize the new-task background before the CPU dither pass — the
-# same `image` gpui already decodes through, so no new crate versions.
+# Decode, resize, blur, and apply artwork effects to the wallpaper off the UI
+# thread — the same `image` gpui already decodes through, so no new versions.
 image = "0.25"
 # Remote author avatars rendered by GPUI's image loader. `reqwest` is the
 # same zed-reqwest already in the graph via gpui, so no new crate versions;
@@ -108,6 +108,10 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSGraphicsContext",
     "NSImage",
     "NSImageRep",
+    # Clipboard screenshots (`platform::clipboard_image_png`). macOS puts a
+    # TIFF on the pasteboard, which GPUI skips once it has also found text.
+    "NSPasteboard",
+    "NSPasteboardItem",
     "NSSound",
     "NSWorkspace",
     "block2",
@@ -164,6 +168,8 @@ windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_Storage_FileSystem",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }

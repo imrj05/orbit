@@ -2,7 +2,8 @@ import { NewTwitterIcon, RedditIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 import { UserAvatar } from "@/components/avatar";
-import { Band, SectionLabel, Shell } from "@/components/ui";
+import { ReviewsScroller } from "@/components/reviews-scroller";
+import { Band, Shell } from "@/components/ui";
 
 import { getT } from "@/i18n/t";
 import type { Locale } from "@/i18n/config";
@@ -96,21 +97,6 @@ const REVIEWS: Review[] = [
 const COPIES = 3;
 const COLUMNS = 3;
 
-/** Reddit ships seven default snoo avatars at `avatar_default_1..7`. */
-const SNOO_COUNT = 7;
-
-/** A stable per-handle pick from Reddit's default snoo set. */
-function snooAvatar(username: string): string {
-  let hash = 0;
-  for (let i = 0; i < username.length; i += 1) {
-    hash =
-      (username.charCodeAt(i) + (hash << 6) + (hash << 16) - hash) >>> 0;
-  }
-  return `https://www.redditstatic.com/avatars/defaults/v2/avatar_default_${
-    (hash % SNOO_COUNT) + 1
-  }.png`;
-}
-
 function ReviewCard({
   review,
   read,
@@ -137,10 +123,7 @@ function ReviewCard({
         {review.quote}
       </blockquote>
       <figcaption className="mt-5 flex items-center gap-2.5">
-        <UserAvatar
-          src={isReddit ? snooAvatar(review.author) : undefined}
-          handle={handle}
-        />
+        <UserAvatar handle={handle} />
         <span className="truncate text-[12.5px] text-ink">{handle}</span>
         {dupe ? (
           <HugeiconsIcon
@@ -211,8 +194,7 @@ export async function Reviews({ locale }: { locale: Locale }) {
     <Shell>
       <Band id="reviews" dashed className="scroll-mt-20 py-20 sm:py-28">
         <div className="flex flex-col items-center text-center">
-          <SectionLabel>{t("label")}</SectionLabel>
-          <h2 className="mt-4 max-w-[24ch] text-balance text-[clamp(26px,2.8vw,34px)] font-semibold leading-[1.18] tracking-[-0.024em] text-ink">
+          <h2 className="mt-0 max-w-[24ch] text-balance text-[clamp(30px,3.2vw,40px)] font-semibold leading-[1.18] tracking-[-0.024em] text-ink">
             {t("heading")}
           </h2>
           <p className="mt-4 max-w-[48ch] text-[14.5px] leading-[1.75] text-ink-2">
@@ -220,10 +202,10 @@ export async function Reviews({ locale }: { locale: Locale }) {
           </p>
         </div>
 
-        <div
-          className="reviews-scroller mt-12"
-          role="region"
-          aria-label={t("label")}
+        <ReviewsScroller
+          label={t("label")}
+          pauseLabel={t("pause")}
+          resumeLabel={t("resume")}
         >
           <div className="reviews-grid">
             <ReviewColumn
@@ -245,7 +227,7 @@ export async function Reviews({ locale }: { locale: Locale }) {
               className="hidden lg:block"
             />
           </div>
-        </div>
+        </ReviewsScroller>
 
         <div className="mt-10 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-[12px] text-ink-3">
           <a

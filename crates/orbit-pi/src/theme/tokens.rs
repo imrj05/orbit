@@ -87,9 +87,15 @@ impl Radius {
         // Restrained Operational Minimalism uses a tighter, fixed radius ramp:
         // 6px buttons/inputs, 8px panels, 10px dialogs. Classic keeps the
         // existing rem-based Zed scale.
-        if theme.design_system == DesignSystem::Operational {
-            return match self {
-                Self::None => px(0.),
+        if matches!(self, Self::None | Self::Full) {
+            return if self == Self::None {
+                px(0.)
+            } else {
+                px(9999.)
+            };
+        }
+        let base = if theme.design_system == DesignSystem::Operational {
+            match self {
                 Self::XSmall => px(2.),
                 Self::Small => px(4.),
                 Self::Medium => px(5.),
@@ -97,20 +103,24 @@ impl Radius {
                 Self::XLarge => px(8.),
                 Self::XXLarge => px(10.),
                 Self::XXXLarge => px(12.),
-                Self::Full => px(9999.),
-            };
-        }
-        match self {
-            Self::None => px(0.),
-            Self::XSmall => theme.rems(0.125),
-            Self::Small => theme.rems(0.25),
-            Self::Medium => theme.rems(0.375),
-            Self::Large => theme.rems(0.5),
-            Self::XLarge => theme.rems(0.75),
-            Self::XXLarge => theme.rems(1.),
-            Self::XXXLarge => theme.rems(1.5),
-            Self::Full => px(9999.),
-        }
+                Self::None | Self::Full => unreachable!(),
+            }
+        } else {
+            match self {
+                Self::XSmall => theme.rems(0.125),
+                Self::Small => theme.rems(0.25),
+                Self::Medium => theme.rems(0.375),
+                Self::Large => theme.rems(0.5),
+                Self::XLarge => theme.rems(0.75),
+                Self::XXLarge => theme.rems(1.),
+                Self::XXXLarge => theme.rems(1.5),
+                Self::None | Self::Full => unreachable!(),
+            }
+        };
+        base + px(theme
+            .ui
+            .corner_rounding
+            .min(crate::theme::MAX_CORNER_ROUNDING) as f32)
     }
 }
 
@@ -1191,7 +1201,7 @@ impl<E: Styled> RaisedExt for E {}
 
 fn elevated<E: Styled>(el: E, theme: &Theme, index: ElevationIndex, bordered: bool) -> E {
     let el = el
-        .bg(ElevationIndex::ElevatedSurface.bg(theme))
+        .bg(theme.card_fill(ElevationIndex::ElevatedSurface.bg(theme)))
         .rounded(panel::RADIUS.px(theme))
         .shadow(index.shadow(theme));
     if bordered {
@@ -1277,6 +1287,19 @@ pub mod scrollbar {
 mod tests {
     use super::*;
     use crate::theme::UiPrefs;
+
+    #[test]
+    fn corner_rounding_adjusts_shared_shapes_without_changing_pills_or_square_edges() {
+        for design_system in [DesignSystem::Classic, DesignSystem::Operational] {
+            let mut theme = Theme::dark();
+            theme.design_system = design_system;
+            let base = Radius::Large.px(&theme);
+            theme.ui.corner_rounding = crate::theme::MAX_CORNER_ROUNDING;
+            assert_eq!(Radius::Large.px(&theme), base + px(4.));
+            assert_eq!(Radius::None.px(&theme), px(0.));
+            assert_eq!(Radius::Full.px(&theme), px(9999.));
+        }
+    }
 
     fn theme_with(ui_font_size: f32, spacing_density: u32) -> Theme {
         let ui = UiPrefs {

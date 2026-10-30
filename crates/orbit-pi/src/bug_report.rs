@@ -110,8 +110,8 @@ pub enum Filed {
 /// failure is returned as `Err` so the form can show it.
 ///
 /// `screenshots` (name + bytes) are written to a temp directory and uploaded
-/// with `gh issue create --attach`; when `gh` is unavailable, or too old for
-/// `--attach`, the web form is opened instead and the saved files are handed
+/// with `gh issue create --attach`; when `gh` is unavailable or rejects an
+/// upload before issue creation, the web form opens and the saved files are handed
 /// back in [`Filed::Browser::screenshots`] for the user to drag in.
 pub fn file(
     cwd: &Path,
@@ -137,11 +137,7 @@ pub fn file(
 
     // Screenshots: write them out, then let `gh` upload them. The body stays
     // free of a screenshots section because `--attach` appends the images.
-    let directory = save_screenshots(screenshots)?;
-    let paths: Vec<PathBuf> = screenshots
-        .iter()
-        .map(|(name, _)| directory.join(sanitize_name(name)))
-        .collect();
+    let (directory, paths) = save_screenshots(screenshots)?;
     let status = gh::status(cwd);
     if status.installed && status.authenticated {
         let body = issue_body(kind, what, steps, diagnostics, false);
@@ -155,9 +151,9 @@ pub fn file(
             &paths,
         ) {
             Ok(url) => return Ok(Filed::Created(url)),
-            // A `gh` too old for `--attach` failed before creating anything;
-            // fall through to the web form rather than dropping the shots.
-            Err(err) if err.contains("unknown flag") || err.contains("unknown shorthand") => {}
+            // These `gh` validation errors occur before issue creation, so it
+            // is safe to hand the report and screenshots to the browser.
+            Err(err) if attachment_requires_browser(&err) => {}
             // Any other failure is real (the issue may even have been created
             // with the attachments that did upload); surface it instead of
             // silently opening a second form.
@@ -171,28 +167,94 @@ pub fn file(
     })
 }
 
+/// Errors raised by `gh issue create --attach` before creating an issue.
+/// In particular, gh 2.102 requires repository write access for its upload
+/// endpoint even though an ordinary user can attach images in the web form.
+fn attachment_requires_browser(error: &str) -> bool {
+    [
+        "unknown flag: --attach",
+        "unknown shorthand flag",
+        "attaching files requires write access to the repository",
+        "unsupported authentication type",
+        "attaching files is not supported on GitHub Enterprise Server",
+        "could not determine your permission on the repository to attach files",
+        "is not a supported file type",
+    ]
+    .iter()
+    .any(|message| error.contains(message))
+}
+
 /// The repository labels for a report kind, as `gh` expects them.
 fn kind_labels(kind: ReportKind) -> Vec<String> {
     kind.label().map(str::to_string).into_iter().collect()
 }
 
-/// Write the report's screenshots to a fresh temp directory. `gh issue create
-/// --attach` uploads them from there, and the browser fallback points the user
-/// at the same files to drag in. Returns the directory. Blocking; call off the
-/// UI thread.
-pub fn save_screenshots(files: &[(String, Vec<u8>)]) -> Result<PathBuf, String> {
+/// Make an upload filename match the actual image format after compression.
+/// The original name remains unchanged in the report form.
+pub fn screenshot_filename(name: &str, mime: &str) -> String {
+    let extension = match mime {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        "image/bmp" => "bmp",
+        _ => return name.to_string(),
+    };
+    let path = Path::new(name);
+    if path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            ext.eq_ignore_ascii_case(extension)
+                || (mime == "image/jpeg" && ext.eq_ignore_ascii_case("jpeg"))
+        })
+    {
+        return name.to_string();
+    }
+    path.with_extension(extension)
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Write screenshots to a fresh temp directory, retaining a distinct path for
+/// each even when their sanitized names collide. Blocking; call off the UI thread.
+pub fn save_screenshots(files: &[(String, Vec<u8>)]) -> Result<(PathBuf, Vec<PathBuf>), String> {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis())
         .unwrap_or(0);
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = crate::temp_files::ensure_dir()
         .map_err(|err| err.to_string())?
-        .join(format!("bug-report-{stamp}"));
+        .join(format!(
+            "bug-report-{stamp}-{}-{sequence}",
+            std::process::id()
+        ));
     std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+    let mut paths = Vec::with_capacity(files.len());
     for (name, bytes) in files {
-        std::fs::write(dir.join(sanitize_name(name)), bytes).map_err(|err| err.to_string())?;
+        let name = sanitize_name(name);
+        let original = Path::new(&name);
+        let stem = original
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("screenshot");
+        let extension = original.extension().and_then(|ext| ext.to_str());
+        let mut path = dir.join(&name);
+        let mut suffix = 2;
+        while paths.contains(&path) {
+            let candidate = match extension {
+                Some(ext) => format!("{stem}-{suffix}.{ext}"),
+                None => format!("{stem}-{suffix}"),
+            };
+            path = dir.join(candidate);
+            suffix += 1;
+        }
+        std::fs::write(&path, bytes).map_err(|err| err.to_string())?;
+        paths.push(path);
     }
-    Ok(dir)
+    Ok((dir, paths))
 }
 
 /// A screenshot filename safe to join onto the temp directory: the final path
@@ -366,6 +428,21 @@ mod tests {
     }
 
     #[test]
+    fn attachment_preflight_failures_use_browser_but_upload_failures_do_not() {
+        assert!(attachment_requires_browser(
+            "attaching files requires write access to the repository"
+        ));
+        assert!(attachment_requires_browser("unknown flag: --attach"));
+        assert!(attachment_requires_browser(
+            "photo.bmp is not a supported file type"
+        ));
+        assert!(!attachment_requires_browser(
+            "upload failed after issue creation"
+        ));
+        assert!(!attachment_requires_browser("network connection lost"));
+    }
+
+    #[test]
     fn screenshots_add_a_drag_target_section() {
         let body = issue_body(ReportKind::Bug, "Broken", "", &diagnostics(), true);
         assert!(body.contains("## Screenshots"), "{body}");
@@ -405,12 +482,29 @@ mod tests {
     }
 
     #[test]
+    fn screenshot_names_match_the_encoded_format() {
+        assert_eq!(
+            screenshot_filename("capture.png", "image/webp"),
+            "capture.webp"
+        );
+        assert_eq!(
+            screenshot_filename("capture.png", "image/jpeg"),
+            "capture.jpg"
+        );
+        assert_eq!(
+            screenshot_filename("capture.jpeg", "image/jpeg"),
+            "capture.jpeg"
+        );
+    }
+
+    #[test]
     fn save_screenshots_writes_named_files_into_a_fresh_directory() {
         let files = vec![
             ("shot one.png".to_string(), vec![1, 2, 3]),
             ("../../escape.png".to_string(), vec![4, 5]),
         ];
-        let dir = save_screenshots(&files).unwrap();
+        let (dir, paths) = save_screenshots(&files).unwrap();
+        assert_eq!(paths.len(), 2);
         assert!(dir.join("shot_one.png").exists());
         assert_eq!(
             std::fs::read(dir.join("shot_one.png")).unwrap(),
@@ -420,6 +514,19 @@ mod tests {
         assert_eq!(sanitize_name("../../escape.png"), "escape.png");
         assert!(dir.join("escape.png").exists());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn screenshots_with_colliding_names_are_not_overwritten() {
+        let files = vec![
+            ("shot 1.png".to_string(), vec![1]),
+            ("shot_1.png".to_string(), vec![2]),
+        ];
+        let (dir, paths) = save_screenshots(&files).unwrap();
+        assert_ne!(paths[0], paths[1]);
+        assert_eq!(std::fs::read(&paths[0]).unwrap(), vec![1]);
+        assert_eq!(std::fs::read(&paths[1]).unwrap(), vec![2]);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

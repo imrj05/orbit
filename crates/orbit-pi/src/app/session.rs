@@ -215,6 +215,7 @@ impl OrbitApp {
     pub(super) fn submit_as(&mut self, text: String, mode: SendMode, cx: &mut Context<Self>) {
         // Collect any paste that raced the submit tick, then fold the long
         // pastes back in: a pill is only a compact way to *hold* text.
+        self.drain_pasted_files(cx);
         self.drain_pasted_images(cx);
         self.drain_pasted_texts(cx);
         let text = Self::fold_pasted_texts(text.trim(), &self.pasted_texts);
@@ -390,6 +391,161 @@ impl OrbitApp {
     pub(super) fn reset_queue(&mut self) {
         self.queue = PendingQueue::default();
         self.restore_queue_on_clear = false;
+        self.queue_replaced = false;
+        self.queue_edit = None;
+    }
+
+    /// One queued message, if the mirror still holds it. A target goes stale
+    /// the moment pi delivers something ahead of it, so every action re-reads
+    /// the text through here instead of trusting the index it was drawn on.
+    pub(super) fn queued_message(&self, target: QueuedMessage) -> Option<&str> {
+        self.queue
+            .lane(target.lane)
+            .get(target.index)
+            .map(String::as_str)
+    }
+
+    /// Replace pi's whole pending queue.
+    ///
+    /// pi exposes no per-message queue command: `clear_queue` drops every
+    /// steering and follow-up message at once. Editing or promoting one queued
+    /// message is therefore a rebuild — clear, then re-queue the survivors in
+    /// their original lanes and order. The commands ride one writer in order,
+    /// so pi applies the swap as a single step; the mirror is set here so the
+    /// bar never blinks through the empty state.
+    fn replace_queue(&mut self, queue: PendingQueue) {
+        // Escape's restore-to-composer behavior belongs to Escape only.
+        self.restore_queue_on_clear = false;
+        self.queue_edit = None;
+        // The text the optimistic follow-up named is being re-queued under a
+        // new command id, so its own tracking is over.
+        self.pending_follow_up = None;
+        if !self.send(CommandBody::ClearQueue, "clear_queue") {
+            return;
+        }
+        self.queue = queue.clone();
+        self.queue_replaced = true;
+        for message in queue.steering {
+            self.send(
+                CommandBody::Steer {
+                    message,
+                    images: None,
+                },
+                "steer",
+            );
+        }
+        for message in queue.follow_up {
+            self.send(
+                CommandBody::FollowUp {
+                    message,
+                    images: None,
+                },
+                "follow_up",
+            );
+        }
+    }
+
+    /// Open the queue bar's inline editor on one queued message (issue #79).
+    pub(super) fn begin_queue_edit(
+        &mut self,
+        target: QueuedMessage,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(text) = self.queued_message(target).map(str::to_owned) else {
+            return;
+        };
+        let input = cx.new(|cx| {
+            ComposerInput::new(cx)
+                .with_element_id("queue-edit-input")
+                .with_placeholder_key("view.queue_edit_placeholder")
+                .with_key_context("Composer QueueEdit")
+                .with_max_lines(3)
+                .with_text(text.clone())
+        });
+        // The Save control reads the draft, so it repaints with every edit.
+        let sub = cx.observe(&input, |_, _, cx| cx.notify());
+        self.queue_edit = Some(QueueEdit {
+            target,
+            original: text,
+            input: input.clone(),
+            _sub: sub,
+        });
+        input.read(cx).focus(window);
+        cx.notify();
+    }
+
+    /// Write the inline draft back into the queue.
+    pub(super) fn commit_queue_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(edit) = self.queue_edit.as_ref() else {
+            return;
+        };
+        let target = edit.target;
+        let text = edit.input.read(cx).text().trim().to_owned();
+        if text.is_empty() {
+            // A blank message pi should not deliver; keep the field open so the
+            // draft is never silently thrown away.
+            return;
+        }
+        let mut queue = self.queue.clone();
+        let Some(slot) = queue.lane_mut(target.lane).get_mut(target.index) else {
+            return;
+        };
+        if *slot == text {
+            // Nothing changed: closing the field is the whole edit.
+            self.cancel_queue_edit(window, cx);
+            return;
+        }
+        *slot = text;
+        self.replace_queue(queue);
+        self.input.read(cx).focus(window);
+        cx.notify();
+    }
+
+    /// Close the inline editor, leaving the queued message as it was.
+    pub(super) fn cancel_queue_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.queue_edit.take().is_some() {
+            self.input.read(cx).focus(window);
+            cx.notify();
+        }
+    }
+
+    /// Deliver one queued message ahead of everything else (issue #79).
+    ///
+    /// There is no "promote" command either, so the message is re-queued as a
+    /// steering message at the front of the steer lane: pi delivers steering
+    /// before the next model call, the earliest point short of aborting the
+    /// run. A message already at that point has nowhere to move, so the bar
+    /// does not offer the action for it.
+    pub(super) fn send_queued_now(&mut self, target: QueuedMessage, cx: &mut Context<Self>) {
+        if target.lane == QueueLane::Steer && target.index == 0 {
+            return;
+        }
+        let Some(text) = self.queued_message(target).map(str::to_owned) else {
+            return;
+        };
+        let mut queue = self.queue.clone();
+        queue.lane_mut(target.lane).remove(target.index);
+        queue.steering.insert(0, text);
+        self.replace_queue(queue);
+        cx.notify();
+    }
+
+    /// Re-point an open editor after pi reported a new queue: the message keeps
+    /// its text, so find it again by text. Nothing found means pi delivered or
+    /// dropped it — the field was editing a message that is no longer queued.
+    pub(super) fn reanchor_queue_edit(&mut self, cx: &mut Context<Self>) {
+        let Some(edit) = self.queue_edit.as_mut() else {
+            return;
+        };
+        let lane = self.queue.lane(edit.target.lane);
+        match lane.iter().position(|message| *message == edit.original) {
+            Some(index) => edit.target.index = index,
+            None => {
+                self.queue_edit = None;
+                cx.notify();
+            }
+        }
     }
 
     /// Park the active session's process so it stays warm in the background,
@@ -2929,6 +3085,24 @@ impl OrbitApp {
         // since the list was last read.
         self.sessions = sessions::load_sessions();
         self.sync_session_menu(cx);
+        // The status bar's branch chip and every sidebar row's branch line.
+        self.refresh_branch_status(cx);
+        self.refresh_sidebar_branches(cx);
+
+        // Config-backed catalogs are re-read unconditionally, not just while
+        // their Settings page is open. A manual Refresh is a full resync: a
+        // plugin installed from a terminal, a provider edited into
+        // models.json, or a skill dropped into the workspace should be in
+        // Orbit's state even when the page that shows it is closed.
+        self.reload_custom_providers(cx);
+        self.refresh_plugins(cx);
+        self.refresh_skills(cx);
+        // MCP config, secrets, metadata, and runtime state. Re-reading is
+        // cheap; the probe (which starts servers) stays with the open page.
+        self.mcp.set_workspace(self.current_workspace.as_deref());
+        self.mcp.refresh();
+        self.mcp_external_change = false;
+
         // Worktrees for the active repository, when their page is up.
         if self.worktrees_open {
             self.refresh_worktrees(cx);
@@ -2947,22 +3121,30 @@ impl OrbitApp {
         if self.usage_open {
             self.usage.update(cx, |page, cx| page.refresh(cx));
         }
-        // Settings-backed catalogs: MCP config/status and installed packages
-        // are only meaningful while their section is on screen.
+        // Section-only probes and reads that would otherwise cost a process
+        // or a filesystem scan for data nothing is showing.
         if self.settings_open {
             match self.settings_section {
                 SettingsSection::Mcp => self.mcp_refresh(cx),
-                SettingsSection::Plugins => self.refresh_plugins(cx),
+                SettingsSection::GitAccounts if !self.git_accounts_loading => {
+                    self.refresh_git_accounts_for_workspace(cx)
+                }
+                SettingsSection::Privacy => self.refresh_temp_files(cx),
+                SettingsSection::General => self.refresh_notification_auth(cx),
                 _ => {}
             }
         }
         // The running agent can change under us (re-auth, model list, a
-        // compaction moved the context estimate) — re-ask it directly.
+        // compaction moved the context estimate) — re-ask it directly. The
+        // primary state/catalog commands go first so the slow auth/quota
+        // probes never queue in front of them.
         if self.client.is_some() {
-            self.refresh_auth();
+            self.send(CommandBody::GetState, "get_state");
             self.refresh_catalogs();
             self.refresh_context_stats();
+            self.refresh_auth();
         }
+        self.toast_info(tr!("view.refreshed"));
         cx.notify();
     }
 

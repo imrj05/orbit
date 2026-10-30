@@ -1330,6 +1330,19 @@ impl SessionState {
     }
 }
 
+/// Which of pi's two pending lanes a queued message waits in.
+///
+/// `queue_update` reports the lanes separately because they are delivered at
+/// different moments — steering before the next model call, follow-ups only
+/// once the run settles — and the queue commands are lane-specific
+/// (`steer` / `follow_up`). Any rebuild of the queue has to keep each message
+/// in its own lane, so the lane travels with the message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueLane {
+    Steer,
+    FollowUp,
+}
+
 /// The pending steering / follow-up queue from a `queue_update` event or a
 /// `clear_queue` response.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1352,6 +1365,23 @@ impl PendingQueue {
 
     pub fn len(&self) -> usize {
         self.steering.len() + self.follow_up.len()
+    }
+
+    /// The messages waiting in one lane, in delivery order.
+    pub fn lane(&self, lane: QueueLane) -> &[String] {
+        match lane {
+            QueueLane::Steer => &self.steering,
+            QueueLane::FollowUp => &self.follow_up,
+        }
+    }
+
+    /// One lane's messages, mutably — how an edit replaces a message's text in
+    /// place before the queue is rebuilt.
+    pub fn lane_mut(&mut self, lane: QueueLane) -> &mut Vec<String> {
+        match lane {
+            QueueLane::Steer => &mut self.steering,
+            QueueLane::FollowUp => &mut self.follow_up,
+        }
     }
 
     /// The queued text joined back together (steering first), for restoring

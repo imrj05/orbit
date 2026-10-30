@@ -61,12 +61,12 @@ mod context_meter;
 mod custom_ui;
 mod dialog;
 mod diff_view;
-mod dither;
 mod explorer;
 mod favorites;
 mod gh;
 mod gh_templates;
 mod git;
+mod git_accounts;
 mod git_ops;
 mod git_panel;
 mod highlight;
@@ -108,6 +108,8 @@ mod transcript;
 mod transcript_view;
 mod updater;
 mod usage;
+mod wallpaper;
+mod wallpaper_fx;
 mod watch;
 mod widgets;
 mod workflow;
@@ -307,6 +309,12 @@ actions!(
     explorer_entry_keys,
     [ExplorerEntryConfirm, ExplorerEntryCancel]
 );
+
+// Queue-bar inline edit actions (bound to the `QueueEdit` context on the row's
+// text field, which also carries `Composer`). Registered after the Composer
+// bindings so Enter saves the edited message instead of submitting the
+// composer, and Escape closes the field instead of aborting the run.
+actions!(queue_edit_keys, [QueueEditConfirm, QueueEditCancel]);
 
 // Sessions-sidebar keyboard navigation (bound to the `Sidebar` context, which
 // rides the sidebar's focus handle while it is keyboard-focused). Arrow keys
@@ -540,6 +548,11 @@ fn bind_keys(cx: &mut App) {
         // same-depth tie against `Submit`/`AbortRun` (registered later).
         KeyBinding::new("enter", ExplorerEntryConfirm, Some("ExplorerEntry")),
         KeyBinding::new("escape", ExplorerEntryCancel, Some("ExplorerEntry")),
+        // Queue-bar inline edit. The same shape: the field carries `Composer
+        // QueueEdit`, so caret/clipboard keys stay live while Enter saves the
+        // message and Escape closes the field (issue #79).
+        KeyBinding::new("enter", QueueEditConfirm, Some("QueueEdit")),
+        KeyBinding::new("escape", QueueEditCancel, Some("QueueEdit")),
         // Git commit message. The field carries `Composer GitCommitMessage`,
         // so caret/clipboard keys stay live; Enter inserts a newline (a commit
         // message is edited, not sent) and the primary modifier + Enter

@@ -71,7 +71,8 @@ def split_args(body):
 
 
 def main(path, name, arg_index, apply):
-    src = open(path, encoding="utf-8").read()
+    with open(path, encoding="utf-8") as source:
+        src = source.read()
     cut = len(src)
     for marker in ("\n#[cfg(test)]", "\nmod tests {"):
         ix = src.find(marker)
@@ -113,7 +114,8 @@ def main(path, name, arg_index, apply):
         cursor = start + 1
 
     if apply:
-        open(path, "w", encoding="utf-8").write(head + tail)
+        with open(path, "w", encoding="utf-8") as output:
+            output.write(head + tail)
     for k in sorted(keys):
         print(f"{k}\t{keys[k]}")
 

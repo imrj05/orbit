@@ -336,7 +336,6 @@ async function orbitQuotaOpenRouter(id) {
   const d = (r.body && (r.body.data || r.body)) || {};
   const balances = [];
   const limitRemaining = orbitQuotaNumber(d.limit_remaining);
-  const limit = orbitQuotaNumber(d.limit);
   const usage = orbitQuotaNumber(d.usage);
   if (limitRemaining != null) {
     balances.push(orbitQuotaBalance(d.limit == null ? "Spent" : "Remaining", limitRemaining, "USD"));

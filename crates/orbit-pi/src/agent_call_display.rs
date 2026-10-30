@@ -1,16 +1,13 @@
 //! How agent call details open in the transcript (issue #80).
 //!
-//! By default an activity group is open while its turn streams and shuts as
-//! soon as the run settles — a group the reader never touched follows the run
-//! state, so a finished conversation reads as a wall of collapsed rows that
-//! visibly snapped shut. This module owns the persisted preference that decides
-//! what "untouched" means: follow the run, always open, always closed.
+//! Untouched activity groups are collapsed by default, so streaming work does
+//! not unexpectedly expand the transcript. The persisted preference can also
+//! follow the run or keep groups open.
 //!
 //! An explicit per-group or per-call toggle always wins over the preference, so
 //! the setting only moves the default. Persisted to
 //! `~/.orbit-pi/agent-calls.json`, parsed leniently: a malformed file can only
-//! fall back to [`AgentCallDisplay::FollowRun`], which is the behavior every
-//! build before this one had.
+//! fall back to [`AgentCallDisplay::Collapsed`].
 
 use std::path::PathBuf;
 
@@ -21,11 +18,11 @@ use serde_json::{json, Value};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum AgentCallDisplay {
     /// Open while the turn streams, closed once it settles. The pre-#80 default.
-    #[default]
     FollowRun,
     /// Always open, live or settled.
     Expanded,
     /// Always closed until the reader opens one.
+    #[default]
     Collapsed,
 }
 
@@ -43,9 +40,9 @@ impl AgentCallDisplay {
     /// written by a newer build cannot strand the reader with no calls.
     pub fn parse(value: &str) -> Self {
         match value {
+            "follow_run" => Self::FollowRun,
             "expanded" => Self::Expanded,
-            "collapsed" => Self::Collapsed,
-            _ => Self::FollowRun,
+            _ => Self::Collapsed,
         }
     }
 
@@ -132,8 +129,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_default_follows_the_run() {
-        assert_eq!(AgentCallDisplay::default(), AgentCallDisplay::FollowRun);
+    fn the_default_is_collapsed_and_follow_run_remains_available() {
+        assert_eq!(AgentCallDisplay::default(), AgentCallDisplay::Collapsed);
         assert!(AgentCallDisplay::FollowRun.open_by_default(true));
         assert!(!AgentCallDisplay::FollowRun.open_by_default(false));
     }
@@ -156,11 +153,11 @@ mod tests {
     }
 
     #[test]
-    fn malformed_or_unknown_json_falls_back_to_follow_run() {
+    fn malformed_or_unknown_json_falls_back_to_collapsed() {
         for raw in ["not json at all", "{}", r#"{"display":"sideways"}"#, "[]"] {
             assert_eq!(
                 AgentCallDisplay::from_json(raw),
-                AgentCallDisplay::FollowRun,
+                AgentCallDisplay::Collapsed,
                 "{raw}"
             );
         }
@@ -174,7 +171,7 @@ mod tests {
         }
         assert_eq!(
             AgentCallDisplay::from_index(99),
-            AgentCallDisplay::FollowRun
+            AgentCallDisplay::Collapsed
         );
     }
 

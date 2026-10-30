@@ -9,7 +9,6 @@ export async function Appearance({ locale }: { locale: Locale }) {
   return (
     <Story
       id="appearance"
-      label={t("label")}
       title={t("title")}
       copy={t("copy")}
       points={t.raw("points") as string[]}

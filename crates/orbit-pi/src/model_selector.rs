@@ -1140,7 +1140,7 @@ fn trailing_check(selected: bool, theme: Theme) -> impl IntoElement + use<> {
 /// with an 8px corner. It stays neutral in every state — selection is carried
 /// by the row's own fill and the trailing accent check, so the tile never adds
 /// a second accent mark to the same row (the One Accent Rule).
-fn leading_tile(theme: Theme, glyph: AnyElement) -> impl IntoElement + use<> {
+pub(crate) fn leading_tile(theme: Theme, glyph: AnyElement) -> impl IntoElement + use<> {
     div()
         .size(px(LEADING_TILE))
         .flex_none()

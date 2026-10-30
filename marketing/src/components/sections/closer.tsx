@@ -32,12 +32,8 @@ export async function Closer({ locale }: { locale: Locale }) {
   return (
     <Shell>
       <Band id="install" className="flex scroll-mt-20 flex-col items-center py-24 text-center sm:py-32">
-        {/* The mark, held in a quiet pocket of ambient light. */}
+        {/* The mark. */}
         <div className="relative mb-8">
-          <div
-            aria-hidden
-            className="pointer-events-none absolute left-1/2 top-1/2 h-[180px] w-[260px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[radial-gradient(closest-side,rgba(91,157,255,0.08),transparent)]"
-          />
           <OrbitIcon
             alt=""
             className="relative h-12 w-12 rounded-[12px] shadow-card"

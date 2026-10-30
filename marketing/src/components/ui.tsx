@@ -59,7 +59,7 @@ export function buttonLinkClass(
     }),
     /* Primary: the highest-contrast element on the page. */
     variant === "primary" &&
-      "min-h-11 gap-2.5 rounded-[10px] px-5 text-[13px] font-semibold shadow-[0_1px_2px_rgba(0,0,0,0.18)] dark:border-white/20 light:border-black/10",
+      "min-h-11 gap-2.5 rounded-[10px] px-5 text-[13px] font-semibold shadow-[var(--elev-button)] dark:border-white/20 light:border-black/10",
     variant === "secondary" &&
       "min-h-11 gap-2.5 rounded-[10px] border-edge-default px-5 text-[13px]",
     variant === "nav" &&
