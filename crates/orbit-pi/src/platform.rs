@@ -1607,6 +1607,113 @@ pub fn titlebar_options() -> TitlebarOptions {
     }
 }
 
+/// Files copied by the native file manager, distinct from ordinary path text.
+pub fn clipboard_file_paths() -> Vec<std::path::PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{NSPasteboard, NSPasteboardTypeFileURL};
+
+        let Some(items) = NSPasteboard::generalPasteboard().pasteboardItems() else {
+            return Vec::new();
+        };
+        items
+            .iter()
+            .filter_map(|item| {
+                // SAFETY: NSPasteboardTypeFileURL is a system-defined constant.
+                let value = item.stringForType(unsafe { NSPasteboardTypeFileURL })?;
+                macos_file_url_path(&value)
+            })
+            .collect()
+    }
+    #[cfg(windows)]
+    {
+        windows_clipboard_file_paths()
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        Vec::new()
+    }
+}
+
+#[cfg(windows)]
+fn windows_clipboard_file_paths() -> Vec<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+    use windows_sys::Win32::UI::Shell::DragQueryFileW;
+
+    // CF_HDROP is the standard file-list clipboard format.
+    const CF_HDROP: u32 = 15;
+    // SAFETY: a null owner opens the clipboard for this thread.
+    if unsafe { OpenClipboard(std::ptr::null_mut()) } == 0 {
+        return Vec::new();
+    }
+    struct ClipboardGuard;
+    impl Drop for ClipboardGuard {
+        fn drop(&mut self) {
+            // SAFETY: this guard is created only after OpenClipboard succeeds.
+            unsafe { CloseClipboard() };
+        }
+    }
+    let _guard = ClipboardGuard;
+    // SAFETY: the clipboard is open and the handle remains valid until closed.
+    let handle = unsafe { GetClipboardData(CF_HDROP) };
+    if handle.is_null() {
+        return Vec::new();
+    }
+    let count = unsafe { DragQueryFileW(handle, u32::MAX, std::ptr::null_mut(), 0) };
+    (0..count)
+        .filter_map(|index| {
+            // SAFETY: querying the length requires no output buffer.
+            let len = unsafe { DragQueryFileW(handle, index, std::ptr::null_mut(), 0) };
+            if len == 0 {
+                return None;
+            }
+            let mut buffer = vec![0u16; len as usize + 1];
+            // SAFETY: the buffer has room for the path and terminating NUL.
+            let written = unsafe { DragQueryFileW(handle, index, buffer.as_mut_ptr(), len + 1) };
+            (written == len).then(|| {
+                std::path::PathBuf::from(std::ffi::OsString::from_wide(&buffer[..len as usize]))
+            })
+        })
+        .collect()
+}
+
+#[cfg(any(target_os = "linux", test))]
+pub fn clipboard_uri_list(text: &str) -> Option<Vec<std::path::PathBuf>> {
+    // GNOME Files publishes a file clipboard as `x-special/nautilus-clipboard`,
+    // a `copy`/`cut` verb, then the file URLs. Skipping only those header lines
+    // keeps the mixed-text guard: any other non-URL line still means "this is
+    // prose, not a file list".
+    const URI_LIST_HEADER: [&str; 3] = ["x-special/nautilus-clipboard", "copy", "cut"];
+    let mut paths = Vec::new();
+    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if line.starts_with('#') {
+            continue;
+        }
+        if paths.is_empty() && URI_LIST_HEADER.contains(&line) {
+            continue;
+        }
+        let url = url::Url::parse(line).ok()?;
+        if url.scheme() != "file" {
+            return None;
+        }
+        paths.push(url.to_file_path().ok()?);
+    }
+    (!paths.is_empty()).then_some(paths)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_file_url_path(value: &objc2_foundation::NSString) -> Option<std::path::PathBuf> {
+    use objc2_foundation::NSURL;
+
+    let url = NSURL::URLWithString(value)?;
+    if !url.isFileURL() {
+        return None;
+    }
+    let path = url.filePathURL()?.path()?;
+    Some(std::path::PathBuf::from(path.to_string()))
+}
+
 /// PNG bytes of a picture on the system clipboard.
 ///
 /// GPUI's clipboard read is what `ComposerInput::paste` tries first. It misses
@@ -1843,6 +1950,43 @@ fn macos_clipboard_png() -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn clipboard_uri_list_accepts_files_but_not_plain_paths_or_mixed_text() {
+        assert_eq!(
+            clipboard_uri_list("file:///tmp/a%20b.png\r\nfile:///tmp/notes.txt\r\n"),
+            Some(vec!["/tmp/a b.png".into(), "/tmp/notes.txt".into()])
+        );
+        // GNOME Files prefixes the URLs with its own two-line header.
+        assert_eq!(
+            clipboard_uri_list("x-special/nautilus-clipboard\ncopy\nfile:///tmp/a%20b.png\n"),
+            Some(vec!["/tmp/a b.png".into()])
+        );
+        assert_eq!(clipboard_uri_list("/tmp/notes.txt"), None);
+        assert_eq!(
+            clipboard_uri_list("file:///tmp/a\nhttps://example.com"),
+            None
+        );
+        // A header-less line of prose means text, not a file list.
+        assert_eq!(clipboard_uri_list("here is a file\nfile:///tmp/a"), None);
+        // And the header is only skipped ahead of the URLs.
+        assert_eq!(clipboard_uri_list("file:///tmp/a\ncopy"), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finder_file_reference_url_resolves_to_real_path() {
+        use objc2_foundation::{NSString, NSURL};
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let path_string = NSString::from_str(path.to_str().unwrap());
+        let url = NSURL::fileURLWithPath(&path_string);
+        let reference = url.fileReferenceURL().expect("file reference URL");
+        let value = reference.absoluteString().expect("URL string");
+        assert!(value.to_string().contains("/.file/id="));
+        assert_eq!(macos_file_url_path(&value), Some(path));
+    }
 
     #[test]
     fn chord_labels_use_the_platform_vocabulary() {

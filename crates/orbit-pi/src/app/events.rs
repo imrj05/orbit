@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::composer_ops::QueuedPath;
 use crate::app::sidebar::{clear_review_mark, should_mark_review};
 use crate::toast::ToastKind;
 
@@ -135,6 +136,7 @@ impl OrbitApp {
             self.runtime.alive = client.is_alive();
         }
         // Images pasted in the composer become message attachments.
+        self.drain_pasted_files(cx);
         self.drain_pasted_images(cx);
         // Long pastes become collapsible pills above the composer.
         self.drain_pasted_texts(cx);
@@ -181,8 +183,7 @@ impl OrbitApp {
             }
             match event {
                 Event::AgentStart => {
-                    self.extension_widgets
-                        .retain(|widget| widget.key != "orbit-follow-up-suggestions");
+                    self.clear_follow_up_suggestions();
                     self.busy = true;
                 }
                 // An extension dialog blocks the run until the client answers.
@@ -1331,6 +1332,20 @@ impl OrbitApp {
             // A snapshot landed: no need for fast bootstrap polls.
             self.quota_entries_bootstrap = 0;
             cx.notify();
+        }
+    }
+
+    /// Queue copied files using the same attachment rules as file drops.
+    pub(super) fn drain_pasted_files(&mut self, cx: &mut Context<Self>) {
+        let paths = self
+            .input
+            .update(cx, |input, _| std::mem::take(&mut input.pasted_files));
+        for path in paths {
+            if self.attachment_budget_exhausted() {
+                self.report_attachment_limit();
+                break;
+            }
+            self.queue_path(QueuedPath::classify(&path), None, cx);
         }
     }
 

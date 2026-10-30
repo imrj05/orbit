@@ -111,6 +111,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     # Clipboard screenshots (`platform::clipboard_image_png`). macOS puts a
     # TIFF on the pasteboard, which GPUI skips once it has also found text.
     "NSPasteboard",
+    "NSPasteboardItem",
     "NSSound",
     "NSWorkspace",
     "block2",

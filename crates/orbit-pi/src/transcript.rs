@@ -494,7 +494,7 @@ fn injected_skill_message(value: &Value) -> bool {
 /// Decode an image content block — `{"type":"image","data":<base64>,
 /// "mimeType":"image/png"}`, the shape this app prompts with — into a
 /// renderable image. Covers pi echoes and session reloads from disk.
-fn image_from_block(block: &Value) -> Option<Arc<Image>> {
+pub(crate) fn image_from_block(block: &Value) -> Option<Arc<Image>> {
     let mime = block
         .get("mimeType")
         .or_else(|| block.get("mime_type"))
@@ -529,7 +529,12 @@ fn tool_result_parts(value: &Value) -> Option<(String, Option<Value>, bool, Tool
         return None;
     }
     let id = value.get("toolCallId").and_then(Value::as_str)?.to_string();
-    let output = tool_result_output(value);
+    let output = match normalize_tool_result(value) {
+        Value::Object(output) if output.get("content").is_some_and(Value::is_array) => {
+            Some(Value::Object(output))
+        }
+        _ => tool_result_output(value),
+    };
     let failed = value
         .get("isError")
         .and_then(Value::as_bool)
@@ -550,6 +555,9 @@ fn normalize_tool_result(value: &Value) -> Value {
     match value {
         Value::String(_) => value.clone(),
         Value::Object(map) => match tool_result_output(value) {
+            _ if map.get("content").and_then(Value::as_array).is_some_and(|blocks| {
+                blocks.iter().any(|block| block.get("type").and_then(Value::as_str) == Some("image"))
+            }) => value.clone(),
             Some(text) => text,
             // Only pi's envelope — an *array* `content` that carries no text
             // yet (the empty array that streams before the first chunk) — is
@@ -563,7 +571,7 @@ fn normalize_tool_result(value: &Value) -> Value {
 }
 
 /// Tool result payloads: joined text blocks; images are skipped.
-fn tool_result_output(value: &Value) -> Option<Value> {
+pub(crate) fn tool_result_output(value: &Value) -> Option<Value> {
     let blocks = value.get("content").and_then(Value::as_array)?;
     let mut text = String::new();
     for block in blocks {
@@ -856,8 +864,8 @@ type CopiedSections = Rc<RefCell<HashMap<(usize, usize, u8), Instant>>>;
 /// `(message_ix, flat_tool_ix, section)`.
 type ExpandedSections = Rc<RefCell<HashSet<(usize, usize, u8)>>>;
 /// Code blocks expanded past their collapsed preview, keyed
-/// `(message_ix, prose_salt, block_ix)` — the salt scopes the block index to
-/// the step/user prose run it was parsed from.
+/// `(message_ix, prose_namespace, block_ix)` — the namespace scopes the block
+/// index to the step/user prose run it was parsed from.
 type ExpandedBlocks = Rc<RefCell<HashSet<(usize, u64, usize)>>>;
 /// `toolCallId` -> `(message_ix, tool_ix, flat_tool_ix)` so tool results land
 /// on the right row.
@@ -4254,6 +4262,32 @@ mod tests {
     }
 
     #[test]
+    fn image_tool_results_survive_live_and_snapshot_parsing() {
+        let content = json!([
+            {"type": "text", "text": "image read"},
+            {"type": "image", "mimeType": "image/png", "data": "aGVsbG8="}
+        ]);
+        let mut transcript = Transcript::new();
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": ""}),
+        });
+        transcript.apply_event(&Event::ToolExecutionStart {
+            value: json!({"toolCallId": "image1", "toolName": "read", "args": {"path": "image.png"}}),
+        });
+        transcript.apply_event(&Event::ToolExecutionEnd {
+            value: json!({"toolCallId": "image1", "result": {"content": content}, "isError": false}),
+        });
+        let messages = transcript.messages.borrow();
+        let output = messages[0].tools().next().unwrap().output.as_ref().unwrap();
+        assert_eq!(output["content"], content);
+        assert_eq!(tool_result_output(output), Some(json!("image read")));
+        let (_, snapshot, _, _) = tool_result_parts(&json!({
+            "role": "toolResult", "toolCallId": "image1", "content": content
+        })).unwrap();
+        assert_eq!(snapshot.unwrap()["content"], content);
+    }
+
+    #[test]
     fn tool_facts_read_pi_details() {
         // read/bash attach a `truncation` object only when the output was cut.
         let facts = ToolFacts::from_result(&json!({
@@ -4469,11 +4503,11 @@ mod tests {
         // detail card hides empty sections — never render the raw envelope.
         let value = normalize_tool_result(&json!({"content": [], "details": {}}));
         assert_eq!(value, json!(""));
-        // An image-only envelope (no text blocks) reads the same way.
-        let value = normalize_tool_result(
-            &json!({"content": [{"type": "image", "data": "…"}], "details": {}}),
-        );
-        assert_eq!(value, json!(""));
+        // An image-only envelope keeps its blocks so the card can paint the
+        // image; the detail section still never prints the envelope itself.
+        let images = json!({"content": [{"type": "image", "data": "…"}], "details": {}});
+        assert_eq!(normalize_tool_result(&images), images);
+        assert_eq!(tool_result_output(&images), None);
         // Structured payloads without pi's `content` envelope are untouched.
         let value = normalize_tool_result(&json!({"rows": []}));
         assert_eq!(value, json!({"rows": []}));

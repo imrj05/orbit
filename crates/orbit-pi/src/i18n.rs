@@ -46,9 +46,8 @@ impl AppLanguage {
         Self::Italian,
     ];
 
-    /// Explicit languages only (no `System`), in picker order. Used by the
-    /// completeness tests and by callers that enumerate shipped locales.
-    #[allow(dead_code)]
+    /// Explicit languages only (no `System`), in picker order.
+    #[cfg(test)]
     pub const EXPLICIT: [Self; 10] = [
         Self::English,
         Self::SimplifiedChinese,
@@ -199,22 +198,8 @@ pub fn translate(key: &str) -> String {
 /// Translate a key in an explicit locale rather than the active one. Used by
 /// tests (and any caller that must resolve a string for a locale other than
 /// the one currently painted).
-#[allow(dead_code)]
 pub fn translate_in(locale: &str, key: &str) -> String {
     rust_i18n::t!(key, locale = locale).into_owned()
-}
-
-/// Whether the active locale reads dates in an East-Asian order
-/// (`2026年2月3日`), which some call sites format by hand. Reserved for the
-/// date formatters; unused until those read it.
-#[allow(dead_code)]
-pub fn uses_east_asian_date_format() -> bool {
-    locale_uses_east_asian_date_format(&rust_i18n::locale())
-}
-
-#[allow(dead_code)]
-fn locale_uses_east_asian_date_format(locale: &str) -> bool {
-    matches!(locale, "zh-CN" | "ja" | "ko")
 }
 
 /// The OS's preferred UI language as a BCP-47 tag.
@@ -397,14 +382,6 @@ mod tests {
     #[test]
     fn system_default_resolves_to_a_shipped_locale() {
         assert!(AppLanguage::EXPLICIT.contains(&AppLanguage::System.resolved()));
-    }
-
-    #[test]
-    fn east_asian_locales_use_east_asian_dates() {
-        assert!(locale_uses_east_asian_date_format("ja"));
-        assert!(locale_uses_east_asian_date_format("ko"));
-        assert!(locale_uses_east_asian_date_format("zh-CN"));
-        assert!(!locale_uses_east_asian_date_format("en"));
     }
 
     #[test]

@@ -200,6 +200,8 @@ pub struct ComposerInput {
     /// Images pasted (or attached) since the app last drained them — the
     /// app turns these into message attachments.
     pub pasted_images: Vec<Image>,
+    /// File URLs copied from the system file manager, awaiting attachment.
+    pub pasted_files: Vec<std::path::PathBuf>,
     /// Long pasted text since the app last drained it — the app turns these
     /// into collapsible pills instead of flooding the box.
     pub pasted_texts: Vec<String>,
@@ -268,6 +270,7 @@ impl ComposerInput {
             prompt_history: None,
             pasted_texts: Vec::new(),
             pasted_images: Vec::new(),
+            pasted_files: Vec::new(),
             caret_visible: true,
             blink_active: false,
             blink_epoch: 0,
@@ -938,6 +941,14 @@ impl ComposerInput {
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
+        // Finder also supplies a generic file icon as an image; use the
+        // actual file URL before considering that preview.
+        let files = crate::platform::clipboard_file_paths();
+        if !files.is_empty() {
+            self.pasted_files.extend(files);
+            cx.notify();
+            return;
+        }
         let item = cx.read_from_clipboard();
         // Pasted images become message attachments ("Show pasted
         // images as attachments") — the app drains `pasted_images` and
@@ -970,6 +981,12 @@ impl ComposerInput {
             return;
         }
         if let Some(text) = item.as_ref().and_then(|item| item.text()) {
+            #[cfg(target_os = "linux")]
+            if let Some(files) = crate::platform::clipboard_uri_list(&text) {
+                self.pasted_files.extend(files);
+                cx.notify();
+                return;
+            }
             // A long paste collapses into a pill above the composer — pasting
             // 200 lines of log must not turn the box into a scroll trap. The
             // app drains `pasted_texts` and folds the text back in on send.
@@ -1480,7 +1497,7 @@ fn next_char_boundary(text: &str, offset: usize) -> usize {
 /// (word / punctuation / whitespace) around `offset`. Returning the class run
 /// rather than only a word means double-clicking punctuation selects it too,
 /// matching native text views.
-fn word_range_at(text: &str, offset: usize) -> Range<usize> {
+pub(crate) fn word_range_at(text: &str, offset: usize) -> Range<usize> {
     if text.is_empty() {
         return 0..0;
     }

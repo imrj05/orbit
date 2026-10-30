@@ -552,7 +552,11 @@ impl Render for OrbitApp {
             .size_full()
             .flex()
             .relative()
-            .bg(theme.background)
+            .bg(if sidebar_shown {
+                theme.surface
+            } else {
+                theme.background
+            })
             .text_color(theme.text_primary)
             .font_family(theme::ui_font_family())
             // One wallpaper layer behind every surface. Hero-only places it in
@@ -611,9 +615,21 @@ impl Render for OrbitApp {
                                     .bottom_0()
                                     .right_0()
                                     .w(px(6.))
+                                    .group("sidebar-resize")
                                     .cursor(CursorStyle::ResizeLeftRight)
-                                    .hover(|style| style.bg(theme.accent.opacity(0.4)))
-                                    .on_drag(SidebarResize, |_, _, _, cx| cx.new(|_| DragGhost)),
+                                    .on_drag(SidebarResize, |_, _, _, cx| cx.new(|_| DragGhost))
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .top(panel::RADIUS.px(&theme))
+                                            .bottom(panel::RADIUS.px(&theme))
+                                            .right_0()
+                                            .w(px(1.))
+                                            .bg(theme.border)
+                                            .group_hover("sidebar-resize", |style| {
+                                                style.bg(theme.accent.opacity(0.4))
+                                            }),
+                                    ),
                             )
                             // brand — the wordmark, centred over the nav
                             // column and held to a quiet size. White mark on
@@ -765,8 +781,10 @@ impl Render for OrbitApp {
                                 div()
                                     .id("sidebar-footer")
                                     .debug_selector(|| "sidebar-footer".to_string())
-                                    .h(px(44.))
-                                    .px(px(14.))
+                                    .h(px(48.))
+                                    .flex_none()
+                                    .px(px(12.))
+                                    .bg(theme.panel_fill(theme.surface_secondary))
                                     .border_t_1()
                                     .border_color(theme.border)
                                     .flex()
@@ -786,13 +804,19 @@ impl Render for OrbitApp {
                                             .flex()
                                             .flex_shrink()
                                             .min_w_0()
+                                            .h(px(28.))
                                             .items_center()
                                             .gap(DynamicSpacing::Base06.px(&theme))
                                             .when(!live && !retrying, |status| {
                                                 status
+                                                    .px(px(4.))
+                                                    .rounded(button::RADIUS.px(&theme))
                                                     .cursor_pointer()
                                                     .tip(tr!("view.reconnect"))
-                                                    .hover(|s| s.text_color(theme.text_primary))
+                                                    .hover(|s| {
+                                                        s.bg(theme.surface_hover)
+                                                            .text_color(theme.text_primary)
+                                                    })
                                                     .active(|s| s.opacity(PRESS_DIM))
                                                     .on_mouse_up(
                                                         MouseButton::Left,
@@ -868,7 +892,6 @@ impl Render for OrbitApp {
                     // doesn't slide open on launch.
                     panel
                         .w(px(if open { panel_w } else { 0. }))
-                        .when(open, |p| p.border_r_1().border_color(theme.border))
                         .into_any_element()
                 } else {
                     panel
@@ -882,12 +905,7 @@ impl Render for OrbitApp {
                                 } else {
                                     panel_w * (1.0 - d)
                                 };
-                                let el = el.w(px(w));
-                                if w > 0.5 {
-                                    el.border_r_1().border_color(theme.border)
-                                } else {
-                                    el
-                                }
+                                el.w(px(w))
                             },
                         )
                         .into_any_element()
@@ -1188,6 +1206,9 @@ impl Render for OrbitApp {
                     // every other mode this resolves to the same opaque
                     // background the window already paints.
                     .bg(theme.panel_fill(theme.background))
+                    .when(sidebar_shown, |main| {
+                        main.rounded_l(panel::RADIUS.px(&theme))
+                    })
                     .children(if feature_open || pane_full {
                         None
                     } else {
@@ -1527,7 +1548,15 @@ impl OrbitApp {
                 let Some(suggestions) = payload.get("suggestions").and_then(Value::as_array) else {
                     continue;
                 };
-                let mut row = div().w_full().flex().flex_wrap().gap_2().pb_2();
+                // One row of chips, side by side: a suggestion is a prompt
+                // the user scans and picks, not something to read in place.
+                let mut list = div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_row()
+                    .gap(DynamicSpacing::Base04.px(&theme));
+                let mut count = 0;
                 for (index, suggestion) in suggestions.iter().take(3).enumerate() {
                     let Some(text) = suggestion
                         .as_str()
@@ -1538,7 +1567,8 @@ impl OrbitApp {
                     let text = text.to_owned();
                     let selected = text.clone();
                     let keyboard_text = text.clone();
-                    row = row.child(
+                    count += 1;
+                    list = list.child(
                         div()
                             .id(ElementId::Name(format!("suggestion-{index}").into()))
                             .debug_selector(move || format!("follow-up-suggestion-{index}"))
@@ -1552,27 +1582,74 @@ impl OrbitApp {
                                     }
                                 },
                             ))
+                            .flex_1()
                             .min_w_0()
-                            .max_w(relative(1.))
                             .overflow_hidden()
-                            .px_3()
-                            .py_2()
+                            .flex()
+                            .items_center()
+                            .px(DynamicSpacing::Base08.px(&theme))
+                            .py(DynamicSpacing::Base04.px(&theme))
                             .rounded(panel::RADIUS.px(&theme))
                             .border_1()
                             .border_color(theme.border)
+                            .text_size(TextSize::Small.px(&theme))
                             .text_color(theme.text_secondary)
+                            .tip(text.clone())
                             .cursor_pointer()
                             .hover(|style| style.bg(theme.overlay))
                             .on_click(cx.listener(move |app, _, window, cx| {
                                 app.insert_suggestion(&selected, window, cx);
                             }))
-                            // Keep a model's occasional long sentence from
-                            // growing the chip past the composer column; the
-                            // full text still inserts on click.
-                            .child(div().line_clamp(2).child(text)),
+                            // The chip shows the start of the suggestion;
+                            // the complete text stays on hover, and the
+                            // suggestion is inserted unchanged on activation.
+                            .child(
+                                div()
+                                    .debug_selector(move || format!("follow-up-text-{index}"))
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(text),
+                            ),
                     );
                 }
-                column = column.child(row);
+                if count > 0 {
+                    let close = icon_button_frame(
+                        div().id("dismiss-follow-up-suggestions"),
+                        &theme,
+                        ButtonSize::Compact,
+                    )
+                    .debug_selector(|| "dismiss-follow-up-suggestions".to_string())
+                    .focusable()
+                    .focus(|style| style.border_1().border_color(theme.focus_ring))
+                    .tip(tr!("common.dismiss"))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(theme.overlay_strong))
+                    .child(icon(
+                        "icons/x.svg",
+                        ButtonSize::Compact.icon_size().px(&theme),
+                        theme.text_muted,
+                    ))
+                    .on_key_down(cx.listener(|app, event: &gpui::KeyDownEvent, window, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            cx.stop_propagation();
+                            app.dismiss_suggestions(window, cx);
+                        }
+                    }))
+                    .on_click(cx.listener(|app, _, window, cx| {
+                        app.dismiss_suggestions(window, cx);
+                    }));
+                    column = column.child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .items_start()
+                            .gap(DynamicSpacing::Base04.px(&theme))
+                            .pb(DynamicSpacing::Base04.px(&theme))
+                            .child(list)
+                            .child(close),
+                    );
+                }
                 continue;
             }
             let mut card = div()
@@ -1600,6 +1677,20 @@ impl OrbitApp {
         Some(column.into_any_element())
     }
 
+    /// Drop the follow-up suggestion chips. Every path that changes what they
+    /// were generated for (a new run, a mode switch, a settings toggle) calls
+    /// this, so the key lives here alone.
+    pub(super) fn clear_follow_up_suggestions(&mut self) {
+        self.extension_widgets
+            .retain(|widget| widget.key != "orbit-follow-up-suggestions");
+    }
+
+    pub(super) fn dismiss_suggestions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.clear_follow_up_suggestions();
+        self.input.read(cx).focus(window);
+        cx.notify();
+    }
+
     fn insert_suggestion(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.suggestions.enabled
             && !self.busy
@@ -1611,8 +1702,7 @@ impl OrbitApp {
                 .any(|widget| widget.key == "orbit-follow-up-suggestions")
         {
             self.input.update(cx, |input, cx| input.set_text(text, cx));
-            self.extension_widgets
-                .retain(|widget| widget.key != "orbit-follow-up-suggestions");
+            self.clear_follow_up_suggestions();
             self.input.read(cx).focus(window);
             cx.notify();
         }
@@ -3843,7 +3933,7 @@ impl OrbitApp {
             .child(icon(
                 "icons/search.svg",
                 ButtonSize::Medium.icon_size().px(&theme),
-                theme.text_muted,
+                theme.text_secondary,
             ));
         // Usage — opens (or leaves) the Usage page (⌘U).
         let usage = icon_button_frame(div().id("sidebar-usage"), &theme, ButtonSize::Medium)
@@ -3865,7 +3955,7 @@ impl OrbitApp {
                 if self.usage_open {
                     theme.text_primary
                 } else {
-                    theme.text_muted
+                    theme.text_secondary
                 },
             ));
         // Settings — toggles the Settings surface (⌘,).
@@ -3888,7 +3978,7 @@ impl OrbitApp {
                 if self.settings_open {
                     theme.text_primary
                 } else {
-                    theme.text_muted
+                    theme.text_secondary
                 },
             ));
         div()

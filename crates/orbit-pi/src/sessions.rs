@@ -29,7 +29,6 @@ use crate::watch::debounced_watch;
 pub struct SessionInfo {
     /// Path to the `.jsonl` session file (used by `switch_session`).
     pub path: PathBuf,
-    #[allow(dead_code)] // useful for future fork/clone wiring
     pub id: String,
     /// Workspace the session belongs to.
     pub cwd: PathBuf,
@@ -784,23 +783,6 @@ pub fn relative_time(modified: SystemTime) -> String {
         86_400..=2_591_999 => format!("{}d", secs / 86_400),
         2_592_000..=31_535_999 => format!("{}mo", secs / 2_592_000),
         _ => format!("{}y", secs / 31_536_000),
-    }
-}
-
-/// Coarse age bucket (kept for potential future time-grouped views).
-#[allow(dead_code)]
-pub fn time_bucket(modified: SystemTime) -> &'static str {
-    let hours = SystemTime::now()
-        .duration_since(modified)
-        .unwrap_or_default()
-        .as_secs()
-        / 3600;
-    match hours {
-        0..=23 => "Today",
-        24..=47 => "Yesterday",
-        48..=167 => "This Week",
-        168..=719 => "This Month",
-        _ => "Older",
     }
 }
 

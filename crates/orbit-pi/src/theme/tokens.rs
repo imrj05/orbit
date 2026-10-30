@@ -1295,7 +1295,7 @@ mod tests {
             theme.design_system = design_system;
             let base = Radius::Large.px(&theme);
             theme.ui.corner_rounding = crate::theme::MAX_CORNER_ROUNDING;
-            assert_eq!(Radius::Large.px(&theme), base + px(14.));
+            assert_eq!(Radius::Large.px(&theme), base + px(4.));
             assert_eq!(Radius::None.px(&theme), px(0.));
             assert_eq!(Radius::Full.px(&theme), px(9999.));
         }

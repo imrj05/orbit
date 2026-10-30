@@ -215,6 +215,7 @@ impl OrbitApp {
     pub(super) fn submit_as(&mut self, text: String, mode: SendMode, cx: &mut Context<Self>) {
         // Collect any paste that raced the submit tick, then fold the long
         // pastes back in: a pill is only a compact way to *hold* text.
+        self.drain_pasted_files(cx);
         self.drain_pasted_images(cx);
         self.drain_pasted_texts(cx);
         let text = Self::fold_pasted_texts(text.trim(), &self.pasted_texts);

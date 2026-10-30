@@ -33,7 +33,7 @@ use base64::Engine as _;
 use gpui::{
     anchored, deferred, div, img, linear_color_stop, linear_gradient, list, point, prelude::*, px,
     radians, relative, uniform_list, AnchoredPositionMode, Animation, AnimationExt, AnyElement,
-    App, ClipboardItem, Context, Corner, CursorStyle, DragMoveEvent, ElementId, Entity,
+    App, ClickEvent, ClipboardItem, Context, Corner, CursorStyle, DragMoveEvent, ElementId, Entity,
     ExternalPaths, FocusHandle, Focusable, FontWeight, Hsla, Image, ImageSource, IntoElement,
     ListAlignment, ListState, MouseButton, MouseDownEvent, MouseUpEvent, ObjectFit,
     PathPromptOptions, Pixels, Point, Render, Resource, ScrollStrategy, SharedString,

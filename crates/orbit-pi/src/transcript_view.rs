@@ -15,7 +15,7 @@
 
 use std::{
     cell::{Cell, RefCell},
-    collections::{hash_map::DefaultHasher, HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
     rc::Rc,
@@ -24,13 +24,13 @@ use std::{
 };
 
 use gpui::{
-    anchored, canvas, deferred, div, img, linear_color_stop, linear_gradient, list, point,
-    prelude::*, px, relative, Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem,
-    CursorStyle, DispatchPhase, Element, ElementId, Font, FontFeatures, FontStyle, FontWeight,
-    GlobalElementId, Hitbox, HitboxBehavior, Hsla, Image, ImageSource, InspectorElementId,
-    InteractiveText, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ObjectFit, Pixels, ScrollHandle, ScrollWheelEvent, SharedString, StrikethroughStyle,
-    StyledText, TextAlign, TextLayout, TextRun, TransformationMatrix, UnderlineStyle, Window,
+    Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem, CursorStyle, DispatchPhase,
+    Element, ElementId, Font, FontFeatures, FontStyle, FontWeight, GlobalElementId, Hitbox,
+    HitboxBehavior, Hsla, Image, ImageSource, InspectorElementId, InteractiveText, LayoutId,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels, ScrollHandle,
+    ScrollWheelEvent, SharedString, StrikethroughStyle, StyledText, TextAlign, TextLayout, TextRun,
+    TransformationMatrix, UnderlineStyle, Window, anchored, canvas, deferred, div, img,
+    linear_color_stop, linear_gradient, list, point, prelude::*, px, relative,
 };
 
 use std::ops::Range;
@@ -43,8 +43,8 @@ use orbit_rpc::MessageUsage;
 
 use crate::agent_call_display::AgentCallDisplay;
 use crate::app::{
-    button_frame, file_badge, file_glyph, file_icon_tile, icon_button_frame, nerd_font_family,
-    picker_entry, picker_surface, OrbitApp, TipExt, BUTTON_GROUP,
+    BUTTON_GROUP, OrbitApp, TipExt, button_frame, file_badge, file_glyph, file_icon_tile,
+    icon_button_frame, nerd_font_family, picker_entry, picker_surface,
 };
 use crate::context_meter::{format_tokens, hit_percent_label};
 use crate::highlight::{self, Token};
@@ -52,8 +52,8 @@ use crate::message_scroller::{self, MessageScrollerState};
 use crate::shimmer::ShimmerText;
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
-    button, context_menu, panel, picker, popover, BufferLineHeight, ButtonSize, DynamicSpacing,
-    IconSize, Radius, StyledExt, TextSize, BORDER_WIDTH,
+    BORDER_WIDTH, BufferLineHeight, ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt,
+    TextSize, button, context_menu, panel, picker, popover,
 };
 use crate::theme::{self, Theme, ThemeMode};
 use crate::transcript::{ChatMessage, Step, SummaryRow, ToolCall, ToolFacts};
@@ -144,7 +144,7 @@ type CopiedSections = Rc<RefCell<HashMap<(usize, usize, u8), Instant>>>;
 /// `(message_ix, flat_tool_ix, section)`.
 type ExpandedSections = Rc<RefCell<HashSet<(usize, usize, u8)>>>;
 /// Code blocks expanded past their collapsed preview, keyed
-/// `(message_ix, prose_salt, block_ix)`.
+/// `(message_ix, prose_namespace, block_ix)`.
 type ExpandedBlocks = Rc<RefCell<HashSet<(usize, u64, usize)>>>;
 /// Persistent scroll handles for expandable "Thought" cards, keyed
 /// `(message_ix, step_ix)`. The handle lets the card read its own
@@ -319,6 +319,7 @@ pub(crate) struct TextSelection {
     /// The press that started the drag, for link resolution on release.
     down: Option<(ElementId, usize)>,
     menu: Option<TextMenu>,
+    stream_fades: HashMap<ElementId, StreamFade>,
 }
 
 pub(crate) type TextSelectionState = Rc<RefCell<TextSelection>>;
@@ -335,6 +336,7 @@ impl TextSelection {
             moved: false,
             down: None,
             menu: None,
+            stream_fades: HashMap::new(),
         }
     }
 
@@ -412,13 +414,39 @@ impl TextSelection {
             block: index,
             offset,
         };
-        self.down = Some((key, offset));
+        // Gutter presses can start a selection, but must never activate the
+        // nearest text block's link (for example, when clicking a card).
+        let block = &self.blocks[index];
+        if block.bounds.contains(&position) {
+            if let Ok(actual_offset) = block.layout.index_for_position(position) {
+                self.down = Some((key, actual_offset));
+            }
+        }
         self.selection = Some(Selection {
             blocks,
             anchor: point,
             focus: point,
         });
         self.dragging = true;
+    }
+
+    fn select_word(&mut self, position: gpui::Point<Pixels>) {
+        let Some(index) = self.blocks.iter().position(|block| block.bounds.contains(&position)) else {
+            return;
+        };
+        let Ok(offset) = self.blocks[index].layout.index_for_position(position) else {
+            return;
+        };
+        let text = &self.blocks[index].text;
+        let range = crate::composer::word_range_at(text, byte_boundary(text, offset));
+        self.begin_selection(position);
+        if let Some(selection) = self.selection.as_mut() {
+            selection.anchor = SelectPoint { block: index, offset: range.start };
+            selection.focus = SelectPoint { block: index, offset: range.end };
+        }
+        self.dragging = false;
+        self.moved = true;
+        self.down = None;
     }
 
     fn extend_selection(&mut self, position: gpui::Point<Pixels>) {
@@ -446,17 +474,22 @@ impl TextSelection {
     }
 
     /// End a drag; a press that never moved resolves to the link under it.
-    fn finish_selection(&mut self) -> Option<String> {
+    fn finish_selection(&mut self, position: gpui::Point<Pixels>) -> Option<String> {
         self.dragging = false;
         if self.moved {
+            self.down = None;
             return None;
         }
         let (key, offset) = self.down.take()?;
         let block = self.blocks.iter().find(|block| block.key == key)?;
+        if !block.bounds.contains(&position) {
+            return None;
+        }
+        let release_offset = block.layout.index_for_position(position).ok()?;
         block
             .links
             .iter()
-            .find(|(range, _)| range.contains(&offset))
+            .find(|(range, _)| range.contains(&offset) && range.contains(&release_offset))
             .map(|(_, url)| url.clone())
     }
 
@@ -849,7 +882,11 @@ fn register_text_selection(
                     if menu_open {
                         return;
                     }
-                    state.borrow_mut().begin_selection(event.position);
+                    if event.click_count >= 2 {
+                        state.borrow_mut().select_word(event.position);
+                    } else {
+                        state.borrow_mut().begin_selection(event.position);
+                    }
                     window.refresh();
                 }
                 MouseButton::Right => {
@@ -887,7 +924,7 @@ fn register_text_selection(
             if phase != DispatchPhase::Capture || event.button != MouseButton::Left {
                 return;
             }
-            let url = state.borrow_mut().finish_selection();
+            let url = state.borrow_mut().finish_selection(event.position);
             if let Some(url) = url {
                 cx.open_url(&url);
             }
@@ -1058,7 +1095,13 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
     let theme = *theme::get(cx);
     let messages = view.messages.clone();
     let text_selection = view.text_selection.clone();
-    text_selection.borrow_mut().begin_frame();
+    {
+        let mut selection = text_selection.borrow_mut();
+        selection.begin_frame();
+        if view.streaming.get().is_none() || theme.ui.reduce_motion {
+            selection.stream_fades.clear();
+        }
+    }
     // Clones the list closure cannot move: the panel's mouse handlers and
     // right-click menu need them after the list (and its rows) have captured
     // the originals.
@@ -2217,6 +2260,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
                         paint.thinking_scrolls.clone(),
                         paint.collapsed_thoughts.clone(),
                         paint.thinking_detached.clone(),
+                        paint.image_opener.clone(),
                     ));
                 }
             }
@@ -2294,6 +2338,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
                 paint.thinking_scrolls.clone(),
                 paint.collapsed_thoughts.clone(),
                 paint.thinking_detached.clone(),
+                paint.image_opener.clone(),
             ));
         }
     }
@@ -2520,6 +2565,7 @@ fn render_activity_group(
     thinking_scrolls: ThinkingScrolls,
     collapsed_thoughts: CollapsedThoughts,
     thinking_detached: ThinkingDetached,
+    image_opener: Option<ImageOpener>,
 ) -> impl IntoElement {
     let steps = &all_steps[range.clone()];
     let title = activity_title(steps, live);
@@ -2626,8 +2672,7 @@ fn render_activity_group(
                 let scroller = scroller.clone();
                 move |_, _, cx| {
                     let mut map = expanded_activities.borrow_mut();
-                    let next = !map.get(&key).copied().unwrap_or(false);
-                    map.insert(key, next);
+                    map.insert(key, !open);
                     scroller.remeasure_toggle(ix);
                     cx.refresh_windows();
                 }
@@ -2695,6 +2740,7 @@ fn render_activity_group(
                     copied_sections.clone(),
                     expanded_sections.clone(),
                     scroller.clone(),
+                    image_opener.clone(),
                 )
             }));
             tool_base += step.tools.len();
@@ -3280,6 +3326,7 @@ fn render_activity_card(
     copied_sections: CopiedSections,
     expanded_sections: ExpandedSections,
     scroller: MessageScrollerState,
+    image_opener: Option<ImageOpener>,
 ) -> AnyElement {
     // A structured questionnaire gets its own card — the raw arguments JSON
     // and the generic "Command/Arguments" detail would bury the question.
@@ -3347,6 +3394,23 @@ fn render_activity_card(
         .bg(theme.overlay)
         .child(
             div()
+                .id(ElementId::NamedInteger(
+                    "activity-header".into(),
+                    (key.0 as u64) << 16 | key.1 as u64,
+                ))
+                .debug_selector(move || format!("tool-header-{}-{}", key.0, key.1))
+                .when(has_detail, |header| {
+                    let scroller = scroller.clone();
+                    header.on_click(move |_, _, cx| {
+                        let mut open = expanded_tools.borrow_mut();
+                        if !open.remove(&key) {
+                            open.insert(key);
+                        }
+                        drop(open);
+                        scroller.remeasure_toggle(key.0);
+                        cx.refresh_windows();
+                    })
+                })
                 .h(DynamicSpacing::Base32.px(&theme))
                 .px(DynamicSpacing::Base08.px(&theme))
                 .flex()
@@ -3552,19 +3616,6 @@ fn render_activity_card(
     if tool.failed {
         card = card.child(render_tool_error_strip(tool, !detail_shown, theme));
     }
-    card = card.when(has_detail, |row| {
-        let scroller = scroller.clone();
-        row.on_click(move |_, _, cx| {
-            let mut open = expanded_tools.borrow_mut();
-            if !open.remove(&key) {
-                open.insert(key);
-            }
-            drop(open);
-            scroller.remeasure_toggle(key.0);
-            cx.refresh_windows();
-        })
-    });
-
     if tool_open && has_detail {
         card = card.child(render_tool_detail(
             tool,
@@ -3573,6 +3624,7 @@ fn render_activity_card(
             expanded_sections,
             scroller.clone(),
             theme,
+            image_opener,
         ));
     }
     card.into_any_element()
@@ -3680,6 +3732,7 @@ fn render_tool_detail(
     expanded_sections: ExpandedSections,
     scroller: MessageScrollerState,
     theme: Theme,
+    image_opener: Option<ImageOpener>,
 ) -> impl IntoElement {
     // An edit/write tool shows its change as an inline diff — the arguments
     // JSON would just be the same text, unread. Everything else: a command
@@ -3704,7 +3757,15 @@ fn render_tool_detail(
             )
         }),
     };
-    let second = tool.output.as_ref().map(|output| {
+    let images = tool.output.as_ref().map(tool_result_images).unwrap_or_default();
+    let output = tool.output.as_ref().and_then(|output| {
+        if output.get("content").and_then(Value::as_array).is_some() {
+            crate::transcript::tool_result_output(output)
+        } else {
+            Some(output.clone())
+        }
+    });
+    let second = output.as_ref().map(|output| {
         (
             tr!("transcript.output"),
             display_value_capped(output, OUTPUT_TEXT_CAP),
@@ -3732,7 +3793,7 @@ fn render_tool_detail(
                 .border_color(theme.border)
                 // With no sections below it, the diff is the card's last
                 // child and carries its bottom radius.
-                .when(!has_sections, |d| d.rounded_b(panel::RADIUS.px(&theme)))
+                .when(!has_sections && images.is_empty(), |d| d.rounded_b(panel::RADIUS.px(&theme)))
                 .child(render_edit_diff(
                     rows,
                     key,
@@ -3756,7 +3817,7 @@ fn render_tool_detail(
             .flex_col()
             // The surface is always the card's last child, so it carries the
             // card's bottom radius (gpui clips children to a rectangle).
-            .rounded_b(panel::RADIUS.px(&theme))
+            .when(images.is_empty(), |s| s.rounded_b(panel::RADIUS.px(&theme)))
             // Without a diff above it, the surface owns the rule that
             // separates it from the card header.
             .when(diff.is_none(), |s| {
@@ -3784,7 +3845,99 @@ fn render_tool_detail(
         }
         container = container.child(surface);
     }
+    if !images.is_empty() {
+        container = container.child(
+            div()
+                .w_full()
+                .border_t_1()
+                .border_color(theme.border)
+                .rounded_b(panel::RADIUS.px(&theme))
+                .p(DynamicSpacing::Base08.px(&theme))
+                .flex()
+                .flex_wrap()
+                .gap(DynamicSpacing::Base06.px(&theme))
+                .children(images.into_iter().enumerate().map(|(image_ix, image)| {
+                    let opener = image_opener.clone();
+                    div()
+                        .id(ElementId::NamedInteger(
+                            "tool-image".into(),
+                            (key.0 as u64) << 32 | (key.1 as u64) << 16 | image_ix as u64,
+                        ))
+                        .debug_selector(move || format!("tool-image-{}-{}-{image_ix}", key.0, key.1))
+                        .size(px(180.))
+                        .when(opener.is_some(), |tile| tile.cursor_pointer())
+                        .child(
+                            img(ImageSource::Image(image.clone()))
+                                .size_full()
+                                .object_fit(ObjectFit::Contain),
+                        )
+                        .on_click(move |_, window, cx| {
+                            if let Some(opener) = &opener {
+                                opener(image.clone(), window, cx);
+                                cx.stop_propagation();
+                            }
+                        })
+                })),
+        );
+    }
     container
+}
+
+/// Decoded tool images, keyed by a hash of their content block. Bounded, and
+/// the oldest entry is dropped one at a time: one long session holds far more
+/// images than any single card shows, so clearing the whole map (as this once
+/// did) threw away images still on screen and re-decoded them every frame.
+#[derive(Default)]
+struct ToolImageCache {
+    images: HashMap<u64, Arc<Image>>,
+    order: VecDeque<u64>,
+}
+
+impl ToolImageCache {
+    const CAP: usize = 32;
+
+    fn get(&self, key: u64) -> Option<Arc<Image>> {
+        self.images.get(&key).cloned()
+    }
+
+    fn insert(&mut self, key: u64, image: Arc<Image>) {
+        if self.images.insert(key, image).is_some() {
+            return;
+        }
+        self.order.push_back(key);
+        if self.order.len() > Self::CAP {
+            if let Some(oldest) = self.order.pop_front() {
+                self.images.remove(&oldest);
+            }
+        }
+    }
+}
+
+thread_local! {
+    static TOOL_IMAGE_CACHE: RefCell<ToolImageCache> = RefCell::new(ToolImageCache::default());
+}
+
+fn tool_result_images(output: &Value) -> Vec<Arc<Image>> {
+    let Some(blocks) = output.get("content").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    blocks.iter().filter_map(|block| {
+        if block.get("type").and_then(Value::as_str) != Some("image") {
+            return None;
+        }
+        let mut hasher = DefaultHasher::new();
+        block.get("data")?.as_str()?.hash(&mut hasher);
+        block.get("mimeType").or_else(|| block.get("mime_type"))?.as_str()?.hash(&mut hasher);
+        let key = hasher.finish();
+        TOOL_IMAGE_CACHE.with(|cache| {
+            if let Some(image) = cache.borrow().get(key) {
+                return Some(image);
+            }
+            let image = crate::transcript::image_from_block(block)?;
+            cache.borrow_mut().insert(key, image.clone());
+            Some(image)
+        })
+    }).collect()
 }
 
 /// A structured (non-string) value highlights as JSON; strings and scalars
@@ -3931,7 +4084,7 @@ fn render_detail_section(
                 div().id(ElementId::NamedInteger(
                     "section-fold".into(),
                     ((key.0 as u64) << 16 | key.1 as u64) << 8 | section as u64,
-                )),
+                )).debug_selector(move || format!("tool-section-fold-{}-{}-{section}", key.0, key.1)),
                 &theme,
                 ButtonSize::Default,
             )
@@ -4883,33 +5036,11 @@ fn working_wave_dots(theme: Theme, elapsed_ms: u128) -> impl IntoElement {
         }))
 }
 
-/// What the agent is doing right now, for the live indicator: "Running
-/// cargo test", "Reading src/auth.rs", "Thinking…". Derived from the live
-/// step's latest tool so the status names real work, never a bare spinner.
+/// Reasoning is named in the live indicator; tool details already appear in
+/// the activity group above and should not be repeated here.
 fn working_activity_label(step: &Step) -> Option<String> {
-    if let Some(tool) = step.tools.last() {
-        let detail = activity_preview(tool);
-        let verb = match tool.name.as_str() {
-            "bash" | "shell" | "terminal" | "exec" | "run" => {
-                tr!("transcript_view.verb_running")
-            }
-            "read" | "view" => tr!("transcript_view.verb_reading"),
-            "grep" | "find" | "glob" | "search" => tr!("transcript_view.verb_searching"),
-            "edit" | "write" => tr!("transcript_view.verb_editing"),
-            other => {
-                let action = activity_action_label(other);
-                return Some(if detail.is_empty() {
-                    tr!("transcript_view.using_tool", action = action)
-                } else {
-                    format!("{action} {detail}")
-                });
-            }
-        };
-        return Some(if detail.is_empty() {
-            verb
-        } else {
-            format!("{verb} {detail}")
-        });
+    if !step.tools.is_empty() {
+        return None;
     }
     // Reasoning is only the current activity while the step has no answer
     // text yet; once the model is writing, the thinking phase is over.
@@ -4948,9 +5079,8 @@ fn render_working_indicator(
     tps: Option<f64>,
     theme: Theme,
 ) -> impl IntoElement {
-    // Name the current activity when we know it; the elapsed time stays so
-    // a long-running command still reads as progress, not a hang. When the
-    // row is producing output, the rate rides alongside as `· 42 tok/s`.
+    // Keep elapsed time visible during long-running work; the tool group
+    // above carries its details. Output rate rides alongside as `· 42 tok/s`.
     let timing = match tps {
         Some(tps) => tr!(
             "transcript_view.working_for_with_rate",
@@ -5581,6 +5711,77 @@ fn ui_font() -> Font {
     }
 }
 
+/// Paint only newly appended text with a short fade; the actual text and its
+/// layout are never delayed. Existing text remains fully readable.
+#[derive(Default)]
+struct StreamFade {
+    text: String,
+    chunks: Vec<(Range<usize>, Instant)>,
+    initialized: bool,
+}
+
+impl StreamFade {
+    fn apply(&mut self, text: &str, runs: Vec<TextRun>, now: Instant) -> Vec<TextRun> {
+        const FADE: Duration = Duration::from_millis(140);
+        if self.text != text {
+            let prefix = self
+                .text
+                .chars()
+                .zip(text.chars())
+                .take_while(|(a, b)| a == b)
+                .map(|(ch, _)| ch.len_utf8())
+                .sum::<usize>();
+            self.chunks.retain_mut(|(range, _)| {
+                range.end = range.end.min(prefix);
+                range.start < range.end
+            });
+            if self.initialized && prefix < text.len() {
+                self.chunks.push((prefix..text.len(), now));
+            }
+            self.text.clear();
+            self.text.push_str(text);
+            self.initialized = true;
+        }
+        self.chunks
+            .retain(|(_, start)| now.saturating_duration_since(*start) < FADE);
+        if self.chunks.is_empty() {
+            return runs;
+        }
+        let mut output = Vec::new();
+        let mut offset = 0;
+        for run in runs {
+            let end = offset + run.len;
+            let mut pos = offset;
+            while pos < end {
+                let chunk = self.chunks.iter().find(|(range, _)| range.contains(&pos));
+                let next = if let Some((range, _)) = chunk {
+                    end.min(range.end)
+                } else {
+                    self.chunks
+                        .iter()
+                        .map(|(range, _)| range.start)
+                        .filter(|start| *start > pos)
+                        .min()
+                        .unwrap_or(end)
+                        .min(end)
+                };
+                let mut part = run.clone();
+                part.len = next - pos;
+                if let Some((_, start)) = chunk {
+                    let t = (now.saturating_duration_since(*start).as_secs_f32()
+                        / FADE.as_secs_f32())
+                    .min(1.0);
+                    part.color.a *= 0.55 + 0.45 * (1.0 - (1.0 - t).powi(2));
+                }
+                output.push(part);
+                pos = next;
+            }
+            offset = end;
+        }
+        output
+    }
+}
+
 /// A styled, word-wrapping paragraph. In the transcript the text is
 /// selectable and links resolve through the panel's mouse handlers; outside
 /// it (the skills viewer) the plain clickable [`InteractiveText`] is kept.
@@ -5596,6 +5797,22 @@ fn paragraph_text(
     key: ElementId,
     theme: Theme,
 ) -> impl IntoElement {
+    paragraph_text_live(
+        text, size, line_height, weight, color, key, theme, false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paragraph_text_live(
+    text: &str,
+    size: f32,
+    line_height: f32,
+    weight: FontWeight,
+    color: Hsla,
+    key: ElementId,
+    theme: Theme,
+    live: bool,
+) -> impl IntoElement {
     let spans = parse_inline(text);
     let (body, runs, links, marks) = inline_runs(&spans, weight, color, theme);
     let wrapper = div()
@@ -5608,7 +5825,12 @@ fn paragraph_text(
     if let Some(scope) = text_scope() {
         // The font's arrow would pick a fallback/emoji face; the hugeicon
         // paints crisper and on-theme (see `paint_link_mark`).
-        let runs = hide_autolink_marks(runs, &marks);
+        let mut runs = hide_autolink_marks(runs, &marks);
+        if live && !theme.ui.reduce_motion {
+            let mut state = scope.state.borrow_mut();
+            let fade = state.stream_fades.entry(key.clone()).or_default();
+            runs = fade.apply(body.as_ref(), runs, Instant::now());
+        }
         let range = scope.state.borrow().range_for(&key, body.as_ref());
         let runs = highlight_runs(runs, range, selection_color(theme));
         let plain = body.clone();
@@ -5641,10 +5863,13 @@ fn paragraph_text(
     }
 }
 
-fn md_id(ix: usize, salt: u64, block_ix: usize, sub: usize) -> ElementId {
+fn md_id(ix: usize, id_namespace: u64, block_ix: usize, sub: usize) -> ElementId {
     ElementId::NamedInteger(
         "md".into(),
-        ((ix as u64) << 40) | ((salt & 0xffff) << 24) | ((block_ix as u64) << 8) | sub as u64,
+        ((ix as u64) << 40)
+            | ((id_namespace & 0xffff) << 24)
+            | ((block_ix as u64) << 8)
+            | sub as u64,
     )
 }
 
@@ -6192,7 +6417,7 @@ struct TableBreakout {
 fn render_prose(
     text: &str,
     ix: usize,
-    salt: u64,
+    id_namespace: u64,
     theme: Theme,
     copied_sections: CopiedSections,
     expanded_blocks: ExpandedBlocks,
@@ -6242,7 +6467,7 @@ fn render_prose(
                     .child(render_block(
                         block,
                         ix,
-                        salt,
+                        id_namespace,
                         block_ix,
                         theme,
                         copied_sections.clone(),
@@ -6305,7 +6530,7 @@ fn block_gap(prev: &Block, next: &Block) -> f32 {
 fn render_block(
     block: &Block,
     ix: usize,
-    salt: u64,
+    id_namespace: u64,
     block_ix: usize,
     theme: Theme,
     copied_sections: CopiedSections,
@@ -6315,14 +6540,15 @@ fn render_block(
     scroller: MessageScrollerState,
 ) -> AnyElement {
     match block {
-        Block::Paragraph(lines) => paragraph_text(
+        Block::Paragraph(lines) => paragraph_text_live(
             &lines.join(" "),
             14.,
             26.,
             FontWeight::NORMAL,
             theme.assistant_text,
-            md_id(ix, salt, block_ix, 0),
+            md_id(ix, id_namespace, block_ix, 0),
             theme,
+            !settled,
         )
         .into_any_element(),
         Block::Heading(level, text) => {
@@ -6339,7 +6565,7 @@ fn render_block(
                 line_height,
                 FontWeight::SEMIBOLD,
                 color,
-                md_id(ix, salt, block_ix, 0),
+                md_id(ix, id_namespace, block_ix, 0),
                 theme,
             )
             .into_any_element()
@@ -6348,7 +6574,7 @@ fn render_block(
             language.as_deref(),
             lines,
             ix,
-            salt,
+            id_namespace,
             block_ix,
             theme,
             copied_sections,
@@ -6360,7 +6586,7 @@ fn render_block(
         .into_any_element(),
         Block::Rule => div().w_full().h(px(1.)).bg(theme.border).into_any_element(),
         Block::Alert(kind, lines) => {
-            render_alert(*kind, lines, ix, salt, block_ix, theme).into_any_element()
+            render_alert(*kind, lines, ix, id_namespace, block_ix, theme).into_any_element()
         }
         Block::Quote(lines) => div()
             .w_full()
@@ -6379,7 +6605,7 @@ fn render_block(
                 render_container_line(
                     line,
                     ix,
-                    salt,
+                    id_namespace,
                     block_ix,
                     sub,
                     14.,
@@ -6396,20 +6622,19 @@ fn render_block(
             .flex()
             .flex_col()
             .gap(DynamicSpacing::Base08.px(&theme))
-            .children(
-                items
-                    .iter()
-                    .enumerate()
-                    .map(move |(sub, item)| render_list_item(item, ix, salt, block_ix, sub, theme)),
-            )
+            .children(items.iter().enumerate().map(move |(sub, item)| {
+                render_list_item(item, ix, id_namespace, block_ix, sub, theme)
+            }))
             .into_any_element(),
         Block::Table {
             header,
             rows,
             aligns,
-        } => render_table(header, rows, aligns, ix, salt, block_ix, theme).into_any_element(),
+        } => {
+            render_table(header, rows, aligns, ix, id_namespace, block_ix, theme).into_any_element()
+        }
         Block::Image { alt, url } => {
-            render_markdown_image(alt, url, ix, salt, block_ix, 0, theme).into_any_element()
+            render_markdown_image(alt, url, ix, id_namespace, block_ix, 0, theme).into_any_element()
         }
     }
 }
@@ -6422,7 +6647,7 @@ fn render_markdown_image(
     alt: &str,
     url: &str,
     ix: usize,
-    salt: u64,
+    id_namespace: u64,
     block_ix: usize,
     sub: usize,
     theme: Theme,
@@ -6432,7 +6657,7 @@ fn render_markdown_image(
     let fallback_alt = alt.to_string();
     div().w_full().min_w_0().flex().child(
         img(url)
-            .id(md_id(ix, salt, block_ix, sub))
+            .id(md_id(ix, id_namespace, block_ix, sub))
             // `min_w_0` is load-bearing: a replaced element's automatic minimum
             // width is its intrinsic width, so without it `max_w_full` loses
             // and a large screenshot overflows the column and the rail.
@@ -6481,7 +6706,7 @@ fn render_alert(
     kind: AlertKind,
     lines: &[String],
     ix: usize,
-    salt: u64,
+    id_namespace: u64,
     block_ix: usize,
     theme: Theme,
 ) -> impl IntoElement {
@@ -6515,7 +6740,7 @@ fn render_alert(
             render_container_line(
                 line,
                 ix,
-                salt,
+                id_namespace,
                 block_ix,
                 sub,
                 14.,
@@ -6534,7 +6759,7 @@ fn render_alert(
 fn render_container_line(
     line: &str,
     ix: usize,
-    salt: u64,
+    id_namespace: u64,
     block_ix: usize,
     sub: usize,
     size: f32,
@@ -6544,7 +6769,7 @@ fn render_container_line(
     theme: Theme,
 ) -> AnyElement {
     if let Some((alt, url)) = image_line(line) {
-        return render_markdown_image(&alt, &url, ix, salt, block_ix, sub, theme)
+        return render_markdown_image(&alt, &url, ix, id_namespace, block_ix, sub, theme)
             .into_any_element();
     }
     paragraph_text(
@@ -6553,7 +6778,7 @@ fn render_container_line(
         line_height,
         weight,
         color,
-        md_id(ix, salt, block_ix, sub),
+        md_id(ix, id_namespace, block_ix, sub),
         theme,
     )
     .into_any_element()
@@ -6564,7 +6789,7 @@ fn render_container_line(
 fn render_list_item(
     item: &ListItem,
     ix: usize,
-    salt: u64,
+    id_namespace: u64,
     block_ix: usize,
     sub: usize,
     theme: Theme,
@@ -6613,7 +6838,7 @@ fn render_list_item(
         .child(div().min_w_0().flex_1().child(render_container_line(
             &item.text,
             ix,
-            salt,
+            id_namespace,
             block_ix,
             sub,
             14.,
@@ -6668,7 +6893,7 @@ fn render_code_block(
     language: Option<&str>,
     lines: &[String],
     ix: usize,
-    salt: u64,
+    id_namespace: u64,
     block_ix: usize,
     theme: Theme,
     copied_sections: CopiedSections,
@@ -6693,7 +6918,7 @@ fn render_code_block(
             diagram,
             lines,
             ix,
-            salt,
+            id_namespace,
             block_ix,
             theme,
             copied_sections,
@@ -6705,10 +6930,10 @@ fn render_code_block(
         .and_then(highlight::lang_for_tag)
         .map(|lang| highlight::tokenize_cached(lang, &code));
     let label = code_block_label(language);
-    // Block identity within the message: the prose salt scopes the index to
+    // Block identity within the message: the prose id_namespace scopes the index to
     // the step/user run it was parsed from, so two steps' third blocks
     // never share copy feedback, element state, or fold state.
-    let block_key = salt as usize + block_ix;
+    let block_key = id_namespace as usize + block_ix;
     let copy_button = code_copy_button(ix, block_key, &code, &copied_sections, theme);
     // Title strip: the language name and the copy affordance in one row, so
     // context and action sit in the same place on every code block.
@@ -6742,7 +6967,10 @@ fn render_code_block(
     // Long settled blocks fold to a prefix preview; the fold state is keyed
     // by (message, prose run, block) so steps never collide.
     let folded = collapsible && lines.len() > CODE_COLLAPSE_LINES;
-    let expanded = folded && expanded_blocks.borrow().contains(&(ix, salt, block_ix));
+    let expanded = folded
+        && expanded_blocks
+            .borrow()
+            .contains(&(ix, id_namespace, block_ix));
     let visible = if folded && !expanded {
         &lines[..CODE_PREVIEW_LINES]
     } else {
@@ -6762,7 +6990,7 @@ fn render_code_block(
             visible,
             tokens.as_deref(),
             ix,
-            salt,
+            id_namespace,
             block_ix,
             theme,
         ));
@@ -6805,7 +7033,7 @@ fn render_code_block(
                     theme.text_muted,
                 ))
                 .on_click(move |_, _, cx| {
-                    let key = (ix, salt, block_ix);
+                    let key = (ix, id_namespace, block_ix);
                     let mut open = expanded_blocks.borrow_mut();
                     if !open.remove(&key) {
                         open.insert(key);
@@ -6877,11 +7105,11 @@ fn code_lines_body(
     lines: &[String],
     tokens: Option<&Vec<Vec<Token>>>,
     ix: usize,
-    salt: u64,
+    id_namespace: u64,
     block_ix: usize,
     theme: Theme,
 ) -> impl IntoElement {
-    let block_key = salt as usize + block_ix;
+    let block_key = id_namespace as usize + block_ix;
     div()
         .id(ElementId::NamedInteger(
             "code-scroll".into(),
@@ -6908,7 +7136,7 @@ fn code_lines_body(
                 .children(lines.iter().enumerate().map(|(line_ix, line)| {
                     let line_id = ElementId::NamedInteger(
                         "code-line".into(),
-                        code_line_id(ix, salt, block_ix, line_ix),
+                        code_line_id(ix, id_namespace, block_ix, line_ix),
                     );
                     code_line(
                         line,
@@ -6943,7 +7171,7 @@ fn render_mermaid_block(
     diagram: Rc<crate::mermaid::Flowchart>,
     lines: &[String],
     ix: usize,
-    salt: u64,
+    id_namespace: u64,
     block_ix: usize,
     theme: Theme,
     copied_sections: CopiedSections,
@@ -6951,8 +7179,10 @@ fn render_mermaid_block(
     scroller: MessageScrollerState,
 ) -> AnyElement {
     let code = lines.join("\n");
-    let block_key = salt as usize + block_ix;
-    let showing_source = expanded_blocks.borrow().contains(&(ix, salt, block_ix));
+    let block_key = id_namespace as usize + block_ix;
+    let showing_source = expanded_blocks
+        .borrow()
+        .contains(&(ix, id_namespace, block_ix));
     let copy_button = code_copy_button(ix, block_key, &code, &copied_sections, theme);
 
     let header = div()
@@ -6983,7 +7213,8 @@ fn render_mermaid_block(
     let body: AnyElement = if showing_source {
         let tokens =
             highlight::lang_for_tag("mermaid").map(|lang| highlight::tokenize_cached(lang, &code));
-        code_lines_body(lines, tokens.as_deref(), ix, salt, block_ix, theme).into_any_element()
+        code_lines_body(lines, tokens.as_deref(), ix, id_namespace, block_ix, theme)
+            .into_any_element()
     } else {
         div()
             .id(ElementId::NamedInteger(
@@ -7040,7 +7271,7 @@ fn render_mermaid_block(
             theme.text_muted,
         ))
         .on_click(move |_, _, cx| {
-            let key = (ix, salt, block_ix);
+            let key = (ix, id_namespace, block_ix);
             let mut open = expanded_blocks.borrow_mut();
             if !open.remove(&key) {
                 open.insert(key);
@@ -7164,8 +7395,11 @@ fn syntax_runs(
 }
 
 /// Element id for one line inside a code block.
-fn code_line_id(ix: usize, salt: u64, block_ix: usize, line_ix: usize) -> u64 {
-    ((ix as u64) << 40) | ((salt & 0xff_ffff) << 16) | ((block_ix as u64) << 10) | line_ix as u64
+fn code_line_id(ix: usize, id_namespace: u64, block_ix: usize, line_ix: usize) -> u64 {
+    ((ix as u64) << 40)
+        | ((id_namespace & 0xff_ffff) << 16)
+        | ((block_ix as u64) << 10)
+        | line_ix as u64
 }
 
 fn code_run(len: usize, color: Hsla, font: &Font) -> TextRun {
@@ -7218,7 +7452,7 @@ fn render_table(
     rows: &[Vec<String>],
     aligns: &[TableAlign],
     ix: usize,
-    salt: u64,
+    id_namespace: u64,
     block_ix: usize,
     theme: Theme,
 ) -> AnyElement {
@@ -7233,7 +7467,7 @@ fn render_table(
                      strong: bool,
                      align: TableAlign,
                      sub: usize,
-                     salt: u64,
+                     id_namespace: u64,
                      theme: Theme| {
         div()
             .flex_none()
@@ -7258,7 +7492,7 @@ fn render_table(
                 ElementId::NamedInteger(
                     "md-table".into(),
                     ((ix as u64) << 40)
-                        | ((salt & 0xffff) << 24)
+                        | ((id_namespace & 0xffff) << 24)
                         | ((block_ix as u64) << 16)
                         | (sub as u64 & 0xffff),
                 ),
@@ -7286,7 +7520,7 @@ fn render_table(
                     true,
                     align_at(col),
                     col,
-                    salt,
+                    id_namespace,
                     theme,
                 )
             })),
@@ -7306,7 +7540,7 @@ fn render_table(
                         false,
                         align_at(col),
                         64 + (row_ix * 64) + col,
-                        salt,
+                        id_namespace,
                         theme,
                     )
                 })),
@@ -7324,7 +7558,9 @@ fn render_table(
             div()
                 .id(ElementId::NamedInteger(
                     "table-scroll".into(),
-                    ((ix as u64) << 40) | ((salt & 0xffff) << 24) | ((block_ix as u64) << 8),
+                    ((ix as u64) << 40)
+                        | ((id_namespace & 0xffff) << 24)
+                        | ((block_ix as u64) << 8),
                 ))
                 .w_full()
                 .min_w_0()
@@ -7811,6 +8047,44 @@ fn starts_followup_turn(messages: &[ChatMessage], ix: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streaming_fade_only_affects_new_text_and_finishes() {
+        let mut fade = StreamFade::default();
+        let start = Instant::now();
+        let run = |len| TextRun {
+            len,
+            font: ui_font(),
+            color: gpui::hsla(0., 0., 0., 1.),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        fade.apply("Hi", vec![run(2)], start);
+        let appended = fade.apply("Hi é", vec![run(5)], start);
+        assert_eq!(
+            appended.iter().map(|r| r.len).collect::<Vec<_>>(),
+            [2, 3]
+        );
+        assert_eq!(appended[0].color.a, 1.);
+        assert!((appended[1].color.a - 0.55).abs() < 0.001);
+        let finished = fade.apply(
+            "Hi é",
+            vec![run(5)],
+            start + Duration::from_millis(140),
+        );
+        assert_eq!(finished.len(), 1);
+        assert_eq!(finished[0].color.a, 1.);
+    }
+
+    #[test]
+    fn streaming_fade_handles_replaced_unicode_text() {
+        let mut fade = StreamFade::default();
+        let start = Instant::now();
+        fade.apply("éclair", Vec::new(), start);
+        fade.apply("ê", Vec::new(), start);
+        assert_eq!(fade.chunks[0].0, 0.."ê".len());
+    }
 
     #[test]
     fn fold_label_falls_back_without_elapsed() {
@@ -9200,6 +9474,44 @@ mod tests {
         assert!(end.x > start.x, "the mark reserves room for the icon");
     }
 
+    #[gpui::test]
+    fn clicks_below_link_do_not_open_it(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let selection = Rc::new(RefCell::new(TextSelection::new()));
+        let view = cx.update(|_, cx| {
+            cx.new(|_| AutolinkParagraphView {
+                selection: selection.clone(),
+            })
+        });
+        cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(600.), px(200.)),
+            |_, _| view.clone(),
+        );
+        let (link_position, card_position) = {
+            let state = selection.borrow();
+            let block = &state.blocks[0];
+            let start = block.links[0].0.start;
+            let first = block.layout.position_for_index(start).unwrap();
+            let next = block.layout.position_for_index(start + 1).unwrap();
+            let x = (first.x + next.x) * 0.5;
+            (
+                point(x, first.y + block.layout.line_height() * 0.5),
+                point(x, block.bounds.bottom() + px(5.)),
+            )
+        };
+        let mut state = selection.borrow_mut();
+        state.begin_selection(card_position);
+        assert_eq!(state.finish_selection(card_position), None);
+        state.begin_selection(link_position);
+        assert_eq!(
+            state.finish_selection(link_position).as_deref(),
+            Some("https://github.com/imrj05/orbit/pull/36")
+        );
+        state.begin_selection(link_position);
+        assert_eq!(state.finish_selection(card_position), None);
+    }
+
     #[test]
     fn followup_gap_is_user_after_assistant() {
         let messages = vec![
@@ -9249,7 +9561,7 @@ mod tests {
     }
 
     #[test]
-    fn working_indicator_names_the_live_tool() {
+    fn working_indicator_does_not_repeat_tool_details() {
         let bash = ToolCall {
             name: "bash".into(),
             summary: r#"{"command":"cargo test"}"#.into(),
@@ -9266,10 +9578,7 @@ mod tests {
             tools: vec![bash],
             ..Step::default()
         };
-        assert_eq!(
-            working_activity_label(&step).as_deref(),
-            Some("Running cargo test")
-        );
+        assert_eq!(working_activity_label(&step), None);
 
         let read = ToolCall {
             name: "read".into(),
@@ -9287,10 +9596,7 @@ mod tests {
             tools: vec![read],
             ..Step::default()
         };
-        assert_eq!(
-            working_activity_label(&step).as_deref(),
-            Some("Reading src/auth.rs")
-        );
+        assert_eq!(working_activity_label(&step), None);
 
         // Thinking-only work reads as thinking; an empty step yields no
         // label so the caller falls back to the generic working form.
@@ -9568,6 +9874,141 @@ mod tests {
             search_hits: None,
             search_active: None,
         }
+    }
+
+    struct ActivityCardTestView {
+        open: ExpandedTools,
+        sections: ExpandedSections,
+        scroller: MessageScrollerState,
+        output: Option<Value>,
+        image_opener: Option<ImageOpener>,
+    }
+
+    impl gpui::Render for ActivityCardTestView {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            let tool = ToolCall {
+                name: "read".into(),
+                summary: "example.txt".into(),
+                path: Some("example.txt".into()),
+                added: 0,
+                removed: 0,
+                id: None,
+                args: None,
+                output: self.output.clone().or_else(|| Some(Value::String((0..40).map(|i| format!("line {i}\n")).collect()))),
+                failed: false,
+                facts: ToolFacts::default(),
+            };
+            render_activity_card(
+                &tool,
+                false,
+                true,
+                theme::Theme::for_id(theme::ThemeId::Orbit),
+                None,
+                (0, 0),
+                self.open.borrow().contains(&(0, 0)),
+                self.open.clone(),
+                Rc::new(RefCell::new(HashMap::new())),
+                self.sections.clone(),
+                self.scroller.clone(),
+                self.image_opener.clone(),
+            )
+        }
+    }
+
+    #[gpui::test]
+    fn activity_details_do_not_toggle_the_card(cx: &mut gpui::TestAppContext) {
+        let open = Rc::new(RefCell::new(HashSet::from([(0, 0)])));
+        let sections = Rc::new(RefCell::new(HashSet::new()));
+        let (view, cx) = cx.add_window_view(|_, _| ActivityCardTestView {
+            open: open.clone(),
+            sections: sections.clone(),
+            scroller: MessageScrollerState::new(1),
+            output: None,
+            image_opener: None,
+        });
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            cx.draw(point(px(0.), px(0.)), gpui::size(px(600.), px(1200.)), |_, _| view.clone());
+        };
+        draw(cx);
+        let header = cx.debug_bounds("tool-header-0-0").unwrap();
+        let body = point(header.left() + px(30.), header.bottom() + px(55.));
+        cx.simulate_mouse_move(body, None, gpui::Modifiers::none());
+        draw(cx);
+        cx.simulate_mouse_down(body, MouseButton::Left, gpui::Modifiers::none());
+        draw(cx);
+        cx.simulate_mouse_up(body, MouseButton::Left, gpui::Modifiers::none());
+        assert!(open.borrow().contains(&(0, 0)), "clicking text must not close the card");
+        draw(cx);
+        let fold = cx.debug_bounds("tool-section-fold-0-0-1").unwrap();
+        let position = point(fold.left() + px(20.), fold.top() + px(10.));
+        cx.simulate_mouse_move(position, None, gpui::Modifiers::none());
+        draw(cx);
+        cx.simulate_mouse_down(position, MouseButton::Left, gpui::Modifiers::none());
+        draw(cx);
+        cx.simulate_mouse_up(position, MouseButton::Left, gpui::Modifiers::none());
+        assert!(sections.borrow().contains(&(0, 0, 1)), "show more expands the output");
+        assert!(open.borrow().contains(&(0, 0)), "show more must not close the card");
+        draw(cx);
+        let header = cx.debug_bounds("tool-header-0-0").unwrap();
+        let position = point(header.left() + px(25.), header.top() + px(10.));
+        cx.simulate_mouse_move(position, None, gpui::Modifiers::none());
+        draw(cx);
+        cx.simulate_mouse_down(position, MouseButton::Left, gpui::Modifiers::none());
+        draw(cx);
+        cx.simulate_mouse_up(position, MouseButton::Left, gpui::Modifiers::none());
+        assert!(!open.borrow().contains(&(0, 0)), "the header still closes the card");
+    }
+
+    #[gpui::test]
+    fn clicking_tool_image_uses_attachment_opener(cx: &mut gpui::TestAppContext) {
+        use base64::Engine as _;
+
+        let opened = Rc::new(Cell::new(0));
+        let count = opened.clone();
+        let open = Rc::new(RefCell::new(HashSet::from([(0, 0)])));
+        let card_open = open.clone();
+        let (view, cx) = cx.add_window_view(|_, _| ActivityCardTestView {
+            open,
+            sections: Rc::new(RefCell::new(HashSet::new())),
+            scroller: MessageScrollerState::new(1),
+            output: Some(serde_json::json!({"content": [{
+                "type": "image", "mimeType": "image/png",
+                "data": base64::engine::general_purpose::STANDARD.encode(fixture_png())
+            }]})),
+            image_opener: Some(Rc::new(move |_, _, _| count.set(count.get() + 1))),
+        });
+        cx.draw(point(px(0.), px(0.)), gpui::size(px(600.), px(600.)), |_, _| view.clone());
+        let bounds = cx.debug_bounds("tool-image-0-0-0").expect("tool image");
+        let position = point(bounds.left() + px(30.), bounds.top() + px(30.));
+        cx.simulate_mouse_move(position, None, gpui::Modifiers::none());
+        cx.simulate_click(position, gpui::Modifiers::none());
+        assert_eq!(opened.get(), 1);
+        assert!(card_open.borrow().contains(&(0, 0)));
+    }
+
+    #[test]
+    fn tool_result_images_reuse_their_decoded_form_and_stay_bounded() {
+        use base64::Engine as _;
+
+        let output = |byte: u8| {
+            serde_json::json!({"content": [{
+                "type": "image", "mimeType": "image/png",
+                "data": base64::engine::general_purpose::STANDARD.encode([byte; 8])
+            }]})
+        };
+        let first = tool_result_images(&output(0));
+        assert!(Arc::ptr_eq(&first[0], &tool_result_images(&output(0))[0]));
+        // Far more images than one card holds: the cache evicts one at a time
+        // rather than clearing, so the newest stays warm and the map is capped.
+        let last = ToolImageCache::CAP as u8 + 8;
+        for byte in 1..=last {
+            tool_result_images(&output(byte));
+        }
+        TOOL_IMAGE_CACHE.with(|cache| assert!(cache.borrow().images.len() <= ToolImageCache::CAP));
+        assert!(Arc::ptr_eq(
+            &tool_result_images(&output(last))[0],
+            &tool_result_images(&output(last))[0]
+        ));
     }
 
     struct TableTestView {
@@ -10359,6 +10800,40 @@ mod tests {
             (px(0.)..px(100.)).contains(&(height - last_tool.bottom())),
             "only the footer and row padding should follow the settled work"
         );
+    }
+
+    #[gpui::test]
+    fn transcript_double_click_selects_a_word(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let state = Rc::new(RefCell::new(TextSelection::new()));
+        let messages = test_messages();
+        let scroller = MessageScrollerState::new(messages.borrow().len());
+        let view = cx.update(|_, cx| cx.new(|_| SelectTestView {
+            messages: messages.clone(),
+            state: state.clone(),
+            scroller: scroller.clone(),
+            main_width: px(900.),
+            open_work: false,
+            live: false,
+        }));
+        cx.draw(point(px(0.), px(0.)), gpui::size(px(900.), px(600.)), |_, _| view.clone());
+        let position = {
+            let state = state.borrow();
+            let block = state.blocks.iter().find(|block| block.text.contains("Alpha bravo")).unwrap();
+            let start = block.text.find("bravo").unwrap();
+            let a = block.layout.position_for_index(start + 1).unwrap();
+            point(a.x, a.y + block.layout.line_height() * 0.5)
+        };
+        cx.simulate_event(MouseDownEvent {
+            position,
+            button: MouseButton::Left,
+            click_count: 2,
+            modifiers: gpui::Modifiers::none(),
+            first_mouse: false,
+        });
+        assert_eq!(state.borrow().selected_text().as_deref(), Some("bravo"));
+        assert!(!state.borrow().dragging);
     }
 
     /// The panel's selection plumbing end-to-end: a simulated drag from the

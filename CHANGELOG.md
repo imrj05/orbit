@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Pasting files copied in macOS Finder resolves file-reference URLs to real paths and attaches image contents rather than the generic file icon. Windows file lists and Linux file URI lists exposed as text also use the attachment tray; other files use the existing file references.
+
 - **Global Refresh is a full resync.** ⌘R, File → Refresh, and the command
   palette entry now re-read the session list, branch lines, installed plugins,
   workspace skills, custom providers, auth files, and MCP configuration even

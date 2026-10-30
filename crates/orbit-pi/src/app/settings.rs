@@ -564,7 +564,7 @@ impl OrbitApp {
             // ── nav column ──
             .child(
                 div()
-                    .w(px(240.))
+                    .w(px(256.))
                     .h_full()
                     .flex_shrink_0()
                     .bg(theme.panel_fill(theme.surface))
@@ -579,15 +579,11 @@ impl OrbitApp {
                     .child(window_drag_region(
                         div().h(px(super::view::TOP_BAR_H)).w_full(),
                     ))
-                    // Back — same 28px row language as the section list.
-                    // The list below sits in an 8px container with 8px row
-                    // insets, so the icon column lands at 16px here, on the
-                    // eyebrow, and in the footer: one left edge, read once.
                     .child(
                         div()
-                            .px(DynamicSpacing::Base08.px(&theme))
-                            .pt(DynamicSpacing::Base04.px(&theme))
-                            .pb(DynamicSpacing::Base12.px(&theme))
+                            .px(DynamicSpacing::Base12.px(&theme))
+                            .pt(DynamicSpacing::Base08.px(&theme))
+                            .pb(DynamicSpacing::Base16.px(&theme))
                             .child(
                                 press(
                                     div()
@@ -620,38 +616,27 @@ impl OrbitApp {
                     // the list it reaches into, so a query is one click from
                     // any setting in any section.
                     .child(self.settings_search_bar(theme))
-                    // Eyebrow: a small caps label gives the flat list a
-                    // heading to read under, the way a sidebar in a
-                    // crafted app does. No accent marker — the accent is
-                    // reserved for data emphasis, not chrome. Inset matches
-                    // the rows' icon column (8px container + 8px row pad).
                     .child(
                         div()
-                            .pl(DynamicSpacing::Base16.px(&theme))
-                            .pb(DynamicSpacing::Base06.px(&theme))
+                            .pl(DynamicSpacing::Base20.px(&theme))
+                            .pb(DynamicSpacing::Base08.px(&theme))
                             .child(
                                 div()
-                                    .text_size(TextSize::XSmall.px(&theme))
+                                    .text_size(TextSize::Default.px(&theme))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(theme.text_muted)
+                                    .text_color(theme.text_primary)
                                     .child(tr!("settings.settings")),
                             ),
                     )
-                    // Section rows — 28px pills with a 2px rhythm (the
-                    // density Linear uses for flat nav lists), grouped by
-                    // what they belong to: the app (General / Appearance /
-                    // Shortcuts), the agent and its resources (Runtime /
-                    // Agent / Providers / Models), the extensions it loads
-                    // (Skills / Plugins / MCP), and About on its own. Groups
-                    // are set off by a hairline with 8px of air on each side
-                    // — 16px of separation total, so the groups read as
-                    // set-off but related. Selection is a single low-opacity
-                    // accent wash — no bar, no weight change — with the icon
-                    // and ink stepping toward the accent so the row reads as
-                    // one quiet highlight, never a button that took over.
+                    // Keep the navigation reachable at short window heights.
                     .child(
                         div()
-                            .px(DynamicSpacing::Base08.px(&theme))
+                            .id("settings-navigation")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .px(DynamicSpacing::Base12.px(&theme))
+                            .pb(DynamicSpacing::Base12.px(&theme))
                             .flex()
                             .flex_col()
                             .gap(DynamicSpacing::Base02.px(&theme))
@@ -673,16 +658,17 @@ impl OrbitApp {
                                     let row = div()
                                         .id(ElementId::Name(format!("settings-nav-{label}").into()))
                                         .w_full()
-                                        .h(ButtonSize::Medium.height(&theme))
+                                        .h(ButtonSize::Large.height(&theme))
                                         .px(DynamicSpacing::Base08.px(&theme))
                                         .rounded(Radius::Medium.px(&theme))
                                         .text_size(TextSize::Default.px(&theme))
                                         .flex()
                                         .items_center()
-                                        .gap(DynamicSpacing::Base08.px(&theme))
+                                        .gap(DynamicSpacing::Base12.px(&theme))
                                         .cursor_pointer()
                                         .when(selected, |row| {
-                                            row.bg(theme.surface_selected)
+                                            row.font_weight(FontWeight::MEDIUM)
+                                                .bg(theme.surface_selected)
                                                 .hover(|s| s.bg(theme.surface_selected))
                                         })
                                         .when(!selected, |row| {
@@ -717,9 +703,7 @@ impl OrbitApp {
                                             .flex_col()
                                             .gap(DynamicSpacing::Base02.px(&theme))
                                             .pt(DynamicSpacing::Base08.px(&theme))
-                                            .mt(DynamicSpacing::Base06.px(&theme))
-                                            .border_t_1()
-                                            .border_color(theme.border)
+                                            .mt(DynamicSpacing::Base08.px(&theme))
                                             .child(row)
                                             .into_any_element()
                                     } else {
@@ -866,8 +850,8 @@ impl OrbitApp {
         div()
             .w_full()
             .flex_shrink_0()
-            .px(DynamicSpacing::Base08.px(&theme))
-            .pb(DynamicSpacing::Base12.px(&theme))
+            .px(DynamicSpacing::Base12.px(&theme))
+            .pb(DynamicSpacing::Base20.px(&theme))
             .child(search)
             .into_any_element()
     }
@@ -5548,8 +5532,7 @@ impl OrbitApp {
     pub(super) fn toggle_suggestions(&mut self, cx: &mut Context<Self>) {
         self.suggestions.enabled = !self.suggestions.enabled;
         self.suggestions.persist_suggestions();
-        self.extension_widgets
-            .retain(|widget| widget.key != "orbit-follow-up-suggestions");
+        self.clear_follow_up_suggestions();
         cx.notify();
     }
 
@@ -7890,8 +7873,7 @@ impl OrbitApp {
                 };
                 self.suggestions.model = model;
                 self.suggestions.persist_suggestions();
-                self.extension_widgets
-                    .retain(|widget| widget.key != "orbit-follow-up-suggestions");
+                self.clear_follow_up_suggestions();
                 cx.notify();
                 return true;
             }

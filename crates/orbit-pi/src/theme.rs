@@ -473,7 +473,7 @@ pub const FONT_SIZES: [f32; 8] = [11., 12., 13., 14., 15., 16., 18., 20.];
 /// Selectable spacing densities, percent.
 pub const SPACING_DENSITIES: [u32; 9] = [80, 85, 90, 95, 100, 105, 110, 115, 120];
 /// Maximum additional rounding for shared component corners, in pixels.
-pub const MAX_CORNER_ROUNDING: u32 = 14;
+pub const MAX_CORNER_ROUNDING: u32 = 4;
 
 impl Default for UiPrefs {
     fn default() -> Self {
@@ -2501,7 +2501,7 @@ mod tests {
         }
         for value in [
             serde_json::json!({}),
-            serde_json::json!({"corner_rounding": 15}),
+            serde_json::json!({"corner_rounding": 5}),
             serde_json::json!({"corner_rounding": -1}),
         ] {
             assert_eq!(UiPrefs::from_value(&value).corner_rounding, 0);

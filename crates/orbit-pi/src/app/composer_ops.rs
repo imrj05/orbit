@@ -24,6 +24,34 @@ struct ChipContent {
     tip: SharedString,
 }
 
+/// Opens a chip's image in the app's full-window lightbox — the surface a
+/// transcript attachment tile opens. `None` leaves the chip inert.
+type ChipOpener = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
+
+/// Where a picked, dropped, or pasted path belongs: an image attachment, a
+/// file chip, or — for a folder or an unreadable path — a plain reference at
+/// the caret. One rule, shared by every entry point.
+pub(super) enum QueuedPath {
+    Image(Attachment),
+    File(AttachedFile),
+    Reference(PathBuf),
+}
+
+impl QueuedPath {
+    /// Classifies a path by reading (and for an image, decoding) it, so a
+    /// caller off the UI thread — the attach picker — does the work before
+    /// landing on it.
+    pub(super) fn classify(path: &Path) -> Self {
+        if let Some(attachment) = Attachment::from_path(path) {
+            return Self::Image(attachment);
+        }
+        if let Some(file) = AttachedFile::from_path(path) {
+            return Self::File(file);
+        }
+        Self::Reference(path.to_path_buf())
+    }
+}
+
 impl OrbitApp {
     /// The filtered menu entries for the active trigger (empty when none).
     pub(super) fn autocomplete_entries(&mut self, trigger: &Trigger) -> Vec<AcEntry> {
@@ -530,6 +558,7 @@ impl OrbitApp {
                         cx.notify();
                     }
                 }),
+                None,
             )
         });
 
@@ -562,6 +591,15 @@ impl OrbitApp {
             } else {
                 a.name.clone()
             };
+            // Clicking an image chip previews it full-window, the same
+            // surface a sent attachment opens from the transcript. A chip
+            // with no decoded preview has nothing to show, so it stays inert.
+            let open: Option<ChipOpener> = a.preview.clone().map(|image| {
+                Box::new(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.lightbox = Some(image.clone());
+                    cx.notify();
+                })) as ChipOpener
+            });
             Self::attachment_chip(
                 &theme,
                 ElementId::NamedInteger("attachment".into(), ix as u64),
@@ -578,6 +616,7 @@ impl OrbitApp {
                         cx.notify();
                     }
                 }),
+                open,
             )
         });
 
@@ -601,6 +640,7 @@ impl OrbitApp {
                         cx.notify();
                     }
                 }),
+                None,
             )
         });
 
@@ -617,7 +657,8 @@ impl OrbitApp {
     ///
     /// The remove control is a real button on the chip's right edge rather
     /// than the whole chip: a chip big enough to read the file name is also
-    /// big enough to delete by accident.
+    /// big enough to delete by accident. That leaves the rest of the chip for
+    /// `open`, which previews an image the way the transcript's tiles do.
     fn attachment_chip(
         theme: &Theme,
         id: ElementId,
@@ -625,9 +666,10 @@ impl OrbitApp {
         visual: AnyElement,
         content: ChipContent,
         remove: impl Fn(&MouseUpEvent, &mut Window, &mut App) + 'static,
+        open: Option<ChipOpener>,
     ) -> AnyElement {
         let remove_debug = format!("remove-{debug}");
-        button_frame(
+        let chip = button_frame(
             div().id(id).debug_selector(move || debug),
             theme,
             ButtonSize::Medium,
@@ -664,9 +706,43 @@ impl OrbitApp {
                     IconSize::XSmall.px(theme),
                     theme.text_muted,
                 ))
-                .on_mouse_up(MouseButton::Left, remove),
-        )
+                .on_mouse_up(MouseButton::Left, move |event, window, cx| {
+                    // A nested button, so the chip's own `open` never fires
+                    // for a click that meant to delete.
+                    cx.stop_propagation();
+                    remove(event, window, cx);
+                }),
+        );
+        match open {
+            Some(open) => chip
+                .cursor_pointer()
+                .on_click(move |event, window, cx| open(event, window, cx)),
+            None => chip,
+        }
         .into_any_element()
+    }
+
+    /// Queue one classified path, focusing the composer when the caller has a
+    /// window. File drops, clipboard file lists, and the attach picker all
+    /// route through here so their rules cannot drift apart.
+    pub(super) fn queue_path(
+        &mut self,
+        queued: QueuedPath,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) {
+        match queued {
+            QueuedPath::Image(attachment) => self.push_attachment(attachment, cx),
+            QueuedPath::File(file) => self.push_file(file, cx),
+            QueuedPath::Reference(path) => {
+                self.input.update(cx, |input, cx| {
+                    input.insert_at_caret(&format!("{} ", path.display()), cx);
+                });
+                if let Some(window) = window {
+                    self.input.read(cx).focus(window);
+                }
+            }
+        }
     }
 
     /// Files dragged over the window (external OS drag — gpui mirrors them
@@ -709,18 +785,7 @@ impl OrbitApp {
                 self.report_attachment_limit();
                 break;
             }
-            if let Some(attachment) = Attachment::from_path(path) {
-                self.push_attachment(attachment, cx);
-                continue;
-            }
-            if let Some(file) = AttachedFile::from_path(path) {
-                self.push_file(file, cx);
-                continue;
-            }
-            self.input.update(cx, |input, cx| {
-                input.insert_at_caret(&format!("{} ", path.display()), cx);
-            });
-            self.input.read(cx).focus(window);
+            self.queue_path(QueuedPath::classify(path), Some(&mut *window), cx);
         }
         cx.notify();
     }
@@ -777,21 +842,11 @@ impl OrbitApp {
                 return;
             };
             let path = handle.path().to_path_buf();
-            // Decode + compress off the UI thread; only the finished
-            // attachment (and its preview) lands on the next update.
-            let attachment = Attachment::from_path(&path);
-            let file = AttachedFile::from_path(&path);
+            // Read + decode off the UI thread; only the finished attachment
+            // (and its preview) lands on the next update.
+            let queued = QueuedPath::classify(&path);
             let _ = this.update_in(cx, |app, window, cx| {
-                if let Some(attachment) = attachment {
-                    app.push_attachment(attachment, cx);
-                } else if let Some(file) = file {
-                    app.push_file(file, cx);
-                } else {
-                    app.input.update(cx, |input, cx| {
-                        input.insert_at_caret(&format!("{} ", path.display()), cx);
-                    });
-                    app.input.read(cx).focus(window);
-                }
+                app.queue_path(queued, Some(window), cx);
                 cx.notify();
             });
         })
@@ -1075,8 +1130,7 @@ impl OrbitApp {
     /// the status line says so rather than implying it took.
     pub(super) fn set_access_mode(&mut self, mode: AccessMode, cx: &mut Context<Self>) {
         self.access_mode = mode;
-        self.extension_widgets
-            .retain(|widget| widget.key != "orbit-follow-up-suggestions");
+        self.clear_follow_up_suggestions();
         mode.persist();
         if self.extensions.guard().is_none() {
             self.toast_warning(tr!("access.mode_set_unavailable", mode = mode.label()));
@@ -1194,8 +1248,7 @@ impl OrbitApp {
     /// choice is held as pending and applied when the id arrives.
     pub(super) fn set_workflow_mode(&mut self, mode: WorkflowMode, cx: &mut Context<Self>) {
         self.workflow_mode = mode;
-        self.extension_widgets
-            .retain(|widget| widget.key != "orbit-follow-up-suggestions");
+        self.clear_follow_up_suggestions();
         match self.session_id.clone() {
             Some(id) => crate::workflow::persist_for(&id, mode),
             None => self.workflow_pending = Some(mode),

@@ -49,14 +49,14 @@ pub struct ContextSlice {
     pub color: Hsla,
 }
 
-/// Fill color for the ring / "In use" slice, keyed off the used fraction
+/// Fill color for the ring, keyed off the used fraction
 /// (0..=1) so the color always matches the drawn ring even when pi reports
 /// `tokens` without an explicit `percent`.
 pub fn fill_color(fraction: Option<f32>, theme: &Theme) -> Hsla {
     match fraction {
         Some(f) if f >= 0.90 => theme.error,
         Some(f) if f >= 0.70 => theme.warning,
-        _ => theme.accent,
+        _ => theme.text_secondary,
     }
 }
 
@@ -141,7 +141,7 @@ pub fn usage_slices(
             label: label.into(),
             tokens: other,
             color: if conversation == 0 {
-                fill_color(usage.fraction(), theme)
+                theme.accent
             } else {
                 theme.accent.opacity(0.55)
             },
@@ -780,10 +780,10 @@ mod tests {
     #[test]
     fn fill_color_tracks_fraction() {
         let theme = Theme::dark();
-        assert_eq!(fill_color(Some(0.5), &theme), theme.accent);
+        assert_eq!(fill_color(Some(0.5), &theme), theme.text_secondary);
         assert_eq!(fill_color(Some(0.75), &theme), theme.warning);
         assert_eq!(fill_color(Some(0.95), &theme), theme.error);
-        assert_eq!(fill_color(None, &theme), theme.accent);
+        assert_eq!(fill_color(None, &theme), theme.text_secondary);
     }
 
     #[test]
@@ -826,8 +826,11 @@ mod tests {
     #[test]
     fn slices_split_conversation_and_other() {
         let u = usage(Some(60_000), 200_000, Some(30.0));
-        let slices = usage_slices(&u, 50_000, &Theme::dark());
+        let theme = Theme::dark();
+        let slices = usage_slices(&u, 50_000, &theme);
         assert_eq!(slices.len(), 2);
+        assert_eq!(slices[0].color, theme.accent.opacity(0.55));
+        assert_eq!(slices[1].color, theme.accent);
         assert_eq!(slices[0].label.as_ref(), "Other context");
         assert_eq!(slices[0].tokens, 10_000);
         assert_eq!(slices[1].label.as_ref(), "Conversation");
@@ -846,8 +849,10 @@ mod tests {
     #[test]
     fn slices_single_in_use_without_conversation() {
         let u = usage(Some(8_000), 200_000, Some(4.0));
-        let slices = usage_slices(&u, 0, &Theme::dark());
+        let theme = Theme::dark();
+        let slices = usage_slices(&u, 0, &theme);
         assert_eq!(slices.len(), 1);
+        assert_eq!(slices[0].color, theme.accent);
         assert_eq!(slices[0].label.as_ref(), "In use");
         assert_eq!(slices[0].tokens, 8_000);
     }

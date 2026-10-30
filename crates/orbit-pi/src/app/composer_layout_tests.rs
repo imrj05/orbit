@@ -499,9 +499,8 @@ impl Render for SuggestionsProbe {
     }
 }
 
-/// Follow-up suggestions are chips above the composer. A long model answer
-/// must wrap inside the composer column instead of widening the row past the
-/// column (which clipped the chips against the window edge on narrow windows).
+/// Long suggestions stay compact and inside the composer column, and the
+/// dismiss button removes only the suggestions without changing the input.
 #[gpui::test]
 fn follow_up_suggestions_stay_inside_the_composer_column(cx: &mut gpui::TestAppContext) {
     use crate::theme::{Theme, ThemeId};
@@ -539,17 +538,13 @@ fn follow_up_suggestions_stay_inside_the_composer_column(cx: &mut gpui::TestAppC
     });
 
     let width = px(360.);
-    let _ = cx.draw(
-        point(px(0.), px(0.)),
-        gpui::size(width, px(500.)),
-        |_, cx| {
-            cx.new(|_| SuggestionsProbe {
-                app: app.clone(),
-                width,
-            })
-        },
-    );
+    let probe = cx.update(|_, cx| cx.new(|_| SuggestionsProbe { app: app.clone(), width }));
+    let draw = |cx: &mut gpui::VisualTestContext| {
+        cx.draw(point(px(0.), px(0.)), gpui::size(width, px(500.)), |_, _| probe.clone());
+    };
+    draw(cx);
 
+    let mut previous = None;
     for (index, selector) in [
         "follow-up-suggestion-0",
         "follow-up-suggestion-1",
@@ -565,5 +560,23 @@ fn follow_up_suggestions_stay_inside_the_composer_column(cx: &mut gpui::TestAppC
             chip.left() >= px(0.) && chip.right() <= width + px(1.),
             "suggestion {index} must stay inside the composer column: {chip:?} vs width {width:?}"
         );
+        assert!(chip.size.height <= px(32.), "suggestions stay single-line: {chip:?}");
+        let text_selector = ["follow-up-text-0", "follow-up-text-1", "follow-up-text-2"][index];
+        let text = cx.debug_bounds(text_selector).expect("suggestion text laid out");
+        assert!(text.size.width > px(30.), "suggestion text must have readable width: {text:?}");
+        if let Some(previous) = previous {
+            let previous: gpui::Bounds<Pixels> = previous;
+            assert_eq!(chip.top(), previous.top(), "suggestions share one row");
+            assert!(chip.left() >= previous.right(), "suggestions do not overlap");
+        }
+        previous = Some(chip);
     }
+    assert!(cx.debug_bounds("dismiss-follow-up-suggestions").is_some());
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| app.dismiss_suggestions(window, cx));
+    });
+    cx.update(|_, cx| {
+        assert!(app.read(cx).extension_widgets.is_empty());
+        assert!(app.read(cx).input.read(cx).text().is_empty());
+    });
 }
