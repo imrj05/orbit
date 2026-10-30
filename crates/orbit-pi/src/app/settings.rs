@@ -243,6 +243,11 @@ const SETTINGS_SEARCH_INDEX: &[(SettingsSection, &str, &str)] = &[
     ),
     (
         SettingsSection::General,
+        "settings.reload_app",
+        "reload restart app application process pi refresh",
+    ),
+    (
+        SettingsSection::General,
         "settings.desktop_notifications",
         "notifications banner desktop system",
     ),
@@ -1076,6 +1081,27 @@ impl OrbitApp {
                     rows.push(updates);
                 }
                 rows.push(self.notification_rows(theme, this.clone()));
+                // The last group is the escape hatch: a clean relaunch kills
+                // every live run, so it sits below the preferences rather than
+                // beside the everyday controls.
+                rows.push(self.settings_section(
+                    theme,
+                    &tr!("settings.application"),
+                    vec![self.setting_row(
+                        theme,
+                        &tr!("settings.reload_app"),
+                        Some(&tr!("settings.reload_app_description")),
+                        None,
+                        Some(self.runtime_button(
+                            "reload-app",
+                            &tr!("settings.reload_app_action"),
+                            false,
+                            theme,
+                            this.clone(),
+                            OrbitApp::reload_app,
+                        )),
+                    )],
+                ));
                 rows
             }
             SettingsSection::Runtime => self.runtime_rows(theme, this.clone(), cx),
@@ -5840,8 +5866,64 @@ impl OrbitApp {
                 ],
             ),
             self.temporary_files_section(theme, this.clone()),
-            self.ai_scratch_files_section(theme, this),
+            self.ai_scratch_files_section(theme, this.clone()),
+            self.remembered_approvals_section(theme, this),
         ]
+    }
+
+    /// Settings → Privacy: the guard's "Always allow this tool" grants. The
+    /// extension writes them and Orbit never needs to read them for anything but
+    /// this row, so it is the only place a user can see or undo one.
+    fn remembered_approvals_section(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
+        let remembered = crate::access::remembered_approvals();
+        let detail = if remembered.is_empty() {
+            tr!("settings.remembered_approvals_none")
+        } else {
+            tr!(
+                "settings.remembered_approvals_list",
+                tools = remembered.join(", ")
+            )
+        };
+        let mut clear = button_frame(div().id("clear-remembered-approvals"), &theme, ButtonSize::Large)
+            .border_1()
+            .border_color(theme.border)
+            .raised(theme.surface_elevated, &theme)
+            .text_color(theme.text_secondary)
+            .child(tr!("settings.remembered_approvals_clear"));
+        if !remembered.is_empty() {
+            clear = clear
+                .cursor_pointer()
+                .hover(|style| style.raised(theme.surface_hover, &theme))
+                .active(|style| style.raised(theme.surface_active, &theme))
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    this.update(cx, |app, cx| app.clear_remembered_approvals(cx));
+                });
+        }
+        self.settings_section(
+            theme,
+            &tr!("settings.remembered_approvals"),
+            vec![self.setting_row(
+                theme,
+                &tr!("settings.remembered_approvals"),
+                Some(&detail),
+                None,
+                Some(clear.into_any_element()),
+            )],
+        )
+    }
+
+    /// Drop every remembered "Always allow this tool" grant. The guard reads the
+    /// file on the next tool call, so live sessions re-arm without a restart.
+    pub(super) fn clear_remembered_approvals(&mut self, cx: &mut Context<Self>) {
+        match crate::access::clear_remembered_approvals() {
+            Ok(0) => self.toast_info(tr!("settings.remembered_approvals_none")),
+            Ok(count) => self.toast_success(tr!(
+                "settings.remembered_approvals_cleared",
+                count = count
+            )),
+            Err(error) => self.toast_error(error),
+        }
+        cx.notify();
     }
 
     /// Settings → Privacy: the retention action dropdown (archive / delete).
@@ -8734,7 +8816,12 @@ impl OrbitApp {
             Some(tr!("settings.base_url_scheme"))
         } else if base_url.is_empty() && !in_catalog {
             Some(tr!("settings.base_url_required"))
-        } else if models.is_empty() && !in_catalog {
+        } else if models.is_empty() && providers::builtin(&id).is_none() {
+            // Only a built-in provider may go without a model list — empty
+            // there means "use pi's catalog". A custom provider needs at
+            // least one id or the entry resolves to no models at all. Keyed
+            // on the id rather than `in_catalog`, which also goes true once
+            // the agent advertises a *custom* provider's models.
             Some(tr!("settings.add_model_id"))
         } else {
             None
@@ -9247,6 +9334,11 @@ mod settings_search_tests {
         assert!(settings_search_hits("protocol")
             .iter()
             .any(|(section, _, _)| *section == SettingsSection::Mcp));
+        // The app-wide reload control is reachable from Settings search.
+        assert!(settings_search_hits("reload")
+            .iter()
+            .any(|(section, key, _)| *section == SettingsSection::General
+                && *key == "settings.reload_app"));
     }
 
     #[test]

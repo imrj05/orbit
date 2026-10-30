@@ -108,8 +108,10 @@ fn read_custom_at(path: &Path) -> Result<Vec<CustomProvider>, String> {
 }
 
 /// Write (or update) one provider entry, preserving every other key in the
-/// file. `models` is omitted when empty — for a built-in provider that keeps
-/// its catalog; for a custom provider the caller validates non-empty first.
+/// file. An empty `model_ids` removes the `models` key, which returns a
+/// built-in provider to pi's catalog and drops any previously saved override.
+/// Custom providers require at least one model id, so the caller rejects an
+/// empty list before reaching here.
 ///
 /// An empty `api_key` keeps whatever key the file already had, so re-saving
 /// a provider never wipes a stored secret.
@@ -183,7 +185,11 @@ fn write_provider_at(
         // Blank field: keep the stored key if one exists, otherwise leave it out.
         _ => {}
     }
-    if !model_ids.is_empty() {
+    if model_ids.is_empty() {
+        // An empty list means "use pi's built-in models", so drop the key
+        // instead of keeping a stale override the user just cleared.
+        entry.remove("models");
+    } else {
         let models: Vec<Value> = model_ids
             .iter()
             .map(|model_id| {
@@ -265,6 +271,11 @@ fn read_root_at(path: &Path) -> Result<Value, String> {
 
 /// Pretty-print and atomically replace the file (temp + rename), so a crash
 /// mid-write can never leave a truncated config behind.
+///
+/// Written owner-only, because this file holds provider `apiKey` values as well
+/// as addresses: the Providers editor stores them here, not in `auth.json`, and
+/// a config file that the process umask left at `0644` would expose them to
+/// every other account on the machine.
 fn write_root_at(path: &Path, root: &Value) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|err| {
@@ -277,22 +288,60 @@ fn write_root_at(path: &Path, root: &Value) -> Result<(), String> {
     }
     let pretty = serde_json::to_string_pretty(root)
         .map_err(|err| tr!("errors.could_not_serialize_models_json", error = err))?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, format!("{pretty}\n")).map_err(|err| {
+    write_atomic_secure(path, &format!("{pretty}\n"), |err| {
         tr!(
             "errors.could_not_write",
-            path = tmp.display().to_string(),
-            error = err
-        )
-    })?;
-    std::fs::rename(&tmp, path).map_err(|err| {
-        let _ = std::fs::remove_file(&tmp);
-        tr!(
-            "errors.could_not_replace",
             path = path.display().to_string(),
             error = err
         )
     })
+}
+
+/// Write `contents` to a fresh temp file beside `path` with `0600` permissions,
+/// then rename it into place.
+///
+/// `create_new` means the temp file is created rather than truncated, so a
+/// symlink planted at that path — by another local user, or by a repository that
+/// contains one — cannot redirect the write. The mode is set before the rename,
+/// so the secret is never briefly readable under the process umask.
+fn write_atomic_secure(
+    path: &Path,
+    contents: &str,
+    on_error: impl Fn(std::io::Error) -> String,
+) -> Result<(), String> {
+    /// Distinguishes concurrent writers inside one process.
+    static TEMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "models.json".into());
+    let seq = TEMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp = parent.join(format!(
+        ".{file_name}.orbit-{}-{seq}.tmp",
+        std::process::id()
+    ));
+    let result = (|| -> Result<(), String> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+            .map_err(&on_error)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                .map_err(&on_error)?;
+        }
+        use std::io::Write;
+        file.write_all(contents.as_bytes()).map_err(&on_error)?;
+        drop(file);
+        std::fs::rename(&temp, path).map_err(&on_error)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
 }
 
 /// `~/.pi/agent/auth.json`, pi's credential store (0600).
@@ -733,30 +782,9 @@ fn write_json_secure(path: &Path, root: &Value) -> Result<(), String> {
     }
     let pretty = serde_json::to_string_pretty(root)
         .map_err(|err| tr!("errors.could_not_serialize_auth_json", error = err))?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, format!("{pretty}\n")).map_err(|err| {
+    write_atomic_secure(path, &format!("{pretty}\n"), |err| {
         tr!(
             "errors.could_not_write",
-            path = tmp.display().to_string(),
-            error = err
-        )
-    })?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).map_err(|err| {
-            let _ = std::fs::remove_file(&tmp);
-            tr!(
-                "errors.could_not_write",
-                path = tmp.display().to_string(),
-                error = err
-            )
-        })?;
-    }
-    std::fs::rename(&tmp, path).map_err(|err| {
-        let _ = std::fs::remove_file(&tmp);
-        tr!(
-            "errors.could_not_replace",
             path = path.display().to_string(),
             error = err
         )
@@ -1059,6 +1087,14 @@ mod tests {
         assert_eq!(list[0].name.as_deref(), Some("My Gateway"));
         assert_eq!(list[0].model_ids, vec!["m1", "m2"]);
         assert!(list[0].has_api_key);
+        // The editor stores provider keys in this file, so it is a credential
+        // store like auth.json and must not be readable by other accounts.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "models.json holds apiKey values: owner-only");
+        }
 
         // A blank key keeps the stored secret; other keys survive.
         write_provider_at(
@@ -1105,6 +1141,54 @@ mod tests {
         assert_eq!(models[0]["contextWindow"], Value::from(128000));
         assert_eq!(models[0]["reasoning"], Value::Bool(true));
         assert_eq!(models[1]["id"], Value::String("m2".into()));
+    }
+
+    /// Clearing the models field on a built-in provider must drop a previously
+    /// saved override so pi's catalog applies again, not keep the old list.
+    #[test]
+    fn clearing_models_drops_the_override_and_keeps_other_fields() {
+        let path = temp_models("clear-models");
+        std::fs::write(
+            &path,
+            r#"{"other":{"keep":true},"providers":{"anthropic":{"baseUrl":"https://proxy.example.com","apiKey":"sk-test","models":[{"id":"m1","contextWindow":1000},{"id":"m2"}]}}}"#,
+        )
+        .unwrap();
+
+        write_provider_at(
+            &path,
+            "anthropic",
+            Some("Anthropic"),
+            "https://proxy.example.com",
+            "anthropic-messages",
+            None,
+            &[],
+        )
+        .unwrap();
+
+        let root: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(root["providers"]["anthropic"].get("models").is_none());
+        assert_eq!(
+            root["providers"]["anthropic"]["baseUrl"],
+            Value::String("https://proxy.example.com".into())
+        );
+        assert_eq!(
+            root["providers"]["anthropic"]["apiKey"],
+            Value::String("sk-test".into())
+        );
+        assert_eq!(root["other"]["keep"], Value::Bool(true));
+        assert!(read_custom_at(&path).unwrap()[0].model_ids.is_empty());
+
+        // Re-saving with every field blank still keeps the stored secret, and
+        // models stay cleared rather than coming back.
+        write_provider_at(&path, "anthropic", None, "", "", None, &[]).unwrap();
+        let root: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let entry = root["providers"]["anthropic"].as_object().unwrap();
+        assert_eq!(entry.len(), 1, "only the preserved apiKey should remain");
+        assert_eq!(entry["apiKey"], Value::String("sk-test".into()));
+
+        remove_provider_at(&path, "anthropic").unwrap();
+        let root: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(root["providers"].get("anthropic").is_none());
     }
 
     #[test]

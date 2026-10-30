@@ -57,7 +57,7 @@ verified provider reference. Providers without a usage surface report
 | `fireworks` | spend | `/v1/accounts/{id}/billing/summary` |
 | `baseten` | spend | `/v1/billing/usage_summary` |
 | `google`, `google-vertex` | unsupported | no account quota API (AI Studio only) |
-| `ollama` | subscription | `GET https://ollama.com/api/usage` (monthly credits) + `GET https://ollama.com/api/balance` (included/purchased balances), or the authenticated settings page (legacy session/weekly) |
+| `ollama` | subscription | `GET https://ollama.com/api/balance` (session/weekly meters + reset times, purchased balance) + `GET https://ollama.com/api/usage` (legacy `limits` windows, request counts), or the authenticated settings page (legacy reset times) |
 
 `google`/`google-vertex` are registered explicitly so a connected account gets a
 provider-specific explanation rather than the generic fallback. Gemini rate
@@ -69,19 +69,30 @@ no account-quota endpoint to call.
 Ollama Cloud accounts are on one of two billing generations, and the adapter
 handles both:
 
-- **Current (usage credits)** — a single monthly dollar-credit pool metered in
-  tokens. `GET https://ollama.com/api/usage` with a real cloud API key returns a
-  0..1 `limits.monthly.usage` fraction. The reset is on the plan's subscription
-  anniversary, which the payload does not expose, so no countdown is shown.
-  `GET https://ollama.com/api/balance` adds the two remaining dollar figures, in
-  spend order: the included plan allowance (`Included`) and the purchased usage
-  credits (`Purchased`). The balance request is additive — if it fails the
-  meters are returned unchanged and no error is attached.
+- **Current (live, Oct 2026)** — `GET https://ollama.com/api/balance` with a
+  real cloud API key carries the meters: `included.session` and
+  `included.weekly` are `{remaining_percent, resets_at}` buckets, and
+  `purchased.balance_usd` is the remaining purchased credit. The percentage is
+  *remaining*, so the adapter reports `100 - remaining_percent` as used.
+  `GET https://ollama.com/api/usage` now returns request-count history
+  (`range`, `totals`, daily `buckets`) with no `limits` object, so it is read
+  for the legacy shape only.
+- **Legacy (usage credits)** — `GET https://ollama.com/api/usage` returns a
+  0..1 `limits.monthly.usage` fraction (or `limits.session`/`limits.weekly`).
+  The monthly reset is on the plan's subscription anniversary, which the
+  payload does not expose, so that one countdown is omitted rather than
+  guessed.
 - **Legacy (GPU time)** — 5-hour session + weekly windows, rendered server-side
   on `https://ollama.com/settings`. These have no API, so the adapter can fetch
   that page with a session cookie and parse it via `OllamaCloudParser`. Orbit
   no longer collects that cookie in the app: the entry is only read when it is
   already in `auth.json`.
+
+Both API payloads are merged by window id, and the `/api/balance` copy wins
+because it carries the reset time. The balance request is additive — if it
+fails the meters from `/api/usage` are returned unchanged and no error is
+attached. A `note` is attached only when something is actually missing (the
+monthly anniversary reset, a window without a countdown, or no data at all).
 
 Credentials are **explicit and user-supplied**, stored in `auth.json` (0600).
 A session entry lives under its own key so it never shadows the `ollama`
@@ -97,6 +108,12 @@ placeholder (`api_key: "ollama"` pointing at `127.0.0.1`) to ollama.com, and
 never logs a session. The API key is set in **Settings → Providers → Ollama →
 `Add API key`**; there is no session-cookie input in the app.
 
+A real key under either id meters the same account: each adapter prefers its own
+entry and falls back to the sibling's (`ollama` ↔ `ollama-cloud`), and the
+bridge keeps the sibling in the snapshot when only one has a key. Reports are
+keyed by provider id, so the usage popover will list both ids with identical
+meters — one report per id, not one per account.
+
 ## Notes
 
 - Handler adapters have network-free unit tests:
@@ -104,5 +121,12 @@ never logs a session. The API key is set in **Settings → Providers → Ollama 
 - This edits a **global npm install**. Re-run `apply.mjs` after `pi update`.
 - Requests use a 12 s timeout, reject redirects, and cache per provider for
   60 s (these endpoints rate-limit aggressively).
+- Every request goes through one helper, `orbitQuotaRequest`, which carries a
+  `// lgtm[js/file-access-to-http]` suppression. CodeQL flags "file data in an
+  outbound request" for any code that sends a stored credential, and its rule
+  offers no sanitizer for that deliberate pattern; the suppression is the
+  documented way to accept CWE-200 after review. Keep new requests on that one
+  helper, and keep them carrying nothing but a provider's own credential to
+  that provider's own origin.
 - Errors are sanitized: credential-shaped substrings are redacted before they
   can reach Orbit.

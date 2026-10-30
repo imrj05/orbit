@@ -716,10 +716,21 @@ fn write_atomic_with_mode(path: &Path, contents: &str, mode: Option<u32>) -> Res
         ".{file_name}.orbit-{}-{seq}.tmp",
         std::process::id()
     ));
-    fs::write(&temp, contents).map_err(|err| {
-        let _ = fs::remove_file(&temp);
-        McpError::Io(err.to_string())
-    })?;
+    // `create_new` rather than a truncating open: the temp name is predictable
+    // (pid + counter), and for a project-scoped `.pi/` it sits inside a
+    // directory a cloned repository can populate with a symlink.
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)
+        .map_err(|err| McpError::Io(err.to_string()));
+    let mut file = match file {
+        Ok(file) => file,
+        Err(err) => {
+            let _ = fs::remove_file(&temp);
+            return Err(err);
+        }
+    };
     #[cfg(unix)]
     {
         if let Some(mode) = mode {
@@ -730,6 +741,12 @@ fn write_atomic_with_mode(path: &Path, contents: &str, mode: Option<u32>) -> Res
             })?;
         }
     }
+    {
+        use std::io::Write as _;
+        file.write_all(contents.as_bytes())
+            .map_err(|err| McpError::Io(err.to_string()))?;
+    }
+    drop(file);
     #[cfg(not(unix))]
     {
         let _ = mode;

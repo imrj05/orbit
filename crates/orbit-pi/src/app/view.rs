@@ -1744,9 +1744,9 @@ impl OrbitApp {
     /// hovered/open, matching the model chip.
     pub(super) fn access_chip(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
         let theme = *theme::get(cx);
-        // Full access is the default, so its name is not news: the chip keeps the
-        // glyph alone and names the mode on hover instead. A tightened mode
-        // (Supervised, Auto-accept edits) is a deliberate departure from the
+        // Supervised is the default, so its name is not news: the chip keeps the
+        // glyph alone and names the mode on hover instead. A widened mode
+        // (Full access, Auto-accept edits) is a deliberate departure from the
         // default, so that one keeps its label — there the label is the warning,
         // and it should be readable without hovering.
         //

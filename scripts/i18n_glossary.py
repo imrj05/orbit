@@ -1601,3 +1601,18 @@ GLOSSARY = {
         "Try another name, or choose a folder below": "Prova un altro nome o scegli una cartella sotto",
     },
 }
+
+# Shared copy-confirmation label. `Copy` already lives in each locale's table;
+# this is the in-place confirmation that follows the clipboard write.
+for _locale, _table in {
+    "zh-CN": {"Copied": "已复制"},
+    "ja": {"Copied": "コピーしました"},
+    "ko": {"Copied": "복사됨"},
+    "es": {"Copied": "Copiado"},
+    "fr": {"Copied": "Copié"},
+    "de": {"Copied": "Kopiert"},
+    "pt-BR": {"Copied": "Copiado"},
+    "ru": {"Copied": "Скопировано"},
+    "it": {"Copied": "Copiato"},
+}.items():
+    GLOSSARY.setdefault(_locale, {}).update(_table)

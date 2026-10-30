@@ -971,6 +971,8 @@ pub struct Transcript {
     expanded_tools: ExpandedTools,
     /// Per detail-section copy feedback, keyed `(message_ix, tool_ix, section)`.
     copied_sections: CopiedSections,
+    /// Per detail-section hover transition, keyed `(message_ix, tool_ix, section)`.
+    hovered_sections: transcript_view::HoveredSections,
     /// Tool output sections expanded past their collapsed preview.
     expanded_sections: ExpandedSections,
     /// Code blocks expanded past their collapsed preview.
@@ -1050,6 +1052,7 @@ impl Transcript {
             expanded_tools: Rc::new(RefCell::new(HashSet::new())),
             copied: Rc::new(RefCell::new(HashMap::new())),
             copied_sections: Rc::new(RefCell::new(HashMap::new())),
+            hovered_sections: Rc::new(RefCell::new(HashMap::new())),
             expanded_sections: Rc::new(RefCell::new(HashSet::new())),
             expanded_blocks: Rc::new(RefCell::new(HashSet::new())),
             thinking_scrolls: Rc::new(RefCell::new(HashMap::new())),
@@ -1154,6 +1157,7 @@ impl Transcript {
         self.expanded_tools.borrow_mut().clear();
         self.copied.borrow_mut().clear();
         self.copied_sections.borrow_mut().clear();
+        self.hovered_sections.borrow_mut().clear();
         self.expanded_sections.borrow_mut().clear();
         self.expanded_blocks.borrow_mut().clear();
         self.thinking_scrolls.borrow_mut().clear();
@@ -1192,6 +1196,7 @@ impl Transcript {
         self.expanded_tools.borrow_mut().clear();
         self.copied.borrow_mut().clear();
         self.copied_sections.borrow_mut().clear();
+        self.hovered_sections.borrow_mut().clear();
         self.expanded_sections.borrow_mut().clear();
         self.expanded_blocks.borrow_mut().clear();
         self.thinking_scrolls.borrow_mut().clear();
@@ -2557,6 +2562,7 @@ impl Transcript {
                 expanded_tools: self.expanded_tools.clone(),
                 copied: self.copied.clone(),
                 copied_sections: self.copied_sections.clone(),
+                hovered_sections: self.hovered_sections.clone(),
                 expanded_sections: self.expanded_sections.clone(),
                 expanded_blocks: self.expanded_blocks.clone(),
                 thinking_scrolls: self.thinking_scrolls.clone(),

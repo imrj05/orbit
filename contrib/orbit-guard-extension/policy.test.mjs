@@ -17,10 +17,15 @@ import {
   addToAllowlist,
   allowlistPath,
   classify,
+  confirmOptions,
   decide,
   formatTitle,
+  grantable,
   modeFilePath,
   normalizeMode,
+  OPTION_ALWAYS_ALLOW,
+  OPTION_ALLOW_ONCE,
+  OPTION_DENY,
   readAllowlist,
   readMode,
   summarize,
@@ -72,9 +77,39 @@ test("full-access allows everything", () => {
   }
 });
 
-test("an allowlisted tool is allowed even in a confined mode", () => {
-  assert.equal(decide("supervised", "bash", ["bash"]), "allow");
+test("the default mode asks before mutating, so every read failure is fail-safe", () => {
+  assert.equal(DEFAULT_MODE, "supervised");
+  assert.equal(decide(DEFAULT_MODE, "bash"), "ask");
+  assert.equal(decide(DEFAULT_MODE, "edit"), "ask");
+});
+
+test("a grant is never honoured for a tool whose meaning changes per call", () => {
+  // The finding this closes: approving one `ls` used to allow every future
+  // command, because the grant was keyed by the tool name alone.
+  assert.equal(decide("supervised", "bash", ["bash"]), "ask");
+  assert.equal(decide("supervised", "mcp__x", ["mcp__x"]), "ask");
+  assert.equal(decide("supervised", "some_extension_tool", ["some_extension_tool"]), "ask");
+  // Whole-file edits are the same risk whatever the path, so a grant stands.
+  assert.equal(decide("supervised", "edit", ["edit"]), "allow");
   assert.equal(decide("supervised", "bash", ["edit"]), "ask");
+});
+
+test("grantable and confirmOptions agree with decide", () => {
+  for (const [tool, allowed] of [
+    ["edit", true],
+    ["bash", false],
+    ["mcp__x", false],
+    ["some_extension_tool", false],
+  ]) {
+    assert.equal(grantable(tool), allowed, tool);
+    assert.equal(
+      confirmOptions(tool).includes(OPTION_ALWAYS_ALLOW),
+      allowed,
+      `${tool} options`,
+    );
+    assert.ok(confirmOptions(tool).includes(OPTION_ALLOW_ONCE), tool);
+    assert.ok(confirmOptions(tool).includes(OPTION_DENY), tool);
+  }
 });
 
 test("an unknown mode is treated as the default, never as allow-all of a stricter mode", () => {
@@ -118,11 +153,15 @@ test("allowlist round-trips per mode and degrades on failure", () => {
   const file = path.join(dir, "access-allow.json");
   try {
     assert.deepEqual(readAllowlist("supervised", file), [], "missing → empty");
-    addToAllowlist("supervised", "bash", file);
-    addToAllowlist("supervised", "bash", file); // idempotent
-    addToAllowlist("supervised", "edit", file);
-    assert.deepEqual(readAllowlist("supervised", file).sort(), ["bash", "edit"]);
+    assert.equal(addToAllowlist("supervised", "bash", file), false, "exec is not grantable");
+    assert.equal(addToAllowlist("supervised", "edit", file), true);
+    addToAllowlist("supervised", "edit", file); // idempotent
+    addToAllowlist("supervised", "write", file);
+    assert.deepEqual(readAllowlist("supervised", file).sort(), ["edit", "write"]);
     assert.deepEqual(readAllowlist("auto-accept-edits", file), [], "mode-scoped");
+    if (process.platform !== "win32") {
+      assert.equal(fs.statSync(file).mode & 0o777, 0o600, "grants are owner-only");
+    }
     fs.writeFileSync(file, "{not json");
     assert.deepEqual(readAllowlist("supervised", file), [], "broken json → empty");
   } finally {

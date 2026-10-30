@@ -313,6 +313,133 @@ test("ollama balance parser reads included and purchased buckets", () => {
   assert.deepEqual(orbitOllamaBalances({}), []);
   assert.deepEqual(orbitOllamaBalances(null), []);
   assert.deepEqual(orbitOllamaBalances({ included: "n/a", purchased: null }), []);
+  // Non-numeric placeholders must not become a fabricated $0 balance.
+  assert.deepEqual(
+    orbitOllamaBalances({ included: 5, purchased: { balance_usd: "" } }),
+    [{ label: "Included", amount: 5, currency: "USD" }],
+  );
+  assert.deepEqual(orbitOllamaBalances({ purchased: { balance_usd: null } }), []);
+});
+
+// The live payloads (Oct 2026): `/api/usage` is request-count history with no
+// `limits`, and `/api/balance` carries the meters as a remaining percentage
+// plus its own reset time. Reading only `limits` produced an empty window list,
+// which is why Ollama Cloud usage disappeared from the provider card.
+const LIVE_OLLAMA_USAGE = {
+  range: "7d",
+  totals: { request_count: 11131 },
+  buckets: [
+    { from: "2026-10-23T00:00:00Z", until: "2026-10-24T00:00:00Z", request_count: 1689 },
+  ],
+};
+const LIVE_OLLAMA_BALANCE = {
+  included: {
+    session: { remaining_percent: 98.04, resets_at: "2026-10-30T11:00:00Z" },
+    weekly: { remaining_percent: 71.1, resets_at: "2026-11-02T00:00:00Z" },
+  },
+  purchased: { balance_usd: 0 },
+};
+
+test("ollama live payload meters session/weekly from /api/balance", async () => {
+  await withAuth(
+    { "ollama-cloud": { type: "api_key", key: "real-cloud-key" } },
+    async () => {
+      const { orbitQuotaReport } = loadHandler({
+        fetch: async (url) => {
+          const body = String(url).includes("/api/balance")
+            ? LIVE_OLLAMA_BALANCE
+            : LIVE_OLLAMA_USAGE;
+          return { ok: true, status: 200, url, text: async () => JSON.stringify(body) };
+        },
+      });
+      const report = await orbitQuotaReport("ollama-cloud");
+      assert.equal(report.kind, "subscription");
+      const session = report.windows.find((w) => w.id === "session");
+      assert.equal(session.label, "5-hour session");
+      assert.equal(session.usedPercent, 1.96, "remaining_percent is inverted to used");
+      assert.equal(session.resetsAt, Date.parse("2026-10-30T11:00:00Z"));
+      const weekly = report.windows.find((w) => w.id === "weekly");
+      assert.equal(weekly.usedPercent, 28.9);
+      assert.equal(weekly.resetsAt, Date.parse("2026-11-02T00:00:00Z"));
+      assert.deepEqual(report.balances, [
+        { label: "Purchased", amount: 0, currency: "USD" },
+      ]);
+      // Every window carries its own reset, so no caveat note is attached.
+      assert.equal(report.note, undefined);
+    },
+  );
+});
+
+test("ollama ignores a non-numeric remaining percentage", async () => {
+  await withAuth(
+    { "ollama-cloud": { type: "api_key", key: "real-cloud-key" } },
+    async () => {
+      const { orbitQuotaReport } = loadHandler({
+        fetch: async (url) => {
+          const body = String(url).includes("/api/balance")
+            ? { included: { session: { remaining_percent: "", resets_at: "2026-10-30T11:00:00Z" } } }
+            : {};
+          return { ok: true, status: 200, url, text: async () => JSON.stringify(body) };
+        },
+      });
+      const report = await orbitQuotaReport("ollama-cloud");
+      // "" would coerce to 0 remaining → a fabricated 100%-used meter.
+      assert.deepEqual(report.windows, []);
+      assert.deepEqual(report.balances, []);
+    },
+  );
+});
+
+/** Both endpoints return the live payloads; `sent` records the bearer used. */
+function liveOllamaFetch(sent) {
+  return async (url, init) => {
+    if (sent) sent.push((init && init.headers && init.headers.Authorization) || "");
+    const body = String(url).includes("/api/balance")
+      ? LIVE_OLLAMA_BALANCE
+      : LIVE_OLLAMA_USAGE;
+    return { ok: true, status: 200, url, text: async () => JSON.stringify(body) };
+  };
+}
+
+test("ollama borrows a key stored under the sibling ollama-cloud id", async () => {
+  await withAuth(
+    { "ollama-cloud": { type: "api_key", key: "real-cloud-key" } },
+    async () => {
+      const { orbitQuotaReport } = loadHandler({ fetch: liveOllamaFetch() });
+      const report = await orbitQuotaReport("ollama");
+      assert.equal(report.kind, "subscription");
+      assert.deepEqual(
+        report.windows.map((w) => w.id),
+        ["session", "weekly"],
+      );
+    },
+  );
+});
+
+test("each Ollama id sends its own key before the sibling's", async () => {
+  await withAuth(
+    {
+      ollama: { type: "api_key", key: "own-ollama-key" },
+      "ollama-cloud": { type: "api_key", key: "own-cloud-key" },
+    },
+    async () => {
+      const sent = [];
+      const { orbitQuotaReport } = loadHandler({ fetch: liveOllamaFetch(sent) });
+      await orbitQuotaReport("ollama");
+      await orbitQuotaReport("ollama-cloud");
+      assert.deepEqual([...new Set(sent)], ["Bearer own-ollama-key", "Bearer own-cloud-key"]);
+    },
+  );
+});
+
+test("a local placeholder under ollama never reaches ollama.com via the sibling", async () => {
+  await withAuth({ ollama: { type: "api_key", key: "ollama" } }, async () => {
+    const sent = [];
+    const { orbitQuotaReport } = loadHandler({ fetch: liveOllamaFetch(sent) });
+    const report = await orbitQuotaReport("ollama-cloud");
+    assert.equal(report.kind, "unsupported");
+    assert.deepEqual(sent, [], "no request carried the placeholder");
+  });
 });
 
 test("ollama cloud key reports both balances from /api/balance", async () => {

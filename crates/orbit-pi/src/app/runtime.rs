@@ -613,6 +613,41 @@ impl OrbitApp {
         self.reattach_current_session();
     }
 
+    /// Force a clean relaunch of the whole workbench: start a replacement
+    /// instance of this build, stop every child process Orbit owns, and quit
+    /// this one. The replacement spawns its own pi and reads sessions from
+    /// disk, so the agent, catalog, and extensions all come up fresh.
+    ///
+    /// Spawning happens before teardown: if the platform refuses to launch a
+    /// second instance, the current session is left exactly as it was.
+    pub(super) fn reload_app(&mut self, cx: &mut Context<Self>) {
+        if self.reloading_app {
+            return;
+        }
+        self.reloading_app = true;
+        if let Err(error) = platform::relaunch_current_app() {
+            self.reloading_app = false;
+            self.toast_error(tr!("settings.reload_app_failed", error = error));
+            cx.notify();
+            return;
+        }
+        self.stop_all_pi_processes();
+        // Shells are children too: tear their PTYs down so the replacement
+        // process does not inherit a window full of orphaned terminals.
+        self.terminal_panel
+            .update(cx, |panel, cx| panel.shutdown(cx));
+        cx.quit();
+    }
+
+    /// Drop every pi process Orbit owns, active or parked. Used by
+    /// [`Self::reload_app`] so no agent child outlives the window.
+    fn stop_all_pi_processes(&mut self) {
+        self.drop_client();
+        self.lives.clear();
+        self.pending_parks.clear();
+        self.auto_restart_scheduled = false;
+    }
+
     /// Point a just-spawned process back at the session the UI is showing. A
     /// fresh launch opens a *new* session, so without this pi answers on an
     /// empty one while the transcript still shows the old conversation and the
