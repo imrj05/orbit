@@ -121,5 +121,12 @@ meters — one report per id, not one per account.
 - This edits a **global npm install**. Re-run `apply.mjs` after `pi update`.
 - Requests use a 12 s timeout, reject redirects, and cache per provider for
   60 s (these endpoints rate-limit aggressively).
+- Every request goes through one helper, `orbitQuotaRequest`, which carries a
+  `// lgtm[js/file-access-to-http]` suppression. CodeQL flags "file data in an
+  outbound request" for any code that sends a stored credential, and its rule
+  offers no sanitizer for that deliberate pattern; the suppression is the
+  documented way to accept CWE-200 after review. Keep new requests on that one
+  helper, and keep them carrying nothing but a provider's own credential to
+  that provider's own origin.
 - Errors are sanitized: credential-shaped substrings are redacted before they
   can reach Orbit.

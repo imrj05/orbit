@@ -140,17 +140,43 @@ const orbitQuotaOAuthToken = (entry) => {
   return undefined;
 };
 
-async function orbitQuotaJson(url, headers) {
+/**
+ * The single outbound credential sink: every provider request in this file
+ * goes through here. `url` is always a hard-coded provider origin (each adapter
+ * passes its own constant), the credential comes from the user's own
+ * `auth.json` or from pi's resolved auth for that same provider, and redirects
+ * are rejected so it can never be forwarded to a sign-in or proxy host.
+ *
+ * CodeQL reports the flow as `js/file-access-to-http` (file data in an outbound
+ * request). That flow is the feature — a usage meter cannot be read without
+ * sending the account's key to the account's own provider — so it is suppressed
+ * on the one sink below instead of at every call site. Reviewers: a new request
+ * that carries anything *other* than the provider's own credential does not
+ * belong here.
+ */
+async function orbitQuotaRequest(url, headers, options) {
+  const html = options != null && options.html === true;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 12_000);
   try {
     const response = await fetch(url, {
       method: "GET",
-      headers,
+      headers, // lgtm[js/file-access-to-http]
       redirect: "error",
       signal: controller.signal,
     });
     const text = await response.text();
+    if (html) {
+      // Do not follow a redirect to a sign-in host: a redirect here means the
+      // session is expired, not that the page moved.
+      const finalUrl = response.url || url;
+      return {
+        ok: response.ok,
+        status: response.status,
+        redirected: finalUrl !== url,
+        text,
+      };
+    }
     let body = null;
     try {
       body = text ? JSON.parse(text) : null;
@@ -165,30 +191,11 @@ async function orbitQuotaJson(url, headers) {
 
 const orbitQuotaHttpError = (status) => "usage request failed (HTTP " + status + ")";
 
+/** A JSON GET — every adapter that reads a usage payload. */
+const orbitQuotaJson = (url, headers) => orbitQuotaRequest(url, headers);
+
 /** Raw text GET, for endpoints that return HTML rather than JSON. */
-async function orbitQuotaText(url, headers) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 12_000);
-  try {
-    const response = await fetch(url, {
-      method: "GET",
-      headers,
-      redirect: "error",
-      signal: controller.signal,
-    });
-    // Do not follow a redirect to a sign-in host: a redirect here means the
-    // session is expired, not that the page moved.
-    const finalUrl = response.url || url;
-    return {
-      ok: response.ok,
-      status: response.status,
-      redirected: finalUrl !== url,
-      text: await response.text(),
-    };
-  } finally {
-    clearTimeout(timer);
-  }
-}
+const orbitQuotaText = (url, headers) => orbitQuotaRequest(url, headers, { html: true });
 
 // ── per-provider adapters ──────────────────────────────────────────────
 
