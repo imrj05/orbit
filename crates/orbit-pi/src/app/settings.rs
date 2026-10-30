@@ -243,6 +243,11 @@ const SETTINGS_SEARCH_INDEX: &[(SettingsSection, &str, &str)] = &[
     ),
     (
         SettingsSection::General,
+        "settings.reload_app",
+        "reload restart app application process pi refresh",
+    ),
+    (
+        SettingsSection::General,
         "settings.desktop_notifications",
         "notifications banner desktop system",
     ),
@@ -1076,6 +1081,27 @@ impl OrbitApp {
                     rows.push(updates);
                 }
                 rows.push(self.notification_rows(theme, this.clone()));
+                // The last group is the escape hatch: a clean relaunch kills
+                // every live run, so it sits below the preferences rather than
+                // beside the everyday controls.
+                rows.push(self.settings_section(
+                    theme,
+                    &tr!("settings.application"),
+                    vec![self.setting_row(
+                        theme,
+                        &tr!("settings.reload_app"),
+                        Some(&tr!("settings.reload_app_description")),
+                        None,
+                        Some(self.runtime_button(
+                            "reload-app",
+                            &tr!("settings.reload_app_action"),
+                            false,
+                            theme,
+                            this.clone(),
+                            OrbitApp::reload_app,
+                        )),
+                    )],
+                ));
                 rows
             }
             SettingsSection::Runtime => self.runtime_rows(theme, this.clone(), cx),
@@ -9308,6 +9334,11 @@ mod settings_search_tests {
         assert!(settings_search_hits("protocol")
             .iter()
             .any(|(section, _, _)| *section == SettingsSection::Mcp));
+        // The app-wide reload control is reachable from Settings search.
+        assert!(settings_search_hits("reload")
+            .iter()
+            .any(|(section, key, _)| *section == SettingsSection::General
+                && *key == "settings.reload_app"));
     }
 
     #[test]

@@ -270,6 +270,10 @@ pub struct OrbitApp {
     client: Option<PiClient>,
     /// Live state of the active pi process, surfaced in Settings → Runtime.
     runtime: RuntimeStatus,
+    /// Guards Settings → General → Reload app: once a replacement process has
+    /// been started, a second click must not spawn another one before this
+    /// process quits.
+    reloading_app: bool,
     /// Automatic respawns since the last run that stayed up for
     /// [`AUTO_RESTART_HEALTHY_UPTIME`]. Counts a crash loop so a pi that dies
     /// on every start cannot be restarted forever.
@@ -1857,6 +1861,7 @@ impl OrbitApp {
         let mut app = Self {
             client,
             runtime,
+            reloading_app: false,
             rpc_patches,
             sidebar_width: px(crate::layout::sidebar_width()
                 .unwrap_or(SIDEBAR_DEFAULT_W)

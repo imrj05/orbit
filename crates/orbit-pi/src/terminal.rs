@@ -1649,6 +1649,16 @@ impl TerminalPanel {
         }
     }
 
+    /// Tear down every shell by dropping its tab. Used by an app-wide reload
+    /// before the process exits so no PTY child outlives the window.
+    pub fn shutdown(&mut self, cx: &mut Context<Self>) {
+        self.open = false;
+        self.tabs.clear();
+        self.active = 0;
+        self.restart_spin_until = None;
+        cx.notify();
+    }
+
     pub fn is_open(&self) -> bool {
         self.open
     }

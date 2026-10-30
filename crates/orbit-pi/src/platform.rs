@@ -1124,6 +1124,63 @@ pub fn open_url(url: &str) -> Result<(), String> {
         .map_err(|err| tr!("platform.browser_failed", error = err))
 }
 
+/// Start a second instance of this build without waiting for it. Used by the
+/// Settings → General → Reload app control: the caller tears down its child
+/// processes and quits once this returns, leaving the replacement as the one
+/// live workbench.
+///
+/// A bundled macOS app is opened through Launch Services (`open -n`) so the
+/// replacement is a proper app instance rather than a raw child. A bare binary
+/// (a dev `cargo run`/`bacon run`, a Linux install, or Windows) is spawned
+/// directly, preserving its environment and working directory.
+pub fn relaunch_current_app() -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    if let Some(bundle) = macos_app_bundle() {
+        let opened = std::process::Command::new("/usr/bin/open")
+            .arg("-n")
+            .arg(&bundle)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if opened {
+            return Ok(());
+        }
+        // Fall through to a direct spawn: `open` can fail outside a normal
+        // desktop session, where the binary is still launchable.
+    }
+
+    let executable = std::env::current_exe()?;
+    let mut command = std::process::Command::new(executable);
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    command.spawn().map(|_| ())
+}
+
+/// The `.app` bundle containing this executable, when it runs from a bundled
+/// macOS build rather than a bare `target/debug` binary.
+#[cfg(target_os = "macos")]
+fn macos_app_bundle() -> Option<PathBuf> {
+    let executable = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let macos_dir = executable.parent()?;
+    let contents = macos_dir.parent()?;
+    let bundle = contents.parent()?;
+    if macos_dir.file_name()? != "MacOS" || contents.file_name()? != "Contents" {
+        return None;
+    }
+    if bundle
+        .extension()
+        .is_none_or(|extension| extension != "app")
+    {
+        return None;
+    }
+    Some(bundle.to_path_buf())
+}
+
 /// Rename the running process so macOS labels the application menu with the
 /// product name instead of the executable (`orbit-pi` under `cargo run`).
 ///

@@ -1081,3 +1081,74 @@ for _locale, _table in {
     },
 }.items():
     GLOSSARY.setdefault(_locale, {}).update(_table)
+
+# App-wide reload (Settings → General → Application). Kept in its own table so
+# the strings sit together; `Application` and `Reload` are shared with the
+# shortcut group label and the MCP reload button, so translating them here
+# covers those surfaces too.
+for _locale, _table in {
+    "zh-CN": {
+        "Application": "应用",
+        "Reload app": "重新加载应用",
+        "Reload": "重新加载",
+        "Restart Orbit and every pi process, then reopen the window with a fresh runtime. Running turns are stopped.": "重启 Orbit 和所有 pi 进程，然后用全新的运行时重新打开窗口。正在运行的回合会被停止。",
+        "Could not reload Orbit: %{error}": "无法重新加载 Orbit：%{error}",
+    },
+    "ja": {
+        "Application": "アプリケーション",
+        "Reload app": "アプリを再読み込み",
+        "Reload": "再読み込み",
+        "Restart Orbit and every pi process, then reopen the window with a fresh runtime. Running turns are stopped.": "Orbit とすべての pi プロセスを再起動し、新しいランタイムでウィンドウを開き直します。実行中のターンは停止します。",
+        "Could not reload Orbit: %{error}": "Orbit を再読み込みできませんでした：%{error}",
+    },
+    "ko": {
+        "Application": "애플리케이션",
+        "Reload app": "앱 다시 불러오기",
+        "Reload": "다시 불러오기",
+        "Restart Orbit and every pi process, then reopen the window with a fresh runtime. Running turns are stopped.": "Orbit과 모든 pi 프로세스를 재시작한 뒤 새 런타임으로 창을 다시 엽니다. 실행 중인 턴은 중지됩니다.",
+        "Could not reload Orbit: %{error}": "Orbit을 다시 불러올 수 없습니다: %{error}",
+    },
+    "es": {
+        "Application": "Aplicación",
+        "Reload app": "Recargar aplicación",
+        "Reload": "Recargar",
+        "Restart Orbit and every pi process, then reopen the window with a fresh runtime. Running turns are stopped.": "Reinicia Orbit y todos los procesos de pi, y vuelve a abrir la ventana con un entorno de ejecución nuevo. Los turnos en curso se detienen.",
+        "Could not reload Orbit: %{error}": "No se pudo recargar Orbit: %{error}",
+    },
+    "fr": {
+        "Application": "Application",
+        "Reload app": "Recharger l’application",
+        "Reload": "Recharger",
+        "Restart Orbit and every pi process, then reopen the window with a fresh runtime. Running turns are stopped.": "Redémarre Orbit et tous les processus pi, puis rouvre la fenêtre avec un environnement d’exécution neuf. Les tours en cours sont arrêtés.",
+        "Could not reload Orbit: %{error}": "Impossible de recharger Orbit : %{error}",
+    },
+    "de": {
+        "Application": "Anwendung",
+        "Reload app": "App neu laden",
+        "Reload": "Neu laden",
+        "Restart Orbit and every pi process, then reopen the window with a fresh runtime. Running turns are stopped.": "Startet Orbit und alle pi-Prozesse neu und öffnet das Fenster mit einer frischen Laufzeit erneut. Laufende Turns werden gestoppt.",
+        "Could not reload Orbit: %{error}": "Orbit konnte nicht neu geladen werden: %{error}",
+    },
+    "pt-BR": {
+        "Application": "Aplicativo",
+        "Reload app": "Recarregar aplicativo",
+        "Reload": "Recarregar",
+        "Restart Orbit and every pi process, then reopen the window with a fresh runtime. Running turns are stopped.": "Reinicia o Orbit e todos os processos do pi, depois reabre a janela com um ambiente de execução novo. Turnos em andamento são interrompidos.",
+        "Could not reload Orbit: %{error}": "Não foi possível recarregar o Orbit: %{error}",
+    },
+    "ru": {
+        "Application": "Приложение",
+        "Reload app": "Перезагрузить приложение",
+        "Reload": "Перезагрузить",
+        "Restart Orbit and every pi process, then reopen the window with a fresh runtime. Running turns are stopped.": "Перезапускает Orbit и все процессы pi, затем заново открывает окно со свежей средой выполнения. Текущие ходы останавливаются.",
+        "Could not reload Orbit: %{error}": "Не удалось перезагрузить Orbit: %{error}",
+    },
+    "it": {
+        "Application": "Applicazione",
+        "Reload app": "Ricarica l’app",
+        "Reload": "Ricarica",
+        "Restart Orbit and every pi process, then reopen the window with a fresh runtime. Running turns are stopped.": "Riavvia Orbit e tutti i processi pi, poi riapre la finestra con un ambiente di esecuzione nuovo. I turni in corso vengono interrotti.",
+        "Could not reload Orbit: %{error}": "Impossibile ricaricare Orbit: %{error}",
+    },
+}.items():
+    GLOSSARY.setdefault(_locale, {}).update(_table)

@@ -78,6 +78,12 @@ const USER_BUBBLE_MAX_WIDTH: f32 = 540.0;
 /// its usage metric share the button's height.
 const FOOTER_BUTTON: ButtonSize = ButtonSize::Medium;
 const COPY_FEEDBACK: Duration = Duration::from_secs(2);
+/// The copy affordance is quiet at rest and brightens while the pointer is
+/// over its code section. In is shorter than out so crossing the plane does
+/// not flicker; both are short enough to read as direct feedback.
+const COPY_HOVER_IN: Duration = Duration::from_millis(120);
+const COPY_HOVER_OUT: Duration = Duration::from_millis(180);
+const COPY_REST_OPACITY: f32 = 0.45;
 const NAVIGATION_RAIL_LEFT: f32 = 16.0;
 const NAVIGATION_RAIL_WIDTH: f32 = 44.0;
 const NAVIGATION_RAIL_TICK_WIDTH: f32 = 32.0;
@@ -143,6 +149,60 @@ type CopiedSections = Rc<RefCell<HashMap<(usize, usize, u8), Instant>>>;
 /// Tool detail sections expanded past their collapsed preview, keyed
 /// `(message_ix, flat_tool_ix, section)`.
 type ExpandedSections = Rc<RefCell<HashSet<(usize, usize, u8)>>>;
+/// Per-section hover transition. A reversal starts from the current painted
+/// opacity, so entering and leaving the code plane never snaps.
+#[derive(Clone, Copy)]
+pub(crate) struct SectionHover {
+    from: f32,
+    to: f32,
+    started: Instant,
+    duration: Duration,
+    /// Changes on every retarget so the GPUI animation element restarts from
+    /// the value captured in `from`.
+    generation: u64,
+}
+
+impl Default for SectionHover {
+    fn default() -> Self {
+        Self {
+            from: COPY_REST_OPACITY,
+            to: COPY_REST_OPACITY,
+            started: Instant::now(),
+            duration: COPY_HOVER_IN,
+            generation: 0,
+        }
+    }
+}
+
+impl SectionHover {
+    fn opacity_at(&self, elapsed: Duration) -> f32 {
+        let progress = (elapsed.as_secs_f32() / self.duration.as_secs_f32()).clamp(0.0, 1.0);
+        let eased = 1.0 - (1.0 - progress).powi(3);
+        self.from + (self.to - self.from) * eased
+    }
+
+    /// Point the transition at the hovered or resting opacity. Returns true
+    /// when the target actually changed, so the caller knows to repaint.
+    fn retarget(&mut self, hovered: bool) -> bool {
+        let target = if hovered { 1.0 } else { COPY_REST_OPACITY };
+        if (self.to - target).abs() < f32::EPSILON {
+            return false;
+        }
+        let now = Instant::now();
+        self.from = self.opacity_at(now.saturating_duration_since(self.started));
+        self.to = target;
+        self.started = now;
+        self.duration = if hovered {
+            COPY_HOVER_IN
+        } else {
+            COPY_HOVER_OUT
+        };
+        self.generation = self.generation.wrapping_add(1);
+        true
+    }
+}
+
+pub(crate) type HoveredSections = Rc<RefCell<HashMap<(usize, usize, u8), SectionHover>>>;
 /// Code blocks expanded past their collapsed preview, keyed
 /// `(message_ix, prose_namespace, block_ix)`.
 type ExpandedBlocks = Rc<RefCell<HashSet<(usize, u64, usize)>>>;
@@ -186,6 +246,8 @@ pub(crate) struct TranscriptView {
     pub copied: Rc<RefCell<HashMap<usize, Instant>>>,
     /// Per detail-section copy feedback, keyed `(message_ix, tool_ix, section)`.
     pub copied_sections: CopiedSections,
+    /// Per detail-section hover transition, keyed `(message_ix, tool_ix, section)`.
+    pub hovered_sections: HoveredSections,
     /// Tool output sections expanded past their collapsed preview.
     pub expanded_sections: ExpandedSections,
     /// Code blocks expanded past their collapsed preview.
@@ -1071,6 +1133,7 @@ struct RowPaint {
     scroller: MessageScrollerState,
     expanded_tools: ExpandedTools,
     copied_sections: CopiedSections,
+    hovered_sections: HoveredSections,
     expanded_sections: ExpandedSections,
     expanded_blocks: ExpandedBlocks,
     thinking_scrolls: ThinkingScrolls,
@@ -1121,6 +1184,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
     let expanded_tools = view.expanded_tools.clone();
     let copied = view.copied.clone();
     let copied_sections = view.copied_sections.clone();
+    let hovered_sections = view.hovered_sections.clone();
     let expanded_sections = view.expanded_sections.clone();
     let expanded_blocks = view.expanded_blocks.clone();
     let thinking_scrolls = view.thinking_scrolls.clone();
@@ -1367,6 +1431,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
                 scroller: scroller.clone(),
                 expanded_tools: expanded_tools.clone(),
                 copied_sections: copied_sections.clone(),
+                hovered_sections: hovered_sections.clone(),
                 expanded_sections: expanded_sections.clone(),
                 expanded_blocks: expanded_blocks.clone(),
                 thinking_scrolls: thinking_scrolls.clone(),
@@ -2255,6 +2320,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
                         paint.expanded_activities.clone(),
                         paint.expanded_tools.clone(),
                         paint.copied_sections.clone(),
+                        paint.hovered_sections.clone(),
                         paint.expanded_sections.clone(),
                         paint.scroller.clone(),
                         paint.thinking_scrolls.clone(),
@@ -2333,6 +2399,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
                 paint.expanded_activities.clone(),
                 paint.expanded_tools.clone(),
                 paint.copied_sections.clone(),
+                paint.hovered_sections.clone(),
                 paint.expanded_sections.clone(),
                 paint.scroller.clone(),
                 paint.thinking_scrolls.clone(),
@@ -2560,6 +2627,7 @@ fn render_activity_group(
     expanded_activities: ExpandedActivities,
     expanded_tools: ExpandedTools,
     copied_sections: CopiedSections,
+    hovered_sections: HoveredSections,
     expanded_sections: ExpandedSections,
     scroller: MessageScrollerState,
     thinking_scrolls: ThinkingScrolls,
@@ -2738,6 +2806,7 @@ fn render_activity_group(
                     tool_open,
                     expanded_tools.clone(),
                     copied_sections.clone(),
+                    hovered_sections.clone(),
                     expanded_sections.clone(),
                     scroller.clone(),
                     image_opener.clone(),
@@ -3324,6 +3393,7 @@ fn render_activity_card(
     tool_open: bool,
     expanded_tools: ExpandedTools,
     copied_sections: CopiedSections,
+    hovered_sections: HoveredSections,
     expanded_sections: ExpandedSections,
     scroller: MessageScrollerState,
     image_opener: Option<ImageOpener>,
@@ -3621,6 +3691,7 @@ fn render_activity_card(
             tool,
             key,
             copied_sections,
+            hovered_sections,
             expanded_sections,
             scroller.clone(),
             theme,
@@ -3725,10 +3796,12 @@ fn render_tool_error_strip(tool: &ToolCall, round_bottom: bool, theme: Theme) ->
 /// Arguments (JSON) when the tool is not a shell command, then the Output.
 /// Each section carries its own copy button; tall sections collapse to a
 /// preview so a long log never buries the answer that follows it.
+#[allow(clippy::too_many_arguments)]
 fn render_tool_detail(
     tool: &ToolCall,
     key: (usize, usize),
     copied_sections: CopiedSections,
+    hovered_sections: HoveredSections,
     expanded_sections: ExpandedSections,
     scroller: MessageScrollerState,
     theme: Theme,
@@ -3838,6 +3911,7 @@ fn render_tool_detail(
                 lang,
                 prompt,
                 copied_sections.clone(),
+                hovered_sections.clone(),
                 expanded_sections.clone(),
                 scroller.clone(),
                 theme,
@@ -3958,13 +4032,20 @@ fn render_detail_section(
     lang: Option<highlight::Lang>,
     prompt: bool,
     copied_sections: CopiedSections,
+    hovered_sections: HoveredSections,
     expanded_sections: ExpandedSections,
     scroller: MessageScrollerState,
     theme: Theme,
 ) -> impl IntoElement {
+    let hover_key = (key.0, key.1, section);
+    let hover = hovered_sections
+        .borrow()
+        .get(&hover_key)
+        .copied()
+        .unwrap_or_default();
     let copied = copied_sections
         .borrow()
-        .get(&(key.0, key.1, section))
+        .get(&hover_key)
         .is_some_and(|at| at.elapsed() < COPY_FEEDBACK);
     let copy_content = content.clone();
     // Tall sections (a test run's log, a big edit's arguments) collapse to a
@@ -3984,7 +4065,137 @@ fn render_detail_section(
         &lines
     };
     let paint_clipped = expanded && lines.len() > OUTPUT_EXPANDED_PAINT_LINES;
+
+    // The copy affordance is quiet at rest and brightens while the pointer is
+    // over this section. Copy/Copied share a stable seed: a hover generation
+    // restarts the animation from the current painted opacity, and the
+    // confirmation swap forces both the icon and the floating label to full
+    // ink without moving the section label or the code.
+    let mut copy_hasher = DefaultHasher::new();
+    (hover_key, hover.generation, copied).hash(&mut copy_hasher);
+    let copy_seed = copy_hasher.finish() as usize;
+    let copy_duration = if copied {
+        Duration::from_millis(1)
+    } else {
+        hover.duration
+    };
+    let (icon_from, icon_to) = if copied {
+        (1.0, 1.0)
+    } else {
+        (hover.from, hover.to)
+    };
+    let label_range = |opacity: f32| {
+        if copied {
+            1.0
+        } else {
+            ((opacity - COPY_REST_OPACITY) / (1.0 - COPY_REST_OPACITY)).clamp(0.0, 1.0)
+        }
+    };
+    let (label_from, label_to) = (label_range(hover.from), label_range(hover.to));
+    let copy_icon = div()
+        .flex_none()
+        .child(glyph(
+            if copied {
+                "icons/check.svg"
+            } else {
+                "icons/copy.svg"
+            },
+            ButtonSize::Default.icon_size().px(&theme),
+            if copied {
+                theme.success
+            } else {
+                theme.text_muted
+            },
+        ))
+        .with_animation(
+            ElementId::NamedInteger("copy-section-icon".into(), copy_seed as u64),
+            Animation::new(copy_duration).with_easing(gpui::ease_out_quint()),
+            move |icon, delta| icon.opacity(icon_from + (icon_to - icon_from) * delta),
+        );
+    let copy_label = div()
+        .flex_none()
+        .text_size(TextSize::XSmall.px(&theme))
+        .line_height(theme.ui_px(14.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(if copied {
+            theme.success
+        } else {
+            theme.text_muted
+        })
+        .child(if copied {
+            tr!("common.copied")
+        } else {
+            tr!("common.copy")
+        })
+        .with_animation(
+            ElementId::NamedInteger("copy-section-label".into(), copy_seed as u64),
+            Animation::new(copy_duration).with_easing(gpui::ease_out_quint()),
+            move |label, delta| label.opacity(label_from + (label_to - label_from) * delta),
+        );
+    let copy_button = icon_button_frame(
+        div().id(ElementId::NamedInteger(
+            "copy-activity-section".into(),
+            ((key.0 as u64) << 16 | key.1 as u64) << 8 | section as u64,
+        )),
+        &theme,
+        ButtonSize::Default,
+    )
+    .tip(if copied {
+        tr!("common.copied")
+    } else {
+        tr!("transcript.copy_section")
+    })
+    .cursor_pointer()
+    .when(copied, |button| button.bg(theme.success.opacity(0.10)))
+    .hover(move |style| {
+        style.bg(if copied {
+            theme.success.opacity(0.10)
+        } else {
+            theme.overlay_strong
+        })
+    })
+    .active(move |style| {
+        style.bg(if copied {
+            theme.success.opacity(0.16)
+        } else {
+            theme.surface_active
+        })
+    })
+    .child(copy_icon)
+    .on_click(move |_, _, cx| {
+        cx.write_to_clipboard(ClipboardItem::new_string(copy_content.clone()));
+        copied_sections
+            .borrow_mut()
+            .insert((key.0, key.1, section), Instant::now());
+        cx.refresh_windows();
+    });
+    let copy_control = div().relative().flex_none().child(copy_button).child(
+        div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .right(ButtonSize::Default.height(&theme) + DynamicSpacing::Base06.px(&theme))
+            .flex()
+            .items_center()
+            .child(copy_label),
+    );
+    let hovered_sections_for_event = hovered_sections.clone();
+    let mut section_hasher = DefaultHasher::new();
+    hover_key.hash(&mut section_hasher);
+    let section_seed = section_hasher.finish();
     let card = div()
+        .id(ElementId::NamedInteger(
+            "tool-code-section".into(),
+            section_seed,
+        ))
+        .on_hover(move |hovering, _, cx| {
+            let mut states = hovered_sections_for_event.borrow_mut();
+            let state = states.entry(hover_key).or_default();
+            if state.retarget(*hovering) {
+                drop(states);
+                cx.refresh_windows();
+            }
+        })
         .w_full()
         .min_w_0()
         .flex()
@@ -4012,39 +4223,7 @@ fn render_detail_section(
                         .text_color(theme.text_muted)
                         .child(label.to_string()),
                 )
-                .child(
-                    icon_button_frame(
-                        div().id(ElementId::NamedInteger(
-                            "copy-activity-section".into(),
-                            ((key.0 as u64) << 16 | key.1 as u64) << 8 | section as u64,
-                        )),
-                        &theme,
-                        ButtonSize::Default,
-                    )
-                    .tip(tr!("transcript.copy_section"))
-                    .cursor_pointer()
-                    .hover(|style| style.bg(theme.overlay_strong))
-                    .child(glyph(
-                        if copied {
-                            "icons/check.svg"
-                        } else {
-                            "icons/copy.svg"
-                        },
-                        ButtonSize::Default.icon_size().px(&theme),
-                        if copied {
-                            theme.success
-                        } else {
-                            theme.text_muted
-                        },
-                    ))
-                    .on_click(move |_, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(copy_content.clone()));
-                        copied_sections
-                            .borrow_mut()
-                            .insert((key.0, key.1, section), Instant::now());
-                        cx.refresh_windows();
-                    }),
-                ),
+                .child(copy_control),
         )
         .child(
             div()
@@ -8078,6 +8257,22 @@ mod tests {
     }
 
     #[test]
+    fn copy_hover_retargets_from_the_visible_opacity() {
+        let mut hover = SectionHover::default();
+        assert!(hover.retarget(true));
+        // Repeating the same target must not restart the transition.
+        assert!(!hover.retarget(true));
+        assert!((hover.opacity_at(Duration::ZERO) - COPY_REST_OPACITY).abs() < 0.001);
+        let mid = hover.opacity_at(COPY_HOVER_IN / 2);
+        assert!(mid > COPY_REST_OPACITY && mid < 1.0);
+        // Make the transition half-elapsed, then reverse it. The new target
+        // must begin at the value that was already on screen.
+        hover.started = Instant::now() - COPY_HOVER_IN / 2;
+        assert!(hover.retarget(false));
+        assert!((hover.opacity_at(Duration::ZERO) - mid).abs() < 0.001);
+    }
+
+    #[test]
     fn streaming_fade_handles_replaced_unicode_text() {
         let mut fade = StreamFade::default();
         let start = Instant::now();
@@ -9852,6 +10047,7 @@ mod tests {
             expanded_tools: Rc::new(RefCell::new(HashSet::new())),
             copied: Rc::new(RefCell::new(HashMap::new())),
             copied_sections: Rc::new(RefCell::new(HashMap::new())),
+            hovered_sections: Rc::new(RefCell::new(HashMap::new())),
             expanded_sections: Rc::new(RefCell::new(HashSet::new())),
             expanded_blocks: Rc::new(RefCell::new(HashSet::new())),
             thinking_scrolls: Rc::new(RefCell::new(HashMap::new())),
@@ -9907,6 +10103,7 @@ mod tests {
                 (0, 0),
                 self.open.borrow().contains(&(0, 0)),
                 self.open.clone(),
+                Rc::new(RefCell::new(HashMap::new())),
                 Rc::new(RefCell::new(HashMap::new())),
                 self.sections.clone(),
                 self.scroller.clone(),
