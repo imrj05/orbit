@@ -665,16 +665,19 @@ async function orbitQuotaGoogle() {
 // Ollama Cloud has gone through two billing generations, and accounts on
 // different terms expose different things:
 //
-//   current (usage-credit)  a single monthly dollar-credit pool, metered in
-//                           tokens. `GET https://ollama.com/api/usage` with a
-//                           real cloud API key returns a 0..1 `limits.monthly`
-//                           object plus per-model request counts. The reset is
-//                           on the plan's subscription anniversary, which the
-//                           payload does NOT expose — we omit the countdown
-//                           rather than guess. `GET https://ollama.com/api/balance`
-//                           adds the two remaining dollar figures: the included
-//                           plan allowance (drawn first) and the purchased
-//                           credit balance (drawn once included is spent).
+//   current (usage-credit)  `GET https://ollama.com/api/balance` with a real
+//                           cloud API key carries the live meters —
+//                           `included.session` and `included.weekly`, each a
+//                           `remaining_percent` plus a `resets_at` — and the
+//                           purchased credit balance (`purchased.balance_usd`).
+//                           `GET https://ollama.com/api/usage` now reports
+//                           request-count history (totals + daily buckets);
+//                           older accounts still send meters under
+//                           `limits.session`/`limits.weekly` and a 0..1
+//                           `limits.monthly.usage` fraction, whose reset is on
+//                           the plan's subscription anniversary and absent from
+//                           the payload — we omit that countdown rather than
+//                           guess. Both shapes are read and merged by id.
 //   legacy (GPU-time)       a 5-hour session window, a weekly window, and the
 //                           plan's included allowance. These have no API: they
 //                           render server-side on the authenticated
@@ -711,6 +714,12 @@ const OLLAMA_SESSION_KEY = "ollama-cloud-session";
 /** The local-server placeholder pi writes into models.json; never a cloud key. */
 const OLLAMA_LOCAL_PLACEHOLDER = "ollama";
 
+/** Metered windows `/api/balance` reports under `included`, in display order. */
+const OLLAMA_BALANCE_WINDOWS = [
+  ["session", "5-hour session"],
+  ["weekly", "Weekly"],
+];
+
 /** The cookie header from a stored session entry, if any. */
 function orbitOllamaSession(entry) {
   return entry && typeof entry.session === "string" ? entry.session.trim() : "";
@@ -731,6 +740,20 @@ function orbitOllamaCloudKey(entry) {
 }
 
 /**
+ * A finite number from a JSON scalar, or `undefined`. Stricter than `Number()`,
+ * which turns `null`, `""`, `false`, and `[]` into `0` — a provider payload
+ * that omits a field must never render as a confident "0% used" or "$0.00".
+ */
+function orbitOllamaNumber(value) {
+  if (typeof value === "number") return isFinite(value) ? value : undefined;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+/**
  * Reduce one `/api/balance` bucket to an amount plus currency. The endpoint is
  * unversioned from our side, so a bucket may be a bare number or an object
  * carrying the figure under an `amount`-style key and its own `currency`.
@@ -740,13 +763,21 @@ function orbitOllamaCloudKey(entry) {
 function orbitOllamaAmount(node, currency) {
   if (node == null || typeof node === "string") return undefined;
   if (typeof node === "number") {
-    const amount = orbitQuotaNumber(node);
+    const amount = orbitOllamaNumber(node);
     return amount == null ? undefined : { amount, currency };
   }
   if (typeof node !== "object" || Array.isArray(node)) return undefined;
   const own = typeof node.currency === "string" && node.currency ? node.currency : currency;
-  for (const field of ["amount", "remaining", "available", "balance", "value"]) {
-    const amount = orbitQuotaNumber(node[field]);
+  for (const field of [
+    "amount",
+    "remaining",
+    "available",
+    "balance",
+    "value",
+    "balance_usd",
+    "balanceUsd",
+  ]) {
+    const amount = orbitOllamaNumber(node[field]);
     if (amount != null) return { amount, currency: own };
   }
   return undefined;
@@ -796,6 +827,61 @@ function orbitOllamaBalances(body) {
   if (included) balances.push(orbitQuotaBalance("Included", included.amount, included.currency));
   if (purchased) balances.push(orbitQuotaBalance("Purchased", purchased.amount, purchased.currency));
   return balances;
+}
+
+/**
+ * Percent of a window already consumed, from any of the shapes Ollama has
+ * shipped: `used_percent` (already a percent), `remaining_percent` (the live
+ * `/api/balance` shape, so invert it), or a 0..1 `usage` fraction. Clamped to
+ * 0..100 so an out-of-range payload cannot paint outside the meter.
+ */
+function orbitOllamaUsedPercent(node) {
+  if (!node || typeof node !== "object") return undefined;
+  const clamp = (value) => Math.min(100, Math.max(0, value));
+  const used = orbitOllamaNumber(
+    node.used_percent != null ? node.used_percent : node.usedPercent,
+  );
+  if (used != null) return clamp(used);
+  const remaining = orbitOllamaNumber(
+    node.remaining_percent != null ? node.remaining_percent : node.remainingPercent,
+  );
+  if (remaining != null) return clamp(100 - remaining);
+  const fraction = orbitOllamaNumber(node.usage);
+  if (fraction != null) return clamp(fraction <= 1 ? fraction * 100 : fraction);
+  return undefined;
+}
+
+/**
+ * The metered windows from `/api/balance`'s `included` object — the live
+ * source of both usage and reset times. Each bucket is
+ * `{remaining_percent, resets_at}`. A bucket without a readable percentage is
+ * skipped: the UI has no meter to draw and a resets-only row would render
+ * nothing. An older flat shape (`included: {session: 12.5}`) has no percent
+ * either, so it falls through to the balance parser instead.
+ */
+function orbitOllamaBalanceWindows(body) {
+  const included = (body || {}).included;
+  if (!included || typeof included !== "object" || Array.isArray(included)) return [];
+  const windows = [];
+  for (const [id, label] of OLLAMA_BALANCE_WINDOWS) {
+    const node = included[id];
+    if (!node || typeof node !== "object") continue;
+    const usedPercent = orbitOllamaUsedPercent(node);
+    if (usedPercent == null) continue;
+    windows.push(
+      orbitQuotaWindow(id, label, {
+        usedPercent,
+        resetsAt: orbitQuotaReset(
+          node.resets_at != null
+            ? node.resets_at
+            : node.reset_at != null
+              ? node.reset_at
+              : node.resetsAt,
+        ),
+      }),
+    );
+  }
+  return windows;
 }
 
 /**
@@ -939,56 +1025,64 @@ async function orbitOllamaCloudApi(key) {
     Authorization: "Bearer " + key,
     Accept: "application/json",
   };
-  const [r, b] = await Promise.all([
+  const [usageResult, balanceResult] = await Promise.all([
     orbitQuotaJson(OLLAMA_USAGE_URL, headers),
     orbitQuotaJson(OLLAMA_BALANCE_URL, headers),
   ]);
-  if (!r.ok) return { kind: "subscription", error: orbitQuotaHttpError(r.status) };
-  const d = r.body || {};
-  const limits = d.limits || {};
-  const monthly = limits.monthly || {};
+  // The live meters (session/weekly + their reset times) come from
+  // `/api/balance`; `/api/usage` is request-count history with no `limits`
+  // object. Older accounts send the meters and a monthly credit fraction under
+  // `limits` on `/api/usage`, so read both and let the balance copy win — it
+  // carries the countdown. A failure on one endpoint still lets the other
+  // contribute; only losing both is an error.
+  const usage = (usageResult.ok && usageResult.body) || {};
+  const balance = (balanceResult.ok && balanceResult.body) || {};
   const windows = [];
+  const seen = new Set();
+  const push = (window) => {
+    if (!window || window.usedPercent == null || seen.has(window.id)) return;
+    seen.add(window.id);
+    windows.push(window);
+  };
 
-  // `limits.monthly.usage` is a 0..1 fraction of the monthly credit pool.
-  const fraction = orbitQuotaNumber(monthly.usage);
-  if (fraction != null) {
-    windows.push(
-      orbitQuotaWindow("monthly", "Monthly credits", {
-        usedPercent: fraction <= 1 ? fraction * 100 : fraction,
-        unit: "credits",
-        // The reset is the subscription anniversary, absent from the payload.
-        resetsAt: undefined,
+  for (const window of orbitOllamaBalanceWindows(balance)) push(window);
+
+  const limits = usage.limits || {};
+  for (const [id, label] of OLLAMA_BALANCE_WINDOWS) {
+    const node = limits[id];
+    if (!node || typeof node !== "object") continue;
+    push(
+      orbitQuotaWindow(id, label, {
+        usedPercent: orbitOllamaUsedPercent(node),
+        resetsAt: orbitQuotaReset(
+          node.resets_at != null ? node.resets_at : node.reset_at,
+        ),
       }),
     );
   }
-  // Some responses also carry the legacy windows; surface them when present.
-  for (const [key2, id2, label] of [
-    ["session", "session", "5-hour session"],
-    ["weekly", "weekly", "Weekly"],
-  ]) {
-    const node = limits[key2];
-    if (node && typeof node === "object") {
-      const pct = orbitQuotaNumber(
-        node.usage != null ? node.usage : node.used_percent,
-      );
-      const resetsAt = orbitQuotaReset(node.resets_at || node.reset_at);
-      if (pct != null || resetsAt != null) {
-        windows.push(
-          orbitQuotaWindow(id2, label, {
-            usedPercent: pct != null && pct <= 1 ? pct * 100 : pct,
-            resetsAt,
-          }),
-        );
-      }
-    }
+
+  const monthly = limits.monthly || {};
+  push(
+    orbitQuotaWindow("monthly", "Monthly credits", {
+      usedPercent: orbitOllamaUsedPercent(monthly),
+      unit: "credits",
+      // The reset is the subscription anniversary, absent from the payload.
+      resetsAt: orbitQuotaReset(
+        monthly.resets_at != null ? monthly.resets_at : monthly.reset_at,
+      ),
+    }),
+  );
+
+  if (!usageResult.ok && !balanceResult.ok) {
+    return { kind: "subscription", error: orbitQuotaHttpError(usageResult.status) };
   }
 
-  const balances = b.ok ? orbitOllamaBalances(b.body) : [];
+  const balances = balanceResult.ok ? orbitOllamaBalances(balanceResult.body) : [];
   // Older payloads carried a single credit figure on the usage response; keep
   // it as a fallback, but only when /api/balance reported nothing.
-  const credits = d.credits || d.balance;
+  const credits = usage.credits || usage.balance;
   if (balances.length === 0 && credits && typeof credits === "object") {
-    const remaining = orbitQuotaNumber(
+    const remaining = orbitOllamaNumber(
       credits.remaining != null ? credits.remaining : credits.available,
     );
     if (remaining != null) {
@@ -996,16 +1090,26 @@ async function orbitOllamaCloudApi(key) {
     }
   }
 
-  return {
-    kind: "subscription",
-    plan: typeof d.plan === "string" ? d.plan : undefined,
-    windows,
-    balances,
-    note:
-      windows.some((w) => w.id === "monthly")
-        ? "Monthly usage credits reset on your plan's anniversary, which the API does not expose."
-        : "The API does not expose reset times for the 5-hour and weekly windows.",
-  };
+  // A note only explains what is actually missing: the monthly anniversary
+  // reset (never exposed), a window without a countdown, or an account the
+  // endpoints returned nothing for. Windows that carry their own reset render
+  // bare — no stale "the API does not expose reset times" caveat.
+  let note;
+  if (windows.some((window) => window.id === "monthly" && window.resetsAt == null)) {
+    note = "Monthly usage credits reset on your plan's anniversary, which the API does not expose.";
+  } else if (windows.some((window) => window.resetsAt == null)) {
+    note = "Ollama Cloud did not report reset times for every window.";
+  } else if (windows.length === 0 && balances.length === 0) {
+    note = "Ollama Cloud reported no usage or balance for this account.";
+  }
+
+  const plan =
+    typeof usage.plan === "string"
+      ? usage.plan
+      : typeof balance.plan === "string"
+        ? balance.plan
+        : undefined;
+  return { kind: "subscription", plan, windows, balances, note };
 }
 
 /**
