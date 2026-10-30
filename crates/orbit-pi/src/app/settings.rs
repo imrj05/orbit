@@ -8734,7 +8734,12 @@ impl OrbitApp {
             Some(tr!("settings.base_url_scheme"))
         } else if base_url.is_empty() && !in_catalog {
             Some(tr!("settings.base_url_required"))
-        } else if models.is_empty() && !in_catalog {
+        } else if models.is_empty() && providers::builtin(&id).is_none() {
+            // Only a built-in provider may go without a model list — empty
+            // there means "use pi's catalog". A custom provider needs at
+            // least one id or the entry resolves to no models at all. Keyed
+            // on the id rather than `in_catalog`, which also goes true once
+            // the agent advertises a *custom* provider's models.
             Some(tr!("settings.add_model_id"))
         } else {
             None

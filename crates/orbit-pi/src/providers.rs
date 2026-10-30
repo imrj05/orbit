@@ -108,8 +108,10 @@ fn read_custom_at(path: &Path) -> Result<Vec<CustomProvider>, String> {
 }
 
 /// Write (or update) one provider entry, preserving every other key in the
-/// file. `models` is omitted when empty — for a built-in provider that keeps
-/// its catalog; for a custom provider the caller validates non-empty first.
+/// file. An empty `model_ids` removes the `models` key, which returns a
+/// built-in provider to pi's catalog and drops any previously saved override.
+/// Custom providers require at least one model id, so the caller rejects an
+/// empty list before reaching here.
 ///
 /// An empty `api_key` keeps whatever key the file already had, so re-saving
 /// a provider never wipes a stored secret.
@@ -183,7 +185,11 @@ fn write_provider_at(
         // Blank field: keep the stored key if one exists, otherwise leave it out.
         _ => {}
     }
-    if !model_ids.is_empty() {
+    if model_ids.is_empty() {
+        // An empty list means "use pi's built-in models", so drop the key
+        // instead of keeping a stale override the user just cleared.
+        entry.remove("models");
+    } else {
         let models: Vec<Value> = model_ids
             .iter()
             .map(|model_id| {
@@ -1105,6 +1111,54 @@ mod tests {
         assert_eq!(models[0]["contextWindow"], Value::from(128000));
         assert_eq!(models[0]["reasoning"], Value::Bool(true));
         assert_eq!(models[1]["id"], Value::String("m2".into()));
+    }
+
+    /// Clearing the models field on a built-in provider must drop a previously
+    /// saved override so pi's catalog applies again, not keep the old list.
+    #[test]
+    fn clearing_models_drops_the_override_and_keeps_other_fields() {
+        let path = temp_models("clear-models");
+        std::fs::write(
+            &path,
+            r#"{"other":{"keep":true},"providers":{"anthropic":{"baseUrl":"https://proxy.example.com","apiKey":"sk-test","models":[{"id":"m1","contextWindow":1000},{"id":"m2"}]}}}"#,
+        )
+        .unwrap();
+
+        write_provider_at(
+            &path,
+            "anthropic",
+            Some("Anthropic"),
+            "https://proxy.example.com",
+            "anthropic-messages",
+            None,
+            &[],
+        )
+        .unwrap();
+
+        let root: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(root["providers"]["anthropic"].get("models").is_none());
+        assert_eq!(
+            root["providers"]["anthropic"]["baseUrl"],
+            Value::String("https://proxy.example.com".into())
+        );
+        assert_eq!(
+            root["providers"]["anthropic"]["apiKey"],
+            Value::String("sk-test".into())
+        );
+        assert_eq!(root["other"]["keep"], Value::Bool(true));
+        assert!(read_custom_at(&path).unwrap()[0].model_ids.is_empty());
+
+        // Re-saving with every field blank still keeps the stored secret, and
+        // models stay cleared rather than coming back.
+        write_provider_at(&path, "anthropic", None, "", "", None, &[]).unwrap();
+        let root: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let entry = root["providers"]["anthropic"].as_object().unwrap();
+        assert_eq!(entry.len(), 1, "only the preserved apiKey should remain");
+        assert_eq!(entry["apiKey"], Value::String("sk-test".into()));
+
+        remove_provider_at(&path, "anthropic").unwrap();
+        let root: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(root["providers"].get("anthropic").is_none());
     }
 
     #[test]
