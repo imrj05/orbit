@@ -338,6 +338,13 @@ settings.ai_scratch_files_location_description: "pi writes these files directly 
 settings.ai_scratch_files_empty: "No AI scratch files."
 settings.ai_scratch_files_clean: "Clean up now"
 settings.ai_scratch_files_clean_description: "Removes pi's scratch files last used more than an hour ago. Recent files are kept."
+
+settings.remembered_approvals: "已记住的工具许可"
+settings.remembered_approvals_list: "无需询问即可运行：%{tools}"
+settings.remembered_approvals_none: "没有工具被设为免询问"
+settings.remembered_approvals_clear: "清除"
+settings.remembered_approvals_cleared: "已清除 %{count} 项记住的许可"
+
 settings.session_store: "会话存储"
 settings.session_titles: "会话标题"
 settings.sessions_live_in_pi_s_own_store_on_this_computer: "会话存放在本机 pi 自己的存储中 — 没有守护进程，也不上云。"

@@ -336,9 +336,9 @@ fn the_access_chip_names_the_mode_only_when_it_is_not_the_default(cx: &mut gpui:
     let app = cx.update(|cx| cx.new(OrbitApp::new));
 
     for (mode, labelled) in [
-        (AccessMode::FullAccess, false),
+        (AccessMode::Supervised, false),
         (AccessMode::AutoAcceptEdits, true),
-        (AccessMode::Supervised, true),
+        (AccessMode::FullAccess, true),
     ] {
         let window = cx.add_empty_window();
         window.update(|_, cx| {

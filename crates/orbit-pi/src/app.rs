@@ -1582,9 +1582,11 @@ impl OrbitApp {
         // across launches; see `rpc_patches`.
         let rpc_patches = crate::rpc_patches::apply_on_launch();
         // Load the access mode and write it back so the guard extension finds
-        // the file on the very first tool call of the session.
+        // the file on the very first tool call of the session. A failed write
+        // means the guard cannot read a mode and falls back to its own
+        // default, so it is reported instead of dropped.
         let access_mode = AccessMode::load();
-        access_mode.persist();
+        let access_mode_error = access_mode.persist().err().unwrap_or_default();
         // MCP configuration and secrets must be loaded before the first spawn
         // so the child's environment carries every `${NAME}` reference the
         // config uses, and so the process can be stamped with the config it
@@ -1911,8 +1913,13 @@ impl OrbitApp {
             pending_follow_up: None,
             pending_agent_error: None,
             session_name_input,
-            status: connect_error.clone(),
-            status_at: (!connect_error.is_empty()).then(Instant::now),
+            status: if connect_error.is_empty() {
+                access_mode_error.clone()
+            } else {
+                connect_error.clone()
+            },
+            status_at: (!connect_error.is_empty() || !access_mode_error.is_empty())
+                .then(Instant::now),
             current_title: None,
             current_workspace: Some(workspace),
             workspace_logo,

@@ -1131,11 +1131,14 @@ impl OrbitApp {
     pub(super) fn set_access_mode(&mut self, mode: AccessMode, cx: &mut Context<Self>) {
         self.access_mode = mode;
         self.clear_follow_up_suggestions();
-        mode.persist();
-        if self.extensions.guard().is_none() {
-            self.toast_warning(tr!("access.mode_set_unavailable", mode = mode.label()));
-        } else {
-            self.set_status(tr!("access.mode_set", mode = mode.label()));
+        // A mode the guard cannot read is not the mode in force: report the
+        // write failure rather than a confident "Access mode: …".
+        match mode.persist() {
+            Err(error) => self.toast_error(error),
+            Ok(()) if self.extensions.guard().is_none() => {
+                self.toast_warning(tr!("access.mode_set_unavailable", mode = mode.label()));
+            }
+            Ok(()) => self.set_status(tr!("access.mode_set", mode = mode.label())),
         }
         cx.notify();
     }

@@ -338,6 +338,13 @@ settings.ai_scratch_files_location_description: "pi writes these files directly 
 settings.ai_scratch_files_empty: "No AI scratch files."
 settings.ai_scratch_files_clean: "Clean up now"
 settings.ai_scratch_files_clean_description: "Removes pi's scratch files last used more than an hour ago. Recent files are kept."
+
+settings.remembered_approvals: "記憶されたツールの許可"
+settings.remembered_approvals_list: "確認なしで実行を許可: %{tools}"
+settings.remembered_approvals_none: "確認なしで許可されたツールはありません"
+settings.remembered_approvals_clear: "忘れる"
+settings.remembered_approvals_cleared: "記憶された許可を %{count} 件削除しました"
+
 settings.session_store: "セッションストア"
 settings.session_titles: "セッションタイトル"
 settings.sessions_live_in_pi_s_own_store_on_this_computer: "セッションはこのコンピューター上の pi 自身のストアに保存されます — デーモンもクラウドもありません。"

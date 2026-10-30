@@ -8,7 +8,10 @@
  * mode that becomes an `extension_ui_request`; Orbit renders it as an inline
  * bar above the composer and answers it over stdin.
  *
- * The offered options are Allow once / Always allow this tool / Deny.
+ * The offered options are Allow once / Always allow this tool / Deny, except
+ * for tools whose risk depends on their arguments (`bash`, MCP tools, custom
+ * extension tools): those get Allow once / Deny only, because "always allow
+ * bash" would hand over every future command rather than the one on screen.
  * "Always allow" is recorded per mode in `~/.orbit-pi/access-allow.json`. The
  * mode lives in `~/.orbit-pi/access.json` and is read fresh on every tool
  * call, so a change in Orbit re-arms live sessions with no restart. See
@@ -18,12 +21,13 @@
  * throws/returns nothing, the call is blocked rather than allowed.
  */
 import {
-  CONFIRM_OPTIONS,
   OPTION_ALLOW_ONCE,
   OPTION_ALWAYS_ALLOW,
   addToAllowlist,
+  confirmOptions,
   decide,
   formatTitle,
+  grantable,
   readAllowlist,
   readMode,
   summarize,
@@ -62,12 +66,14 @@ export default function activate(pi) {
     let choice;
     try {
       const title = formatTitle(tool, summarize(tool, event.input));
-      choice = await serializePrompt(() => ctx.ui.select(title, CONFIRM_OPTIONS));
+      choice = await serializePrompt(() =>
+        ctx.ui.select(title, confirmOptions(tool)),
+      );
     } catch {
       choice = undefined;
     }
 
-    if (choice === OPTION_ALWAYS_ALLOW) {
+    if (choice === OPTION_ALWAYS_ALLOW && grantable(tool)) {
       addToAllowlist(mode, tool);
       return;
     }

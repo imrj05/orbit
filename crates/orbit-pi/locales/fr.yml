@@ -338,6 +338,13 @@ settings.ai_scratch_files_location_description: "pi writes these files directly 
 settings.ai_scratch_files_empty: "No AI scratch files."
 settings.ai_scratch_files_clean: "Clean up now"
 settings.ai_scratch_files_clean_description: "Removes pi's scratch files last used more than an hour ago. Recent files are kept."
+
+settings.remembered_approvals: "Autorisations d'outils mémorisées"
+settings.remembered_approvals_list: "Autorisé sans demander : %{tools}"
+settings.remembered_approvals_none: "Aucun outil n'est autorisé sans demander"
+settings.remembered_approvals_clear: "Oublier"
+settings.remembered_approvals_cleared: "%{count} autorisations mémorisées ont été oubliées"
+
 settings.session_store: "Stockage des sessions"
 settings.session_titles: "Titres de session"
 settings.sessions_live_in_pi_s_own_store_on_this_computer: "Les sessions vivent dans le stockage propre à pi sur cet ordinateur — sans démon, sans cloud."

@@ -338,6 +338,13 @@ settings.ai_scratch_files_location_description: "pi writes these files directly 
 settings.ai_scratch_files_empty: "No AI scratch files."
 settings.ai_scratch_files_clean: "Clean up now"
 settings.ai_scratch_files_clean_description: "Removes pi's scratch files last used more than an hour ago. Recent files are kept."
+
+settings.remembered_approvals: "기억된 도구 승인"
+settings.remembered_approvals_list: "묻지 않고 허용됨: %{tools}"
+settings.remembered_approvals_none: "묻지 않고 허용된 도구가 없습니다"
+settings.remembered_approvals_clear: "지우기"
+settings.remembered_approvals_cleared: "기억된 승인 %{count}개를 지웠습니다"
+
 settings.session_store: "세션 저장소"
 settings.session_titles: "세션 제목"
 settings.sessions_live_in_pi_s_own_store_on_this_computer: "세션은 이 컴퓨터의 pi 자체 저장소에 있습니다 — 데몬도, 클라우드도 없습니다."

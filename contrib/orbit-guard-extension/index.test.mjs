@@ -21,12 +21,14 @@ import { OPTION_ALLOW_ONCE, OPTION_ALWAYS_ALLOW, OPTION_DENY } from "./policy.js
 let home;
 let selectCalls;
 let selectResult;
+let lastOptions;
 
 beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), "orbit-guard-entry-"));
   fs.mkdirSync(path.join(home, ".orbit-pi"), { recursive: true });
   selectCalls = 0;
   selectResult = OPTION_ALLOW_ONCE;
+  lastOptions = [];
   process.env.HOME = home;
 });
 
@@ -58,7 +60,9 @@ function fakeCtx({ hasUI = true } = {}) {
     ui: {
       select: async (title, options) => {
         selectCalls += 1;
-        assert.equal(options.length, 3, "offers three options");
+        lastOptions = options;
+        assert.ok(options.includes(OPTION_ALLOW_ONCE), "offers allow-once");
+        assert.ok(options.includes(OPTION_DENY), "offers deny");
         assert.ok(title.startsWith("[orbit-guard] "), "title carries the marker");
         return selectResult;
       },
@@ -107,21 +111,46 @@ test("a denied call blocks with a reason", async () => {
   assert.match(result.reason, /Denied/);
 });
 
-test("always allow records the tool and stops prompting for it", async () => {
+test("always allow records a whole-file tool and stops prompting for it", async () => {
   setMode("supervised");
   selectResult = OPTION_ALWAYS_ALLOW;
   const pi = fakePi();
   activate(pi);
 
-  await pi.fire("tool_call", { toolName: "bash", input: { command: "ls" } }, fakeCtx());
+  await pi.fire("tool_call", { toolName: "edit", input: { path: "a" } }, fakeCtx());
   assert.equal(selectCalls, 1);
+  assert.ok(lastOptions.includes(OPTION_ALWAYS_ALLOW), "edit may be granted");
   const written = JSON.parse(fs.readFileSync(allowFile(), "utf8"));
-  assert.deepEqual(written.supervised, ["bash"]);
+  assert.deepEqual(written.supervised, ["edit"]);
 
-  // A second bash call in the same mode is allowed without a prompt.
-  const second = await pi.fire("tool_call", { toolName: "bash", input: { command: "pwd" } }, fakeCtx());
+  // A second edit in the same mode is allowed without a prompt.
+  const second = await pi.fire("tool_call", { toolName: "edit", input: { path: "b" } }, fakeCtx());
   assert.equal(second, undefined);
   assert.equal(selectCalls, 1, "no second prompt");
+});
+
+test("a command can never be granted for the whole session", async () => {
+  // Approving `ls` once must not approve every later command: the button is not
+  // offered for exec tools, and a legacy `["bash"]` grant in the file is ignored.
+  setMode("supervised");
+  selectResult = OPTION_ALWAYS_ALLOW;
+  const pi = fakePi();
+  activate(pi);
+
+  const result = await pi.fire(
+    "tool_call",
+    { toolName: "bash", input: { command: "ls" } },
+    fakeCtx(),
+  );
+  assert.ok(!lastOptions.includes(OPTION_ALWAYS_ALLOW), "no grant button for bash");
+  assert.equal(result.block, true, "an unsupported choice is a denial, not an allow");
+  assert.equal(fs.existsSync(allowFile()), false, "nothing recorded");
+
+  // A grant written by an older Orbit does not survive either.
+  fs.writeFileSync(allowFile(), JSON.stringify({ supervised: ["bash"] }));
+  selectResult = OPTION_DENY;
+  await pi.fire("tool_call", { toolName: "bash", input: { command: "ls" } }, fakeCtx());
+  assert.equal(selectCalls, 2, "still asks after a stale grant");
 });
 
 test("auto-accept-edits skips the prompt for edits but asks for exec", async () => {
@@ -171,12 +200,22 @@ test("a dismissed or throwing prompt fails closed", async () => {
   assert.equal(threw.block, true);
 });
 
-test("a missing mode file behaves as full-access", async () => {
+test("a missing mode file behaves as supervised, not full-access", async () => {
+  // The file is absent, so the guard has no mode to enforce: the safe reading is
+  // "ask", never "allow everything".
   const pi = fakePi();
   activate(pi);
   const result = await pi.fire("tool_call", { toolName: "bash", input: { command: "ls" } }, fakeCtx());
-  assert.equal(result, undefined);
-  assert.equal(selectCalls, 0);
+  assert.equal(selectCalls, 1, "it asked instead of allowing");
+  assert.equal(result, undefined, "the answer was allow-once");
+});
+
+test("a corrupt mode file behaves as supervised, not full-access", async () => {
+  fs.writeFileSync(path.join(home, ".orbit-pi", "access.json"), "{not json");
+  const pi = fakePi();
+  activate(pi);
+  await pi.fire("tool_call", { toolName: "edit", input: { path: "a" } }, fakeCtx());
+  assert.equal(selectCalls, 1, "a half-written file must not widen access");
 });
 
 test("parallel prompts are serialized, never stacked", async () => {
