@@ -1204,7 +1204,14 @@ async function orbitOllamaCloudSettings(session) {
 async function orbitQuotaOllama(id) {
   const { stored } = await orbitQuotaResolved(id);
   const auth = await orbitQuotaReadAuth();
-  const cloudKey = orbitOllamaCloudKey(stored);
+  // Both Ollama provider ids point at the same ollama.com account, so a key
+  // stored under the sibling id is a valid fallback. The id's own entry always
+  // wins, and `orbitOllamaCloudKey` rejects the local placeholder and loopback
+  // URLs either way, so a local-only setup can never borrow — or leak —
+  // anything.
+  const cloudKey =
+    orbitOllamaCloudKey(stored) ||
+    orbitOllamaCloudKey(auth[id === "ollama" ? "ollama-cloud" : "ollama"]);
   // New key first; fall back to a legacy entry stored under the provider id.
   const session =
     orbitOllamaSession(auth[OLLAMA_SESSION_KEY]) || orbitOllamaSession(stored);

@@ -390,6 +390,58 @@ test("ollama ignores a non-numeric remaining percentage", async () => {
   );
 });
 
+/** Both endpoints return the live payloads; `sent` records the bearer used. */
+function liveOllamaFetch(sent) {
+  return async (url, init) => {
+    if (sent) sent.push((init && init.headers && init.headers.Authorization) || "");
+    const body = String(url).includes("/api/balance")
+      ? LIVE_OLLAMA_BALANCE
+      : LIVE_OLLAMA_USAGE;
+    return { ok: true, status: 200, url, text: async () => JSON.stringify(body) };
+  };
+}
+
+test("ollama borrows a key stored under the sibling ollama-cloud id", async () => {
+  await withAuth(
+    { "ollama-cloud": { type: "api_key", key: "real-cloud-key" } },
+    async () => {
+      const { orbitQuotaReport } = loadHandler({ fetch: liveOllamaFetch() });
+      const report = await orbitQuotaReport("ollama");
+      assert.equal(report.kind, "subscription");
+      assert.deepEqual(
+        report.windows.map((w) => w.id),
+        ["session", "weekly"],
+      );
+    },
+  );
+});
+
+test("each Ollama id sends its own key before the sibling's", async () => {
+  await withAuth(
+    {
+      ollama: { type: "api_key", key: "own-ollama-key" },
+      "ollama-cloud": { type: "api_key", key: "own-cloud-key" },
+    },
+    async () => {
+      const sent = [];
+      const { orbitQuotaReport } = loadHandler({ fetch: liveOllamaFetch(sent) });
+      await orbitQuotaReport("ollama");
+      await orbitQuotaReport("ollama-cloud");
+      assert.deepEqual([...new Set(sent)], ["Bearer own-ollama-key", "Bearer own-cloud-key"]);
+    },
+  );
+});
+
+test("a local placeholder under ollama never reaches ollama.com via the sibling", async () => {
+  await withAuth({ ollama: { type: "api_key", key: "ollama" } }, async () => {
+    const sent = [];
+    const { orbitQuotaReport } = loadHandler({ fetch: liveOllamaFetch(sent) });
+    const report = await orbitQuotaReport("ollama-cloud");
+    assert.equal(report.kind, "unsupported");
+    assert.deepEqual(sent, [], "no request carried the placeholder");
+  });
+});
+
 test("ollama cloud key reports both balances from /api/balance", async () => {
   await withAuth(
     { ollama: { type: "api_key", key: "real-cloud-key" } },

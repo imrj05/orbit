@@ -108,6 +108,12 @@ placeholder (`api_key: "ollama"` pointing at `127.0.0.1`) to ollama.com, and
 never logs a session. The API key is set in **Settings → Providers → Ollama →
 `Add API key`**; there is no session-cookie input in the app.
 
+A real key under either id meters the same account: each adapter prefers its own
+entry and falls back to the sibling's (`ollama` ↔ `ollama-cloud`), and the
+bridge keeps the sibling in the snapshot when only one has a key. Reports are
+keyed by provider id, so the usage popover will list both ids with identical
+meters — one report per id, not one per account.
+
 ## Notes
 
 - Handler adapters have network-free unit tests:

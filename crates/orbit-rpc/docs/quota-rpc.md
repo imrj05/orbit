@@ -211,6 +211,15 @@ The server must never send the local `models.json` placeholder
 (`api_key: "ollama"`) to `ollama.com`, never auto-extract browser cookies, and
 never log a session value.
 
+A real key under **either** id meters the same account: the adapter prefers the
+queried id's own entry and falls back to the sibling's, and the bridge keeps the
+sibling id in the snapshot when one of them has a key. So a key saved on the
+Ollama card also meters the Ollama Cloud card and vice versa. Because reports
+are keyed by provider id rather than by account, that means the usage popover
+can list both an `Ollama` and an `Ollama Cloud` row with identical meters — one
+report per id, not one per account. The placeholder is rejected on both paths,
+so a local-only setup borrows nothing and sends nothing.
+
 Adapters must verify the response origin before sending a credential, reject
 redirects, and never follow a credential to a custom/proxy host.
 
