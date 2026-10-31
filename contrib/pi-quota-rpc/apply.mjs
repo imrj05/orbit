@@ -109,6 +109,17 @@ function findTargets(root) {
 
 function handlerSource() {
   const source = fs.readFileSync(path.join(HERE, "quota-handler.js"), "utf8").trim();
+  // The handler is spliced into pi's bundle, where one duplicated declaration
+  // is a SyntaxError that stops RPC mode from loading at all — every command,
+  // not just quota. Compile it here so a broken edit fails at apply time with a
+  // readable message instead of breaking pi on its next launch.
+  try {
+    new Function(source);
+  } catch (error) {
+    throw new Error(
+      `quota-handler.js does not parse, so the patch was not applied: ${error.message}`,
+    );
+  }
   return `${MARKER_BEGIN}\n${source}\n${MARKER_END}\n`;
 }
 
@@ -189,4 +200,11 @@ function main() {
   }
 }
 
-main();
+try {
+  main();
+} catch (error) {
+  // The one failure worth reading as a sentence rather than a stack: the
+  // handler does not parse, so nothing was written.
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+}
