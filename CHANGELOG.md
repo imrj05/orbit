@@ -20,6 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **"Open in" Rex opens the folder when Rex has to start.** A folder handed to
+  Rex while the app was still launching was dropped: Rex came up on its About
+  window and never opened the workspace, because a launch-time open request
+  arrives before its client has connected to its server. Opening in Rex is now
+  two steps when the app isn't running — start it, then hand it the folder a
+  moment later — which opens the workspace. Rex's About window still appears;
+  only the lost folder is worked around, and a Rex that is already running is
+  handed the folder in one step as before.
+
 - **One usage card per Ollama account.** A setup with both `ollama` and
   `ollama-cloud` configured showed the same account twice — two cards carrying
   identical windows and balances, and a header count to match — because the
