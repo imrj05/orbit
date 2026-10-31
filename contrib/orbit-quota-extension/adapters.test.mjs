@@ -514,6 +514,43 @@ test("ollama expired session degrades to a sign-in error, not a crash", async ()
   );
 });
 
+test("ollama surfaces an opaque redirect as an expired session, not a fetch failure", async () => {
+  await withAuth(
+    { "ollama-cloud-session": { type: "ollama_cloud_session", session: "__Secure-session=expired" } },
+    async () => {
+      const redirects = [];
+      // What `redirect: "manual"` really hands back: an opaque redirect with
+      // no status, no readable body, and an unchanged URL. Following it would
+      // throw, and the card would read "fetch failed" instead of naming the
+      // expired session.
+      globalThis.fetch = async (url, init) => {
+        redirects.push(init && init.redirect);
+        return { type: "opaqueredirect", status: 0, ok: false, url, text: async () => "" };
+      };
+      const report = await quotaReport("ollama");
+      assert.equal(report.error, "Ollama session expired — sign in again.");
+      assert.deepEqual(redirects, ["manual"], "the settings page asks for the redirect");
+    },
+  );
+});
+
+test("ollama api requests refuse to follow a redirect", async () => {
+  await withAuth({ "ollama-cloud": { type: "api_key", key: "real-cloud-key" } }, async () => {
+    const redirects = [];
+    globalThis.fetch = async (url, init) => {
+      redirects.push(init && init.redirect);
+      const body = String(url).includes("/api/balance")
+        ? LIVE_OLLAMA_BALANCE
+        : LIVE_OLLAMA_USAGE;
+      return { ok: true, status: 200, url, text: async () => JSON.stringify(body) };
+    };
+    await quotaReport("ollama-cloud");
+    // A redirect on a usage endpoint means the answer would come from a host
+    // that is not ollama.com, so the request fails rather than follows.
+    assert.deepEqual(redirects, ["error", "error"]);
+  });
+});
+
 test("ollama changed markup reports an error instead of a fake zero", async () => {
   await withAuth(
     { "ollama-cloud-session": { type: "ollama_cloud_session", session: "__Secure-session=abc123" } },

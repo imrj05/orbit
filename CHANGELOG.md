@@ -20,6 +20,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **One usage card per Ollama account.** A setup with both `ollama` and
+  `ollama-cloud` configured showed the same account twice — two cards carrying
+  identical windows and balances, and a header count to match — because the
+  popover rendered one card per provider id while both ids resolve one
+  ollama.com account (the adapter borrows a key stored under either). The
+  popover now collapses ids that share an account into a single card, named
+  after the id the active model uses, preferring the report that carries
+  numbers over an errored sibling and keeping a lone failure visible rather
+  than folding it away. The eye toggle stores the shared id, so hiding the card
+  survives a model switch between the two.
+
+- **Ollama's monthly credit window explains its missing countdown.** The note
+  naming the plan-anniversary reset was dropped whenever the session and weekly
+  windows carried their own reset times — which is always — because a note only
+  rendered when *every* window lacked one. It now renders when any window does.
+
+- **An expired Ollama session reads as expired, not as "fetch failed".**
+  Redirects were refused at the fetch layer, so the settings-page reader never
+  saw the sign-in redirect it was written to translate. An expired cookie now
+  reports "Ollama session expired — sign in again", while the usage endpoints
+  still refuse to follow a redirect at all.
+
 - **The skill enable/disable switch is clickable again on Windows.** Settings →
   Skills puts the switch at the right edge of the detail header, directly under
   the caption buttons the app paints over the window's top-right corner, so the

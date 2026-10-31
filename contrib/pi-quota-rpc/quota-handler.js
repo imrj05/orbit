@@ -145,9 +145,19 @@ async function orbitQuotaRequest(url, headers, options) {
     const response = await fetch(url, {
       method: "GET",
       headers, // lgtm[js/file-access-to-http]
-      redirect: "error",
+      // A JSON usage endpoint that redirects is never followed: the answer
+      // would come from a host that is not the provider's own API. The HTML
+      // path asks for the redirect to be surfaced instead of thrown, so an
+      // expired session is reported as expired rather than as "fetch failed".
+      redirect: html ? "manual" : "error",
       signal: controller.signal,
     });
+    // `redirect: "manual"` hands back an opaque redirect instead of throwing.
+    // Nothing can be read from it, and the settings page treats it as the
+    // expired session it is.
+    if (html && (response.type === "opaqueredirect" || response.status === 0)) {
+      return { ok: false, status: 302, redirected: true, text: "" };
+    }
     const text = await response.text();
     if (html) {
       // Do not follow a redirect to a sign-in host: a redirect here means the

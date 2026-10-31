@@ -4,7 +4,7 @@ use super::mcp_ui::QuotaPopupTab;
 use super::*;
 use crate::app::helpers::{segmented_segment, SegmentPosition};
 use crate::context_meter::context_ring;
-use crate::quota::{is_five_hour_window, note_should_render, QuotaHeadline};
+use crate::quota::{canonical_provider, is_five_hour_window, note_should_render, QuotaHeadline};
 use crate::theme::tokens::{
     input, panel, popover, ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize,
 };
@@ -2128,10 +2128,14 @@ impl OrbitApp {
         // The user's hide list only shapes the popover; Settings still shows
         // every connected provider. Split once so the header count and the
         // "Hidden" group agree, and so a hidden provider is one click back.
+        // Sibling ids that share an account (`ollama` / `ollama-cloud`) are
+        // hidden together: a card collapsed to either id stays hidden.
         let hidden = &self.hidden_quota_providers;
-        let (visible, hidden_reports): (Vec<&QuotaReport>, Vec<&QuotaReport>) = reports
-            .into_iter()
-            .partition(|report| !hidden.contains(&report.provider));
+        let (visible, hidden_reports): (Vec<&QuotaReport>, Vec<&QuotaReport>) =
+            reports.into_iter().partition(|report| {
+                !hidden.contains(&report.provider)
+                    && !hidden.contains(canonical_provider(&report.provider))
+            });
         let count = visible.len();
         // One glyph that turns in place instead of swapping to a loader, so
         // the click never changes the control's shape. Active, it wears the
@@ -2259,7 +2263,11 @@ impl OrbitApp {
                             report,
                             theme,
                             false,
-                            Some(self.quota_visibility_button(&report.provider, false, cx)),
+                            Some(self.quota_visibility_button(
+                                canonical_provider(&report.provider),
+                                false,
+                                cx,
+                            )),
                         )
                     }));
                 if !hidden_reports.is_empty() {
@@ -2344,34 +2352,38 @@ impl OrbitApp {
             "quota-{}-{provider}",
             if hidden { "show" } else { "hide" }
         ));
+        // The toggle names the account it hides, not the active model's id:
+        // both Ollama ids share one card, so both store the same entry.
+        let selector = id.to_string();
         let provider = provider.to_string();
-        icon_button_frame(div().id(id), &theme, ButtonSize::Compact)
-            .cursor_pointer()
-            .hover(|style| style.bg(theme.surface_hover))
-            .active(|style| style.opacity(PRESS_DIM))
-            .tooltip({
-                let label = label.clone();
-                move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
-            })
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(
-                    move |this: &mut Self,
-                          _: &MouseUpEvent,
-                          _: &mut Window,
-                          cx: &mut Context<Self>| {
-                        this.hidden_quota_providers.toggle(&provider);
-                        this.hidden_quota_providers.persist();
-                        cx.notify();
-                    },
-                ),
-            )
-            .child(icon(
-                path,
-                ButtonSize::Compact.icon_size().px(&theme),
-                theme.text_muted,
-            ))
-            .into_any_element()
+        icon_button_frame(
+            div().id(id).debug_selector(move || selector.clone()),
+            &theme,
+            ButtonSize::Compact,
+        )
+        .cursor_pointer()
+        .hover(|style| style.bg(theme.surface_hover))
+        .active(|style| style.opacity(PRESS_DIM))
+        .tooltip({
+            let label = label.clone();
+            move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
+        })
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(
+                move |this: &mut Self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>| {
+                    this.hidden_quota_providers.toggle(&provider);
+                    this.hidden_quota_providers.persist();
+                    cx.notify();
+                },
+            ),
+        )
+        .child(icon(
+            path,
+            ButtonSize::Compact.icon_size().px(&theme),
+            theme.text_muted,
+        ))
+        .into_any_element()
     }
 
     /// The Providers pane with nothing to show (no quota reports yet, or a
@@ -2472,7 +2484,11 @@ impl OrbitApp {
                         report,
                         theme,
                         true,
-                        Some(self.quota_visibility_button(&report.provider, true, cx)),
+                        Some(self.quota_visibility_button(
+                            canonical_provider(&report.provider),
+                            true,
+                            cx,
+                        )),
                     ))
             }));
         }

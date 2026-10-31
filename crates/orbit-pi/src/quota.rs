@@ -56,6 +56,44 @@ pub struct QuotaManager {
     reports: HashMap<String, QuotaReport>,
 }
 
+/// The id a shared surface should treat as the account: the alias when
+/// `provider` names a sibling of another provider id, otherwise the id itself.
+/// `ollama` and `ollama-cloud` are one ollama.com account, so the popover keys
+/// both to `ollama` and the hide list stores that id — a card hidden on one id
+/// stays hidden when the active model moves to the other.
+pub fn canonical_provider(provider: &str) -> &str {
+    crate::providers::provider_alias(provider).unwrap_or(provider)
+}
+
+/// Collapse provider ids that resolve to one account into a single report.
+/// `ollama` and `ollama-cloud` are answered by the same ollama.com account (the
+/// adapter borrows a key stored under either id), so their two reports carry
+/// the same windows and balances and would render twice.
+///
+/// Within a group the report carrying real data wins, so an errored sibling
+/// cannot blank a working card; ties go to the active provider's id so the
+/// card names the model in use. A group with nothing but errors keeps one
+/// member, letting the failure surface instead of vanishing into the collapse.
+fn collapse_accounts<'a>(reports: Vec<&'a QuotaReport>, active: &str) -> Vec<&'a QuotaReport> {
+    let mut collapsed: Vec<&'a QuotaReport> = Vec::with_capacity(reports.len());
+    let mut groups: HashMap<&'a str, usize> = HashMap::new();
+    for report in reports {
+        let account = canonical_provider(&report.provider);
+        let Some(&slot) = groups.get(account) else {
+            groups.insert(account, collapsed.len());
+            collapsed.push(report);
+            continue;
+        };
+        let kept = collapsed[slot];
+        if (report.has_data(), report.provider == active)
+            > (kept.has_data(), kept.provider == active)
+        {
+            collapsed[slot] = report;
+        }
+    }
+    collapsed
+}
+
 impl Default for QuotaManager {
     fn default() -> Self {
         Self::new()
@@ -93,10 +131,14 @@ impl QuotaManager {
     }
 
     /// Reports shown in the usage popover, with the active provider first.
-    /// Unsupported providers remain available through `report` for settings.
+    /// Ids that resolve to one account collapse to a single card (see
+    /// [`canonical_provider`]), so neither the list nor the header count read
+    /// from it can show the same account twice. Unsupported providers remain
+    /// available through `report` for settings.
     pub fn usage_reports(&self, active_provider: &str) -> Vec<&QuotaReport> {
         let mut reports = self.reports();
         reports.retain(|report| report.kind != QuotaKind::Unsupported);
+        let mut reports = collapse_accounts(reports, active_provider);
         reports.sort_by_key(|report| report.provider != active_provider);
         reports
     }
@@ -236,10 +278,11 @@ fn is_unsupported_error(message: &str) -> bool {
 
 /// Whether a report's `note` should render. A note normally accompanies a
 /// report with nothing else to show (an unsupported provider, a balance-only
-/// account). It also renders beneath metered windows when none of them carries
-/// a reset time, so a provider whose usage API omits resets (Ollama Cloud's
-/// `/api/usage`) still explains how to see the countdown instead of showing a
-/// bare meter. Errored reports render their error, never the note.
+/// account). It also renders beneath metered windows when any of them carries
+/// no reset time, so a provider whose usage API omits one countdown (Ollama
+/// Cloud's monthly credits reset on the plan anniversary, which the payload
+/// never carries) explains its absence instead of leaving a bare meter.
+/// Errored reports render their error, never the note.
 pub fn note_should_render(report: &QuotaReport) -> bool {
     report.error.is_none()
         && report.note.is_some()
@@ -247,7 +290,7 @@ pub fn note_should_render(report: &QuotaReport) -> bool {
             || report
                 .windows
                 .iter()
-                .all(|window| window.resets_at.is_none()))
+                .any(|window| window.resets_at.is_none()))
 }
 
 /// Whether a report carries anything the UI can render.
@@ -394,6 +437,35 @@ mod tests {
         );
         assert!(!note_should_render(errored.report("ollama").unwrap()));
 
+        // One dated window is not enough to silence a note that explains a
+        // *different* window's missing countdown (Ollama's monthly credits).
+        let mut mixed = QuotaManager::new();
+        mixed.on_response(
+            true,
+            Some(
+                &json!({"providers":[{"provider":"ollama","kind":"subscription",
+                "windows":[{"id":"session","label":"5-hour session","usedPercent":1.0,"resetsAt":1},
+                           {"id":"monthly","label":"Monthly credits","usedPercent":28.0}],
+                "note":"Monthly usage credits reset on your plan's anniversary."}]}),
+            ),
+            None,
+        );
+        assert!(note_should_render(mixed.report("ollama").unwrap()));
+
+        // Every window dated: the note would be a stale caveat, so it drops.
+        let mut fully_dated = QuotaManager::new();
+        fully_dated.on_response(
+            true,
+            Some(
+                &json!({"providers":[{"provider":"ollama","kind":"subscription",
+                "windows":[{"id":"session","label":"5-hour session","usedPercent":1.0,"resetsAt":1},
+                           {"id":"weekly","label":"Weekly","usedPercent":38.0,"resetsAt":2}],
+                "note":"Ollama Cloud did not report reset times for every window."}]}),
+            ),
+            None,
+        );
+        assert!(!note_should_render(fully_dated.report("ollama").unwrap()));
+
         // The classic note case: nothing else to show.
         let mut empty = QuotaManager::new();
         empty.on_response(
@@ -469,6 +541,71 @@ mod tests {
             .map(|r| r.provider.as_str())
             .collect();
         assert_eq!(providers, ["anthropic", "zai"]);
+    }
+
+    /// One ollama.com account, two provider ids: the popover must show one
+    /// card, named after the id the active model is using.
+    fn ollama_pair() -> serde_json::Value {
+        json!({"providers":[
+            {"provider":"ollama","kind":"subscription",
+             "windows":[{"id":"session","label":"5-hour session","usedPercent":2.0,"resetsAt":1}]},
+            {"provider":"ollama-cloud","kind":"subscription",
+             "windows":[{"id":"session","label":"5-hour session","usedPercent":2.0,"resetsAt":1}]}
+        ]})
+    }
+
+    #[test]
+    fn usage_reports_collapse_the_ollama_sibling_pair() {
+        let mut quota = QuotaManager::new();
+        quota.on_response(true, Some(&ollama_pair()), None);
+
+        // The active id wins, so the card names the model in use.
+        for active in ["ollama", "ollama-cloud"] {
+            let reports = quota.usage_reports(active);
+            assert_eq!(reports.len(), 1, "one card for {active}");
+            assert_eq!(reports[0].provider, active);
+        }
+
+        // Settings still addresses each id individually.
+        assert!(quota.report("ollama").is_some());
+        assert!(quota.report("ollama-cloud").is_some());
+    }
+
+    #[test]
+    fn collapsed_group_prefers_data_over_an_errored_sibling() {
+        let mut quota = QuotaManager::new();
+        quota.on_response(
+            true,
+            Some(&json!({"providers":[
+                {"provider":"ollama","kind":"subscription","windows":[],"error":"429"},
+                {"provider":"ollama-cloud","kind":"subscription",
+                 "windows":[{"id":"session","label":"5-hour session","usedPercent":12.0,"resetsAt":1}]}
+            ]})),
+            None,
+        );
+        // The active id errors, but the account's numbers still render: a
+        // failure must not blank a working card.
+        let reports = quota.usage_reports("ollama");
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].provider, "ollama-cloud");
+        assert!(reports[0].has_data());
+    }
+
+    #[test]
+    fn collapsed_group_keeps_one_report_when_both_fail() {
+        let mut quota = QuotaManager::new();
+        quota.on_response(
+            true,
+            Some(&json!({"providers":[
+                {"provider":"ollama","kind":"subscription","windows":[],"error":"429"},
+                {"provider":"ollama-cloud","kind":"subscription","windows":[],"error":"503"}
+            ]})),
+            None,
+        );
+        // Collapsing must not swallow the failure: one card keeps its error.
+        let reports = quota.usage_reports("deepseek");
+        assert_eq!(reports.len(), 1);
+        assert!(reports[0].error.is_some());
     }
 
     #[test]
