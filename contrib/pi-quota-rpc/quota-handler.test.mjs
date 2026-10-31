@@ -370,6 +370,94 @@ test("ollama live payload meters session/weekly from /api/balance", async () => 
   );
 });
 
+test("ollama reads meters from a payload nested under `balance`", async () => {
+  await withAuth(
+    { "ollama-cloud": { type: "api_key", key: "real-cloud-key" } },
+    async () => {
+      const { orbitQuotaReport } = loadHandler({
+        fetch: async (url) => {
+          const body = String(url).includes("/api/balance")
+            ? {
+                balance: {
+                  included: {
+                    session: { remaining_percent: 60, resetsAt: "2026-10-30T11:00:00Z" },
+                    weekly: { remaining_percent: 25, resets_at: "2026-11-02T00:00:00Z" },
+                  },
+                  purchased: { balance_usd: 4.5 },
+                },
+              }
+            : { range: "7d", totals: { request_count: 11131 }, buckets: [] };
+          return { ok: true, status: 200, url, text: async () => JSON.stringify(body) };
+        },
+      });
+      const report = await orbitQuotaReport("ollama-cloud");
+      // The balance parser already unwraps this container; the meters must not
+      // be the one thing a nested payload loses.
+      assert.deepEqual(
+        report.windows.map((w) => w.id),
+        ["session", "weekly"],
+      );
+      assert.equal(report.windows[0].usedPercent, 40);
+      assert.equal(report.windows[0].resetsAt, Date.parse("2026-10-30T11:00:00Z"));
+      assert.equal(report.windows[1].usedPercent, 75);
+      assert.equal(report.windows[1].resetsAt, Date.parse("2026-11-02T00:00:00Z"));
+      assert.deepEqual(report.balances, [
+        { label: "Purchased", amount: 4.5, currency: "USD" },
+      ]);
+    },
+  );
+});
+
+test("ollama reads a legacy limits reset under any of its names", async () => {
+  await withAuth(
+    { ollama: { type: "api_key", key: "real-cloud-key" } },
+    async () => {
+      const { orbitQuotaReport } = loadHandler({
+        fetch: async (url) => {
+          const body = String(url).includes("/api/balance")
+            ? {}
+            : { limits: { session: { usage: 0.3, resetsAt: "2026-10-30T11:00:00Z" } } };
+          return { ok: true, status: 200, url, text: async () => JSON.stringify(body) };
+        },
+      });
+      const report = await orbitQuotaReport("ollama");
+      const session = report.windows.find((w) => w.id === "session");
+      assert.equal(session.usedPercent, 30);
+      assert.equal(session.resetsAt, Date.parse("2026-10-30T11:00:00Z"));
+      // Every window carries a reset, so no caveat note rides along.
+      assert.equal(report.note, undefined);
+    },
+  );
+});
+
+test("ollama reports a failed balance request rather than an empty account", async () => {
+  await withAuth(
+    { ollama: { type: "api_key", key: "real-cloud-key" } },
+    async () => {
+      const { orbitQuotaReport } = loadHandler({
+        fetch: async (url) => {
+          if (String(url).includes("/api/balance")) {
+            return { ok: false, status: 502, url, text: async () => "" };
+          }
+          // The live usage payload is request-count history: no meters at all.
+          return {
+            ok: true,
+            status: 200,
+            url,
+            text: async () =>
+              JSON.stringify({ range: "7d", totals: { request_count: 11131 }, buckets: [] }),
+          };
+        },
+      });
+      const report = await orbitQuotaReport("ollama");
+      // "no usage or balance for this account" would describe a healthy account
+      // with nothing used. This one has a broken endpoint, and says so.
+      assert.match(report.error, /502/);
+      assert.equal(report.note, undefined);
+    },
+  );
+});
+
 test("ollama ignores a non-numeric remaining percentage", async () => {
   await withAuth(
     { "ollama-cloud": { type: "api_key", key: "real-cloud-key" } },
@@ -654,6 +742,53 @@ test("ollama expired session degrades to a sign-in error, not a crash", async ()
       const report = await orbitQuotaReport("ollama");
       assert.equal(report.kind, "unsupported");
       assert.match(report.error, /expired/i);
+    },
+  );
+});
+
+test("ollama surfaces an opaque redirect as an expired session, not a fetch failure", async () => {
+  await withAuth(
+    {
+      "ollama-cloud-session": {
+        type: "ollama_cloud_session",
+        session: "__Secure-session=expired",
+      },
+    },
+    async () => {
+      const redirects = [];
+      // What `redirect: "manual"` really hands back: an opaque redirect with
+      // no status, no readable body, and an unchanged URL. Following it would
+      // throw, and the card would read "fetch failed" instead of naming the
+      // expired session.
+      const fetch = async (url, init) => {
+        redirects.push(init && init.redirect);
+        return { type: "opaqueredirect", status: 0, ok: false, url, text: async () => "" };
+      };
+      const { orbitQuotaReport } = loadHandler({ fetch });
+      const report = await orbitQuotaReport("ollama");
+      assert.equal(report.error, "Ollama session expired — sign in again.");
+      assert.deepEqual(redirects, ["manual"], "the settings page asks for the redirect");
+    },
+  );
+});
+
+test("ollama api requests refuse to follow a redirect", async () => {
+  await withAuth(
+    { "ollama-cloud": { type: "api_key", key: "real-cloud-key" } },
+    async () => {
+      const redirects = [];
+      const fetch = async (url, init) => {
+        redirects.push(init && init.redirect);
+        const body = String(url).includes("/api/balance")
+          ? { included: { session: { remaining_percent: 98.04, resets_at: "2026-10-30T11:00:00Z" } } }
+          : {};
+        return { ok: true, status: 200, url, text: async () => JSON.stringify(body) };
+      };
+      const { orbitQuotaReport } = loadHandler({ fetch });
+      await orbitQuotaReport("ollama-cloud");
+      // A redirect on a usage endpoint means the answer would come from a
+      // host that is not ollama.com, so the request fails rather than follows.
+      assert.deepEqual(redirects, ["error", "error"]);
     },
   );
 });

@@ -153,7 +153,10 @@ metered windows on `GET https://ollama.com/api/balance`: `included.session` and
 `purchased.balance_usd` is the remaining purchased credit. `GET
 https://ollama.com/api/usage` now returns request-count history (`range`,
 `totals.request_count`, daily `buckets`) with **no `limits` object**; it is not
-a usage meter on its own.
+a usage meter on its own. The balance payload has shipped both flat and nested
+under a `balance` container; both shapes are unwrapped before either the meters
+or the balances are read, so a nested payload cannot keep its balances and
+lose its windows.
 
 Older payloads carried the windows under `/api/usage` `limits`, whose buckets
 are a 0..1 `usage` fraction plus per-model request counts. The buckets have
@@ -170,7 +173,9 @@ row (`{"label":"Purchased","amount":0,"currency":"USD"}`). Older shapes
 reported both as flat numbers (`{included: 12.5, purchased: 40}`); those still
 produce `Included` and `Purchased` rows. The balance request is additive: if it
 fails, the meters are returned unchanged and no `error` is attached, because a
-balance outage says nothing about usage. A bucket the payload omits is omitted
+balance outage says nothing about usage — unless it left nothing at all to
+show, in which case the failure is reported rather than the note describing an
+account with no usage. A bucket the payload omits is omitted
 from the report — a real `0` is kept, since "nothing purchased" is not the
 same as "not reported".
 
