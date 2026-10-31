@@ -42,6 +42,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reports "Ollama session expired — sign in again", while the usage endpoints
   still refuse to follow a redirect at all.
 
+- **A nested `/api/balance` payload keeps its meters.** The balances parser already
+  unwrapped the payload's optional `balance` container, but the window parser
+  read `included` from the top level — so a nested payload showed its purchased
+  credit and silently dropped the session and weekly meters. Both parsers now
+  unwrap the same container, and a bucket's reset is read under any of the names
+  it has shipped with.
+
+- **A dead Ollama balance endpoint is reported, not disguised.** When
+  `/api/balance` failed and `/api/usage` carried no meters (the normal shape for
+  a current account), the card read "reported no usage or balance for this
+  account" — describing a healthy account that uses nothing rather than the
+  endpoint that did not answer. It now reports the HTTP failure.
+
 - **The skill enable/disable switch is clickable again on Windows.** Settings →
   Skills puts the switch at the right edge of the detail header, directly under
   the caption buttons the app paints over the window's top-right corner, so the

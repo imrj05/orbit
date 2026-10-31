@@ -885,16 +885,31 @@ function orbitOllamaUsedPercent(node) {
   return undefined;
 }
 
+/** A bucket's reset time, under whichever of its names the payload uses. */
+function orbitOllamaReset(node) {
+  return orbitQuotaReset(
+    node.resets_at != null
+      ? node.resets_at
+      : node.reset_at != null
+        ? node.reset_at
+        : node.resetsAt,
+  );
+}
+
 /**
  * The metered windows from `/api/balance`'s `included` object — the live
  * source of both usage and reset times. Each bucket is
  * `{remaining_percent, resets_at}`. A bucket without a readable percentage is
  * skipped: the UI has no meter to draw and a resets-only row would render
- * nothing. An older flat shape (`included: {session: 12.5}`) has no percent
- * either, so it falls through to the balance parser instead.
+ * nothing. The whole payload has shipped both flat and nested under `balance`,
+ * so the same container is unwrapped here as in `orbitOllamaBalances` — a
+ * nested payload must not keep its balances and silently lose its meters.
  */
 function orbitOllamaBalanceWindows(body) {
-  const included = (body || {}).included;
+  const nested = (body || {}).balance;
+  const root =
+    nested && typeof nested === "object" && !Array.isArray(nested) ? nested : body || {};
+  const included = root.included;
   if (!included || typeof included !== "object" || Array.isArray(included)) return [];
   const windows = [];
   for (const [id, label] of OLLAMA_BALANCE_WINDOWS) {
@@ -905,13 +920,7 @@ function orbitOllamaBalanceWindows(body) {
     windows.push(
       orbitQuotaWindow(id, label, {
         usedPercent,
-        resetsAt: orbitQuotaReset(
-          node.resets_at != null
-            ? node.resets_at
-            : node.reset_at != null
-              ? node.reset_at
-              : node.resetsAt,
-        ),
+        resetsAt: orbitOllamaReset(node),
       }),
     );
   }
@@ -1088,9 +1097,7 @@ async function orbitOllamaCloudApi(key) {
     push(
       orbitQuotaWindow(id, label, {
         usedPercent: orbitOllamaUsedPercent(node),
-        resetsAt: orbitQuotaReset(
-          node.resets_at != null ? node.resets_at : node.reset_at,
-        ),
+        resetsAt: orbitOllamaReset(node),
       }),
     );
   }
@@ -1101,9 +1108,7 @@ async function orbitOllamaCloudApi(key) {
       usedPercent: orbitOllamaUsedPercent(monthly),
       unit: "credits",
       // The reset is the subscription anniversary, absent from the payload.
-      resetsAt: orbitQuotaReset(
-        monthly.resets_at != null ? monthly.resets_at : monthly.reset_at,
-      ),
+      resetsAt: orbitOllamaReset(monthly),
     }),
   );
 
@@ -1143,6 +1148,12 @@ async function orbitOllamaCloudApi(key) {
       : typeof balance.plan === "string"
         ? balance.plan
         : undefined;
+  // A failed balance request that left nothing to show is a failure, not an
+  // account with nothing to report: the empty-account note would describe a
+  // healthy account that simply uses none of its plan.
+  if (windows.length === 0 && balances.length === 0 && !balanceResult.ok) {
+    return { kind: "subscription", plan, error: orbitQuotaHttpError(balanceResult.status) };
+  }
   return { kind: "subscription", plan, windows, balances, note };
 }
 

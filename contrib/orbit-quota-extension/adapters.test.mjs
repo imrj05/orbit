@@ -306,6 +306,70 @@ test("ollama live payload meters session/weekly from /api/balance", async () => 
   });
 });
 
+test("ollama reads meters from a payload nested under `balance`", async () => {
+  await withAuth({ "ollama-cloud": { type: "api_key", key: "real-cloud-key" } }, async () => {
+    globalThis.fetch = async (url) => {
+      const body = String(url).includes("/api/balance")
+        ? {
+            balance: {
+              included: {
+                session: { remaining_percent: 60, resetsAt: "2026-10-30T11:00:00Z" },
+                weekly: { remaining_percent: 25, resets_at: "2026-11-02T00:00:00Z" },
+              },
+              purchased: { balance_usd: 4.5 },
+            },
+          }
+        : LIVE_OLLAMA_USAGE;
+      return { ok: true, status: 200, url, text: async () => JSON.stringify(body) };
+    };
+    const report = await quotaReport("ollama-cloud");
+    // The balance parser already unwraps this container; the meters must not be
+    // the one thing a nested payload loses.
+    assert.deepEqual(report.windows.map((w) => w.id), ["session", "weekly"]);
+    assert.equal(report.windows[0].usedPercent, 40);
+    assert.equal(report.windows[0].resetsAt, Date.parse("2026-10-30T11:00:00Z"));
+    assert.equal(report.windows[1].usedPercent, 75);
+    assert.equal(report.windows[1].resetsAt, Date.parse("2026-11-02T00:00:00Z"));
+    assert.deepEqual(report.balances, [
+      { label: "Purchased", amount: 4.5, currency: "USD" },
+    ]);
+  });
+});
+
+test("ollama reads a legacy limits reset under any of its names", async () => {
+  await withAuth({ ollama: { type: "api_key", key: "real-cloud-key" } }, async () => {
+    globalThis.fetch = async (url) => {
+      const body = String(url).includes("/api/balance")
+        ? {}
+        : { limits: { session: { usage: 0.3, resetsAt: "2026-10-30T11:00:00Z" } } };
+      return { ok: true, status: 200, url, text: async () => JSON.stringify(body) };
+    };
+    const report = await quotaReport("ollama");
+    const session = report.windows.find((w) => w.id === "session");
+    assert.equal(session.usedPercent, 30);
+    assert.equal(session.resetsAt, Date.parse("2026-10-30T11:00:00Z"));
+    // Every window carries a reset, so no caveat note rides along.
+    assert.equal(report.note, undefined);
+  });
+});
+
+test("ollama reports a failed balance request rather than an empty account", async () => {
+  await withAuth({ ollama: { type: "api_key", key: "real-cloud-key" } }, async () => {
+    globalThis.fetch = async (url) => {
+      if (String(url).includes("/api/balance")) {
+        return { ok: false, status: 502, url, text: async () => "" };
+      }
+      // The live usage payload is request-count history: no meters at all.
+      return { ok: true, status: 200, url, text: async () => JSON.stringify(LIVE_OLLAMA_USAGE) };
+    };
+    const report = await quotaReport("ollama");
+    // "no usage or balance for this account" would describe a healthy account
+    // with nothing used. This one has a broken endpoint, and says so.
+    assert.match(report.error, /502/);
+    assert.equal(report.note, undefined);
+  });
+});
+
 test("ollama ignores a non-numeric remaining percentage", async () => {
   await withAuth({ "ollama-cloud": { type: "api_key", key: "real-cloud-key" } }, async () => {
     globalThis.fetch = async (url) => {
