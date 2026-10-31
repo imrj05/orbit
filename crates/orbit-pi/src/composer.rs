@@ -3447,7 +3447,18 @@ mod geometry_tests {
             });
             assert!(input.read(cx).is_composing());
             window.focus(&input.read(cx).focus_handle(cx));
+            // gpui's test window reports itself inactive until it is asked to
+            // activate, and on Windows an inactive window ends the session on
+            // the next frame (the IME cancels the composition there, which is
+            // the separate case below). Activate it so this test exercises the
+            // focus rule instead of the deactivation rule, on every platform.
+            window.activate_window();
         });
+        cx.run_until_parked();
+        assert!(
+            cx.update(|window, _| window.is_window_active()),
+            "the window activation reached the window"
+        );
 
         draw(cx, &harness);
         assert!(
