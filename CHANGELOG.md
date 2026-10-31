@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The skill enable/disable switch is clickable again on Windows.** Settings →
+  Skills puts the switch at the right edge of the detail header, directly under
+  the caption buttons the app paints over the window's top-right corner, so the
+  maximize button covered it and swallowed the click. The header now reserves
+  the caption strip, the same inset the Files and Explorer headers already use.
+
 - **Enter and Backspace during an IME composition no longer act on the
   draft.** Sogou Pinyin, and Chinese IMEs generally, keep the composition
   session — and its candidate window — open after Backspace has emptied the
@@ -30,7 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   open; on Windows it also reports the empty span as marked, so the platform
   hands the keystroke to the IME instead of dispatching `Submit` /
   `Backspace`, and a session the IME abandoned on focus loss is closed on the
-  next frame instead of claiming keys.
+  next frame instead of claiming keys. Regression tests cover the Sogou
+  sequence (Backspace down to an empty pinyin buffer, then Enter / Backspace /
+  arrows), the Windows marked-span gate, and session teardown on focus and
+  window loss.
 
 ## [0.2.14] - 2026-10-30
 

@@ -328,6 +328,16 @@ impl OrbitApp {
             .flex()
             .items_start()
             .gap_3()
+            // The app paints its own caption buttons over the window's
+            // top-right corner on Windows (above every surface), and this
+            // header reaches the detail column's right edge with the toggle
+            // trailing it. Keep that control out from under them — without
+            // the inset the switch is covered and unclickable.
+            .pr(px(if platform::draws_window_controls() {
+                platform::WINDOW_CONTROLS_W
+            } else {
+                0.
+            }))
             .child(
                 div()
                     .size(px(40.))
