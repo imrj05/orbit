@@ -345,6 +345,8 @@ The Report a bug draft generator has a searchable model selector. It defaults to
 
 Review and the Git page re-read a diff when a change or manual refresh arrives during an in-flight load; failures are surfaced rather than silently leaving an old snapshot. Bug reports with screenshots fall back to the browser and open the saved screenshot folder when `gh` rejects an upload before issue creation, including its repository-write-access preflight.
 
+Where space permits, the Review toolbar shows the changed-file total beside the ±stats and previous / next file arrows with the reader's place among them (`12/187`). On narrower panes the total is shown in the navigator instead, and the navigator also folds away when space is tight. The arrows and the `n` / `p` shortcuts use the same step, measured from the file at the top of the diff rather than a tree selection scrolled away from, and both go inert at the first and last file.
+
 Appearance's interface-font picker includes bundled Onest in Regular, Medium,
 SemiBold, and Bold weights; it works offline without an OS font installation.
 The default interface face and saved font preferences remain unchanged.

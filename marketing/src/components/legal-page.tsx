@@ -49,7 +49,7 @@ export function LegalPage({
                   {intro}
                 </p>
               ) : null}
-              <p className="mt-6 font-mono text-[11px] uppercase tracking-[0.12em] text-ink-3">
+              <p className="mt-6 text-[11px] text-ink-3">
                 {t("updated", { date: longDate(locale, updated) })}
               </p>
             </div>

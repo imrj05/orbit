@@ -168,6 +168,55 @@ fn editing_a_queued_message_requeues_the_survivors_in_order(cx: &mut gpui::TestA
     assert_eq!(wire_message(&commands[2]), "then add tests");
 }
 
+/// Issue #100, queue bar: Enter is how an IME confirms a candidate, and Sogou
+/// keeps that session open after the pinyin buffer is emptied. Saving here
+/// would store the draft with the preedit in it (or, for an empty one, close
+/// the field on the keystroke the IME owns).
+#[gpui::test]
+fn enter_during_an_ime_composition_does_not_save_the_queue_edit(cx: &mut gpui::TestAppContext) {
+    use gpui::EntityInputHandler as _;
+
+    let (app, fake) = app_with_logging_pi(cx, "ime-edit");
+    let cx = cx.add_empty_window();
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.queue = queue(&["tighten the hero"], &[]);
+            fake.clear();
+            app.begin_queue_edit(steer(0), window, cx);
+            let input = app
+                .queue_edit
+                .as_ref()
+                .expect("the field opened")
+                .input
+                .clone();
+
+            // "nihao", then Backspace down to an empty pinyin buffer: the
+            // candidate window is still up, the preedit is not.
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "nihao", None, window, cx);
+                input.replace_and_mark_text_in_range(None, "", None, window, cx);
+            });
+            assert!(input.read(cx).is_composing());
+
+            app.commit_queue_edit(window, cx);
+
+            assert!(
+                app.queue_edit.is_some(),
+                "the composition keeps the field open"
+            );
+            assert_eq!(
+                app.queue.steering,
+                vec!["tighten the hero"],
+                "nothing saved"
+            );
+        });
+    });
+    assert!(
+        fake.commands().is_empty(),
+        "the queue was not rebuilt for a half-composed draft"
+    );
+}
+
 /// "Send now" on a follow-up moves it into the steering lane at the front:
 /// steering is delivered before the next model call, which is the earliest
 /// point short of aborting the run.

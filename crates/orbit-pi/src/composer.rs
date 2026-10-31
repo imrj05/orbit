@@ -171,6 +171,15 @@ pub struct ComposerInput {
     /// so the previous preedit span must be remembered to replace it in
     /// place instead of appending a new copy each keystroke.
     marked_range: Option<Range<usize>>,
+    /// Whether the IME owns the next keystrokes, tracked separately from
+    /// [`Self::marked_range`] because a composition session outlives its
+    /// preedit: Sogou keeps the session and its candidate window open while
+    /// the composition string is empty, e.g. once Backspace has deleted every
+    /// pinyin letter, and reports that as an empty preedit update. Equating
+    /// "composing" with "a marked span exists" ends the session there, so
+    /// Enter submits the draft and Backspace deletes committed text while the
+    /// IME is still waiting for them (issue #100).
+    composing: bool,
     /// Layout snapshot from the last prepaint, for hit-testing and IME
     /// bounds outside the paint pass.
     last_lines: Vec<WrappedLine>,
@@ -257,6 +266,7 @@ impl ComposerInput {
             selection_reversed: false,
             is_selecting: false,
             marked_range: None,
+            composing: false,
             last_lines: Vec::new(),
             last_line_starts: Vec::new(),
             last_line_height: px(18.),
@@ -429,11 +439,37 @@ impl ComposerInput {
         self.content.clone()
     }
 
-    /// Whether an IME composition is in flight. Submit-like handlers must bail
-    /// while this is set: Enter may be confirming an IME candidate, not
-    /// asking to submit the draft.
+    /// Whether an IME composition session is open. Submit-like handlers must
+    /// bail while this is set: Enter may be confirming an IME candidate, not
+    /// asking to submit the draft. True even when the preedit string is empty
+    /// — the session belongs to the IME, not to the span it currently marks.
     pub fn is_composing(&self) -> bool {
-        self.marked_range.is_some()
+        self.composing
+    }
+
+    /// End the composition session: forget the preedit span and hand the keys
+    /// back to the composer. Every path that means "the composition is over"
+    /// (commit, cancel, `unmark_text`, a programmatic buffer replacement) goes
+    /// through here, so the flag cannot outlive the span.
+    fn end_composition(&mut self) {
+        self.marked_range = None;
+        self.composing = false;
+    }
+
+    /// Whether the IME has already let go of this field, from what the window
+    /// can tell us.
+    ///
+    /// Focus leaving always ends a composition: the IME targets one control,
+    /// so another one taking over means it is gone. A deactivated window ends
+    /// it too on Windows — the IME cancels the composition there and gpui
+    /// 0.2.2 drops `WM_IME_ENDCOMPOSITION` — where the flag would otherwise
+    /// keep claiming every key after the user comes back from another app.
+    /// macOS and X11 report the end themselves (`unmarkText`,
+    /// `handle_ime_unmark`), so the caller passes `false` for them.
+    fn composition_ended(&self, window: &Window, window_deactivation_ends: bool) -> bool {
+        self.composing
+            && (!self.focus_handle.is_focused(window)
+                || (window_deactivation_ends && !window.is_window_active()))
     }
 
     /// Monotonic text-revision counter; changes only on actual edits, not on
@@ -464,7 +500,7 @@ impl ComposerInput {
         let end = range.end.min(self.content.len()).max(start);
         self.content = self.content[0..start].to_owned() + text + &self.content[end..];
         self.selected_range = start + text.len()..start + text.len();
-        self.marked_range = None;
+        self.end_composition();
         self.revision = self.revision.wrapping_add(1);
         cx.notify();
     }
@@ -472,7 +508,7 @@ impl ComposerInput {
         self.reset_prompt_nav();
         self.content.clear();
         self.selected_range = 0..0;
-        self.marked_range = None;
+        self.end_composition();
         self.scroll_offset = px(0.);
         self.revision = self.revision.wrapping_add(1);
         self.reset_history();
@@ -486,7 +522,7 @@ impl ComposerInput {
         self.content = text.into();
         self.selected_range = self.content.len()..self.content.len();
         self.selection_reversed = false;
-        self.marked_range = None;
+        self.end_composition();
         self.scroll_offset = px(0.);
         self.revision = self.revision.wrapping_add(1);
         self.reset_history();
@@ -500,7 +536,7 @@ impl ComposerInput {
         self.content = text.into();
         self.selected_range = 0..0;
         self.selection_reversed = false;
-        self.marked_range = None;
+        self.end_composition();
         self.scroll_offset = px(0.);
         self.revision = self.revision.wrapping_add(1);
         self.reset_history();
@@ -579,6 +615,9 @@ impl ComposerInput {
     // ── movement ───────────────────────────────────────────────────────
 
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         if self.selected_range.is_empty() {
             self.move_to(self.previous_boundary(self.cursor_offset()), cx);
         } else {
@@ -587,6 +626,9 @@ impl ComposerInput {
     }
 
     fn right(&mut self, _: &Right, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         if self.selected_range.is_empty() {
             self.move_to(self.next_boundary(self.cursor_offset()), cx);
         } else {
@@ -595,6 +637,9 @@ impl ComposerInput {
     }
 
     fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         // While the autocomplete menu is open the arrows navigate it, not
         // the caret.
         if self.autocomplete_navigate(-1, cx) {
@@ -607,6 +652,9 @@ impl ComposerInput {
     }
 
     fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         if self.autocomplete_navigate(1, cx) {
             return;
         }
@@ -651,7 +699,7 @@ impl ComposerInput {
         self.content = text;
         self.selected_range = self.content.len()..self.content.len();
         self.selection_reversed = false;
-        self.marked_range = None;
+        self.end_composition();
         self.scroll_offset = px(0.);
         self.revision = self.revision.wrapping_add(1);
         cx.notify();
@@ -709,16 +757,25 @@ impl ComposerInput {
     }
 
     fn select_left(&mut self, _: &SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         self.select_to(self.previous_boundary(self.cursor_offset()), cx)
     }
 
     fn select_right(&mut self, _: &SelectRight, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         self.select_to(self.next_boundary(self.selected_range.end), cx)
     }
 
     /// Option+Left / Option+Right: move one word at a time (macOS text-field
     /// convention).
     fn word_left(&mut self, _: &WordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         if self.selected_range.is_empty() {
             self.move_to(self.previous_word_boundary(self.cursor_offset()), cx);
         } else {
@@ -727,6 +784,9 @@ impl ComposerInput {
     }
 
     fn word_right(&mut self, _: &WordRight, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         if self.selected_range.is_empty() {
             self.move_to(self.next_word_boundary(self.cursor_offset()), cx);
         } else {
@@ -735,16 +795,25 @@ impl ComposerInput {
     }
 
     fn select_word_left(&mut self, _: &SelectWordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         self.select_to(self.previous_word_boundary(self.cursor_offset()), cx)
     }
 
     fn select_word_right(&mut self, _: &SelectWordRight, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         self.select_to(self.next_word_boundary(self.selected_range.end), cx)
     }
 
     /// Cmd+Left / Cmd+Right: jump to the start/end of the wrapped row the
     /// caret is on (a logical line's edge when it doesn't wrap).
     fn line_left(&mut self, _: &LineLeft, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         if self.selected_range.is_empty() {
             self.move_to(self.line_start(self.cursor_offset()), cx);
         } else {
@@ -753,6 +822,9 @@ impl ComposerInput {
     }
 
     fn line_right(&mut self, _: &LineRight, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         if self.selected_range.is_empty() {
             self.move_to(self.line_end(self.cursor_offset()), cx);
         } else {
@@ -761,10 +833,16 @@ impl ComposerInput {
     }
 
     fn select_line_left(&mut self, _: &SelectLineLeft, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         self.select_to(self.line_start(self.cursor_offset()), cx)
     }
 
     fn select_line_right(&mut self, _: &SelectLineRight, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         self.select_to(self.line_end(self.selected_range.end), cx)
     }
 
@@ -774,14 +852,23 @@ impl ComposerInput {
     }
 
     fn home(&mut self, _: &Home, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         self.move_to(0, cx);
     }
 
     fn end(&mut self, _: &End, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         self.move_to(self.content.len(), cx);
     }
 
     fn newline(&mut self, _: &Newline, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         self.replace_text_in_range(None, "\n", window, cx);
     }
 
@@ -835,7 +922,7 @@ impl ComposerInput {
         self.content = snapshot.content;
         self.selected_range = snapshot.selected_range;
         self.selection_reversed = snapshot.selection_reversed;
-        self.marked_range = None;
+        self.end_composition();
         self.scroll_offset = px(0.);
         self.revision = self.revision.wrapping_add(1);
         self.last_edit = None;
@@ -843,6 +930,9 @@ impl ComposerInput {
     }
 
     fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         let Some(snapshot) = self.undo_stack.pop() else {
             return;
         };
@@ -853,6 +943,9 @@ impl ComposerInput {
     }
 
     fn redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         let Some(snapshot) = self.redo_stack.pop() else {
             return;
         };
@@ -863,6 +956,14 @@ impl ComposerInput {
     // ── editing ────────────────────────────────────────────────────────
 
     fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
+        // Backspace in a live composition deletes a pinyin letter, and the IME
+        // keeps the session open with an empty preedit once the buffer runs
+        // out. Acting on it here would delete committed text and kill the
+        // composition (issue #100); the same guard sits at the top of the other
+        // editing and movement actions.
+        if self.is_composing() {
+            return;
+        }
         if self.selected_range.is_empty() {
             self.select_to(self.previous_boundary(self.cursor_offset()), cx)
         }
@@ -870,6 +971,9 @@ impl ComposerInput {
     }
 
     fn delete(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         if self.selected_range.is_empty() {
             self.select_to(self.next_boundary(self.cursor_offset()), cx)
         }
@@ -941,6 +1045,9 @@ impl ComposerInput {
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         // Finder also supplies a generic file icon as an image; use the
         // actual file URL before considering that preview.
         let files = crate::platform::clipboard_file_paths();
@@ -1008,6 +1115,9 @@ impl ComposerInput {
     }
 
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            return;
+        }
         if !self.selected_range.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.content[self.selected_range.clone()].to_string(),
@@ -1129,6 +1239,30 @@ impl ComposerInput {
             return marked;
         }
         clamp_range(&self.content, self.selected_range.clone())
+    }
+
+    /// The marked span handed to the platform, in UTF-16.
+    ///
+    /// `ime_gate` is true on Windows, the one place where this value is read
+    /// purely as gpui's "does the keystroke belong to the IME?" test
+    /// (`handle_keydown_msg`). There an open session with an empty preedit
+    /// reports the caret as an empty marked span, so gpui calls
+    /// `translate_message` and hands Enter/Backspace to the IME instead of
+    /// dispatching `Submit`/`Backspace` — an empty preedit is exactly Sogou's
+    /// state after Backspace emptied the pinyin buffer, and gpui 0.2.2 exposes
+    /// no other way to say "composing" (issue #100). Everywhere else the
+    /// value *is* the marked text (AppKit's `hasMarkedText`, X11/Wayland's IME
+    /// delete), so the substitution must stay off there.
+    fn platform_marked_range(&self, ime_gate: bool) -> Option<Range<usize>> {
+        let marked = self
+            .marked_range
+            .as_ref()
+            .map(|range| self.range_to_utf16(range));
+        if marked.is_none() && ime_gate && self.composing {
+            let caret = self.offset_to_utf16(self.cursor_offset());
+            return Some(caret..caret);
+        }
+        marked
     }
 
     /// Splice `new_text` over `range` and return the inserted byte span.
@@ -1309,14 +1443,13 @@ impl EntityInputHandler for ComposerInput {
     ) -> Option<Range<usize>> {
         // The trait's ranges are UTF-16 (see `text_for_range` and
         // `replace_text_in_range`), and Linux platforms feed this value back
-        // into those methods, so convert the tracked byte span.
-        self.marked_range
-            .as_ref()
-            .map(|range| self.range_to_utf16(range))
+        // into those methods, so `platform_marked_range` converts the tracked
+        // byte span and keeps the Windows key-gate substitution local to it.
+        self.platform_marked_range(cfg!(target_os = "windows"))
     }
 
     fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
-        self.marked_range = None;
+        self.end_composition();
     }
 
     fn replace_text_in_range(
@@ -1336,7 +1469,7 @@ impl EntityInputHandler for ComposerInput {
         self.record_undo();
         let inserted = self.splice(range, new_text);
         self.selected_range = inserted.end..inserted.end;
-        self.marked_range = None;
+        self.end_composition();
         self.revision = self.revision.wrapping_add(1);
         cx.notify();
     }
@@ -1353,6 +1486,12 @@ impl EntityInputHandler for ComposerInput {
         self.reset_prompt_nav();
         self.record_undo();
         let inserted = self.splice(range, new_text);
+        // Any composition update opens the session, an empty one included: the
+        // IME keeps the session (and its candidate window) alive when its
+        // preedit is emptied, so ending the session here would hand the next
+        // Enter/Backspace to the composer's bindings (issue #100). Only the
+        // span is cleared below; `end_composition` is what closes the session.
+        self.composing = true;
         if new_text.is_empty() {
             // An empty composition clears the preedit text rather than
             // leaving an empty marked span behind.
@@ -2198,10 +2337,28 @@ impl Element for TextElement {
     }
 }
 
+/// Whether any of a form's fields is mid-composition.
+///
+/// Confirm actions read [`ComposerInput::text`], which includes the preedit, so
+/// a Save clicked while an IME candidate window is open would store text the
+/// user is still choosing. Keyboard confirms call `is_composing` at their own
+/// action; this is the same rule for the mouse path (issue #100).
+pub(crate) fn any_composing(cx: &App, fields: &[&Entity<ComposerInput>]) -> bool {
+    fields.iter().any(|field| field.read(cx).is_composing())
+}
+
 impl Render for ComposerInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Keep the caret blink in step with focus and this frame's edit.
         self.sync_caret_blink(window, cx);
+        // A composition cannot outlive focus: once another control takes over,
+        // the IME has ended the session and gpui 0.2.2 never says so (it never
+        // handles `WM_IME_ENDCOMPOSITION`), so the flag would keep claiming
+        // keystrokes — on Windows, every one of them (`platform_marked_range`).
+        // Close it on the first frame the window says the IME is done with it.
+        if self.composition_ended(window, cfg!(target_os = "windows")) {
+            self.end_composition();
+        }
         // Transparent: the floating composer box in app.rs provides the
         // background/border; this is just the editable (auto-growing) area.
         let debug_selector = self.element_id.to_string();
@@ -3096,14 +3253,19 @@ mod geometry_tests {
             assert_eq!(input.read(cx).text(), "ok!");
 
             // `unmark_text` ends composition but keeps the text, like
-            // NSTextView; an empty composition clears the preedit outright.
+            // NSTextView. An empty composition clears the preedit and keeps the
+            // session open: the IME still owns the next keystroke, and only
+            // `unmark_text` or a commit hands it back (issue #100).
             input.update(cx, |input, cx| {
                 input.clear(cx);
                 input.replace_and_mark_text_in_range(None, "n", None, window, cx);
                 input.replace_and_mark_text_in_range(None, "", None, window, cx);
             });
             assert_eq!(input.read(cx).text(), "", "empty composition cleared");
-            assert!(!input.read(cx).is_composing());
+            assert!(
+                input.read(cx).is_composing(),
+                "an empty preedit keeps the composition session"
+            );
 
             input.update(cx, |input, cx| {
                 input.clear(cx);
@@ -3153,6 +3315,217 @@ mod geometry_tests {
             });
             assert_eq!(input.read(cx).text(), "😀!");
             assert!(!input.read(cx).is_composing());
+        });
+    }
+
+    /// Issue #100 regression: Sogou keeps the composition session — and its
+    /// candidate window — open after Backspace has emptied the pinyin buffer,
+    /// which it reports as an empty preedit update. Enter and Backspace belong
+    /// to the IME there, so they must not reach the composer's bindings: the
+    /// draft was being submitted and committed text deleted while the IME was
+    /// still waiting for the keystroke.
+    #[gpui::test]
+    fn ime_empty_preedit_keeps_the_keys_away_from_the_composer(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let input = ime_input(cx);
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| input.set_text("draft", cx));
+            input.update(cx, |input, cx| {
+                // "nihao", then Backspace down to an empty pinyin buffer.
+                input.replace_and_mark_text_in_range(None, "nihao", Some(5..5), window, cx);
+            });
+            // Backspace inside the composition deletes the preedit, not the
+            // buffer: the guard holds even though a marked span exists.
+            input.update(cx, |input, cx| input.backspace(&Backspace, window, cx));
+            assert_eq!(input.read(cx).text(), "draftnihao");
+
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "", None, window, cx)
+            });
+            assert!(
+                input.read(cx).is_composing(),
+                "the session outlives its span"
+            );
+
+            // Every key the IME owns is a no-op for the composer.
+            input.update(cx, |input, cx| {
+                input.newline(&Newline, window, cx);
+                input.backspace(&Backspace, window, cx);
+                input.delete(&Delete, window, cx);
+                input.left(&Left, window, cx);
+                input.up(&Up, window, cx);
+            });
+            let (text, selected) =
+                input.update(cx, |input, _| (input.text(), input.selected_range.clone()));
+            assert_eq!(text, "draft", "no edit reached the buffer");
+            assert_eq!(selected, text.len()..text.len(), "the caret did not move");
+
+            // The commit (`GCS_RESULTSTR`) ends the session; the composer owns
+            // the keys again.
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(None, "你好", window, cx)
+            });
+            assert!(!input.read(cx).is_composing());
+            input.update(cx, |input, cx| input.backspace(&Backspace, window, cx));
+            assert_eq!(input.read(cx).text(), "draft你");
+        });
+    }
+
+    /// The composer guard alone would swallow Enter and Backspace; the IME has
+    /// to receive them. On Windows gpui decides that by asking for the marked
+    /// span, so a session with an empty preedit reports one at the caret —
+    /// while other platforms, where the value is the real marked text, keep
+    /// saying `None` (issue #100).
+    #[gpui::test]
+    fn ime_empty_preedit_is_marked_for_the_windows_key_gate(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let input = ime_input(cx);
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| input.set_text("draft", cx));
+            assert_eq!(
+                input.read(cx).platform_marked_range(true),
+                None,
+                "no session, nothing marked"
+            );
+
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "nihao", None, window, cx)
+            });
+            assert_eq!(
+                input.read(cx).platform_marked_range(true),
+                Some(5..10),
+                "a real preedit is its own span"
+            );
+
+            // Sogou after Backspace emptied the pinyin buffer: the candidate
+            // window stays open, the preedit is empty.
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "", None, window, cx)
+            });
+            assert_eq!(
+                input.read(cx).platform_marked_range(true),
+                Some(5..5),
+                "Windows hands the key to the IME instead of submitting"
+            );
+            assert_eq!(
+                input.read(cx).platform_marked_range(false),
+                None,
+                "other platforms keep AppKit's hasMarkedText contract"
+            );
+
+            // The commit ends the session, so the gate closes with it.
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(None, "你好", window, cx)
+            });
+            assert_eq!(input.read(cx).platform_marked_range(true), None);
+        });
+    }
+
+    /// gpui 0.2.2 never reports `WM_IME_ENDCOMPOSITION`, so a session the IME
+    /// abandoned on focus loss would keep claiming keys — every key, once the
+    /// Windows gate reports an empty marked span. The first unfocused frame
+    /// closes it.
+    #[gpui::test]
+    fn ime_session_ends_when_the_composer_loses_focus(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let input = cx.update(|_, cx| {
+            cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit));
+            cx.new(ComposerInput::new)
+        });
+        let harness = cx.update(|_, cx| {
+            cx.new(|_| Harness {
+                input: input.clone(),
+            })
+        });
+        draw(cx, &harness);
+
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.set_text("draft", cx);
+                input.replace_and_mark_text_in_range(None, "nihao", None, window, cx);
+                input.replace_and_mark_text_in_range(None, "", None, window, cx);
+            });
+            assert!(input.read(cx).is_composing());
+            window.focus(&input.read(cx).focus_handle(cx));
+        });
+
+        draw(cx, &harness);
+        assert!(
+            cx.update(|_, cx| input.read(cx).is_composing()),
+            "a focused session outlives a frame"
+        );
+
+        cx.update(|window, _| window.blur());
+        draw(cx, &harness);
+        assert!(
+            !cx.update(|_, cx| input.read(cx).is_composing()),
+            "an abandoned session must not keep claiming keys"
+        );
+    }
+
+    /// Deactivating the window is the other way a Windows composition is
+    /// abandoned: Alt-Tab mid-composition, come back, and the IME's own
+    /// `WM_IME_ENDCOMPOSITION` was never reported. Focus is still on the field
+    /// there, so only the window's activation says the session is over.
+    #[gpui::test]
+    fn ime_session_ends_with_the_windows_window(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let input = ime_input(cx);
+        cx.update(|window, cx| {
+            window.focus(&input.read(cx).focus_handle(cx));
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "nihao", None, window, cx);
+                input.replace_and_mark_text_in_range(None, "", None, window, cx);
+            });
+            assert!(input.read(cx).is_composing());
+
+            // The test platform reports its window as inactive, which is a
+            // deactivated window on Windows: the IME has cancelled the
+            // composition there, so the flag must not survive.
+            assert!(
+                input.read(cx).composition_ended(window, true),
+                "a deactivated window ends the session on Windows"
+            );
+            // macOS and X11 end it through `unmarkText` instead, and the
+            // inactive test window must not end it for them.
+            assert!(
+                !input.read(cx).composition_ended(window, false),
+                "the other platforms keep the session until the IME unmarks"
+            );
+        });
+    }
+
+    /// The mouse path needs the same rule as the keyboard: a form's Save reads
+    /// `text()`, which still holds the preedit, so one field mid-composition
+    /// holds the whole form (issue #100).
+    #[gpui::test]
+    fn a_form_confirm_waits_while_any_field_composes(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let title = ime_input(cx);
+        let body = ime_input(cx);
+        cx.update(|window, cx| {
+            assert!(!super::any_composing(cx, &[&title, &body]));
+
+            title.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "nihao", None, window, cx);
+                input.replace_and_mark_text_in_range(None, "", None, window, cx);
+            });
+            assert!(
+                super::any_composing(cx, &[&title, &body]),
+                "one field mid-composition holds the form"
+            );
+            assert!(
+                !super::any_composing(cx, &[&body]),
+                "fields that are not on the form do not"
+            );
+
+            title.update(cx, |input, cx| {
+                input.replace_text_in_range(None, "你好", window, cx)
+            });
+            assert!(
+                !super::any_composing(cx, &[&title, &body]),
+                "the commit releases the form"
+            );
         });
     }
 }

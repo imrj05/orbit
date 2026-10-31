@@ -225,7 +225,15 @@ fn the_summary_board_reads_each_bucket_and_keeps_an_unmeasured_bucket_as_a_gap()
     let session = fixture.session("/tmp/orbit", "cache", now - 5 * day, vec![]);
     // Three days: one request with no cache traffic, one with a measured read,
     // and a day with no requests at all.
-    fixture.request(session, ("anthropic", "claude"), now - 3 * day, 100, 20, 0, 0);
+    fixture.request(
+        session,
+        ("anthropic", "claude"),
+        now - 3 * day,
+        100,
+        20,
+        0,
+        0,
+    );
     fixture.request(
         session,
         ("anthropic", "claude"),

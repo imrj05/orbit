@@ -160,10 +160,18 @@ impl BranchPicker {
         cx: &mut Context<Self>,
     ) {
         if self.mode == Mode::Create {
+            // Enter confirms an IME candidate before it names a branch: a
+            // half-composed name must not create one (issue #100).
+            if self.create_input.read(cx).is_composing() {
+                return;
+            }
             let name = self.create_input.read(cx).text().trim().to_string();
             if !name.is_empty() {
                 (self.on_create)(name, window, cx);
             }
+            return;
+        }
+        if self.filter.read(cx).is_composing() {
             return;
         }
         let rows = self.filtered_branches(&self.last_filter);

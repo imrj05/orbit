@@ -208,10 +208,19 @@ export async function Reviews({ locale }: { locale: Locale }) {
           resumeLabel={t("resume")}
         >
           <div className="reviews-grid">
+            {/* Phone: one column that cycles EVERY quote — below `sm` the
+                desktop wall hides columns two and three. */}
+            <ReviewColumn
+              reviews={REVIEWS}
+              read={read}
+              platforms={platforms}
+              className="sm:hidden"
+            />
             <ReviewColumn
               reviews={columns[0]}
               read={read}
               platforms={platforms}
+              className="hidden sm:block"
             />
             <ReviewColumn
               reviews={columns[1]}

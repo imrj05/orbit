@@ -372,6 +372,12 @@ impl CommandPalette {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Enter may be confirming an IME candidate in the filter; taking the
+        // highlighted row here would act on the keystroke the IME owns
+        // (issue #100).
+        if self.filter.read(cx).is_composing() {
+            return;
+        }
         let rows = self.results(&self.last_filter);
         self.activate(self.highlighted, &rows, window, cx);
     }

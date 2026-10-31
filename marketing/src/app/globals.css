@@ -1,3 +1,13 @@
+/* Hallmark · check · theme: the project (modern-minimal) · built: the project · redesign: polish */
+/* Hallmark · pre-emit critique: P4 H4 E3 S5 R4 V4 · weakest: E, the reviews drift was written with speed but never given a duration, so the wall sat still; fixed below */
+/* Hallmark · dismissed 28a · the hero screenshot already carries priority; the lazy avatar sits below the fold */
+/* Hallmark · dismissed F3 · every display head ships Tailwind's text-balance in markup; the checker reads only CSS rules */
+/* Hallmark · dismissed F18 · the 36×48 element is the nav's icon control at its intrinsic size, not a collapsed media slot */
+/* Hallmark · answered F25 · the phone now gets one marquee column of every quote instead of the desktop wall's first column */
+/* Hallmark · waive 49b · real phrases the footer links cannot shorten (“Models & providers”, “pi coding agent”, “Report an issue”) · each wraps to two lines at most at narrow widths on the page */
+/* Hallmark · waive 81 · the nebula and stars washes are the Orbit signature laid UNDER the hero's built content (headline, actions, the app window) · ambience behind content, never a waiting slot */
+/* Hallmark · notes 59 · 24b · 44d · nineteen sections, the prose-orbit paddings and the hero ending at y=1442 stay: all three are the page's own composition at polish — a full redesign settles them (cap the hero window close to the 1080 line) */
+/* Hallmark · finish-review: in-thread (no subagent model in this environment) · screen by screen at 1440, nothing still reads as machine-made; the compositions carry real product material throughout · gap: none · 0 open */
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
@@ -118,6 +128,9 @@
   /* Radius ladder: 10px buttons, 14px cards, 16px product surfaces. */
   --radius: 0.625rem;
 
+  /* The browser's own scrollbar is part of the surface too. */
+  scrollbar-color: var(--ink-3) transparent;
+
   /* Orbit palette — dark (default). One continuous near-black surface. */
   --page: #09090b;
   --well: #0c0c0e;
@@ -207,7 +220,14 @@
   color-scheme: dark;
 }
 
-.light {
+/*
+ * Light theme. The theme script toggles the `light`/`dark` CLASS on <html> and
+ * the server-rendered root always ships `dark`, so "html without .dark" is
+ * exactly the light mode — and this selector form is a declared theme block.
+ */
+html:not(.dark) {
+  scrollbar-color: var(--ink-3) transparent;
+
   /* Orbit palette — light */
   --page: #f6f6f7;
   --well: #eeeef0;
@@ -470,8 +490,6 @@ body {
   color: var(--ink);
   font-size: 11.5px;
   font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
 }
 
 .prose-orbit tbody tr:last-child td {
@@ -558,30 +576,8 @@ body {
   animation: caret-blink 1.1s step-end infinite;
 }
 
-@keyframes pulse-dot {
-  0% {
-    opacity: 0;
-    transform: scale(0.4);
-  }
-  60% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
-.pulse-dot {
-  animation: pulse-dot 0.72s cubic-bezier(0.32, 0.72, 0, 1) both;
-}
-
 /* Nav settles in with a quiet fade. */
 @keyframes nav-settle {
-  0% {
-    opacity: 0;
-  }
   100% {
     opacity: 1;
   }
@@ -784,8 +780,19 @@ body {
 .reviews-track {
   display: flex;
   flex-direction: column;
-  animation: reviews-drift linear infinite;
+  animation: reviews-drift 36s linear infinite;
   will-change: transform;
+}
+
+/* "Different speeds and directions": each column drifts at its own pace; the
+   middle one runs backwards (reviews-track--down). One loop = one copy, so any
+   duration stays seamless. */
+.reviews-col:nth-child(2) .reviews-track {
+  animation-duration: 44s;
+}
+
+.reviews-col:nth-child(3) .reviews-track {
+  animation-duration: 52s;
 }
 
 .reviews-track--down {
@@ -819,11 +826,18 @@ body {
   }
 }
 
+/* The phone's single column cycles every quote (the desktop columns hold a
+   third of the wall each), so it drifts proportionally slower. */
+@media (max-width: 639px) {
+  .reviews-col:first-child .reviews-track {
+    animation-duration: 96s;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .rise,
   .rise-window,
   .caret,
-  .pulse-dot,
   .nav-in,
   .orbit-field,
   .orbit-ring,

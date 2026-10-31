@@ -489,6 +489,20 @@ impl OrbitApp {
         if self.bug_report_busy {
             return;
         }
+        // A click on Report needs the same rule as ⏎: the fields hold the
+        // preedit while an IME candidate window is open, and filing it would
+        // type the composition into the issue (issue #100).
+        if crate::composer::any_composing(
+            cx,
+            &[
+                &self.bug_report_title,
+                &self.bug_report_context,
+                &self.bug_report_what,
+                &self.bug_report_steps,
+            ],
+        ) {
+            return;
+        }
         let title = self.bug_report_title.read(cx).text().trim().to_string();
         let what = self.bug_report_what.read(cx).text();
         if title.is_empty() {

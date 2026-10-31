@@ -555,9 +555,17 @@ fn normalize_tool_result(value: &Value) -> Value {
     match value {
         Value::String(_) => value.clone(),
         Value::Object(map) => match tool_result_output(value) {
-            _ if map.get("content").and_then(Value::as_array).is_some_and(|blocks| {
-                blocks.iter().any(|block| block.get("type").and_then(Value::as_str) == Some("image"))
-            }) => value.clone(),
+            _ if map
+                .get("content")
+                .and_then(Value::as_array)
+                .is_some_and(|blocks| {
+                    blocks
+                        .iter()
+                        .any(|block| block.get("type").and_then(Value::as_str) == Some("image"))
+                }) =>
+            {
+                value.clone()
+            }
             Some(text) => text,
             // Only pi's envelope — an *array* `content` that carries no text
             // yet (the empty array that streams before the first chunk) — is
@@ -2268,7 +2276,10 @@ impl Transcript {
     /// The settled run's last message generation clock — pi's `durationMs`
     /// (prefill plus decode), or the client-measured fallback.
     pub fn last_message_duration(&self) -> Option<Duration> {
-        self.messages.borrow().last().and_then(ChatMessage::generation_time)
+        self.messages
+            .borrow()
+            .last()
+            .and_then(ChatMessage::generation_time)
     }
 
     /// Mark the settled turn as a user stop: the last assistant row keeps the
@@ -4289,7 +4300,8 @@ mod tests {
         assert_eq!(tool_result_output(output), Some(json!("image read")));
         let (_, snapshot, _, _) = tool_result_parts(&json!({
             "role": "toolResult", "toolCallId": "image1", "content": content
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(snapshot.unwrap()["content"], content);
     }
 

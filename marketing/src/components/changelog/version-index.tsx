@@ -77,7 +77,7 @@ export function VersionIndex({
                   />
                   {entry.tag}
                 </span>
-                <span className="font-mono text-[10.5px] tracking-[0.04em] text-ink-3">
+                <span className="font-mono text-[11px] text-ink-3">
                   {entry.dateLabel}
                 </span>
               </a>

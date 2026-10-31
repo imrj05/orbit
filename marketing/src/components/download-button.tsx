@@ -196,7 +196,7 @@ export function OsDownloadButton({
             <Fragment key={platform}>
               {index > 0 ? <DropdownMenuSeparator /> : null}
               <DropdownMenuGroup>
-                <DropdownMenuLabel className="flex items-center gap-2 px-1.5 pb-1 font-mono text-[10px] uppercase tracking-[0.09em] text-ink-3">
+                <DropdownMenuLabel className="flex items-center gap-2 px-1.5 pb-1 text-[11px] text-ink-3">
                   {ICONS[platform]}
                   {LABELS[platform]}
                 </DropdownMenuLabel>
@@ -217,11 +217,11 @@ export function OsDownloadButton({
                       <span className="truncate text-[12.5px] text-ink">
                         {download.label}
                       </span>
-                      <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-3">
+                      <span className="shrink-0 font-mono text-[11px] text-ink-3">
                         {download.detail}
                       </span>
                     </span>
-                    <span className="ml-auto shrink-0 font-mono text-[9.5px] uppercase tracking-[0.1em] text-ink-3">
+                    <span className="ml-auto shrink-0 font-mono text-[11px] text-ink-3">
                       {download.format}
                     </span>
                   </DropdownMenuItem>

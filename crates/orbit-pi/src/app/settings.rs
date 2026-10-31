@@ -8543,6 +8543,11 @@ impl OrbitApp {
         let Some(editor) = self.provider_key_editor.as_ref() else {
             return;
         };
+        // A key field mid-composition still holds the preedit; ⏎/Save waits for
+        // the IME rather than storing a half-composed key (issue #100).
+        if crate::composer::any_composing(cx, &[&editor.key]) {
+            return;
+        }
         let id = editor.provider_id.clone();
         let name = editor.provider_name.clone();
         let key = editor.key.read(cx).text();
@@ -8783,6 +8788,20 @@ impl OrbitApp {
         let Some(editor) = self.provider_editor.as_ref() else {
             return;
         };
+        // Same rule as every other confirm: the fields hold the preedit while
+        // an IME candidate window is open (issue #100).
+        if crate::composer::any_composing(
+            cx,
+            &[
+                &editor.id,
+                &editor.name,
+                &editor.base_url,
+                &editor.api_key,
+                &editor.models,
+            ],
+        ) {
+            return;
+        }
         let id = editor.id.read(cx).text().trim().to_string();
         let name = editor.name.read(cx).text().trim().to_string();
         let base_url = editor.base_url.read(cx).text().trim().to_string();

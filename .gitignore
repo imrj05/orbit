@@ -37,3 +37,6 @@ orbit-update.pem
 # and are specific to one machine's review history, like the editor directories
 # above. `git add -f` one if a particular archive is worth keeping.
 .impeccable/
+# Hallmark redesign state (before/after screenshots, linter records, the run
+# log): generated per machine during a build, same policy as .impeccable/.
+.hallmark/

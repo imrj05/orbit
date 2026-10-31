@@ -1695,7 +1695,9 @@ pub fn clipboard_file_paths() -> Vec<std::path::PathBuf> {
 #[cfg(windows)]
 fn windows_clipboard_file_paths() -> Vec<std::path::PathBuf> {
     use std::os::windows::ffi::OsStringExt;
-    use windows_sys::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+    use windows_sys::Win32::System::DataExchange::{
+        CloseClipboard, GetClipboardData, OpenClipboard,
+    };
     use windows_sys::Win32::UI::Shell::DragQueryFileW;
 
     // CF_HDROP is the standard file-list clipboard format.
@@ -1964,8 +1966,8 @@ fn windows_clipboard_png() -> Option<Vec<u8>> {
             Raw::Raster(bytes)
         } else if let Some(bytes) = named("GIF").or_else(|| named("image/gif")) {
             Raw::Raster(bytes)
-        } else if let Some(bytes) = unsafe { copy_format(CF_DIBV5) }
-            .or_else(|| unsafe { copy_format(CF_DIB) })
+        } else if let Some(bytes) =
+            unsafe { copy_format(CF_DIBV5) }.or_else(|| unsafe { copy_format(CF_DIB) })
         {
             Raw::Dib(bytes)
         } else {

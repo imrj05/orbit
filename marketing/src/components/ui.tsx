@@ -102,10 +102,7 @@ export function SectionLabel({
   className?: string;
 }) {
   return (
-    <p
-      className={`flex items-center gap-[9px] font-mono text-[10px] uppercase leading-[1.4] tracking-[0.065em] text-ink-2 ${className}`}
-    >
-      <i className="pulse-dot size-[5px] shrink-0 rounded-full bg-brand" />
+    <p className={`text-[11px] leading-[1.4] font-medium text-ink-2 ${className}`}>
       {children}
     </p>
   );
@@ -119,9 +116,7 @@ export function Eyebrow({
   className?: string;
 }) {
   return (
-    <p
-      className={`font-mono text-[11.5px] uppercase leading-normal tracking-[0.16em] text-ink-3 ${className}`}
-    >
+    <p className={`text-[11.5px] leading-normal text-ink-3 ${className}`}>
       {children}
     </p>
   );

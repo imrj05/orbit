@@ -321,6 +321,19 @@ impl OrbitApp {
     /// run goes through the explicit permission dialog; everything else runs
     /// straight away.
     fn submit_create_worktree(&mut self, cx: &mut Context<Self>) {
+        // The fields hold the preedit while an IME candidate window is open; a
+        // click on Create must not name a worktree with half-composed text
+        // (issue #100).
+        if crate::composer::any_composing(
+            cx,
+            &[
+                &self.worktree_name_input,
+                &self.worktree_branch_input,
+                &self.worktree_start_input,
+            ],
+        ) {
+            return;
+        }
         let Some(manager) = self.worktree_manager() else {
             self.worktree_dialog_error = Some(tr!("worktree.error.not_a_repository"));
             return;
@@ -645,6 +658,9 @@ impl OrbitApp {
     /// field as a name under the worktree root; Move resolves it as a
     /// destination directory.
     fn submit_move_worktree(&mut self, path: PathBuf, new_name: bool, cx: &mut Context<Self>) {
+        if crate::composer::any_composing(cx, &[&self.worktree_field_input]) {
+            return;
+        }
         let Some(manager) = self.worktree_manager() else {
             return;
         };

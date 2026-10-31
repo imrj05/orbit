@@ -51,7 +51,7 @@ export function LanguageSwitcher({
       >
         <HugeiconsIcon icon={LanguageSkillIcon} className="size-4" />
         {locale ? (
-          <span className="font-mono text-[11px] uppercase tracking-[0.06em]">
+          <span className="font-mono text-[11px]">
             {locale}
           </span>
         ) : null}

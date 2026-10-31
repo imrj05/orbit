@@ -62,7 +62,7 @@ export function ErrorView({
               variant="default"
               size="lg"
               onClick={() => retry()}
-              className="min-h-12 gap-2.5 rounded-[10px] px-6 text-sm font-semibold shadow-[0_1px_2px_rgba(0,0,0,0.18)] dark:border-white/20 light:border-black/10"
+              className="min-h-12 gap-2.5 rounded-[10px] px-6 text-sm font-semibold shadow-card dark:border-white/20 light:border-black/10"
             >
               <HugeiconsIcon icon={RefreshIcon} data-icon="inline-start" />
               {t("retry")}
@@ -77,7 +77,7 @@ export function ErrorView({
           </div>
 
           {error.digest ? (
-            <p className="mt-7 font-mono text-[10.5px] uppercase tracking-[0.12em] text-ink-3">
+            <p className="mt-7 font-mono text-[11px] text-ink-3">
               {t("reference", { digest: error.digest })}
             </p>
           ) : null}

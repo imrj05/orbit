@@ -164,14 +164,14 @@ export function LightboxProvider({ children }: { children: ReactNode }) {
           }
         }}
         aria-label="Image viewer"
-        className="inset-0 m-0 h-full max-h-none w-full max-w-none border-0 bg-transparent p-0 backdrop:bg-black/90 backdrop:backdrop-blur-sm"
+        className="inset-0 m-0 h-full max-h-none w-full max-w-none border-0 bg-transparent p-0 backdrop:bg-black/90"
       >
         {item ? (
           <div ref={stageRef} className="relative h-full w-full">
             <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-start justify-between gap-2 p-3 sm:p-4">
               <span
                 aria-live="polite"
-                className="pointer-events-auto rounded-full bg-black/55 px-2.5 py-1 text-xs font-medium tabular-nums text-white/80 backdrop-blur-sm"
+                className="pointer-events-auto rounded-full bg-black/75 px-2.5 py-1 text-xs font-medium tabular-nums text-white/80"
               >
                 {(index ?? 0) + 1} / {items.length}
               </span>
@@ -285,7 +285,7 @@ function Control({
       title={label}
       onClick={onClick}
       disabled={disabled}
-      className={`inline-flex size-9 items-center justify-center rounded-full bg-black/55 text-white/90 backdrop-blur-sm transition-colors hover:bg-black/75 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 disabled:pointer-events-none disabled:opacity-35 ${className}`}
+      className={`inline-flex size-9 items-center justify-center rounded-full bg-black/75 text-white/90 transition-colors hover:bg-black/85 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 disabled:pointer-events-none disabled:opacity-35 ${className}`}
     >
       {children}
     </button>

@@ -145,6 +145,9 @@ impl WorkspacePicker {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.filter.read(cx).is_composing() {
+            return;
+        }
         let rows = self.filtered(&self.last_filter);
         self.activate(self.highlighted, &rows, window, cx);
     }
