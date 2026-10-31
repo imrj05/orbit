@@ -28,16 +28,15 @@ APP_NAME="Orbit Pi"
 EXEC_NAME="orbit-pi"
 BUNDLE_ID="dev.orbit.pi"
 ICON="assets/icons/icon.icns"
-# DMG window styling. The background art is 660x400 and Finder draws a folder
-# background at natural size from the top-left of the content area, so the
-# window frame has to be one title bar taller than the art to avoid trimming
-# its bottom edge.
-# The TIFF has two frosted label plates baked in behind "Orbit Pi.app" and
-# "Applications": Finder draws icon labels in black whenever a background
-# picture is set (it only adapts to Dark Mode for the default background), so
-# the art has to carry the light area the labels sit on. Regenerate it with
-# scripts/make-dmg-background.sh — the plate positions must track the icon
-# coordinates below.
+# DMG window styling. The background art is 660x400 at 72 dpi and Finder draws
+# a folder background at natural size from the top-left of the content area, so
+# the window frame has to be one title bar taller than the art to avoid
+# trimming its bottom edge.
+# Finder draws icon labels in black whenever a background picture is set (it
+# only adapts to Dark Mode for the default background), and no .DS_Store or
+# AppleScript field controls the label colour — so the art has to be light
+# where "Orbit Pi.app" and "Applications" print their labels, roughly
+# y 267..278 under the icon coordinates below.
 DMG_BG="assets/icons/background_660x400.tiff"
 DMG_BG_NAME="background.tiff"
 DMG_CONTENT_W=660
@@ -198,6 +197,13 @@ tell application "Finder"
 end tell
 EOF
 
+  sync
+  # Volume icon, last: Finder rewrites the volume's icon state while it lays
+  # the window out and deletes .VolumeIcon.icns if it is already there. The
+  # file plus the root folder's custom-icon bit is what paints the title bar
+  # with the Orbit mark instead of the generic disk.
+  cp "$ICON" "$mnt/.VolumeIcon.icns"
+  SetFile -a C "$mnt" || warn "SetFile failed — the DMG header icon stays generic"
   sync
   rm -rf "$mnt/.fseventsd" "$mnt/.Trashes" 2>/dev/null || true
   hdiutil detach "$mnt" >/dev/null

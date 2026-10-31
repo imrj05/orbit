@@ -4117,7 +4117,6 @@ dependencies = [
  "base64",
  "block2",
  "chrono",
- "cocoa 0.26.0",
  "crossbeam-channel",
  "devicons",
  "ed25519-dalek",

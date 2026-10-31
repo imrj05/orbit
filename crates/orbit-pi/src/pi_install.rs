@@ -27,6 +27,11 @@ use std::process::{Command, Output, Stdio};
 /// pi's official installer, exactly as the project documents it.
 pub const INSTALL_SCRIPT_URL: &str = "https://pi.dev/install.sh";
 /// The copyable one-liner shown to a user who has no pi yet.
+///
+/// The official installer is macOS/Linux-only, so only the onboarding hint
+/// there and the tests that keep the hint and the executed command in sync
+/// refer to it; on Windows the hint shows pi's documented npm command.
+#[cfg(any(test, target_os = "macos", target_os = "linux"))]
 pub const INSTALL_COMMAND: &str = "curl -fsSL https://pi.dev/install.sh | sh";
 /// The npm package that identifies a pi install inside a `node_modules` tree.
 pub const PI_PACKAGE_NAME: &str = "@earendil-works/pi-coding-agent";

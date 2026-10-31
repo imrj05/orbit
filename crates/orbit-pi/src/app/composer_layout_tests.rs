@@ -538,9 +538,18 @@ fn follow_up_suggestions_stay_inside_the_composer_column(cx: &mut gpui::TestAppC
     });
 
     let width = px(360.);
-    let probe = cx.update(|_, cx| cx.new(|_| SuggestionsProbe { app: app.clone(), width }));
+    let probe = cx.update(|_, cx| {
+        cx.new(|_| SuggestionsProbe {
+            app: app.clone(),
+            width,
+        })
+    });
     let draw = |cx: &mut gpui::VisualTestContext| {
-        cx.draw(point(px(0.), px(0.)), gpui::size(width, px(500.)), |_, _| probe.clone());
+        cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(width, px(500.)),
+            |_, _| probe.clone(),
+        );
     };
     draw(cx);
 
@@ -560,14 +569,25 @@ fn follow_up_suggestions_stay_inside_the_composer_column(cx: &mut gpui::TestAppC
             chip.left() >= px(0.) && chip.right() <= width + px(1.),
             "suggestion {index} must stay inside the composer column: {chip:?} vs width {width:?}"
         );
-        assert!(chip.size.height <= px(32.), "suggestions stay single-line: {chip:?}");
+        assert!(
+            chip.size.height <= px(32.),
+            "suggestions stay single-line: {chip:?}"
+        );
         let text_selector = ["follow-up-text-0", "follow-up-text-1", "follow-up-text-2"][index];
-        let text = cx.debug_bounds(text_selector).expect("suggestion text laid out");
-        assert!(text.size.width > px(30.), "suggestion text must have readable width: {text:?}");
+        let text = cx
+            .debug_bounds(text_selector)
+            .expect("suggestion text laid out");
+        assert!(
+            text.size.width > px(30.),
+            "suggestion text must have readable width: {text:?}"
+        );
         if let Some(previous) = previous {
             let previous: gpui::Bounds<Pixels> = previous;
             assert_eq!(chip.top(), previous.top(), "suggestions share one row");
-            assert!(chip.left() >= previous.right(), "suggestions do not overlap");
+            assert!(
+                chip.left() >= previous.right(),
+                "suggestions do not overlap"
+            );
         }
         previous = Some(chip);
     }

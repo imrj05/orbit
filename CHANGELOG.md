@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **File count and previous / next arrows in the Review toolbar.** The diff
+  toolbar names how many files the snapshot changes when there is room and
+  walks between them with previous / next arrows around the reader's
+  place (`12/187`). The arrows and the `n` / `p` shortcuts share one step,
+  measured from the file at the top of the diff so scrolling to another file
+  and pressing the arrow continues from there; both go inert at the first and
+  last file. The count and navigator fold away as space gets tight rather than
+  overflowing the row.
+
+### Fixed
+
+- **The skill enable/disable switch is clickable again on Windows.** Settings →
+  Skills puts the switch at the right edge of the detail header, directly under
+  the caption buttons the app paints over the window's top-right corner, so the
+  maximize button covered it and swallowed the click. The header now reserves
+  the caption strip, the same inset the Files and Explorer headers already use.
+
+- **Enter and Backspace during an IME composition no longer act on the
+  draft.** Sogou Pinyin, and Chinese IMEs generally, keep the composition
+  session — and its candidate window — open after Backspace has emptied the
+  pinyin buffer, and report that as an empty preedit. Orbit read the empty
+  preedit as "not composing", so Enter submitted the draft and Backspace
+  deleted committed text behind it. The composer now tracks the session
+  separately from the preedit span and holds its own shortcuts while one is
+  open; on Windows it also reports the empty span as marked, so the platform
+  hands the keystroke to the IME instead of dispatching `Submit` /
+  `Backspace`, and a session the IME abandoned on focus loss is closed on the
+  next frame instead of claiming keys. Regression tests cover the Sogou
+  sequence (Backspace down to an empty pinyin buffer, then Enter / Backspace /
+  arrows), the Windows marked-span gate, and session teardown on focus and
+  window loss.
+
 ## [0.2.14] - 2026-10-30
 
 ### Added

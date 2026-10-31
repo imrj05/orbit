@@ -480,6 +480,13 @@ impl OrbitApp {
         let Some(edit) = self.queue_edit.as_ref() else {
             return;
         };
+        // Enter can be the key that confirms an IME candidate in the edit
+        // field; the preedit is still in the buffer and must not become the
+        // queued message. Save (⏎ or the button) waits for the composition to
+        // end, the same rule the chat composer follows (issue #100).
+        if edit.input.read(cx).is_composing() {
+            return;
+        }
         let target = edit.target;
         let text = edit.input.read(cx).text().trim().to_owned();
         if text.is_empty() {
@@ -678,6 +685,11 @@ impl OrbitApp {
         // Only the main composer owns the completion menu — picker filter
         // inputs share the `Composer` key context but must never reach it.
         if !self.input.read(cx).focus_handle(cx).is_focused(window) {
+            return;
+        }
+        // Tab can page IME candidates; moving focus here would drop the
+        // composition (issue #100).
+        if self.input.read(cx).is_composing() {
             return;
         }
         // With the menu open, Tab accepts the highlighted entry; with it

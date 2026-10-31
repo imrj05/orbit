@@ -50,6 +50,17 @@ const PANE_MIN_W: f32 = 300.;
 const PANE_MAX_W: f32 = 900.;
 /// Below this width the ±stats collapse out of the toolbar.
 const STATS_MIN_PANE_W: f32 = 380.;
+/// Below this width the file navigator collapses out of the toolbar. It needs
+/// its own, higher breakpoint than the stats: the arrows and their counter sit
+/// beside them, so a pane that just fits the stats has no room to walk files.
+const FILE_NAV_MIN_PANE_W: f32 = 440.;
+/// How much room the truncation warning takes from the toolbar row; while it
+/// shows, the file navigator needs that much more pane before it fits.
+const FILE_WARNING_W: f32 = 80.;
+/// Below this width the standalone changed-file count folds away. The
+/// navigator's counter still carries the total (`1/187`), so the count is never
+/// lost — only stated once, which is all a narrow toolbar can afford.
+const FILE_COUNT_MIN_PANE_W: f32 = 560.;
 /// Below this width the changed-files tree is hidden (responsive).
 const TREE_MIN_PANE_W: f32 = 440.;
 /// Directory tree column width range.
@@ -942,19 +953,39 @@ impl SidePane {
         }
     }
 
-    /// `n` / `p`: select the next or previous changed file.
+    /// `n` / `p`: select the next or previous changed file. The toolbar's
+    /// arrows call the same step, so pointer and keyboard always agree.
     pub(super) fn review_move_file(&mut self, direction: isize, cx: &mut Context<Self>) {
-        let count = self.review.as_ref().map_or(0, |review| review.files.len());
-        if count == 0 {
+        let Some(snapshot) = self.review.clone() else {
             return;
-        }
-        let current = self.selected_file.unwrap_or(0).min(count - 1);
+        };
+        let count = snapshot.files.len();
+        let Some(current) = self.current_file(&snapshot) else {
+            return;
+        };
         let next = if direction > 0 {
             (current + 1).min(count - 1)
         } else {
             current.saturating_sub(1)
         };
-        self.select_file(next, cx);
+        if next != current {
+            self.select_file(next, cx);
+        }
+    }
+
+    /// The changed file the reader is looking at: the file whose header sits
+    /// at the top of the diff, falling back to the tree's selection and then
+    /// to the first file. Navigation steps from here, so `n` / `p` and the
+    /// arrows follow what is on screen rather than a selection the reader
+    /// scrolled away from.
+    fn current_file(&self, snapshot: &Snapshot) -> Option<usize> {
+        let top = self.diff_list.logical_scroll_top().item_ix;
+        snapshot
+            .file_headers_around(top)
+            .and_then(|(header, _)| snapshot.lines.get(header))
+            .map(|line| line.file_index)
+            .or(self.selected_file)
+            .or((!snapshot.files.is_empty()).then_some(0))
     }
 
     /// `]` / `[`: jump the diff to the next or previous hunk header. The
@@ -1033,7 +1064,17 @@ impl SidePane {
             .as_ref()
             .map(|snapshot| (snapshot.additions, snapshot.deletions))
             .unwrap_or((0, 0));
+        let files = self
+            .review
+            .as_ref()
+            .map_or(0, |snapshot| snapshot.files.len());
         let compact = self.pane_width() < px(STATS_MIN_PANE_W);
+        // The count and the navigator need more room than the stats do; each
+        // folds away at its own width so the row never overflows its pane.
+        let show_file_count =
+            files > 0 && !compact && self.pane_width() >= px(FILE_COUNT_MIN_PANE_W);
+        let nav_min_w = FILE_NAV_MIN_PANE_W + if truncated { FILE_WARNING_W } else { 0. };
+        let show_file_nav = !self.embedded && files > 1 && self.pane_width() >= px(nav_min_w);
         let tree_available = !self.embedded && self.pane_width() >= px(TREE_MIN_PANE_W);
         let tree_visible = tree_available && self.tree_open;
 
@@ -1208,9 +1249,17 @@ impl SidePane {
                     .gap_2()
                     .text_size(TextSize::Small.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
+                    .children(show_file_count.then(|| {
+                        div()
+                            .debug_selector(|| "review-file-count".to_string())
+                            .whitespace_nowrap()
+                            .text_color(theme.text_secondary)
+                            .child(file_count_label(files))
+                    }))
                     .child(div().text_color(theme.success).child(format!("+{added}")))
                     .child(div().text_color(theme.error).child(format!("-{removed}")))
-            }));
+            }))
+            .children(show_file_nav.then(|| self.file_nav(theme, cx)));
 
         let content = self.render_content(window, theme, tree_visible, cx);
 
@@ -1352,6 +1401,96 @@ impl SidePane {
                 theme,
                 cx,
             ))
+            .into_any_element()
+    }
+
+    /// Previous / next changed file with the reader's place among them — the
+    /// pointer twin of `p` / `n`. The arrows stay in place and go inert at the
+    /// ends, so the row never reflows as the reader walks the diff.
+    fn file_nav(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        let Some(snapshot) = self.review.as_ref() else {
+            return div().into_any_element();
+        };
+        let count = snapshot.files.len();
+        let current = self.current_file(snapshot).unwrap_or(0);
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_0p5()
+            .child(self.file_step_button(
+                "review-file-prev",
+                "icons/chevron-up.svg",
+                tr!("sidepane.previous_file"),
+                current > 0,
+                -1,
+                theme,
+                cx,
+            ))
+            .child(
+                // Tabular figures keep the counter from jittering as the
+                // reader steps from 9 to 10.
+                div()
+                    .flex_none()
+                    .min_w(px(40.))
+                    .flex()
+                    .justify_center()
+                    .font(crate::usage::view::num_font())
+                    .whitespace_nowrap()
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_muted)
+                    .child(format!("{}/{count}", current + 1)),
+            )
+            .child(self.file_step_button(
+                "review-file-next",
+                "icons/chevron-down.svg",
+                tr!("sidepane.next_file"),
+                current + 1 < count,
+                1,
+                theme,
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    /// One arrow of the file navigator. An arrow with nowhere to go keeps its
+    /// hit target but loses its ink, hover, and handler.
+    #[allow(clippy::too_many_arguments)]
+    fn file_step_button(
+        &self,
+        id: &'static str,
+        icon_path: &'static str,
+        tooltip: String,
+        enabled: bool,
+        direction: isize,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let button = icon_button_frame(div().id(id), &theme, ButtonSize::Default)
+            .group(BUTTON_GROUP)
+            .debug_selector(move || id.to_string())
+            .child(icon(
+                icon_path,
+                IconSize::XSmall.px(&theme),
+                if enabled {
+                    theme.text_muted
+                } else {
+                    theme.text_disabled
+                },
+            ));
+        if !enabled {
+            return button.into_any_element();
+        }
+        button
+            .cursor_pointer()
+            .hover(|style| style.bg(theme.surface_hover))
+            .active(|style| style.opacity(PRESS_DIM))
+            .tip(tooltip)
+            .on_click(
+                cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.review_move_file(direction, cx)
+                }),
+            )
             .into_any_element()
     }
 
@@ -2252,6 +2391,16 @@ fn separator(theme: Theme) -> AnyElement {
     context_menu_separator(&theme).into_any_element()
 }
 
+/// The changed-file total beside the ±stats — "12 files", or "1 file" where a
+/// count of one would otherwise read as a bug.
+fn file_count_label(files: usize) -> String {
+    if files == 1 {
+        tr!("sidepane.files_count_one", count = files)
+    } else {
+        tr!("sidepane.files_count_other", count = files)
+    }
+}
+
 /// The top of a dropdown hung from a button centered in the pane row that
 /// starts `row_top` px below the pane: the button's bottom edge plus Zed's
 /// menu offset.
@@ -2576,6 +2725,151 @@ mod tests {
                 assert_eq!(pane.selected_file, Some(1));
             });
         });
+    }
+
+    /// A patch with one changed line in each named file.
+    fn multi_file_patch(names: &[&str]) -> (String, String) {
+        let numstat = names.iter().map(|name| format!("1\t1\t{name}\n")).collect();
+        let patch = names
+            .iter()
+            .map(|name| {
+                format!(
+                    "diff --git a/{name} b/{name}\n\
+                     index 1111111..2222222 100644\n\
+                     --- a/{name}\n\
+                     +++ b/{name}\n\
+                     @@ -1,3 +1,3 @@\n\
+                     -old();\n\
+                     +new();\n"
+                )
+            })
+            .collect();
+        (numstat, patch)
+    }
+
+    /// The arrows step from the file at the top of the diff, not from a
+    /// selection the reader scrolled away from — so stepping always continues
+    /// where they are reading.
+    #[gpui::test]
+    fn file_navigation_steps_from_the_file_on_screen(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        let (numstat, patch) = multi_file_patch(&["src/a.rs", "src/b.rs", "src/c.rs"]);
+        let snapshot = crate::review::parse_collected(Source::Uncommitted, &numstat, &patch, false);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.apply_snapshot(snapshot);
+
+                // The reader scrolls to the last file without touching the
+                // tree, so the selection still points at the first one.
+                let last = pane.review.as_ref().unwrap().files[2].diff_line.unwrap();
+                pane.diff_list.scroll_to(ListOffset {
+                    item_ix: last,
+                    offset_in_item: px(0.),
+                });
+                pane.review_move_file(-1, cx);
+                assert_eq!(
+                    pane.selected_file,
+                    Some(1),
+                    "the previous file is the one above the file being read"
+                );
+
+                pane.review_move_file(1, cx);
+                assert_eq!(pane.selected_file, Some(2));
+            });
+        });
+    }
+
+    /// The file counter and its arrows share the stats group: they appear
+    /// where the toolbar has the room and drop out below the stats breakpoint
+    /// rather than overflowing.
+    /// The file navigator and the standalone count fold away at their own
+    /// widths: the arrows need the stats' room plus theirs, and the count only
+    /// appears once the toolbar can hold it beside them. The counter in the
+    /// navigator keeps the total on the panes that cannot.
+    #[gpui::test]
+    fn file_navigation_shows_where_the_toolbar_has_room(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let pane = cx.update(|_, cx| cx.new(SidePane::new));
+        let (numstat, patch) = multi_file_patch(&["src/a.rs", "src/b.rs"]);
+        cx.update(|_, cx| {
+            pane.update(cx, |pane, cx| {
+                pane.open = true;
+                pane.set_width(px(460.), cx);
+                pane.apply_snapshot(crate::review::parse_collected(
+                    Source::Uncommitted,
+                    &numstat,
+                    &patch,
+                    true,
+                ));
+            });
+        });
+        let viewport = gpui::size(px(1200.), px(800.));
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            let _ = cx.draw(point(px(0.), px(0.)), viewport, |_, _| pane.clone());
+        };
+
+        // The debug-bounds map keeps entries from earlier frames, so the test
+        // widens from narrow to wide: an arrow seen here was drawn by this
+        // frame.
+        cx.update(|_, cx| pane.update(cx, |pane, cx| pane.set_width(px(PANE_MIN_W), cx)));
+        draw(cx);
+        assert!(
+            cx.debug_bounds("review-file-prev").is_none(),
+            "a narrow pane drops the arrows with the stats"
+        );
+        assert!(cx.debug_bounds("review-file-count").is_none());
+
+        // The default docked width carries the arrows; the counter in them
+        // states the total, so the standing count waits for more room.
+        cx.update(|_, cx| pane.update(cx, |pane, cx| pane.set_width(px(460.), cx)));
+        draw(cx);
+        assert!(
+            cx.debug_bounds("review-file-prev").is_some(),
+            "a docked pane has room for the file arrows"
+        );
+        let next = cx.debug_bounds("review-file-next").unwrap();
+        let pane_bounds = cx.debug_bounds("side-pane").unwrap();
+        assert!(next.origin.x + next.size.width <= pane_bounds.origin.x + pane_bounds.size.width);
+        assert!(
+            cx.debug_bounds("review-file-count").is_none(),
+            "the count folds into the counter on a narrow pane"
+        );
+
+        // A wide pane also names the total outright.
+        cx.update(|_, cx| pane.update(cx, |pane, cx| pane.set_width(px(700.), cx)));
+        draw(cx);
+        assert!(cx.debug_bounds("review-file-count").is_some());
+        assert!(cx.debug_bounds("review-file-prev").is_some());
+    }
+
+    #[gpui::test]
+    fn partial_diff_warning_leaves_room_for_file_navigation(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let pane = cx.update(|_, cx| cx.new(SidePane::new));
+        let (numstat, patch) = multi_file_patch(&["src/a.rs", "src/b.rs"]);
+        cx.update(|_, cx| {
+            pane.update(cx, |pane, cx| {
+                pane.open = true;
+                pane.set_width(px(460.), cx);
+                pane.apply_snapshot(crate::review::parse_collected(
+                    Source::Uncommitted,
+                    &numstat,
+                    &patch,
+                    false,
+                ));
+            });
+        });
+        let viewport = gpui::size(px(1200.), px(800.));
+        let _ = cx.draw(point(px(0.), px(0.)), viewport, |_, _| pane.clone());
+        assert!(cx.debug_bounds("review-file-next").is_none());
+
+        cx.update(|_, cx| pane.update(cx, |pane, cx| pane.set_width(px(560.), cx)));
+        let _ = cx.draw(point(px(0.), px(0.)), viewport, |_, _| pane.clone());
+        let next = cx.debug_bounds("review-file-next").unwrap();
+        let pane_bounds = cx.debug_bounds("side-pane").unwrap();
+        assert!(next.origin.x + next.size.width <= pane_bounds.origin.x + pane_bounds.size.width);
     }
 
     #[gpui::test]

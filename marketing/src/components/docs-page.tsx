@@ -117,7 +117,7 @@ function DocsSidebar({
       <div className="hidden flex-col gap-8 lg:flex">
         {DOCS_NAV.map((group) => (
           <div key={group.id}>
-            <p className="mb-3 font-mono text-[10.5px] uppercase tracking-[0.16em] text-ink-3">
+            <p className="mb-3 text-[11.5px] font-medium text-ink-3">
               {t(`nav.groups.${group.id}`)}
             </p>
             <ul className="flex flex-col gap-0.5">
@@ -168,7 +168,7 @@ function DocsPager({
           href={localeHref(locale, prev.href)}
           className="group flex flex-col gap-1 rounded-[14px] border border-edge-subtle bg-surface-1 p-4 no-underline transition-colors hover:border-edge-strong hover:bg-surface-2"
         >
-          <span className="inline-flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-[0.14em] text-ink-3">
+          <span className="inline-flex items-center gap-1.5 text-[11.5px] text-ink-3">
             <HugeiconsIcon icon={ArrowLeft01Icon} className="size-3.5" />
             {t("previous")}
           </span>
@@ -184,7 +184,7 @@ function DocsPager({
           href={localeHref(locale, next.href)}
           className="group flex flex-col items-end gap-1 rounded-[14px] border border-edge-subtle bg-surface-1 p-4 text-right no-underline transition-colors hover:border-edge-strong hover:bg-surface-2 sm:col-start-2"
         >
-          <span className="inline-flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-[0.14em] text-ink-3">
+          <span className="inline-flex items-center gap-1.5 text-[11.5px] text-ink-3">
             {t("next")}
             <HugeiconsIcon icon={ArrowRight01Icon} className="size-3.5" />
           </span>

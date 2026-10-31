@@ -98,7 +98,20 @@ impl OrbitApp {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Enter may be confirming an IME candidate in the find field; jumping
+        // to another hit on that keystroke moves the reader's place for a key
+        // the IME owns (issue #100).
+        if self.search_field_composing(cx) {
+            return;
+        }
         self.step_search(true, cx);
+    }
+
+    /// Whether the find field is mid-composition, so ⏎/⇧⏎ wait for the IME.
+    fn search_field_composing(&self, cx: &Context<Self>) -> bool {
+        self.transcript_search
+            .as_ref()
+            .is_some_and(|search| search.input.read(cx).is_composing())
     }
 
     pub(super) fn on_search_prev(
@@ -107,6 +120,9 @@ impl OrbitApp {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.search_field_composing(cx) {
+            return;
+        }
         self.step_search(false, cx);
     }
 

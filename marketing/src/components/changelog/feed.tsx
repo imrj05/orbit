@@ -66,7 +66,7 @@ function ReleaseHeader({
       </div>
       <time
         dateTime={entry.date}
-        className="font-mono text-[11px] uppercase tracking-[0.12em] text-ink-3"
+        className="font-mono text-[11px] text-ink-3"
       >
         {formatDate(entry.date)}
       </time>

@@ -512,7 +512,12 @@ fn day_readout(
                 .gap(DynamicSpacing::Base12.px(&theme))
                 .whitespace_nowrap()
                 .text_size(TextSize::Small.px(&theme))
-                .child(div().flex_none().text_color(theme.text_muted).child(label.clone()))
+                .child(
+                    div()
+                        .flex_none()
+                        .text_color(theme.text_muted)
+                        .child(label.clone()),
+                )
                 .child(
                     div()
                         .min_w_0()
@@ -715,7 +720,11 @@ mod tests {
         }
 
         impl Render for CalendarProbe {
-            fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
                 div().w(px(self.width)).child(super::calendar(
                     "usage-calendar",
                     &self.calendar,

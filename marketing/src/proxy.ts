@@ -75,7 +75,17 @@ export function proxy(request: NextRequest) {
 
 export const config = {
   // Every page, minus the paths that cannot have a locale: `/api/locale` records
-  // the choice, Next's internals, and anything with a file extension (sitemap,
-  // RSS feed, manifest, icons, OG cards).
-  matcher: ["/((?!api|_next|_vercel|.*\\..*).*)"],
+  // the choice, Next's internals, and paths that ARE files — real asset
+  // extensions at the end of the path (sitemap, RSS feed, manifest, icons, OG
+  // cards). A catch-all "any dot anywhere" exclusion would also swallow the
+  // release pages, whose URL is `/changelog/v0.2.14` — a version tag, not a
+  // file — and leave every sitemap-listed release URL a 404. The AppKit-style
+  // metadata-image routes (`opengraph-image`, `twitter-image`) are excluded by
+  // NAME at any prefix: next ships them with the locale prefix they sit under
+  // (`/en/opengraph-image?…`), and next-intl's `as-needed` rewrite would strip
+  // that prefix on every English page — a permanent 307 (or, before the
+  // `[locale]` card existed, a 404) in the og:image URL crawlers fetch.
+  matcher: [
+    "/((?!api|_next|_vercel|(?:.*/)?opengraph-image$|(?:.*/)?twitter-image$|.*\\.(?:png|svg|ico|xml|txt|webmanifest|json|jpg|jpeg|webp|gif|css|js|wasm|woff2?|map)$).*)",
+  ],
 };

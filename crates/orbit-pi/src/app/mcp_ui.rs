@@ -67,6 +67,31 @@ pub(super) struct McpEditor {
     pub(super) error: Option<String>,
 }
 
+impl McpEditor {
+    /// Whether any field is mid-composition. Save reads `text()`, which
+    /// includes the preedit, so it waits for the IME like every other
+    /// confirm (issue #100).
+    fn composing(&self, cx: &App) -> bool {
+        crate::composer::any_composing(
+            cx,
+            &[
+                &self.name,
+                &self.description,
+                &self.command,
+                &self.args,
+                &self.env,
+                &self.url,
+                &self.headers,
+                &self.oauth_client_id,
+                &self.oauth_client_secret,
+                &self.oauth_callback_port,
+                &self.oauth_callback_url,
+                &self.oauth_scope,
+            ],
+        )
+    }
+}
+
 /// The in-flight OAuth sign-in: which server, and the flag the waiting
 /// background task polls so Cancel can abort it.
 pub(super) struct McpAuthJob {
@@ -525,6 +550,11 @@ impl OrbitApp {
         let Some(editor) = self.mcp_editor.as_ref() else {
             return;
         };
+        // Save reads every field, and a field mid-composition still holds the
+        // preedit: ⏎/Save must wait for the IME (issue #100).
+        if editor.composing(cx) {
+            return;
+        }
         let original = editor.original.clone();
         let kind = editor.kind;
         let scope = editor.scope;

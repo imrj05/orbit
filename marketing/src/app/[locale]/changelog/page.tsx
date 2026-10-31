@@ -51,6 +51,8 @@ export async function generateMetadata({
     },
     twitter: {
       card: "summary_large_image",
+      site: SITE.twitter,
+      creator: SITE.twitter,
       title: "Changelog · Orbit",
       description:
         "Every Orbit Pi release, newest first — pulled live from the repository.",

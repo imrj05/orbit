@@ -15,7 +15,7 @@
 
 use std::{
     cell::{Cell, RefCell},
-    collections::{HashMap, HashSet, VecDeque, hash_map::DefaultHasher},
+    collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque},
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
     rc::Rc,
@@ -24,13 +24,13 @@ use std::{
 };
 
 use gpui::{
-    Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem, CursorStyle, DispatchPhase,
-    Element, ElementId, Font, FontFeatures, FontStyle, FontWeight, GlobalElementId, Hitbox,
-    HitboxBehavior, Hsla, Image, ImageSource, InspectorElementId, InteractiveText, LayoutId,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels, ScrollHandle,
-    ScrollWheelEvent, SharedString, StrikethroughStyle, StyledText, TextAlign, TextLayout, TextRun,
-    TransformationMatrix, UnderlineStyle, Window, anchored, canvas, deferred, div, img,
-    linear_color_stop, linear_gradient, list, point, prelude::*, px, relative,
+    anchored, canvas, deferred, div, img, linear_color_stop, linear_gradient, list, point,
+    prelude::*, px, relative, Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem,
+    CursorStyle, DispatchPhase, Element, ElementId, Font, FontFeatures, FontStyle, FontWeight,
+    GlobalElementId, Hitbox, HitboxBehavior, Hsla, Image, ImageSource, InspectorElementId,
+    InteractiveText, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ObjectFit, Pixels, ScrollHandle, ScrollWheelEvent, SharedString, StrikethroughStyle,
+    StyledText, TextAlign, TextLayout, TextRun, TransformationMatrix, UnderlineStyle, Window,
 };
 
 use std::ops::Range;
@@ -43,8 +43,8 @@ use orbit_rpc::MessageUsage;
 
 use crate::agent_call_display::AgentCallDisplay;
 use crate::app::{
-    BUTTON_GROUP, OrbitApp, TipExt, button_frame, file_badge, file_glyph, file_icon_tile,
-    icon_button_frame, nerd_font_family, picker_entry, picker_surface,
+    button_frame, file_badge, file_glyph, file_icon_tile, icon_button_frame, nerd_font_family,
+    picker_entry, picker_surface, OrbitApp, TipExt, BUTTON_GROUP,
 };
 use crate::context_meter::{format_tokens, hit_percent_label};
 use crate::highlight::{self, Token};
@@ -52,8 +52,8 @@ use crate::message_scroller::{self, MessageScrollerState};
 use crate::shimmer::ShimmerText;
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
-    BORDER_WIDTH, BufferLineHeight, ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt,
-    TextSize, button, context_menu, panel, picker, popover,
+    button, context_menu, panel, picker, popover, BufferLineHeight, ButtonSize, DynamicSpacing,
+    IconSize, Radius, StyledExt, TextSize, BORDER_WIDTH,
 };
 use crate::theme::{self, Theme, ThemeMode};
 use crate::transcript::{ChatMessage, Step, SummaryRow, ToolCall, ToolFacts};
@@ -493,7 +493,11 @@ impl TextSelection {
     }
 
     fn select_word(&mut self, position: gpui::Point<Pixels>) {
-        let Some(index) = self.blocks.iter().position(|block| block.bounds.contains(&position)) else {
+        let Some(index) = self
+            .blocks
+            .iter()
+            .position(|block| block.bounds.contains(&position))
+        else {
             return;
         };
         let Ok(offset) = self.blocks[index].layout.index_for_position(position) else {
@@ -503,8 +507,14 @@ impl TextSelection {
         let range = crate::composer::word_range_at(text, byte_boundary(text, offset));
         self.begin_selection(position);
         if let Some(selection) = self.selection.as_mut() {
-            selection.anchor = SelectPoint { block: index, offset: range.start };
-            selection.focus = SelectPoint { block: index, offset: range.end };
+            selection.anchor = SelectPoint {
+                block: index,
+                offset: range.start,
+            };
+            selection.focus = SelectPoint {
+                block: index,
+                offset: range.end,
+            };
         }
         self.dragging = false;
         self.moved = true;
@@ -3830,7 +3840,11 @@ fn render_tool_detail(
             )
         }),
     };
-    let images = tool.output.as_ref().map(tool_result_images).unwrap_or_default();
+    let images = tool
+        .output
+        .as_ref()
+        .map(tool_result_images)
+        .unwrap_or_default();
     let output = tool.output.as_ref().and_then(|output| {
         if output.get("content").and_then(Value::as_array).is_some() {
             crate::transcript::tool_result_output(output)
@@ -3866,7 +3880,9 @@ fn render_tool_detail(
                 .border_color(theme.border)
                 // With no sections below it, the diff is the card's last
                 // child and carries its bottom radius.
-                .when(!has_sections && images.is_empty(), |d| d.rounded_b(panel::RADIUS.px(&theme)))
+                .when(!has_sections && images.is_empty(), |d| {
+                    d.rounded_b(panel::RADIUS.px(&theme))
+                })
                 .child(render_edit_diff(
                     rows,
                     key,
@@ -3937,7 +3953,9 @@ fn render_tool_detail(
                             "tool-image".into(),
                             (key.0 as u64) << 32 | (key.1 as u64) << 16 | image_ix as u64,
                         ))
-                        .debug_selector(move || format!("tool-image-{}-{}-{image_ix}", key.0, key.1))
+                        .debug_selector(move || {
+                            format!("tool-image-{}-{}-{image_ix}", key.0, key.1)
+                        })
                         .size(px(180.))
                         .when(opener.is_some(), |tile| tile.cursor_pointer())
                         .child(
@@ -3995,23 +4013,30 @@ fn tool_result_images(output: &Value) -> Vec<Arc<Image>> {
     let Some(blocks) = output.get("content").and_then(Value::as_array) else {
         return Vec::new();
     };
-    blocks.iter().filter_map(|block| {
-        if block.get("type").and_then(Value::as_str) != Some("image") {
-            return None;
-        }
-        let mut hasher = DefaultHasher::new();
-        block.get("data")?.as_str()?.hash(&mut hasher);
-        block.get("mimeType").or_else(|| block.get("mime_type"))?.as_str()?.hash(&mut hasher);
-        let key = hasher.finish();
-        TOOL_IMAGE_CACHE.with(|cache| {
-            if let Some(image) = cache.borrow().get(key) {
-                return Some(image);
+    blocks
+        .iter()
+        .filter_map(|block| {
+            if block.get("type").and_then(Value::as_str) != Some("image") {
+                return None;
             }
-            let image = crate::transcript::image_from_block(block)?;
-            cache.borrow_mut().insert(key, image.clone());
-            Some(image)
+            let mut hasher = DefaultHasher::new();
+            block.get("data")?.as_str()?.hash(&mut hasher);
+            block
+                .get("mimeType")
+                .or_else(|| block.get("mime_type"))?
+                .as_str()?
+                .hash(&mut hasher);
+            let key = hasher.finish();
+            TOOL_IMAGE_CACHE.with(|cache| {
+                if let Some(image) = cache.borrow().get(key) {
+                    return Some(image);
+                }
+                let image = crate::transcript::image_from_block(block)?;
+                cache.borrow_mut().insert(key, image.clone());
+                Some(image)
+            })
         })
-    }).collect()
+        .collect()
 }
 
 /// A structured (non-string) value highlights as JSON; strings and scalars
@@ -4260,10 +4285,14 @@ fn render_detail_section(
         };
         card.child(
             button_frame(
-                div().id(ElementId::NamedInteger(
-                    "section-fold".into(),
-                    ((key.0 as u64) << 16 | key.1 as u64) << 8 | section as u64,
-                )).debug_selector(move || format!("tool-section-fold-{}-{}-{section}", key.0, key.1)),
+                div()
+                    .id(ElementId::NamedInteger(
+                        "section-fold".into(),
+                        ((key.0 as u64) << 16 | key.1 as u64) << 8 | section as u64,
+                    ))
+                    .debug_selector(move || {
+                        format!("tool-section-fold-{}-{}-{section}", key.0, key.1)
+                    }),
                 &theme,
                 ButtonSize::Default,
             )
@@ -5976,9 +6005,7 @@ fn paragraph_text(
     key: ElementId,
     theme: Theme,
 ) -> impl IntoElement {
-    paragraph_text_live(
-        text, size, line_height, weight, color, key, theme, false,
-    )
+    paragraph_text_live(text, size, line_height, weight, color, key, theme, false)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -8241,17 +8268,10 @@ mod tests {
         };
         fade.apply("Hi", vec![run(2)], start);
         let appended = fade.apply("Hi é", vec![run(5)], start);
-        assert_eq!(
-            appended.iter().map(|r| r.len).collect::<Vec<_>>(),
-            [2, 3]
-        );
+        assert_eq!(appended.iter().map(|r| r.len).collect::<Vec<_>>(), [2, 3]);
         assert_eq!(appended[0].color.a, 1.);
         assert!((appended[1].color.a - 0.55).abs() < 0.001);
-        let finished = fade.apply(
-            "Hi é",
-            vec![run(5)],
-            start + Duration::from_millis(140),
-        );
+        let finished = fade.apply("Hi é", vec![run(5)], start + Duration::from_millis(140));
         assert_eq!(finished.len(), 1);
         assert_eq!(finished[0].color.a, 1.);
     }
@@ -10090,7 +10110,11 @@ mod tests {
                 removed: 0,
                 id: None,
                 args: None,
-                output: self.output.clone().or_else(|| Some(Value::String((0..40).map(|i| format!("line {i}\n")).collect()))),
+                output: self.output.clone().or_else(|| {
+                    Some(Value::String(
+                        (0..40).map(|i| format!("line {i}\n")).collect(),
+                    ))
+                }),
                 failed: false,
                 facts: ToolFacts::default(),
             };
@@ -10124,7 +10148,11 @@ mod tests {
             image_opener: None,
         });
         let draw = |cx: &mut gpui::VisualTestContext| {
-            cx.draw(point(px(0.), px(0.)), gpui::size(px(600.), px(1200.)), |_, _| view.clone());
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(600.), px(1200.)),
+                |_, _| view.clone(),
+            );
         };
         draw(cx);
         let header = cx.debug_bounds("tool-header-0-0").unwrap();
@@ -10134,7 +10162,10 @@ mod tests {
         cx.simulate_mouse_down(body, MouseButton::Left, gpui::Modifiers::none());
         draw(cx);
         cx.simulate_mouse_up(body, MouseButton::Left, gpui::Modifiers::none());
-        assert!(open.borrow().contains(&(0, 0)), "clicking text must not close the card");
+        assert!(
+            open.borrow().contains(&(0, 0)),
+            "clicking text must not close the card"
+        );
         draw(cx);
         let fold = cx.debug_bounds("tool-section-fold-0-0-1").unwrap();
         let position = point(fold.left() + px(20.), fold.top() + px(10.));
@@ -10143,8 +10174,14 @@ mod tests {
         cx.simulate_mouse_down(position, MouseButton::Left, gpui::Modifiers::none());
         draw(cx);
         cx.simulate_mouse_up(position, MouseButton::Left, gpui::Modifiers::none());
-        assert!(sections.borrow().contains(&(0, 0, 1)), "show more expands the output");
-        assert!(open.borrow().contains(&(0, 0)), "show more must not close the card");
+        assert!(
+            sections.borrow().contains(&(0, 0, 1)),
+            "show more expands the output"
+        );
+        assert!(
+            open.borrow().contains(&(0, 0)),
+            "show more must not close the card"
+        );
         draw(cx);
         let header = cx.debug_bounds("tool-header-0-0").unwrap();
         let position = point(header.left() + px(25.), header.top() + px(10.));
@@ -10153,7 +10190,10 @@ mod tests {
         cx.simulate_mouse_down(position, MouseButton::Left, gpui::Modifiers::none());
         draw(cx);
         cx.simulate_mouse_up(position, MouseButton::Left, gpui::Modifiers::none());
-        assert!(!open.borrow().contains(&(0, 0)), "the header still closes the card");
+        assert!(
+            !open.borrow().contains(&(0, 0)),
+            "the header still closes the card"
+        );
     }
 
     #[gpui::test]
@@ -10174,7 +10214,11 @@ mod tests {
             }]})),
             image_opener: Some(Rc::new(move |_, _, _| count.set(count.get() + 1))),
         });
-        cx.draw(point(px(0.), px(0.)), gpui::size(px(600.), px(600.)), |_, _| view.clone());
+        cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(600.), px(600.)),
+            |_, _| view.clone(),
+        );
         let bounds = cx.debug_bounds("tool-image-0-0-0").expect("tool image");
         let position = point(bounds.left() + px(30.), bounds.top() + px(30.));
         cx.simulate_mouse_move(position, None, gpui::Modifiers::none());
@@ -11006,18 +11050,28 @@ mod tests {
         let state = Rc::new(RefCell::new(TextSelection::new()));
         let messages = test_messages();
         let scroller = MessageScrollerState::new(messages.borrow().len());
-        let view = cx.update(|_, cx| cx.new(|_| SelectTestView {
-            messages: messages.clone(),
-            state: state.clone(),
-            scroller: scroller.clone(),
-            main_width: px(900.),
-            open_work: false,
-            live: false,
-        }));
-        cx.draw(point(px(0.), px(0.)), gpui::size(px(900.), px(600.)), |_, _| view.clone());
+        let view = cx.update(|_, cx| {
+            cx.new(|_| SelectTestView {
+                messages: messages.clone(),
+                state: state.clone(),
+                scroller: scroller.clone(),
+                main_width: px(900.),
+                open_work: false,
+                live: false,
+            })
+        });
+        cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(600.)),
+            |_, _| view.clone(),
+        );
         let position = {
             let state = state.borrow();
-            let block = state.blocks.iter().find(|block| block.text.contains("Alpha bravo")).unwrap();
+            let block = state
+                .blocks
+                .iter()
+                .find(|block| block.text.contains("Alpha bravo"))
+                .unwrap();
             let start = block.text.find("bravo").unwrap();
             let a = block.layout.position_for_index(start + 1).unwrap();
             point(a.x, a.y + block.layout.line_height() * 0.5)

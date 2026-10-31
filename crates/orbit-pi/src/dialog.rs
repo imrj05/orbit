@@ -248,6 +248,16 @@ impl Dialog {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // In an input/editor dialog, Enter is often the key confirming an IME
+        // candidate; the field still holds half-composed text, which must not
+        // become the dialog's answer (issue #100).
+        if self
+            .input
+            .as_ref()
+            .is_some_and(|input| input.read(cx).is_composing())
+        {
+            return;
+        }
         let response = match &self.request.kind {
             DialogKind::Select { options } => match options.get(self.highlighted) {
                 Some(option) => DialogResponse::Value(option.clone()),
@@ -772,5 +782,66 @@ mod tests {
         assert!(card.size.width > px(0.), "card collapsed to zero width");
         assert!(card.size.width <= px(CARD_W));
         assert!(card.size.height > px(0.), "card collapsed to zero height");
+    }
+
+    /// Issue #100: Enter confirming an IME candidate must not answer the
+    /// dialog with the preedit still in the field — the same rule the chat
+    /// composer, the queue editor and the pickers follow.
+    #[gpui::test]
+    fn enter_during_an_ime_composition_does_not_answer_the_dialog(cx: &mut gpui::TestAppContext) {
+        use gpui::EntityInputHandler as _;
+
+        let cx = cx.add_empty_window();
+        let answered = std::rc::Rc::new(std::cell::Cell::new(false));
+        let request = DialogRequest {
+            id: "ime".into(),
+            title: "Name the branch".into(),
+            body: None,
+            kind: DialogKind::Input {
+                placeholder: "type".into(),
+            },
+        };
+        let dialog = {
+            let answered = answered.clone();
+            cx.update(|_, cx| {
+                cx.new(|cx| {
+                    Dialog::new(
+                        request,
+                        Box::new(move |_: DialogResponse, _: &mut Window, _: &mut App| {
+                            answered.set(true);
+                        }),
+                        cx,
+                    )
+                })
+            })
+        };
+
+        cx.update(|window, cx| {
+            let input = dialog
+                .read(cx)
+                .input
+                .clone()
+                .expect("an input dialog has a field");
+            // Sogou with the pinyin buffer emptied: session open, preedit empty.
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "nihao", None, window, cx);
+                input.replace_and_mark_text_in_range(None, "", None, window, cx);
+            });
+
+            dialog.update(cx, |dialog, cx| {
+                dialog.on_confirm(&crate::DialogConfirm, window, cx)
+            });
+            assert!(!answered.get(), "the IME owns that Enter");
+            assert!(!dialog.read(cx).responded, "the dialog is still open");
+
+            // The commit ends the session, and Enter answers as usual.
+            input.update(cx, |input, cx| {
+                input.replace_text_in_range(None, "你好", window, cx)
+            });
+            dialog.update(cx, |dialog, cx| {
+                dialog.on_confirm(&crate::DialogConfirm, window, cx)
+            });
+            assert!(answered.get(), "a committed value answers the dialog");
+        });
     }
 }

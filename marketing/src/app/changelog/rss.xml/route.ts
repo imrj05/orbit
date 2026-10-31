@@ -31,6 +31,12 @@ function toPlainText(value: string): string {
 export async function GET() {
   const releases = await getChangelog();
 
+  // The newest release is the last time the product (and this feed) changed.
+  const lastModified = releases.find((entry) => entry.date)?.date;
+  const lastBuildDate = lastModified
+    ? new Date(`${lastModified}T00:00:00Z`).toUTCString()
+    : "";
+
   const items = releases
     .slice(0, 30)
     .map((release) => {
@@ -72,6 +78,7 @@ export async function GET() {
     <atom:link href="${
       SITE.url
     }/changelog/rss.xml" rel="self" type="application/rss+xml" />
+    ${lastBuildDate ? `<lastBuildDate>${lastBuildDate}</lastBuildDate>` : ""}
 ${items}
   </channel>
 </rss>

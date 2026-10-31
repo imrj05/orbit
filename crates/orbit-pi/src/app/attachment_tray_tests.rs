@@ -179,11 +179,17 @@ fn pasted_and_attached_images_have_the_same_preview() {
     let pixels = image::RgbaImage::from_pixel(2, 2, image::Rgba([12, 34, 56, 255]));
     let mut bytes = Vec::new();
     image::DynamicImage::ImageRgba8(pixels)
-        .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
         .expect("encode PNG");
     let image = gpui::Image::from_bytes(gpui::ImageFormat::Png, bytes.clone());
     let pasted = Attachment::from_image(&image, 0);
     let attached = Attachment::from_bytes("image.png".into(), &bytes, gpui::ImageFormat::Png);
-    assert_eq!(pasted.preview.unwrap().bytes, attached.preview.unwrap().bytes);
+    assert_eq!(
+        pasted.preview.unwrap().bytes,
+        attached.preview.unwrap().bytes
+    );
     assert_eq!(pasted.data, attached.data);
 }
