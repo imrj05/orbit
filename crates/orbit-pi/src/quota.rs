@@ -287,6 +287,7 @@ pub fn note_should_render(report: &QuotaReport) -> bool {
     report.error.is_none()
         && report.note.is_some()
         && (!report.has_data()
+            || report.windows.is_empty()
             || report
                 .windows
                 .iter()
@@ -451,6 +452,23 @@ mod tests {
             None,
         );
         assert!(note_should_render(mixed.report("ollama").unwrap()));
+
+        // A balance-only report (no windows at all) keeps the note that
+        // explains it: `any` over an empty list must not swallow what `all`
+        // used to render vacuously.
+        let mut balance_only = QuotaManager::new();
+        balance_only.on_response(
+            true,
+            Some(
+                &json!({"providers":[{"provider":"openrouter","kind":"credits",
+                "balances":[{"label":"Remaining","amount":4.5,"currency":"USD"}],
+                "note":"Team key"}]}),
+            ),
+            None,
+        );
+        assert!(note_should_render(
+            balance_only.report("openrouter").unwrap()
+        ));
 
         // Every window dated: the note would be a stale caveat, so it drops.
         let mut fully_dated = QuotaManager::new();

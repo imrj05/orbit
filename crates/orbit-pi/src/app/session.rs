@@ -2128,14 +2128,12 @@ impl OrbitApp {
         // The user's hide list only shapes the popover; Settings still shows
         // every connected provider. Split once so the header count and the
         // "Hidden" group agree, and so a hidden provider is one click back.
-        // Sibling ids that share an account (`ollama` / `ollama-cloud`) are
-        // hidden together: a card collapsed to either id stays hidden.
+        // The list is account-keyed, so one entry hides a card collapsed to
+        // either sibling id (`ollama` / `ollama-cloud`).
         let hidden = &self.hidden_quota_providers;
-        let (visible, hidden_reports): (Vec<&QuotaReport>, Vec<&QuotaReport>) =
-            reports.into_iter().partition(|report| {
-                !hidden.contains(&report.provider)
-                    && !hidden.contains(canonical_provider(&report.provider))
-            });
+        let (visible, hidden_reports): (Vec<&QuotaReport>, Vec<&QuotaReport>) = reports
+            .into_iter()
+            .partition(|report| !hidden.contains(&report.provider));
         let count = visible.len();
         // One glyph that turns in place instead of swapping to a loader, so
         // the click never changes the control's shape. Active, it wears the

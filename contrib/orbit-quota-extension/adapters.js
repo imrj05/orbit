@@ -1148,11 +1148,18 @@ async function orbitOllamaCloudApi(key) {
       : typeof balance.plan === "string"
         ? balance.plan
         : undefined;
-  // A failed balance request that left nothing to show is a failure, not an
-  // account with nothing to report: the empty-account note would describe a
-  // healthy account that simply uses none of its plan.
-  if (windows.length === 0 && balances.length === 0 && !balanceResult.ok) {
-    return { kind: "subscription", plan, error: orbitQuotaHttpError(balanceResult.status) };
+  // A failed endpoint that left nothing to show is a failure, not an account
+  // with nothing to report: the empty-account note would describe a healthy
+  // account that simply uses none of its plan. Either endpoint failing hides
+  // the same way — balance is the usual one, but a dead /api/usage leaves no
+  // windows either.
+  if (windows.length === 0 && balances.length === 0) {
+    if (!balanceResult.ok) {
+      return { kind: "subscription", plan, error: orbitQuotaHttpError(balanceResult.status) };
+    }
+    if (!usageResult.ok) {
+      return { kind: "subscription", plan, error: orbitQuotaHttpError(usageResult.status) };
+    }
   }
   return { kind: "subscription", plan, windows, balances, note };
 }

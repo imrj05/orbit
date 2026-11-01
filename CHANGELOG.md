@@ -38,7 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after the id the active model uses, preferring the report that carries
   numbers over an errored sibling and keeping a lone failure visible rather
   than folding it away. The eye toggle stores the shared id, so hiding the card
-  survives a model switch between the two.
+  survives a model switch between the two, and an entry saved under either id
+  before this change still hides it.
 
 - **Ollama's monthly credit window explains its missing countdown.** The note
   naming the plan-anniversary reset was dropped whenever the session and weekly
@@ -58,11 +59,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unwrap the same container, and a bucket's reset is read under any of the names
   it has shipped with.
 
-- **A dead Ollama balance endpoint is reported, not disguised.** When
-  `/api/balance` failed and `/api/usage` carried no meters (the normal shape for
-  a current account), the card read "reported no usage or balance for this
-  account" — describing a healthy account that uses nothing rather than the
-  endpoint that did not answer. It now reports the HTTP failure.
+- **A dead Ollama endpoint is reported, not disguised.** When one endpoint
+  failed and the other carried nothing to show — `/api/balance` dying while
+  `/api/usage` has no meters is the normal shape for a current account — the
+  card read "reported no usage or balance for this account", describing a
+  healthy account that uses nothing rather than the endpoint that did not
+  answer. It now reports the HTTP failure, from either side.
 
 - **The skill enable/disable switch is clickable again on Windows.** Settings →
   Skills puts the switch at the right edge of the detail header, directly under

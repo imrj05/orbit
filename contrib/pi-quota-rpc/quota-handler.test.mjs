@@ -458,6 +458,28 @@ test("ollama reports a failed balance request rather than an empty account", asy
   );
 });
 
+test("ollama reports a failed usage request rather than an empty account", async () => {
+  await withAuth(
+    { ollama: { type: "api_key", key: "real-cloud-key" } },
+    async () => {
+      const { orbitQuotaReport } = loadHandler({
+        fetch: async (url) => {
+          if (String(url).includes("/api/usage")) {
+            return { ok: false, status: 429, url, text: async () => "" };
+          }
+          // A balance that answers but carries no meters: nothing to show either.
+          return { ok: true, status: 200, url, text: async () => "{}" };
+        },
+      });
+      const report = await orbitQuotaReport("ollama");
+      // The mirror of the balance test: a dead /api/usage with nothing from
+      // /api/balance is a failure, not an account that uses nothing.
+      assert.match(report.error, /429/);
+      assert.equal(report.note, undefined);
+    },
+  );
+});
+
 test("ollama ignores a non-numeric remaining percentage", async () => {
   await withAuth(
     { "ollama-cloud": { type: "api_key", key: "real-cloud-key" } },

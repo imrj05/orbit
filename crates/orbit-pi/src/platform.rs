@@ -581,10 +581,21 @@ pub fn detect_open_in_apps() -> Vec<ExternalApp> {
 #[cfg(target_os = "macos")]
 const REX_BUNDLE_ID: &str = "com.superlogical.rex";
 
-/// How long Rex needs after launching before it accepts a folder open. Short
-/// enough to feel immediate, long enough to clear its startup.
+/// How long Rex needs after it has finished launching before it accepts a
+/// folder open. It comes up on its About window before its client has
+/// connected to its server, so opening on the launch event alone is dropped.
 #[cfg(target_os = "macos")]
 const REX_LAUNCH_SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// How long to wait for the launch to finish before giving up on the second
+/// step. Generous: a first launch behind Gatekeeper can take seconds, and
+/// waiting is better than handing the folder over too early.
+#[cfg(target_os = "macos")]
+const REX_LAUNCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// How often to re-check while waiting for the launch to finish.
+#[cfg(target_os = "macos")]
+const REX_LAUNCH_POLL: std::time::Duration = std::time::Duration::from_millis(200);
 
 /// Open `path` in the application `app`, activating it. macOS resolves the
 /// bundle id through Launch Services, which delivers the open asynchronously;
@@ -611,7 +622,7 @@ pub fn open_path_in_app(path: &Path, app: &ExternalApp) {
     // A folder handed to Rex as it launches is dropped, so a cold start is two
     // opens: the app alone, then the folder once it has settled. Rex's About
     // window still comes up; this only keeps the folder from being lost.
-    if bundle_id == REX_BUNDLE_ID && !is_app_running(&workspace, bundle_id) {
+    if bundle_id == REX_BUNDLE_ID && !is_app_running(bundle_id) {
         workspace.openApplicationAtURL_configuration_completionHandler(
             &application_url,
             &NSWorkspaceOpenConfiguration::configuration(),
@@ -619,6 +630,18 @@ pub fn open_path_in_app(path: &Path, app: &ExternalApp) {
         );
         let path = path.to_path_buf();
         std::thread::spawn(move || {
+            // Wait for the launch to finish rather than sleeping blind: on a
+            // slow first launch a fixed wait can expire before the app is up,
+            // and the folder is dropped again — the failure this works around.
+            let deadline = std::time::Instant::now() + REX_LAUNCH_TIMEOUT;
+            while !is_app_ready(REX_BUNDLE_ID) && std::time::Instant::now() < deadline {
+                std::thread::sleep(REX_LAUNCH_POLL);
+            }
+            // Nothing to hand the folder to if Rex never came up; opening it
+            // here would repeat the launch-time drop.
+            if !is_app_running(REX_BUNDLE_ID) {
+                return;
+            }
             std::thread::sleep(REX_LAUNCH_SETTLE);
             open_folder_in_running_app(&path, REX_BUNDLE_ID);
         });
@@ -642,11 +665,29 @@ pub fn open_path_in_app(path: &Path, app: &ExternalApp) {
 
 /// Whether an instance of `bundle_id` is already running.
 #[cfg(target_os = "macos")]
-fn is_app_running(workspace: &objc2_app_kit::NSWorkspace, bundle_id: &str) -> bool {
-    workspace.runningApplications().iter().any(|app| {
-        app.bundleIdentifier()
-            .is_some_and(|id| id.to_string() == bundle_id)
-    })
+fn is_app_running(bundle_id: &str) -> bool {
+    running_app(bundle_id, false)
+}
+
+/// Whether an instance of `bundle_id` is running and has finished launching.
+#[cfg(target_os = "macos")]
+fn is_app_ready(bundle_id: &str) -> bool {
+    running_app(bundle_id, true)
+}
+
+/// Whether an instance of `bundle_id` is running, optionally only once it has
+/// finished launching: `isFinishedLaunching` separates a process Launch
+/// Services has registered from an app whose run loop is up.
+#[cfg(target_os = "macos")]
+fn running_app(bundle_id: &str, finished_launching: bool) -> bool {
+    objc2_app_kit::NSWorkspace::sharedWorkspace()
+        .runningApplications()
+        .iter()
+        .any(|app| {
+            app.bundleIdentifier()
+                .is_some_and(|id| id.to_string() == bundle_id)
+                && (!finished_launching || app.isFinishedLaunching())
+        })
 }
 
 /// Hand `path` to the installed app with `bundle_id`, used for the second step
