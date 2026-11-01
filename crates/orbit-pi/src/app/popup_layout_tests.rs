@@ -1138,3 +1138,146 @@ fn model_and_thinking_pickers_stay_shut_while_running(cx: &mut gpui::TestAppCont
         "an idle turn opens the model picker"
     );
 }
+
+// ── command palette focus ─────────────────────────────────────────────
+
+/// `DESIGN.md`: "After dismissing a popover or modal, restore focus to the
+/// control that opened it." The palette used to hand focus to the composer
+/// unconditionally, so opening it from the sessions sidebar and pressing
+/// Escape dropped the keyboard into the wrong surface.
+#[gpui::test]
+fn dismissing_the_palette_returns_focus_to_its_opener(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+
+    cx.update(|cx| {
+        cx.set_global(Theme::for_id(ThemeId::Orbit));
+        crate::bind_keys(cx);
+    });
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(1200.), px(820.)),
+        |_, _| app.clone(),
+    );
+
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            // Focus the sessions sidebar, then open the palette on top of it.
+            app.on_focus_sessions(&crate::FocusSessions, window, cx);
+            assert!(
+                app.sidebar_focus.is_focused(window),
+                "the sidebar holds focus before the palette opens"
+            );
+            app.on_toggle_command_palette(&crate::ToggleCommandPalette, window, cx);
+            assert!(app.command_palette.is_some(), "⌘P opened the palette");
+        });
+    });
+    // The palette only joins the dispatch tree on the next frame.
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(1200.), px(820.)),
+        |_, _| app.clone(),
+    );
+
+    cx.simulate_keystrokes("escape");
+
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            assert!(app.command_palette.is_none(), "escape closed the palette");
+            assert!(
+                app.sidebar_focus.is_focused(window),
+                "focus went back to the sidebar that opened the palette"
+            );
+            assert!(
+                !app.input.read(cx).focus_handle(cx).is_focused(window),
+                "the composer must not steal focus from the opener"
+            );
+        });
+    });
+}
+
+/// The run path closes the palette and *then* runs the command, so the focus
+/// handle the palette held is gone by the time the command finishes. Without
+/// an explicit restore the window is left with no focused element and typing
+/// does nothing until the user clicks.
+#[gpui::test]
+fn running_a_palette_command_restores_focus(cx: &mut gpui::TestAppContext) {
+    use crate::command_palette::PaletteCommand;
+    use crate::theme::{Theme, ThemeId};
+
+    cx.update(|cx| {
+        cx.set_global(Theme::for_id(ThemeId::Orbit));
+        crate::bind_keys(cx);
+    });
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(1200.), px(820.)),
+        |_, _| app.clone(),
+    );
+
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.on_focus_sessions(&crate::FocusSessions, window, cx);
+            app.on_toggle_command_palette(&crate::ToggleCommandPalette, window, cx);
+            // Exactly what the palette's `on_command` callback does. Copy
+            // Session ID is a no-op with no session loaded, so nothing but the
+            // restore can move focus.
+            app.command_palette = None;
+            app.restore_palette_focus(window, cx);
+            app.run_palette_command(
+                PaletteCommand::Run(crate::commands::CommandId::CopySessionId),
+                window,
+                cx,
+            );
+            assert!(
+                app.sidebar_focus.is_focused(window),
+                "running a row hands focus back to the opener"
+            );
+        });
+    });
+}
+
+/// The 200ms gesture guard exists for one pointer gesture that both dismisses
+/// and re-opens (scrim mouse-down, button mouse-up). A keyboard press is a
+/// separate gesture and must never be swallowed by a menu dismissed a moment
+/// earlier — that reads as "⌘P does not work".
+#[gpui::test]
+fn the_gesture_guard_does_not_swallow_the_keyboard_shortcut(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+
+    cx.update(|cx| {
+        cx.set_global(Theme::for_id(ThemeId::Orbit));
+        crate::bind_keys(cx);
+    });
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(1200.), px(820.)),
+        |_, _| app.clone(),
+    );
+
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            // A chip or row menu was just dismissed with the mouse.
+            app.menu_dismissed_at = Some(std::time::Instant::now());
+            app.on_toggle_command_palette(&crate::ToggleCommandPalette, window, cx);
+            assert!(
+                app.command_palette.is_some(),
+                "⌘P must open even right after a mouse dismissal"
+            );
+
+            // The pointer path still guards the same gesture.
+            app.command_palette = None;
+            app.menu_dismissed_at = Some(std::time::Instant::now());
+            app.toggle_command_palette(window, cx);
+            assert!(
+                app.command_palette.is_none(),
+                "the dismissing click must not re-open the palette"
+            );
+        });
+    });
+}

@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The command palette advertises both of its shortcuts.** `⌘P` and `⌘K` have
+  always both opened it, but only `⌘P` was ever shown — in the sidebar Search
+  tooltip and on Settings → Shortcuts. Both chords now appear, so a user who
+  learned `⌘K` is not told their shortcut does not exist.
+
+### Changed
+
+- **Typing in the command palette no longer rebuilds its rows.** Session,
+  command, settings, and MCP rows are built once when the palette opens and a
+  keystroke only filters and ranks them, instead of re-deriving every label
+  (and re-reading every session title) on each key. A row whose *name* matches
+  now outranks one that only matched a search keyword.
+
+### Fixed
+
+- **Dismissing the command palette returns focus to whatever opened it.** It
+  always went to the composer, so opening it from the sessions sidebar and
+  pressing Escape dropped the keyboard into the wrong surface; running a row
+  left the window with no focused element at all, so typing did nothing until
+  the next click.
+
+- **`⌘P` / `⌘K` are no longer swallowed just after a menu closes.** The 200 ms
+  guard that stops a dismissing click from immediately re-opening a popover was
+  applied to the keyboard path too, so a shortcut pressed right after closing a
+  chip or a row menu silently did nothing.
+
 ## [0.2.15] - 2026-11-01
 
 ### Added

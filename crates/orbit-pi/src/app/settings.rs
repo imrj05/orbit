@@ -4772,9 +4772,12 @@ impl OrbitApp {
                 .filter(|spec| spec.help && spec.category == category)
                 .map(|spec| {
                     let title = tr!(spec.title_key);
-                    match spec.shortcut() {
-                        Some(chip) => self.shortcut_row(theme, &title, &[chip.as_str()]),
-                        None => self.setting_row(theme, &title, None, None, None),
+                    let chips = spec.shortcuts();
+                    if chips.is_empty() {
+                        self.setting_row(theme, &title, None, None, None)
+                    } else {
+                        let keys: Vec<&str> = chips.iter().map(String::as_str).collect();
+                        self.shortcut_row(theme, &title, &keys)
                     }
                 })
                 .collect();

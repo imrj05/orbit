@@ -26,6 +26,7 @@
 //! dispatch depth; the filter input carries the `Composer Picker` context so
 //! backspace/paste keep editing.
 
+use std::ops::Range;
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
@@ -192,8 +193,13 @@ struct PaletteItem {
     /// A display chip derived from the command's advertised chord.
     shortcut: Option<String>,
     action: PaletteAction,
-    /// Lowercased haystack for fuzzy matching (label + keywords + detail).
-    search: String,
+    /// Lowercased text the query is matched against first: the row's label,
+    /// plus its context (a session's workspace and path). A hit here outranks
+    /// a keyword hit, because a row is offered for what it is called.
+    haystack: String,
+    /// Lowercased registry keywords. Never displayed; a hit here still counts,
+    /// one rank lower than the same hit in the haystack.
+    keywords: &'static str,
     /// Declaration order — the stable tie-break for commands/settings.
     order: usize,
     /// Last-activity seconds (sessions only; 0 for commands).
@@ -212,7 +218,8 @@ impl PaletteItem {
             detail: None,
             shortcut: spec.shortcut(),
             action: PaletteAction::Run(PaletteCommand::Run(spec.id)),
-            search: format!("{} {}", label.to_lowercase(), spec.keywords),
+            haystack: label.to_lowercase(),
+            keywords: spec.keywords,
             order,
             recency: 0,
         }
@@ -223,13 +230,14 @@ impl PaletteItem {
         section: SettingsSection,
         icon: &'static str,
         label: String,
-        keywords: &str,
+        keywords: &'static str,
         order: usize,
     ) -> Self {
         Self {
             section: Section::Settings,
             icon,
-            search: format!("{} {keywords}", label.to_lowercase()),
+            haystack: label.to_lowercase(),
+            keywords,
             label,
             detail: Some(tr!("command_palette.settings")),
             shortcut: (section == SettingsSection::General)
@@ -275,30 +283,62 @@ fn command_enabled(id: CommandId, snapshot: &PaletteSnapshot) -> bool {
     }
 }
 
-/// Subsequence fuzzy score, Zed-style: every query character must appear in
-/// order; word-boundary and consecutive hits score higher. Returns `None`
-/// when the query is not a subsequence of the candidate.
-fn fuzzy_score(query: &str, candidate: &str) -> Option<u32> {
-    let query = query.trim();
+/// Subsequence fuzzy score over an already-lowercased candidate: every query
+/// character must appear in order; word-boundary and consecutive hits score
+/// higher. Returns `None` when the query is not a subsequence. `query` is
+/// pre-lowered and pre-split so the caller pays for it once per keystroke
+/// instead of once per candidate row.
+fn fuzzy_score_lower(query: &[char], candidate: &str) -> Option<u32> {
     if query.is_empty() {
         return Some(0);
     }
-    let query: Vec<char> = query.to_lowercase().chars().collect();
-    let candidate: Vec<char> = candidate.to_lowercase().chars().collect();
     let mut score = 0u32;
     let mut qi = 0;
     let mut prev_hit = false;
-    for (i, &c) in candidate.iter().enumerate() {
+    let mut prev: Option<char> = None;
+    for c in candidate.chars() {
         if qi < query.len() && c == query[qi] {
-            let boundary = i == 0 || !candidate[i - 1].is_alphanumeric();
+            let boundary = match prev {
+                None => true,
+                Some(prev) => !prev.is_alphanumeric(),
+            };
             score += 1 + u32::from(boundary) * 6 + u32::from(prev_hit) * 3;
             qi += 1;
             prev_hit = true;
         } else {
             prev_hit = false;
         }
+        prev = Some(c);
     }
     (qi == query.len()).then_some(score)
+}
+
+/// [`fuzzy_score_lower`] for callers holding two loose strings.
+#[cfg(test)]
+fn fuzzy_score(query: &str, candidate: &str) -> Option<u32> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Some(0);
+    }
+    let query: Vec<char> = query.to_lowercase().chars().collect();
+    fuzzy_score_lower(&query, &candidate.to_lowercase())
+}
+
+/// How well one row matches. A haystack hit is doubled so a row whose *name*
+/// matches always outranks one that only matched a keyword; keywords still
+/// score, because "perm" should find the access-mode command.
+fn score_item(query: &[char], item: &PaletteItem) -> Option<u32> {
+    let label = fuzzy_score_lower(query, &item.haystack);
+    let keywords = if item.keywords.is_empty() {
+        None
+    } else {
+        fuzzy_score_lower(query, item.keywords)
+    };
+    match (label, keywords) {
+        (Some(label), Some(keywords)) => Some(label * 2 + keywords),
+        (Some(label), None) => Some(label * 2),
+        (None, keywords) => keywords,
+    }
 }
 
 /// Open callback: the chosen session plus the ambient window.
@@ -312,6 +352,13 @@ type PaletteDismiss = Box<dyn Fn(bool, &mut Window, &mut App)>;
 /// through the callbacks it was built with.
 pub struct CommandPalette {
     snapshot: PaletteSnapshot,
+    /// Every row the palette can show, sessions first. Built once in [`Self::new`]
+    /// and never rebuilt: the snapshot is frozen for the palette's lifetime, so
+    /// a keystroke only filters and ranks these.
+    items: Vec<PaletteItem>,
+    /// `items[..session_count]` are session rows; the rest are command,
+    /// settings, and MCP rows.
+    session_count: usize,
     filter: Entity<ComposerInput>,
     scroll: ScrollHandle,
     highlighted: usize,
@@ -347,8 +394,13 @@ impl CommandPalette {
                 cx.notify();
             }
         });
+        let mut items = Self::session_rows(&snapshot);
+        let session_count = items.len();
+        items.extend(Self::command_rows(&snapshot));
         Self {
             snapshot,
+            items,
+            session_count,
             filter,
             scroll: ScrollHandle::new(),
             highlighted: 0,
@@ -406,15 +458,23 @@ impl CommandPalette {
 
     // ── internals ────────────────────────────────────────────────────────
 
+    /// Command + settings + MCP rows, in registry order. Built once at open.
+    #[cfg(test)]
+    fn command_items(&self) -> &[PaletteItem] {
+        &self.items[self.session_count..]
+    }
+
     /// Session rows (newest activity first — `load_sessions` pre-sorts).
-    fn session_items(&self) -> Vec<PaletteItem> {
-        self.snapshot
+    /// Built at open, never per keystroke: the snapshot cannot change while
+    /// the palette is up, so rebuilding these would only re-clone titles.
+    fn session_rows(snapshot: &PaletteSnapshot) -> Vec<PaletteItem> {
+        snapshot
             .sessions
             .iter()
             .enumerate()
             .map(|(order, session)| {
                 let workspace = crate::sessions::workspace_label(&session.cwd);
-                let active = self.snapshot.active_path.as_ref() == Some(&session.path);
+                let active = snapshot.active_path.as_ref() == Some(&session.path);
                 let mut detail = format!(
                     "{workspace} · {}",
                     crate::sessions::relative_time(session.modified)
@@ -429,12 +489,13 @@ impl CommandPalette {
                     detail: Some(detail),
                     shortcut: None,
                     action: PaletteAction::OpenSession(session.clone()),
-                    search: format!(
-                        "{} {} {} session chat conversation",
+                    haystack: format!(
+                        "{} {} {}",
                         session.title.to_lowercase(),
                         workspace.to_lowercase(),
                         session.cwd.to_string_lossy().to_lowercase(),
                     ),
+                    keywords: "session chat conversation",
                     order,
                     recency: session
                         .modified
@@ -452,17 +513,17 @@ impl CommandPalette {
     /// Settings destinations. Labels, icons, keywords, and shortcut chips
     /// all come from the registry (`crate::commands`), so this list cannot
     /// drift from the keymap or the Shortcuts page.
-    fn command_items(&self) -> Vec<PaletteItem> {
+    fn command_rows(snapshot: &PaletteSnapshot) -> Vec<PaletteItem> {
         let mut items: Vec<PaletteItem> = Vec::new();
         for spec in commands::COMMANDS.iter().filter(|spec| spec.palette) {
-            if !command_enabled(spec.id, &self.snapshot) {
+            if !command_enabled(spec.id, snapshot) {
                 continue;
             }
-            items.push(PaletteItem::from_spec(spec, &self.snapshot, items.len()));
+            items.push(PaletteItem::from_spec(spec, snapshot, items.len()));
         }
         // Per-server MCP rows: enable/disable and reconnect, labelled with the
         // server they act on. The page remains the place for details.
-        for server in &self.snapshot.mcp_servers {
+        for server in &snapshot.mcp_servers {
             for action in [
                 McpPaletteAction::Toggle,
                 McpPaletteAction::Reconnect,
@@ -483,7 +544,8 @@ impl CommandPalette {
                 items.push(PaletteItem {
                     section: Section::Commands,
                     icon: "icons/tools/mcp.svg",
-                    search: format!("{} {keywords} mcp", label.to_lowercase()),
+                    haystack: label.to_lowercase(),
+                    keywords,
                     label,
                     detail: Some(tr!("mcp.palette_group")),
                     shortcut: None,
@@ -583,34 +645,35 @@ impl CommandPalette {
     }
 
     /// Rows for the current query: an empty query lists recent sessions plus
-    /// every command; a query fuzzy-filters and ranks each section.
-    fn results(&self, query: &str) -> Vec<PaletteItem> {
+    /// every command; a query fuzzy-filters and ranks each section. Returns
+    /// indices into `items`, so ranking never clones a row.
+    fn results(&self, query: &str) -> Vec<usize> {
+        let sessions = 0..self.session_count;
+        let commands = self.session_count..self.items.len();
         let query = query.trim();
         if query.is_empty() {
-            let mut rows: Vec<PaletteItem> = self
-                .session_items()
-                .into_iter()
-                .take(EMPTY_SESSION_ROWS)
-                .collect();
-            rows.extend(self.command_items());
+            let mut rows: Vec<usize> = sessions.take(EMPTY_SESSION_ROWS).collect();
+            rows.extend(commands);
             return rows;
         }
-        let rank = |items: Vec<PaletteItem>, cap: usize| -> Vec<PaletteItem> {
-            let mut scored: Vec<(u32, PaletteItem)> = items
-                .into_iter()
-                .filter_map(|item| fuzzy_score(query, &item.search).map(|s| (s, item)))
-                .collect();
-            scored.sort_by(|a, b| {
-                b.0.cmp(&a.0)
-                    .then(b.1.recency.cmp(&a.1.recency))
-                    .then(a.1.order.cmp(&b.1.order))
-            });
-            scored.truncate(cap);
-            scored.into_iter().map(|(_, item)| item).collect()
-        };
-        let mut rows = rank(self.session_items(), MAX_SESSION_RESULTS);
-        rows.extend(rank(self.command_items(), usize::MAX));
+        let query: Vec<char> = query.to_lowercase().chars().collect();
+        let mut rows = self.rank(sessions, &query, MAX_SESSION_RESULTS);
+        rows.extend(self.rank(commands, &query, usize::MAX));
         rows
+    }
+
+    /// Score and sort one section's rows, keeping the best `cap`.
+    fn rank(&self, range: Range<usize>, query: &[char], cap: usize) -> Vec<usize> {
+        let mut scored: Vec<(u32, usize)> = range
+            .filter_map(|ix| score_item(query, &self.items[ix]).map(|score| (score, ix)))
+            .collect();
+        scored.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then(self.items[b.1].recency.cmp(&self.items[a.1].recency))
+                .then(self.items[a.1].order.cmp(&self.items[b.1].order))
+        });
+        scored.truncate(cap);
+        scored.into_iter().map(|(_, ix)| ix).collect()
     }
 
     /// Wrap-around ↑/↓ navigation, keeping the highlighted row
@@ -625,20 +688,26 @@ impl CommandPalette {
         self.highlighted = next;
         let theme = theme::get(cx);
         let metrics = PaletteMetrics::new(theme);
-        let viewport_h = Self::list_height(&rows, &metrics, theme, window_height);
+        let viewport_h = self.list_height(&rows, &metrics, theme, window_height);
         self.ensure_visible(&rows, &metrics, viewport_h);
         cx.notify();
     }
 
+    /// Sections the given rows fall into, in order (`rows` are item indices).
+    fn section(&self, row: usize) -> Section {
+        self.items[row].section
+    }
+
     /// Pixel offset of a row's top edge, accounting for the list's top
     /// padding and the section headers.
-    fn row_top(rows: &[PaletteItem], ix: usize, metrics: &PaletteMetrics) -> f32 {
+    fn row_top(&self, rows: &[usize], ix: usize, metrics: &PaletteMetrics) -> f32 {
         let mut y = metrics.list_pad_y;
         let mut prev = None;
-        for (i, item) in rows.iter().enumerate() {
-            if prev != Some(item.section) {
+        for (i, &row) in rows.iter().enumerate() {
+            let section = self.section(row);
+            if prev != Some(section) {
                 y += metrics.header_h;
-                prev = Some(item.section);
+                prev = Some(section);
             }
             if i == ix {
                 break;
@@ -651,7 +720,8 @@ impl CommandPalette {
     /// Height the results list gets for this frame: its content height capped
     /// by the card space the current window leaves.
     fn list_height(
-        rows: &[PaletteItem],
+        &self,
+        rows: &[usize],
         metrics: &PaletteMetrics,
         theme: &Theme,
         viewport_h: f32,
@@ -663,7 +733,7 @@ impl CommandPalette {
             // The no-match state: one two-line entry inside the list padding.
             f32::from(picker::two_line_entry_height(theme)) + 2. * metrics.list_pad_y
         } else {
-            Self::content_height(rows, metrics)
+            self.content_height(rows, metrics)
         };
         let list_cap = metrics.card_max_h().min(card_cap) - metrics.search_h - metrics.footer_h;
         content_h.min(list_cap)
@@ -671,31 +741,29 @@ impl CommandPalette {
 
     /// Total content height of the results list (rows + headers + the
     /// list's vertical padding).
-    fn content_height(rows: &[PaletteItem], metrics: &PaletteMetrics) -> f32 {
-        let headers = {
-            let mut count = 0;
-            let mut prev = None;
-            for item in rows {
-                if prev != Some(item.section) {
-                    count += 1;
-                    prev = Some(item.section);
-                }
+    fn content_height(&self, rows: &[usize], metrics: &PaletteMetrics) -> f32 {
+        let mut headers = 0;
+        let mut prev = None;
+        for &row in rows {
+            let section = self.section(row);
+            if prev != Some(section) {
+                headers += 1;
+                prev = Some(section);
             }
-            count
-        };
+        }
         rows.len() as f32 * metrics.row_h
             + headers as f32 * metrics.header_h
             + 2. * metrics.list_pad_y
     }
 
-    fn ensure_visible(&mut self, rows: &[PaletteItem], metrics: &PaletteMetrics, viewport: f32) {
-        let content_h = Self::content_height(rows, metrics);
+    fn ensure_visible(&mut self, rows: &[usize], metrics: &PaletteMetrics, viewport: f32) {
+        let content_h = self.content_height(rows, metrics);
         let viewport_h = content_h.min(if viewport > 0. {
             viewport
         } else {
             metrics.list_max_h
         });
-        let row_top = Self::row_top(rows, self.highlighted, metrics);
+        let row_top = self.row_top(rows, self.highlighted, metrics);
         // `ScrollHandle` keeps the offset as the first child's top relative to
         // the container, which is **negative** once scrolled down; recover the
         // positive distance-from-top before comparing, and negate on the way
@@ -712,34 +780,16 @@ impl CommandPalette {
             .set_offset(point(px(0.), px(-offset.clamp(0., max_offset))));
     }
 
-    fn activate(
-        &mut self,
-        ix: usize,
-        rows: &[PaletteItem],
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match rows.get(ix) {
-            Some(PaletteItem {
-                action: PaletteAction::OpenSession(session),
-                ..
-            }) => (self.on_open)(session.clone(), window, cx),
-            Some(PaletteItem {
-                action: PaletteAction::Run(command),
-                ..
-            }) => (self.on_command)(command.clone(), window, cx),
-            Some(PaletteItem {
-                action: PaletteAction::Mcp { name, action },
-                ..
-            }) => (self.on_command)(
-                PaletteCommand::Mcp {
-                    name: name.clone(),
-                    action: *action,
-                },
-                window,
-                cx,
-            ),
-            None => {}
+    fn activate(&mut self, ix: usize, rows: &[usize], window: &mut Window, cx: &mut Context<Self>) {
+        let Some(action) = rows.get(ix).map(|&row| self.items[row].action.clone()) else {
+            return;
+        };
+        match action {
+            PaletteAction::OpenSession(session) => (self.on_open)(session, window, cx),
+            PaletteAction::Run(command) => (self.on_command)(command, window, cx),
+            PaletteAction::Mcp { name, action } => {
+                (self.on_command)(PaletteCommand::Mcp { name, action }, window, cx)
+            }
         }
     }
 }
@@ -761,7 +811,7 @@ impl Render for CommandPalette {
         // Hug the content, capped so the card never owns the window.
         let viewport_h = f32::from(window.viewport_size().height);
         let top = (viewport_h * 0.09).clamp(48., 72.);
-        let list_h = Self::list_height(&rows, &metrics, &theme, viewport_h);
+        let list_h = self.list_height(&rows, &metrics, &theme, viewport_h);
 
         // ── results list ──
         let mut list = div()
@@ -807,24 +857,25 @@ impl Render for CommandPalette {
                 );
         } else {
             let mut prev_section = None;
-            for ix in 0..rows.len() {
-                if prev_section != Some(rows[ix].section) {
+            for (ix, &row) in rows.iter().enumerate() {
+                let section = self.section(row);
+                if prev_section != Some(section) {
                     // Base12 above each section; `PaletteMetrics::header_h`
                     // counts it.
                     list = list.child(
-                        menu_header(rows[ix].section.label(), &theme)
-                            .pt(DynamicSpacing::Base12.px(&theme)),
+                        menu_header(section.label(), &theme).pt(DynamicSpacing::Base12.px(&theme)),
                     );
-                    prev_section = Some(rows[ix].section);
+                    prev_section = Some(section);
                 }
-                let is_current = match &rows[ix].action {
+                let item = &self.items[row];
+                let is_current = match &item.action {
                     PaletteAction::OpenSession(session) => {
                         self.snapshot.active_path.as_ref() == Some(&session.path)
                     }
                     PaletteAction::Run(_) | PaletteAction::Mcp { .. } => false,
                 };
                 list = list.child(render_row(
-                    &rows,
+                    item,
                     ix,
                     ix == self.highlighted,
                     is_current,
@@ -898,14 +949,17 @@ impl Render for CommandPalette {
 }
 
 fn render_row(
-    rows: &[PaletteItem],
+    item: &PaletteItem,
     ix: usize,
     highlighted: bool,
     is_current_session: bool,
     this: &Entity<CommandPalette>,
     theme: Theme,
 ) -> impl IntoElement + use<> {
-    let item = rows[ix].clone();
+    let label = item.label.clone();
+    let detail = item.detail.clone();
+    let icon_path = item.icon;
+    let shortcut = item.shortcut.clone();
     let this = this.clone();
     let row = picker_entry(
         div().id(ElementId::NamedInteger(
@@ -948,7 +1002,7 @@ fn render_row(
         })
         .when(highlighted, |row| row.bg(theme.surface_selected))
         .child(icon(
-            item.icon,
+            icon_path,
             context_menu::ICON.px(&theme),
             if is_current_session {
                 theme.accent_text
@@ -977,9 +1031,9 @@ fn render_row(
                         } else {
                             theme.text_secondary
                         })
-                        .child(item.label.clone()),
+                        .child(label),
                 )
-                .when_some(item.detail.clone(), |row, detail| {
+                .when_some(detail, |row, detail| {
                     row.child(
                         div()
                             .flex_none()
@@ -993,7 +1047,7 @@ fn render_row(
                     )
                 }),
         )
-        .when_some(item.shortcut, |row, shortcut| {
+        .when_some(shortcut, |row, shortcut| {
             row.child(
                 div()
                     .ml(context_menu::keybinding_gap(&theme) - list_item::content_gap(&theme))
@@ -1023,6 +1077,8 @@ pub fn layer(palette: Entity<CommandPalette>) -> impl IntoElement {
 mod tests {
     use super::*;
     use gpui::size;
+    use std::cell::Cell;
+    use std::rc::Rc;
 
     #[test]
     fn fuzzy_subsequence_and_boundaries() {
@@ -1046,8 +1102,10 @@ mod tests {
         assert!(Section::Commands < Section::Settings);
     }
 
-    #[test]
-    fn row_top_accounts_for_headers() {
+    /// Sections cost a header each, and the geometry helpers must count them
+    /// from the row list rather than assuming one section.
+    #[gpui::test]
+    fn row_top_accounts_for_headers(cx: &mut gpui::TestAppContext) {
         let item = |section: Section, order: usize| PaletteItem {
             section,
             icon: "icons/chat.svg",
@@ -1055,32 +1113,41 @@ mod tests {
             detail: None,
             shortcut: None,
             action: PaletteAction::Run(PaletteCommand::Run(crate::commands::CommandId::NewSession)),
-            search: String::new(),
+            haystack: String::new(),
+            keywords: "",
             order,
             recency: 0,
         };
-        let rows = vec![
-            item(Section::Sessions, 0),
-            item(Section::Sessions, 1),
-            item(Section::Commands, 2),
-        ];
+        let cx = cx.add_empty_window();
+        let palette = open_test_palette(cx);
+        cx.update(|_, cx| {
+            palette.update(cx, |palette, _| {
+                palette.items = vec![
+                    item(Section::Sessions, 0),
+                    item(Section::Sessions, 1),
+                    item(Section::Commands, 2),
+                ];
+                palette.session_count = 2;
+            });
+        });
+        let rows = [0usize, 1, 2];
         let m = PaletteMetrics::new(&Theme::dark());
-        assert_eq!(
-            CommandPalette::row_top(&rows, 0, &m),
-            m.list_pad_y + m.header_h
-        );
-        assert_eq!(
-            CommandPalette::row_top(&rows, 1, &m),
-            m.list_pad_y + m.header_h + m.row_h
-        );
-        assert_eq!(
-            CommandPalette::row_top(&rows, 2, &m),
-            m.list_pad_y + m.header_h * 2. + m.row_h * 2.
-        );
-        assert_eq!(
-            CommandPalette::content_height(&rows, &m),
-            2. * m.list_pad_y + m.header_h * 2. + m.row_h * 3.
-        );
+        cx.update(|_, cx| {
+            let palette = palette.read(cx);
+            assert_eq!(palette.row_top(&rows, 0, &m), m.list_pad_y + m.header_h);
+            assert_eq!(
+                palette.row_top(&rows, 1, &m),
+                m.list_pad_y + m.header_h + m.row_h
+            );
+            assert_eq!(
+                palette.row_top(&rows, 2, &m),
+                m.list_pad_y + m.header_h * 2. + m.row_h * 2.
+            );
+            assert_eq!(
+                palette.content_height(&rows, &m),
+                2. * m.list_pad_y + m.header_h * 2. + m.row_h * 3.
+            );
+        });
     }
 
     /// With the palette filter focused, the `Picker` arrows must win over the
@@ -1143,7 +1210,7 @@ mod tests {
                 });
             });
             let offset = cx.update(|_, cx| -f32::from(palette.read(cx).scroll.offset().y));
-            let top = CommandPalette::row_top(&rows, highlighted, &metrics);
+            let top = cx.update(|_, cx| palette.read(cx).row_top(&rows, highlighted, &metrics));
             assert!(
                 top >= offset - 0.5,
                 "row scrolled above the viewport: {top} < {offset}"
@@ -1156,10 +1223,10 @@ mod tests {
         }
     }
 
-    /// Bind the picker arrows exactly as `main::bind_keys` does: the `Composer`
-    /// arrows first, the `Picker` arrows after (later registration wins ties).
+    /// Bind the picker keys exactly as `main::bind_keys` does: the `Composer`
+    /// arrows first, the `Picker` keys after (later registration wins ties).
     fn bind_picker_arrows(cx: &mut gpui::TestAppContext) {
-        use crate::{Down, PickerSelectNext, PickerSelectPrev, Up};
+        use crate::{Down, PickerCancel, PickerConfirm, PickerSelectNext, PickerSelectPrev, Up};
         use gpui::KeyBinding;
 
         cx.update(|cx| {
@@ -1169,6 +1236,8 @@ mod tests {
                 KeyBinding::new("down", Down, Some("Composer")),
                 KeyBinding::new("up", PickerSelectPrev, Some("Picker")),
                 KeyBinding::new("down", PickerSelectNext, Some("Picker")),
+                KeyBinding::new("escape", PickerCancel, Some("Picker")),
+                KeyBinding::new("enter", PickerConfirm, Some("Picker")),
             ]);
         });
     }
@@ -1178,12 +1247,9 @@ mod tests {
         open_test_palette_with(cx, Vec::new())
     }
 
-    /// A palette over an explicit MCP server list, its filter focused.
-    fn open_test_palette_with(
-        cx: &mut gpui::VisualTestContext,
-        mcp_servers: Vec<PaletteMcpServer>,
-    ) -> Entity<CommandPalette> {
-        let snapshot = PaletteSnapshot {
+    /// A snapshot holding nothing but the given MCP servers.
+    fn test_snapshot(mcp_servers: Vec<PaletteMcpServer>) -> PaletteSnapshot {
+        PaletteSnapshot {
             sessions: Vec::new(),
             active_path: None,
             active_pinned: false,
@@ -1197,7 +1263,15 @@ mod tests {
             can_choose_model: false,
             can_choose_thinking: false,
             mcp_servers,
-        };
+        }
+    }
+
+    /// A palette over an explicit MCP server list, its filter focused.
+    fn open_test_palette_with(
+        cx: &mut gpui::VisualTestContext,
+        mcp_servers: Vec<PaletteMcpServer>,
+    ) -> Entity<CommandPalette> {
+        let snapshot = test_snapshot(mcp_servers);
         cx.update(|window, cx| {
             let palette = cx.new(|cx| {
                 CommandPalette::new(
@@ -1205,6 +1279,33 @@ mod tests {
                     Box::new(|_, _, _| {}),
                     Box::new(|_, _, _| {}),
                     Box::new(|_, _, _| {}),
+                    cx,
+                )
+            });
+            window.focus(&palette.read(cx).focus_handle(cx));
+            palette
+        })
+    }
+
+    /// A palette over an explicit snapshot with counting callbacks, so a test
+    /// can assert how many times a dismissal or a run actually happens.
+    fn open_counting_palette(
+        cx: &mut gpui::VisualTestContext,
+        snapshot: PaletteSnapshot,
+        ran: Rc<Cell<usize>>,
+        dismissals: Rc<Cell<usize>>,
+        dismissed_by_mouse: Rc<Cell<Option<bool>>>,
+    ) -> Entity<CommandPalette> {
+        cx.update(|window, cx| {
+            let palette = cx.new(|cx| {
+                CommandPalette::new(
+                    snapshot,
+                    Box::new(|_, _, _| {}),
+                    Box::new(move |_, _, _| ran.set(ran.get() + 1)),
+                    Box::new(move |by_mouse, _, _| {
+                        dismissals.set(dismissals.get() + 1);
+                        dismissed_by_mouse.set(Some(by_mouse));
+                    }),
                     cx,
                 )
             });
@@ -1223,9 +1324,9 @@ mod tests {
             let palette = palette.read(cx);
             let listed: Vec<crate::commands::CommandId> = palette
                 .command_items()
-                .into_iter()
-                .filter_map(|item| match item.action {
-                    PaletteAction::Run(PaletteCommand::Run(id)) => Some(id),
+                .iter()
+                .filter_map(|item| match &item.action {
+                    PaletteAction::Run(PaletteCommand::Run(id)) => Some(*id),
                     _ => None,
                 })
                 .collect();
@@ -1265,9 +1366,9 @@ mod tests {
             palette
                 .read(cx)
                 .command_items()
-                .into_iter()
-                .filter_map(|item| match item.action {
-                    PaletteAction::Mcp { name, action } => Some((name, action)),
+                .iter()
+                .filter_map(|item| match &item.action {
+                    PaletteAction::Mcp { name, action } => Some((name.clone(), *action)),
                     _ => None,
                 })
                 .collect()
@@ -1277,5 +1378,156 @@ mod tests {
         assert!(rows.contains(&("sentry".into(), McpPaletteAction::Toggle)));
         assert!(rows.contains(&("github".into(), McpPaletteAction::Reconnect)));
         assert!(rows.contains(&("sentry".into(), McpPaletteAction::Test)));
+    }
+
+    /// A row whose *label* matches must outrank one that only matched a
+    /// registry keyword, or `⌘P` buries "New Session" under whatever command
+    /// happens to mention the word in prose.
+    #[test]
+    fn a_label_hit_outranks_a_keyword_hit() {
+        let item = |label: &str, keywords: &'static str| PaletteItem {
+            section: Section::Commands,
+            icon: "icons/chat.svg",
+            label: label.into(),
+            detail: None,
+            shortcut: None,
+            action: PaletteAction::Run(PaletteCommand::Run(crate::commands::CommandId::NewSession)),
+            haystack: label.to_lowercase(),
+            keywords,
+            order: 0,
+            recency: 0,
+        };
+        let query: Vec<char> = "sess".chars().collect();
+        let on_label = score_item(&query, &item("Session List", ""));
+        let on_keyword = score_item(&query, &item("Zzz", "session"));
+        assert!(on_label.is_some() && on_keyword.is_some());
+        assert!(
+            on_label.unwrap() > on_keyword.unwrap(),
+            "label hit {on_label:?} must beat keyword hit {on_keyword:?}"
+        );
+        // No match anywhere is still no match.
+        assert!(score_item(&query, &item("Zzz", "nothing")).is_none());
+    }
+
+    /// An empty query lists a few recent sessions and *every* enabled command —
+    /// the palette is also the discovery surface, so capping the command list
+    /// would hide commands a user cannot otherwise find.
+    #[gpui::test]
+    fn an_empty_query_caps_sessions_but_never_commands(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let palette = open_test_palette(cx);
+        cx.update(|_, cx| {
+            let palette = palette.read(cx);
+            let rows = palette.results("");
+            let sessions = rows
+                .iter()
+                .filter(|&&row| palette.section(row) == Section::Sessions)
+                .count();
+            let commands = rows.len() - sessions;
+            assert_eq!(sessions, EMPTY_SESSION_ROWS.min(palette.session_count));
+            assert_eq!(commands, palette.command_items().len());
+        });
+    }
+
+    /// AC: Escape closes the palette, runs nothing, and reports a *keyboard*
+    /// dismissal so the caller can skip the mouse-gesture guard.
+    #[gpui::test]
+    fn escape_dismisses_once_without_running_anything(cx: &mut gpui::TestAppContext) {
+        bind_picker_arrows(cx);
+        let cx = cx.add_empty_window();
+        let ran = Rc::new(Cell::new(0usize));
+        let dismissals = Rc::new(Cell::new(0usize));
+        let by_mouse = Rc::new(Cell::new(None));
+        let palette = open_counting_palette(
+            cx,
+            test_snapshot(Vec::new()),
+            ran.clone(),
+            dismissals.clone(),
+            by_mouse.clone(),
+        );
+        let _ = cx.draw(point(px(0.), px(0.)), size(px(900.), px(700.)), |_, _| {
+            palette.clone()
+        });
+
+        cx.simulate_keystrokes("escape");
+        assert_eq!(dismissals.get(), 1, "escape dismisses the palette once");
+        assert_eq!(
+            by_mouse.get(),
+            Some(false),
+            "escape is a keyboard dismissal, not a gesture"
+        );
+        assert_eq!(ran.get(), 0, "dismissing must not run the highlighted row");
+    }
+
+    /// AC: Enter runs the highlighted row exactly once — one keystroke, one
+    /// execution, however many action layers are watching the keyboard.
+    #[gpui::test]
+    fn enter_runs_the_highlighted_row_exactly_once(cx: &mut gpui::TestAppContext) {
+        bind_picker_arrows(cx);
+        let cx = cx.add_empty_window();
+        let ran = Rc::new(Cell::new(0usize));
+        let dismissals = Rc::new(Cell::new(0usize));
+        let by_mouse = Rc::new(Cell::new(None));
+        let palette = open_counting_palette(
+            cx,
+            test_snapshot(Vec::new()),
+            ran.clone(),
+            dismissals.clone(),
+            by_mouse.clone(),
+        );
+        let _ = cx.draw(point(px(0.), px(0.)), size(px(900.), px(700.)), |_, _| {
+            palette.clone()
+        });
+
+        cx.simulate_keystrokes("enter");
+        assert_eq!(ran.get(), 1, "one ⏎ runs the row once");
+        assert_eq!(dismissals.get(), 0, "running is not a dismissal");
+    }
+
+    /// AC: typing filters within a frame on a large registry. This is a smoke
+    /// guard, not a benchmark: the bound is deliberately loose, but it fails if
+    /// filtering goes back to rebuilding every row (`tr!` label + `format!`
+    /// haystack) on each keystroke.
+    #[gpui::test]
+    fn filtering_a_large_palette_is_cheap(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let mut snapshot = test_snapshot(Vec::new());
+        snapshot.sessions = (0..200)
+            .map(|ix| SessionInfo {
+                path: PathBuf::from(format!("/sessions/{ix}.jsonl")),
+                id: format!("session-{ix}"),
+                cwd: PathBuf::from("/workspace/orbit"),
+                title: format!("Session about transcript rendering {ix}"),
+                first_message: "refactor the palette".into(),
+                modified: UNIX_EPOCH,
+            })
+            .collect();
+        let palette = cx.update(|window, cx| {
+            let palette = cx.new(|cx| {
+                CommandPalette::new(
+                    snapshot,
+                    Box::new(|_, _, _| {}),
+                    Box::new(|_, _, _| {}),
+                    Box::new(|_, _, _| {}),
+                    cx,
+                )
+            });
+            window.focus(&palette.read(cx).focus_handle(cx));
+            palette
+        });
+        cx.update(|_, cx| {
+            let palette = palette.read(cx);
+            assert!(palette.items.len() > 100, "want a 100+ row palette");
+            let started = std::time::Instant::now();
+            for _ in 0..200 {
+                assert!(!palette.results("transcript").is_empty());
+            }
+            let elapsed = started.elapsed();
+            assert!(
+                elapsed < std::time::Duration::from_millis(250),
+                "200 keystrokes over {} rows took {elapsed:?}",
+                palette.items.len()
+            );
+        });
     }
 }

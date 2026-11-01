@@ -280,23 +280,46 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.toggle_command_palette(window, cx);
+        // Keyboard path: no gesture guard. A dismissed popover must not be able
+        // to swallow the next ⌘P/⌘K — the guard exists for a single pointer
+        // gesture that both closes and re-opens, which cannot happen here.
+        self.toggle_command_palette_with(false, window, cx);
     }
 
-    /// Toggle the window-wide command palette. Mutually exclusive with the
-    /// chip popovers, the branch picker, and the row menu.
+    /// The pointer path (the sidebar Search row): its mouse-up follows the
+    /// scrim's mouse-down dismiss, so the gesture guard applies.
     pub(super) fn toggle_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_command_palette_with(true, window, cx);
+    }
+
+    /// Hand focus back to whatever opened the palette, or to the composer when
+    /// that control is gone. Every close path goes through here.
+    pub(super) fn restore_palette_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.palette_return_focus.take().and_then(|h| h.upgrade()) {
+            Some(handle) => window.focus(&handle),
+            None => self.input.read(cx).focus(window),
+        }
+    }
+
+    fn toggle_command_palette_with(
+        &mut self,
+        by_gesture: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // A dismissal from the same click's mouse-down must not immediately
         // re-open — the sidebar Search row opens on mouse-up, and the scrim
         // dismisses on mouse-down.
         const GESTURE: Duration = Duration::from_millis(200);
-        if let Some(dismissed) = self.menu_dismissed_at.take() {
-            if dismissed.elapsed() < GESTURE {
-                return;
+        if by_gesture {
+            if let Some(dismissed) = self.menu_dismissed_at.take() {
+                if dismissed.elapsed() < GESTURE {
+                    return;
+                }
             }
         }
         if self.command_palette.take().is_some() {
-            self.input.read(cx).focus(window);
+            self.restore_palette_focus(window, cx);
             cx.notify();
             return;
         }
@@ -353,6 +376,7 @@ impl OrbitApp {
             move |command: PaletteCommand, window: &mut Window, cx: &mut App| {
                 this.update(cx, |app, cx| {
                     app.command_palette = None;
+                    app.restore_palette_focus(window, cx);
                     app.run_palette_command(command, window, cx);
                 })
                 .ok();
@@ -365,9 +389,7 @@ impl OrbitApp {
                     app.menu_dismissed_at = Some(Instant::now());
                 }
                 app.command_palette = None;
-                // The palette's focus handle dies with it; hand focus back to
-                // the composer so typing continues after Escape.
-                app.input.read(cx).focus(window);
+                app.restore_palette_focus(window, cx);
                 cx.notify();
             })
             .ok();
@@ -375,7 +397,14 @@ impl OrbitApp {
 
         let palette =
             cx.new(|cx| CommandPalette::new(snapshot, on_open, on_command, on_dismiss, cx));
-        // Focus the palette's filter input so typing filters immediately.
+        // Remember who opened it (the focused control, or the composer when the
+        // palette is opened from a menu that took focus), then focus the filter.
+        self.palette_return_focus = Some(
+            window
+                .focused(cx)
+                .unwrap_or_else(|| self.input.read(cx).focus_handle(cx))
+                .downgrade(),
+        );
         window.focus(&palette.read(cx).focus_handle(cx));
         self.command_palette = Some(palette);
         cx.notify();

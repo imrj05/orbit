@@ -146,6 +146,10 @@ pub struct CommandSpec {
     /// through [`CommandSpec::shortcut`]; the actual keymap rows live in
     /// [`BINDINGS`].
     pub chord: Option<&'static str>,
+    /// A second advertised chord for the same command. The palette opens on
+    /// both `⌘P` and `⌘K`, and a user who learned the latter from the issue
+    /// must not be told the other one exists instead.
+    pub alt_chord: Option<&'static str>,
     /// Palette fuzzy-search keywords (never displayed).
     pub keywords: &'static str,
     /// List in the command palette.
@@ -155,16 +159,33 @@ pub struct CommandSpec {
 }
 
 impl CommandSpec {
-    /// The platform's display chip for this command's advertised chord.
-    pub fn shortcut(&self) -> Option<String> {
+    /// Every advertised chord as its own display chip, primary first. The
+    /// palette opens on two, so a surface that draws keycaps gets both.
+    pub fn shortcuts(&self) -> Vec<String> {
         match self.id {
             // One command, nine chords — show the span, not just ⌘1.
-            CommandId::OpenSessionSlot => Some(format!(
+            CommandId::OpenSessionSlot => vec![format!(
                 "{}–{}",
                 shortcuts::label(shortcuts::FIRST_SESSION_SLOT),
                 shortcuts::label(shortcuts::LAST_SESSION_SLOT)
-            )),
-            _ => self.chord.map(shortcuts::label),
+            )],
+            _ => self
+                .chord
+                .into_iter()
+                .chain(self.alt_chord)
+                .map(shortcuts::label)
+                .collect(),
+        }
+    }
+
+    /// The platform's display chip for this command's advertised chords —
+    /// one string, for a tooltip or a single inline chip.
+    pub fn shortcut(&self) -> Option<String> {
+        let chips = self.shortcuts();
+        if chips.is_empty() {
+            None
+        } else {
+            Some(chips.join(" / "))
         }
     }
 }
@@ -192,6 +213,7 @@ const fn command(
         title_key,
         alt_title_key: None,
         chord: None,
+        alt_chord: None,
         keywords,
         palette: true,
         help: false,
@@ -207,6 +229,12 @@ const fn with_chord(mut spec: CommandSpec, chord: &'static str) -> CommandSpec {
 
 const fn with_alt_title(mut spec: CommandSpec, alt_title_key: &'static str) -> CommandSpec {
     spec.alt_title_key = Some(alt_title_key);
+    spec
+}
+
+/// A command reachable from two chords: the primary one plus an alias.
+const fn with_alt_chord(mut spec: CommandSpec, alt_chord: &'static str) -> CommandSpec {
+    spec.alt_chord = Some(alt_chord);
     spec
 }
 
@@ -379,15 +407,18 @@ pub static COMMANDS: &[CommandSpec] = &[
         shortcuts::STOP,
     ),
     // ── Navigation ─────────────────────────────────────────────────────
-    with_chord(
-        help_only(command(
-            CommandId::ToggleCommandPalette,
-            Navigation,
-            "icons/search.svg",
-            "menu.command_palette",
-            "command palette search quick open",
-        )),
-        shortcuts::PALETTE,
+    with_alt_chord(
+        with_chord(
+            help_only(command(
+                CommandId::ToggleCommandPalette,
+                Navigation,
+                "icons/search.svg",
+                "menu.command_palette",
+                "command palette search quick open",
+            )),
+            shortcuts::PALETTE,
+        ),
+        shortcuts::PALETTE_ALT,
     ),
     with_chord(
         command(
@@ -1287,15 +1318,33 @@ mod tests {
     #[test]
     fn advertised_chords_match_a_keymap_row() {
         for spec in COMMANDS {
-            let Some(chord) = spec.chord else { continue };
-            assert!(
-                BINDINGS
-                    .iter()
-                    .any(|binding| { binding.id == spec.id && binding.chord == chord }),
-                "{:?} advertises {chord} but no keymap row binds it",
-                spec.id
-            );
+            for chord in spec.chord.into_iter().chain(spec.alt_chord) {
+                assert!(
+                    BINDINGS
+                        .iter()
+                        .any(|binding| { binding.id == spec.id && binding.chord == chord }),
+                    "{:?} advertises {chord} but no keymap row binds it",
+                    spec.id
+                );
+            }
         }
+    }
+
+    /// The palette opens on `⌘P` and `⌘K`. Advertising only the first tells a
+    /// user who learned the second that their shortcut does not exist.
+    #[test]
+    fn the_palette_advertises_both_of_its_chords() {
+        let chip = spec(CommandId::ToggleCommandPalette)
+            .shortcut()
+            .expect("the palette has chords");
+        assert!(
+            chip.contains(&shortcuts::label(shortcuts::PALETTE)),
+            "{chip}"
+        );
+        assert!(
+            chip.contains(&shortcuts::label(shortcuts::PALETTE_ALT)),
+            "{chip}"
+        );
     }
 
     #[test]

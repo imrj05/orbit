@@ -477,8 +477,14 @@ pub struct OrbitApp {
     /// kind travels with the entity; creating/dropping this *is* the
     /// open/closed state. Each popup is anchored above its own chip.
     model_selector: Option<(PickerKind, Entity<ModelSelector>)>,
-    /// The window-wide command palette (⌘P / sidebar Search row), if open.
+    /// The window-wide command palette (⌘P / ⌘K / sidebar Search row), if open.
     command_palette: Option<Entity<CommandPalette>>,
+    /// Whatever held focus when the palette opened, so dismissing it can hand
+    /// focus back rather than guessing (`DESIGN.md`: restore focus to the
+    /// control that opened a modal). Weak: the opener may be torn down while
+    /// the palette is up, in which case `restore_palette_focus` falls back to
+    /// the composer.
+    palette_return_focus: Option<gpui::WeakFocusHandle>,
     /// A blocking extension dialog (`extension_ui_request`), if one is open.
     /// pi holds the run until the answer is sent, so this is a modal surface.
     dialog: Option<Entity<Dialog>>,
@@ -1941,6 +1947,7 @@ impl OrbitApp {
             available_thinking_levels: Vec::new(),
             model_selector: None,
             command_palette: None,
+            palette_return_focus: None,
             dialog: None,
             dialog_focus_pending: false,
             approval: None,
