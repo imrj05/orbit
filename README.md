@@ -1,10 +1,12 @@
-# Orbit
+# Orbit PI
 
 [![CI](https://github.com/imrj05/orbit/actions/workflows/ci.yml/badge.svg)](https://github.com/imrj05/orbit/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.94%2B-orange.svg)](https://rustup.rs/)
 
-**Orbit** is a native desktop workbench for the [pi coding agent](https://github.com/earendil-works/pi) — a chat-style GUI rendered entirely in Rust on GPUI, the GPU-accelerated UI framework Zed is built on. It speaks the pi CLI's RPC protocol directly over stdio: no browser, no webview, no Node.
+![Orbit's banner: the headline "A native workbench for the pi coding agent", the tagline "Chat, review, and commit in one window — the same sessions as the terminal", and macOS, Windows, and Linux listed, beside a screenshot of Orbit's New task page with its projects sidebar, an orbit workspace picker, and the composer set to Build, deepseek-v4.1-flash:1017, and High thinking.](marketing/public/app-preview.webp)
+
+**Orbit Pi** is a native desktop workbench for the [pi coding agent](https://github.com/earendil-works/pi) — a chat-style GUI rendered entirely in Rust on GPUI, the GPU-accelerated UI framework Zed is built on. It speaks the pi CLI's RPC protocol directly over stdio: no browser, no webview, no Node.
 
 Sessions you create in Orbit and in the terminal are the same sessions (`~/.pi/agent/sessions/`), managed by pi's own session manager.
 
