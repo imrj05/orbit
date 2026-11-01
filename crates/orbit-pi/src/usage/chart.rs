@@ -9,7 +9,7 @@
 //! Restraint is the point (§17): one accent, no rainbow.
 //! The chart is a measurement, not a poster.
 
-use std::{cell::Cell, rc::Rc, time::Duration};
+use std::{cell::Cell, rc::Rc};
 
 use gpui::{
     canvas, div, fill, linear_color_stop, linear_gradient, point, prelude::*, px, relative, size,
@@ -19,7 +19,7 @@ use gpui::{
 
 use super::aggregate::{ChartMetric, LatencyMetric, TimeSeries};
 use super::format;
-use crate::theme::tokens::{DynamicSpacing, StyledExt, TextSize};
+use crate::theme::tokens::{chart, DynamicSpacing, StyledExt, TextSize};
 use crate::theme::Theme;
 
 const PLOT_H: f32 = 168.;
@@ -414,8 +414,7 @@ fn plot_canvas(
         canvas
             .with_animation(
                 "usage-chart-reveal",
-                Animation::new(Duration::from_millis(1100))
-                    .with_easing(|t| 1.0 - (1.0 - t).powi(3)),
+                Animation::new(chart::REVEAL).with_easing(chart::ease()),
                 move |canvas, progress| {
                     reveal.set(progress);
                     canvas

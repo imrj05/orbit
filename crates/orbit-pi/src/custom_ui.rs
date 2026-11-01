@@ -21,10 +21,10 @@ use gpui::{
 };
 use serde_json::Value;
 
-use crate::app::{icon, icon_button_frame, TipExt};
+use crate::app::{icon, icon_button_frame, modal_card, modal_scrim, ControlExt, TipExt};
 use crate::terminal::encode_key;
 use crate::theme;
-use crate::theme::tokens::{panel, ButtonSize, DynamicSpacing, IconSize, StyledExt, TextSize};
+use crate::theme::tokens::{panel, ButtonSize, DynamicSpacing, IconSize, TextSize};
 use crate::widgets;
 
 /// Column budget the host offers the component: the card is exactly this many
@@ -398,7 +398,7 @@ impl Render for CustomUi {
                     .debug_selector(|| "custom-ui-close".to_string())
                     .tip(tr!("common.close"))
                     .cursor_pointer()
-                    .hover(|style| style.bg(theme.surface_hover))
+                    .hover_state(&theme)
                     .on_click(cx.listener(Self::on_close_click))
                     .child(icon(
                         "icons/x.svg",
@@ -450,38 +450,23 @@ impl Render for CustomUi {
                 "Keyboard input is sent to the extension",
             ));
 
-        let card = div()
+        let card = modal_card(&theme)
             .id("custom-ui-card")
             .debug_selector(|| "custom-ui-card".to_string())
             .w(card_w)
-            .elevation_3(&theme)
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .occlude()
-            .font_family(theme::ui_font_family())
             // The component gets first crack at every key; only `CustomUiEscape`
             // is intercepted, so the global Escape → AbortRun never fires here.
             .key_context("CustomUi")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key_down))
             .on_action(cx.listener(Self::on_escape))
-            // Clicks inside must not reach the scrim's cancel.
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(header)
             .child(body)
             .child(footer);
 
-        let scrim = theme.scrim_modal();
-        div()
+        modal_scrim(&theme)
             .id("custom-ui-layer")
             .debug_selector(|| "custom-ui-layer".to_string())
-            .absolute()
-            .inset_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(scrim)
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_scrim_down))
             .child(card)
     }

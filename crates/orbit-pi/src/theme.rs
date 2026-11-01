@@ -31,18 +31,20 @@ pub enum ThemeMode {
     Light,
 }
 
-/// A visual language, independent of light/dark appearance. Existing palettes
-/// are [`DesignSystem::Classic`]; [`DesignSystem::Operational`] is the opt-in
-/// Restrained Operational Minimalism system. The choice is persisted with the
-/// appearance preferences, so switching systems restores the previous palette
-/// choice within each system.
+/// A palette family, independent of light/dark appearance. Existing palettes
+/// are [`DesignSystem::Classic`]; [`DesignSystem::Operational`] is the
+/// Restrained Operational Minimalism colorway. The family selects which
+/// `ThemeId`s the appearance picker offers and which accent/surface colors they
+/// carry — **not** their geometry: every palette resolves the same radii,
+/// control heights, caption size and elevation (see [`crate::theme::tokens`]).
+/// The choice is persisted with the appearance preferences, so switching
+/// families restores the previous palette choice within each.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum DesignSystem {
-    /// Orbit's existing palette and token geometry. The default; unchanged.
+    /// Orbit's existing palette family: ember, blue, graphite and paper.
     #[default]
     Classic,
-    /// Near-black neutral surfaces, lime interaction accent, tighter radii,
-    /// flatter elevation, and 11px captions.
+    /// Near-black neutral surfaces with a lime interaction accent.
     Operational,
 }
 
@@ -333,9 +335,6 @@ impl Default for SurfaceTreatment {
 pub struct Theme {
     pub theme_id: ThemeId,
     pub mode: ThemeMode,
-    /// Active visual language. Existing palettes resolve to
-    /// [`DesignSystem::Classic`], so their paint is unchanged.
-    pub design_system: DesignSystem,
     /// UI customization (General settings): language + font sizes.
     pub ui: UiPrefs,
     /// Wallpaper-derived surface treatment. Opaque unless a wallpaper is
@@ -908,7 +907,7 @@ const ORBIT: Palette = Palette {
     border_subtle: 0x232323,
     text: 0xE2E2E2,
     text_secondary: 0xA3A3A3,
-    text_muted: 0x8A8A8A,
+    text_muted: 0x919191,
     text_disabled: 0x606060,
     success: 0x62C987,
     error: 0xE2726A,
@@ -955,7 +954,7 @@ const ORBIT_DARKER: Palette = Palette {
     border_subtle: 0x1B1B1B,
     text: 0xE8E8E8,
     text_secondary: 0xA1A1A1,
-    text_muted: 0x8C8C8C,
+    text_muted: 0x909090,
     text_disabled: 0x5A5A5A,
     success: 0x69C58A,
     error: 0xE16F68,
@@ -1002,7 +1001,7 @@ const ORBIT_COBALT: Palette = Palette {
     border_subtle: 0x202020,
     text: 0xF1F1F1,
     text_secondary: 0xA7A7A7,
-    text_muted: 0x8E8E8E,
+    text_muted: 0x919191,
     text_disabled: 0x5C5C5C,
     success: 0x40C977,
     error: 0xFA423E,
@@ -1052,7 +1051,7 @@ const ORBIT_AZURE: Palette = Palette {
     border_subtle: 0x292929,
     text: 0xE5E5E5,
     text_secondary: 0xA3A3A3,
-    text_muted: 0x909090,
+    text_muted: 0xA1A1A1,
     text_disabled: 0x606060,
     success: 0x4CAF86,
     error: 0xE47478,
@@ -1099,7 +1098,7 @@ const ORBIT_AZURE_LIGHT: Palette = Palette {
     border_subtle: 0xEEEEEE,
     text: 0x171717,
     text_secondary: 0x525252,
-    text_muted: 0x696969,
+    text_muted: 0x646464,
     text_disabled: 0xA3A3A3,
     success: 0x247A56,
     error: 0xC03940,
@@ -1146,7 +1145,7 @@ const ORBIT_LIGHT: Palette = Palette {
     border_subtle: 0xECECEC,
     text: 0x242424,
     text_secondary: 0x666666,
-    text_muted: 0x696969,
+    text_muted: 0x646464,
     text_disabled: 0xA3A3A3,
     success: 0x277845,
     error: 0xB94038,
@@ -1193,7 +1192,7 @@ const ORBIT_PAPER: Palette = Palette {
     border_subtle: 0xE8E8EB,
     text: 0x232327,
     text_secondary: 0x5A5A62,
-    text_muted: 0x686870,
+    text_muted: 0x606068,
     text_disabled: 0xA0A0A8,
     success: 0x277644,
     error: 0xB63F37,
@@ -1240,7 +1239,7 @@ const ORBIT_CONTRAST: Palette = Palette {
     border_subtle: 0xE2E2E2,
     text: 0x0F0F0F,
     text_secondary: 0x454545,
-    text_muted: 0x666666,
+    text_muted: 0x606060,
     text_disabled: 0x8A8A8A,
     success: 0x1E6B39,
     error: 0xB02A22,
@@ -1286,7 +1285,7 @@ const FLEXOKI_LIGHT: Palette = Palette {
     border_subtle: 0xE6E4D9,
     text: 0x282726,
     text_secondary: 0x575653,
-    text_muted: 0x66645E,
+    text_muted: 0x595752,
     text_disabled: 0xA09E98,
     success: 0x566C09,
     error: 0xAF3029,
@@ -1332,7 +1331,7 @@ const FLEXOKI: Palette = Palette {
     border_subtle: 0x252221,
     text: 0xCECDC3,
     text_secondary: 0x9A9893,
-    text_muted: 0x8C8C8C,
+    text_muted: 0xA6A6A2,
     text_disabled: 0x5A5855,
     success: 0xA0AF54,
     error: 0xD96A60,
@@ -1431,7 +1430,7 @@ const OPERATIONAL_LIGHT: Palette = Palette {
     border_subtle: 0xECEDE7,
     text: 0x171916,
     text_secondary: 0x50544D,
-    text_muted: 0x6A6E66,
+    text_muted: 0x636760,
     text_disabled: 0x989B93,
     success: 0x187847,
     error: 0xC4313D,
@@ -1532,6 +1531,13 @@ impl Theme {
     /// rems resolve against the UI font size (`ui_font_size /
     /// DEFAULT_UI_FONT_SIZE`). Chrome sizes are authored at the 14px default,
     /// so at the default setting this resolves to the authored pixel value.
+    /// Whether motion should be suppressed: the user's own setting, or the OS
+    /// asking for it. A surface reads this, never `ui.reduce_motion`, so the
+    /// system preference cannot be half-honoured.
+    pub fn reduce_motion(self) -> bool {
+        self.ui.reduce_motion || OS_REDUCE_MOTION.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub fn ui_px(&self, value: f32) -> Pixels {
         px(value * (self.ui.ui_font_size / DEFAULT_UI_FONT_SIZE))
     }
@@ -1603,7 +1609,6 @@ impl Theme {
         Self {
             theme_id: id,
             mode,
-            design_system: id.design_system(),
             ui,
             wallpaper: SurfaceTreatment::OPAQUE,
             background: hex(p.background),
@@ -1712,6 +1717,7 @@ fn persist_path() -> PathBuf {
 
 /// Install the persisted appearance (System by default) and font preferences.
 pub fn init(cx: &mut App) {
+    refresh_os_reduce_motion();
     crate::wallpaper::init();
     let prefs = AppearancePrefs::load();
     cx.set_global(prefs);
@@ -1755,7 +1761,33 @@ pub fn get(cx: &App) -> &Theme {
 /// Whether the user asked to reduce motion. Looping animations should render
 /// static when this is true.
 pub fn reduce_motion(cx: &App) -> bool {
-    get(cx).ui.reduce_motion
+    get(cx).ui.reduce_motion || os_reduce_motion()
+}
+
+/// The operating system's Reduce Motion preference, cached because it is read
+/// on every frame's worth of render calls and changes only when the user leaves
+/// the app to change it.
+static OS_REDUCE_MOTION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Re-read the OS preference. Called at launch and whenever a window becomes
+/// active: a user who changes the setting returns to a window, which is when it
+/// needs to be true again.
+pub fn refresh_os_reduce_motion() {
+    OS_REDUCE_MOTION.store(
+        crate::platform::os_reduce_motion(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+pub fn os_reduce_motion() -> bool {
+    OS_REDUCE_MOTION.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Set the cached OS preference directly. Tests only: the real value comes
+/// from the platform read.
+#[cfg(test)]
+pub fn set_os_reduce_motion_for_test(wants: bool) {
+    OS_REDUCE_MOTION.store(wants, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Apply new UI / code font families to the statics and persist them.
@@ -2090,7 +2122,7 @@ mod tests {
             ("border_subtle", dark.border_subtle, 0x292929),
             ("text_primary", dark.text_primary, 0xE5E5E5),
             ("text_secondary", dark.text_secondary, 0xA3A3A3),
-            ("text_muted", dark.text_muted, 0x909090),
+            ("text_muted", dark.text_muted, 0xA1A1A1),
             ("text_disabled", dark.text_disabled, 0x606060),
             ("accent", dark.accent, 0x286CF0),
             ("accent_hover", dark.accent_hover, 0x2D6FEF),
@@ -2116,7 +2148,7 @@ mod tests {
             ("border_subtle", light.border_subtle, 0xEEEEEE),
             ("text_primary", light.text_primary, 0x171717),
             ("text_secondary", light.text_secondary, 0x525252),
-            ("text_muted", light.text_muted, 0x696969),
+            ("text_muted", light.text_muted, 0x646464),
             ("text_disabled", light.text_disabled, 0xA3A3A3),
             ("accent", light.accent, 0x286CF0),
             ("accent_hover", light.accent_hover, 0x1F5DD8),
@@ -2274,6 +2306,43 @@ mod tests {
                     "{id:?}: accent text on the {label} wash"
                 );
             }
+        }
+    }
+
+    /// The combinations a row actually paints that the pair tests above do not
+    /// cover: muted metadata on a selected or hovered row, and the assistant's
+    /// ink on the canvas. Phase 9 asked for the whole matrix, not a sample.
+    #[test]
+    fn metadata_stays_readable_on_every_row_state() {
+        for id in ThemeId::ALL {
+            let p = palette(id);
+            let c = |a, b| contrast(a, b);
+            for (label, wash) in [
+                ("hover", p.hover),
+                ("active", p.active),
+                ("selected row", p.selected_surface),
+            ] {
+                assert!(
+                    c(p.text_muted, wash) >= 4.5,
+                    "{id:?}: muted metadata on the {label} row"
+                );
+                assert!(
+                    c(p.text, wash) >= 4.5,
+                    "{id:?}: primary ink on the {label} row"
+                );
+            }
+            assert!(
+                c(p.assistant_text, p.background) >= 4.5,
+                "{id:?}: assistant ink on the canvas"
+            );
+            assert!(
+                c(p.code_text, p.code_bg) >= 4.5,
+                "{id:?}: code ink on the code plane"
+            );
+            assert!(
+                c(p.text_muted, p.background) >= 4.5,
+                "{id:?}: muted ink on the canvas"
+            );
         }
     }
 

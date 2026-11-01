@@ -512,6 +512,9 @@ impl OrbitApp {
             CommandId::OpenWorktrees => {
                 self.on_open_worktrees(&crate::OpenWorktrees, window, cx);
             }
+            CommandId::FocusSessionSearch => {
+                self.focus_session_search(window, cx);
+            }
             CommandId::ToggleSidebar => {
                 self.toggle_sidebar(window, cx);
                 cx.notify();
@@ -756,14 +759,11 @@ impl OrbitApp {
                 .bottom_0()
                 .left_0()
                 .size(px(0.))
-                .child(
-                    anchored()
-                        .position_mode(AnchoredPositionMode::Local)
-                        .anchor(Corner::TopLeft)
-                        .offset(point(px(0.), popover::MENU_OFFSET))
-                        .snap_to_window_with_margin(popover::WINDOW_MARGIN)
-                        .child(deferred(picker)),
-                )
+                .child(anchored_popover(
+                    Corner::TopLeft,
+                    point(px(0.), popover::MENU_OFFSET),
+                    picker,
+                ))
                 .into_any_element()
         })
     }
@@ -776,14 +776,11 @@ impl OrbitApp {
                 .bottom_0()
                 .left_0()
                 .size(px(0.))
-                .child(
-                    anchored()
-                        .position_mode(AnchoredPositionMode::Local)
-                        .anchor(Corner::BottomLeft)
-                        .offset(point(px(0.), -popover::MENU_OFFSET))
-                        .snap_to_window_with_margin(popover::WINDOW_MARGIN)
-                        .child(deferred(picker)),
-                )
+                .child(anchored_popover(
+                    Corner::BottomLeft,
+                    point(px(0.), -popover::MENU_OFFSET),
+                    picker,
+                ))
                 .into_any_element()
         })
     }

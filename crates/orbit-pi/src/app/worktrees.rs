@@ -1016,7 +1016,7 @@ impl OrbitApp {
                     button_frame(div().id("worktrees-top-back"), &theme, ButtonSize::Medium)
                         .group(BUTTON_GROUP)
                         .cursor_pointer()
-                        .hover(|style| style.bg(theme.surface_hover)),
+                        .hover_state(&theme),
                 )
                 .on_mouse_up(
                     MouseButton::Left,
@@ -1159,7 +1159,7 @@ impl OrbitApp {
                 .raised(theme.surface_elevated, &theme)
                 .font_weight(FontWeight::MEDIUM)
                 .cursor_pointer()
-                .hover(|s| s.raised(theme.surface_hover, &theme))
+                .hover_state(&theme)
                 .child(icon(
                     "icons/plus.svg",
                     ButtonSize::Medium.icon_size().px(&theme),
@@ -1290,7 +1290,7 @@ impl OrbitApp {
                         &theme,
                     )
                     .cursor_pointer()
-                    .hover(|s| s.raised(theme.surface_hover, &theme))
+                    .hover_state(&theme)
                     .child(
                         div()
                             .text_size(TextSize::Small.px(&theme))
@@ -1533,7 +1533,7 @@ impl OrbitApp {
             ButtonSize::Default,
         )
         .cursor_pointer()
-        .hover(|s| s.bg(theme.overlay_strong))
+        .hover_on_glass(&theme)
         .tip(tr!("common.dismiss"))
         .child(icon(
             "icons/x.svg",
@@ -1649,7 +1649,7 @@ impl OrbitApp {
             .gap(DynamicSpacing::Base12.px(&theme))
             .cursor_pointer()
             .when(active, |row| row.bg(theme.surface_selected))
-            .hover(|row| row.bg(theme.surface_hover))
+            .hover_state(&theme)
             .on_mouse_down(MouseButton::Right, {
                 let this = this.clone();
                 let path = path.clone();
@@ -1750,7 +1750,7 @@ impl OrbitApp {
                 .cursor_pointer()
                 .opacity(if row_menu.is_some() { 1.0 } else { 0.0 })
                 .group_hover("worktree-row", |style| style.opacity(1.))
-                .active(|style| style.opacity(PRESS_DIM))
+                .pressed_state(&theme, PressedRamp::Wash)
                 .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                     cx.stop_propagation();
                     button_this.update(cx, |app, cx| {
@@ -1797,31 +1797,9 @@ impl OrbitApp {
                 self.worktree_unavailable_dialog_body(path, theme, this.clone())
             }
         };
-        let scrim = match theme.mode {
-            ThemeMode::Dark => Hsla {
-                h: 0.,
-                s: 0.,
-                l: 0.,
-                a: 0.42,
-            },
-            ThemeMode::Light => Hsla {
-                h: 0.,
-                s: 0.,
-                l: 0.,
-                a: 0.22,
-            },
-        };
         Some(
-            div()
+            modal_scrim(&theme)
                 .id("worktree-dialog-layer")
-                .absolute()
-                .inset_0()
-                .occlude()
-                .bg(scrim)
-                .p(DynamicSpacing::Base24.px(&theme))
-                .flex()
-                .items_center()
-                .justify_center()
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(Self::on_worktree_dialog_scrim),
@@ -1833,19 +1811,9 @@ impl OrbitApp {
 
     /// The shared dialog card frame.
     fn worktree_dialog_card(&self, title: String, theme: Theme, body: AnyElement) -> AnyElement {
-        div()
+        modal_card(&theme)
             .w(px(520.))
             .max_h(px(560.))
-            .bg(theme.surface_secondary)
-            .border_1()
-            .border_color(theme.border)
-            .rounded(panel::RADIUS.px(&theme))
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            // The card's own hitbox blocks the scrim below it, so a click on
-            // any field or button never reaches the dismiss handler.
-            .occlude()
             .child(
                 div()
                     .px(modal::header_padding_x(&theme))
@@ -1992,7 +1960,7 @@ impl OrbitApp {
                         .gap(DynamicSpacing::Base08.px(&theme))
                         .cursor_pointer()
                         .when(selected, |row| row.bg(theme.surface_selected))
-                        .hover(|row| row.bg(theme.surface_hover))
+                        .hover_state(&theme)
                         .child(icon(
                             if selected {
                                 "icons/check.svg"
@@ -2736,11 +2704,7 @@ impl OrbitApp {
                 .child(
                     button_frame(div().id("status-work-in"), &theme, ButtonSize::Default)
                         .cursor_pointer()
-                        .when(!open, |chip| {
-                            chip.hover(|s| {
-                                s.bg(theme.surface_hover).text_color(theme.text_secondary)
-                            })
-                        })
+                        .when(!open, |chip| chip.hover_quiet(&theme))
                         .when(open, |chip| {
                             chip.bg(theme.surface_active).text_color(theme.text_primary)
                         })
@@ -2816,9 +2780,7 @@ impl OrbitApp {
                     .when(selected || highlighted, |row| {
                         row.bg(theme.surface_selected)
                     })
-                    .when(!selected && !highlighted, |row| {
-                        row.hover(|style| style.bg(theme.surface_hover))
-                    })
+                    .when(!selected && !highlighted, |row| row.hover_state(&theme))
                     .on_hover(move |hovered, _, cx| {
                         if *hovered {
                             this_row
@@ -2926,13 +2888,12 @@ impl OrbitApp {
                     .child(list),
             );
         Some(
-            anchored()
-                .position_mode(AnchoredPositionMode::Local)
-                .anchor(Corner::BottomLeft)
-                .offset(point(px(0.), -popover::MENU_OFFSET))
-                .snap_to_window_with_margin(popover::WINDOW_MARGIN)
-                .child(deferred(popup))
-                .into_any_element(),
+            anchored_popover(
+                Corner::BottomLeft,
+                point(px(0.), -popover::MENU_OFFSET),
+                popup,
+            )
+            .into_any_element(),
         )
     }
 }
@@ -3252,7 +3213,7 @@ where
         .border_color(theme.border)
         .raised(theme.surface_elevated, &theme)
         .cursor_pointer()
-        .hover(|s| s.raised(theme.surface_hover, &theme))
+        .hover_state(&theme)
         .text_color(theme.text_secondary)
         .child(label)
         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
@@ -3277,7 +3238,7 @@ where
         .border_color(theme.border)
         .raised(theme.surface_elevated, &theme)
         .cursor_pointer()
-        .hover(|s| s.raised(theme.surface_hover, &theme))
+        .hover_state(&theme)
         .tip(tr!("common.refresh"))
         .child(icon(
             icon_path,
@@ -3306,7 +3267,7 @@ where
         .border_color(theme.accent.opacity(0.5))
         .raised(theme.accent.opacity(0.14), &theme)
         .cursor_pointer()
-        .hover(|s| s.raised(theme.accent.opacity(0.2), &theme))
+        .hover_accent_wash(&theme, AccentWash::Faint)
         .font_weight(FontWeight::MEDIUM)
         .text_color(theme.accent_text)
         .child(label)
@@ -3332,7 +3293,7 @@ where
         .h(picker::entry_height(&theme))
         .flex_none()
         .cursor_pointer()
-        .hover(|s| s.bg(theme.surface_hover))
+        .hover_state(&theme)
         .child(icon(
             icon_path,
             context_menu::ICON.px(&theme),
@@ -3381,7 +3342,7 @@ where
             &theme,
         )
         .cursor_pointer()
-        .hover(|s| s.raised(theme.surface_hover, &theme))
+        .hover_state(&theme)
         .font_weight(FontWeight::MEDIUM)
         .text_color(if selected {
             theme.accent_text

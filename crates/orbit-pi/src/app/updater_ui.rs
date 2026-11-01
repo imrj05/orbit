@@ -10,7 +10,7 @@
 use super::helpers::*;
 use super::*;
 use crate::theme::tokens::{
-    button, modal, AnimationDuration, ButtonSize, DynamicSpacing, IconSize, StyledExt, TextSize,
+    button, looping, modal, ButtonSize, DynamicSpacing, IconSize, TextSize,
 };
 use crate::updater::{UpdateStatus, UpdaterEvent, UpdaterState};
 use crate::usage::tooltip::Tooltip;
@@ -349,7 +349,7 @@ impl OrbitApp {
             .text_size(button::label_size(ButtonSize::Compact).px(&theme))
             .font_weight(FontWeight::MEDIUM)
             .cursor_pointer()
-            .hover(|s| s.opacity(0.9))
+            .hover_dimmed()
             .tooltip({
                 let label = label.clone();
                 move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
@@ -379,8 +379,8 @@ impl OrbitApp {
             button
                 .with_animation(
                     ElementId::NamedInteger("sidebar-update-expand".into(), generation),
-                    Animation::new(AnimationDuration::Fast.duration())
-                        .with_easing(|d| 1.0 - (1.0 - d).powi(3)),
+                    Animation::new(Motion::Interaction.duration(&theme))
+                        .with_easing(Motion::Interaction.easing()),
                     move |button, delta| {
                         let width = from_width + (target_width - from_width) * delta;
                         let reveal = from_reveal + (target_reveal - from_reveal) * delta;
@@ -487,7 +487,7 @@ impl OrbitApp {
             .when(!on, |track| {
                 track.bg(theme.surface_elevated).justify_start()
             })
-            .hover(|track| track.border_color(theme.border_strong))
+            .hover_border(&theme)
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                 this.update(cx, |app, cx| {
                     let next = !app.automatic_updates_enabled;
@@ -514,8 +514,8 @@ impl OrbitApp {
                 .group(BUTTON_GROUP)
                 .raised(theme.action, &theme)
                 .cursor_pointer()
-                .hover(|s| s.raised(theme.action_hover, &theme))
-                .active(|s| s.raised(theme.action_pressed, &theme))
+                .hover_action(&theme)
+                .pressed_state(&theme, PressedRamp::Action)
                 .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into())
                 .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                     this.update(cx, |app, cx| app.open_staged_update_dialog(cx));
@@ -551,7 +551,7 @@ impl OrbitApp {
             .raised(theme.surface_elevated, &theme)
             .text_color(theme.text_secondary)
             .cursor_pointer()
-            .hover(|s| s.raised(theme.surface_hover, &theme))
+            .hover_state(&theme)
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                 this.update(cx, |app, cx| app.begin_update_check(cx));
             })
@@ -583,18 +583,10 @@ impl OrbitApp {
             title = tr!("updater_ui.version_history");
         }
 
-        let mut card = div()
+        let mut card = modal_card(&theme)
             .id("update-dialog-card")
             .w(card_width)
             .max_h(card_max_height)
-            .elevation_3(&theme)
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .occlude()
-            .font_family(theme::ui_font_family())
-            // Clicks inside the card must not reach the scrim's dismiss.
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 div()
                     .px(modal::header_padding_x(&theme))
@@ -788,18 +780,9 @@ impl OrbitApp {
         card = card.child(footer);
 
         // ── scrim: dimmed backdrop; a click outside dismisses the modal ──
-        let scrim = theme.scrim_modal();
         Some(
-            div()
+            modal_scrim(&theme)
                 .id("update-dialog-layer")
-                .absolute()
-                .inset_0()
-                .occlude()
-                .bg(scrim)
-                .px(DynamicSpacing::Base24.px(&theme))
-                .flex()
-                .items_center()
-                .justify_center()
                 .key_context("UpdateDialog")
                 .track_focus(&self.updater_dialog_focus)
                 .on_action(cx.listener(Self::on_update_dialog_close))
@@ -1031,15 +1014,15 @@ fn dialog_button(
         button
             .raised(theme.action, &theme)
             .text_color(theme.action_fg)
-            .hover(|s| s.raised(theme.action_hover, &theme))
-            .active(|s| s.raised(theme.action_pressed, &theme))
+            .hover_action(&theme)
+            .pressed_state(&theme, PressedRamp::Action)
     } else {
         button
             .border_1()
             .border_color(theme.border)
             .raised(theme.surface_elevated, &theme)
             .text_color(theme.text_secondary)
-            .hover(|s| s.raised(theme.surface_hover, &theme))
+            .hover_state(&theme)
     };
     press(button).child(label).into_any_element()
 }
@@ -1115,8 +1098,33 @@ fn update_dialog_body(theme: Theme, content: AnyElement) -> AnyElement {
 
 /// A thin indeterminate bar, for the modal's search state. The moving segment
 /// is a fraction of the track, so the sweep scales with the card.
-fn update_progress_bar(theme: Theme) -> impl IntoElement {
+fn update_progress_bar(theme: Theme) -> AnyElement {
     const SEGMENT: f32 = 0.28;
+    let segment = div()
+        .absolute()
+        .top_0()
+        .left(gpui::relative(-SEGMENT))
+        .h_full()
+        .w(gpui::relative(SEGMENT))
+        .rounded_full()
+        .bg(theme.accent);
+    // Indeterminate progress: the segment sweeps the track. Reduce Motion
+    // parks it inside the track — the bar still says "work in flight", it
+    // just does not loop.
+    let segment = if theme.reduce_motion() {
+        segment.left(gpui::relative(0.36)).into_any_element()
+    } else {
+        segment
+            .with_animation(
+                ElementId::Name("update-progress".into()),
+                Animation::new(looping::PROGRESS).repeat(),
+                move |bar, delta| {
+                    // Travel from just off the left edge to just off the right.
+                    bar.left(gpui::relative(-SEGMENT + (1.0 + SEGMENT) * delta))
+                },
+            )
+            .into_any_element()
+    };
     div()
         .relative()
         .w_full()
@@ -1124,24 +1132,8 @@ fn update_progress_bar(theme: Theme) -> impl IntoElement {
         .rounded_full()
         .bg(theme.surface_hover)
         .overflow_hidden()
-        .child(
-            div()
-                .absolute()
-                .top_0()
-                .left(gpui::relative(-SEGMENT))
-                .h_full()
-                .w(gpui::relative(SEGMENT))
-                .rounded_full()
-                .bg(theme.accent)
-                .with_animation(
-                    ElementId::Name("update-progress".into()),
-                    Animation::new(Duration::from_millis(1100)).repeat(),
-                    move |bar, delta| {
-                        // Travel from just off the left edge to just off the right.
-                        bar.left(gpui::relative(-SEGMENT + (1.0 + SEGMENT) * delta))
-                    },
-                ),
-        )
+        .child(segment)
+        .into_any_element()
 }
 
 #[cfg(test)]

@@ -37,6 +37,7 @@ use gpui::{
 use image::{Frame, RgbaImage};
 use serde_json::{json, Value};
 
+use crate::theme::tokens::Motion;
 use crate::theme::{SurfaceTreatment, Theme};
 use crate::wallpaper_fx::{self, Effect};
 
@@ -1156,7 +1157,7 @@ fn layer_inner(theme: Theme, reduce_motion: bool, id: &'static str) -> Option<An
         layer
             .with_animation(
                 ElementId::Name(format!("{id}-fade-{}", assets.key_id).into()),
-                Animation::new(std::time::Duration::from_millis(240)),
+                Animation::new(Motion::Layout.nominal()),
                 |layer, delta| layer.opacity(delta),
             )
             .into_any_element(),

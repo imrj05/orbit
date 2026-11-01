@@ -102,6 +102,7 @@ crossbeam-channel = "0.5.17"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std",
+    "NSAccessibility",
     "NSApplication",
     "NSBitmapImageRep",
     # Rasterizing a detected app's icon into a bitmap rep of the exact pixel

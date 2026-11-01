@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::helpers::anchored_popover_in_window;
 
 // ── settings select popup anchoring ───────────────────────────────────
 
@@ -42,11 +43,7 @@ impl Render for SettingsSelectAnchorProbe {
                 .child(deferred(popup))
                 .into_any_element()
         } else {
-            anchored()
-                .position_mode(AnchoredPositionMode::Window)
-                .anchor(Corner::TopRight)
-                .offset(point(px(0.), px(30.)))
-                .child(deferred(popup))
+            anchored_popover_in_window(Corner::TopRight, point(px(0.), px(30.)), popup)
                 .into_any_element()
         };
         div()

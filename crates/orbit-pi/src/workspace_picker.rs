@@ -14,7 +14,9 @@ use gpui::{
     Subscription, Window,
 };
 
-use crate::app::{icon, menu_header, picker_entry, picker_search_frame, picker_surface};
+use crate::app::{
+    icon, menu_header, picker_entry, picker_search_frame, picker_surface, ControlExt,
+};
 use crate::composer::ComposerInput;
 use crate::theme::tokens::{context_menu, input, list, picker, DynamicSpacing};
 use crate::theme::{self, Theme};
@@ -284,9 +286,7 @@ impl Render for WorkspacePicker {
                 .when(!highlighted && is_current, |row| {
                     row.bg(theme.surface_selected)
                 })
-                .when(!highlighted && !is_current, |row| {
-                    row.hover(|s| s.bg(theme.surface_hover))
-                })
+                .when(!highlighted && !is_current, |row| row.hover_state(&theme))
                 // Pointer movement moves the highlight; a scroll sliding rows
                 // under a stationary pointer must not hijack ↑/↓ navigation.
                 .on_mouse_move({
@@ -468,7 +468,7 @@ impl Render for WorkspacePicker {
                             .cursor_pointer()
                             .when(browse_highlighted, |row| row.bg(theme.surface_selected))
                             .when(!browse_highlighted, |row| {
-                                row.hover(|s| s.bg(theme.surface_hover))
+                                row.hover_state(&theme)
                             })
                             .on_mouse_move({
                                 let this = this.clone();

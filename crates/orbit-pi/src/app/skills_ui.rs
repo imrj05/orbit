@@ -216,9 +216,7 @@ impl OrbitApp {
             .gap_2p5()
             .cursor_pointer()
             .when(selected, |row| row.bg(theme.surface_selected))
-            .when(!selected, |row| {
-                row.hover(|style| style.bg(theme.surface_hover))
-            })
+            .when(!selected, |row| row.hover_state(&theme))
             .when(!skill.enabled, |row| row.opacity(0.55))
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                 this.update(cx, |app, cx| app.select_skill(file.clone(), cx));
@@ -665,11 +663,7 @@ impl OrbitApp {
                     .border_color(theme.border)
                     .raised(theme.surface_elevated, &theme)
                     .text_color(theme.error)
-                    .hover(|style| {
-                        style
-                            .border_color(theme.error.opacity(0.6))
-                            .raised(theme.error.opacity(0.08), &theme)
-                    }),
+                    .hover_danger_soft(&theme),
                 theme.error,
             )
         } else {
@@ -678,7 +672,7 @@ impl OrbitApp {
                     .border_color(theme.border)
                     .raised(theme.surface_elevated, &theme)
                     .text_color(theme.text_secondary)
-                    .hover(|style| style.raised(theme.surface_hover, &theme)),
+                    .hover_state(&theme),
                 theme.text_secondary,
             )
         };

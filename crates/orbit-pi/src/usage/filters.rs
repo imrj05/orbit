@@ -11,7 +11,7 @@
 
 use crate::app::{
     button_frame, context_menu_separator, icon_button_frame, menu_header, picker_entry,
-    picker_search_frame, picker_surface, press, refresh_glyph, TipExt, BUTTON_GROUP,
+    picker_search_frame, picker_surface, press, refresh_glyph, ControlExt, TipExt, BUTTON_GROUP,
 };
 use chrono::Datelike;
 use gpui::{
@@ -135,16 +135,7 @@ pub fn chip(
         &theme,
     )
     .cursor_pointer()
-    .hover(|style| {
-        style.raised(
-            if active {
-                theme.surface_active
-            } else {
-                theme.surface_hover
-            },
-            &theme,
-        )
-    })
+    .hover_state_open(&theme, active)
     .on_mouse_down(MouseButton::Left, on_click)
     .children(icon_path.map(|path| {
         icon(
@@ -247,9 +238,7 @@ fn row(
         .flex_none()
         .cursor_pointer()
         .when(highlighted, |row| row.bg(theme.surface_hover))
-        .when(!highlighted, |row| {
-            row.hover(|style| style.bg(theme.surface_hover))
-        })
+        .when(!highlighted, |row| row.hover_state(&theme))
         .on_hover(on_hover)
         .on_mouse_down(MouseButton::Left, on_click)
         .child(
@@ -309,11 +298,7 @@ fn footer_row(
     button_frame(div().id(id), &theme, ButtonSize::Medium)
         .cursor_pointer()
         .text_color(theme.text_muted)
-        .hover(|style| {
-            style
-                .bg(theme.surface_hover)
-                .text_color(theme.text_secondary)
-        })
+        .hover_quiet(&theme)
         .on_mouse_down(MouseButton::Left, on_click)
         .child(label.to_string())
         .into_any_element()
@@ -892,7 +877,7 @@ fn calendar(page: &UsagePage, cx: &mut gpui::Context<UsagePage>, theme: Theme) -
             icon_button_frame(div().id("usage-cal-prev"), &theme, ButtonSize::Default)
                 .tip(tr!("usage.previous_month"))
                 .cursor_pointer()
-                .hover(|style| style.bg(theme.surface_hover))
+                .hover_state(&theme)
                 .on_mouse_down(MouseButton::Left, {
                     let entity = cx.entity();
                     let prev = local_month_start(first - 86_400_000);
@@ -920,7 +905,7 @@ fn calendar(page: &UsagePage, cx: &mut gpui::Context<UsagePage>, theme: Theme) -
             icon_button_frame(div().id("usage-cal-next"), &theme, ButtonSize::Default)
                 .tip(tr!("usage.next_month"))
                 .cursor_pointer()
-                .hover(|style| style.bg(theme.surface_hover))
+                .hover_state(&theme)
                 .on_mouse_down(MouseButton::Left, {
                     let entity = cx.entity();
                     let next = next_bucket(first, Granularity::Month);
@@ -998,7 +983,7 @@ fn calendar(page: &UsagePage, cx: &mut gpui::Context<UsagePage>, theme: Theme) -
                         } else {
                             theme.text_secondary
                         })
-                        .hover(|style| style.bg(theme.surface_hover))
+                        .hover_state(&theme)
                     })
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         entity.update(cx, |page, cx| page.pick_day(day_ms, cx));
@@ -1078,7 +1063,7 @@ pub fn toggle_chip(
         )
         .tip(tr!("usage.clear_filter"))
         .cursor_pointer()
-        .hover(|style| style.bg(theme.overlay_strong))
+        .hover_on_glass(&theme)
         .on_mouse_down(MouseButton::Left, on_clear)
         .child(icon(
             "icons/x.svg",
@@ -1114,7 +1099,7 @@ pub fn text_button(
     .when(enabled, |button| {
         press(button)
             .cursor_pointer()
-            .hover(|style| style.bg(theme.surface_hover).text_color(theme.text_primary))
+            .hover_state(&theme)
             .on_mouse_down(MouseButton::Left, on_click)
     })
     .children(icon_path.map(|path| {
@@ -1162,11 +1147,7 @@ pub fn outline_button(
         press(button)
             .raised(theme.background, &theme)
             .cursor_pointer()
-            .hover(|style| {
-                style
-                    .raised(theme.surface_hover, &theme)
-                    .border_color(theme.border_strong)
-            })
+            .hover_bordered(&theme)
             .on_mouse_down(MouseButton::Left, on_click)
     })
     .child(label.to_string())

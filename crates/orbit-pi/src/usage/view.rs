@@ -34,7 +34,6 @@
 
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
 
 use gpui::{
     anchored, deferred, div, prelude::*, px, relative, Animation, AnimationExt, AnyElement, App,
@@ -64,14 +63,14 @@ use super::tooltip::Tooltip;
 use crate::app::{
     button_frame, context_menu_separator, helpers::empty_state_glyph, icon, icon_button_frame,
     icon_dyn, picker_entry, picker_search_frame, picker_surface, press, provider_mark_color,
-    TipExt, BUTTON_GROUP,
+    ControlExt, TipExt, BUTTON_GROUP,
 };
 use crate::composer::ComposerInput;
 use crate::model_selector::{leading_tile, provider_icon};
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
     button, context_menu, input, panel, picker, popover, ButtonSize, DynamicSpacing, IconSize,
-    Radius, TextSize,
+    Motion, Radius, TextSize,
 };
 use crate::theme::{self, Theme};
 use crate::transcript_view::activity_icon;
@@ -163,7 +162,7 @@ impl UsagePage {
                     button_frame(div().id("usage-top-back"), &theme, ButtonSize::Medium)
                         .group(BUTTON_GROUP)
                         .cursor_pointer()
-                        .hover(|style| style.bg(theme.surface_hover)),
+                        .hover_state(&theme),
                 )
                 .on_mouse_down(MouseButton::Left, {
                     let entity = cx.entity();
@@ -616,7 +615,7 @@ impl UsagePage {
                         .border_color(theme.border)
                         .raised(theme.surface_elevated, &theme)
                         .cursor_pointer()
-                        .hover(|style| style.raised(theme.surface_hover, &theme)),
+                        .hover_state(&theme),
                 )
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     entity.update(cx, |page, cx| page.refresh(cx));
@@ -828,7 +827,7 @@ impl UsagePage {
                     .border_color(theme.border)
                     .raised(theme.surface_elevated, &theme)
                     .cursor_pointer()
-                    .hover(|style| style.raised(theme.surface_hover, &theme)),
+                    .hover_state(&theme),
             )
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 entity.update(cx, |page, cx| page.clear_filters(cx));
@@ -1181,8 +1180,7 @@ impl UsagePage {
                         cell.border_r_1().border_color(theme.border)
                     })
                     .when(cell.click.is_some(), |cell| {
-                        cell.cursor_pointer()
-                            .hover(|style| style.bg(theme.surface_hover))
+                        cell.cursor_pointer().hover_state(&theme)
                     })
                     // The label and the scope it reads: the range at rest, the
                     // bucket under the pointer.
@@ -1545,7 +1543,7 @@ impl UsagePage {
                     )
                     .text_color(theme.error)
                     .cursor_pointer()
-                    .hover(|style| style.text_color(theme.text_primary)),
+                    .hover_ink(&theme),
                 )
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     fail_entity.update(cx, |page, cx| page.set_errors_only(true, cx));
@@ -2331,7 +2329,7 @@ impl UsagePage {
                 .items_center()
                 .when(!last, |row| row.border_b_1().border_color(theme.border))
                 .cursor_pointer()
-                .hover(|style| style.bg(theme.surface_hover));
+                .hover_state(&theme);
             for column in &columns {
                 let cell = match column.id {
                     "name" => breakdown_name_cell(
@@ -2620,7 +2618,7 @@ impl UsagePage {
                 .flex()
                 .items_center()
                 .when(!last, |row| row.border_b_1().border_color(theme.border))
-                .hover(|style| style.bg(theme.surface_hover));
+                .hover_state(&theme);
             for column in &columns {
                 let cell = match column.id {
                     "tool" => cell_shell(column)
@@ -3290,7 +3288,7 @@ impl UsagePage {
                 .flex()
                 .items_center()
                 .when(!last, |row| row.border_b_1().border_color(theme.border))
-                .hover(|style| style.bg(theme.surface_hover))
+                .hover_state(&theme)
                 .when(selected == Some(row.session), |line| {
                     line.bg(theme.surface_selected)
                 })
@@ -3347,7 +3345,7 @@ impl UsagePage {
                 .flex()
                 .items_center()
                 .when(!last, |row| row.border_b_1().border_color(theme.border))
-                .hover(|style| style.bg(theme.surface_hover));
+                .hover_state(&theme);
             for (ix, column) in columns.iter().enumerate() {
                 let key = keys.get(ix).copied().unwrap_or(BucketSort::Date);
                 if key == BucketSort::Date {
@@ -3419,7 +3417,7 @@ impl UsagePage {
                 .flex()
                 .items_center()
                 .when(!last, |row| row.border_b_1().border_color(theme.border))
-                .hover(|style| style.bg(theme.surface_hover));
+                .hover_state(&theme);
             for (ix, column) in columns.iter().enumerate() {
                 let key = keys.get(ix).copied().unwrap_or(FailureSort::When);
                 let (label, color) = match key {
@@ -3727,7 +3725,7 @@ fn open_session_cell(
                 .cursor_pointer()
                 .opacity(0.)
                 .group_hover("usage-row", |style| style.opacity(1.))
-                .hover(|style| style.bg(theme.overlay_strong))
+                .hover_on_glass(&theme)
                 .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                     // Do not let the row's own click handler also fire: this
                     // is a jump to another surface, not a scope change.
@@ -3851,7 +3849,7 @@ fn context_item(
         .flex_none()
         .text_color(theme.text_secondary)
         .cursor_pointer()
-        .hover(|style| style.bg(theme.surface_hover).text_color(theme.text_primary))
+        .hover_state(&theme)
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
             cx.stop_propagation();
             on_click(window, cx);
@@ -4036,7 +4034,7 @@ where
                     tab.raised_flat(resting)
                         .text_color(theme.text_secondary)
                         .cursor_pointer()
-                        .hover(|style| style.raised_flat(theme.surface_hover))
+                        .hover_state(&theme)
                         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                             handler(option, window, cx)
                         })
@@ -4261,7 +4259,7 @@ fn legend_row(
         .gap(DynamicSpacing::Base06.px(&theme))
         .cursor_pointer()
         .when(row.selected, |wash| wash.bg(theme.surface_selected))
-        .hover(|style| style.bg(theme.surface_hover))
+        .hover_state(&theme)
         .child(head)
         .child(bar)
 }
@@ -4284,7 +4282,7 @@ fn legend_bar(id: &SharedString, fraction: f64, theme: Theme, reduced_motion: bo
     } else {
         fill.with_animation(
             ElementId::Name(format!("{id}-reveal").into()),
-            Animation::new(Duration::from_millis(450)).with_easing(|t| 1.0 - (1.0 - t).powi(3)),
+            Animation::new(Motion::Layout.duration(&theme)).with_easing(Motion::Layout.easing()),
             move |fill, progress| fill.w(relative(fraction * progress)),
         )
         .into_any_element()

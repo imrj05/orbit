@@ -18,16 +18,16 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    anchored, canvas, deferred, div, fill, hsla, img, point, prelude::*, px, size,
-    AnchoredPositionMode, AnyElement, Background, Bounds, ClickEvent, Context, Corner, Entity,
-    Focusable, FontWeight, Hsla, MouseDownEvent, ObjectFit, PathBuilder, Pixels, Render,
-    ScrollHandle, Subscription, Window,
+    canvas, deferred, div, fill, hsla, img, point, prelude::*, px, size, AnyElement, Background,
+    Bounds, ClickEvent, Context, Corner, Entity, Focusable, FontWeight, Hsla, MouseDownEvent,
+    ObjectFit, PathBuilder, Pixels, Render, ScrollHandle, Subscription, Window,
 };
 
 use crate::app::{
-    button_frame, context_menu_separator, icon, icon_button_frame, icon_dyn, input_field_frame,
-    menu_header, nerd_font_family, picker_entry, picker_search_frame, picker_surface, press,
-    provider_mark_color, refresh_glyph, spinner, ModelEntry, TipExt, BUTTON_GROUP,
+    anchored_popover, button_frame, context_menu_separator, icon, icon_button_frame, icon_dyn,
+    input_field_frame, menu_header, nerd_font_family, picker_entry, picker_search_frame,
+    picker_surface, press, provider_mark_color, refresh_glyph, spinner, ControlExt, ModelEntry,
+    PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
 };
 use crate::commands::{self, CommandId};
 use crate::commit_message;
@@ -41,8 +41,8 @@ use crate::model_selector::provider_icon;
 use crate::sidepane::{FileActions, SectionActions, SidePane};
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
-    button, context_menu, input, panel, picker, popover, ButtonSize, DynamicSpacing, IconSize,
-    Radius, StyledExt, TextSize,
+    button, context_menu, input, panel, picker, ButtonSize, DynamicSpacing, IconSize, Radius,
+    StyledExt, TextSize,
 };
 use crate::theme::{self, Theme, ThemeMode};
 use crate::usage::tooltip::Tooltip;
@@ -1590,7 +1590,7 @@ impl GitPanel {
             picker_entry(div().id("git-template-blank"), &theme)
                 .cursor_pointer()
                 .text_color(theme.text_secondary)
-                .hover(|s| s.bg(theme.surface_hover))
+                .hover_state(&theme)
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.set_template(target, None, cx)
                 }))
@@ -1631,7 +1631,7 @@ impl GitPanel {
                 )
                 .cursor_pointer()
                 .text_color(theme.text_secondary)
-                .hover(|s| s.bg(theme.surface_hover))
+                .hover_state(&theme)
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.set_template(target, Some(index), cx)
                 }))
@@ -1789,8 +1789,7 @@ impl GitPanel {
                                 .text_color(theme.selection_fg)
                         })
                         .when(!selected, |row| {
-                            row.text_color(theme.text_secondary)
-                                .hover(|s| s.bg(theme.surface_hover))
+                            row.text_color(theme.text_secondary).hover_state(&theme)
                         })
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.pr_new_base = Some(branch.clone());
@@ -2729,18 +2728,9 @@ impl GitPanel {
                     })
                     .when(open, |chip| chip.bg(theme.overlay))
                     .when(!open, |chip| chip.raised(theme.surface_elevated, &theme))
-                    .when(enabled, |chip| {
-                        chip.cursor_pointer().hover(|s| {
-                            s.raised(theme.surface_hover, &theme)
-                                .border_color(theme.border_strong)
-                        })
-                    })
-                    .when(!enabled, |chip| chip.cursor_not_allowed())
-                    .text_color(if enabled {
-                        theme.text_secondary
-                    } else {
-                        theme.text_muted
-                    })
+                    .when(enabled, |chip| chip.cursor_pointer().hover_bordered(&theme))
+                    .when(!enabled, |chip| chip.disabled_state(&theme))
+                    .when(enabled, |chip| chip.text_color(theme.text_secondary))
                     .tip(tr!(
                         "git_panel.commit_model_tip",
                         name = self.commit_model_label()
@@ -2982,14 +2972,11 @@ impl GitPanel {
                 .top_0()
                 .left_0()
                 .size(px(0.))
-                .child(
-                    anchored()
-                        .position_mode(AnchoredPositionMode::Local)
-                        .anchor(Corner::BottomLeft)
-                        .offset(point(px(0.), px(-6.)))
-                        .snap_to_window_with_margin(popover::WINDOW_MARGIN)
-                        .child(deferred(menu)),
-                )
+                .child(anchored_popover(
+                    Corner::BottomLeft,
+                    point(px(0.), px(-6.)),
+                    menu,
+                ))
                 .into_any_element(),
         )
     }
@@ -3038,8 +3025,7 @@ impl GitPanel {
                         .text_color(theme.text_primary)
                 })
                 .when(!selected && !highlighted, |row| {
-                    row.text_color(theme.text_secondary)
-                        .hover(|s| s.bg(theme.surface_hover).text_color(theme.text_primary))
+                    row.text_color(theme.text_secondary).hover_state(&theme)
                 })
                 .on_click(cx.listener(move |this, _, window, cx| {
                     cx.stop_propagation();
@@ -3511,7 +3497,7 @@ impl GitPanel {
                 press(
                     button_frame(div().id("git-back"), &theme, ButtonSize::Medium)
                         .cursor_pointer()
-                        .hover(|s| s.bg(theme.surface_hover)),
+                        .hover_state(&theme),
                 )
                 .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                     // Close the panel here (we already hold it), then tell
@@ -3582,7 +3568,7 @@ impl GitPanel {
                             &theme,
                         )
                         .cursor_pointer()
-                        .hover(|s| s.raised(theme.surface_hover, &theme))
+                        .hover_state(&theme)
                         .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                             this.toggle_branch_menu(window, cx);
                         }))
@@ -3648,8 +3634,8 @@ impl GitPanel {
                 icon_button_frame(div().id("git-refresh"), &theme, ButtonSize::Default)
                     .group(BUTTON_GROUP)
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.surface_hover))
-                    .active(|s| s.bg(theme.surface_active))
+                    .hover_state(&theme)
+                    .pressed_state(&theme, PressedRamp::Wash)
                     .tooltip({
                         let label = tr!("common.refresh");
                         move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
@@ -3748,8 +3734,7 @@ impl GitPanel {
                     tab.bg(theme.surface_active).text_color(theme.text_primary)
                 })
                 .when(!selected, |tab| {
-                    tab.text_color(theme.text_muted)
-                        .hover(|s| s.bg(theme.surface_hover).text_color(theme.text_secondary))
+                    tab.text_color(theme.text_muted).hover_quiet(&theme)
                 })
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     if this.tab != tab {
@@ -3863,7 +3848,7 @@ impl GitPanel {
                     .when(!busy, |button| {
                         button
                             .cursor_pointer()
-                            .hover(|s| s.bg(theme.surface_hover))
+                            .hover_state(&theme)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.sync_menu_open = false;
                                 this.sync_menu_dismissed_at = None;
@@ -3895,7 +3880,7 @@ impl GitPanel {
                     .rounded_l_none()
                     .cursor_pointer()
                     .when(self.sync_menu_open, |b| b.bg(theme.surface_active))
-                    .hover(|s| s.bg(theme.surface_hover))
+                    .hover_state(&theme)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         // The outside-click dismiss runs on mouse-down for the
                         // same press, so a click within its wake-up window is
@@ -3994,14 +3979,11 @@ impl GitPanel {
                 .bottom_0()
                 .right_0()
                 .size(px(0.))
-                .child(
-                    anchored()
-                        .position_mode(AnchoredPositionMode::Local)
-                        .anchor(Corner::TopRight)
-                        .offset(point(px(0.), px(6.)))
-                        .snap_to_window_with_margin(popover::WINDOW_MARGIN)
-                        .child(deferred(menu)),
-                )
+                .child(anchored_popover(
+                    Corner::TopRight,
+                    point(px(0.), px(6.)),
+                    menu,
+                ))
                 .into_any_element(),
         )
     }
@@ -4017,7 +3999,7 @@ impl GitPanel {
                     .group(BUTTON_GROUP)
                     .when(self.branch_more_open, |b| b.bg(theme.surface_active))
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.surface_hover))
+                    .hover_state(&theme)
                     .tooltip({
                         let label = tr!("git_panel.tip_more");
                         move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
@@ -4094,14 +4076,11 @@ impl GitPanel {
                 .bottom_0()
                 .right_0()
                 .size(px(0.))
-                .child(
-                    anchored()
-                        .position_mode(AnchoredPositionMode::Local)
-                        .anchor(Corner::TopRight)
-                        .offset(point(px(0.), px(6.)))
-                        .snap_to_window_with_margin(popover::WINDOW_MARGIN)
-                        .child(deferred(menu)),
-                )
+                .child(anchored_popover(
+                    Corner::TopRight,
+                    point(px(0.), px(6.)),
+                    menu,
+                ))
                 .into_any_element(),
         )
     }
@@ -4187,7 +4166,7 @@ impl GitPanel {
                     icon_button_frame(div().id("git-failure-copy"), &theme, ButtonSize::Compact)
                         .cursor_pointer()
                         .text_color(theme.text_secondary)
-                        .hover(|s| s.bg(theme.surface_hover).text_color(theme.text_primary))
+                        .hover_state(&theme)
                         .tooltip({
                             let label = tr!("git_panel.tip_copy_error");
                             move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
@@ -4210,7 +4189,7 @@ impl GitPanel {
                     icon_button_frame(div().id("git-failure-dismiss"), &theme, ButtonSize::Compact)
                         .cursor_pointer()
                         .text_color(theme.text_secondary)
-                        .hover(|s| s.bg(theme.surface_hover).text_color(theme.text_primary))
+                        .hover_state(&theme)
                         .tooltip({
                             let label = tr!("git_panel.tip_dismiss");
                             move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
@@ -4358,10 +4337,7 @@ impl GitPanel {
                             .raised(theme.surface_elevated, &theme)
                             .cursor_pointer()
                             .text_color(theme.text_secondary)
-                            .hover(|s| {
-                                s.raised(theme.surface_hover, &theme)
-                                    .text_color(theme.text_primary)
-                            })
+                            .hover_state(&theme)
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                                 this.open_path(target.clone(), window, cx)
                             }))
@@ -4479,7 +4455,7 @@ impl GitPanel {
                                     .items_center()
                                     .gap(DynamicSpacing::Base08.px(&theme))
                                     .cursor_pointer()
-                                    .hover(|s| s.bg(theme.surface_hover))
+                                    .hover_state(&theme)
                                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                         this.include_unstaged = !this.include_unstaged;
                                         cx.notify();
@@ -4540,15 +4516,11 @@ impl GitPanel {
                                             theme.text_primary
                                         })
                                         .when(!self.generating, |button| {
-                                            button
-                                                .cursor_pointer()
-                                                .hover(|s| {
-                                                    s.raised(theme.surface_hover, &theme)
-                                                        .border_color(theme.border_strong)
-                                                })
-                                                .on_click(cx.listener(
-                                                    |this, _: &ClickEvent, _, cx| this.generate(cx),
-                                                ))
+                                            button.cursor_pointer().hover_bordered(&theme).on_click(
+                                                cx.listener(|this, _: &ClickEvent, _, cx| {
+                                                    this.generate(cx)
+                                                }),
+                                            )
                                         })
                                         .child(if self.generating {
                                             spinner(
@@ -4757,11 +4729,7 @@ impl GitPanel {
                     .cursor_pointer()
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_secondary)
-                    .hover(|s| {
-                        s.raised(theme.surface_hover, &theme)
-                            .border_color(theme.border_strong)
-                            .text_color(theme.text_primary)
-                    })
+                    .hover_bordered_ink(&theme)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.stash_push(cx);
                     }))
@@ -5985,7 +5953,7 @@ impl GitPanel {
                 picker_entry(div().id(id), &theme)
                     .cursor_pointer()
                     .text_color(theme.text_secondary)
-                    .hover(|s| s.bg(theme.surface_hover))
+                    .hover_state(&theme)
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         if this.issue_detail.is_some() {
                             this.toggle_issue_label(name.clone(), cx);
@@ -6354,7 +6322,7 @@ impl GitPanel {
                     .flex()
                     .items_center()
                     .gap(DynamicSpacing::Base08.px(&theme))
-                    .hover(|s| s.bg(theme.surface_hover))
+                    .hover_state(&theme)
                     .child(
                         check_bucket_chip(Some(check.bucket_kind()), theme).unwrap_or_else(|| {
                             icon(
@@ -6464,7 +6432,7 @@ impl GitPanel {
                         .flex()
                         .items_center()
                         .gap(DynamicSpacing::Base08.px(&theme))
-                        .hover(|s| s.bg(theme.surface_hover))
+                        .hover_state(&theme)
                         .child(letter_tile(status, status_color(status, theme), theme))
                         .child(glyph)
                         .child(
@@ -6994,7 +6962,7 @@ impl GitPanel {
                 picker_entry(div().id("git-menu-new-branch").group(BUTTON_GROUP), &theme)
                     .cursor_pointer()
                     .text_color(theme.text_primary)
-                    .hover(|s| s.bg(theme.surface_hover)),
+                    .hover_state(&theme),
             )
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                 this.open_branch_prompt(BranchPrompt::New, window, cx)
@@ -7143,8 +7111,7 @@ impl GitPanel {
                     .text_color(theme.selection_fg)
             })
             .when(!selected, |row| {
-                row.text_color(theme.text_secondary)
-                    .hover(|s| s.bg(theme.surface_hover))
+                row.text_color(theme.text_secondary).hover_state(&theme)
             })
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 if selected {
@@ -7185,7 +7152,7 @@ impl GitPanel {
                     .cursor_pointer()
                     .opacity(0.)
                     .group_hover("git-branch-row", |s| s.opacity(1.))
-                    .hover(|s| s.bg(theme.surface_hover))
+                    .hover_state(&theme)
                     .tooltip({
                         let label = tr!("git_panel.tip_delete_branch");
                         move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
@@ -7271,9 +7238,7 @@ impl GitPanel {
                                     s.bg(theme.surface_selected).text_color(theme.selection_fg)
                                 })
                                 .when(!selected, |s| {
-                                    s.text_color(theme.text_muted).hover(|s| {
-                                        s.bg(theme.surface_hover).text_color(theme.text_primary)
-                                    })
+                                    s.text_color(theme.text_muted).hover_state(&theme)
                                 })
                                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                     this.merge_mode = mode;
@@ -7307,7 +7272,7 @@ impl GitPanel {
                     .flex_none()
                     .cursor_pointer()
                     .text_color(theme.text_secondary)
-                    .hover(|s| s.bg(theme.surface_hover).text_color(theme.text_primary))
+                    .hover_state(&theme)
                     .on_click(
                         cx.listener(move |this, _: &ClickEvent, _, cx| match target {
                             RefTarget::Merge => this.merge_ref(&name, cx),
@@ -7776,7 +7741,7 @@ fn menu_row(
             .flex_none()
             .cursor_pointer()
             .text_color(theme.text_secondary)
-            .hover(|s| s.bg(theme.surface_hover).text_color(theme.text_primary)),
+            .hover_state(&theme),
     )
     .on_click(listener)
     .child(icon(
@@ -7821,7 +7786,7 @@ fn stash_row(stash: &git_ops::StashEntry, theme: Theme, cx: &Context<GitPanel>) 
         .flex()
         .items_center()
         .gap(DynamicSpacing::Base08.px(&theme))
-        .hover(|s| s.bg(theme.surface_hover))
+        .hover_state(&theme)
         .child(icon(
             "icons/clock.svg",
             IconSize::XSmall.px(&theme),
@@ -7887,10 +7852,7 @@ fn filter_chip(
         .raised(theme.surface_elevated, &theme)
         .cursor_pointer()
         .text_color(theme.text_secondary)
-        .hover(|s| {
-            s.raised(theme.surface_hover, &theme)
-                .text_color(theme.text_primary)
-        })
+        .hover_state(&theme)
         .on_click(listener)
         .child(label.to_string())
         .child(icon(
@@ -7920,12 +7882,11 @@ fn filter_toggle_chip(
             // its interactive states ride the accent's own steps.
             chip.raised(theme.accent, &theme)
                 .text_color(theme.accent_fg)
-                .hover(|s| s.raised(theme.accent_hover, &theme))
-                .active(|s| s.raised(theme.accent_pressed, &theme))
+                .hover_accent(&theme)
+                .pressed_state(&theme, PressedRamp::Accent)
         })
         .when(!active, |chip| {
-            chip.text_color(theme.text_muted)
-                .hover(|s| s.bg(theme.surface_hover).text_color(theme.text_primary))
+            chip.text_color(theme.text_muted).hover_state(&theme)
         })
         .cursor_pointer()
         .on_click(listener)
@@ -7967,7 +7928,7 @@ fn dropdown_chip(
             &theme,
         )
         .cursor_pointer()
-        .hover(|s| s.raised(theme.surface_hover, &theme))
+        .hover_state(&theme)
         .on_click(listener)
         .child(icon(
             glyph,
@@ -8103,7 +8064,7 @@ fn issue_row(issue: &gh::GhIssue, theme: Theme, cx: &Context<GitPanel>) -> AnyEl
         .items_center()
         .gap(DynamicSpacing::Base08.px(&theme))
         .cursor_pointer()
-        .hover(|s| s.bg(theme.surface_hover))
+        .hover_state(&theme)
         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open_issue(number, cx)))
         .child(state_tile(state_glyph, state_color, theme))
         .child(
@@ -8418,7 +8379,7 @@ fn pr_row(pull: &gh::GhPull, theme: Theme, cx: &Context<GitPanel>) -> AnyElement
         .items_center()
         .gap(DynamicSpacing::Base08.px(&theme))
         .cursor_pointer()
-        .hover(|s| s.bg(theme.surface_hover))
+        .hover_state(&theme)
         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open_pull(number, cx)))
         .child(state_tile(state_glyph, state_color, theme))
         .child(
@@ -8715,7 +8676,7 @@ fn graph_row(
         .items_center()
         .gap(DynamicSpacing::Base08.px(&theme))
         .cursor_pointer()
-        .hover(|s| s.bg(theme.surface_hover))
+        .hover_state(&theme)
         .when(selected, |s| s.bg(theme.surface_selected))
         .on_click(listener)
         .child(graph_gutter(row, theme))
@@ -8899,7 +8860,7 @@ fn commit_row(
                 ))
                 .text_color(theme.text_secondary)
                 .cursor_pointer()
-                .hover(|s| s.text_color(theme.accent_text))
+                .hover_ink_accent(&theme)
                 .on_click(move |_, window, cx: &mut gpui::App| {
                     cx.stop_propagation();
                     on_author(author_for_click.clone(), window, cx);
@@ -8930,7 +8891,7 @@ fn commit_row(
         .items_center()
         .gap(DynamicSpacing::Base08.px(&theme))
         .cursor_pointer()
-        .hover(|s| s.bg(theme.surface_hover))
+        .hover_state(&theme)
         .when(selected, |row| row.bg(theme.surface_selected))
         .on_click(listener)
         .child(history_marker(theme))
@@ -9222,7 +9183,7 @@ fn review_action_icon(
     )
     .group(BUTTON_GROUP)
     .cursor_pointer()
-    .hover(|s| s.bg(theme.surface_hover))
+    .hover_state(&theme)
     .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into())
     .on_click(move |event, window, cx| {
         cx.stop_propagation();
@@ -9250,7 +9211,7 @@ fn review_toolbar_button(
     icon_button_frame(div().id(id), &theme, ButtonSize::Medium)
         .group(BUTTON_GROUP)
         .cursor_pointer()
-        .hover(|s| s.bg(theme.surface_hover))
+        .hover_state(&theme)
         .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into())
         .on_click(listener)
         .child(icon(

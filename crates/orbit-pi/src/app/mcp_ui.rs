@@ -26,8 +26,7 @@ use crate::mcp::{
     McpTransport, McpTransportKind,
 };
 use crate::theme::tokens::{
-    button, input, list_item, modal, panel, ButtonSize, DynamicSpacing, IconSize, Radius,
-    StyledExt, TextSize,
+    button, input, list_item, modal, panel, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize,
 };
 
 /// How long after a configuration change the probe is debounced, so several
@@ -946,11 +945,7 @@ impl OrbitApp {
         Some(
             button_frame(div().id("status-mcp"), &theme, ButtonSize::Default)
                 .cursor_pointer()
-                .hover(|style| {
-                    style
-                        .bg(theme.surface_hover)
-                        .text_color(theme.text_secondary)
-                })
+                .hover_quiet(&theme)
                 .tip(tr!("mcp.command_open"))
                 .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                     entity.update(cx, |app, cx| {
@@ -1063,7 +1058,7 @@ impl OrbitApp {
             .border_color(theme.border)
             .raised(theme.surface_elevated, &theme)
             .cursor_pointer()
-            .hover(|style| style.raised(theme.surface_hover, &theme))
+            .hover_state(&theme)
             .tip(tr!("mcp.refresh"))
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
@@ -1082,8 +1077,8 @@ impl OrbitApp {
             .font_weight(FontWeight::MEDIUM)
             .raised(theme.action, &theme)
             .text_color(theme.action_fg)
-            .hover(|style| style.raised(theme.action_hover, &theme))
-            .active(|style| style.raised(theme.action_pressed, &theme))
+            .hover_action(&theme)
+            .pressed_state(&theme, PressedRamp::Action)
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, window, cx| this.update(cx, |app, cx| app.mcp_add(window, cx))
@@ -1381,7 +1376,7 @@ impl OrbitApp {
             .when(first, |row| row.rounded_t(panel::RADIUS.px(&theme)))
             .when(last, |row| row.rounded_b(panel::RADIUS.px(&theme)))
             .when(selected, |row| row.bg(theme.surface_selected))
-            .hover(|row| row.bg(theme.surface_hover))
+            .hover_state(&theme)
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 let name = name.clone();
@@ -1712,8 +1707,8 @@ impl OrbitApp {
                         .font_weight(FontWeight::MEDIUM)
                         .raised(theme.action, &theme)
                         .text_color(theme.action_fg)
-                        .hover(|style| style.raised(theme.action_hover, &theme))
-                        .active(|style| style.raised(theme.action_pressed, &theme))
+                        .hover_action(&theme)
+                        .pressed_state(&theme, PressedRamp::Action)
                         .on_mouse_up(MouseButton::Left, {
                             let this = this.clone();
                             move |_, window, cx| this.update(cx, |app, cx| app.mcp_add(window, cx))
@@ -1726,30 +1721,13 @@ impl OrbitApp {
 
     fn mcp_notice_card(&self, theme: Theme, title: impl Into<String>, detail: &str) -> AnyElement {
         let title = title.into();
-        div()
-            .w_full()
-            .px(DynamicSpacing::Base16.px(&theme))
-            .py(DynamicSpacing::Base12.px(&theme))
-            .rounded(panel::RADIUS.px(&theme))
-            .border_1()
-            .border_color(theme.error.opacity(0.35))
-            .bg(theme.error.opacity(0.06))
-            .flex()
-            .flex_col()
-            .gap(DynamicSpacing::Base04.px(&theme))
-            .child(
-                div()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.error)
-                    .child(title),
-            )
-            .child(
-                div()
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.text_secondary)
-                    .child(detail.to_string()),
-            )
-            .into_any_element()
+        error_state(
+            theme,
+            &title,
+            Some(detail),
+            Some(&tr!("mcp.notice_next_step")),
+            None,
+        )
     }
 
     fn mcp_external_change_card(
@@ -1929,7 +1907,7 @@ impl OrbitApp {
                     theme.text_secondary
                 })
                 .cursor_pointer()
-                .hover(|style| style.raised(theme.surface_hover, &theme))
+                .hover_state(&theme)
                 .on_mouse_up(MouseButton::Left, {
                     let this = this.clone();
                     move |_, _, cx| {
@@ -2120,7 +2098,7 @@ impl OrbitApp {
                     .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                     .cursor_pointer()
                     .when(selected, |row| row.bg(theme.surface_selected))
-                    .hover(|row| row.bg(theme.surface_hover))
+                    .hover_state(&theme)
                     .on_key_down({
                         let this = this.clone();
                         move |event, _, cx| {
@@ -2208,7 +2186,7 @@ impl OrbitApp {
                     .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                     .cursor_pointer()
                     .when(selected, |row| row.bg(theme.surface_selected))
-                    .hover(|row| row.bg(theme.surface_hover))
+                    .hover_state(&theme)
                     .on_key_down({
                         let this = this.clone();
                         move |event, _, cx| {
@@ -2347,7 +2325,7 @@ impl OrbitApp {
             .border_color(theme.border)
             .raised(theme.surface_elevated, &theme)
             .cursor_pointer()
-            .hover(|style| style.raised(theme.surface_hover, &theme))
+            .hover_state(&theme)
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, _, cx| this.update(cx, |app, cx| app.mcp_editor_close(cx))
@@ -2362,25 +2340,18 @@ impl OrbitApp {
             .font_weight(FontWeight::MEDIUM)
             .raised(theme.action, &theme)
             .text_color(theme.action_fg)
-            .hover(|style| style.raised(theme.action_hover, &theme))
-            .active(|style| style.raised(theme.action_pressed, &theme))
+            .hover_action(&theme)
+            .pressed_state(&theme, PressedRamp::Action)
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, _, cx| this.update(cx, |app, cx| app.mcp_editor_save(cx))
             })
             .child(tr!("mcp.save"));
 
-        let card = div()
+        let card = modal_card(&theme)
             .w_full()
             .max_w(px(560.))
             .max_h(relative(1.))
-            .elevation_3(&theme)
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .occlude()
-            .font_family(theme::ui_font_family())
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_action(cx.listener(Self::mcp_editor_cancel))
             .on_action(cx.listener(Self::mcp_editor_confirm))
             .child(
@@ -2553,8 +2524,8 @@ impl OrbitApp {
         let refresh = icon_button_frame(div().id("quota-mcp-refresh"), &theme, ButtonSize::Medium)
             .group(BUTTON_GROUP)
             .cursor_pointer()
-            .hover(|style| style.bg(theme.surface_hover))
-            .active(|style| style.bg(theme.surface_active))
+            .hover_state(&theme)
+            .pressed_state(&theme, PressedRamp::Wash)
             .tip(tr!("mcp.refresh"))
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
@@ -2815,7 +2786,7 @@ impl OrbitApp {
             .items_start()
             .gap(DynamicSpacing::Base08.px(&theme))
             .cursor_pointer()
-            .hover(|style| style.bg(theme.surface_hover))
+            .hover_state(&theme)
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, _, cx| {
@@ -2912,17 +2883,13 @@ fn mcp_popup_action(
         button
             .raised(theme.action, &theme)
             .text_color(theme.action_fg)
-            .hover(|style| style.raised(theme.action_hover, &theme))
-            .active(|style| style.raised(theme.action_pressed, &theme))
+            .hover_action(&theme)
+            .pressed_state(&theme, PressedRamp::Action)
     } else {
         button
             .raised(theme.overlay, &theme)
             .text_color(theme.text_secondary)
-            .hover(|style| {
-                style
-                    .raised(theme.overlay_strong, &theme)
-                    .text_color(theme.text_primary)
-            })
+            .hover_overlay_strong(&theme)
     };
     press(button)
         .child(label)
@@ -3055,7 +3022,7 @@ fn mcp_switch(
         .cursor_pointer()
         .when(on, |t| t.bg(theme.accent).justify_end())
         .when(!on, |t| t.bg(theme.surface_elevated).justify_start())
-        .hover(|t| t.border_color(theme.border_strong))
+        .hover_border(&theme)
         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
             this.update(cx, |app, cx| action(app, cx));
         })
@@ -3083,7 +3050,7 @@ fn mcp_icon_action(
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .hover(|style| style.bg(theme.surface_hover)),
+            .hover_state(&theme),
     )
     .tip(tip)
     .child(icon(
@@ -3119,15 +3086,15 @@ fn mcp_text_button(
         button
             .raised(theme.action, &theme)
             .text_color(theme.action_fg)
-            .hover(|style| style.raised(theme.action_hover, &theme))
-            .active(|style| style.raised(theme.action_pressed, &theme))
+            .hover_action(&theme)
+            .pressed_state(&theme, PressedRamp::Action)
     } else {
         button
             .border_1()
             .border_color(theme.border)
             .raised(theme.surface_elevated, &theme)
             .text_color(theme.text_secondary)
-            .hover(|style| style.raised(theme.surface_hover, &theme))
+            .hover_state(&theme)
     };
     press(button)
         .child(label)

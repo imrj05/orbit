@@ -49,6 +49,7 @@ pub enum CommandId {
     // Navigation
     ToggleCommandPalette,
     ToggleSearch,
+    FocusSessionSearch,
     PrevTurn,
     NextTurn,
     CopyLastResponse,
@@ -429,6 +430,16 @@ pub static COMMANDS: &[CommandSpec] = &[
             "find search transcript messages",
         ),
         shortcuts::FIND,
+    ),
+    with_chord(
+        command(
+            CommandId::FocusSessionSearch,
+            Navigation,
+            "icons/filter.svg",
+            "menu.search_sessions",
+            "search sessions sidebar filter find",
+        ),
+        shortcuts::SESSION_SEARCH,
     ),
     with_chord(
         command(
@@ -965,6 +976,11 @@ pub static BINDINGS: &[Binding] = &[
         id: CommandId::ToggleSearch,
     },
     Binding {
+        chord: shortcuts::SESSION_SEARCH,
+        context: None,
+        id: CommandId::FocusSessionSearch,
+    },
+    Binding {
         chord: shortcuts::PREV_TURN,
         context: None,
         id: CommandId::PrevTurn,
@@ -1144,9 +1160,9 @@ pub fn tooltip(id: CommandId, alternate: bool) -> String {
 /// The typed gpui binding for one row, or `None` for palette-only commands.
 fn action_binding(binding: &Binding) -> Option<KeyBinding> {
     use crate::{
-        AbortRun, CheckForUpdates, CloseTerminalTab, CopyLastResponse, FocusSessions,
-        GitTabChanges, GitTabGraph, GitTabHistory, GitTabIssues, GitTabPulls, GitTabStashes,
-        NewSession, NewTerminalTab, NextSession, NextTerminalTab, NextTurn, OpenGit,
+        AbortRun, CheckForUpdates, CloseTerminalTab, CopyLastResponse, FocusSessionSearch,
+        FocusSessions, GitTabChanges, GitTabGraph, GitTabHistory, GitTabIssues, GitTabPulls,
+        GitTabStashes, NewSession, NewTerminalTab, NextSession, NextTerminalTab, NextTurn, OpenGit,
         OpenSessionSlot, OpenSettings, OpenShortcutHelp, PrevSession, PrevTerminalTab, PrevTurn,
         Quit, RefreshSessions, ReviewChanges, ReviewClose, ReviewCollapseAll, ReviewExpandAll,
         ReviewFileNext, ReviewFilePrev, ReviewHunkNext, ReviewHunkPrev, ReviewTreeNext,
@@ -1182,6 +1198,7 @@ fn action_binding(binding: &Binding) -> Option<KeyBinding> {
         CommandId::OpenShortcutHelp => KeyBinding::new(chord, OpenShortcutHelp, context),
         CommandId::ToggleCommandPalette => KeyBinding::new(chord, ToggleCommandPalette, context),
         CommandId::ToggleSearch => KeyBinding::new(chord, ToggleSearch, context),
+        CommandId::FocusSessionSearch => KeyBinding::new(chord, FocusSessionSearch, context),
         CommandId::PrevTurn => KeyBinding::new(chord, PrevTurn, context),
         CommandId::NextTurn => KeyBinding::new(chord, NextTurn, context),
         CommandId::CopyLastResponse => KeyBinding::new(chord, CopyLastResponse, context),
@@ -1279,6 +1296,57 @@ mod tests {
         }
     }
 
+    /// Every chord the app advertises must be one gpui can parse. A typo here
+    /// is a shortcut that silently never fires — the failure mode is invisible
+    /// in the app and only shows up as "that key does nothing".
+    #[test]
+    fn every_binding_chord_parses() {
+        for binding in BINDINGS {
+            assert!(
+                gpui::Keystroke::parse(binding.chord).is_ok(),
+                "{:?}: unparseable chord {:?}",
+                binding.id,
+                binding.chord
+            );
+        }
+        for spec in COMMANDS {
+            for chord in spec.chord.into_iter().chain(spec.alt_chord) {
+                assert!(
+                    gpui::Keystroke::parse(chord).is_ok(),
+                    "{:?}: unparseable advertised chord {chord:?}",
+                    spec.id
+                );
+            }
+        }
+    }
+
+    /// Two bindings on the same chord in the same context is a shadowed
+    /// command: one of them can never run, and nothing says which.
+    #[test]
+    fn no_two_bindings_share_a_chord_in_one_context() {
+        let mut seen: Vec<(String, Option<&str>, CommandId)> = Vec::new();
+        for binding in BINDINGS {
+            let keystroke = gpui::Keystroke::parse(binding.chord).expect("parsed above");
+            let key = keystroke.unparse();
+            if let Some((_, _, other)) = seen
+                .iter()
+                .find(|(chord, context, _)| *chord == key && *context == binding.context)
+            {
+                panic!(
+                    "{} and {:?} both bind {key} in {:?}",
+                    other_label(*other),
+                    binding.id,
+                    binding.context
+                );
+            }
+            seen.push((key, binding.context, binding.id));
+        }
+
+        fn other_label(id: CommandId) -> &'static str {
+            spec(id).title_key
+        }
+    }
+
     #[test]
     fn every_binding_has_a_spec() {
         for binding in BINDINGS {
@@ -1345,6 +1413,45 @@ mod tests {
             chip.contains(&shortcuts::label(shortcuts::PALETTE_ALT)),
             "{chip}"
         );
+    }
+
+    /// Phase 6's done-gate, read against what the registry actually ships.
+    ///
+    /// The gate is "every action reachable from a menu or a shortcut is also
+    /// reachable from the palette". Two kinds of command cannot honestly be a
+    /// palette row, and both are marked `help_only` (in the Shortcuts
+    /// reference, never in the list):
+    ///
+    /// * **Context-local commands** — the review tree's ↑/↓, the Git tab
+    ///   chords. A global row would offer an action that does nothing until a
+    ///   specific pane has focus.
+    /// * **The palette itself** — `⌘P`/`⌘K` cannot open the palette from inside
+    ///   the palette.
+    ///
+    /// `OpenSessionSlot` is the third shape: one command whose chord carries
+    /// the slot (⌘1–⌘9), so a row would have to pick a slot for the user.
+    ///
+    /// Everything else chorded must be listed. Chordless palette rows are
+    /// fine — that is a chip's only keyboard route.
+    #[test]
+    fn every_chorded_command_has_a_route() {
+        for spec in COMMANDS {
+            if spec.chord.is_some() || spec.alt_chord.is_some() {
+                assert!(
+                    spec.palette || spec.help,
+                    "{:?} has a chord but neither a palette row nor a help entry",
+                    spec.id
+                );
+            }
+        }
+        for binding in BINDINGS {
+            let spec = spec(binding.id);
+            assert!(
+                spec.palette || spec.help,
+                "{:?} is bound but has no route",
+                binding.id
+            );
+        }
     }
 
     #[test]

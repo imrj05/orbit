@@ -86,7 +86,7 @@ use crate::workspace_mark::WorkspaceMark;
 use crate::workspace_picker::{WorkspaceEntry, WorkspacePicker};
 
 const SIDEBAR_DEFAULT_W: f32 = 248.;
-const SIDEBAR_MIN_W: f32 = 200.;
+pub(crate) const SIDEBAR_MIN_W: f32 = 200.;
 /// Sessions shown under each workspace group before "Show more" appears.
 const SIDEBAR_GROUP_SESSIONS_VISIBLE: usize = 3;
 /// Room the side-pane resize keeps for the transcript column.
@@ -324,6 +324,13 @@ pub struct OrbitApp {
     workspace_watch_dir: Option<PathBuf>,
     sidebar_list: ListState,
     sidebar_visible: bool,
+    /// Whether the persisted arrangement has been pushed onto the live panels
+    /// yet. The restore needs a window (opening the terminal spawns a shell),
+    /// so it runs on the first frame rather than in `new`.
+    layout_restored: bool,
+    /// Re-record the arrangement whenever a panel opens or closes, so the next
+    /// launch lands in the same shape.
+    _layout_subs: Vec<Subscription>,
     /// Bumped on every sidebar toggle. The render keys its slide animation on
     /// it, so an open→close→open cycle animates every time (a boolean key
     /// would let the repeat skip) while the first frame — generation 0 — draws
@@ -588,6 +595,16 @@ pub struct OrbitApp {
     settings_search: Entity<ComposerInput>,
     /// Re-render the settings surface as the search is typed.
     _settings_search_sub: Subscription,
+    /// Sidebar session search. The field owns the text; `sidebar_query` mirrors
+    /// it so the row builder and keyboard navigation filter without needing a
+    /// context.
+    sidebar_search: Entity<ComposerInput>,
+    sidebar_query: String,
+    _sidebar_search_sub: Subscription,
+    /// The name field for "save the current arrangement". Shown in the sidebar's
+    /// view menu while `naming_layout` is on.
+    layout_name: Entity<ComposerInput>,
+    naming_layout: bool,
     /// Settings → General: which notification channels are on (persisted to
     /// `~/.orbit-pi/notifications.json`), plus the last macOS permission
     /// read. The read drives the honest "blocked" / "unbundled" rows — a
@@ -1463,6 +1480,32 @@ impl OrbitApp {
                 .with_wrap(false)
         });
         let settings_search_sub = cx.observe(&settings_search, |_, _, cx| cx.notify());
+        // The sidebar's own search: one field over the session list, kept as a
+        // mirrored string so the row builder and ⌘↑/↓ navigation agree on what
+        // is visible without threading a context through both.
+        let sidebar_search = cx.new(|cx| {
+            ComposerInput::new(cx)
+                .with_element_id("sidebar-search-input")
+                .with_placeholder_key("sidebar.search_sessions")
+                .with_key_context("Composer Picker")
+                .with_max_lines(1)
+                .with_wrap(false)
+        });
+        let layout_name = cx.new(|cx| {
+            ComposerInput::new(cx)
+                .with_element_id("layout-name-input")
+                .with_placeholder_key("sidebar.layout_name_placeholder")
+                .with_key_context("Composer Picker")
+                .with_max_lines(1)
+                .with_wrap(false)
+        });
+        let sidebar_search_sub = cx.observe(&sidebar_search, |app: &mut Self, input, cx| {
+            let text = input.read(cx).text().trim().to_lowercase();
+            if app.sidebar_query != text {
+                app.sidebar_query = text;
+                cx.notify();
+            }
+        });
         // Settings → Report a bug: the issue title, the description, and the
         // optional reproduction steps. The description fields carry the
         // `Editor` context so Enter inserts a newline rather than submitting
@@ -1748,6 +1791,20 @@ impl OrbitApp {
                 cx,
             )
         });
+        // Any open/close on a dock or the shell re-records the arrangement, so
+        // the next launch lands in the same shape. The store compares first, so
+        // an unrelated notify (a terminal tab, a tree refresh) costs nothing.
+        let layout_subs = vec![
+            cx.observe(&project_panel, |app: &mut Self, _, cx| {
+                app.record_arrangement(cx);
+            }),
+            cx.observe(&sidepane, |app: &mut Self, _, cx| {
+                app.record_arrangement(cx);
+            }),
+            cx.observe(&terminal_panel, |app: &mut Self, _, cx| {
+                app.record_arrangement(cx);
+            }),
+        ];
         // Full-page read-only file viewer.
         let viewer_weak = cx.entity().downgrade();
         let file_viewer = cx.new(|cx| {
@@ -1977,6 +2034,11 @@ impl OrbitApp {
             settings_filter,
             settings_search: settings_search.clone(),
             _settings_search_sub: settings_search_sub,
+            sidebar_search: sidebar_search.clone(),
+            sidebar_query: String::new(),
+            _sidebar_search_sub: sidebar_search_sub,
+            layout_name,
+            naming_layout: false,
             settings_select_highlight: None,
             settings_select_scroll: UniformListScrollHandle::new(),
             bug_report_title,
@@ -1999,6 +2061,8 @@ impl OrbitApp {
             session_history: Vec::new(),
             history_index: 0,
             collapsed_workspaces: HashSet::new(),
+            layout_restored: false,
+            _layout_subs: layout_subs,
             expanded_workspace_groups: HashSet::new(),
             expanded_session_groups: HashMap::new(),
             workspaces: workspace_store.workspaces,
@@ -2343,6 +2407,12 @@ impl OrbitApp {
         self.window_active = window.is_window_active();
         let activation = cx.observe_window_activation(window, |app, window, _| {
             app.window_active = window.is_window_active();
+            // The OS Reduce Motion preference can only have changed while the
+            // user was elsewhere, so a window becoming active is the moment to
+            // re-read it. A repaint picks up the new value on the next frame.
+            if app.window_active {
+                theme::refresh_os_reduce_motion();
+            }
         });
         // Closing the window ends the observer above on its last value — and
         // the window usually was frontmost when the user closed it — which
@@ -2808,15 +2878,20 @@ pub(crate) enum SidebarGroupBy {
     #[default]
     Workspace,
     OneList,
+    /// What you have been working on: every pinned, open and running session,
+    /// then the most recent of the rest. Not a filter on the project list —
+    /// a smaller list for a smaller question.
+    Recent,
 }
 
 impl SidebarGroupBy {
-    pub(crate) const ALL: [SidebarGroupBy; 2] = [Self::Workspace, Self::OneList];
+    pub(crate) const ALL: [SidebarGroupBy; 3] = [Self::Workspace, Self::OneList, Self::Recent];
 
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Workspace => "workspace",
             Self::OneList => "one_list",
+            Self::Recent => "recent",
         }
     }
 
@@ -2824,6 +2899,7 @@ impl SidebarGroupBy {
         match key {
             "workspace" => Self::Workspace,
             "one_list" => Self::OneList,
+            "recent" => Self::Recent,
             // A store written while the tree mode existed falls back to the
             // grouped default rather than an unknown state.
             _ => Self::default(),
@@ -2834,6 +2910,7 @@ impl SidebarGroupBy {
         match self {
             Self::Workspace => "sidebar.group_workspace",
             Self::OneList => "sidebar.group_one_list",
+            Self::Recent => "sidebar.group_recent",
         }
     }
 
@@ -2841,6 +2918,7 @@ impl SidebarGroupBy {
         match self {
             Self::Workspace => "icons/folder.svg",
             Self::OneList => "icons/unified-view.svg",
+            Self::Recent => "icons/clock.svg",
         }
     }
 }
@@ -3604,6 +3682,8 @@ mod new_task_panels_tests;
 #[cfg(test)]
 mod new_task_reconnect_tests;
 #[cfg(test)]
+mod perf_sampler_tests;
+#[cfg(test)]
 mod popup_layout_tests;
 #[cfg(test)]
 mod process_exit_cleanup_tests;
@@ -3626,11 +3706,15 @@ mod sidebar_active_reveal_tests;
 #[cfg(test)]
 mod sidebar_group_tests;
 #[cfg(test)]
+mod sidebar_menu_tests;
+#[cfg(test)]
 mod sidebar_placeholder_tests;
 #[cfg(test)]
 mod sidebar_remove_tests;
 #[cfg(test)]
 mod sidebar_review_tests;
+#[cfg(test)]
+mod sidebar_search_tests;
 #[cfg(test)]
 mod sidebar_sort_tests;
 #[cfg(test)]
@@ -3650,13 +3734,14 @@ mod worktree_howto_tests;
 
 // `icon` and friends are part of the crate-wide UI kit; keep their original
 // `crate::app::…` paths stable for the other modules that import them.
-pub(crate) use crate::theme::tokens::RaisedExt;
+pub(crate) use crate::theme::tokens::{Motion, RaisedExt};
 pub(crate) use helpers::{
-    button_frame, context_menu_entry, context_menu_separator, context_menu_surface, empty_state,
-    file_badge, file_glyph, file_icon_tile, icon, icon_button_frame, icon_dyn, input_field_frame,
-    menu_header, nerd_font_family, picker_entry, picker_search_frame, picker_surface, press,
-    provider_mark_color, refresh_glyph, running_spinner, spinner, EmptyFill, TipExt, BUTTON_GROUP,
-    PRESS_DIM,
+    anchored_popover, anchored_popover_at, button_frame, context_menu_entry,
+    context_menu_separator, context_menu_surface, empty_state, file_badge, file_glyph,
+    file_icon_tile, icon, icon_button_frame, icon_dyn, input_field_frame, menu_header, modal_card,
+    modal_scrim, nerd_font_family, picker_entry, picker_search_frame, picker_surface, press,
+    provider_mark_color, refresh_glyph, running_spinner, spinner, AccentWash, ControlExt,
+    EmptyFill, PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
 };
 use sidebar::sessions_with_placeholder;
 

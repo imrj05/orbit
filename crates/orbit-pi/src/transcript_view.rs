@@ -24,13 +24,13 @@ use std::{
 };
 
 use gpui::{
-    anchored, canvas, deferred, div, img, linear_color_stop, linear_gradient, list, point,
-    prelude::*, px, relative, Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem,
-    CursorStyle, DispatchPhase, Element, ElementId, Font, FontFeatures, FontStyle, FontWeight,
-    GlobalElementId, Hitbox, HitboxBehavior, Hsla, Image, ImageSource, InspectorElementId,
-    InteractiveText, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ObjectFit, Pixels, ScrollHandle, ScrollWheelEvent, SharedString, StrikethroughStyle,
-    StyledText, TextAlign, TextLayout, TextRun, TransformationMatrix, UnderlineStyle, Window,
+    canvas, deferred, div, img, linear_color_stop, linear_gradient, list, point, prelude::*, px,
+    relative, Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem, CursorStyle,
+    DispatchPhase, Element, ElementId, Font, FontFeatures, FontStyle, FontWeight, GlobalElementId,
+    Hitbox, HitboxBehavior, Hsla, Image, ImageSource, InspectorElementId, InteractiveText,
+    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels,
+    ScrollHandle, ScrollWheelEvent, SharedString, StrikethroughStyle, StyledText, TextAlign,
+    TextLayout, TextRun, TransformationMatrix, UnderlineStyle, Window,
 };
 
 use std::ops::Range;
@@ -43,8 +43,8 @@ use orbit_rpc::MessageUsage;
 
 use crate::agent_call_display::AgentCallDisplay;
 use crate::app::{
-    button_frame, file_badge, file_glyph, file_icon_tile, icon_button_frame, nerd_font_family,
-    picker_entry, picker_surface, OrbitApp, TipExt, BUTTON_GROUP,
+    anchored_popover_at, button_frame, file_badge, file_glyph, file_icon_tile, icon_button_frame,
+    nerd_font_family, picker_entry, picker_surface, ControlExt, OrbitApp, TipExt, BUTTON_GROUP,
 };
 use crate::context_meter::{format_tokens, hit_percent_label};
 use crate::highlight::{self, Token};
@@ -52,8 +52,8 @@ use crate::message_scroller::{self, MessageScrollerState};
 use crate::shimmer::ShimmerText;
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
-    button, context_menu, panel, picker, popover, BufferLineHeight, ButtonSize, DynamicSpacing,
-    IconSize, Radius, StyledExt, TextSize, BORDER_WIDTH,
+    button, context_menu, looping, panel, picker, popover, BufferLineHeight, ButtonSize,
+    DynamicSpacing, IconSize, Motion, Radius, StyledExt, TextSize, BORDER_WIDTH,
 };
 use crate::theme::{self, Theme, ThemeMode};
 use crate::transcript::{ChatMessage, Step, SummaryRow, ToolCall, ToolFacts};
@@ -80,9 +80,11 @@ const FOOTER_BUTTON: ButtonSize = ButtonSize::Medium;
 const COPY_FEEDBACK: Duration = Duration::from_secs(2);
 /// The copy affordance is quiet at rest and brightens while the pointer is
 /// over its code section. In is shorter than out so crossing the plane does
-/// not flicker; both are short enough to read as direct feedback.
-const COPY_HOVER_IN: Duration = Duration::from_millis(120);
-const COPY_HOVER_OUT: Duration = Duration::from_millis(180);
+/// not flicker; both are motion roles rather than typed durations — the fade in
+/// is `Interaction`, the fade out is `Layout`, which is exactly the spec's
+/// 120–160 and 160–220 bands.
+const COPY_HOVER_IN: Duration = Motion::Interaction.nominal();
+const COPY_HOVER_OUT: Duration = Motion::Layout.nominal();
 const COPY_REST_OPACITY: f32 = 0.45;
 const NAVIGATION_RAIL_LEFT: f32 = 16.0;
 const NAVIGATION_RAIL_WIDTH: f32 = 44.0;
@@ -1057,29 +1059,24 @@ fn text_selection_menu(menu: &TextMenu, state: TextSelectionState, theme: Theme)
         },
     );
     let dismiss = state.clone();
-    deferred(
-        anchored()
-            .position(menu.position)
-            .snap_to_window_with_margin(popover::WINDOW_MARGIN)
-            .child(
-                picker_surface(div().id("transcript-text-menu"), &theme)
-                    .w(px(220.))
-                    .py(picker::list_padding_y(&theme))
-                    .flex()
-                    .flex_col()
-                    .gap(DynamicSpacing::Base01.px(&theme))
-                    .overflow_hidden()
-                    .occlude()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_mouse_down_out(move |_, window, _| {
-                        dismiss.borrow_mut().menu = None;
-                        window.refresh();
-                    })
-                    .child(copy_selection_item)
-                    .child(copy_message_item),
-            ),
+    anchored_popover_at(
+        menu.position,
+        picker_surface(div().id("transcript-text-menu"), &theme)
+            .w(px(220.))
+            .py(picker::list_padding_y(&theme))
+            .flex()
+            .flex_col()
+            .gap(DynamicSpacing::Base01.px(&theme))
+            .overflow_hidden()
+            .occlude()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down_out(move |_, window, _| {
+                dismiss.borrow_mut().menu = None;
+                window.refresh();
+            })
+            .child(copy_selection_item)
+            .child(copy_message_item),
     )
-    .into_any_element()
 }
 
 fn selection_menu_item(
@@ -1099,11 +1096,12 @@ fn selection_menu_item(
             theme.text_muted
         })
         .when(enabled, |item| {
-            item.cursor_pointer()
-                .hover(|style| style.bg(theme.surface_hover).text_color(theme.text_primary))
-                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            item.cursor_pointer().hover_state(&theme).on_mouse_down(
+                MouseButton::Left,
+                move |_, window, cx| {
                     on_click(window, cx);
-                })
+                },
+            )
         })
         .child(crate::app::icon(
             icon_path,
@@ -1171,7 +1169,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
     {
         let mut selection = text_selection.borrow_mut();
         selection.begin_frame();
-        if view.streaming.get().is_none() || theme.ui.reduce_motion {
+        if view.streaming.get().is_none() || theme.reduce_motion() {
             selection.stream_fades.clear();
         }
     }
@@ -1275,7 +1273,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
                 .unwrap_or(&[])
                 .iter()
                 .take_while(|message| !message.user)
-                .find(|message| !message.text().trim().is_empty())
+                .find(|message| message.has_text())
                 .map(|message| snippet(&message.text(), 240))
                 .unwrap_or_default();
             Some((prompt, response))
@@ -1674,7 +1672,7 @@ fn render_navigation_rail(
                                 .w(px(width))
                                 .rounded_full()
                                 .bg(color)
-                                .hover(|style| style.bg(theme.text_primary)),
+                                .hover_inverse(&theme),
                         )
                 })),
         )
@@ -1973,7 +1971,7 @@ fn render_summary_card(row: &SummaryRow, paint: &RowPaint) -> AnyElement {
             header.rounded_b(panel::RADIUS.px(&theme))
         })
         .cursor_pointer()
-        .hover(|style| style.bg(theme.overlay_strong))
+        .hover_on_glass(&theme)
         .on_click({
             let expanded_turns = paint.expanded_turns.clone();
             let scroller = paint.scroller.clone();
@@ -2098,8 +2096,7 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint, cx: &gpui::App) -
                             .overflow_hidden()
                             .bg(theme.surface_elevated)
                             .when(opener.is_some(), |tile| {
-                                tile.cursor_pointer()
-                                    .hover(|s| s.border_color(theme.border_strong))
+                                tile.cursor_pointer().hover_border(&theme)
                             })
                             .child(
                                 img(ImageSource::Image(image.clone()))
@@ -2454,7 +2451,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
         .items_start()
         .child(content);
 
-    if !paint.live && !paint.suppress_footer && !message.text().is_empty() {
+    if !paint.live && !paint.suppress_footer && message.has_text() {
         row = row.child(render_message_footer(
             message.text(),
             ix,
@@ -2707,11 +2704,7 @@ fn render_activity_group(
                 theme.border
             })
             .cursor_pointer()
-            .hover(|style| {
-                style
-                    .raised(theme.surface_hover, &theme)
-                    .text_color(theme.text_primary)
-            })
+            .hover_state(&theme)
             .child(
                 div()
                     .flex_none()
@@ -2918,7 +2911,7 @@ fn render_thinking_body(
     let id = (key.0 as u64) << 16 | key.1 as u64;
     // The reasoning glyph: brand accent while the card streams (with a slow
     // opacity pulse, reduce-motion aware), muted once it settles.
-    let thought_icon: AnyElement = if live && !theme.ui.reduce_motion {
+    let thought_icon: AnyElement = if live && !theme.reduce_motion() {
         div()
             .flex_none()
             .child(glyph(
@@ -2928,7 +2921,7 @@ fn render_thinking_body(
             ))
             .with_animation(
                 ElementId::NamedInteger("thought-icon".into(), id),
-                Animation::new(Duration::from_millis(1600)).repeat(),
+                Animation::new(looping::PULSE).repeat(),
                 |el, delta| el.opacity(0.4 + 0.6 * (delta * std::f32::consts::TAU).sin().abs()),
             )
             .into_any_element()
@@ -2967,7 +2960,7 @@ fn render_thinking_body(
                 .cursor_pointer()
                 .text_size(TextSize::Default.px(&theme))
                 .line_height(theme.ui_px(17.))
-                .hover(|style| style.text_color(theme.text_primary))
+                .hover_ink(&theme)
                 .child(thought_icon)
                 .child(
                     div()
@@ -3503,7 +3496,7 @@ fn render_activity_card(
                     row.rounded_b(panel::RADIUS.px(&theme))
                 })
                 .when(has_detail, |row| row.cursor_pointer())
-                .hover(|style| style.bg(theme.overlay_strong))
+                .hover_on_glass(&theme)
                 .child(activity_badge(icon, tone, theme))
                 .child(
                     div()
@@ -3650,7 +3643,7 @@ fn render_activity_card(
                         )
                         .tip(tr!("transcript.copy_diff"))
                         .cursor_pointer()
-                        .hover(|style| style.bg(theme.overlay_strong))
+                        .hover_on_glass(&theme)
                         .child(glyph(
                             if copied {
                                 "icons/check.svg"
@@ -4303,7 +4296,7 @@ fn render_detail_section(
             .cursor_pointer()
             .font_weight(FontWeight::MEDIUM)
             .text_color(theme.text_muted)
-            .hover(|style| style.text_color(theme.text_primary))
+            .hover_ink(&theme)
             .child(glyph(
                 if expanded {
                     "icons/chevron-down.svg"
@@ -4665,7 +4658,7 @@ fn render_edit_diff(
             .cursor_pointer()
             .font_weight(FontWeight::MEDIUM)
             .text_color(theme.text_muted)
-            .hover(|style| style.text_color(theme.text_primary))
+            .hover_ink(&theme)
             .child(glyph(
                 if expanded {
                     "icons/chevron-down.svg"
@@ -4871,7 +4864,7 @@ fn render_message_footer(
     )
     .tip(tr!("transcript.copy_message"))
     .cursor_pointer()
-    .hover(|style| style.bg(theme.overlay_strong))
+    .hover_on_glass(&theme)
     .child(glyph(
         if copied {
             "icons/check.svg"
@@ -5209,7 +5202,7 @@ fn render_turn_fold(
             .cursor_pointer()
             .font_weight(FontWeight::MEDIUM)
             .text_color(theme.text_muted)
-            .hover(|style| style.text_color(theme.text_secondary))
+            .hover_ink_quiet(&theme)
             .child(label)
             .child(glyph(
                 if expanded {
@@ -5309,7 +5302,7 @@ fn render_working_indicator(
     // The live label carries the sidebar's running-session shimmer — the same
     // accent band sweeping across the ink. Reduce-motion keeps the accent
     // signal without the perpetual sweep.
-    let label_el: AnyElement = if theme.ui.reduce_motion {
+    let label_el: AnyElement = if theme.reduce_motion() {
         div()
             .min_w_0()
             .truncate()
@@ -5323,7 +5316,7 @@ fn render_working_indicator(
         ShimmerText::new(label, theme.text_muted, theme.accent)
             .with_animation(
                 ElementId::NamedInteger("working-shimmer".into(), 0),
-                Animation::new(Duration::from_millis(2000)).repeat(),
+                Animation::new(looping::SHIMMER).repeat(),
                 |mut text, delta| {
                     text.phase = delta;
                     text
@@ -6032,7 +6025,7 @@ fn paragraph_text_live(
         // The font's arrow would pick a fallback/emoji face; the hugeicon
         // paints crisper and on-theme (see `paint_link_mark`).
         let mut runs = hide_autolink_marks(runs, &marks);
-        if live && !theme.ui.reduce_motion {
+        if live && !theme.reduce_motion() {
             let mut state = scope.state.borrow_mut();
             let fade = state.stream_fades.entry(key.clone()).or_default();
             runs = fade.apply(body.as_ref(), runs, Instant::now());
@@ -7226,7 +7219,7 @@ fn render_code_block(
                 .text_size(TextSize::Small.px(&theme))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text_secondary)
-                .hover(|style| style.bg(theme.surface_hover).text_color(theme.text_primary))
+                .hover_state(&theme)
                 .child(label)
                 .child(div().flex_1())
                 .child(glyph(
@@ -7280,7 +7273,7 @@ fn code_copy_button(
     )
     .tip(tr!("transcript.copy_code"))
     .cursor_pointer()
-    .hover(|style| style.bg(theme.overlay_strong))
+    .hover_on_glass(&theme)
     .child(glyph(
         if copied {
             "icons/check.svg"
@@ -7464,7 +7457,7 @@ fn render_mermaid_block(
         .text_size(TextSize::Small.px(&theme))
         .font_weight(FontWeight::MEDIUM)
         .text_color(theme.text_secondary)
-        .hover(|style| style.bg(theme.surface_hover).text_color(theme.text_primary))
+        .hover_state(&theme)
         .child(toggle_label)
         .child(div().flex_1())
         .child(glyph(
@@ -7915,11 +7908,7 @@ pub(crate) fn render_changed_files(
         .cursor_pointer()
         .font_weight(FontWeight::MEDIUM)
         .text_color(theme.text_secondary)
-        .hover(|style| {
-            style
-                .raised(theme.surface_hover, &theme)
-                .text_color(theme.text_primary)
-        })
+        .hover_state(&theme)
         .child(glyph(
             "icons/file-diff.svg",
             ButtonSize::Medium.icon_size().px(&theme),
@@ -8024,7 +8013,7 @@ pub(crate) fn render_changed_files(
             .text_size(TextSize::Small.px(&theme))
             .font_weight(FontWeight::MEDIUM)
             .text_color(theme.text_secondary)
-            .hover(|style| style.bg(theme.surface_hover).text_color(theme.text_primary))
+            .hover_state(&theme)
             .child(label);
         if clipped {
             toggle = toggle.child(

@@ -103,6 +103,15 @@ impl ChatMessage {
         !self.user && self.summary.is_none()
     }
 
+    /// Whether the message has any visible text, without joining it.
+    ///
+    /// `text()` allocates the whole joined turn; the render path asks whether
+    /// there is any text at all on every visible row on every frame, so that
+    /// question gets its own allocation-free answer.
+    pub fn has_text(&self) -> bool {
+        self.steps.iter().any(|step| !step.text.is_empty())
+    }
+
     /// The concatenated answer text (steps in sequence).
     pub fn text(&self) -> String {
         self.steps

@@ -151,6 +151,25 @@ fn app_icon_png(application_path: &objc2_foundation::NSString, px: usize) -> Opt
     (!bytes.is_empty()).then(|| bytes.to_vec())
 }
 
+/// Whether the operating system asks for reduced motion.
+///
+/// macOS publishes it as `NSWorkspace.accessibilityDisplayShouldReduceMotion`;
+/// the other platforms expose no equivalent this build can read, so they answer
+/// false and the in-app setting is the only input there. The value is read at
+/// launch and again whenever a window becomes active — a user who changes the
+/// setting comes back to a window, which is exactly when it is re-checked.
+#[cfg(target_os = "macos")]
+pub fn os_reduce_motion() -> bool {
+    use objc2_app_kit::NSWorkspace;
+    NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
+}
+
+/// See the macOS implementation: no equivalent read exists here.
+#[cfg(not(target_os = "macos"))]
+pub fn os_reduce_motion() -> bool {
+    false
+}
+
 /// Resolve which catalog apps are installed, with their icons.
 #[cfg(target_os = "macos")]
 pub fn detect_open_in_apps() -> Vec<ExternalApp> {
@@ -939,6 +958,9 @@ pub mod shortcuts {
     pub const PALETTE: &str = "secondary-p";
     pub const PALETTE_ALT: &str = "secondary-k";
     pub const FIND: &str = "secondary-f";
+    /// Focus the sidebar's session search. `⌘F` searches the transcript, so the
+    /// sidebar gets the same chord shifted.
+    pub const SESSION_SEARCH: &str = "secondary-shift-f";
     pub const USAGE: &str = "secondary-u";
     pub const PREV_TURN: &str = "secondary-up";
     pub const NEXT_TURN: &str = "secondary-down";

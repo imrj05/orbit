@@ -13,7 +13,7 @@ use gpui::{
 
 use crate::app::{
     button_frame, icon, input_field_frame, menu_header, picker_entry, picker_search_frame,
-    picker_surface,
+    picker_surface, ControlExt,
 };
 use crate::composer::ComposerInput;
 use crate::git::BranchEntry;
@@ -317,7 +317,7 @@ impl Render for BranchPicker {
                         .mx(DynamicSpacing::Base08.px(&theme))
                         .mb(DynamicSpacing::Base04.px(&theme))
                         .raised(theme.action, &theme)
-                        .hover(|s| s.raised(theme.action_hover, &theme))
+                        .hover_action(&theme)
                         .cursor_pointer()
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.action_fg)
@@ -367,9 +367,7 @@ impl Render for BranchPicker {
                 .when(selected || highlighted, |row| {
                     row.bg(theme.surface_selected)
                 })
-                .when(!selected && !highlighted, |row| {
-                    row.hover(|s| s.bg(theme.surface_hover))
-                })
+                .when(!selected && !highlighted, |row| row.hover_state(&theme))
                 .on_hover({
                     let this = this.clone();
                     move |hovering, _, cx| {
@@ -521,7 +519,7 @@ impl Render for BranchPicker {
                         picker_entry(div(), &theme)
                             .h(picker::entry_height(&theme))
                             .cursor_pointer()
-                            .hover(|s| s.bg(theme.surface_hover))
+                            .hover_state(&theme)
                             .on_mouse_up(gpui::MouseButton::Left, cx.listener(Self::begin_create))
                             .child(icon(
                                 "icons/plus.svg",

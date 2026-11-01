@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 
 use crate::app::{
     button_frame, icon, icon_button_frame, icon_dyn, picker_entry, picker_search_frame,
-    picker_surface, provider_mark_color, ModelEntry, TipExt,
+    picker_surface, provider_mark_color, ControlExt, ModelEntry, TipExt,
 };
 use crate::composer::ComposerInput;
 use crate::context_meter::format_tokens;
@@ -1218,9 +1218,7 @@ fn scope_chip(
             theme.text_secondary
         })
         .cursor_pointer()
-        .when(!active, |chip| {
-            chip.hover(|s| s.raised(theme.surface_hover, &theme))
-        })
+        .when(!active, |chip| chip.hover_state(&theme))
         .on_click(move |_, window, cx| on_click(window, cx))
         .child(lead)
         .child(label)
@@ -1244,7 +1242,7 @@ fn favorite_button(
         .cursor_pointer()
         .group_hover("picker-row", |s| s.opacity(1.))
         .when(!favorited, |button| button.opacity(0.))
-        .hover(|s| s.bg(theme.surface_hover))
+        .hover_state(&theme)
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
             // Keep the row's own click (model selection) from also firing.
             cx.stop_propagation();
@@ -1521,9 +1519,7 @@ fn render_row(
         .when(!highlighted && selected, |row| {
             row.bg(theme.surface_selected)
         })
-        .when(!highlighted && !selected, |row| {
-            row.hover(|style| style.bg(theme.surface_hover))
-        })
+        .when(!highlighted && !selected, |row| row.hover_state(&theme))
     };
 
     match row {

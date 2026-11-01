@@ -16,7 +16,7 @@ use gpui::{
     ListOffset, ListScrollEvent, ListState, Pixels,
 };
 
-use crate::app::{button_frame, icon_button_frame, TipExt, BUTTON_GROUP};
+use crate::app::{button_frame, icon_button_frame, ControlExt, TipExt, BUTTON_GROUP};
 use crate::theme::tokens::{ButtonSize, StyledExt};
 use crate::theme::Theme;
 
@@ -354,7 +354,7 @@ fn render_jump_button(state: MessageScrollerState, theme: Theme) -> impl IntoEle
                 .tip(tr!("message_scroller.jump_to_latest"))
                 .bg(theme.surface_secondary)
                 .cursor_pointer()
-                .hover(|style| style.bg(theme.surface_elevated))
+                .hover_elevated(&theme)
                 .on_click(move |_, _, cx| {
                     state.scroll_to_end();
                     cx.refresh_windows();

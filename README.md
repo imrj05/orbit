@@ -195,7 +195,7 @@ issue before starting.
 | Explorer gaps | Explorer | Quick-open, sticky scroll, and directory folding in the file tree. | Planned — expand/collapse, filter, hidden toggle, and git badges ship today | — |
 | Conversation fork/rewind | Sessions | Branch and rewind a conversation (clone ships today). | Planned | — |
 | Scroll-perf measurement | Performance | On-device measurement of transcript scroll performance. | Planned | — |
-| Zed token migration | Design | Move the remaining surfaces (settings, pickers, command palette, modals, transcript chrome, sidebar rows) onto the Zed design tokens. | In progress — settings, usage, sidebar, transcript chrome, palette, pickers, modals, Explorer, Git panel, and terminal are on the tokens; the composer is the last major surface | — |
+| Design-system unification | Design | One token layer (colour, geometry, state, motion) across every surface, with the interaction-state and motion contracts enforced by scripts. | Done — see [DESIGN.md](DESIGN.md) and [docs/design-system-audit.md](docs/design-system-audit.md) | — |
 
 ### Contributor checklist
 

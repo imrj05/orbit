@@ -87,6 +87,10 @@ mod pi_install;
 mod pi_update;
 mod pins;
 mod platform;
+// Frame-time sampling for the render baseline. Debug builds only: a release
+// binary must not carry a frame hook or a recorder.
+#[cfg(debug_assertions)]
+mod perf;
 mod plugins;
 mod providers;
 mod quota;
@@ -176,6 +180,10 @@ actions!(
         SteerRun,
         SendAlternate,
         ToggleSearch,
+        /// Record frame times while the user drives the app. The binding is
+        /// debug-only; the action type is not, so the root can always register a
+        /// handler and the handler body is what compiles away.
+        RecordFrameTimes,
         SearchNext,
         SearchPrev,
         SearchClose,
@@ -183,6 +191,7 @@ actions!(
         ToggleProjectPanel,
         ToggleSidebar,
         FocusSessions,
+        FocusSessionSearch,
         NextSession,
         PrevSession,
         ReviewChanges,
@@ -365,12 +374,23 @@ pub struct OpenSessionSlot {
     pub slot: usize,
 }
 
-fn bind_keys(cx: &mut App) {
+pub(crate) fn bind_keys(cx: &mut App) {
     // The app-command keymap comes from the command registry
     // (`commands::BINDINGS`), so a chord and the chip that advertises it can
     // never drift apart. Text-entry and modal keymaps below stay literal:
     // they are conventions, not commands.
     cx.bind_keys(commands::key_bindings());
+    // ⌘⌥P starts or stops a frame-time capture (`src/perf.rs`). Debug builds
+    // only, and deliberately outside the command registry: it is a developer
+    // tool, not a user command, so it must not appear in the palette or help.
+    // Two chords, on purpose: `alt` participates in macOS character composition
+    // (⌥P types "π"), and a chord that never fires is indistinguishable from a
+    // sampler that never ran. `⌘⇧P` carries no such ambiguity.
+    #[cfg(debug_assertions)]
+    cx.bind_keys([
+        KeyBinding::new("secondary-alt-p", RecordFrameTimes, None),
+        KeyBinding::new("secondary-shift-p", RecordFrameTimes, None),
+    ]);
     cx.bind_keys([
         // Focus traversal: every surface with a focus handle is reachable
         // without the mouse. The composer's `Tab` (autocomplete accept) and

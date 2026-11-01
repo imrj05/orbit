@@ -1418,11 +1418,8 @@ impl OrbitApp {
         if !generating {
             button = button
                 .cursor_pointer()
-                .hover(|s| {
-                    s.raised(theme.surface_hover, &theme)
-                        .border_color(theme.border_strong)
-                })
-                .active(|s| s.opacity(PRESS_DIM))
+                .hover_bordered(&theme)
+                .pressed_state(&theme, PressedRamp::Wash)
                 .tooltip({
                     let label = tr!("session.generate_title");
                     move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
@@ -1672,7 +1669,7 @@ impl OrbitApp {
         }
         svg.with_animation(
             "sess-rename-check",
-            Animation::new(Duration::from_millis(200)).with_easing(|d| 1.0 - (1.0 - d).powi(3)),
+            Animation::new(Motion::Layout.duration(&theme)).with_easing(Motion::Layout.easing()),
             |svg, d| {
                 let scale = 0.5 + 0.5 * d;
                 svg.opacity(d)
@@ -1786,7 +1783,7 @@ impl OrbitApp {
                                     .raised(theme.surface_elevated, &theme)
                                     .border_color(theme.border)
                                     .text_color(theme.text_primary)
-                                    .hover(|s| s.raised(theme.surface_hover, &theme))
+                                    .hover_state(&theme)
                                     .child(tr!("session.update"));
                             }
                             button
@@ -1845,7 +1842,7 @@ impl OrbitApp {
                     .items_center()
                     .gap(DynamicSpacing::Base08.px(&theme))
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.surface_hover))
+                    .hover_state(&theme)
                     .on_click({
                         let this = this.clone();
                         move |_, _window, cx| {
@@ -1881,7 +1878,7 @@ impl OrbitApp {
                     .items_center()
                     .gap(DynamicSpacing::Base08.px(&theme))
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.surface_hover))
+                    .hover_state(&theme)
                     .on_click({
                         let this = this.clone();
                         move |_, window, cx| {
@@ -1928,14 +1925,11 @@ impl OrbitApp {
                 .bottom_0()
                 .right_0()
                 .size(px(0.))
-                .child(
-                    anchored()
-                        .position_mode(AnchoredPositionMode::Local)
-                        .anchor(Corner::TopRight)
-                        .offset(point(px(0.), popover::MENU_OFFSET))
-                        .snap_to_window_with_margin(popover::WINDOW_MARGIN)
-                        .child(deferred(popup)),
-                )
+                .child(anchored_popover(
+                    Corner::TopRight,
+                    point(px(0.), popover::MENU_OFFSET),
+                    popup,
+                ))
                 .into_any_element(),
         )
     }
@@ -2150,8 +2144,8 @@ impl OrbitApp {
             icon_button_frame(div().id("quota-refresh"), &theme, ButtonSize::Medium)
                 .group(BUTTON_GROUP)
                 .cursor_pointer()
-                .hover(|style| style.bg(theme.surface_hover))
-                .active(|style| style.bg(theme.surface_active))
+                .hover_state(&theme)
+                .pressed_state(&theme, PressedRamp::Wash)
                 .tooltip({
                     let label = tr!("common.refresh");
                     move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
@@ -2194,7 +2188,7 @@ impl OrbitApp {
                 .when(!selected, |chip| {
                     chip.raised_flat(theme.surface_elevated)
                         .text_color(theme.text_secondary)
-                        .hover(|style| style.raised_flat(theme.surface_hover))
+                        .hover_state(&theme)
                 })
                 .on_mouse_up(MouseButton::Left, {
                     let this = this.clone();
@@ -2317,14 +2311,11 @@ impl OrbitApp {
                 .bottom_0()
                 .right_0()
                 .size(px(0.))
-                .child(
-                    anchored()
-                        .position_mode(AnchoredPositionMode::Local)
-                        .anchor(Corner::TopRight)
-                        .offset(point(px(0.), popover::MENU_OFFSET))
-                        .snap_to_window_with_margin(popover::WINDOW_MARGIN)
-                        .child(deferred(popup)),
-                )
+                .child(anchored_popover(
+                    Corner::TopRight,
+                    point(px(0.), popover::MENU_OFFSET),
+                    popup,
+                ))
                 .into_any_element(),
         )
     }
@@ -2360,8 +2351,8 @@ impl OrbitApp {
             ButtonSize::Compact,
         )
         .cursor_pointer()
-        .hover(|style| style.bg(theme.surface_hover))
-        .active(|style| style.opacity(PRESS_DIM))
+        .hover_state(&theme)
+        .pressed_state(&theme, PressedRamp::Wash)
         .tooltip({
             let label = label.clone();
             move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
@@ -2414,8 +2405,8 @@ impl OrbitApp {
                     .font_weight(FontWeight::MEDIUM)
                     .raised(theme.action, &theme)
                     .text_color(theme.action_fg)
-                    .hover(|style| style.raised(theme.action_hover, &theme))
-                    .active(|style| style.raised(theme.action_pressed, &theme))
+                    .hover_action(&theme)
+                    .pressed_state(&theme, PressedRamp::Action)
                     .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                         this.update(cx, |app, cx| {
                             app.mcp_popup_tab(QuotaPopupTab::Mcp, cx);
@@ -2460,7 +2451,7 @@ impl OrbitApp {
                     .px(DynamicSpacing::Base04.px(&theme))
                     .py(px(2.))
                     .rounded(Radius::Medium.px(&theme))
-                    .hover(|style| style.bg(theme.surface_hover))
+                    .hover_state(&theme)
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::on_quota_hidden_toggle))
                     .child(icon(chevron, IconSize::XSmall.px(&theme), theme.text_muted))
                     .child(
@@ -2666,7 +2657,7 @@ impl OrbitApp {
                 icon_button_frame(div().id(("sess-copy", ix)), &theme, ButtonSize::Compact)
                     .tip(tr!("common.copy"))
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.surface_hover))
+                    .hover_state(&theme)
                     .on_click(move |_, _window, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(v.clone()));
                     })
@@ -2715,6 +2706,7 @@ impl OrbitApp {
                 self.input.read(cx).focus(window);
             }
         }
+        self.record_arrangement(cx);
     }
 
     /// The top-bar Review control: one chip for the right dock and the

@@ -17,10 +17,9 @@ use gpui::{
     SharedString, Window,
 };
 
+use crate::app::{modal_card, modal_scrim};
 use crate::composer::ComposerInput;
-use crate::theme::tokens::{
-    button, input, list_item, modal, ButtonSize, DynamicSpacing, StyledExt, TextSize,
-};
+use crate::theme::tokens::{button, input, list_item, modal, ButtonSize, DynamicSpacing, TextSize};
 use crate::theme::{self, Theme};
 
 /// Card width — a question plus its options without owning the window.
@@ -330,25 +329,17 @@ impl Render for Dialog {
         let theme = *theme::get(cx);
         let this = cx.entity();
 
-        let mut card = div()
+        let mut card = modal_card(&theme)
             .id("dialog-card")
             .debug_selector(|| "dialog-card".to_string())
             .w_full()
             .max_w(px(CARD_W))
-            .elevation_3(&theme)
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .occlude()
-            .font_family(theme::ui_font_family())
             .key_context(self.key_context())
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::on_cancel))
             .on_action(cx.listener(Self::on_confirm))
             .on_action(cx.listener(Self::on_next))
-            .on_action(cx.listener(Self::on_prev))
-            // Clicks inside the card must not reach the scrim's dismiss.
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+            .on_action(cx.listener(Self::on_prev));
 
         // ── header: origin, title, and (confirm) the message body ──
         // Zed's `ModalHeader` insets, with its Small headline for the title.
@@ -448,18 +439,9 @@ impl Render for Dialog {
         );
 
         // ── scrim: dimmed backdrop; a click outside cancels the dialog ──
-        let scrim = theme.scrim_modal();
-        div()
+        modal_scrim(&theme)
             .id("dialog-layer")
             .debug_selector(|| "dialog-layer".to_string())
-            .absolute()
-            .inset_0()
-            .occlude()
-            .bg(scrim)
-            .px(DynamicSpacing::Base24.px(&theme))
-            .flex()
-            .items_center()
-            .justify_center()
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_scrim_down))
             .child(card)
     }

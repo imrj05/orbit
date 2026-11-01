@@ -22,7 +22,6 @@
 use std::cell::Cell;
 use std::ops::Range;
 use std::rc::Rc;
-use std::time::Duration;
 
 use gpui::{
     canvas, div, fill, linear_color_stop, linear_gradient, point, prelude::*, px, size, Animation,
@@ -32,6 +31,7 @@ use gpui::{
 
 use super::aggregate::{ChartMetric, SeriesPoint, TimeSeries};
 use super::chart::curve_controls;
+use crate::theme::tokens::chart;
 use crate::theme::Theme;
 
 /// Rendered height of one sparkline (the recipe's `height={40}`).
@@ -42,46 +42,6 @@ const PAD: f32 = 5.;
 const STROKE: f32 = 1.5;
 const DOT_R: f32 = 3.;
 const RING: f32 = 1.5;
-
-/// The recipe's cadences: 900ms draw-in and 500ms data transition. Hover has no
-/// transition.
-const DRAW: Duration = Duration::from_millis(900);
-const MORPH: Duration = Duration::from_millis(500);
-
-/// The recipe's `DEFAULT_ANIMATION_EASING`: `cubic-bezier(0.85, 0, 0.15, 1)`.
-fn recipe_ease() -> impl Fn(f32) -> f32 {
-    cubic_bezier(0.85, 0.0, 0.15, 1.0)
-}
-
-/// A cubic Bézier easing curve, parameterised by its two control points.
-fn cubic_bezier(x1: f32, y1: f32, x2: f32, y2: f32) -> impl Fn(f32) -> f32 {
-    move |t: f32| {
-        let x = t.clamp(0.0, 1.0);
-        if x <= 0.0 {
-            return 0.0;
-        }
-        if x >= 1.0 {
-            return 1.0;
-        }
-        // x(s) is monotone for these curves, so bisection finds the curve
-        // parameter that lands on this x; then read y there.
-        let (mut low, mut high) = (0.0_f32, 1.0_f32);
-        for _ in 0..18 {
-            let mid = (low + high) / 2.0;
-            if bezier(mid, x1, x2) < x {
-                low = mid;
-            } else {
-                high = mid;
-            }
-        }
-        bezier((low + high) / 2.0, y1, y2).clamp(0.0, 1.0)
-    }
-}
-
-fn bezier(t: f32, p1: f32, p2: f32) -> f32 {
-    let mt = 1.0 - t;
-    3.0 * mt * mt * t * p1 + 3.0 * mt * t * t * p2 + t * t * t
-}
 
 /// One card of the Summary board. Fixed order: the board builds its cells and
 /// the page caches the previous shapes in the same order.
@@ -457,7 +417,7 @@ pub(super) fn sparkline(spec: Spark<'_>, on_hover: HoverFn) -> AnyElement {
         painted
             .with_animation(
                 ElementId::Name(format!("{id}-draw").into()),
-                Animation::new(DRAW).with_easing(recipe_ease()),
+                Animation::new(chart::DRAW).with_easing(chart::ease()),
                 move |canvas, progress| {
                     reveal.set(progress);
                     canvas
@@ -465,7 +425,7 @@ pub(super) fn sparkline(spec: Spark<'_>, on_hover: HoverFn) -> AnyElement {
             )
             .with_animation(
                 ElementId::Name(format!("{id}-morph-{morph_serial}").into()),
-                Animation::new(MORPH).with_easing(recipe_ease()),
+                Animation::new(chart::MORPH).with_easing(chart::ease()),
                 move |canvas, progress| {
                     morph.set(progress);
                     canvas
@@ -564,7 +524,7 @@ mod tests {
 
     #[test]
     fn recipe_easing_starts_and_ends_exactly() {
-        let ease = recipe_ease();
+        let ease = chart::ease();
         assert_eq!(ease(0.0), 0.0);
         assert_eq!(ease(1.0), 1.0);
         // Strongly eased at both ends: slow out, fast middle, soft landing.

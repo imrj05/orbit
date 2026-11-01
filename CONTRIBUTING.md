@@ -44,14 +44,22 @@ cargo run -p orbit-pi
 cargo build --workspace      # must stay clean: zero warnings
 cargo test --workspace       # unit tests + live pi integration tests
 cargo clippy --workspace --all-targets
+
+# Three guards for the design system. They are checks, not lint: a violation is
+# a real defect (a component re-deciding a state colour, an animation typing its
+# own duration, a locale missing a key).
+python3 scripts/check_states.py
+python3 scripts/check_motion.py
+python3 scripts/check_i18n.py
 ```
 
 `cargo build` with zero warnings is a stated project invariant. CI runs build
 and clippy on macOS (`.github/workflows/ci.yml`); tests are run locally, not in
 CI.
 
-For UI changes, launch the app (`cargo run -p orbit-pi`) and confirm the
-affected surface works. Notifications need an app bundle — use
+For UI changes, read `DESIGN.md` first — it is the design system, and the state,
+motion and modal contracts in it are enforced by the guards above. Then launch the
+app (`cargo run -p orbit-pi`) and confirm the affected surface works. Notifications need an app bundle — use
 `scripts/run-bundled.sh`. For a rebuild-and-relaunch loop on save,
 `cargo install bacon && bacon run`.
 

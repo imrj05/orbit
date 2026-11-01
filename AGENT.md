@@ -330,6 +330,10 @@ The other nine locale files are generated, never hand-edited:
 python3 scripts/gen_locales.py        # regenerate locales/*.yml + report gaps
 cargo test -p orbit-pi --bin orbit-pi i18n  # completeness guard
 python3 scripts/check_i18n.py         # key + placeholder guard
+python3 scripts/check_states.py       # interaction states must come from the contract
+python3 scripts/check_motion.py       # animations must use a motion primitive
+python3 scripts/check_keyboard.py     # every key binding lands in a declared context
+python3 scripts/read-perf.py          # frame-time captures from a debug build (⌘⌥P)
 ```
 
 - **Ships:** English, 简体中文 (`zh-CN`), 日本語 (`ja`), 한국어 (`ko`),

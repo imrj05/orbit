@@ -113,6 +113,16 @@ pub fn open(cx: &mut App) {
                 window.focus(&handle);
             });
 
+            // Debug builds only: announce the sampler so "the chord did
+            // nothing" and "the sampler is not in this binary" are different
+            // observations, then honour ORBIT_PERF if it is set.
+            #[cfg(debug_assertions)]
+            {
+                eprintln!("perf: frame sampler ready — \u{2318}\u{2325}P starts a capture");
+                crate::perf::note_launch();
+                crate::perf::start_from_env(window);
+            }
+
             app
         },
     ) else {

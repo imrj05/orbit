@@ -20,6 +20,7 @@ use gpui::{
     Hsla, IntoElement, MouseButton, Pixels, Render, SharedString, Window,
 };
 
+use crate::app::ControlExt;
 use crate::theme::tokens::{panel, DynamicSpacing, IconSize, TextSize};
 use crate::theme::Theme;
 
@@ -288,11 +289,12 @@ fn header_cell(ix: usize, column: &Column, theme: Theme, handlers: TableHandlers
         .px(px(CELL_PADDING))
         .when(column.numeric, |cell| cell.justify_end())
         .when(column.sortable, |cell| {
-            cell.cursor_pointer()
-                .hover(|style| style.bg(theme.surface_hover))
-                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            cell.cursor_pointer().hover_state(&theme).on_mouse_down(
+                MouseButton::Left,
+                move |_, window, cx| {
                     sort(ix, sort_next, window, cx);
-                })
+                },
+            )
         })
         .child(
             div()
@@ -329,7 +331,7 @@ fn header_cell(ix: usize, column: &Column, theme: Theme, handlers: TableHandlers
                         .h_full()
                         .w(px(1.))
                         .bg(theme.border.opacity(0.))
-                        .hover(|style| style.bg(theme.border_strong)),
+                        .hover_divider(&theme),
                 )
                 .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                     // A divider drag is not a sort click.

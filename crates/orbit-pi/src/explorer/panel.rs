@@ -23,9 +23,10 @@ use super::ops;
 use super::tree::{self, Row, StatusBadge, TreeIndex};
 use super::walk;
 use crate::app::{
-    button_frame, context_menu_entry, context_menu_separator, context_menu_surface, empty_state,
-    file_badge, file_glyph, icon, icon_button_frame, nerd_font_family, picker_search_frame, press,
-    refresh_glyph, EmptyFill, TipExt, BUTTON_GROUP,
+    anchored_popover_at, button_frame, context_menu_entry, context_menu_separator,
+    context_menu_surface, empty_state, file_badge, file_glyph, icon, icon_button_frame,
+    nerd_font_family, picker_search_frame, press, refresh_glyph, AccentWash, ControlExt, EmptyFill,
+    TipExt, BUTTON_GROUP,
 };
 use crate::composer::ComposerInput;
 use crate::git;
@@ -812,7 +813,7 @@ impl ProjectPanel {
                     )
                     .tip(tr!("common.refresh"))
                     .cursor_pointer()
-                    .hover(|el| el.bg(theme.surface_hover)),
+                    .hover_state(&theme),
                 )
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.mark_stale(cx);
@@ -1098,9 +1099,7 @@ impl ProjectPanel {
                 // quieter wash; pointer hover is the lightest step.
                 .when(active, |el| el.bg(theme.surface_selected))
                 .when(!active && cursor, |el| el.bg(theme.overlay))
-                .when(!active && !cursor, |el| {
-                    el.hover(|el| el.bg(theme.surface_hover))
-                })
+                .when(!active && !cursor, |el| el.hover_state(&theme))
                 .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                     // Clicking away from an open prompt cancels it rather than
                     // activating the row under the pointer.
@@ -1412,11 +1411,7 @@ impl ProjectPanel {
             // above/left when it would overflow the window — the default
             // `SwitchAnchor` fit mode. Previously it was pinned to the panel's
             // top-left regardless of where the row was clicked.
-            gpui::anchored()
-                .anchor(gpui::Corner::TopLeft)
-                .position(menu.position)
-                .child(popup)
-                .into_any_element(),
+            anchored_popover_at(menu.position, popup),
         )
     }
 
@@ -1511,7 +1506,7 @@ fn prompt_button(
         button_frame(div().id(id).group(BUTTON_GROUP), &theme, ButtonSize::Medium)
             .cursor_pointer()
             .raised(bg, &theme)
-            .hover(|el| el.opacity(0.9)),
+            .hover_dimmed(),
     )
     .on_click(listener)
     .child(
@@ -1537,7 +1532,7 @@ fn ghost_icon(
         icon_button_frame(div().id(id).group(BUTTON_GROUP), theme, ButtonSize::Default)
             .tip(label)
             .cursor_pointer()
-            .hover(|el| el.bg(theme.surface_hover)),
+            .hover_state(theme),
     )
     .on_click(listener)
     .child(icon(path, ButtonSize::Default.icon_size().px(theme), color))
@@ -1563,7 +1558,7 @@ fn menu_row(
         &theme,
     )
     .cursor_pointer()
-    .hover(|el| el.bg(theme.surface_hover))
+    .hover_state(&theme)
     .on_click(listener)
     .child(icon(
         icon_path,
@@ -1644,7 +1639,7 @@ impl Render for ProjectPanel {
                     .left(px(9.))
                     .w(px(6.))
                     .cursor(CursorStyle::ResizeLeftRight)
-                    .hover(|style| style.bg(theme.accent.opacity(0.4)))
+                    .hover_accent_wash(&theme, AccentWash::Strong)
                     .on_drag(ExplorerResize, |_, _, _, cx| cx.new(|_| ExplorerDragGhost)),
             )
             // The dock reads as a rounded card, like the Git/Usage cards in

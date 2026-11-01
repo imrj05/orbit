@@ -24,8 +24,8 @@ use gpui::{
 
 use crate::app::{
     button_frame, context_menu_separator, empty_state, file_glyph, icon, icon_button_frame,
-    nerd_font_family, picker_entry, picker_search_frame, picker_surface, refresh_glyph, EmptyFill,
-    TipExt, BUTTON_GROUP, PRESS_DIM,
+    nerd_font_family, picker_entry, picker_search_frame, picker_surface, refresh_glyph, AccentWash,
+    ControlExt, EmptyFill, PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
 };
 use crate::composer::ComposerInput;
 use crate::diff_view::{
@@ -44,10 +44,10 @@ use crate::usage::tooltip::Tooltip;
 
 /// Pane width defaults / drag clamps.
 const PANE_DEFAULT_W: f32 = 460.;
-const PANE_MIN_W: f32 = 300.;
+pub(crate) const PANE_MIN_W: f32 = 300.;
 /// Ceiling a left-edge drag can reach. Full width is exempt from this cap — it
 /// deliberately takes the whole column beside the sidebar.
-const PANE_MAX_W: f32 = 900.;
+pub(crate) const PANE_MAX_W: f32 = 900.;
 /// Below this width the ±stats collapse out of the toolbar.
 const STATS_MIN_PANE_W: f32 = 380.;
 /// Below this width the file navigator collapses out of the toolbar. It needs
@@ -1108,8 +1108,8 @@ impl SidePane {
                     .group(BUTTON_GROUP)
                     .tip(tr!("sidepane.toggle_tree"))
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.surface_hover))
-                    .active(|s| s.opacity(PRESS_DIM))
+                    .hover_state(&theme)
+                    .pressed_state(&theme, PressedRamp::Wash)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_tree(cx)))
                     .child(icon(
                         "icons/folder.svg",
@@ -1126,8 +1126,8 @@ impl SidePane {
                     .group(BUTTON_GROUP)
                     .tip(tr!("common.refresh"))
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.surface_hover))
-                    .active(|s| s.opacity(PRESS_DIM))
+                    .hover_state(&theme)
+                    .pressed_state(&theme, PressedRamp::Wash)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.refresh_from_button(cx);
                     }))
@@ -1166,8 +1166,8 @@ impl SidePane {
                         .group(BUTTON_GROUP)
                         .tip(tr!("common.close"))
                         .cursor_pointer()
-                        .hover(|s| s.bg(theme.surface_hover))
-                        .active(|s| s.opacity(PRESS_DIM))
+                        .hover_state(&theme)
+                        .pressed_state(&theme, PressedRamp::Wash)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close(cx)))
                         .child(icon(
                             "icons/x.svg",
@@ -1191,8 +1191,8 @@ impl SidePane {
                 })
                 .raised(theme.surface_elevated, &theme)
                 .cursor_pointer()
-                .hover(|s| s.raised(theme.surface_hover, &theme))
-                .active(|s| s.opacity(PRESS_DIM))
+                .hover_state(&theme)
+                .pressed_state(&theme, PressedRamp::Wash)
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_source_menu(cx)))
                 .child(icon(
                     "icons/file-diff.svg",
@@ -1319,8 +1319,8 @@ impl SidePane {
         }
         button
             .cursor_pointer()
-            .hover(|style| style.bg(theme.surface_hover))
-            .active(|style| style.opacity(PRESS_DIM))
+            .hover_state(&theme)
+            .pressed_state(&theme, PressedRamp::Wash)
             .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into())
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| action(this, cx)))
             .into_any_element()
@@ -1483,8 +1483,8 @@ impl SidePane {
         }
         button
             .cursor_pointer()
-            .hover(|style| style.bg(theme.surface_hover))
-            .active(|style| style.opacity(PRESS_DIM))
+            .hover_state(&theme)
+            .pressed_state(&theme, PressedRamp::Wash)
             .tip(tooltip)
             .on_click(
                 cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -1812,7 +1812,7 @@ impl SidePane {
                 .to_string()
             })
             .cursor_pointer()
-            .hover(|style| style.bg(theme.surface_hover))
+            .hover_state(&theme)
             .on_click(
                 cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_file(file_index, cx)),
             );
@@ -1945,7 +1945,7 @@ impl SidePane {
                                 .border_color(theme.border)
                         })
                         .cursor_pointer()
-                        .hover(|s| s.bg(theme.overlay_strong))
+                        .hover_on_glass(&theme)
                         .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
                             let direction = if event.modifiers().shift {
                                 ExpansionDirection::All
@@ -1980,7 +1980,7 @@ impl SidePane {
             .when(expandable, |label| {
                 label
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.overlay_strong))
+                    .hover_on_glass(&theme)
                     .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
                         let direction = if event.modifiers().shift {
                             ExpansionDirection::All
@@ -2128,7 +2128,7 @@ impl SidePane {
                         .gap(DynamicSpacing::Base06.px(&theme))
                         .cursor_pointer()
                         .when(cursor, |row| row.bg(theme.overlay_strong))
-                        .when(!cursor, |row| row.hover(|row| row.bg(theme.surface_hover)))
+                        .when(!cursor, |row| row.hover_state(&theme))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             window.focus(&this.tree_focus);
                             this.tree_cursor = Some(index);
@@ -2216,9 +2216,7 @@ impl SidePane {
                             .cursor_pointer()
                             .when(selected, |row| row.bg(theme.surface_selected))
                             .when(!selected && cursor, |row| row.bg(theme.surface_hover))
-                            .when(!selected && !cursor, |row| {
-                                row.hover(|row| row.bg(theme.surface_hover))
-                            })
+                            .when(!selected && !cursor, |row| row.hover_state(&theme))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 window.focus(&this.tree_focus);
                                 this.tree_cursor = Some(index);
@@ -2341,9 +2339,7 @@ fn source_row(
     .flex_none()
     .when(enabled, |row| row.cursor_pointer())
     .when(selected, |row| row.bg(theme.surface_selected))
-    .when(enabled && !selected, |row| {
-        row.hover(|s| s.bg(theme.surface_hover))
-    })
+    .when(enabled && !selected, |row| row.hover_state(&theme))
     .when(enabled && choice.is_some(), |row| {
         row.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
             if let Some(choice) = choice {
@@ -2486,7 +2482,7 @@ impl Render for SidePane {
                     .left(px(9.))
                     .w(px(6.))
                     .cursor(CursorStyle::ResizeLeftRight)
-                    .hover(|style| style.bg(theme.accent.opacity(0.4)))
+                    .hover_accent_wash(&theme, AccentWash::Strong)
                     .on_drag(SidePaneResize, |_, _, _, cx| cx.new(|_| DragGhost)),
             )
             // The dock reads as a rounded card, like the Git/Usage cards in

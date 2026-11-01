@@ -381,7 +381,7 @@ impl OrbitApp {
                 .h(row_h)
                 .cursor_pointer()
                 .when(selected, |row| row.bg(theme.surface_selected))
-                .hover(|style| style.bg(theme.surface_hover))
+                .hover_state(&theme)
                 .on_click(move |_, _, cx| {
                     this.update(cx, |app, cx| app.commit_entry(entry.clone(), cx))
                         .ok();
@@ -452,13 +452,12 @@ impl OrbitApp {
             .child(list);
 
         Some(
-            anchored()
-                .position_mode(AnchoredPositionMode::Local)
-                .anchor(Corner::BottomLeft)
-                .offset(point(px(0.), -popover::MENU_OFFSET))
-                .snap_to_window_with_margin(popover::WINDOW_MARGIN)
-                .child(deferred(popup))
-                .into_any_element(),
+            anchored_popover(
+                Corner::BottomLeft,
+                point(px(0.), -popover::MENU_OFFSET),
+                popup,
+            )
+            .into_any_element(),
         )
     }
 
@@ -499,7 +498,7 @@ impl OrbitApp {
                         button_frame(div().id("attachments-clear"), &theme, ButtonSize::Compact)
                             .debug_selector(|| "attachments-clear".to_string())
                             .cursor_pointer()
-                            .hover(|style| style.bg(theme.surface_hover))
+                            .hover_state(&theme)
                             .tip(tr!("composer.clear_attachments"))
                             .child(icon(
                                 "icons/x.svg",
@@ -677,7 +676,7 @@ impl OrbitApp {
         .border_1()
         .border_color(theme.border)
         .raised(theme.surface_elevated, theme)
-        .hover(|style| style.border_color(theme.border_strong))
+        .hover_border(theme)
         .child(visual)
         .child(
             div()
@@ -699,7 +698,7 @@ impl OrbitApp {
             button_frame(div(), theme, ButtonSize::Compact)
                 .debug_selector(move || remove_debug)
                 .cursor_pointer()
-                .hover(|style| style.bg(theme.overlay_strong))
+                .hover_on_glass(theme)
                 .tip(tr!("composer.remove_attachment"))
                 .child(icon(
                     "icons/x.svg",

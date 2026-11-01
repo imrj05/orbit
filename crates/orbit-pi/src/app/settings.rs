@@ -2,8 +2,8 @@ use super::helpers::*;
 use super::*;
 use crate::quota::note_should_render;
 use crate::theme::tokens::{
-    button, button_shadow, context_menu, input, modal, panel, picker, popover, BufferLineHeight,
-    ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize, BORDER_WIDTH,
+    button, context_menu, input, modal, panel, picker, popover, BufferLineHeight, ButtonSize,
+    DynamicSpacing, IconSize, Radius, TextSize, BORDER_WIDTH,
 };
 use gpui::{canvas, Bounds, DispatchPhase, Hitbox, HitboxBehavior, MouseMoveEvent};
 
@@ -601,7 +601,7 @@ impl OrbitApp {
                                         .items_center()
                                         .gap(DynamicSpacing::Base08.px(&theme))
                                         .cursor_pointer()
-                                        .hover(|s| s.bg(theme.surface_hover)),
+                                        .hover_state(&theme),
                                 )
                                 .on_mouse_up(MouseButton::Left, cx.listener(Self::on_settings_back))
                                 .child(icon(
@@ -674,11 +674,9 @@ impl OrbitApp {
                                         .when(selected, |row| {
                                             row.font_weight(FontWeight::MEDIUM)
                                                 .bg(theme.surface_selected)
-                                                .hover(|s| s.bg(theme.surface_selected))
+                                                .hover_selected(&theme)
                                         })
-                                        .when(!selected, |row| {
-                                            row.hover(|s| s.bg(theme.surface_hover))
-                                        })
+                                        .when(!selected, |row| row.hover_state(&theme))
                                         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                                             this.update(cx, |app, cx| {
                                                 app.set_settings_section(section, cx);
@@ -929,7 +927,7 @@ impl OrbitApp {
                 .items_center()
                 .gap(DynamicSpacing::Base12.px(&theme))
                 .cursor_pointer()
-                .hover(|s| s.bg(theme.surface_hover)),
+                .hover_state(&theme),
         )
         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
             this.update(cx, |app, cx| {
@@ -1265,7 +1263,7 @@ impl OrbitApp {
         .when(!self.models_favorites_only, |button| {
             button
                 .raised(theme.surface_elevated, &theme)
-                .hover(|s| s.raised(theme.surface_hover, &theme))
+                .hover_state(&theme)
         })
         .on_mouse_up(MouseButton::Left, {
             let this = this.clone();
@@ -1303,8 +1301,8 @@ impl OrbitApp {
             .raised(theme.surface_elevated, &theme)
             .cursor_pointer()
             .when(self.models_refreshing, |button| button.opacity(0.6))
-            .hover(|style| style.raised(theme.surface_hover, &theme))
-            .active(|style| style.raised(theme.surface_active, &theme))
+            .hover_state(&theme)
+            .pressed_state(&theme, PressedRamp::Wash)
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, _, cx| {
@@ -1717,7 +1715,7 @@ impl OrbitApp {
             tr!("settings.favorite")
         })
         .cursor_pointer()
-        .hover(|s| s.bg(theme.surface_hover))
+        .hover_state(&theme)
         .on_mouse_up(MouseButton::Left, {
             let this = this.clone();
             let (provider, id) = (provider.clone(), id.clone());
@@ -1826,9 +1824,7 @@ impl OrbitApp {
             .flex_col()
             .gap(DynamicSpacing::Base08.px(&theme))
             .cursor_pointer()
-            .when(!active, |card| {
-                card.hover(|s| s.bg(theme.surface_hover).border_color(theme.border_strong))
-            })
+            .when(!active, |card| card.hover_bordered(&theme))
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, _, cx| {
@@ -2299,7 +2295,7 @@ impl OrbitApp {
                 .border_color(theme.border)
                 .raised(theme.surface_elevated, &theme)
                 .text_color(theme.text_muted)
-                .hover(|style| style.raised(theme.surface_hover, &theme))
+                .hover_state(&theme)
         };
         chip.on_mouse_up(MouseButton::Left, move |_, _, cx| {
             this.update(cx, |app, cx| {
@@ -2337,8 +2333,8 @@ impl OrbitApp {
             (
                 base.raised(theme.action, &theme)
                     .text_color(theme.action_fg)
-                    .hover(|style| style.raised(theme.action_hover, &theme))
-                    .active(|style| style.raised(theme.action_pressed, &theme)),
+                    .hover_action(&theme)
+                    .pressed_state(&theme, PressedRamp::Action),
                 theme.action_fg,
             )
         } else {
@@ -2347,7 +2343,7 @@ impl OrbitApp {
                     .border_color(theme.border)
                     .raised(theme.surface_elevated, &theme)
                     .text_color(theme.text_secondary)
-                    .hover(|style| style.raised(theme.surface_hover, &theme)),
+                    .hover_state(&theme),
                 theme.text_secondary,
             )
         };
@@ -2443,8 +2439,8 @@ impl OrbitApp {
             .raised(theme.surface_elevated, &theme)
             .cursor_pointer()
             .when(self.providers_refreshing, |button| button.opacity(0.6))
-            .hover(|style| style.raised(theme.surface_hover, &theme))
-            .active(|style| style.raised(theme.surface_active, &theme))
+            .hover_state(&theme)
+            .pressed_state(&theme, PressedRamp::Wash)
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, _, cx| {
@@ -2462,8 +2458,8 @@ impl OrbitApp {
         let add_button = button_frame(div().id("providers-add"), &theme, ButtonSize::Large)
             .raised(theme.action, &theme)
             .cursor_pointer()
-            .hover(|style| style.raised(theme.action_hover, &theme))
-            .active(|style| style.raised(theme.action_pressed, &theme))
+            .hover_action(&theme)
+            .pressed_state(&theme, PressedRamp::Action)
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, window, cx| {
@@ -2678,52 +2674,15 @@ impl OrbitApp {
 
     /// A red note card for a config read error.
     pub(super) fn provider_error_card(&self, theme: Theme, title: &str, error: &str) -> AnyElement {
-        div()
-            .w_full()
-            .bg(theme.error.opacity(0.08))
-            .border_1()
-            .border_color(theme.error.opacity(0.35))
-            .rounded(panel::RADIUS.px(&theme))
-            .px(DynamicSpacing::Base12.px(&theme))
-            .py(DynamicSpacing::Base12.px(&theme))
-            .flex()
-            .items_start()
-            .gap(DynamicSpacing::Base08.px(&theme))
-            .child(icon(
-                "icons/info.svg",
-                IconSize::Medium.px(&theme),
-                theme.error,
-            ))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap(DynamicSpacing::Base04.px(&theme))
-                    .child(
-                        div()
-                            .text_size(TextSize::Default.px(&theme))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_primary)
-                            .child(title.to_string()),
-                    )
-                    .child(
-                        div()
-                            .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_secondary)
-                            .child(error.to_string()),
-                    )
-                    .child(
-                        div()
-                            .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_muted)
-                            .child(tr!(
-                                "settings.fix_or_remove_the_file_before_editing_providers_"
-                            )),
-                    ),
-            )
-            .into_any_element()
+        error_state(
+            theme,
+            title,
+            Some(error),
+            Some(&tr!(
+                "settings.fix_or_remove_the_file_before_editing_providers_"
+            )),
+            None,
+        )
     }
 
     /// Every provider pi ships with, merged with the live catalog, models.json,
@@ -3775,24 +3734,20 @@ impl OrbitApp {
             ProviderButtonStyle::Primary => button
                 .raised(theme.action, &theme)
                 .text_color(theme.action_fg)
-                .hover(|style| style.raised(theme.action_hover, &theme))
-                .active(|style| style.raised(theme.action_pressed, &theme)),
+                .hover_action(&theme)
+                .pressed_state(&theme, PressedRamp::Action),
             ProviderButtonStyle::Ghost => button
                 .border_1()
                 .border_color(theme.border)
                 .raised(theme.surface_elevated, &theme)
                 .text_color(theme.text_secondary)
-                .hover(|style| style.raised(theme.surface_hover, &theme)),
+                .hover_state(&theme),
             ProviderButtonStyle::Danger => button
                 .border_1()
                 .border_color(theme.border)
                 .raised(theme.surface_elevated, &theme)
                 .text_color(theme.error)
-                .hover(|style| {
-                    style
-                        .border_color(theme.error.opacity(0.6))
-                        .raised(theme.error.opacity(0.08), &theme)
-                }),
+                .hover_danger_soft(&theme),
         };
         let icon_color = match style {
             ProviderButtonStyle::Primary => theme.action_fg,
@@ -3911,7 +3866,7 @@ impl OrbitApp {
             .border_color(theme.border)
             .raised(theme.surface_elevated, &theme)
             .cursor_pointer()
-            .hover(|style| style.raised(theme.surface_hover, &theme))
+            .hover_state(&theme)
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, _, cx| {
@@ -3927,17 +3882,10 @@ impl OrbitApp {
                     .child(tr!("settings.close")),
             );
 
-        let card = div()
+        let card = modal_card(&theme)
             .w_full()
             .max_w(px(460.))
             .max_h(relative(1.))
-            .elevation_3(&theme)
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .occlude()
-            .font_family(theme::ui_font_family())
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_action(cx.listener(Self::provider_editor_cancel))
             .child(
                 div()
@@ -4114,7 +4062,7 @@ impl OrbitApp {
             .border_color(theme.border)
             .raised(theme.surface_elevated, &theme)
             .cursor_pointer()
-            .hover(|style| style.raised(theme.surface_hover, &theme))
+            .hover_state(&theme)
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, _, cx| {
@@ -4138,17 +4086,10 @@ impl OrbitApp {
             ProviderAction::SaveKey,
         );
 
-        let card = div()
+        let card = modal_card(&theme)
             .w_full()
             .max_w(px(460.))
             .max_h(relative(1.))
-            .elevation_3(&theme)
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .occlude()
-            .font_family(theme::ui_font_family())
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_action(cx.listener(Self::provider_editor_cancel))
             .on_action(cx.listener(Self::provider_editor_confirm))
             .child(
@@ -4310,7 +4251,7 @@ impl OrbitApp {
                     &theme,
                 )
                 .cursor_pointer()
-                .hover(|style| style.raised(theme.surface_hover, &theme))
+                .hover_state(&theme)
                 .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                     this.update(cx, |app, cx| {
                         if let Some(editor) = app.provider_editor.as_mut() {
@@ -4410,17 +4351,10 @@ impl OrbitApp {
                 editor.models.clone(),
             ));
 
-        let mut card = div()
+        let mut card = modal_card(&theme)
             .w_full()
             .max_w(px(520.))
             .max_h(px(560.))
-            .elevation_3(&theme)
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .occlude()
-            .font_family(theme::ui_font_family())
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_action(cx.listener(Self::provider_editor_cancel))
             .on_action(cx.listener(Self::provider_editor_confirm))
             .child(
@@ -4490,7 +4424,7 @@ impl OrbitApp {
             .border_color(theme.border)
             .raised(theme.surface_elevated, &theme)
             .cursor_pointer()
-            .hover(|style| style.raised(theme.surface_hover, &theme))
+            .hover_state(&theme)
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                 this.update(cx, |app, cx| {
                     app.provider_editor = None;
@@ -4508,8 +4442,8 @@ impl OrbitApp {
             button_frame(div().id("provider-editor-save"), &theme, ButtonSize::Large)
                 .raised(theme.action, &theme)
                 .cursor_pointer()
-                .hover(|style| style.raised(theme.action_hover, &theme))
-                .active(|style| style.raised(theme.action_pressed, &theme))
+                .hover_action(&theme)
+                .pressed_state(&theme, PressedRamp::Action)
                 .on_mouse_up(MouseButton::Left, move |_, window, cx| {
                     this.update(cx, |app, cx| app.provider_save(window, cx));
                 })
@@ -4741,7 +4675,7 @@ impl OrbitApp {
             .font_weight(FontWeight::MEDIUM)
             .text_color(theme.text_secondary)
             .cursor_pointer()
-            .hover(|s| s.raised(theme.surface_hover, &theme))
+            .hover_state(&theme)
             .child(icon(
                 "icons/arrow-up-right.svg",
                 ButtonSize::Medium.icon_size().px(&theme),
@@ -5717,7 +5651,7 @@ impl OrbitApp {
                 .when(!active, |b| {
                     b.raised_flat(theme.surface_elevated)
                         .text_color(theme.text_secondary)
-                        .hover(|s| s.raised_flat(theme.surface_hover))
+                        .hover_state(&theme)
                 })
                 .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                     this.update(cx, |app, cx| app.set_composer_send_mode(mode, cx));
@@ -5771,7 +5705,7 @@ impl OrbitApp {
                             b.border_color(theme.border)
                                 .raised_flat(theme.surface_elevated)
                                 .text_color(theme.text_secondary)
-                                .hover(|s| s.raised_flat(theme.surface_hover))
+                                .hover_state(&theme)
                         })
                         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                             this.update(cx, |app, cx| app.set_follow_up_mode(value_all, cx));
@@ -5812,7 +5746,7 @@ impl OrbitApp {
             .cursor_pointer()
             .when(on, |t| t.bg(theme.accent).justify_end())
             .when(!on, |t| t.bg(theme.surface_elevated).justify_start())
-            .hover(|t| t.border_color(theme.border_strong))
+            .hover_border(&theme)
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                 this.update(cx, action);
             })
@@ -5887,17 +5821,21 @@ impl OrbitApp {
                 tools = remembered.join(", ")
             )
         };
-        let mut clear = button_frame(div().id("clear-remembered-approvals"), &theme, ButtonSize::Large)
-            .border_1()
-            .border_color(theme.border)
-            .raised(theme.surface_elevated, &theme)
-            .text_color(theme.text_secondary)
-            .child(tr!("settings.remembered_approvals_clear"));
+        let mut clear = button_frame(
+            div().id("clear-remembered-approvals"),
+            &theme,
+            ButtonSize::Large,
+        )
+        .border_1()
+        .border_color(theme.border)
+        .raised(theme.surface_elevated, &theme)
+        .text_color(theme.text_secondary)
+        .child(tr!("settings.remembered_approvals_clear"));
         if !remembered.is_empty() {
             clear = clear
                 .cursor_pointer()
-                .hover(|style| style.raised(theme.surface_hover, &theme))
-                .active(|style| style.raised(theme.surface_active, &theme))
+                .hover_state(&theme)
+                .pressed_state(&theme, PressedRamp::Wash)
                 .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                     this.update(cx, |app, cx| app.clear_remembered_approvals(cx));
                 });
@@ -5920,10 +5858,9 @@ impl OrbitApp {
     pub(super) fn clear_remembered_approvals(&mut self, cx: &mut Context<Self>) {
         match crate::access::clear_remembered_approvals() {
             Ok(0) => self.toast_info(tr!("settings.remembered_approvals_none")),
-            Ok(count) => self.toast_success(tr!(
-                "settings.remembered_approvals_cleared",
-                count = count
-            )),
+            Ok(count) => {
+                self.toast_success(tr!("settings.remembered_approvals_cleared", count = count))
+            }
             Err(error) => self.toast_error(error),
         }
         cx.notify();
@@ -5992,8 +5929,8 @@ impl OrbitApp {
             .border_color(theme.border)
             .raised(theme.surface_elevated, &theme)
             .cursor_pointer()
-            .hover(|style| style.raised(theme.surface_hover, &theme))
-            .active(|style| style.raised(theme.surface_active, &theme))
+            .hover_state(&theme)
+            .pressed_state(&theme, PressedRamp::Wash)
             .text_color(theme.text_secondary)
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                 this.update(cx, |app, cx| app.run_session_retention(cx));
@@ -6170,15 +6107,15 @@ impl OrbitApp {
             button = button
                 .raised(theme.action, &theme)
                 .text_color(theme.action_fg)
-                .hover(|s| s.raised(theme.action_hover, &theme))
-                .active(|s| s.raised(theme.action_pressed, &theme));
+                .hover_action(&theme)
+                .pressed_state(&theme, PressedRamp::Action);
         } else {
             button = button
                 .border_1()
                 .border_color(theme.border)
                 .raised(theme.surface_elevated, &theme)
                 .text_color(theme.text_secondary)
-                .hover(|s| s.raised(theme.surface_hover, &theme));
+                .hover_state(&theme);
         }
         press(button)
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
@@ -6723,7 +6660,6 @@ impl OrbitApp {
                             .border_1()
                             .border_color(theme.border_strong)
                             .bg(theme.toggle_knob)
-                            .shadow(button_shadow(&theme))
                             .group_hover("wallpaper-slider", |s| s.border_color(theme.accent)),
                     )
                     .child(events),
@@ -6816,7 +6752,7 @@ impl OrbitApp {
                             b.border_color(theme.border)
                                 .raised_flat(theme.surface_elevated)
                                 .text_color(theme.text_secondary)
-                                .hover(|s| s.raised_flat(theme.surface_hover))
+                                .hover_state(&theme)
                         })
                         .on_click(move |_, _, cx| {
                             this.update(cx, |app, cx| app.set_design_system(system, cx));
@@ -6951,7 +6887,7 @@ impl OrbitApp {
                             b.border_color(theme.border)
                                 .raised_flat(theme.surface_elevated)
                                 .text_color(theme.text_secondary)
-                                .hover(|s| s.raised_flat(theme.surface_hover))
+                                .hover_state(&theme)
                         })
                         .on_click(move |_, _, cx| {
                             this.update(cx, |app, cx| app.set_appearance_mode(mode, cx));
@@ -7533,7 +7469,7 @@ impl OrbitApp {
                     )
                     .cursor_pointer()
                     .text_color(theme.text_secondary)
-                    .hover(|s| s.raised(theme.overlay, &theme))
+                    .hover_overlay(&theme)
                     .on_mouse_up(MouseButton::Left, move |_, window, cx| {
                         chip_this.update(cx, |app, cx| {
                             // A dismissal from this same click's mouse-down
@@ -7699,7 +7635,7 @@ impl OrbitApp {
                                         row.bg(theme.surface_active)
                                     })
                                     .when(!highlighted_row && !selected_row, |row| {
-                                        row.hover(|style| style.bg(theme.surface_hover))
+                                        row.hover_state(&theme)
                                     })
                                     .text_color(if selected_row || highlighted_row {
                                         theme.text_primary
@@ -7833,13 +7769,11 @@ impl OrbitApp {
                 .top_0()
                 .right_0()
                 .size(px(0.))
-                .child(
-                    anchored()
-                        .position_mode(AnchoredPositionMode::Window)
-                        .anchor(Corner::TopRight)
-                        .offset(point(px(0.), size.height(&theme) + popover::MENU_OFFSET))
-                        .child(deferred(popup)),
-                )
+                .child(anchored_popover_in_window(
+                    Corner::TopRight,
+                    point(px(0.), size.height(&theme) + popover::MENU_OFFSET),
+                    popup,
+                ))
                 .into_any_element(),
         )
     }
