@@ -5,8 +5,10 @@
 //! so the popover reads it without a lock on the render path and tests can
 //! seed it directly. It is persisted to
 //! `~/.orbit-pi/hidden-quota-providers.json` as `{ "providers": ["cursor-acp",
-//! …] }`, keyed by pi provider id so a catalog reshuffle never strands an
-//! entry. Orbit-owned: this only hides the provider from the top-bar popover,
+//! …] }`, keyed by account id: provider ids that resolve one account (`ollama`
+//! / `ollama-cloud`) collapse to the shared id, so an entry written before
+//! that collapse still hides — and can still be cleared from — the shared
+//! card. Orbit-owned: this only hides the provider from the top-bar popover,
 //! never from Settings → Providers or from pi itself.
 //!
 //! A hidden provider stays reachable: the popover keeps a collapsed "Hidden"
@@ -15,6 +17,8 @@
 use std::path::PathBuf;
 
 use serde_json::{json, Value};
+
+use crate::quota::canonical_provider;
 
 /// The provider ids hidden from the top-bar usage popover.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -32,17 +36,17 @@ impl HiddenProviders {
         let Ok(value) = serde_json::from_str::<Value>(&raw) else {
             return Self::default();
         };
-        let entries = value
+        let mut entries = Vec::new();
+        for provider in value
             .get("providers")
             .and_then(Value::as_array)
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(Value::as_str)
-                    .filter(|provider| !provider.is_empty())
-                    .map(str::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default();
+            .into_iter()
+            .flatten()
+        {
+            if let Some(provider) = provider.as_str().filter(|provider| !provider.is_empty()) {
+                push_account(&mut entries, provider);
+            }
+        }
         Self { entries }
     }
 
@@ -57,18 +61,20 @@ impl HiddenProviders {
 
     /// Whether a provider is hidden from the popover.
     pub fn contains(&self, provider: &str) -> bool {
-        self.entries.iter().any(|entry| entry == provider)
+        let account = canonical_provider(provider);
+        self.entries.iter().any(|entry| entry == account)
     }
 
     /// Flip a provider's hidden state; returns the new hidden state.
     pub fn toggle(&mut self, provider: &str) -> bool {
-        match self.entries.iter().position(|entry| entry == provider) {
+        let account = canonical_provider(provider);
+        match self.entries.iter().position(|entry| entry == account) {
             Some(ix) => {
                 self.entries.remove(ix);
                 false
             }
             None => {
-                self.entries.push(provider.to_string());
+                self.entries.push(account.to_owned());
                 true
             }
         }
@@ -76,9 +82,21 @@ impl HiddenProviders {
 
     #[cfg(test)]
     pub fn from_providers(providers: &[&str]) -> Self {
-        Self {
-            entries: providers.iter().map(|p| p.to_string()).collect(),
+        let mut entries = Vec::new();
+        for provider in providers {
+            push_account(&mut entries, provider);
         }
+        Self { entries }
+    }
+}
+
+/// Append `provider`'s account id unless it is already listed. Sibling ids
+/// resolve one account, so the set holds one entry per account and hiding it
+/// survives a model switch between the siblings.
+fn push_account(entries: &mut Vec<String>, provider: &str) {
+    let account = canonical_provider(provider);
+    if !entries.iter().any(|entry| entry == account) {
+        entries.push(account.to_owned());
     }
 }
 
@@ -115,5 +133,21 @@ mod tests {
         assert!(hidden.toggle("deepseek"));
         assert!(hidden.contains("cursor-acp"));
         assert!(hidden.contains("deepseek"));
+    }
+
+    #[test]
+    fn a_legacy_sibling_entry_hides_the_shared_account() {
+        // Written before the sibling collapse, which stored the clicked id.
+        let mut hidden = HiddenProviders::from_providers(&["ollama-cloud"]);
+        assert!(hidden.contains("ollama"), "the account must stay hidden");
+        assert!(!hidden.toggle("ollama"), "showing it must clear the entry");
+        assert!(!hidden.contains("ollama-cloud"));
+    }
+
+    #[test]
+    fn one_account_is_one_entry() {
+        let hidden = HiddenProviders::from_providers(&["ollama", "ollama-cloud"]);
+        assert_eq!(hidden.entries.len(), 1);
+        assert!(hidden.contains("ollama"));
     }
 }

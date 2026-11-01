@@ -908,6 +908,57 @@ fn quota_popup_moves_hidden_providers_into_their_own_group(cx: &mut gpui::TestAp
     );
 }
 
+/// `ollama` and `ollama-cloud` are two ids for one ollama.com account, so the
+/// popover draws one card — named after the id the active model uses — and its
+/// hide toggle stores the shared id, so hiding it survives a model switch.
+#[gpui::test]
+fn quota_popup_collapses_the_ollama_ids_into_one_card(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+
+    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(1200.), px(820.)),
+        |_, _| app.clone(),
+    );
+
+    cx.update(|_, cx| {
+        app.update(cx, |app, _cx| {
+            let providers = serde_json::json!({
+                "providers": [
+                    {"provider": "ollama", "kind": "subscription",
+                     "windows": [{"id": "session", "label": "5-hour session", "usedPercent": 2.0, "resetsAt": 1}]},
+                    {"provider": "ollama-cloud", "kind": "subscription",
+                     "windows": [{"id": "session", "label": "5-hour session", "usedPercent": 2.0, "resetsAt": 1}]}
+                ]
+            });
+            app.quota.on_response(true, Some(&providers), None);
+            app.model_provider = "ollama-cloud".into();
+            app.quota_popup_open = true;
+        });
+    });
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(1200.), px(820.)),
+        |_, _| app.clone(),
+    );
+
+    assert!(
+        cx.debug_bounds("quota-card-visible-ollama-cloud").is_some(),
+        "the card must be named after the id the active model uses"
+    );
+    assert!(
+        cx.debug_bounds("quota-card-visible-ollama").is_none(),
+        "the sibling id drew the same account a second time"
+    );
+    assert!(
+        cx.debug_bounds("quota-hide-ollama").is_some(),
+        "the hide toggle must store the shared account id"
+    );
+}
+
 /// The usage popover carries a second pane for MCP server status. The tab
 /// switch must swap the body — never draw both — and an MCP-only setup (no
 /// provider quota reports) must still get the chip, so the popover and the

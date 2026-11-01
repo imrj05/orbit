@@ -850,6 +850,20 @@ pub(crate) fn provider_display_name(id: &str) -> String {
         .join(" ")
 }
 
+/// The id a shared surface speaks for when `provider` names a sibling of
+/// another provider id. Ollama Cloud's third-party provider id and the local
+/// `ollama` id resolve the same [ollama.com](http://ollama.com) account, so a
+/// per-account surface (the usage popover) must key on one of them.
+///
+/// `None` means the id is its own account. Only true aliases belong here; a
+/// provider that merely resembles another keeps its own identity.
+pub(crate) fn provider_alias(provider: &str) -> Option<&'static str> {
+    Some(match provider {
+        "ollama-cloud" => "ollama",
+        _ => return None,
+    })
+}
+
 /// Brand ink for a provider's mark, as `(dark, light)` hex — the same
 /// per-mode shape as `mentions::file_type_badge`, so identity color reads on
 /// both canvases.
@@ -861,11 +875,11 @@ pub(crate) fn provider_display_name(id: &str) -> String {
 /// comes through.
 pub(crate) fn provider_brand(provider: &str) -> Option<(u32, u32)> {
     // The catalog-index filename is not a real provider id; Ollama Cloud
-    // shares Ollama's mark.
-    let provider = match provider {
-        "ollama-cloud" => "ollama",
-        ".manifest" => "manifest",
-        other => other,
+    // shares Ollama's mark through the alias table above.
+    let provider = match provider_alias(provider) {
+        Some(alias) => alias,
+        None if provider == ".manifest" => "manifest",
+        None => provider,
     };
     Some(match provider {
         "amazon-bedrock" => (0xFF9900, 0xC77700),
@@ -918,6 +932,10 @@ mod tests {
             provider_brand("moonshotai")
         );
         assert_eq!(provider_brand("ollama-cloud"), provider_brand("ollama"));
+        // The mark follows the alias table, so a new sibling id needs one edit.
+        assert_eq!(provider_alias("ollama-cloud"), Some("ollama"));
+        assert_eq!(provider_alias("ollama"), None);
+        assert_eq!(provider_alias("deepseek"), None);
         // Distinct brands get distinct hues…
         assert!(provider_brand("deepseek").is_some());
         assert_ne!(provider_brand("deepseek"), provider_brand("nvidia"));
