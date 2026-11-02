@@ -747,7 +747,11 @@ impl OrbitApp {
         // The Worktrees dialog is a modal surface: Escape closes it before
         // anything underneath (menus, the page, a running agent).
         if self.worktree_dialog.is_some() {
+            let clone = matches!(self.worktree_dialog, Some(WorktreeDialog::Clone));
             self.cancel_worktree_dialog(cx);
+            if clone {
+                self.input.read(cx).focus(window);
+            }
             return;
         }
         // A pending access-guard approval is answered first: escape denies it.
@@ -1145,7 +1149,25 @@ impl OrbitApp {
         // A busy session is never dropped for staleness: the live run wins,
         // and the new config applies on its next idle reopen.
         let mcp_stamp = self.mcp.fingerprint_for(Some(&session.cwd));
-        if let Some(parked) = self
+        if !session.cwd.is_dir() {
+            // Keep a warm process parked: it may still be finishing a run in
+            // the removed directory, but it cannot safely become active.
+            self.extension_widgets.clear();
+            self.execution = SessionExecution::from_status(
+                self.session_outcomes
+                    .get(&session.path)
+                    .copied()
+                    .unwrap_or_default(),
+            );
+            self.preview_session_transcript(session.path.clone(), cx);
+            self.client = None;
+            self.worktree_dialog_error = None;
+            self.worktree_dialog = Some(WorktreeDialog::Unavailable {
+                path: session.cwd.clone(),
+                local: None,
+            });
+            self.find_missing_worktree_local(session.cwd.clone(), session.path.clone(), cx);
+        } else if let Some(parked) = self
             .lives
             .remove(&session.path)
             .filter(|parked| parked.busy || parked.mcp_stamp == mcp_stamp)
@@ -1206,52 +1228,41 @@ impl OrbitApp {
                     .unwrap_or_default(),
             );
             self.preview_session_transcript(session.path.clone(), cx);
-            if !session.cwd.is_dir() {
-                // The session's workspace is gone (a removed worktree, a
-                // deleted folder). Never spawn the agent in a fallback
-                // directory and never re-point the session silently (§22) —
-                // show the unavailable notice instead.
-                self.client = None;
-                self.worktree_dialog = Some(WorktreeDialog::Unavailable {
-                    path: session.cwd.clone(),
+            // Spawn a dedicated pi process rooted at the session's
+            // workspace and point it at the session file.
+            let secret_env = self.mcp.secret_env();
+            let spawned = self
+                .extensions
+                .spawn(&session.cwd, false, &secret_env)
+                .or_else(|_| {
+                    self.extensions.spawn(
+                        &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                        false,
+                        &secret_env,
+                    )
                 });
-            } else {
-                // Spawn a dedicated pi process rooted at the session's
-                // workspace and point it at the session file.
-                let secret_env = self.mcp.secret_env();
-                let spawned = self
-                    .extensions
-                    .spawn(&session.cwd, false, &secret_env)
-                    .or_else(|_| {
-                        self.extensions.spawn(
-                            &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-                            false,
-                            &secret_env,
-                        )
-                    });
-                match spawned {
-                    Ok(client) => {
-                        self.adopt_client(client);
-                        self.mcp_stamp = mcp_stamp;
-                        self.send(
-                            CommandBody::SwitchSession {
-                                session_path: session.path.to_string_lossy().into_owned(),
-                            },
-                            "switch_session",
-                        );
-                        // `get_state` and the capability probes are sent from
-                        // the switch_session success handler: querying state
-                        // eagerly here races the switch (pi answers with the
-                        // default model), and the probes only get queued after
-                        // the load commands, so a slow auth/quota lookup can't
-                        // delay the transcript.
-                    }
-                    Err(err) => {
-                        let message = tr!("runtime.pi_spawn_failed", error = err);
-                        self.client = None;
-                        self.runtime.error = Some(message.clone());
-                        self.set_status(message);
-                    }
+            match spawned {
+                Ok(client) => {
+                    self.adopt_client(client);
+                    self.mcp_stamp = mcp_stamp;
+                    self.send(
+                        CommandBody::SwitchSession {
+                            session_path: session.path.to_string_lossy().into_owned(),
+                        },
+                        "switch_session",
+                    );
+                    // `get_state` and the capability probes are sent from
+                    // the switch_session success handler: querying state
+                    // eagerly here races the switch (pi answers with the
+                    // default model), and the probes only get queued after
+                    // the load commands, so a slow auth/quota lookup can't
+                    // delay the transcript.
+                }
+                Err(err) => {
+                    let message = tr!("runtime.pi_spawn_failed", error = err);
+                    self.client = None;
+                    self.runtime.error = Some(message.clone());
+                    self.set_status(message);
                 }
             }
         }

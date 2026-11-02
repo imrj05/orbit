@@ -71,6 +71,7 @@ impl Drop for FakePi {
 }
 
 fn test_app(cx: &mut gpui::TestAppContext) -> Entity<OrbitApp> {
+    std::fs::create_dir_all("/tmp/orbit-park-tests").expect("parked session workspace");
     cx.update(|cx| {
         cx.set_global(Theme::for_id(ThemeId::Orbit));
         cx.new(OrbitApp::new)
@@ -203,6 +204,46 @@ fn unclaimed_running_session_parks_pending_and_rekeys(cx: &mut gpui::TestAppCont
             );
         });
     });
+}
+
+#[gpui::test]
+fn missing_parked_session_stays_parked_and_shows_unavailable(cx: &mut gpui::TestAppContext) {
+    let app = test_app(cx);
+    let fake = FakePi::start("missing-warm");
+    let session = SessionInfo {
+        path: fake.dir.join("session.jsonl"),
+        id: "missing".into(),
+        cwd: fake.dir.join("removed-worktree"),
+        title: "Missing".into(),
+        first_message: String::new(),
+        modified: SystemTime::UNIX_EPOCH,
+    };
+    cx.update(|cx| app.update(cx, |app, cx| {
+        let client = spawn_fake(app, &fake);
+        let pid = client.child_pid();
+        let stamp = app.mcp.fingerprint_for(Some(&session.cwd));
+        app.park(session.path.clone(), ParkedSession {
+            client,
+            transcript: Transcript::new(),
+            busy: true,
+            added: 0,
+            removed: 0,
+            mcp_stamp: stamp,
+            widgets: Vec::new(),
+            queue: PendingQueue::default(),
+            parked_at: Instant::now(),
+            execution: SessionExecution::default(),
+            interaction: ParkedInteraction::default(),
+            retry_detail: None,
+        });
+        app.current_session_path = None;
+        app.switch_to_session(session.clone(), true, cx);
+        assert!(app.lives.contains_key(&session.path));
+        assert!(child_alive(pid), "the parked process must not be killed");
+        assert!(app.client.is_none());
+        assert_eq!(app.current_workspace.as_deref(), Some(session.cwd.as_path()));
+        assert!(matches!(&app.worktree_dialog, Some(WorktreeDialog::Unavailable { path, .. }) if *path == session.cwd));
+    }));
 }
 
 /// The session-navigation shortcuts (⌘1…⌘9 / Ctrl+Tab) route through

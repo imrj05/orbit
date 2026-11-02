@@ -15,8 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and offers the repository's worktrees, a new worktree, an existing worktree
   folder on disk, a remote branch, and any other folder. The new-task page's
   folder field uses the same vocabulary, so a task can start in a worktree
-  without visiting the Worktrees page first. The chip no longer restarts the
-  current session: switching a location is a workspace move.
+  without visiting the Worktrees page first. Choosing a different location
+  starts a task there; a running session is parked, and an idle session's
+  transcript remains on disk.
 
 - **Remote branches become local branches that track them.** Choosing a
   remote-tracking ref used to run `git worktree add <path> origin/feat`, which

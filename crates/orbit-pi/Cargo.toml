@@ -163,6 +163,8 @@ libc = "0.2"
 # needs the window's native handle. Already in the graph through gpui, so this
 # adds no package — it only names the version gpui itself uses.
 [target.'cfg(windows)'.dependencies]
+# Start Git suspended in a job object so cancellation also stops transports.
+process-wrap = { version = "10.0.1", default-features = false, features = ["std", "job-object"] }
 raw-window-handle = "0.6"
 # Enumerate installed editors/terminals and extract their icons for the
 # header's "open in" menu. Already in the graph through gpui, so this adds no

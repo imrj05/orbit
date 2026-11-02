@@ -3879,22 +3879,6 @@ impl OrbitApp {
                         this.open_git(cx);
                     }
                 }),
-            ))
-            // Worktrees is a surface, not live state, so it belongs here rather
-            // than in the status row — which is why the "Work in" chip can stay
-            // out of the way at the main checkout. The row keeps the registry's
-            // icon and title, so the menu and the palette cannot drift.
-            .child(header_menu_row(
-                "header-more-worktrees",
-                "icons/branch.svg",
-                commands::title(CommandId::OpenWorktrees, false),
-                commands::spec(CommandId::OpenWorktrees).shortcut(),
-                self.worktrees_open,
-                theme,
-                cx.listener(|this, _: &MouseUpEvent, window, cx| {
-                    this.header_more_open = false;
-                    this.on_open_worktrees(&crate::OpenWorktrees, window, cx);
-                }),
             ));
         Some(
             div()

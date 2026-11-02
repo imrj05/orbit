@@ -36,7 +36,7 @@ use gpui::{
     App, ClickEvent, ClipboardItem, Context, Corner, CursorStyle, DragMoveEvent, ElementId, Entity,
     ExternalPaths, FocusHandle, Focusable, FontWeight, Hsla, Image, ImageSource, IntoElement,
     ListAlignment, ListState, MouseButton, MouseDownEvent, MouseUpEvent, ObjectFit,
-    PathPromptOptions, Pixels, Point, Render, Resource, ScrollStrategy, SharedString,
+    PathPromptOptions, Pixels, Point, Render, Resource, ScrollHandle, ScrollStrategy, SharedString,
     StatefulInteractiveElement, Subscription, TextAlign, Transformation, UniformListScrollHandle,
     Window,
 };
@@ -700,8 +700,11 @@ pub struct OrbitApp {
     /// The picker's remote-branch level is showing instead of the location
     /// rows.
     work_in_remote_open: bool,
+    /// Full details for the highlighted remote branch.
+    work_in_details_open: bool,
     /// Highlighted row in the "Work in" picker.
     work_in_menu_highlight: usize,
+    work_in_scroll: ScrollHandle,
     /// Highlighted row in the picker's remote-branch level.
     work_in_remote_highlight: usize,
     /// Focus handle that carries the `WorkInMenu` key context while the picker
@@ -746,6 +749,17 @@ pub struct OrbitApp {
     worktree_refresh_due: Option<Instant>,
     /// The open Worktrees dialog, if any.
     worktree_dialog: Option<WorktreeDialog>,
+    /// Clone dialog inputs and in-flight operation.
+    clone_url_input: Entity<ComposerInput>,
+    clone_name_input: Entity<ComposerInput>,
+    clone_browse_focus: FocusHandle,
+    clone_confirm_focus: FocusHandle,
+    clone_cancel_focus: FocusHandle,
+    clone_window: Option<gpui::AnyWindowHandle>,
+    #[cfg(test)]
+    clone_test_parent: Option<PathBuf>,
+    clone_parent: Option<PathBuf>,
+    clone_operation: Option<CloneOperation>,
     /// Create dialog: worktree name.
     worktree_name_input: Entity<ComposerInput>,
     /// Create dialog: new-branch name.
@@ -1886,6 +1900,20 @@ impl OrbitApp {
         });
         // Create / rename / move dialog fields. The create dialog's start
         // point defaults to HEAD (empty input).
+        let clone_url_input = cx.new(|cx| {
+            ComposerInput::new(cx)
+                .with_element_id("clone-url-input")
+                .with_key_context("Composer CloneDialog")
+                .with_max_lines(1)
+                .with_wrap(false)
+        });
+        let clone_name_input = cx.new(|cx| {
+            ComposerInput::new(cx)
+                .with_element_id("clone-name-input")
+                .with_key_context("Composer CloneDialog")
+                .with_max_lines(1)
+                .with_wrap(false)
+        });
         let worktree_name_input = cx.new(|cx| {
             ComposerInput::new(cx)
                 .with_element_id("worktree-name-input")
@@ -2105,7 +2133,9 @@ impl OrbitApp {
             ),
             work_in_menu_open: false,
             work_in_remote_open: false,
+            work_in_details_open: false,
             work_in_menu_highlight: 0,
+            work_in_scroll: ScrollHandle::new(),
             work_in_remote_highlight: 0,
             work_in_menu_focus: cx.focus_handle(),
             worktree_remotes: Vec::new(),
@@ -2124,6 +2154,16 @@ impl OrbitApp {
             worktree_advanced_open: false,
             worktree_refresh_due: None,
             worktree_dialog: None,
+            clone_url_input,
+            clone_name_input,
+            clone_browse_focus: cx.focus_handle(),
+            clone_confirm_focus: cx.focus_handle(),
+            clone_cancel_focus: cx.focus_handle(),
+            clone_window: None,
+            #[cfg(test)]
+            clone_test_parent: None,
+            clone_parent: None,
+            clone_operation: None,
             worktree_name_input: worktree_name_input.clone(),
             worktree_branch_input: worktree_branch_input.clone(),
             worktree_start_input: worktree_start_input.clone(),
@@ -3361,6 +3401,8 @@ pub(crate) struct PendingWorktreeCreate {
 /// The open Worktrees dialog, if any.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WorktreeDialog {
+    /// Clone a repository into a new working folder.
+    Clone,
     /// Name / branch / location / setup fields.
     Create,
     /// First setup-script run in this repository.
@@ -3377,7 +3419,22 @@ pub(crate) enum WorktreeDialog {
     /// The workspace a session points at is gone (e.g. its worktree was
     /// removed). The session is never silently re-pointed at another
     /// workspace (§22).
-    Unavailable { path: PathBuf },
+    Unavailable {
+        path: PathBuf,
+        local: Option<PathBuf>,
+    },
+}
+
+struct CloneOperation {
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+    progress: Arc<std::sync::Mutex<String>>,
+}
+
+impl Drop for CloneOperation {
+    fn drop(&mut self) {
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
 }
 
 /// Setup-script progress for the most recent worktree creation.
@@ -3805,8 +3862,8 @@ pub(crate) use helpers::{
     file_icon_tile, icon, icon_button_frame, icon_dyn, input_field_frame, menu_header, modal_card,
     modal_scrim, nerd_font_family, picker_entry, picker_row_height, picker_search_frame,
     picker_surface, press, provider_mark_color, refresh_glyph, running_spinner, spinner,
-    AccentWash, ControlExt, EmptyFill, PickerRow, PressedRamp, StatefulControlExt, TipExt,
-    BUTTON_GROUP,
+    working_folder_keyboard_hints, AccentWash, ControlExt, EmptyFill, PickerRow, PressedRamp,
+    StatefulControlExt, TipExt, BUTTON_GROUP,
 };
 use sidebar::sessions_with_placeholder;
 

@@ -87,7 +87,7 @@ Settings → **Git Accounts** inspects local Git author settings, generic and ho
 - The commit bar's **Generate** button has its own model picker — a searchable chip beside it — so commit messages can run on a different (or smaller, local) model than the chat session, with **Active session model** restoring the default
 - Git page's Issues and Pull requests tabs through `gh`: browse and filter, file issues and PRs, comment, apply labels, close/reopen, review, merge, and check out a PR's branch — with repository templates and an AI **Generate** action that drafts a title and body from the branch, its commits, optional notes, and the repo's own template
 - Git worktrees as first-class workspaces — a Worktrees page lists and creates worktrees (`repo/.wt/113` → `feature/issue-113`), opens them as the active workspace so the Explorer, terminal, Git page, Review, and agent all run there, and supports rename / move / lock / remove / prune / repair
-- The status bar's **Work in** chip names where the next task runs and switches between them: `Local`, any linked worktree, a new worktree, an existing worktree folder on disk, a remote branch (as a local branch that tracks it), or any other folder — the same list the new-task page offers
+- The status bar's **Work in** chip names where the next task runs: `Local`, linked worktrees, recent folders, a new or existing worktree, a remote branch (as a local branch that tracks it), a clone, or another folder. The new-task picker offers the same choices; there, remote branches are selected in the create dialog
 - An optional per-repository setup script runs asynchronously with `ORBIT_ROOT_PATH` and `ORBIT_WORKTREE_PATH`
 
 **Explorer and Files**

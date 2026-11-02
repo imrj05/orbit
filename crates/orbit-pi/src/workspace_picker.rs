@@ -19,7 +19,7 @@ use gpui::{
 
 use crate::app::{
     icon, menu_header, picker_entry, picker_row_height, picker_search_frame, picker_surface,
-    ControlExt, PickerRow,
+    working_folder_keyboard_hints, ControlExt, PickerRow,
 };
 use crate::composer::ComposerInput;
 use crate::theme::tokens::{context_menu, input, list, picker};
@@ -553,6 +553,7 @@ impl Render for WorkspacePicker {
         let browse_highlighted = self.highlighted == rows.len() + self.actions.len();
 
         picker_surface(div(), &theme)
+            .debug_selector(|| "workspace-picker-popup".to_string())
             .w(px(self.width))
             .flex()
             .flex_col()
@@ -641,5 +642,6 @@ impl Render for WorkspacePicker {
                             ),
                     ),
             )
+            .child(working_folder_keyboard_hints(&theme, false))
     }
 }

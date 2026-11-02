@@ -96,6 +96,7 @@ mod providers;
 mod quota;
 mod quota_hidden;
 mod recent_models;
+mod repository_clone;
 mod review;
 mod rpc_patches;
 mod session_defaults;
@@ -270,8 +271,14 @@ actions!(
         WorkInMenuNext,
         WorkInMenuPrev,
         WorkInMenuConfirm,
-        WorkInMenuClose
+        WorkInMenuClose,
+        WorkInMenuDetails
     ]
+);
+
+actions!(
+    clone_dialog_keys,
+    [CloneDialogNext, CloneDialogPrev, CloneDialogActivate]
 );
 
 // Workflow-mode picker actions (bound to the `WorkflowMenu` context, which
@@ -496,9 +503,14 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("down", AccessMenuNext, Some("AccessMenu")),
         // Work-in picker keys — same shape again.
         KeyBinding::new("escape", WorkInMenuClose, Some("WorkInMenu")),
+        KeyBinding::new("space", WorkInMenuDetails, Some("WorkInMenu")),
         KeyBinding::new("enter", WorkInMenuConfirm, Some("WorkInMenu")),
         KeyBinding::new("up", WorkInMenuPrev, Some("WorkInMenu")),
         KeyBinding::new("down", WorkInMenuNext, Some("WorkInMenu")),
+        KeyBinding::new("tab", CloneDialogNext, Some("CloneDialog")),
+        KeyBinding::new("shift-tab", CloneDialogPrev, Some("CloneDialog")),
+        KeyBinding::new("enter", CloneDialogActivate, Some("CloneDialog")),
+        KeyBinding::new("space", CloneDialogActivate, Some("CloneDialogButton")),
         // Workflow-mode picker keys — same shape again.
         KeyBinding::new("escape", WorkflowMenuClose, Some("WorkflowMenu")),
         KeyBinding::new("enter", WorkflowMenuConfirm, Some("WorkflowMenu")),

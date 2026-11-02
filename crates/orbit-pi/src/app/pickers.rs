@@ -73,33 +73,39 @@ impl OrbitApp {
         entries
     }
 
-    /// The verb rows the new-task page's picker offers below the folders. Only
-    /// in a repository: without one there is no worktree to create and no
-    /// remote to start from.
-    fn folder_actions(&self) -> Vec<PickerAction> {
-        if self.work_in_root().is_none() {
-            return Vec::new();
-        }
-        vec![
-            PickerAction {
-                id: "new-worktree",
-                icon: "icons/plus.svg",
-                label: tr!("working_folder.new"),
-                hint: Some(tr!("working_folder.new_hint")),
-            },
-            PickerAction {
-                id: "existing-worktree",
-                icon: "icons/branch.svg",
-                label: tr!("working_folder.existing"),
-                hint: Some(tr!("working_folder.existing_hint")),
-            },
-            PickerAction {
-                id: "remote-branch",
-                icon: "icons/cloud.svg",
-                label: tr!("working_folder.remote"),
-                hint: Some(tr!("working_folder.remote_hint")),
-            },
-        ]
+    /// Worktree actions require a repository; cloning does not.
+    pub(super) fn folder_actions(&self) -> Vec<PickerAction> {
+        let mut actions = if self.work_in_root().is_some() {
+            vec![
+                PickerAction {
+                    id: "new-worktree",
+                    icon: "icons/plus.svg",
+                    label: tr!("working_folder.new"),
+                    hint: Some(tr!("working_folder.new_hint")),
+                },
+                PickerAction {
+                    id: "existing-worktree",
+                    icon: "icons/branch.svg",
+                    label: tr!("working_folder.existing"),
+                    hint: Some(tr!("working_folder.existing_hint")),
+                },
+                PickerAction {
+                    id: "remote-branch",
+                    icon: "icons/cloud.svg",
+                    label: tr!("working_folder.remote"),
+                    hint: Some(tr!("working_folder.remote_hint")),
+                },
+            ]
+        } else {
+            Vec::new()
+        };
+        actions.push(PickerAction {
+            id: "clone-repository",
+            icon: "icons/cloud.svg",
+            label: tr!("working_folder.clone_title"),
+            hint: Some(tr!("working_folder.clone_hint")),
+        });
+        actions
     }
 
     /// Toggle the workspace picker under the new-task page's folder field.
@@ -170,6 +176,7 @@ impl OrbitApp {
                 match id {
                     "new-worktree" => app.open_new_worktree_from_work_in(window, cx),
                     "existing-worktree" => app.browse_for_existing_worktree(window, cx),
+                    "clone-repository" => app.open_clone_dialog(window, cx),
                     // The create dialog's existing-branch list carries the
                     // remote refs, and the manager turns one into a local
                     // tracking branch instead of a detached worktree.
@@ -386,8 +393,8 @@ impl OrbitApp {
         self.toggle_command_palette_with(false, window, cx);
     }
 
-    /// The pointer path (the sidebar Search row): its mouse-up follows the
-    /// scrim's mouse-down dismiss, so the gesture guard applies.
+    /// Exercise the pointer gesture guard in popup tests.
+    #[cfg(test)]
     pub(super) fn toggle_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.toggle_command_palette_with(true, window, cx);
     }

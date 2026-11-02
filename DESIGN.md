@@ -853,8 +853,9 @@ The status row under the composer is a readout, not a toolbar.
   in the composer. At the main checkout it reads `Local`; inside a worktree it names that
   worktree; on a broken worktree it says so instead of naming a branch. Outside a repository the
   chip is absent, and the plain folder chip takes its place — there is no location to choose
-  between there. The chip never restarts the session: switching a location is a workspace move,
-  and creating one is a dialog. See `the_work_in_chip_is_absent_outside_a_repository` and
+  between there. Choosing a different location starts a task there; a running session is parked,
+  and an idle session's transcript remains on disk. Creating a worktree opens a dialog. See
+  `the_work_in_chip_is_absent_outside_a_repository` and
   `the_chip_is_present_at_the_main_checkout_and_reads_local`.
 - Workspace and branch chips yield before the row can crowd; the context indicator holds
   the right edge.
@@ -1561,7 +1562,7 @@ performance, and visual restraint make long agent sessions feel natural.
 - **Don't** ship a chip that appears in every state "just in case". Give it a rule for
   when it is absent, and make that rule read the state the chip describes rather than a
   neighbouring control's open state.
-- **Don't** give a control a permanent row for its own default. The access chip drops its
-  label at Full access, the "Work in" chip is absent at the main checkout, and the MCP
-  chip is absent while every server is connected — the default needs no announcement, and
-  the row it frees is paid back on every frame.
+- **Don't** give a control a permanent row merely to announce its own default. The access
+  chip drops its label at Full access, and the MCP chip is absent while every server is
+  connected. The "Work in" chip is an exception: at the main checkout it provides access
+  to other working locations.

@@ -43,6 +43,61 @@ pub(crate) fn kbd_key(label: impl Into<SharedString>, theme: &Theme) -> AnyEleme
         .into_any_element()
 }
 
+/// Keyboard legend shared by both working-folder pickers. The remote level
+/// uses Escape to go back; elsewhere it closes the picker.
+pub(crate) fn working_folder_keyboard_hints(theme: &Theme, back: bool) -> gpui::Div {
+    let group = |id: &'static str, keys: &[&str], label: String| {
+        div()
+            .debug_selector(move || id.to_string())
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base02.px(theme))
+            .children(
+                keys.iter()
+                    .map(|key| kbd_key(crate::platform::shortcuts::label(key), theme)),
+            )
+            .child(div().whitespace_nowrap().child(label))
+    };
+    div()
+        .debug_selector(|| "working-folder-keyboard-hints".to_string())
+        .flex_none()
+        .w_full()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(DynamicSpacing::Base08.px(theme))
+        .px(picker::search_padding_x(theme))
+        .py(DynamicSpacing::Base06.px(theme))
+        .border_t_1()
+        .border_color(theme.border)
+        .text_size(TextSize::XSmall.px(theme))
+        .text_color(theme.text_muted)
+        .child(group(
+            "working-folder-hint-navigate",
+            &["up", "down"],
+            tr!("working_folder.hint_navigate"),
+        ))
+        .child(group(
+            "working-folder-hint-select",
+            &["enter"],
+            tr!("working_folder.hint_select"),
+        ))
+        .child(group(
+            if back {
+                "working-folder-hint-back"
+            } else {
+                "working-folder-hint-close"
+            },
+            &["escape"],
+            if back {
+                tr!("common.back")
+            } else {
+                tr!("common.close")
+            },
+        ))
+}
+
 /// Group the platform-specific key labels of a canonical shortcut chord.
 pub(crate) fn kbd_shortcut(chord: &str, theme: &Theme) -> AnyElement {
     div()

@@ -1,7 +1,8 @@
 # Plan — Working folder ("Work in")
 
-**Status:** P0–P2 implemented. P3 (clone from a URL) not started. See §13 for the phase gates and
-§17 for what shipped versus what the plan assumed.
+**Status:** P0–P2 implemented. P3 (clone from a URL) is in progress: the picker and clone flow
+are implemented, including Windows job-object cancellation; Windows runtime and manual GUI
+verification remain. See §13 for the phase gates and §17 for what shipped versus the plan assumed.
 **Scope:** one new pure module (`crates/orbit-pi/src/working_folder.rs`), a rewrite of the status
 bar's folder/location controls (`app/worktrees.rs`, `app/view.rs`), the new-task page's folder
 field (`workspace_picker.rs`, `app/pickers.rs`), three new `WorktreeManager` methods
@@ -409,5 +410,18 @@ prompt (a title-driven name would start the task before the workspace exists).
   menu row cannot hold "Open a worktree folder that already exists on disk." The new-task page's
   picker keeps the hint lines — it has the width for them. The check's position is pinned by the
   same test (`work-in-check` must sit right of the row's centre).
-- **Not shipped (P3)**: `Clone(CloneSpec)`, the clone progress/cancel UI, and sidebar registration
-  of a freshly cloned repository.
+- **Missing-worktree recovery**: the unavailable notice offers to start a new task in Local only
+  when Git lists the missing path in exactly one known repository. Orbit rechecks ownership before
+  opening and never moves the missing session; unknown or ambiguous owners get no Local shortcut.
+  A warm process stays parked if its folder is missing.
+- **P4 keycaps**: both working-folder pickers show the existing Up/Down, Enter, and Escape
+  bindings in a compact, localized legend. Escape says **Back** on the remote-branch level and
+  **Close** elsewhere; the legend wraps when space is tight.
+- **P4 recents**: the status-bar picker lists up to eight recent session folders after the actions,
+  excluding the active folder and listed worktrees. Missing or broken folders are reported instead
+  of opened. Keyboard navigation scrolls the highlighted row into view.
+- **P3 in progress**: the status-bar and new-task pickers offer cloning via a URL, folder name,
+  and destination picker. Git runs in the background with progress and process-tree cancellation
+  (a process group on Unix, a job object on Windows); a successful clone opens as a working folder
+  and is added to the sidebar. Local bare-repository tests and a public GitHub backend clone pass.
+  Windows runtime tests and manual GUI verification remain.

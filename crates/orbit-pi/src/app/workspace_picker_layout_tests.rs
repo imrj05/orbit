@@ -145,6 +145,57 @@ impl Drop for Fixture {
 }
 
 #[gpui::test]
+fn new_task_keyboard_hints_fit_the_picker_at_maximum_ui_scale(cx: &mut gpui::TestAppContext) {
+    cx.update(|cx| {
+        let mut theme = Theme::for_id(ThemeId::Orbit);
+        theme.ui.ui_font_size = 20.;
+        theme.ui.spacing_density = 120;
+        cx.set_global(theme);
+    });
+    let fixture = Fixture::new();
+    let app = cx.update(|cx| cx.new(OrbitApp::new));
+    let window_cx = cx.add_empty_window();
+    window_cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.worktrees = vec![worktree(&fixture.repo(), "repo", true)];
+            app.worktree_repo_root = Some(fixture.repo());
+            app.current_workspace = Some(fixture.repo());
+            app.toggle_workspace_picker(window, cx);
+        })
+    });
+    let _ = window_cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(420.), px(640.)),
+        |_, cx| cx.new(|_| PickerProbe { app: app.clone() }),
+    );
+    let popup = window_cx
+        .debug_bounds("workspace-picker-popup")
+        .expect("picker");
+    let footer = window_cx
+        .debug_bounds("working-folder-keyboard-hints")
+        .expect("hints");
+    assert!(footer.left() >= popup.left() - px(1.) && footer.right() <= popup.right() + px(1.));
+    assert!(footer.top() >= popup.top() && footer.bottom() <= popup.bottom() + px(1.));
+    assert!(window_cx
+        .debug_bounds("working-folder-hint-close")
+        .is_some());
+    assert!(window_cx.debug_bounds("working-folder-hint-back").is_none());
+    for id in [
+        "working-folder-hint-navigate",
+        "working-folder-hint-select",
+        "working-folder-hint-close",
+    ] {
+        let group = window_cx.debug_bounds(id).expect(id);
+        assert!(
+            group.left() >= footer.left() - px(1.)
+                && group.right() <= footer.right() + px(1.)
+                && group.bottom() <= footer.bottom() + px(1.),
+            "{id} overflows: {group:?} in {footer:?}"
+        );
+    }
+}
+
+#[gpui::test]
 fn picker_rows_tile_at_one_two_line_height(cx: &mut gpui::TestAppContext) {
     cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
     let fixture = Fixture::new();
@@ -196,10 +247,10 @@ fn picker_rows_tile_at_one_two_line_height(cx: &mut gpui::TestAppContext) {
         "{entries} folder rows must tile at {row_h}px each: expected {expected_entries}, was {}",
         f32::from(entries_group.size.height)
     );
-    let expected_actions = 3. * row_h;
+    let expected_actions = 4. * row_h;
     assert!(
         (f32::from(actions_group.size.height) - expected_actions).abs() <= 2.,
-        "3 action rows tile at {row_h}px each (plus the hairline): expected ~{expected_actions}, was {}",
+        "4 action rows tile at {row_h}px each (plus the hairline): expected ~{expected_actions}, was {}",
         f32::from(actions_group.size.height)
     );
 
@@ -271,8 +322,8 @@ fn a_filter_that_matches_nothing_keeps_the_action_rows(cx: &mut gpui::TestAppCon
         f32::from(rows.size.height)
     );
     assert!(
-        (f32::from(actions.size.height) - 3. * row_h).abs() <= 2.,
-        "all three verbs remain: was {}",
+        (f32::from(actions.size.height) - 4. * row_h).abs() <= 2.,
+        "all four verbs remain: was {}",
         f32::from(actions.size.height)
     );
 }

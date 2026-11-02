@@ -41,7 +41,8 @@ the common Git directory, which is why Orbit resolves Git paths with
 
 Open **Worktrees** from:
 
-- the workspace header's `…` menu, or
+- the workspace menu in the sidebar,
+- worktree settings, or
 - the command palette (`Open Worktrees`).
 
 The page lists every worktree Git reports for the active repository — including
@@ -82,10 +83,16 @@ worktree's name; it appears only for Git repositories. Opening it lists:
 - **Local** — the repository's main working directory.
 - Every linked worktree (name over its branch).
 - **New worktree** — the quick create flow.
+- **Existing worktree** — choose a worktree folder to reconnect and open.
+- **Remote branch** — create a worktree on a local tracking branch.
+- **Clone repository** — clone a repository into a new folder.
+- **Choose folder** — browse to any directory.
+- **Recent folders** — reopen folders from recent sessions, without duplicating listed worktrees.
 
-Choosing a row switches the active workspace (the same path any other
-workspace switch uses: Explorer, terminal, Git page, Review, and the agent all
-follow). **New worktree** opens the create dialog prefilled with a suggested,
+Choosing a different location starts a task there and switches the active
+workspace, so Explorer, terminal, Git page, Review, and the agent all follow.
+A running session is parked; an idle session's transcript remains on disk.
+**New worktree** opens the create dialog prefilled with a suggested,
 **fully editable name** — derived from the current branch, with a numeric
 suffix when taken — and a new branch derived from that name. Editing the name
 updates the branch until you edit the branch yourself, so a custom name costs
@@ -243,6 +250,10 @@ session runs in `.wt/113`:
 
 If a session's worktree (or folder) no longer exists, Orbit shows a
 **Worktree unavailable** notice with the recorded path and **Open Worktrees**.
+When Git identifies the missing worktree in exactly one known repository, the
+notice also offers **Start new task in Local**. This starts a separate task in
+that repository's main checkout; it does not move or resume the missing session.
+If ownership cannot be established, Orbit does not guess a Local folder.
 It never silently re-points the session at another workspace, and it does not
 spawn the agent in a fallback directory.
 
