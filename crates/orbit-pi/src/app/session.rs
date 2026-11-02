@@ -1496,6 +1496,13 @@ impl OrbitApp {
         cx.notify();
     }
 
+    /// Open the Git page on its **Changes** tab. The dirty-tree counts chip
+    /// calls this so the files behind the `+N −N` are the first thing shown.
+    pub(super) fn open_git_changes(&mut self, cx: &mut Context<Self>) {
+        self.open_git(cx);
+        self.git_panel.update(cx, |panel, cx| panel.set_tab(0, cx));
+    }
+
     /// ⌘⇧G: open the Git page, or leave it when it is already open. The
     /// top-bar affordance lives in the overflow menu; this keeps the GitHub
     /// surface one chord away.
@@ -2709,10 +2716,8 @@ impl OrbitApp {
         self.record_arrangement(cx);
     }
 
-    /// The top-bar Review control: one chip for the right dock and the
-    /// working tree's `+N −N` counts. With a dirty tree and the pane closed it
-    /// opens Review on the **Uncommitted** diff, so the counts the chip shows
-    /// are what it reveals; otherwise it is a plain toggle.
+    /// The clean top-bar chip: flip the right dock, opening Review. The dirty
+    /// `+N −N` state never reaches here; it opens the Git page's Changes tab.
     pub(super) fn on_toggle_side_pane(
         &mut self,
         _: &MouseUpEvent,
@@ -2722,23 +2727,16 @@ impl OrbitApp {
         self.toggle_side_pane(cx);
     }
 
-    /// Flip the right dock, opening Review on the working tree's Uncommitted
-    /// diff when it is dirty and the pane is closed. Split from the click
-    /// handler so the overflow menu can call it without synthesizing an event.
+    /// Flip the right dock, closing the Git page it shares the window with.
+    /// Split from the click handler so it can be called without synthesizing
+    /// an event.
     pub(super) fn toggle_side_pane(&mut self, cx: &mut Context<Self>) {
         let pane_open = self.sidepane.read(cx).is_open();
         if !pane_open {
             // Opening Review replaces the Git page, which shares the window.
             self.close_git_for_review(cx);
         }
-        let dirty = self.added > 0 || self.removed > 0;
-        self.sidepane.update(cx, |pane, cx| {
-            if pane_open || !dirty {
-                pane.toggle(cx);
-            } else {
-                pane.show_uncommitted(cx);
-            }
-        });
+        self.sidepane.update(cx, |pane, cx| pane.toggle(cx));
         cx.notify();
     }
 

@@ -117,6 +117,7 @@ mod wallpaper_fx;
 mod watch;
 mod widgets;
 mod workflow;
+mod working_folder;
 mod workspace_logo;
 mod workspace_mark;
 mod workspace_picker;

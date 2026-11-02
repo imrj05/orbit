@@ -202,11 +202,7 @@ fn sending_hints_match_footer_metrics_and_share_the_context_row(cx: &mut gpui::T
                 .debug_bounds("composer-hint-keys")
                 .expect("hint shortcut laid out");
             let label_size = button::label_size(ButtonSize::Default).px(&theme);
-            let key_size = if cfg!(target_os = "macos") {
-                ButtonSize::Default.icon_size().px(&theme)
-            } else {
-                label_size
-            };
+            let key_size = ButtonSize::Compact.height(&theme);
 
             // GPUI rounds layout to whole pixels, including scaled UI sizes.
             assert!((label.size.height - label_size).abs() <= px(1.));

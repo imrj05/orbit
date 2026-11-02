@@ -351,7 +351,7 @@ Appearance's interface-font picker includes bundled Onest in Regular, Medium,
 SemiBold, and Bold weights; it works offline without an OS font installation.
 The default interface face and saved font preferences remain unchanged.
 
-Done: streaming transcript + virtualization; markdown + highlighting; composer with steering, follow-ups, cancel, autocomplete, attachments; extension dialogs; diff/Review + Git page + GitHub issues/PRs (where `gh` is available); sessions (list/switch/new/delete/clone/cross-workspace) over an Orbit-owned project list (only folders the user added; removing one never touches pi) whose groups sort by activity, added date, name, or session count, with a **warm process pool** so re-opening a recent session is a resume, not a Node spawn; Git worktrees as first-class workspaces (`worktree.rs` + the Worktrees page: discovery, create from a new/existing branch, open/rename/move/lock/remove/prune/repair, configurable `.wt` root, optional async setup script with `ORBIT_ROOT_PATH`/`ORBIT_WORKTREE_PATH`, sessions rooted in and restored to the worktree — D14); Explorer project panel + editable Files surface; integrated terminal (⌘J); usage, skills, plugins, models, providers, settings pages; transcript find; image lightbox; theming (dark/light/system, ten Classic palettes plus an opt-in Operational pair) + reduce-motion; localization (ten locales + System, D9); in-app signed updater + Version History; notifications; open-in-editor; signed/notarizable macOS packaging + best-effort Windows/Linux bundles (D5); CI; access modes (a guard, not a sandbox), workflow modes (Plan/Build/Ask per D8), and the auto-title / quota extension bridges (D10); Zed design tokens (D11) with context menus, the tooltip, the extension dialog, the floating modal cards (provider usage / API-key / editor, update dialog, custom UI), the sidebar session / workspace rows, the transcript's message / card chrome, the settings section / group / row chrome, UI type on `TextSize` across every surface, corner radii on `Radius`, and one-shot motion on `AnimationDuration` migrated onto them.
+Done: streaming transcript + virtualization; markdown + highlighting; composer with steering, follow-ups, cancel, autocomplete, attachments; extension dialogs; diff/Review + Git page + GitHub issues/PRs (where `gh` is available); sessions (list/switch/new/delete/clone/cross-workspace) over an Orbit-owned project list (only folders the user added; removing one never touches pi) whose groups sort by activity, added date, name, or session count, with a **warm process pool** so re-opening a recent session is a resume, not a Node spawn; Git worktrees as first-class workspaces (`worktree.rs` + the Worktrees page: discovery, create from a new/existing branch, open/rename/move/lock/remove/prune/repair, configurable `.wt` root, optional async setup script with `ORBIT_ROOT_PATH`/`ORBIT_WORKTREE_PATH`, sessions rooted in and restored to the worktree — D14) plus one **Work in** control on the status bar and the new-task page that chooses any of them: `Local`, a linked worktree, a new worktree, an existing worktree folder re-registered with `git worktree repair` (`working_folder.rs` classifies it, and a folder whose `.git/worktrees/<id>` is gone is reported instead of opened), a remote branch checked out as a local branch that tracks it (`create_tracking_branch`, because `git worktree add <path> origin/feat` leaves a detached HEAD), or any folder; Explorer project panel + editable Files surface; integrated terminal (⌘J); usage, skills, plugins, models, providers, settings pages; transcript find; image lightbox; theming (dark/light/system, ten Classic palettes plus an opt-in Operational pair) + reduce-motion; localization (ten locales + System, D9); in-app signed updater + Version History; notifications; open-in-editor; signed/notarizable macOS packaging + best-effort Windows/Linux bundles (D5); CI; access modes (a guard, not a sandbox), workflow modes (Plan/Build/Ask per D8), and the auto-title / quota extension bridges (D10); Zed design tokens (D11) with context menus, the tooltip, the extension dialog, the floating modal cards (provider usage / API-key / editor, update dialog, custom UI), the sidebar session / workspace rows, the transcript's message / card chrome, the settings section / group / row chrome, UI type on `TextSize` across every surface, corner radii on `Radius`, and one-shot motion on `AnimationDuration` migrated onto them.
 
 Finder file URLs and Windows CF_HDROP lists take precedence over clipboard preview images: pasted image files enter the image queue, and other files enter the existing file-reference queue. On Linux, file URI lists exposed as clipboard text use the same queue; GPUI cannot currently read file-only clipboard offers. Plain path text stays text.
 
@@ -397,9 +397,11 @@ marks and count badges establish hierarchy, semantic status washes distinguish
 outcomes, and primary-ink titles lead secondary previews and muted metadata.
 The selected row keeps its theme selection fill with a subtle accent outline;
 the keyboard cursor adds a full focus outline even when that row is selected.
-Title, preview, and branch tooltips expose truncated text without widening the
-sidebar. Spacing and mark geometry follow the existing theme tokens, and the
-list remains virtualized with the same session data and action handlers.
+Preview and branch tooltips expose truncated text without widening the
+sidebar, while the session title stays a single visible line (its row tooltip
+names the keyboard shortcut instead). Spacing and mark geometry follow the
+existing theme tokens, and the list remains virtualized with the same session
+data and action handlers.
 The sidebar view menu's **Show first message** toggle hides or restores the preview
 in both grouped and flat lists. It defaults to shown and persists as
 `show_first_message` in `workspaces.json`; missing or invalid values keep previews
@@ -459,11 +461,40 @@ not guess what was read elsewhere — and a marked row joins the open, running, 
 pinned rows in staying visible under a collapsed project group, so the result cannot
 scroll out of reach before it is seen.
 
+Workspace-list and last-workspace persistence use isolated, self-cleaning
+per-thread directories under tests. Simulated session switches must never add
+fixture folders to the user's real `~/.orbit-pi/workspaces.json` or replace the
+last workspace.
+
+During a run the composer footer shows Queue and Steer shortcuts in the same
+platform-aware keycaps as the sidebar. Their order and chords follow the chosen
+Enter behavior; the hints stay hidden while idle.
+
+Settings uses the same UI type and button scale as the rest of the workbench:
+readable page and section headings, regular-sized row descriptions, 32px selects,
+and neutral selected navigation. Navigation rows keep their height and scroll
+instead of compressing in short windows.
+
+Holding ⌘ (Ctrl on Windows/Linux) reveals numbered keycaps beside the first
+nine visible sidebar sessions. The hints follow the same filtered, sorted row
+order as the session-switching shortcuts and disappear on release or blur.
+
+The empty sidebar session search shows **⌘P / Ctrl+P** as compact grouped
+keycaps for the separate command palette, with a tooltip naming that action.
+**⌘⇧F / Ctrl+Shift+F** focuses the session search itself; **⌘P / ⌘K** open
+the command palette. The footer no longer duplicates a Search icon.
+
 Every icon-only button carries the app's native tooltip — a localized label, usually
 with its shortcut appended (the send / stop button set the register) — across the top
 bar, sidebar, transcript copy / diff controls, composer add button, window caption
 buttons, Explorer, Review pane, Git, Usage, terminal, settings, and the picker / dialog
-controls, so no glyph is a guess.
+controls, so no glyph is a guess. A button that already shows its label does not repeat
+it on hover: New Task, the Git tabs, and a widened access chip keep their visible text
+as the label, while truncated text and icon-only controls keep a tooltip.
+
+The top bar's dirty-tree `+N −N` chip opens the Git page on **Changes**, so the
+counts reveal the files they name instead of opening Review; the plain
+side-panel glyph still toggles the Review dock.
 
 The Git page's **Issues** and **Pull requests** tabs gained a **Generate** action: the
 **New issue** and **New pull request** forms take optional free-form notes, then draft a

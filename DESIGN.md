@@ -847,9 +847,15 @@ The status row under the composer is a readout, not a toolbar.
 - **The MCP chip appears only when a server needs attention.** A fully connected fleet is
   the steady state, and the steady state earns no pixels. Its label names the counts, so
   colour is never the only signal.
-- **The "Work in" chip appears only in a linked worktree.** At the repository's main
-  checkout the location is "Local" — the default — so the chip stays away. In a worktree it
-  names a non-default location and is the way back. See `the_work_in_chip_is_absent_at_the_main_checkout`.
+- **The "Work in" chip is always present in a repository.** It is not a readout of the default:
+  it is the control that decides where the next task runs, and its rows include the places — a
+  linked worktree, a new one, an existing folder, a remote branch — that have no other affordance
+  in the composer. At the main checkout it reads `Local`; inside a worktree it names that
+  worktree; on a broken worktree it says so instead of naming a branch. Outside a repository the
+  chip is absent, and the plain folder chip takes its place — there is no location to choose
+  between there. The chip never restarts the session: switching a location is a workspace move,
+  and creating one is a dialog. See `the_work_in_chip_is_absent_outside_a_repository` and
+  `the_chip_is_present_at_the_main_checkout_and_reads_local`.
 - Workspace and branch chips yield before the row can crowd; the context indicator holds
   the right edge.
 

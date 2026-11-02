@@ -29,7 +29,6 @@ use crate::app::{
     picker_surface, press, provider_mark_color, refresh_glyph, spinner, ControlExt, ModelEntry,
     PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
 };
-use crate::commands::{self, CommandId};
 use crate::commit_message;
 use crate::commit_model::{CommitModel, CommitModelConfig};
 use crate::gh;
@@ -668,6 +667,20 @@ impl GitPanel {
             self.refresh_all(cx);
         }
         cx.notify();
+    }
+
+    /// The active tab's shortcut index (`0` = Changes … `5` = Pull requests).
+    /// Tests use it to assert which tab a chip or shortcut lands on.
+    #[cfg(test)]
+    pub(crate) fn active_tab_index(&self) -> usize {
+        match self.tab {
+            GitTab::Changes => 0,
+            GitTab::History => 1,
+            GitTab::Graph => 2,
+            GitTab::Stashes => 3,
+            GitTab::Issues => 4,
+            GitTab::Pulls => 5,
+        }
     }
 
     /// Reload the page when the workspace changes under it (file edit, stage,
@@ -3709,14 +3722,6 @@ impl GitPanel {
             .children(tabs.into_iter().map(|(tab, tab_icon, key)| {
                 let label = tr!(key);
                 let selected = self.tab == tab;
-                let command = match tab {
-                    GitTab::Changes => CommandId::GitTabChanges,
-                    GitTab::History => CommandId::GitTabHistory,
-                    GitTab::Graph => CommandId::GitTabGraph,
-                    GitTab::Stashes => CommandId::GitTabStashes,
-                    GitTab::Issues => CommandId::GitTabIssues,
-                    GitTab::Pulls => CommandId::GitTabPulls,
-                };
                 press(button_frame(
                     div().id(gpui::ElementId::Name(
                         format!("git-tab-{}", key.rsplit('.').next().unwrap_or(key)).into(),
@@ -3745,7 +3750,6 @@ impl GitPanel {
                     this.refresh_all(cx);
                     cx.notify();
                 }))
-                .tip(commands::tooltip(command, false))
                 .child(icon(
                     tab_icon,
                     ButtonSize::Medium.icon_size().px(&theme),
@@ -7534,8 +7538,12 @@ impl GitPanel {
             ),
         };
         let card = div()
-            .w_full()
-            .max_w(px(420.))
+            .debug_selector(|| "git-confirm-card".into())
+            // Give GPUI a definite width when measuring wrapped text. A
+            // percentage width capped by max_w measures at the wider parent
+            // width, leaving the footer outside the painted card.
+            .w(px(420.))
+            .max_w_full()
             .elevation_2(&theme)
             .p(DynamicSpacing::Base16.px(&theme))
             .flex()
@@ -7547,6 +7555,7 @@ impl GitPanel {
             )
             .child(
                 div()
+                    .debug_selector(|| "git-confirm-title".into())
                     .text_size(TextSize::Default.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_primary)
@@ -7554,6 +7563,7 @@ impl GitPanel {
             )
             .child(
                 div()
+                    .debug_selector(|| "git-confirm-body".into())
                     .text_size(TextSize::Small.px(&theme))
                     .line_height(theme.ui_px(17.))
                     .text_color(theme.text_secondary)
@@ -7562,6 +7572,7 @@ impl GitPanel {
             )
             .child(
                 div()
+                    .debug_selector(|| "git-confirm-actions".into())
                     .mt(DynamicSpacing::Base02.px(&theme))
                     .w_full()
                     .min_w_0()
@@ -9318,6 +9329,55 @@ fn commit_separator(theme: Theme) -> AnyElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct ConfirmPopupProbe(Entity<GitPanel>);
+
+    impl Render for ConfirmPopupProbe {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let popup = self
+                .0
+                .update(cx, |panel, cx| panel.confirm_popup(*theme::get(cx), cx));
+            div().size_full().relative().children(popup)
+        }
+    }
+
+    #[gpui::test]
+    fn discard_confirmation_contains_actions_after_wrapped_content(cx: &mut gpui::TestAppContext) {
+        use crate::theme::ThemeId;
+
+        cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let panel = cx.update(|cx| cx.new(GitPanel::new));
+        let cx = cx.add_empty_window();
+        let mut short_card_height = px(0.);
+        for (width, path) in [
+            (800., "short.rs"),
+            (800., ".argent/recordings/screen-recording-43F6B111-4588-41BC-96D7-2A58D84E9BA1-1793269223730.mp4"),
+            (340., ".argent/recordings/screen-recording-43F6B111-4588-41BC-96D7-2A58D84E9BA1-1793269223730.mp4"),
+        ] {
+            cx.update(|_, cx| {
+                panel.update(cx, |panel, cx| {
+                    panel.pending_confirm = Some(PendingConfirm::DiscardPath(path.into()));
+                    cx.notify();
+                });
+            });
+            let _ = cx.draw(point(px(0.), px(0.)), size(px(width), px(600.)), |_, cx| {
+                cx.new(|_| ConfirmPopupProbe(panel.clone()))
+            });
+            let card = cx.debug_bounds("git-confirm-card").unwrap();
+            let title = cx.debug_bounds("git-confirm-title").unwrap();
+            let body = cx.debug_bounds("git-confirm-body").unwrap();
+            let actions = cx.debug_bounds("git-confirm-actions").unwrap();
+            assert!(body.top() >= title.bottom(), "title {title:?}, body {body:?}");
+            assert!(actions.top() >= body.bottom(), "body {body:?}, actions {actions:?}");
+            assert!(actions.bottom() + px(16.) <= card.bottom(), "width {width}, card {card:?}, actions {actions:?}");
+            assert!(card.size.width <= px(width - 32.));
+            if path == "short.rs" {
+                short_card_height = card.size.height;
+            } else {
+                assert!(card.size.height > short_card_height);
+            }
+        }
+    }
 
     #[test]
     fn bar_actions_follow_git_state() {

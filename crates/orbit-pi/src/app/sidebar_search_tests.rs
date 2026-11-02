@@ -68,22 +68,207 @@ fn filtering_composes_with_the_archived_filter() {
     let sessions = vec![kept.clone(), archived.clone()];
     let archived_paths: HashSet<PathBuf> = [archived.path.clone()].into_iter().collect();
 
-    let shown = filter_archived(
+    let shown = filter_sidebar_sessions(
         sessions.clone(),
         SidebarArchivedFilter::Hide,
         &archived_paths,
-    )
-    .into_iter()
-    .filter(|s| session_matches(s, "match"))
-    .collect::<Vec<_>>();
+        "match",
+    );
     assert!(shown.is_empty(), "a hidden archived match must not surface");
 
-    let only = filter_archived(sessions, SidebarArchivedFilter::Only, &archived_paths)
-        .into_iter()
-        .filter(|s| session_matches(s, "match"))
-        .collect::<Vec<_>>();
+    let only = filter_sidebar_sessions(
+        sessions,
+        SidebarArchivedFilter::Only,
+        &archived_paths,
+        "match",
+    );
     assert_eq!(only.len(), 1);
     assert_eq!(only[0].id, "2");
+}
+
+#[test]
+fn search_results_and_row_indices_use_the_filtered_snapshot() {
+    let sessions = vec![
+        store_session("Unrelated", "", "/work/a", "first"),
+        store_session("Matching result", "", "/work/b", "second"),
+        store_session("Another match", "", "/work/c", "third"),
+    ];
+    let filtered = filter_sidebar_sessions(
+        sessions.clone(),
+        SidebarArchivedFilter::Show,
+        &HashSet::new(),
+        "match",
+    );
+    let rows = build_flat_sidebar_rows(&filtered, &HashSet::new(), &None, &HashSet::new());
+    let ids: Vec<_> = rows
+        .iter()
+        .filter_map(|row| match row {
+            SideRow::Session(ix) => filtered.get(*ix).map(|session| session.id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids, ["second", "third"]);
+    assert!(filter_sidebar_sessions(
+        sessions.clone(),
+        SidebarArchivedFilter::Show,
+        &HashSet::new(),
+        "no such result",
+    )
+    .is_empty());
+    assert_eq!(
+        filter_sidebar_sessions(sessions, SidebarArchivedFilter::Show, &HashSet::new(), "").len(),
+        3,
+        "clearing the query restores the list"
+    );
+}
+
+#[gpui::test]
+fn search_input_and_navigation_use_matching_sessions(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+
+    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.workspaces = vec![PathBuf::from("/work/sidebar-search-test")];
+            app.sessions = vec![
+                store_session("Unrelated", "", "/work/sidebar-search-test", "first"),
+                store_session("Matching result", "", "/work/sidebar-search-test", "second"),
+            ];
+            app.current_session_path = None;
+            app.sidebar_archived_filter = SidebarArchivedFilter::Show;
+            app.sidebar_search
+                .update(cx, |input, cx| input.set_text("MATCH", cx));
+        });
+    });
+    cx.update(|_, cx| {
+        app.update(cx, |app, _| {
+            assert_eq!(app.sidebar_query, "match");
+            let visible = app.sidebar_sessions_filtered();
+            assert_eq!(visible.len(), 1);
+            assert_eq!(visible[0].id, "second");
+            let navigable = app.navigable_sessions();
+            assert_eq!(navigable.len(), 1);
+            assert_eq!(navigable[0].id, "second");
+        });
+    });
+}
+
+#[gpui::test]
+fn session_search_shortcut_focuses_the_sidebar_input(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+
+    cx.update(|cx| {
+        cx.set_global(Theme::for_id(ThemeId::Orbit));
+        crate::bind_keys(cx);
+    });
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    cx.update(|_, cx| {
+        app.update(cx, |app, _| {
+            for dependency in &mut app.deps {
+                dependency.installed = true;
+            }
+            app.setup_open = false;
+            app.settings_open = false;
+            app.sidebar_visible = true;
+        });
+    });
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(1200.), px(820.)),
+        |_, _| app.clone(),
+    );
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| app.input.read(cx).focus(window));
+    });
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(1200.), px(820.)),
+        |_, _| app.clone(),
+    );
+    cx.simulate_keystrokes(crate::platform::shortcuts::SESSION_SEARCH);
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            assert!(
+                app.sidebar_search
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window),
+                "the advertised shortcut must focus the session search field"
+            );
+        });
+    });
+}
+
+#[gpui::test]
+fn holding_the_session_modifier_reveals_and_hides_number_hints(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+    use gpui::Modifiers;
+
+    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    cx.update(|_, cx| {
+        app.update(cx, |app, _| {
+            for dependency in &mut app.deps {
+                dependency.installed = true;
+            }
+            app.setup_open = false;
+            app.settings_open = false;
+            app.sidebar_visible = true;
+            app.sidebar_group_by = SidebarGroupBy::OneList;
+            app.sidebar_archived_filter = SidebarArchivedFilter::Show;
+            app.workspaces = vec![PathBuf::from("/work/sidebar-shortcut-hints")];
+            app.sessions = vec![
+                store_session("First", "", "/work/sidebar-shortcut-hints", "first"),
+                store_session("Second", "", "/work/sidebar-shortcut-hints", "second"),
+            ];
+            app.current_session_path = None;
+        });
+    });
+    let draw = |cx: &mut gpui::VisualTestContext| {
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(1200.), px(820.)),
+            |_, _| app.clone(),
+        );
+    };
+    draw(cx);
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| app.input.read(cx).focus(window));
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("session-shortcut-1").is_none());
+
+    let mut modifier = Modifiers::none();
+    if cfg!(target_os = "macos") {
+        modifier.platform = true;
+    } else {
+        modifier.control = true;
+    }
+    cx.simulate_modifiers_change(modifier);
+    draw(cx);
+    assert!(cx.debug_bounds("session-shortcut-1").is_some());
+    assert!(cx.debug_bounds("session-shortcut-2").is_some());
+    assert!(cx.debug_bounds("session-shortcut-3").is_none());
+
+    cx.simulate_modifiers_change(Modifiers::none());
+    draw(cx);
+    assert!(!cx.update(|_, cx| app.read(cx).sidebar_shortcut_hints));
+    cx.simulate_modifiers_change(modifier);
+    draw(cx);
+    assert!(cx.debug_bounds("session-shortcut-1").is_some());
+
+    modifier.shift = true;
+    cx.simulate_modifiers_change(modifier);
+    draw(cx);
+    assert!(!cx.update(|_, cx| app.read(cx).sidebar_shortcut_hints));
+
+    cx.simulate_modifiers_change(Modifiers::none());
+    draw(cx);
+    assert!(!cx.update(|_, cx| app.read(cx).sidebar_shortcut_hints));
 }
 
 // ── Recent view ────────────────────────────────────────────────────────────

@@ -39,7 +39,7 @@ summary sparkline to read that day across the whole row:
 
 - Chat-style agent sessions — composer with model selection, thinking effort, follow-up queueing, mid-run steering, cancel, and streaming replies
 - A send is in flight from the keystroke: pressing Enter flips the composer to Stop and starts the live “Working for…” row at the send, instead of waiting for pi’s first streamed token. A second Enter queues a follow-up rather than racing a second prompt, and a prompt pi rejects unwinds that state
-- **Enter behavior** — Settings → Agent → Behavior picks what Enter does: queue a follow-up (default) or steer the running task. Alt/Option+Enter uses the other mode, and ⌘⇧Enter / Ctrl+Shift+Enter always steers
+- **Enter behavior** — Settings → Agent → Behavior picks what Enter does: queue a follow-up (default) or steer the running task. Alt/Option+Enter uses the other mode, and ⌘⇧Enter / Ctrl+Shift+Enter always steers; the composer shows platform-aware keycap hints during a run
 - Compact hints immediately left of the context-window indicator show both sending modes while the agent is working. Steering takes effect after the current response and tools finish; idle Enter sends normally, and Shift+Enter inserts a new line
 - **Edit queued messages, or send one now** — the queue bar above the composer gives every pending steer and follow-up its own **Edit** (inline field, ⏎ saves, Esc cancels) and **Send now**, which moves that message to the front of the steering lane so pi delivers it before the next model call
 - **Workflow modes** — scope a session to **Plan**, **Build**, or **Ask**: Plan and Ask are read-only (write tools disabled, bash gated), so you can explore and plan before switching to Build
@@ -57,12 +57,13 @@ summary sparkline to read that day across the whole row:
 **Sessions**
 
 - Grouped by project, persistent, reopenable, and cross-workspace
+- Search sidebar sessions with **⌘⇧F** (**Ctrl+Shift+F**); the empty input also shows the command palette shortcut **⌘P** (**Ctrl+P**)
 - Session rows keep titles, prompt previews, age/status, branches (with `↑n`/`↓n` against upstream), and provider/model marks. Tinted project marks, semantic status badges, stronger title hierarchy, and distinct selection/focus outlines make the list easier to scan; flat mode adds the workspace above each title
 - **Show first message** in the sidebar view menu toggles prompt previews in grouped and flat lists; enabled by default and remembered across restarts, without hiding other session metadata
 - Orbit-owned project list — remove a workspace from the sidebar without deleting pi's sessions
 - Sort projects by last activity, recently added, name, or session count
 - Rename, pin, clone, or delete sessions, and copy a session id; pinned sessions sort first — right-click a row for its actions
-- Address sessions by position — **⌘1…⌘9** (**Ctrl+1…9**) opens the Nth visible session, **Ctrl+Tab / Ctrl+Shift+Tab** cycle them
+- Address sessions by position — **⌘1…⌘9** (**Ctrl+1…9**) opens the Nth visible session; hold ⌘ (Ctrl on Windows/Linux) to reveal its shortcut in the sidebar. **Ctrl+Tab / Ctrl+Shift+Tab** cycle them
 - Sessions written by the CLI or another window refresh the sidebar live
 - Execution status for sessions observed during this app launch — Running, Waiting for approval/input, Retrying, Compacting, Completed, Failed, Stopped, Disconnected, or Idle. Open and background sessions use the same real pi events; outcomes remain after reading and switching. Historical or externally written sessions get no guessed status
 - A turn that ends while you are elsewhere leaves a separate unread mark on its row (a green eye plus "Needs review", or a red cross with a corner dot when it failed) until you open it in the foreground. Reading spends the mark and leaves the Completed/Failed state behind; unread and waiting sessions remain visible under collapsed project groups
@@ -86,7 +87,7 @@ Settings → **Git Accounts** inspects local Git author settings, generic and ho
 - The commit bar's **Generate** button has its own model picker — a searchable chip beside it — so commit messages can run on a different (or smaller, local) model than the chat session, with **Active session model** restoring the default
 - Git page's Issues and Pull requests tabs through `gh`: browse and filter, file issues and PRs, comment, apply labels, close/reopen, review, merge, and check out a PR's branch — with repository templates and an AI **Generate** action that drafts a title and body from the branch, its commits, optional notes, and the repo's own template
 - Git worktrees as first-class workspaces — a Worktrees page lists and creates worktrees (`repo/.wt/113` → `feature/issue-113`), opens them as the active workspace so the Explorer, terminal, Git page, Review, and agent all run there, and supports rename / move / lock / remove / prune / repair
-- The status bar's **Work in** chip switches between Local and any worktree, or opens a quick create with a custom worktree name
+- The status bar's **Work in** chip names where the next task runs and switches between them: `Local`, any linked worktree, a new worktree, an existing worktree folder on disk, a remote branch (as a local branch that tracks it), or any other folder — the same list the new-task page offers
 - An optional per-repository setup script runs asynchronously with `ORBIT_ROOT_PATH` and `ORBIT_WORKTREE_PATH`
 
 **Explorer and Files**
@@ -105,7 +106,7 @@ Settings → **Git Accounts** inspects local Git author settings, generic and ho
 
 **Workbench**
 
-- Usage, skills, plugins, models, providers, MCP, appearance, and agent/runtime settings, backed by pi's on-disk data
+- Usage, skills, plugins, models, providers, MCP, appearance, and agent/runtime settings, backed by pi's on-disk data; Settings uses the shared UI type and control scale and keeps navigation scrollable in short windows
 - **MCP** — manage pi's MCP servers (global and per project) in Settings → MCP: add / edit / validate, a `${NAME}` secret store, live status and tool lists from `pi mcp list --json`, and applying changes by respawning pi with the session preserved
 - Providers — pi's live catalog plus custom endpoints (`models.json`), with API-key or OAuth sign-in and usage meters
 - Plugins — install pi packages from npm, git, or a local path, global or per project; update checks and update/remove in place
@@ -189,7 +190,7 @@ issue before starting.
 | Voice dictation | Composer | Dictate prompts into the composer. | Planned | — |
 | Diff review and terminal | Workbench | Inline diff review and an integrated terminal. | Shipped — Review pane with per-turn checkpoints and view controls, plus a login-shell terminal (⌘J) | — |
 | Terminal tabs | Terminal | Run several shells in the bottom panel without losing the ones in the background. | Shipped — ⌘T / ⌘W / ⌘⇧] / ⌘⇧[, each tab holding its own PTY | — |
-| Git worktrees | Workbench | List, create, open, move, lock, repair, and prune worktrees, and work in one as the active workspace. | Shipped — Worktrees page, a **Work in** chip in the status bar, and an optional per-repository setup script | — |
+| Git worktrees | Workbench | List, create, open, move, lock, repair, and prune worktrees, and work in one as the active workspace. | Shipped — Worktrees page, a **Work in** chip in the status bar and on the new-task page (Local / worktree / new / existing / remote branch / folder), and an optional per-repository setup script | — |
 | Session retention | Workbench | Keep pi's session store from growing without bound. | Shipped — Settings → Privacy archives or deletes idle sessions on a schedule, alongside Orbit and pi scratch-file cleanup | — |
 | Parallel sessions | Sessions | Run multiple agents / sessions side by side. | Planned | — |
 | Explorer gaps | Explorer | Quick-open, sticky scroll, and directory folding in the file tree. | Planned — expand/collapse, filter, hidden toggle, and git badges ship today | — |

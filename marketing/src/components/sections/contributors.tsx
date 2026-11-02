@@ -53,7 +53,6 @@ export async function Contributors({ locale }: { locale: Locale }) {
                   target="_blank"
                   rel="noreferrer"
                   aria-label={c.login}
-                  title={c.login}
                   className="block rounded-full outline-none ring-2 ring-page focus-visible:ring-brand"
                 >
                   <Image

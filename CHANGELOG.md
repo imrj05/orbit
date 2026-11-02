@@ -9,12 +9,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **"Work in" is one control, and it answers for every kind of place.** The
+  status bar's chip now reads `Local` at the repository's main checkout (it
+  used to appear only inside a worktree, so the composer could never enter one)
+  and offers the repository's worktrees, a new worktree, an existing worktree
+  folder on disk, a remote branch, and any other folder. The new-task page's
+  folder field uses the same vocabulary, so a task can start in a worktree
+  without visiting the Worktrees page first. The chip no longer restarts the
+  current session: switching a location is a workspace move.
+
+- **Remote branches become local branches that track them.** Choosing a
+  remote-tracking ref used to run `git worktree add <path> origin/feat`, which
+  leaves a **detached** worktree with no branch to push. It now creates
+  `feat` (or `feat-2` when that name is taken) with `--track`, and the create
+  dialog says which branch it will create before you press Create.
+
+- **A worktree folder Git stopped listing can be reconnected.** A directory
+  that was moved by hand shows up as prunable, and the picker's
+  "Existing worktree…" row (and the Worktrees page's Advanced menu) re-registers
+  it with `git worktree repair` before opening it.
+
+- **Discover session shortcuts by holding ⌘ or Ctrl.** The first nine visible
+  sessions show their numbered keycaps while the modifier is held; the hints
+  follow the current sidebar order and disappear on release.
+
 - **The command palette advertises both of its shortcuts.** `⌘P` and `⌘K` have
-  always both opened it, but only `⌘P` was ever shown — in the sidebar Search
-  tooltip and on Settings → Shortcuts. Both chords now appear, so a user who
-  learned `⌘K` is not told their shortcut does not exist.
+  always both opened it, but only `⌘P` was shown on Settings → Shortcuts.
+  Both chords now appear, so a user who learned `⌘K` is not told otherwise.
 
 ### Changed
+
+- **The `+N −N` chip opens the Git page's Changes tab.** The dirty-tree
+  counts now reveal the files they count instead of opening the Review dock;
+  the plain side-panel glyph still toggles Review.
+
+- **Labelled buttons no longer repeat their label on hover.** New Task, the
+  Git page tabs, a widened access-mode chip, and sidebar session titles drop
+  the tooltip that restated text already on screen; icon-only controls and
+  truncated previews keep theirs. Session rows now show their shortcut hint
+  on hover instead of a title tooltip.
+
+- **Composer delivery hints use keycaps.** Queue and Steer show the same
+  platform-aware keyboard styling as the sidebar while keeping the shortcuts
+  matched to the selected Enter behavior.
+
+- **Settings is easier to scan and use.** Navigation rows keep their full
+  height in short windows, page and section headings have clearer hierarchy,
+  descriptions use the regular UI text size, and select controls match the
+  app's 32px buttons. The selected navigation row uses a neutral surface.
+
+- **Session search shows the command palette shortcut.** Compact keycaps in
+  the empty sidebar input show ⌘P / Ctrl+P for the separate command palette.
+  The footer Search icon is removed. ⌘⇧F / Ctrl+Shift+F now focuses session
+  search, while ⌘P / ⌘K (Ctrl+P / Ctrl+K) open the command palette.
+
+- **Workspace icons fill more of their existing sidebar frames.** Project logos
+  and marks have less inner padding, and their frames use a neutral surface
+  instead of an accent tint. The frame size is unchanged.
 
 - **Windows installs and updates pi with pi's own installer.** Orbit used to
   tell Windows users to run `npm install -g` itself and refused to migrate an
@@ -36,9 +87,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Selected sidebar and list rows use neutral theme surfaces.** Active rows
-  no longer use accent-tinted backgrounds; the selected surface follows each
-  palette's neutral ramp, while text selection keeps its own highlight.
+- **Tests no longer add temporary projects to the real sidebar.** Workspace
+  preferences and the last-workspace file use isolated, self-cleaning test
+  directories instead of the user's Orbit files.
+
+- **Sidebar session search now filters the visible list.** Search results and
+  keyboard navigation use the same sessions, respect the archive filter, and
+  show each result's workspace. Clearing the search restores the list.
+
+- **The active sidebar session uses the hover surface.** Its background stays
+  neutral even with a custom accent; the border still marks the open session.
+  Other list rows use their palette's selected surface, while text selection
+  keeps its own highlight.
 
 - **Runtime settings show where pi actually is.** The page listed the pi
   *package root* — a `node_modules/@earendil-works/pi-coding-agent` path deep

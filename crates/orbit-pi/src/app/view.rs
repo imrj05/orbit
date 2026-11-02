@@ -246,15 +246,16 @@ impl Render for OrbitApp {
         // the duration of this frame.
         crate::mermaid::install(window);
         // Sessions the sidebar lists, plus a placeholder for the open one
-        // when its file is not on disk yet. The archived filter is applied
-        // here so row indices match the list the render path receives; the
-        // unfiltered list still drives the per-workspace status glyphs.
+        // when its file is not on disk yet. Apply both filters before building
+        // rows so their indices match the sessions rendered and navigated;
+        // unfiltered sessions still drive the workspace status glyphs.
         let all_sessions = self.sidebar_sessions();
         let archived_set: HashSet<PathBuf> = crate::archive::all().paths();
-        let sidebar_sessions = filter_archived(
+        let sidebar_sessions = filter_sidebar_sessions(
             all_sessions.clone(),
             self.sidebar_archived_filter,
             &archived_set,
+            &self.sidebar_query,
         );
         // A pinned session leads its project group; the sidebar sorts and
         // marks pinned rows from this snapshot (Orbit-owned state).
@@ -262,9 +263,11 @@ impl Render for OrbitApp {
         // Archived sessions, from the Orbit-owned set — rows in "show
         // archived" mode wear a small archive glyph.
         let archived_paths: Rc<HashSet<PathBuf>> = Rc::new(archived_set);
-        // Flat "one list" mode names each row's workspace instead of grouping.
-        let show_workspace = self.sidebar_group_by == SidebarGroupBy::OneList;
+        // Flat lists, including search results, name each row's workspace.
+        let show_workspace =
+            self.sidebar_group_by == SidebarGroupBy::OneList || !self.sidebar_query.is_empty();
         let show_first_message = self.sidebar_show_first_message;
+        let show_shortcuts = self.sidebar_shortcut_hints;
         // Parked (background) sessions mid-run — they keep their row under a
         // collapsed workspace header, like the open session, so a live task
         // is never hidden by a collapse. Also drives the running loader.
@@ -277,11 +280,15 @@ impl Render for OrbitApp {
         );
         // Per-workspace glyph: the user's mark icon when set, otherwise a
         // folder status (current / running / archived-only / idle).
-        let running_workspaces: HashSet<PathBuf> = sidebar_sessions
-            .iter()
-            .filter(|session| running_paths.contains(&session.path))
-            .map(|session| session.cwd.clone())
-            .collect();
+        let running_workspaces: HashSet<PathBuf> = filter_archived(
+            all_sessions.clone(),
+            self.sidebar_archived_filter,
+            &archived_paths,
+        )
+        .iter()
+        .filter(|session| running_paths.contains(&session.path))
+        .map(|session| session.cwd.clone())
+        .collect();
         let archived_only_workspaces: HashSet<PathBuf> = {
             let mut totals: HashMap<PathBuf, (usize, usize)> = HashMap::new();
             for session in &all_sessions {
@@ -379,6 +386,7 @@ impl Render for OrbitApp {
                     &archived_paths,
                     show_workspace,
                     show_first_message,
+                    show_shortcuts,
                     &live_paths,
                     &marks,
                     &workspace_icons,
@@ -820,6 +828,7 @@ impl Render for OrbitApp {
                                                                     &archived_paths,
                                                                     show_workspace,
                                                                     show_first_message,
+                                                                    show_shortcuts,
                                                                     &live_paths,
                                                                     &marks,
                                                                     &workspace_icons,
@@ -1404,6 +1413,15 @@ impl Render for OrbitApp {
             // never buried by whatever surface happens to be open.
             .children(self.toast_layer(cx))
             .track_focus(&self.focus_handle(cx))
+            .on_modifiers_changed(
+                cx.listener(|app, event: &gpui::ModifiersChangedEvent, _, cx| {
+                    let show = app.window_active && show_session_shortcuts(event.modifiers);
+                    if app.sidebar_shortcut_hints != show {
+                        app.sidebar_shortcut_hints = show;
+                        cx.notify();
+                    }
+                }),
+            )
             // Sidebar resize: fires for every mouse move while the handle
             // drag is active, wherever the pointer travels.
             .on_drag_move(cx.listener(
@@ -1497,6 +1515,7 @@ impl Render for OrbitApp {
             .on_action(cx.listener(Self::on_prev_terminal_tab))
             .on_action(cx.listener(Self::on_toggle_sidebar_action))
             .on_action(cx.listener(Self::on_focus_sessions))
+            .on_action(cx.listener(Self::on_focus_session_search))
             .on_action(cx.listener(Self::on_open_session_slot))
             .on_action(cx.listener(Self::on_next_session))
             .on_action(cx.listener(Self::on_prev_session))
@@ -1821,7 +1840,9 @@ impl OrbitApp {
                     .when(self.access_menu_open, |chip| {
                         chip.bg(theme.surface_active).text_color(theme.text_primary)
                     })
-                    .tip(label.clone())
+                    // The label already names the mode when it is visible; the
+                    // tooltip is only the terse (icon-only) chip's label.
+                    .when(terse, |chip| chip.tip(label.clone()))
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(Self::on_access_trigger_click),
@@ -2247,10 +2268,7 @@ impl OrbitApp {
                                 div()
                                     .debug_selector(|| "composer-hint-keys".to_string())
                                     .flex_none()
-                                    .when(cfg!(target_os = "macos"), |keys| {
-                                        keys.text_size(ButtonSize::Default.icon_size().px(&theme))
-                                    })
-                                    .child(keys),
+                                    .child(kbd_shortcut(keys, &theme)),
                             )
                             .child(
                                 div()
@@ -2806,7 +2824,11 @@ impl OrbitApp {
                                             .text_size(TextSize::XSmall.px(&theme))
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(theme.text_muted)
-                                            .child(tr!("view.workspace")),
+                                            // One vocabulary for one question:
+                                            // the field, the picker's header,
+                                            // and the status bar chip all say
+                                            // "Work in".
+                                            .child(tr!("working_folder.title")),
                                     )
                                     .child(
                                         div()
@@ -3385,6 +3407,26 @@ impl OrbitApp {
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = *theme::get(cx);
+        // Inside a repository the location control is "Work in" — it names the
+        // main checkout (as `Local`), a worktree, and the ways to reach a new
+        // place, including switching to any other folder. Outside a repository
+        // there is nothing to choose, so the plain folder chip stays: it names
+        // the workspace and the native dialog changes it.
+        let work_in = self.work_in_chip(cx);
+        let folder_chip = work_in.is_none().then(|| {
+            button_frame(div().id("status-workspace"), &theme, ButtonSize::Default)
+                .cursor_pointer()
+                .hover_quiet(&theme)
+                .pressed_state(&theme, PressedRamp::Wash)
+                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_pick_folder_click))
+                .child(icon(
+                    "icons/folder.svg",
+                    ButtonSize::Default.icon_size().px(&theme),
+                    theme.text_muted,
+                ))
+                .child(workspace_label.to_string())
+                .into_any_element()
+        });
         div()
             .pt_1p5()
             .w_full()
@@ -3393,22 +3435,8 @@ impl OrbitApp {
             .gap_4()
             .text_size(TextSize::Small.px(&theme))
             .text_color(theme.text_muted)
-            .child(
-                button_frame(div().id("status-workspace"), &theme, ButtonSize::Default)
-                    .cursor_pointer()
-                    .hover_quiet(&theme)
-                    .pressed_state(&theme, PressedRamp::Wash)
-                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_pick_folder_click))
-                    .child(icon(
-                        "icons/folder.svg",
-                        ButtonSize::Default.icon_size().px(&theme),
-                        theme.text_muted,
-                    ))
-                    .child(workspace_label.to_string()),
-            )
-            // "Work in": Local / linked worktree / New worktree. Hidden when
-            // the active workspace is not a Git repository.
-            .children(self.work_in_chip(cx))
+            .children(folder_chip)
+            .children(work_in)
             .children(self.branch.as_ref().map(|branch| {
                 let open = self.branch_picker.is_some();
                 let pending = self.branch_operation_pending;
@@ -3652,13 +3680,11 @@ impl OrbitApp {
             )
     }
 
-    /// The right dock's single top-bar affordance: the side-panel toggle and
-    /// the working tree's `+N −N` change counts, folded into one chip. The
-    /// counts already opened Review on the uncommitted diff, so a separate
-    /// panel toggle beside them was the same job twice. Dirty — and with the
-    /// pane and the Git page closed — the chip wears the counts instead of the
-    /// glyph; clean, it falls back to the `panel-right` icon. Either way it
-    /// flips the pane and stays lifted while the pane is visible.
+    /// The right dock's top-bar affordance: the working tree's `+N −N` change
+    /// counts when the tree is dirty, and the side-panel toggle otherwise. The
+    /// counts open the Git page's **Changes** tab (the diff they name); the
+    /// plain glyph toggles Review. Either state stays lifted while its target
+    /// is visible.
     pub(super) fn render_review_panel_control(
         &self,
         theme: Theme,
@@ -3723,8 +3749,23 @@ impl OrbitApp {
         } else {
             chip
         };
-        chip.tip(commands::tooltip(CommandId::ToggleSidePanel, pane_visible))
-            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_toggle_side_pane))
+        // The dirty chip is the Git page's Changes tab; the clean chip is the
+        // Review toggle. Label the control by what the current glyph does.
+        let tooltip = if dirty {
+            commands::tooltip(CommandId::OpenGit, false)
+        } else {
+            commands::tooltip(CommandId::ToggleSidePanel, pane_visible)
+        };
+        chip.tip(tooltip).on_mouse_up(
+            MouseButton::Left,
+            cx.listener(move |this, event: &MouseUpEvent, window, cx| {
+                if dirty {
+                    this.open_git_changes(cx);
+                } else {
+                    this.on_toggle_side_pane(event, window, cx);
+                }
+            }),
+        )
     }
 
     /// The top bar's overflow menu: one "…" control holding the surfaces that
@@ -3881,7 +3922,6 @@ impl OrbitApp {
         button_frame(div().id("sidebar-new-session"), &theme, ButtonSize::Large)
             .group(BUTTON_GROUP)
             .w_full()
-            .tip(commands::tooltip(CommandId::NewSession, false))
             .raised(theme.surface_elevated, &theme)
             .border_1()
             .border_color(theme.border)
@@ -3920,8 +3960,8 @@ impl OrbitApp {
             )
     }
 
-    /// The sidebar footer's utility icons: Search (command palette), Usage,
-    /// and Settings. Icon-only — each glyph is labelled by its tooltip, which
+    /// The sidebar footer's utility icons: Usage and Settings. Icon-only —
+    /// each glyph is labelled by its tooltip, which
     /// also names its chord — so the column keeps labels for the primary
     /// action and the session list alone.
     pub(super) fn sidebar_footer_actions(
@@ -3929,21 +3969,6 @@ impl OrbitApp {
         theme: Theme,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
-        // Search — opens the command palette (⌘P).
-        let search = icon_button_frame(div().id("sidebar-search"), &theme, ButtonSize::Medium)
-            .tip(commands::tooltip(CommandId::ToggleCommandPalette, false))
-            .cursor_pointer()
-            .hover_state(&theme)
-            .pressed_state(&theme, PressedRamp::Wash)
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _: &MouseUpEvent, w, cx| this.toggle_command_palette(w, cx)),
-            )
-            .child(icon(
-                "icons/search.svg",
-                ButtonSize::Medium.icon_size().px(&theme),
-                theme.text_secondary,
-            ));
         // Usage — opens (or leaves) the Usage page (⌘U).
         let usage = icon_button_frame(div().id("sidebar-usage"), &theme, ButtonSize::Medium)
             .tip(commands::tooltip(CommandId::ToggleUsage, false))
@@ -3992,7 +4017,6 @@ impl OrbitApp {
             .flex()
             .items_center()
             .gap(DynamicSpacing::Base06.px(&theme))
-            .child(search)
             .child(usage)
             .child(settings)
     }

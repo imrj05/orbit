@@ -248,6 +248,46 @@ fn provider_name_column_has_a_real_width(cx: &mut gpui::TestAppContext) {
     );
 }
 
+/// Settings navigation must remain readable rather than shrinking its rows to
+/// fit a short window; the main column must still fit beside it.
+#[gpui::test]
+fn settings_navigation_keeps_control_size_in_short_windows(cx: &mut gpui::TestAppContext) {
+    use crate::theme::tokens::ButtonSize;
+
+    let theme = Theme::for_id(ThemeId::Orbit);
+    cx.update(|cx| cx.set_global(theme));
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    cx.update(|_, cx| {
+        app.update(cx, |app, _| {
+            app.settings_open = true;
+            app.settings_section = SettingsSection::General;
+        });
+    });
+
+    for width in [720., 1200.] {
+        let _ = cx.draw(point(px(0.), px(0.)), size(px(width), px(460.)), |_, _| {
+            app.clone()
+        });
+        let first = cx
+            .debug_bounds("settings-nav-settings.general")
+            .expect("general navigation row");
+        let navigation = cx
+            .debug_bounds("settings-navigation")
+            .expect("scrolling navigation");
+        let content = cx
+            .debug_bounds("settings-content")
+            .expect("settings content");
+        let title = cx
+            .debug_bounds("settings-page-title")
+            .expect("settings page title");
+        assert_eq!(first.size.height, ButtonSize::Large.height(&theme));
+        assert!(navigation.size.height < px(15. * 32.));
+        assert!(content.right() <= px(width));
+        assert!(title.size.height >= theme.ui_px(20.));
+    }
+}
+
 /// Regression: the Agent tab's long card descriptions blew the settings
 /// content column past the window. A text element's min-content width is
 /// its full unwrapped line in gpui, so a `flex_1` column with default

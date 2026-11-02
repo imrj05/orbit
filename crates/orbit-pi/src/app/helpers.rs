@@ -2,7 +2,8 @@ use super::*;
 use crate::platform::WindowCommand;
 use crate::theme::tokens::{
     self, button, context_menu, input, list, list_item, looping, panel, picker, popover,
-    ButtonSize, DynamicSpacing, IconSize, InteractionState, Motion, Radius, StyledExt, TextSize,
+    BufferLineHeight, ButtonSize, DynamicSpacing, IconSize, InteractionState, Motion, Radius,
+    StyledExt, TextSize,
 };
 use crate::usage::tooltip::Tooltip;
 use gpui::{Font, FontFeatures, FontStyle, InteractiveElement};
@@ -23,6 +24,40 @@ pub(crate) trait TipExt: InteractiveElement {
 }
 
 impl<T: InteractiveElement> TipExt for T {}
+
+/// A compact keyboard key, suitable for an inline shortcut hint.
+pub(crate) fn kbd_key(label: impl Into<SharedString>, theme: &Theme) -> AnyElement {
+    div()
+        .h(ButtonSize::Compact.height(theme))
+        .min_w(ButtonSize::Compact.height(theme))
+        .px(DynamicSpacing::Base04.px(theme))
+        .rounded(Radius::Small.px(theme))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(theme.overlay_strong)
+        .text_size(TextSize::XSmall.px(theme))
+        .text_color(theme.text_secondary)
+        .child(label.into())
+        .into_any_element()
+}
+
+/// Group the platform-specific key labels of a canonical shortcut chord.
+pub(crate) fn kbd_shortcut(chord: &str, theme: &Theme) -> AnyElement {
+    div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base02.px(theme))
+        .children(
+            chord
+                .split('-')
+                .filter(|part| !part.is_empty())
+                .map(|part| kbd_key(crate::platform::shortcuts::label(part), theme)),
+        )
+        .into_any_element()
+}
 
 /// The interaction-state contract, applied to an element.
 ///
@@ -89,16 +124,6 @@ pub(crate) trait ControlExt: InteractiveElement + Styled + Sized {
     /// Hover for an accent-filled control: the fill steps to `accent_hover`.
     fn hover_accent(self, theme: &Theme) -> Self {
         let fill = theme.accent_hover;
-        self.hover(move |style| style.bg(fill))
-    }
-
-    /// Hover for a *selected* row or control: the selected wash, unchanged by
-    /// the pointer — a selected row must not read as a different row because
-    /// the cursor crossed it.
-    fn hover_selected(self, theme: &Theme) -> Self {
-        let fill = InteractionState::Selected
-            .fill(theme)
-            .expect("Selected fills");
         self.hover(move |style| style.bg(fill))
     }
 
@@ -694,6 +719,150 @@ pub(crate) fn picker_entry<E: Styled + InteractiveElement>(el: E, theme: &Theme)
         .gap(list_item::content_gap(theme))
         .text_size(picker::TEXT.px(theme))
         .focus_state(theme)
+}
+
+/// One fixed text line box inside a picker row, at the Comfortable leading
+/// [`picker::two_line_entry_height`] measures. Used by [`PickerRow`].
+fn picker_line_height(size: TextSize, theme: &Theme) -> gpui::Pixels {
+    BufferLineHeight::Comfortable.resolve(size.px(theme))
+}
+
+/// The text body of a two-line picker row: a title over a secondary detail
+/// line, each on a fixed line box so the pair is exactly
+/// [`picker::two_line_entry_height`] tall.
+///
+/// Every picker uses this one builder — the model selector's label column, the
+/// "Work in" lists, the folder picker — so their rows share a rhythm and a row's
+/// text can never spill into the row below it (which is what happens when a
+/// two-line body is given a one-line height).
+pub(crate) struct PickerRow {
+    title: String,
+    detail: Option<String>,
+    detail_mono: bool,
+    weight: gpui::FontWeight,
+    title_color: Hsla,
+    detail_color: Hsla,
+    /// A leading glyph, drawn on the **title's** line.
+    icon: Option<(&'static str, Hsla)>,
+}
+
+impl PickerRow {
+    /// A row body with the picker's regular ink: `title_color` for the title,
+    /// `detail_color` for the second line.
+    pub(crate) fn new(title: impl Into<String>, title_color: Hsla, detail_color: Hsla) -> Self {
+        Self {
+            title: title.into(),
+            detail: None,
+            detail_mono: false,
+            weight: gpui::FontWeight::NORMAL,
+            title_color,
+            detail_color,
+            icon: None,
+        }
+    }
+
+    /// The leading glyph. It is drawn on the title's line and the detail line
+    /// is indented to clear it, so one row reads as one block: glyph and title
+    /// paired, description underneath. Centering the glyph in a two-line row
+    /// instead leaves it floating between the lines, belonging to neither —
+    /// which is what makes a scrolling list look like two things sliding past
+    /// each other.
+    pub(crate) fn icon(mut self, path: &'static str, color: Hsla) -> Self {
+        self.icon = Some((path, color));
+        self
+    }
+
+    /// The second line: a path, a branch, a hint.
+    pub(crate) fn detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    /// Draw the second line in the code face — paths and branches are machine
+    /// text, the same register the model picker uses for an id.
+    pub(crate) fn mono(mut self) -> Self {
+        self.detail_mono = true;
+        self
+    }
+
+    /// The title's weight. Pickers mark the highlighted/selected row with
+    /// Medium rather than a second color.
+    pub(crate) fn weight(mut self, weight: gpui::FontWeight) -> Self {
+        self.weight = weight;
+        self
+    }
+
+    /// The row body. It is the flexible child (`flex_1` + `min_w_0`), so the
+    /// row's trailing slot — a check, an age, a tag — lands at the right edge
+    /// and long text ellipsizes inside the row instead of spilling past it.
+    /// Wrap it in another div and that promise is gone.
+    pub(crate) fn into_element(self, theme: &Theme) -> AnyElement {
+        let gap = list_item::content_gap(theme);
+        let icon_size = context_menu::ICON.px(theme);
+        let leading = self.icon.map(|(path, color)| {
+            div()
+                .debug_selector(|| "picker-row-leading".to_string())
+                .flex_none()
+                // Exactly the title's line box, so the glyph and the title
+                // share one optical line whatever the row's total height.
+                .h(picker_line_height(picker::TEXT, theme))
+                .flex()
+                .items_center()
+                .child(icon(path, icon_size, color))
+        });
+        let indent = if leading.is_some() {
+            icon_size + gap
+        } else {
+            gpui::px(0.)
+        };
+        let detail = self.detail.map(|detail| {
+            let line = div()
+                .w_full()
+                .pl(indent)
+                .truncate()
+                .text_size(picker::SECONDARY_TEXT.px(theme))
+                .line_height(picker_line_height(picker::SECONDARY_TEXT, theme))
+                .text_color(self.detail_color)
+                .child(detail);
+            if self.detail_mono {
+                line.font_family(theme::code_font_family())
+                    .into_any_element()
+            } else {
+                line.into_any_element()
+            }
+        });
+        div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap(gap)
+                    .children(leading)
+                    .child(
+                        div()
+                            .debug_selector(|| "picker-row-title".to_string())
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .font_weight(self.weight)
+                            .line_height(picker_line_height(picker::TEXT, theme))
+                            .text_color(self.title_color)
+                            .child(self.title),
+                    ),
+            )
+            .children(detail)
+            .into_any_element()
+    }
+}
+
+/// The row height a two-line [`PickerRow`] fills exactly.
+pub(crate) fn picker_row_height(theme: &Theme) -> gpui::Pixels {
+    picker::two_line_entry_height(theme)
 }
 
 /// A labeled button's frame, Zed's `ButtonLike`: the size's height and

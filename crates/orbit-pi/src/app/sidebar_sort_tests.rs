@@ -241,6 +241,42 @@ fn session_count_puts_the_busiest_group_first() {
 }
 
 #[test]
+fn test_workspace_stores_do_not_use_the_real_orbit_directory() {
+    let actual_home = crate::platform::home_dir().join(".orbit-pi");
+    assert_ne!(workspaces_path(), actual_home.join("workspaces.json"));
+    assert_ne!(
+        last_workspace_path(),
+        actual_home.join("last-workspace.json")
+    );
+    assert_eq!(workspaces_path().parent(), last_workspace_path().parent());
+    let other_thread_path = std::thread::spawn(workspaces_path).join().unwrap();
+    assert_ne!(workspaces_path(), other_thread_path);
+}
+
+#[test]
+fn isolated_workspace_stores_still_round_trip() {
+    let dir = workspace_store_dir();
+    let workspace = dir.join("project");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut store = WorkspaceStore::default();
+    store.workspaces.push(workspace.clone());
+    store.sort = WorkspaceSort::Manual;
+    persist_workspace_store(&store);
+    persist_last_workspace(&workspace);
+
+    let reloaded = load_workspace_store();
+    assert_eq!(
+        reloaded.workspaces,
+        vec![sessions::canonical_workspace_path(&workspace)]
+    );
+    assert_eq!(reloaded.sort, WorkspaceSort::Manual);
+    assert_eq!(
+        load_last_workspace(),
+        Some(sessions::canonical_workspace_path(&workspace))
+    );
+}
+
+#[test]
 fn sort_keys_round_trip_through_disk() {
     for sort in WorkspaceSort::ALL {
         assert_eq!(WorkspaceSort::from_key(sort.as_str()), sort);

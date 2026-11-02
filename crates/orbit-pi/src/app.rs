@@ -83,7 +83,7 @@ use crate::watch;
 use crate::widgets::{ExtensionWidget, WidgetPlacement};
 use crate::workflow::WorkflowMode;
 use crate::workspace_mark::WorkspaceMark;
-use crate::workspace_picker::{WorkspaceEntry, WorkspacePicker};
+use crate::workspace_picker::{EntryMark, PickerAction, WorkspaceEntry, WorkspacePicker};
 
 const SIDEBAR_DEFAULT_W: f32 = 248.;
 pub(crate) const SIDEBAR_MIN_W: f32 = 200.;
@@ -600,6 +600,8 @@ pub struct OrbitApp {
     /// context.
     sidebar_search: Entity<ComposerInput>,
     sidebar_query: String,
+    /// Show numbered session shortcuts while the platform modifier is held.
+    sidebar_shortcut_hints: bool,
     _sidebar_search_sub: Subscription,
     /// The name field for "save the current arrangement". Shown in the sidebar's
     /// view menu while `naming_layout` is on.
@@ -695,11 +697,27 @@ pub struct OrbitApp {
     worktree_howto_dismissed: bool,
     /// Whether the status bar's "Work in" picker (Local / worktrees) is open.
     work_in_menu_open: bool,
+    /// The picker's remote-branch level is showing instead of the location
+    /// rows.
+    work_in_remote_open: bool,
     /// Highlighted row in the "Work in" picker.
     work_in_menu_highlight: usize,
+    /// Highlighted row in the picker's remote-branch level.
+    work_in_remote_highlight: usize,
     /// Focus handle that carries the `WorkInMenu` key context while the picker
     /// is open (focus moves here so ↑/↓/Enter/Escape hit it).
     work_in_menu_focus: FocusHandle,
+    /// Remote-tracking refs for the picker's remote level. Fetched on demand
+    /// when that level opens; empty until then.
+    worktree_remotes: Vec<crate::git_ops::RefEntry>,
+    /// The repository's configured remotes, so `origin/feat` splits in the
+    /// right place.
+    worktree_remote_names: Vec<String>,
+    /// Local branch names, for choosing a free name when a remote branch is
+    /// checked out as a new local branch.
+    worktree_local_branches: Vec<String>,
+    /// A remote-ref fetch is in flight.
+    worktree_remotes_busy: bool,
     /// Linked worktrees Git reports for the active repository (main first).
     worktrees: Vec<crate::worktree::Worktree>,
     /// Main worktree root of the active repository, cached from the last
@@ -1503,6 +1521,7 @@ impl OrbitApp {
             let text = input.read(cx).text().trim().to_lowercase();
             if app.sidebar_query != text {
                 app.sidebar_query = text;
+                app.sidebar_cursor = None;
                 cx.notify();
             }
         });
@@ -2036,6 +2055,7 @@ impl OrbitApp {
             _settings_search_sub: settings_search_sub,
             sidebar_search: sidebar_search.clone(),
             sidebar_query: String::new(),
+            sidebar_shortcut_hints: false,
             _sidebar_search_sub: sidebar_search_sub,
             layout_name,
             naming_layout: false,
@@ -2084,8 +2104,14 @@ impl OrbitApp {
                 worktrees::WORKTREE_HOWTO_HINT_KEY,
             ),
             work_in_menu_open: false,
+            work_in_remote_open: false,
             work_in_menu_highlight: 0,
+            work_in_remote_highlight: 0,
             work_in_menu_focus: cx.focus_handle(),
+            worktree_remotes: Vec::new(),
+            worktree_remote_names: Vec::new(),
+            worktree_local_branches: Vec::new(),
+            worktree_remotes_busy: false,
             worktrees: Vec::new(),
             worktree_repo_root: None,
             worktrees_busy: false,
@@ -2405,8 +2431,11 @@ impl OrbitApp {
     /// registration, so the field starts truthful.
     pub(crate) fn watch_window_activation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.window_active = window.is_window_active();
-        let activation = cx.observe_window_activation(window, |app, window, _| {
+        let activation = cx.observe_window_activation(window, |app, window, cx| {
             app.window_active = window.is_window_active();
+            app.sidebar_shortcut_hints =
+                app.window_active && sidebar::show_session_shortcuts(window.modifiers());
+            cx.notify();
             // The OS Reduce Motion preference can only have changed while the
             // user was elsewhere, so a window becoming active is the moment to
             // re-read it. A repaint picks up the new value on the next frame.
@@ -2972,13 +3001,46 @@ impl SidebarArchivedFilter {
     }
 }
 
-/// `~/.orbit-pi/workspaces.json` — the folders Orbit lists in its sidebar,
-/// when each was added, and how the sidebar orders them. Orbit-owned: pi owns
-/// the session files, this only records which projects the user added.
+/// Keep tests' workspace preferences out of the user's real Orbit store.
+/// Each test thread has its own self-cleaning directory, so parallel tests do
+/// not change each other's workspace list or last-workspace state either.
+#[cfg(test)]
+struct TestWorkspaceStoreDir(PathBuf);
+
+#[cfg(test)]
+impl Drop for TestWorkspaceStoreDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_WORKSPACE_STORE_DIR: TestWorkspaceStoreDir = {
+        static NEXT_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+        TestWorkspaceStoreDir(std::env::temp_dir().join(format!(
+            "orbit-workspace-store-test-{}-{nanos}-{id}", std::process::id()
+        )))
+    };
+}
+
+fn workspace_store_dir() -> PathBuf {
+    #[cfg(test)]
+    {
+        TEST_WORKSPACE_STORE_DIR.with(|dir| dir.0.clone())
+    }
+    #[cfg(not(test))]
+    {
+        crate::platform::home_dir().join(".orbit-pi")
+    }
+}
+
+/// Orbit's project list: the folders in the sidebar, when each was added,
+/// and how they are ordered. This never writes to pi's session files.
 fn workspaces_path() -> PathBuf {
-    crate::platform::home_dir()
-        .join(".orbit-pi")
-        .join("workspaces.json")
+    workspace_store_dir().join("workspaces.json")
 }
 
 /// The parsed workspaces store. Keeping `added_at` beside the path list gives
@@ -3167,9 +3229,7 @@ fn workspace_store_json(store: &WorkspaceStore) -> Value {
 /// new-task page restores this instead of showing `/`. Orbit-owned, like the
 /// workspaces list.
 fn last_workspace_path() -> PathBuf {
-    crate::platform::home_dir()
-        .join(".orbit-pi")
-        .join("last-workspace.json")
+    workspace_store_dir().join("last-workspace.json")
 }
 
 /// The remembered folder, if the store is readable and the folder still
@@ -3678,6 +3738,8 @@ mod devicons_tests;
 #[cfg(test)]
 mod error_label_tests;
 #[cfg(test)]
+mod git_chip_tests;
+#[cfg(test)]
 mod new_task_panels_tests;
 #[cfg(test)]
 mod new_task_reconnect_tests;
@@ -3728,6 +3790,8 @@ mod titlebar_layout_tests;
 #[cfg(test)]
 mod window_watch_tests;
 #[cfg(test)]
+mod workspace_picker_layout_tests;
+#[cfg(test)]
 mod worktree_chip_tests;
 #[cfg(test)]
 mod worktree_howto_tests;
@@ -3739,9 +3803,10 @@ pub(crate) use helpers::{
     anchored_popover, anchored_popover_at, button_frame, context_menu_entry,
     context_menu_separator, context_menu_surface, empty_state, file_badge, file_glyph,
     file_icon_tile, icon, icon_button_frame, icon_dyn, input_field_frame, menu_header, modal_card,
-    modal_scrim, nerd_font_family, picker_entry, picker_search_frame, picker_surface, press,
-    provider_mark_color, refresh_glyph, running_spinner, spinner, AccentWash, ControlExt,
-    EmptyFill, PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
+    modal_scrim, nerd_font_family, picker_entry, picker_row_height, picker_search_frame,
+    picker_surface, press, provider_mark_color, refresh_glyph, running_spinner, spinner,
+    AccentWash, ControlExt, EmptyFill, PickerRow, PressedRamp, StatefulControlExt, TipExt,
+    BUTTON_GROUP,
 };
 use sidebar::sessions_with_placeholder;
 

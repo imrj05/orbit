@@ -3,36 +3,103 @@ use crate::commands::CommandId;
 use crate::theme::tokens::popover;
 
 impl OrbitApp {
-    /// Recent workspaces for the folder selector: distinct session folders,
-    /// newest activity first (`load_sessions` pre-sorts), with the current
-    /// workspace pinned to the top even when it has no sessions yet.
+    /// Rows for the new-task page's folder selector, in priority order:
+    /// this repository's locations (the main checkout, then each linked
+    /// worktree), then distinct session folders newest-first (`load_sessions`
+    /// pre-sorts), with the current workspace pinned to the top when it is not
+    /// already one of them. Every row is a place a task can start in, so the
+    /// same list serves the Worktrees page's vocabulary.
     pub(super) fn recent_workspaces(&self) -> Vec<WorkspaceEntry> {
         let current = self
             .current_workspace
             .clone()
             .or_else(|| std::env::current_dir().ok());
         let mut entries: Vec<WorkspaceEntry> = Vec::new();
+        let push = |entry: WorkspaceEntry, entries: &mut Vec<WorkspaceEntry>| {
+            if entries.iter().any(|e| e.path == entry.path) {
+                return;
+            }
+            entries.push(entry);
+        };
+
+        // The repository first: "Local" and each worktree, exactly as the
+        // status bar's picker orders them.
+        if let Some(root) = self.work_in_root() {
+            for row in
+                crate::working_folder::location_rows(&self.worktrees, &root, current.as_deref())
+            {
+                let mark = match &row.folder.location {
+                    crate::working_folder::Location::Local => EntryMark::Local,
+                    crate::working_folder::Location::Worktree { .. } => EntryMark::Worktree,
+                    _ => EntryMark::Folder,
+                };
+                push(
+                    WorkspaceEntry {
+                        name: row.label,
+                        path: row.folder.path,
+                        note: row.detail,
+                        mark,
+                    },
+                    &mut entries,
+                );
+            }
+        }
+
         if let Some(cwd) = &current {
-            entries.push(WorkspaceEntry {
-                name: sessions::workspace_label(cwd),
-                path: cwd.clone(),
-                last_active: None,
-            });
+            push(
+                WorkspaceEntry {
+                    name: sessions::workspace_label(cwd),
+                    path: cwd.clone(),
+                    note: None,
+                    mark: EntryMark::Folder,
+                },
+                &mut entries,
+            );
         }
         for session in &self.sessions {
             if entries.len() >= crate::workspace_picker::MAX_RECENTS {
                 break;
             }
-            if entries.iter().any(|e| e.path == session.cwd) {
-                continue;
-            }
-            entries.push(WorkspaceEntry {
-                name: sessions::workspace_label(&session.cwd),
-                path: session.cwd.clone(),
-                last_active: Some(sessions::relative_time(session.modified)),
-            });
+            push(
+                WorkspaceEntry {
+                    name: sessions::workspace_label(&session.cwd),
+                    path: session.cwd.clone(),
+                    note: Some(sessions::relative_time(session.modified)),
+                    mark: EntryMark::Folder,
+                },
+                &mut entries,
+            );
         }
         entries
+    }
+
+    /// The verb rows the new-task page's picker offers below the folders. Only
+    /// in a repository: without one there is no worktree to create and no
+    /// remote to start from.
+    fn folder_actions(&self) -> Vec<PickerAction> {
+        if self.work_in_root().is_none() {
+            return Vec::new();
+        }
+        vec![
+            PickerAction {
+                id: "new-worktree",
+                icon: "icons/plus.svg",
+                label: tr!("working_folder.new"),
+                hint: Some(tr!("working_folder.new_hint")),
+            },
+            PickerAction {
+                id: "existing-worktree",
+                icon: "icons/branch.svg",
+                label: tr!("working_folder.existing"),
+                hint: Some(tr!("working_folder.existing_hint")),
+            },
+            PickerAction {
+                id: "remote-branch",
+                icon: "icons/cloud.svg",
+                label: tr!("working_folder.remote"),
+                hint: Some(tr!("working_folder.remote_hint")),
+            },
+        ]
     }
 
     /// Toggle the workspace picker under the new-task page's folder field.
@@ -57,6 +124,7 @@ impl OrbitApp {
         self.session_menu = None;
 
         let entries = self.recent_workspaces();
+        let actions = self.folder_actions();
         let current = self
             .current_workspace
             .clone()
@@ -88,6 +156,28 @@ impl OrbitApp {
             })
             .ok();
         }) as Box<dyn Fn(&mut Window, &mut App)>;
+        // Verbs the picker offers under the folders. Each one closes the
+        // picker first: they open a dialog or a second surface, and a popover
+        // left behind a modal is the wrong layer.
+        let this = cx.weak_entity();
+        let action_ids: Vec<&'static str> = actions.iter().map(|action| action.id).collect();
+        let on_action = Box::new(move |ix: usize, window: &mut Window, cx: &mut App| {
+            let Some(id) = action_ids.get(ix).copied() else {
+                return;
+            };
+            this.update(cx, |app, cx| {
+                app.workspace_picker = None;
+                match id {
+                    "new-worktree" => app.open_new_worktree_from_work_in(window, cx),
+                    "existing-worktree" => app.browse_for_existing_worktree(window, cx),
+                    // The create dialog's existing-branch list carries the
+                    // remote refs, and the manager turns one into a local
+                    // tracking branch instead of a detached worktree.
+                    _ => app.open_new_worktree_from_remote_branch(window, cx),
+                }
+            })
+            .ok();
+        }) as Box<dyn Fn(usize, &mut Window, &mut App)>;
         let this = cx.weak_entity();
         let on_dismiss = Box::new(move |by_mouse: bool, window: &mut Window, cx: &mut App| {
             this.update(cx, |app, cx| {
@@ -102,7 +192,9 @@ impl OrbitApp {
         }) as Box<dyn Fn(bool, &mut Window, &mut App)>;
 
         let picker = cx.new(|cx| {
-            WorkspacePicker::new(entries, current, width, on_pick, on_browse, on_dismiss, cx)
+            WorkspacePicker::new(
+                entries, actions, current, width, on_pick, on_browse, on_action, on_dismiss, cx,
+            )
         });
         window.focus(&picker.read(cx).focus_handle(cx));
         self.workspace_picker = Some(picker);
@@ -121,6 +213,18 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.start_task_in_folder_quiet(folder, cx);
+        // Ready to type: the empty state is gone, so put the caret in the
+        // composer. Callers with no window (the Worktrees page's Open, the
+        // status bar's location rows) use the quiet form.
+        self.input.read(cx).focus(window);
+        cx.notify();
+    }
+
+    /// [`Self::start_task_in_folder`] without taking a window: the workspace
+    /// move, the spawn, and the reset, but no focus change. The caller
+    /// notifies.
+    pub(super) fn start_task_in_folder_quiet(&mut self, folder: PathBuf, cx: &mut Context<Self>) {
         if self.is_running() {
             // Blocking native requests stay pending with the parked session.
             self.cancel_custom_surfaces(cx);
@@ -162,10 +266,6 @@ impl OrbitApp {
                 self.set_status(message);
             }
         }
-        // Ready to type: the empty state is gone, so put the caret in the
-        // composer.
-        self.input.read(cx).focus(window);
-        cx.notify();
     }
 
     /// Toggle one of the two composer dropdowns (model / thinking). Opening
@@ -184,7 +284,7 @@ impl OrbitApp {
         if self.model_selector.is_some() {
             self.close_model_selector(window, cx);
         }
-        self.work_in_menu_open = false;
+        self.dismiss_work_in_menu();
         self.open_picker(kind, window, cx);
     }
 
@@ -620,7 +720,7 @@ impl OrbitApp {
         }
         self.workspace_picker = None;
         self.session_menu = None;
-        self.work_in_menu_open = false;
+        self.dismiss_work_in_menu();
 
         let cwd = match self
             .current_workspace

@@ -446,6 +446,12 @@ pub(crate) fn empty_search_state(
         .into_any_element()
 }
 
+/// Number shortcuts are available only with the platform's primary modifier
+/// held on its own, not while composing a different shortcut.
+pub(crate) fn show_session_shortcuts(modifiers: gpui::Modifiers) -> bool {
+    modifiers.secondary() && modifiers.number_of_modifiers() == 1
+}
+
 /// Whether a session answers the sidebar's search query.
 ///
 /// Case-insensitive, matched against the four things a row shows: pi's title,
@@ -462,6 +468,20 @@ pub(crate) fn session_matches(session: &SessionInfo, needle: &str) -> bool {
             .to_lowercase()
             .contains(&needle)
         || session.id.to_lowercase().contains(&needle)
+}
+
+/// Apply the archive and search filters before building rows, so every row
+/// index refers to the same session snapshot in rendering and navigation.
+pub(crate) fn filter_sidebar_sessions(
+    sessions: Vec<SessionInfo>,
+    filter: SidebarArchivedFilter,
+    archived: &HashSet<PathBuf>,
+    query: &str,
+) -> Vec<SessionInfo> {
+    filter_archived(sessions, filter, archived)
+        .into_iter()
+        .filter(|session| session_matches(session, query))
+        .collect()
 }
 
 pub(crate) fn filter_archived(
@@ -831,17 +851,19 @@ fn project_icon(
     size: IconSize,
     theme: &Theme,
 ) -> AnyElement {
-    // Untinted projects inherit the theme accent; an explicitly neutral mark
-    // stays neutral. The wash belongs to the mark, not the entire session.
+    // Untinted project glyphs inherit the theme accent; an explicitly neutral
+    // mark stays neutral. The frame remains neutral in either case.
     let tint = match mark.tint.as_deref() {
         None => theme.accent_text,
         key => workspace_mark::tint_color(theme, key),
     };
+    // Keep the frame fixed while giving the mark more room inside it.
+    let inner_size = size.px(theme) + DynamicSpacing::Base04.px(theme);
     let frame = div()
         .flex_none()
         .size(size.px(theme) + DynamicSpacing::Base08.px(theme))
         .rounded(Radius::Small.px(theme))
-        .bg(tint.opacity(0.10))
+        .bg(theme.surface_elevated)
         .flex()
         .items_center()
         .justify_center();
@@ -855,7 +877,7 @@ fn project_icon(
                 .child(
                     img(ImageSource::Image(logo.clone()))
                         .flex_none()
-                        .size(size.px(theme))
+                        .size(inner_size)
                         .rounded(Radius::XSmall.px(theme))
                         .object_fit(ObjectFit::Contain),
                 )
@@ -866,7 +888,7 @@ fn project_icon(
         .cloned()
         .unwrap_or_else(|| workspace_mark::icon_path(mark.icon.as_deref()));
     frame
-        .child(icon_dyn(path, size.px(theme), tint))
+        .child(icon_dyn(path, inner_size, tint))
         .into_any_element()
 }
 
@@ -889,6 +911,7 @@ pub(crate) fn render_side_row(
     // workspace instead.
     show_workspace: bool,
     show_first_message: bool,
+    show_shortcuts: bool,
     // Every session with a live (running or warm-idle) pi process. Guards
     // delete, which would otherwise let an alive process recreate the file.
     live_paths: &Rc<HashSet<PathBuf>>,
@@ -1239,8 +1262,8 @@ pub(crate) fn render_side_row(
             // Keep titles still; the status icon communicates background activity.
             let title = session_title(*ix, session.title.clone().into(), theme, active, false);
             // Indented under its workspace group so the list reads as a
-            // tree. The open session uses the neutral selected surface, which
-            // stands out more from the sidebar than the secondary surface.
+            // tree. The open session uses the same neutral surface as hover,
+            // even when the selected surface follows a custom accent.
             // Row actions live on the right-click menu, so the card carries no
             // hover-revealed control at all.
             // Outer item carries the inter-row spacing (padding) and the click
@@ -1301,7 +1324,7 @@ pub(crate) fn render_side_row(
                 .items_center()
                 .gap(DynamicSpacing::Base06.px(&theme))
                 .when(active, |card| {
-                    card.bg(theme.surface_selected)
+                    card.bg(theme.surface_hover)
                         .border_color(theme.border)
                         .text_color(theme.text_primary)
                 })
@@ -1413,6 +1436,13 @@ pub(crate) fn render_side_row(
                             .gap(DynamicSpacing::Base06.px(&theme))
                             .child(title)
                             .children(status_details)
+                            .when(show_shortcuts && slot <= 9, |line| {
+                                line.child(
+                                    div()
+                                        .debug_selector(move || format!("session-shortcut-{slot}"))
+                                        .child(kbd_shortcut(&format!("secondary-{slot}"), &theme)),
+                                )
+                            })
                             .when(active && show_workspace, |line| {
                                 line.child(
                                     div()
@@ -1639,7 +1669,6 @@ fn session_title(
             .line_height(line_height)
             .font_weight(weight)
             .text_color(color)
-            .tip(title.clone())
             .child(title)
             .into_any_element();
     }
@@ -3072,14 +3101,21 @@ impl OrbitApp {
         }
     }
 
-    /// Focus the sidebar's session search. The keyboard route to the field:
-    /// ⌘K reaches session search through the palette, but this is the control
-    /// itself, revealed first so the field it focuses is on screen.
+    /// Focus the sidebar's session search, revealing the sidebar first.
     pub(super) fn focus_session_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sidebar_visible = true;
         self.record_arrangement(cx);
         self.sidebar_search.read(cx).focus(window);
         cx.notify();
+    }
+
+    pub(super) fn on_focus_session_search(
+        &mut self,
+        _: &crate::FocusSessionSearch,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.focus_session_search(window, cx);
     }
 
     /// Bring back the arrangement a preset replaced. A no-op when there is none.
@@ -3343,18 +3379,14 @@ impl OrbitApp {
         }
     }
 
-    /// The sidebar's session list with the archived filter applied — the same
-    /// list the render path paints, so keyboard navigation stays in step.
+    /// The same filtered session snapshot used by rendering and navigation.
     pub(super) fn sidebar_sessions_filtered(&self) -> Vec<SessionInfo> {
-        let sessions = self.sidebar_sessions();
-        let archived: HashSet<PathBuf> = crate::archive::all().paths();
-        let sessions = filter_archived(sessions, self.sidebar_archived_filter, &archived);
-        // A search narrows the same list the archived filter produced, so the
-        // two compose instead of one hiding the other.
-        sessions
-            .into_iter()
-            .filter(|session| session_matches(session, &self.sidebar_query))
-            .collect()
+        filter_sidebar_sessions(
+            self.sidebar_sessions(),
+            self.sidebar_archived_filter,
+            &crate::archive::all().paths(),
+            &self.sidebar_query,
+        )
     }
 
     /// The sidebar rows with the pinned snapshot read fresh — the same
@@ -3367,7 +3399,7 @@ impl OrbitApp {
 
     /// Row index of the open session in `rows`, when it is visible.
     fn active_session_row(&self, rows: &[SideRow]) -> Option<usize> {
-        let sessions = self.sidebar_sessions();
+        let sessions = self.sidebar_sessions_filtered();
         let active = self.current_session_path.as_ref()?;
         let session_ix = sessions
             .iter()
@@ -3388,7 +3420,18 @@ impl OrbitApp {
                 input::ICON.px(&theme),
                 theme.text_muted,
             ))
-            .child(div().flex_1().min_w_0().child(self.sidebar_search.clone()));
+            .child(div().flex_1().min_w_0().child(self.sidebar_search.clone()))
+            .when(self.sidebar_query.is_empty(), |field| {
+                field.child(
+                    div()
+                        .id("sidebar-palette-shortcut")
+                        .tip(crate::commands::tooltip(
+                            crate::commands::CommandId::ToggleCommandPalette,
+                            false,
+                        ))
+                        .child(kbd_shortcut(crate::platform::shortcuts::PALETTE, &theme)),
+                )
+            });
         let clear = (!self.sidebar_query.is_empty()).then(|| {
             let input = self.sidebar_search.clone();
             button_frame(
@@ -3448,8 +3491,8 @@ impl OrbitApp {
     /// Visible sessions in the order the sidebar navigates them — the
     /// numbering `⌘1…⌘9` and session cycling share.
     pub(super) fn navigable_sessions(&self) -> Vec<SessionInfo> {
-        let sessions = self.sidebar_sessions();
-        self.sidebar_rows_for_nav()
+        let sessions = self.sidebar_sessions_filtered();
+        self.sidebar_rows(&sessions, &crate::pins::all().paths())
             .iter()
             .filter_map(|row| match row {
                 SideRow::Session(ix) => sessions.get(*ix).cloned(),
@@ -3578,13 +3621,13 @@ impl OrbitApp {
         let Some(index) = self.sidebar_cursor else {
             return;
         };
-        let rows = self.sidebar_rows_for_nav();
+        let sessions = self.sidebar_sessions_filtered();
+        let rows = self.sidebar_rows(&sessions, &crate::pins::all().paths());
         let Some(row) = rows.get(index) else {
             return;
         };
         match row {
             SideRow::Session(ix) => {
-                let sessions = self.sidebar_sessions();
                 if let Some(session) = sessions.get(*ix).cloned() {
                     self.on_open_session(session, cx);
                 }
@@ -3662,10 +3705,13 @@ impl OrbitApp {
             self.sidebar_visible = true;
             self.sidebar_slide_gen = self.sidebar_slide_gen.wrapping_add(1);
         }
-        let rows = self.sidebar_rows_for_nav();
-        self.sidebar_cursor = rows
-            .iter()
-            .position(|row| matches!(row, SideRow::Session(ix) if *ix == session_ix));
+        let visible_sessions = self.sidebar_sessions_filtered();
+        let visible_ix = visible_sessions.iter().position(|item| item.path == path);
+        let rows = self.sidebar_rows(&visible_sessions, &crate::pins::all().paths());
+        self.sidebar_cursor = visible_ix.and_then(|session_ix| {
+            rows.iter()
+                .position(|row| matches!(row, SideRow::Session(ix) if *ix == session_ix))
+        });
         if let Some(ix) = self.sidebar_cursor {
             self.sidebar_list.scroll_to_reveal_item(ix);
         }

@@ -271,8 +271,7 @@ impl TextSize {
 }
 
 /// Headline sizes on a Major Second scale — Zed's `HeadlineSize`.
-/// Reserved by the modal metrics ([`modal::HEADLINE`]); no surface paints a
-/// page headline through it yet.
+/// Used for page headings and reserved by the modal metrics ([`modal::HEADLINE`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HeadlineSize {
     /// ~14px.

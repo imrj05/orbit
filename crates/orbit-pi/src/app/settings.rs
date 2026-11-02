@@ -3,7 +3,7 @@ use super::*;
 use crate::quota::note_should_render;
 use crate::theme::tokens::{
     button, context_menu, input, modal, panel, picker, popover, BufferLineHeight, ButtonSize,
-    DynamicSpacing, IconSize, Radius, TextSize, BORDER_WIDTH,
+    DynamicSpacing, HeadlineSize, IconSize, Radius, TextSize, BORDER_WIDTH,
 };
 use gpui::{canvas, Bounds, DispatchPhase, Hitbox, HitboxBehavior, MouseMoveEvent};
 
@@ -34,7 +34,7 @@ const PLUGIN_REFRESH_FEEDBACK: Duration = Duration::from_millis(650);
 
 /// The settings select chip's size. Its dropdown is offset by this height
 /// plus `popover::MENU_OFFSET`, so the two must move together.
-const SELECT_CHIP_SIZE: ButtonSize = ButtonSize::Medium;
+const SELECT_CHIP_SIZE: ButtonSize = ButtonSize::Large;
 
 /// Wallpaper slider geometry: the painted track width, rail height, handle
 /// diameter, and the row they are centered in. The drag math reads the same
@@ -594,7 +594,7 @@ impl OrbitApp {
                                     div()
                                         .id("settings-back")
                                         .w_full()
-                                        .h(ButtonSize::Medium.height(&theme))
+                                        .h(ButtonSize::Large.height(&theme))
                                         .px(DynamicSpacing::Base08.px(&theme))
                                         .rounded(button::RADIUS.px(&theme))
                                         .flex()
@@ -637,6 +637,7 @@ impl OrbitApp {
                     .child(
                         div()
                             .id("settings-navigation")
+                            .debug_selector(|| "settings-navigation".to_string())
                             .flex_1()
                             .min_h_0()
                             .overflow_y_scroll()
@@ -664,6 +665,8 @@ impl OrbitApp {
                                         .id(ElementId::Name(format!("settings-nav-{label}").into()))
                                         .w_full()
                                         .h(ButtonSize::Large.height(&theme))
+                                        .flex_none()
+                                        .debug_selector(move || format!("settings-nav-{label_key}"))
                                         .px(DynamicSpacing::Base08.px(&theme))
                                         .rounded(Radius::Medium.px(&theme))
                                         .text_size(TextSize::Default.px(&theme))
@@ -673,8 +676,7 @@ impl OrbitApp {
                                         .cursor_pointer()
                                         .when(selected, |row| {
                                             row.font_weight(FontWeight::MEDIUM)
-                                                .bg(theme.surface_selected)
-                                                .hover_selected(&theme)
+                                                .bg(theme.surface_hover)
                                         })
                                         .when(!selected, |row| row.hover_state(&theme))
                                         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
@@ -684,7 +686,7 @@ impl OrbitApp {
                                         })
                                         .child(icon(
                                             section_icon,
-                                            IconSize::Small.px(&theme),
+                                            IconSize::Medium.px(&theme),
                                             if selected {
                                                 theme.accent_text
                                             } else {
@@ -693,8 +695,11 @@ impl OrbitApp {
                                         ))
                                         .child(
                                             div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .truncate()
                                                 .text_color(if selected {
-                                                    theme.selection_fg
+                                                    theme.text_primary
                                                 } else {
                                                     theme.text_secondary
                                                 })
@@ -702,6 +707,7 @@ impl OrbitApp {
                                         );
                                     if group_start {
                                         div()
+                                            .flex_none()
                                             .flex()
                                             .flex_col()
                                             .gap(DynamicSpacing::Base02.px(&theme))
@@ -817,6 +823,7 @@ impl OrbitApp {
             .child(
                 div()
                     .id("settings-content")
+                    .debug_selector(|| "settings-content".to_string())
                     .flex_1()
                     .min_h_0()
                     .w_full()
@@ -1014,7 +1021,8 @@ impl OrbitApp {
             })
             .child(
                 div()
-                    .text_size(TextSize::Large.px(&theme))
+                    .debug_selector(|| "settings-page-title".to_string())
+                    .text_size(HeadlineSize::Large.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
                     .line_height(BufferLineHeight::Standard.relative())
                     .text_color(theme.text_primary)
@@ -1022,8 +1030,8 @@ impl OrbitApp {
             )
             .child(
                 div()
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.text_muted)
+                    .text_size(TextSize::Default.px(&theme))
+                    .text_color(theme.text_secondary)
                     .child(subtitle.to_string()),
             )
     }
@@ -4504,7 +4512,7 @@ impl OrbitApp {
         )
     }
 
-    /// A settings section: an 11px uppercase label over one grouped board.
+    /// A settings section: a readable label over one grouped board.
     /// The label sits closer to its board than to the section above it.
     pub(super) fn settings_section(
         &self,
@@ -4527,6 +4535,7 @@ impl OrbitApp {
     ) -> AnyElement {
         div()
             .w_full()
+            .flex_none()
             .flex()
             .flex_col()
             .gap(DynamicSpacing::Base08.px(&theme))
@@ -4538,15 +4547,15 @@ impl OrbitApp {
                     .gap(DynamicSpacing::Base02.px(&theme))
                     .child(
                         div()
-                            .text_size(TextSize::XSmall.px(&theme))
+                            .text_size(TextSize::Default.px(&theme))
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_muted)
-                            .child(label.to_uppercase()),
+                            .text_color(theme.text_primary)
+                            .child(label.to_string()),
                     )
                     .children(desc.map(|desc| {
                         div()
-                            .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_muted)
+                            .text_size(TextSize::Default.px(&theme))
+                            .text_color(theme.text_secondary)
                             .child(desc.to_string())
                     })),
             )
@@ -4596,6 +4605,8 @@ impl OrbitApp {
     ) -> AnyElement {
         div()
             .w_full()
+            .flex_none()
+            .min_h(ButtonSize::Large.height(&theme) + DynamicSpacing::Base08.px(&theme))
             .px(DynamicSpacing::Base16.px(&theme))
             .py(DynamicSpacing::Base12.px(&theme))
             .flex()
@@ -4617,7 +4628,7 @@ impl OrbitApp {
                     )
                     .children(desc.map(|d| {
                         div()
-                            .text_size(TextSize::Small.px(&theme))
+                            .text_size(TextSize::Default.px(&theme))
                             .text_color(theme.text_secondary)
                             .child(d.to_string())
                     }))
@@ -6110,7 +6121,7 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         action: fn(&mut OrbitApp, &mut Context<OrbitApp>),
     ) -> AnyElement {
-        let mut button = button_frame(div().id(id), &theme, ButtonSize::Medium)
+        let mut button = button_frame(div().id(id), &theme, ButtonSize::Large)
             .group(BUTTON_GROUP)
             .cursor_pointer()
             .font_weight(FontWeight::MEDIUM);
@@ -7419,8 +7430,7 @@ impl OrbitApp {
     }
 
     /// [`select_control`](Self::select_control) at an explicit chip size, so a
-    /// toolbar control can match the 32px action buttons beside it while the
-    /// settings rows keep the 28px chip.
+    /// toolbar control can choose its size independently of settings rows.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn select_control_sized(
         &self,

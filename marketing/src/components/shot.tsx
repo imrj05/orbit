@@ -45,7 +45,6 @@ export function Shot({
         ref={buttonRef}
         type="button"
         onClick={() => open(id)}
-        title="Click to enlarge"
         className="block w-full cursor-zoom-in outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
       >
         <Image

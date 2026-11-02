@@ -54,6 +54,12 @@ pub enum WorktreeError {
     /// The branch is checked out by another worktree (Git allows one at a
     /// time). The UI offers to open that worktree instead.
     BranchCheckedOut { branch: String, path: PathBuf },
+    /// A local branch with this name already exists, so it cannot be created
+    /// again for a new worktree.
+    BranchExists(String),
+    /// The folder carries worktree metadata Git can no longer use (its
+    /// `.git/worktrees/<id>` entry is gone). Repair cannot restore it.
+    BrokenWorktree(PathBuf),
     /// The worktree is locked.
     Locked(PathBuf),
     /// The worktree has uncommitted changes; removal needs `--force`.
@@ -109,6 +115,19 @@ impl fmt::Display for WorktreeError {
                     branch = branch,
                     path = Self::format_path(path)
                 )
+            ),
+            Self::BranchExists(branch) => {
+                write!(
+                    f,
+                    "{}",
+                    tr!("worktree.error.branch_exists", branch = branch)
+                )
+            }
+            Self::BrokenWorktree(path) => write!(
+                f,
+                "{}\n\n{}",
+                tr!("working_folder.broken"),
+                Self::format_path(path)
             ),
             Self::Locked(path) => write!(
                 f,
@@ -826,10 +845,22 @@ impl WorktreeManager {
     /// `git worktree add <path> <branch>`. The branch is not created or
     /// renamed; if it is already checked out elsewhere, the error carries
     /// that worktree's path.
+    ///
+    /// A ref that only exists on a remote routes to
+    /// [`Self::create_tracking_branch`] instead: `git worktree add <path>
+    /// origin/feat` produces a **detached** worktree with no branch to push,
+    /// which is never what "check out this branch" means.
     pub fn create(&self, name: &str, path: &Path, branch: &str) -> Result<Worktree, WorktreeError> {
         let branch = branch.trim();
         if branch.is_empty() {
             return Err(WorktreeError::InvalidBranch(branch.to_string()));
+        }
+        if self.is_remote_only_ref(branch) {
+            let local = crate::working_folder::local_branch_for(
+                &crate::working_folder::short_branch_name(branch),
+                &self.local_branches(),
+            );
+            return self.create_tracking_branch(name, path, &local, branch);
         }
         self.check_create_target(name, path, Some(branch))?;
         let path = normalize_lexically(path);
@@ -846,6 +877,155 @@ impl WorktreeManager {
         branch: &str,
     ) -> Result<Worktree, WorktreeError> {
         self.create(name, path, branch)
+    }
+
+    /// Create a worktree on a **new local branch that tracks a remote one**:
+    /// `git worktree add --track -b <local> <path> <remote_ref>`.
+    ///
+    /// This is the only correct shape for "work on a branch that only exists
+    /// on the remote": the branch is local, it tracks `remote_ref`, and
+    /// upstream/behind readouts keep working. `--track` is explicit so the
+    /// result does not depend on the user's `branch.autoSetupMerge`.
+    pub fn create_tracking_branch(
+        &self,
+        name: &str,
+        path: &Path,
+        local_branch: &str,
+        remote_ref: &str,
+    ) -> Result<Worktree, WorktreeError> {
+        let local_branch = local_branch.trim();
+        let remote_ref = remote_ref.trim();
+        if local_branch.is_empty() {
+            return Err(WorktreeError::InvalidBranch(local_branch.to_string()));
+        }
+        if remote_ref.is_empty() {
+            return Err(WorktreeError::InvalidBranch(remote_ref.to_string()));
+        }
+        if run_text(&self.repo, &["check-ref-format", "--branch", local_branch]).is_err() {
+            return Err(WorktreeError::InvalidBranch(local_branch.to_string()));
+        }
+        if run_text(
+            &self.repo,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/remotes/{remote_ref}"),
+            ],
+        )
+        .is_err()
+        {
+            return Err(WorktreeError::InvalidBranch(remote_ref.to_string()));
+        }
+        // `-b` refuses an existing branch; name the condition instead of
+        // passing Git's wording through.
+        if self
+            .local_branches()
+            .iter()
+            .any(|branch| branch == local_branch)
+        {
+            return Err(WorktreeError::BranchExists(local_branch.to_string()));
+        }
+        self.check_create_target(name, path, None)?;
+        let path = normalize_lexically(path);
+        let path_str = path.to_string_lossy().into_owned();
+        run(
+            &self.repo,
+            &[
+                "worktree",
+                "add",
+                "--track",
+                "-b",
+                local_branch,
+                &path_str,
+                "--",
+                remote_ref,
+            ],
+        )?;
+        self.resolve_after(&path)
+    }
+
+    /// Every local branch name (`refs/heads/*`), short. Used to pick a free
+    /// name before `-b` is handed to Git.
+    pub fn local_branches(&self) -> Vec<String> {
+        run_text(
+            &self.repo,
+            &["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+        )
+        .map(|out| {
+            out.lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
+    /// Whether `branch` names a ref that only exists on a remote: there is no
+    /// `refs/heads/<branch>` but there is `refs/remotes/<branch>`.
+    fn is_remote_only_ref(&self, branch: &str) -> bool {
+        // An explicit local path is never remote.
+        if branch.starts_with("refs/heads/") {
+            return false;
+        }
+        if run_text(
+            &self.repo,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ],
+        )
+        .is_ok()
+        {
+            return false;
+        }
+        run_text(
+            &self.repo,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/remotes/{branch}"),
+            ],
+        )
+        .is_ok()
+    }
+
+    /// Adopt a worktree directory that exists on disk but that
+    /// `git worktree list` does not report at that path — the state left by a
+    /// directory that was renamed or moved by hand: `git worktree repair
+    /// <path>` re-registers it at the new location.
+    ///
+    /// Only a directory that carries live worktree metadata is repaired. A
+    /// plain folder is `NotAWorktree`, and a directory whose administrative
+    /// entry is gone is [`WorktreeError::BrokenWorktree`]: repair fails on that
+    /// state and Git refuses to re-add an existing directory, so the caller
+    /// must report it rather than pretend it worked.
+    pub fn adopt(&self, path: &Path) -> Result<Worktree, WorktreeError> {
+        if let Some(worktree) = self.find_by_path(path)? {
+            return Ok(worktree);
+        }
+        let root = self.repository_root()?;
+        match crate::working_folder::classify(path, Some(&root)) {
+            crate::working_folder::Location::Worktree { .. } => {}
+            crate::working_folder::Location::Broken(
+                crate::working_folder::BrokenReason::Missing,
+            )
+            | crate::working_folder::Location::Local
+            | crate::working_folder::Location::PlainFolder { .. } => {
+                return Err(WorktreeError::NotAWorktree(path.to_path_buf()));
+            }
+            crate::working_folder::Location::Broken(_) => {
+                return Err(WorktreeError::BrokenWorktree(path.to_path_buf()));
+            }
+        }
+        let path_str = normalize_lexically(path).to_string_lossy().into_owned();
+        run(&self.repo, &["worktree", "repair", &path_str])?;
+        self.find_by_path(path)?
+            .ok_or_else(|| WorktreeError::NotAWorktree(path.to_path_buf()))
     }
 
     /// Create a worktree and a new branch from `start_point` (HEAD when
@@ -1020,6 +1200,30 @@ mod tests {
 
         fn manager(&self) -> WorktreeManager {
             WorktreeManager::new(&self.path)
+        }
+
+        /// Publish `branch` to a local bare repository and register it as
+        /// `origin`, so `refs/remotes/origin/<branch>` exists without a
+        /// network. Real clones behave the same way.
+        fn add_remote_branch(&self, branch: &str) {
+            let bare = self.path.parent().expect("temp parent").join(format!(
+                "{}-origin.git",
+                self.path.file_name().expect("temp name").to_string_lossy()
+            ));
+            let _ = std::fs::remove_dir_all(&bare);
+            let output = StdCommand::new("git")
+                .args(["init", "-q", "--bare"])
+                .arg(&bare)
+                .output()
+                .expect("init bare remote");
+            assert!(output.status.success(), "init bare remote");
+            self.git(&["remote", "add", "origin", &bare.to_string_lossy()]);
+            // Push whatever HEAD is so the branch exists *only* on the remote.
+            self.git(&["push", "-q", "origin", &format!("HEAD:{branch}")]);
+            self.git(&["fetch", "-q", "origin"]);
+            // The fixture must leave the repo clean: `is_dirty` elsewhere in
+            // the suite depends on nothing stray in the tree.
+            assert!(bare.exists(), "bare remote exists");
         }
     }
 
@@ -1461,6 +1665,162 @@ mod tests {
             .expect("create");
         manager.repair().expect("repair");
         assert_eq!(manager.list().expect("list").len(), 2);
+    }
+
+    #[test]
+    fn a_remote_ref_creates_a_tracking_branch_not_a_detached_head() {
+        if !require_git() {
+            return;
+        }
+        let repo = TempRepo::new();
+        repo.init();
+        repo.add_remote_branch("feat");
+        let manager = repo.manager();
+
+        // `git worktree add <path> origin/feat` would leave a detached HEAD;
+        // the manager must route it through `--track -b`.
+        manager
+            .create_tracking_branch(
+                "remote-feat",
+                &repo.path.join(".wt/remote-feat"),
+                "feat",
+                "origin/feat",
+            )
+            .expect("create tracking");
+
+        let worktree = manager
+            .find_by_path(&repo.path.join(".wt/remote-feat"))
+            .expect("find")
+            .expect("created");
+        assert!(!worktree.detached, "a remote branch is never detached");
+        assert_eq!(worktree.branch.as_deref(), Some("feat"));
+
+        let upstream = repo.git(&["rev-parse", "--abbrev-ref", "feat@{upstream}"]);
+        assert_eq!(upstream, "origin/feat", "the new branch tracks the remote");
+    }
+
+    #[test]
+    fn create_routes_a_remote_only_ref_to_a_tracking_branch() {
+        if !require_git() {
+            return;
+        }
+        let repo = TempRepo::new();
+        repo.init();
+        repo.add_remote_branch("feat");
+        let manager = repo.manager();
+
+        // No local `feat` exists; the dialog passes the ref it listed.
+        let created = manager
+            .create(
+                "remote-feat",
+                &repo.path.join(".wt/remote-feat"),
+                "origin/feat",
+            )
+            .expect("create from remote ref");
+        assert!(!created.detached);
+        assert_eq!(created.branch.as_deref(), Some("feat"));
+    }
+
+    #[test]
+    fn a_tracking_branch_whose_local_name_is_taken_is_named_not_suffixed() {
+        if !require_git() {
+            return;
+        }
+        let repo = TempRepo::new();
+        repo.init();
+        repo.add_remote_branch("feat");
+        repo.git(&["branch", "feat", "main"]);
+        let manager = repo.manager();
+
+        // The explicit path names the collision instead of guessing.
+        assert!(matches!(
+            manager.create_tracking_branch(
+                "remote-feat",
+                &repo.path.join(".wt/remote-feat"),
+                "feat",
+                "origin/feat"
+            ),
+            Err(WorktreeError::BranchExists(name)) if name == "feat"
+        ));
+
+        // The dialog path picks a free name for the same ref.
+        let created = manager
+            .create(
+                "remote-feat",
+                &repo.path.join(".wt/remote-feat"),
+                "origin/feat",
+            )
+            .expect("create");
+        assert_eq!(created.branch.as_deref(), Some("feat-2"));
+    }
+
+    #[test]
+    fn a_tracking_branch_rejects_an_unknown_remote_ref() {
+        if !require_git() {
+            return;
+        }
+        let repo = TempRepo::new();
+        repo.init();
+        let manager = repo.manager();
+        assert!(matches!(
+            manager.create_tracking_branch("1", &repo.path.join(".wt/1"), "feat", "origin/nope"),
+            Err(WorktreeError::InvalidBranch(_))
+        ));
+    }
+
+    #[test]
+    fn a_moved_worktree_is_adopted_at_its_new_path() {
+        if !require_git() {
+            return;
+        }
+        let repo = TempRepo::new();
+        repo.init();
+        let manager = repo.manager();
+        manager
+            .create_new_branch(
+                "113",
+                &repo.path.join(".wt/113"),
+                "feature/issue-113",
+                Some("main"),
+            )
+            .expect("create");
+
+        // A move outside Orbit: Git still points at the old path.
+        std::fs::rename(repo.path.join(".wt/113"), repo.path.join(".wt/moved"))
+            .expect("move dir by hand");
+        let listed = manager.list().expect("list");
+        assert!(
+            listed.iter().any(|worktree| worktree.prunable),
+            "git reports the abandoned path as prunable"
+        );
+
+        let adopted = manager.adopt(&repo.path.join(".wt/moved")).expect("adopt");
+        assert!(same_path(&adopted.path, &repo.path.join(".wt/moved")));
+        assert_eq!(adopted.branch.as_deref(), Some("feature/issue-113"));
+        let listed = manager.list().expect("list");
+        assert!(
+            !listed.iter().any(|worktree| worktree.prunable),
+            "the repair clears the prunable entry"
+        );
+    }
+
+    #[test]
+    fn adopting_a_plain_folder_reports_not_a_worktree() {
+        if !require_git() {
+            return;
+        }
+        let repo = TempRepo::new();
+        repo.init();
+        let manager = repo.manager();
+        std::fs::create_dir_all(repo.path.join("notes")).expect("folder");
+        assert!(matches!(
+            manager.adopt(&repo.path.join("notes")),
+            Err(WorktreeError::NotAWorktree(_))
+        ));
+        assert!(matches!(
+            manager.adopt(&repo.path.join("gone")),
+            Err(WorktreeError::NotAWorktree(_))
+        ));
     }
 
     #[test]
