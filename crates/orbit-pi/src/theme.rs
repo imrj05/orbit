@@ -375,10 +375,16 @@ pub struct Theme {
     pub accent_fg: Hsla,
     /// Accent-colored text/icons on canvas or panel surfaces.
     pub accent_text: Hsla,
-    /// Selected navigation/list row wash. Classic palettes share this with
-    /// [`Self::selection`]; Operational gives rows their own olive-tinted step.
+    /// Selected navigation/list row wash.
+    ///
+    /// A step on the palette's **neutral** surface ramp, between hover and active,
+    /// never an accent-tinted wash: an opened session or a highlighted list row
+    /// reads as *raised*, not as *colored*. The accent stays the selection
+    /// **ink** ([`Self::accent_text`], [`Self::focus_ring`]), which is what
+    /// keeps "selected" legible as a place rather than a hue.
     pub surface_selected: Hsla,
     /// Text selection and find-match wash (terminal, editor, transcript).
+    /// A tinted wash is correct here — it is text highlight, not a surface.
     pub selection: Hsla,
     /// Foreground on [`Self::surface_selected`] and [`Self::selection`].
     pub selection_fg: Hsla,
@@ -851,7 +857,8 @@ struct Palette {
     hover: u32,
     active: u32,
     selection: u32,
-    /// Selected navigation/list row wash. Classic palettes mirror `selection`.
+    /// Selected navigation/list row wash: a **neutral** step of the palette's
+    /// own surface ramp (between `hover` and `active`), never an accent tint.
     selected_surface: u32,
     selection_fg: u32,
     border: u32,
@@ -948,7 +955,7 @@ const ORBIT_DARKER: Palette = Palette {
     hover: 0x1E1E1E,
     active: 0x232323,
     selection: 0x222A38,
-    selected_surface: 0x222A38,
+    selected_surface: 0x202020,
     selection_fg: 0xF0F0F0,
     border: 0x252525,
     border_subtle: 0x1B1B1B,
@@ -995,7 +1002,7 @@ const ORBIT_COBALT: Palette = Palette {
     hover: 0x242424,
     active: 0x292929,
     selection: 0x1D2B3F,
-    selected_surface: 0x1D2B3F,
+    selected_surface: 0x262626,
     selection_fg: 0xF1F1F1,
     border: 0x2A2A2A,
     border_subtle: 0x202020,
@@ -1042,10 +1049,9 @@ const ORBIT_AZURE: Palette = Palette {
     elevated: 0x292929,
     hover: 0x303030,
     active: 0x363636,
-    // One step below the reference #303A4B so accent-colored labels on the
-    // selected row still clear 4.5:1.
+    // Text selection remains a subtle blue wash, separate from row surfaces.
     selection: 0x2F3949,
-    selected_surface: 0x2F3949,
+    selected_surface: 0x333333,
     selection_fg: 0xE5E5E5,
     border: 0x343434,
     border_subtle: 0x292929,
@@ -1092,7 +1098,7 @@ const ORBIT_AZURE_LIGHT: Palette = Palette {
     hover: 0xEBEBEB,
     active: 0xE2E2E2,
     selection: 0xE8EEFA,
-    selected_surface: 0xE8EEFA,
+    selected_surface: 0xE6E6E6,
     selection_fg: 0x171717,
     border: 0xE5E5E5,
     border_subtle: 0xEEEEEE,
@@ -1186,7 +1192,7 @@ const ORBIT_PAPER: Palette = Palette {
     hover: 0xE3E3E7,
     active: 0xDBDBE0,
     selection: 0xE3E9F7,
-    selected_surface: 0xE3E9F7,
+    selected_surface: 0xDFDFE3,
     selection_fg: 0x232327,
     border: 0xE0E0E4,
     border_subtle: 0xE8E8EB,
@@ -1233,7 +1239,7 @@ const ORBIT_CONTRAST: Palette = Palette {
     hover: 0xE6E6E6,
     active: 0xDBDBDB,
     selection: 0xE4EBFA,
-    selected_surface: 0xE4EBFA,
+    selected_surface: 0xE0E0E0,
     selection_fg: 0x0F0F0F,
     border: 0xC9C9C9,
     border_subtle: 0xE2E2E2,
@@ -1279,7 +1285,7 @@ const FLEXOKI_LIGHT: Palette = Palette {
     hover: 0xDAD8CE,
     active: 0xCECDC3,
     selection: 0xE7E4D6,
-    selected_surface: 0xE7E4D6,
+    selected_surface: 0xD4D2C8,
     selection_fg: 0x282726,
     border: 0xDAD8CE,
     border_subtle: 0xE6E4D9,
@@ -1295,7 +1301,10 @@ const FLEXOKI_LIGHT: Palette = Palette {
     accent_hover: 0xB24E0F,
     accent_pressed: 0xA84712,
     accent_fg: 0xFFFCF0,
-    accent_text: 0xA84712,
+    // Darker than Flexoki's `accent_text`: the row washes in this light
+    // palette are grey (not near-white tints), and burnt orange at the ported
+    // weight only clears 4.5:1 on them a step down.
+    accent_text: 0x8A3E0F,
     focus_ring: 0xBC5215,
     action: 0xBC5215,
     action_hover: 0xB24E0F,
@@ -1325,7 +1334,7 @@ const FLEXOKI: Palette = Palette {
     hover: 0x2D2B2B,
     active: 0x3E3B3B,
     selection: 0x26242C,
-    selected_surface: 0x26242C,
+    selected_surface: 0x302E2E,
     selection_fg: 0xCECDC3,
     border: 0x2D2C2A,
     border_subtle: 0x252221,
@@ -1341,7 +1350,9 @@ const FLEXOKI: Palette = Palette {
     accent_hover: 0xDE8044,
     accent_pressed: 0xC76322,
     accent_fg: 0x171515,
-    accent_text: 0xDA702C,
+    // One step lighter than `accent`: Flexoki's row and hover washes are grey,
+    // and the ported burnt orange only clears 4.5:1 on them at this step.
+    accent_text: 0xDE8044,
     focus_ring: 0xDA702C,
     action: 0xDA702C,
     action_hover: 0xDE8044,
@@ -1375,7 +1386,7 @@ const OPERATIONAL: Palette = Palette {
     hover: 0x1B1D20,
     active: 0x232629,
     selection: 0x303A4B,
-    selected_surface: 0x1B2115,
+    selected_surface: 0x202225,
     selection_fg: 0xE6E7E8,
     border: 0x25272A,
     border_subtle: 0x1B1D20,
@@ -1424,7 +1435,7 @@ const OPERATIONAL_LIGHT: Palette = Palette {
     hover: 0xEEEEEA,
     active: 0xE4E5DF,
     selection: 0xE1E9D1,
-    selected_surface: 0xEEF3DF,
+    selected_surface: 0xE9E9E4,
     selection_fg: 0x24291C,
     border: 0xE1E2DC,
     border_subtle: 0xECEDE7,
@@ -2428,23 +2439,63 @@ mod tests {
         }
     }
 
-    /// Every palette must carry a real accent hue (the composer derives
-    /// `@file` by inverting it), so a grey accent is a defect.
-    /// Classic palettes must stay pixel-identical after the row-selection
-    /// role split: their selected-row wash is the old `selection` color.
+    /// A selected row is a step on the palette's own **neutral** ramp, never an
+    /// accent-tinted wash: the row that is open reads as *raised*, not as
+    /// *colored*, and the accent marks selection with ink and focus instead.
+    ///
+    /// It also has to hold its place on the ramp — above `hover` and below
+    /// `active` in dark mode, the inverse in light, and on the raised side of
+    /// `elevated` so a highlighted menu row can never recess into a hole.
     #[test]
-    fn classic_row_selection_matches_the_existing_wash() {
+    fn selected_rows_are_neutral_surface_steps() {
         for id in ThemeId::ALL {
-            if id.design_system() == DesignSystem::Classic {
-                let p = palette(id);
-                assert_eq!(
-                    p.selected_surface, p.selection,
-                    "{id:?}: Classic row selection drifted"
-                );
+            let p = palette(id);
+            let l = |v: u32| rel_lum(v);
+            let selected = p.selected_surface;
+            let channels = [
+                (selected >> 16) & 255,
+                (selected >> 8) & 255,
+                selected & 255,
+            ];
+            assert!(
+                channels.iter().max().unwrap() - channels.iter().min().unwrap() <= 16,
+                "{id:?}: selected row is not a neutral surface"
+            );
+            match id.appearance() {
+                ThemeMode::Dark => {
+                    assert!(
+                        l(selected) >= l(p.hover),
+                        "{id:?}: a selected row is dimmer than a hovered one"
+                    );
+                    assert!(
+                        l(selected) <= l(p.active),
+                        "{id:?}: a selected row outshines a pressed control"
+                    );
+                    assert!(
+                        l(selected) >= l(p.elevated),
+                        "{id:?}: a selected row recesses below a raised menu"
+                    );
+                }
+                ThemeMode::Light => {
+                    assert!(
+                        l(selected) <= l(p.hover),
+                        "{id:?}: a selected row is paler than a hovered one"
+                    );
+                    assert!(
+                        l(selected) >= l(p.active),
+                        "{id:?}: a selected row outshines a pressed control"
+                    );
+                    assert!(
+                        l(selected) <= l(p.elevated),
+                        "{id:?}: a selected row recesses above a raised menu"
+                    );
+                }
             }
         }
     }
 
+    /// Every palette must carry a real accent hue (the composer derives
+    /// `@file` by inverting it), so a grey accent is a defect.
     #[test]
     fn accent_carries_chroma() {
         for id in ThemeId::ALL {

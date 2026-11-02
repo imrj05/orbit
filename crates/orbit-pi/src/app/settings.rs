@@ -673,8 +673,7 @@ impl OrbitApp {
                                         .cursor_pointer()
                                         .when(selected, |row| {
                                             row.font_weight(FontWeight::MEDIUM)
-                                                .bg(theme.surface_selected)
-                                                .hover_selected(&theme)
+                                                .bg(theme.surface_secondary)
                                         })
                                         .when(!selected, |row| row.hover_state(&theme))
                                         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
@@ -4629,7 +4628,17 @@ impl OrbitApp {
                             .child(m.to_string())
                     })),
             )
-            .children(control.map(|c| div().flex_none().child(c)))
+            // A control keeps its intrinsic size but may never claim the
+            // whole row: the title shares the width, so a long control (a
+            // path, a version string) truncates instead of squeezing the
+            // title down to one letter per line.
+            .children(control.map(|c| {
+                div()
+                    .flex_none()
+                    .min_w_0()
+                    .max_w(gpui::relative(0.6))
+                    .child(c)
+            }))
             .into_any_element()
     }
 
@@ -5086,11 +5095,21 @@ impl OrbitApp {
             None,
             Some(runtime_text(theme, tr!("settings.transport_stdio"))),
         ));
+        // The package root the patches land in is a deep `node_modules` path.
+        // It rides the row's truncating meta line rather than the control
+        // slot: a control never shrinks, so a path there eats the whole row
+        // and leaves the title one letter per line. Home-shortened, it still
+        // makes a stale saved root obvious.
+        let package_root = self
+            .rpc_patches
+            .package_root
+            .as_ref()
+            .map(|root| crate::usage::format::short_path(&root.display().to_string()));
         process.push(self.setting_row(
             theme,
             "RPC patches",
             Some(&self.rpc_patches.summary()),
-            None,
+            package_root.as_deref(),
             Some(self.settings_toggle(
                 "rpc-patches-toggle",
                 self.rpc_patches.enabled,
@@ -5099,15 +5118,6 @@ impl OrbitApp {
                 OrbitApp::toggle_rpc_patches,
             )),
         ));
-        if let Some(root) = &self.rpc_patches.package_root {
-            process.push(self.setting_row(
-                theme,
-                "Package root",
-                None,
-                None,
-                Some(runtime_path(theme, root.display().to_string())),
-            ));
-        }
         if let Some(error) = &self.runtime.error {
             process.push(self.setting_row(
                 theme,

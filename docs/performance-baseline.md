@@ -140,6 +140,87 @@ app was repainting continuously, which is what a scroll looks like.
 **This is the baseline.** Any later capture on this machine should be compared
 against these four numbers: **p50 16.7 · p95 20.7 · p99 22.0 · max 56.7**.
 
+### Streaming measured with the instrument fixed (23:27)
+
+Two auto-captures, started and stopped by the run itself — no chord, no scrolling,
+1 s warm-up, idle threshold 100 ms.
+
+| capture | frames | secs | mean | p50 | p95 | p99 | max | slow | gap |
+| -- | --: | --: | --: | --: | --: | --: | --: | --: | --: |
+| settled scroll 22:21 | 1034 | 17.3 | 16.7 | 16.7 | 17.6 | 17.7 | 42.0 | 117 | 5 |
+| **stream A** | 1417 | 23.7 | **16.67** | 16.67 | **16.71** | 17.45 | **17.61** | 101 | 9 |
+| **stream B** | 542 | 9.0 | 16.67 | 16.67 | **17.19** | 17.62 | 20.57 | 114 | 3 |
+| mixed 120 s 23:26 | 7099 | 120.0 | 16.9 | 16.7 | 22.3 | 32.7 | 50.3 | 1301 | 3 |
+
+**Streaming on its own is free.** p95 is **16.71 ms** in the long capture and
+17.19 ms in the short one — at or *below* the settled-scroll baseline of 17.6,
+and the worst frame in the 23.7 s run is 17.61 ms, i.e. under two thirds of a
+missed vsync. Against the criteria fixed before the run (`gap` near the
+heartbeat's cadence, p95 within ~2 ms of 17.6), **Phase 7's smoothness gate
+passes for streaming**.
+
+The 120 s capture is the outlier and it is **not attributable**: it ran to the
+two-minute cap, so it mixes idle time, streaming and whatever the user did while
+it ran. p95 22.3 / p99 32.7 says something in those two minutes was expensive;
+without knowing whether the transcript was scrolled during it, that number cannot
+be assigned to streaming or to scrolling.
+
+### First streaming reading (23:16, chord-started)
+
+A 52 s capture taken while a response streamed. Chord-started, so no warm-up and
+no `stream` label — the auto-capture was not in that build.
+
+| capture | frames | secs | mean | p50 | p95 | p99 | max | slow | gap |
+| -- | --: | --: | --: | --: | --: | --: | --: | --: | --: |
+| settled scroll 22:21 | 1034 | 17.3 | 16.7 | 16.7 | **17.6** | 17.7 | 42.0 | 117 | 5 |
+| **streaming 23:16** | 3097 | 52.0 | 16.8 | 16.7 | **19.3** | 26.2 | **202.1** | 662 | 3 |
+
+Streaming costs something: p95 is **1.7 ms** worse, the share of frames over
+budget roughly **doubles** (11 % → 21 %), and the slow frames arrive every third
+frame instead of every fifth.
+
+**But the max is not trustworthy, and the instrument was at fault.** A capture
+started by a keystroke has no warm-up, and `IDLE_GAP` was 250 ms — so the pause
+between the app's last idle frame and the first frame after the chord was
+recorded as a **202 ms frame**. It is the app asleep, not the app stalling: six
+missed vsyncs of nothing happening. `IDLE_GAP` is now **100 ms** (six 60 Hz
+frames; a real miss is ~33 ms), with a test asserting a 200 ms pause is not a
+sample.
+
+So: the distribution reading (p95 19.3, slow share 21 %) is real; the tail
+reading (p99 26.2, max 202) is contaminated and must be re-measured. The verdict
+stays open, and it is not leaning towards "free".
+
+## The streaming experiment
+
+Phase 7's gate is that a long streaming session stays smooth. That needs a
+capture of frames produced *while tokens arrive*, and it should need no
+stopwatch: a debug build now starts a capture labelled **`stream`** when the
+active session begins streaming and files it when the run settles.
+
+```
+cargo run -p orbit-pi          # debug build
+# ask for a long answer; use the app normally
+python3 scripts/read-perf.py
+```
+
+The capture appears as a `stream` row with no keypress. The hook is armed from
+the render path (`perf::ensure_armed`), because `tick` — which knows a run is
+streaming — has no window; it is a single atomic load when no capture runs, so an
+idle app still paints nothing.
+
+**How to read it, decided before the run:**
+
+| Result | Verdict |
+| -- | -- |
+| `gap` ≈ 5, p95 within ~2 ms of the settled baseline (17.6) | streaming repaint is free — Phase 7's smoothness gate passes |
+| p95 ≥ 20 with a **noisy** gap | streaming repaint is the cost; that is a Phase 7 code target (coalescing, row rebuild) |
+| p95 high but `gap` ≈ 5 | the same heartbeat cost as the settled run — nothing about streaming |
+
+One capture is one sample: tool-call-heavy runs and pure-prose runs arrive at
+different rates, so an ambiguous result wants a second capture before it is
+believed.
+
 ## Attributing the tail
 
 The p95 is stable across runs, which says the tail has a *cause* rather than being

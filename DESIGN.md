@@ -11,7 +11,7 @@ colors:
   hover: "#303030"
   active: "#363636"
   selection: "#2F3949"
-  surface-selected: "#2F3949"
+  surface-selected: "#333333"
   selection-foreground: "#E5E5E5"
   ink: "#E5E5E5"
   ink-secondary: "#A3A3A3"
@@ -56,7 +56,7 @@ colors:
   hover-light: "#EBEBEB"
   active-light: "#E2E2E2"
   selection-light: "#E8EEFA"
-  surface-selected-light: "#E8EEFA"
+  surface-selected-light: "#E6E6E6"
   selection-foreground-light: "#171717"
   ink-light: "#171717"
   ink-secondary-light: "#525252"
@@ -259,9 +259,9 @@ signature hue inside the same grammar.
   accent fill, and pairs with `selection_fg`. The dark wash is one step below the
   reference #303A4B so `accent_text` labels and secondary metadata on a selected row
   still clear 4.5:1.
-- **Selected row** (`surface_selected`): the active navigation/list row. Classic
-  palettes resolve it equal to `selection`; Operational gives rows their own
-  olive-tinted step.
+- **Selected row** (`surface_selected`): a neutral, theme-matched surface for
+  active navigation and list rows, distinct from the text-selection wash. It
+  sits between hover and pressed on each palette's surface ramp.
 
 ### Neutral
 - **Canvas** (#181818 / #F5F5F5): the main content plane and window background.

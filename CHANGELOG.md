@@ -16,6 +16,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Windows installs and updates pi with pi's own installer.** Orbit used to
+  tell Windows users to run `npm install -g` itself and refused to migrate an
+  npm install there, on the belief that pi shipped no installer for the
+  platform. pi documents one — `powershell -c "irm https://pi.dev/install.ps1 | iex"`
+  — and it lays down the same pinned, self-updating managed install under
+  `%USERPROFILE%\.pi\agent\install`, so install, migration, and `pi update`
+  now work on Windows the way they already did on macOS and Linux. The setup
+  page's copyable hint follows the platform, and an npm global install on
+  Windows (whose `pi.cmd` shim sits beside `node_modules` rather than inside
+  it) is now recognised as an npm install instead of being reported as a
+  package manager Orbit will not touch.
+
 - **Typing in the command palette no longer rebuilds its rows.** Session,
   command, settings, and MCP rows are built once when the palette opens and a
   keystroke only filters and ranks them, instead of re-deriving every label
@@ -23,6 +35,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now outranks one that only matched a search keyword.
 
 ### Fixed
+
+- **Selected sidebar and list rows use neutral theme surfaces.** Active rows
+  no longer use accent-tinted backgrounds; the selected surface follows each
+  palette's neutral ramp, while text selection keeps its own highlight.
+
+- **Runtime settings show where pi actually is.** The page listed the pi
+  *package root* — a `node_modules/@earendil-works/pi-coding-agent` path deep
+  enough to take the whole row — and because a control never shrinks it
+  squeezed "Package root" into one letter per line. The deep path now rides
+  the RPC-patches row as a home-shortened, truncating detail line, and the
+  binary row keeps naming the launcher Orbit spawns, which is what `which pi`
+  prints.
 
 - **Dismissing the command palette returns focus to whatever opened it.** It
   always went to the composer, so opening it from the sessions sidebar and

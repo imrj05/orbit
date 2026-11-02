@@ -1690,7 +1690,7 @@ impl OrbitApp {
                                     div()
                                         .px(DynamicSpacing::Base04.px(&theme))
                                         .rounded(Radius::Small.px(&theme))
-                                        .bg(theme.accent.opacity(0.14))
+                                        .bg(theme.surface_active)
                                         .text_size(TextSize::XSmall.px(&theme))
                                         .text_color(theme.accent_text)
                                         .child(tr!("worktree.row.active")),

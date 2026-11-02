@@ -216,32 +216,30 @@ fn dependency(
 }
 
 /// The command that installs `bin` on this host. `pi` uses the project's
-/// official installer on macOS and Linux; Windows has no managed installer,
-/// so it shows pi's documented npm command for the user to run (Orbit never
-/// runs npm itself — no Orbit code path installs or updates the CLI through
-/// npm). `node` and `git` come from whatever package manager the OS ships:
-/// `winget` on Windows 10/11, Homebrew on macOS (the manager a Mac user with
-/// neither already has), and apt on Linux.
+/// official installer wherever pi ships one — macOS and Linux through
+/// `install.sh`, Windows through the documented `install.ps1` PowerShell
+/// one-liner — and pi's documented npm form on anything else. Orbit never runs
+/// npm itself, so that last one is only ever a hint. `node` and `git` come from
+/// whatever package manager the OS ships: `winget` on Windows 10/11, Homebrew
+/// on macOS (the manager a Mac user with neither already has), and apt on
+/// Linux.
 fn install_hint(bin: &str) -> &'static str {
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    const PI: &str = crate::pi_install::INSTALL_COMMAND;
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    const PI: &str = "npm install -g --ignore-scripts @earendil-works/pi-coding-agent";
+    let pi = crate::pi_install::install_command();
     #[cfg(target_os = "macos")]
     return match bin {
-        "pi" => PI,
+        "pi" => pi,
         "node" => "brew install node",
         _ => "brew install git",
     };
     #[cfg(windows)]
     return match bin {
-        "pi" => PI,
+        "pi" => pi,
         "node" => "winget install OpenJS.NodeJS.LTS",
         _ => "winget install Git.Git",
     };
     #[cfg(not(any(target_os = "macos", windows)))]
     return match bin {
-        "pi" => PI,
+        "pi" => pi,
         "node" => "sudo apt install nodejs npm",
         _ => "sudo apt install git",
     };
@@ -354,14 +352,20 @@ mod tests {
     /// they are on — the page used to offer Homebrew on Windows.
     #[test]
     fn install_hints_match_the_host() {
-        // `pi` installs through its official installer on macOS/Linux; Orbit
-        // must never advertise an npm install there.
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        assert_eq!(install_hint("pi"), crate::pi_install::INSTALL_COMMAND);
+        // `pi` installs through its official installer wherever pi ships one;
+        // Orbit must never advertise an npm install on those platforms.
+        assert_eq!(install_hint("pi"), crate::pi_install::install_command());
         assert!(
             !install_hint("pi").contains("npm install"),
             "{}",
             install_hint("pi")
+        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(install_hint("pi"), crate::pi_install::INSTALL_COMMAND);
+        #[cfg(windows)]
+        assert_eq!(
+            install_hint("pi"),
+            crate::pi_install::INSTALL_COMMAND_WINDOWS
         );
         #[cfg(target_os = "macos")]
         {

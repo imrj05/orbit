@@ -2244,6 +2244,22 @@ fn user_file_chip(
         .into_any_element()
 }
 
+/// Whether a turn's trailing work is pulled up above its answer.
+///
+/// A model that thinks again after writing leaves a lone thought below a
+/// finished answer — a "1 thought" pill stranded at the bottom, reading as if it
+/// came after the reply. When everything after the first answer text is thinking
+/// (no tool calls), that thought joins the reasoning above the answer, where the
+/// reader expects it. The test is the *kind* of work, not the count of text
+/// blocks: a thought has no side effects and no order to preserve.
+///
+/// Tool calls never hoist: they have effects, they interleave with what the agent
+/// says about them, and a turn that speaks and then runs commands must show those
+/// commands where they happened.
+pub(crate) fn hoists_trailing_thought(steps: &[Step], answer_start: Option<usize>) -> bool {
+    answer_start.is_none_or(|answer| steps[answer + 1..].iter().all(|step| step.tools.is_empty()))
+}
+
 fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement {
     let theme = paint.theme;
     let ix = paint.ix;
@@ -2284,6 +2300,20 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
         .steps
         .iter()
         .position(|step| !step.thinking.is_empty() || !step.tools.is_empty());
+    // A turn with ONE answer block hoists all of its work above that block:
+    // reasoning and tool calls are what produced the answer, and a model that
+    // thinks again after writing would otherwise leave a "1 thought" pill
+    // stranded under a finished answer. A turn that interleaves — text, work,
+    // more text — keeps each group where it happened, because hoisting would
+    // rewrite the order the work actually arrived in.
+    let hoist = hoists_trailing_thought(&message.steps, answer_start);
+    let group_at = work_start.map(|work| {
+        if hoist {
+            answer_start.map_or(work, |answer| answer.min(work))
+        } else {
+            work
+        }
+    });
     // First step index whose post-answer work is NOT yet absorbed into a
     // rendered activity group (see the in-sequence group block below).
     let mut covered_until = 0usize;
@@ -2291,19 +2321,25 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
     for (step_ix, step) in message.steps.iter().enumerate() {
         // The group sits where the turn's first work happened, so any text
         // that preceded it stays above; the rest of the text follows below.
-        if Some(step_ix) == work_start {
-            let before_answer = answer_start.is_none_or(|answer| step_ix < answer);
+        if Some(step_ix) == group_at {
+            let before_answer =
+                work_start.is_some_and(|work| answer_start.is_some_and(|answer| work < answer));
             // Pre-answer work hides behind the turn fold; later work stays
             // visible as a collapsed, expandable group.
             let show_work = paint.live || paint.fold_open || !before_answer;
             if show_work {
-                // The group covers the work up to and including the step
-                // that produced the first answer text; work in later steps
-                // gets its own group further down, so tool calls stay in
-                // sequence with the text — live included: a turn that speaks
-                // and then works again must not hoist that work above the
-                // answer that preceded it.
-                let group_end = answer_start.map_or(message.steps.len(), |answer| answer + 1);
+                // A single-answer turn: the group covers every step, so a
+                // thought the model had after writing sits with the reasoning
+                // that produced the answer instead of below it.
+                // An interleaved turn: the group stops at the first answer
+                // block and later work gets its own group further down, so the
+                // order the work arrived in survives — hoisting there would
+                // rewrite history.
+                let group_end = if hoist {
+                    message.steps.len()
+                } else {
+                    answer_start.map_or(message.steps.len(), |answer| answer + 1)
+                };
                 let group_live = activity_group_is_live(paint.live, group_end, &message.steps);
                 let open = paint
                     .expanded_activities
@@ -2363,15 +2399,17 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
             );
         }
 
-        // Work in a step that FOLLOWS answer text (the assistant spoke,
-        // then kept thinking/calling tools) renders as its own group here,
-        // in sequence, instead of being pulled up into the first group.
+        // Interleaved turns only: work in a step that FOLLOWS an earlier
+        // answer block renders as its own group here, in sequence, instead of
+        // being pulled up into the first group. A trailing *thought* is the
+        // one exception (`hoists_trailing_thought`).
         // The group absorbs every following work-only step, so a run of
         // tool calls between two text blocks is ONE group ("Ran 4
         // commands · 5 thoughts"), never a stack of per-step rows. While
         // live, the currently streaming work-only step is absorbed too,
         // so the group sits where the agent actually resumed working.
-        if answer_start.is_some_and(|answer| step_ix > answer)
+        if !hoist
+            && answer_start.is_some_and(|answer| step_ix > answer)
             && step_ix >= covered_until
             && (!step.thinking.is_empty() || !step.tools.is_empty())
         {
@@ -11030,6 +11068,65 @@ mod tests {
             (px(0.)..px(100.)).contains(&(height - last_tool.bottom())),
             "only the footer and row padding should follow the settled work"
         );
+    }
+
+    /// The rule is a judgement about *what kind* of work trails, not just how
+    /// much: a thought after the answer hoists, tool calls never do.
+    #[test]
+    fn only_a_trailing_thought_hoists_above_the_answer() {
+        fn step(text: &str, thinking: &str, tools: usize) -> Step {
+            let mut step = Step {
+                text: text.into(),
+                thinking: thinking.into(),
+                ..Default::default()
+            };
+            for _ in 0..tools {
+                step.tools.push(crate::transcript::ToolCall {
+                    name: "read".into(),
+                    summary: String::new(),
+                    path: None,
+                    added: 0,
+                    removed: 0,
+                    id: None,
+                    args: None,
+                    output: None,
+                    failed: false,
+                    facts: Default::default(),
+                });
+            }
+            step
+        }
+
+        // Answer, then a trailing thought: hoist.
+        let trailing_thought = [step("answer", "", 0), step("", "hmm", 0)];
+        assert!(hoists_trailing_thought(&trailing_thought, Some(0)));
+
+        // Answer, then tool calls: never hoist — those effects happened after
+        // the sentence that announced them.
+        let trailing_tools = [step("answer", "", 0), step("", "hmm", 2)];
+        assert!(!hoists_trailing_thought(&trailing_tools, Some(0)));
+
+        // Work between two text blocks reads in the order it was spoken.
+        let interleaved = [
+            step("first", "", 0),
+            step("", "hmm", 2),
+            step("second", "", 0),
+        ];
+        assert!(!hoists_trailing_thought(&interleaved, Some(0)));
+
+        // Two text blocks with only thinking after them still hoist: a thought
+        // has no effects and no order to preserve, so it belongs with the
+        // reasoning above the answer rather than stranded at the bottom.
+        let two_texts = [
+            step("first", "", 0),
+            step("second", "", 0),
+            step("", "hmm", 0),
+        ];
+        assert!(hoists_trailing_thought(&two_texts, Some(0)));
+
+        // No answer at all: everything hoists into one group at the top.
+        let work_only = [step("", "hmm", 1)];
+        assert!(hoists_trailing_thought(&work_only, None));
     }
 
     #[gpui::test]

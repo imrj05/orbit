@@ -211,6 +211,10 @@ impl Render for OrbitApp {
         // was built), open panels, sidebar visibility, collapsed groups. It
         // needs a window — opening the terminal spawns a shell — so the restore
         // waits for the first frame instead of running in `new`.
+        // Debug builds only: a capture started from `tick` has no window, so the
+        // frame hook is armed here, on the first frame after it starts.
+        #[cfg(debug_assertions)]
+        crate::perf::ensure_armed(window);
         if !self.layout_restored {
             self.layout_restored = true;
             self.apply_stored_arrangement(window, cx);

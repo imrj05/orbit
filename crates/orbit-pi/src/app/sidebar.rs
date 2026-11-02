@@ -1080,7 +1080,7 @@ pub(crate) fn render_side_row(
                                     .px(DynamicSpacing::Base04.px(&theme))
                                     .py(DynamicSpacing::Base02.px(&theme))
                                     .rounded(Radius::Small.px(&theme))
-                                    .bg(theme.accent.opacity(0.08))
+                                    .bg(theme.surface_elevated)
                                     .text_center()
                                     .text_size(TextSize::XSmall.px(&theme))
                                     .font_weight(FontWeight::MEDIUM)
@@ -1239,8 +1239,8 @@ pub(crate) fn render_side_row(
             // Keep titles still; the status icon communicates background activity.
             let title = session_title(*ix, session.title.clone().into(), theme, active, false);
             // Indented under its workspace group so the list reads as a
-            // tree. The open session takes the `selection` fill with `selection_fg`
-            // ink — the same selected-destination grammar as the nav rows.
+            // tree. The open session uses the secondary surface rather than
+            // an accent-tinted selection background.
             // Row actions live on the right-click menu, so the card carries no
             // hover-revealed control at all.
             // Outer item carries the inter-row spacing (padding) and the click
@@ -1301,9 +1301,8 @@ pub(crate) fn render_side_row(
                 .items_center()
                 .gap(DynamicSpacing::Base06.px(&theme))
                 .when(active, |card| {
-                    card.bg(theme.surface_selected)
-                        .border_color(theme.accent.opacity(0.40))
-                        .text_color(theme.selection_fg)
+                    card.bg(theme.surface_secondary)
+                        .text_color(theme.text_primary)
                 })
                 // Focus remains visible even on the selected session. Reserve
                 // the border in every state so hover/focus never shifts text.
@@ -1420,7 +1419,7 @@ pub(crate) fn render_side_row(
                                         .px(DynamicSpacing::Base04.px(&theme))
                                         .py(DynamicSpacing::Base01.px(&theme))
                                         .rounded(Radius::Small.px(&theme))
-                                        .bg(theme.accent.opacity(0.10))
+                                        .bg(theme.surface_active)
                                         .text_size(TextSize::XSmall.px(&theme))
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(theme.accent_text)

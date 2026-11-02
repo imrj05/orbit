@@ -50,6 +50,10 @@ impl OrbitApp {
         self.tick_mcp(cx);
         // Persist a settled panel layout (a drag writes once it stops).
         crate::layout::flush_if_settled();
+        // Debug builds only: time the frames a run actually produces, so a
+        // streaming session can be judged without a stopwatch at the keyboard.
+        #[cfg(debug_assertions)]
+        crate::perf::auto_capture(self.is_running());
         // Bound the warm-session pool: reap idle parked processes past the TTL.
         self.reap_idle_parked();
         // A banner click routes back to the session it announced.

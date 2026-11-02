@@ -19,7 +19,12 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 /// A gap longer than this is the app waiting, not the app working. Dropped.
-const IDLE_GAP: Duration = Duration::from_millis(250);
+///
+/// 100 ms is six 60 Hz frames: a real frame that misses a vsync is ~33 ms, and
+/// two missed is ~50 ms. Anything slower than that is the app asleep between
+/// repaints — most often the pause between the last idle frame and the first
+/// frame after a keystroke, which would otherwise be recorded as a 200 ms stall.
+const IDLE_GAP: Duration = Duration::from_millis(100);
 
 /// A capture stops by itself here, so a forgotten recording cannot run forever.
 const MAX_CAPTURE: Duration = Duration::from_secs(120);
@@ -183,16 +188,69 @@ pub fn start_from_env(window: &mut gpui::Window) {
     }
 }
 
+/// Whether the frame hook is currently armed. The hook is one-shot, so it has to
+/// be re-armed each frame; this keeps `ensure_armed` from stacking callbacks.
+static ARMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Arm the frame hook if a capture is live and nothing is armed yet.
+///
+/// Called from the render path, which is the only place with a `Window`. It is a
+/// single atomic load when idle, and it is what lets a capture start from `tick`
+/// (which has no window) without a keypress.
+pub fn ensure_armed(window: &mut gpui::Window) {
+    if !is_active() {
+        return;
+    }
+    if ARMED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    window.on_next_frame(frame);
+}
+
+/// Start a capture when a run begins streaming and file it when the run settles.
+///
+/// This is the experiment that needs no keypress: the transcript cost of arrival
+/// is measured by using the app, not by driving a stopwatch. Called from `tick`,
+/// which runs on every heartbeat while a session is active.
+pub fn auto_capture(streaming: bool) {
+    let running = CAPTURE
+        .lock()
+        .map(|slot| {
+            slot.as_ref()
+                .map(|capture| capture.label == STREAM_LABEL)
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+    match (streaming, running) {
+        (true, false) => {
+            if start(STREAM_LABEL) {
+                eprintln!("perf: streaming capture started");
+            }
+        }
+        (false, true) => {
+            if let Some(summary) = finish() {
+                eprintln!("perf: {}", summary.line());
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The label an auto-captured streaming run carries.
+const STREAM_LABEL: &str = "stream";
+
 /// Arm the frame hook. Called when a capture starts, because the hook is not
 /// kept running: a permanently armed callback would repaint an idle app at the
 /// display's refresh rate, which is a different app than the one being measured.
 pub fn arm(window: &mut gpui::Window) {
-    window.on_next_frame(frame);
+    ensure_armed(window);
 }
 
 fn frame(window: &mut gpui::Window, _cx: &mut gpui::App) {
     if tick(Instant::now()) {
         window.on_next_frame(frame);
+    } else {
+        ARMED.store(false, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -414,6 +472,30 @@ mod tests {
 
     /// Frames inside the warm-up window are the window's first paint, not the
     /// interaction; a launch-started capture must not report them.
+    /// The pause between an idle app and the first frame after a keystroke is not
+    /// a frame: a 200 ms "sample" is six missed vsyncs of nothing happening, and
+    /// recording it inflates the max and the p99.
+    #[test]
+    fn an_idle_pause_is_not_a_slow_frame() {
+        let _guard = take_capture();
+        let _ = finish();
+        assert!(start("pause"));
+        let base = Instant::now();
+        assert!(tick(base));
+        assert!(tick(base + Duration::from_millis(16)));
+        // 200 ms of the app doing nothing, then it wakes for a keystroke.
+        assert!(tick(base + Duration::from_millis(216)));
+        assert!(tick(base + Duration::from_millis(232)));
+        let samples = {
+            let slot = CAPTURE
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            slot.as_ref().expect("running").samples.clone()
+        };
+        assert_eq!(samples, vec![16.0, 16.0], "the 200 ms pause is not a frame");
+        let _ = finish();
+    }
+
     #[test]
     fn warmup_frames_are_not_samples() {
         let _guard = take_capture();
@@ -446,6 +528,36 @@ mod tests {
     #[test]
     fn an_empty_capture_is_not_a_zero() {
         assert!(summarize("scroll", &[], &[], 2.0).is_none());
+    }
+
+    /// The auto-capture is a state machine over the run's lifecycle: start once
+    /// when streaming begins, file once when it settles, and never nest.
+    #[test]
+    fn auto_capture_tracks_the_run() {
+        let _guard = take_capture();
+        let _ = finish();
+
+        // A run begins: one capture, labelled for what it measured.
+        auto_capture(true);
+        assert!(is_active());
+        assert_eq!(
+            CAPTURE
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_ref()
+                .map(|capture| capture.label.as_str()),
+            Some(STREAM_LABEL)
+        );
+        // A second tick while streaming must not restart it.
+        auto_capture(true);
+        assert!(is_active());
+
+        // The run settles: it files itself and stops.
+        auto_capture(false);
+        assert!(!is_active());
+        // Idle again: nothing to do.
+        auto_capture(false);
+        assert!(!is_active());
     }
 
     /// A periodic tail and a scattered tail look the same in the percentiles and
