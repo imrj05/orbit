@@ -2452,6 +2452,11 @@ mod tests {
             let p = palette(id);
             let l = |v: u32| rel_lum(v);
             let selected = p.selected_surface;
+            assert!(
+                contrast(selected, p.surface) >= 1.13
+                    && contrast(selected, p.surface) > contrast(p.surface_secondary, p.surface),
+                "{id:?}: selected row needs more contrast against the sidebar than the secondary surface"
+            );
             let channels = [
                 (selected >> 16) & 255,
                 (selected >> 8) & 255,

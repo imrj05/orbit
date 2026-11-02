@@ -673,7 +673,8 @@ impl OrbitApp {
                                         .cursor_pointer()
                                         .when(selected, |row| {
                                             row.font_weight(FontWeight::MEDIUM)
-                                                .bg(theme.surface_secondary)
+                                                .bg(theme.surface_selected)
+                                                .hover_selected(&theme)
                                         })
                                         .when(!selected, |row| row.hover_state(&theme))
                                         .on_mouse_up(MouseButton::Left, move |_, _, cx| {

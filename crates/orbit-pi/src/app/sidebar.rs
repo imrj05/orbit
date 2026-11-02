@@ -1239,8 +1239,8 @@ pub(crate) fn render_side_row(
             // Keep titles still; the status icon communicates background activity.
             let title = session_title(*ix, session.title.clone().into(), theme, active, false);
             // Indented under its workspace group so the list reads as a
-            // tree. The open session uses the secondary surface rather than
-            // an accent-tinted selection background.
+            // tree. The open session uses the neutral selected surface, which
+            // stands out more from the sidebar than the secondary surface.
             // Row actions live on the right-click menu, so the card carries no
             // hover-revealed control at all.
             // Outer item carries the inter-row spacing (padding) and the click
@@ -1301,7 +1301,8 @@ pub(crate) fn render_side_row(
                 .items_center()
                 .gap(DynamicSpacing::Base06.px(&theme))
                 .when(active, |card| {
-                    card.bg(theme.surface_secondary)
+                    card.bg(theme.surface_selected)
+                        .border_color(theme.border)
                         .text_color(theme.text_primary)
                 })
                 // Focus remains visible even on the selected session. Reserve
