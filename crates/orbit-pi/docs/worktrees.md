@@ -52,8 +52,8 @@ for:
 - **Name** — a folder identifier such as `113`. See *Naming* below.
 - **Branch** — either a **new branch** (optionally starting from a chosen
   commit/branch; empty means the repository's current `HEAD`) or an
-  **existing branch** (local or remote-tracking). Choosing a remote-tracking
-  branch checks it out under its short name the same way `git switch` would.
+  **existing branch** (local or remote-tracking). A remote-tracking ref creates
+  a local branch that tracks it, using a numeric suffix if its short name is taken.
 - **Location** — derived as `<worktree root>/<name>`; the dialog previews the
   resolved path.
 - **Setup** — whether to run the repository's setup script after creation
@@ -76,9 +76,10 @@ new task there runs pi with that path as its cwd.
 
 ### From the status bar ("Work in")
 
-The status bar shows where the next task will run. Beside the repository chip,
-a **Work in** chip reads `Local` at the main working directory or the linked
-worktree's name; it appears only for Git repositories. Opening it lists:
+The status bar shows where the next task will run. In a Git repository, the
+**Work in** chip reads `Local` at the main working directory or the linked
+worktree's name. Outside a repository, a folder chip takes its place. Opening
+**Work in** lists:
 
 - **Local** — the repository's main working directory.
 - Every linked worktree (name over its branch).
@@ -87,7 +88,20 @@ worktree's name; it appears only for Git repositories. Opening it lists:
 - **Remote branch** — create a worktree on a local tracking branch.
 - **Clone repository** — clone a repository into a new folder.
 - **Choose folder** — browse to any directory.
-- **Recent folders** — reopen folders from recent sessions, without duplicating listed worktrees.
+- **Recent folders** — reopen up to eight recent session folders, excluding the
+  active folder and listed worktrees.
+
+The new-task page's **Work in** picker offers the same choices. Its **Remote
+branch** action opens the create dialog's existing-branch list. Outside a
+repository, the new-task picker still offers **Clone repository** and folder
+selection, but not repository-specific worktree actions.
+
+To clone, enter a repository URL and folder name and choose a parent directory.
+Git runs in the background with progress and cancellation. A successful clone
+opens as a working folder and appears in the sidebar; a failed or cancelled
+clone is not opened, although Git may leave a partial directory. Interactive
+terminal credential prompts are disabled. The Windows job-object cancellation
+path runs on the Windows CI leg; manual GUI verification remains.
 
 Choosing a different location starts a task there and switches the active
 workspace, so Explorer, terminal, Git page, Review, and the agent all follow.
@@ -106,11 +120,11 @@ Three identities never collapse into one:
 | --- | --- | --- |
 | Name | `113` | One path component, no `/` or `\`, not `.`/`..` |
 | Branch | `feature/issue-113` | Any legal Git branch name; slashes are fine |
-| Path | `~/Projects/my-project/.wt/113` | Always `<worktree root>/<name>` |
+| Path | `~/Projects/my-project/.wt/113` | Created at `<worktree root>/<name>`; may be moved later |
 
 Renaming a worktree renames **only its directory** (`git worktree move`); the
-Git branch keeps its name. Orbit never derives a branch from the worktree name
-or vice versa. Moving uses the same Git command with a destination path.
+Git branch keeps its name. The create dialog suggests a branch from the name,
+but both are editable. Moving uses the same Git command with a destination path.
 
 `git worktree list --porcelain -z` is the discovery source, so worktrees
 created outside Orbit appear automatically — no re-import step.
@@ -234,8 +248,12 @@ are intentionally not prominent:
   entries whose directories are gone.
 - **Repair worktrees** — `git worktree repair`, rebuilding administrative
   links after a manual move.
+- **Existing worktree…** — choose an existing worktree directory and reconnect it
+  with `git worktree repair` before opening it.
 
-Both always re-list the repository afterwards.
+These operations re-list the repository afterwards. If the worktree's Git
+administrative metadata is gone, Orbit reports the problem instead of opening
+it as a healthy worktree.
 
 ## Worktrees and sessions
 

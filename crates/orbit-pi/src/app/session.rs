@@ -213,6 +213,9 @@ impl OrbitApp {
     }
 
     pub(super) fn submit_as(&mut self, text: String, mode: SendMode, cx: &mut Context<Self>) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         // Collect any paste that raced the submit tick, then fold the long
         // pastes back in: a pill is only a compact way to *hold* text.
         self.drain_pasted_files(cx);
@@ -384,6 +387,12 @@ impl OrbitApp {
         self.latest_turn = None;
         // The find hits belong to the previous session's transcript.
         self.transcript_search = None;
+        // Fork points belong to the previous session's entries, and a picker
+        // left over it would fork whatever session replaced it.
+        self.rewind_picker = None;
+        self.rewind_fetching = false;
+        self.rewind_fetch_id = None;
+        self.rewind_preselect = None;
     }
 
     /// Forget the queued-message mirror — the queue belongs to the previous
@@ -908,6 +917,9 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         // A run in flight must not be sacrificed to start a new task. pi's
         // `new_session` replaces the session and calls `abort()` on the live
         // turn (`agent-session-runtime.teardownCurrent`), which surfaces as
@@ -935,6 +947,9 @@ impl OrbitApp {
     /// switches the process onto it; the `clone` response handler reloads the
     /// transcript and re-keys the session.
     pub(super) fn clone_session(&mut self, cx: &mut Context<Self>) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         self.send(CommandBody::CloneSession, "clone");
         cx.notify();
     }
@@ -946,6 +961,9 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         // Same workspace with a live idle process: reuse it in place. A run
         // in flight is parked instead, so `new_session` never aborts it; a
         // dead process (or a different workspace) always needs its own.
@@ -969,6 +987,9 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         // Custom terminal surfaces cannot run offscreen; native blocking
         // requests are parked with their session and restored on return.
         self.cancel_custom_surfaces(cx);
@@ -1091,6 +1112,9 @@ impl OrbitApp {
         push: bool,
         cx: &mut Context<Self>,
     ) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         self.pending_session_rename = None;
         self.session_rename_ready = false;
         // Opening a session means viewing the chat: leave whichever full-page

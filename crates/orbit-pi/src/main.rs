@@ -98,6 +98,8 @@ mod quota_hidden;
 mod recent_models;
 mod repository_clone;
 mod review;
+mod rewind;
+mod rewind_picker;
 mod rpc_patches;
 mod session_defaults;
 mod session_retention;

@@ -9,15 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Export a response or visible transcript as Markdown.** Each settled response's
+  footer offers a save action; the command palette can export the visible transcript.
+  Both open a native save dialog and exclude thinking, tool output, and image data.
+  The visible transcript can omit earlier history after compaction. Existing files
+  are never overwritten. GUI verification remains.
+
 - **"Work in" is one control, and it answers for every kind of place.** The
   status bar's chip now reads `Local` at the repository's main checkout (it
   used to appear only inside a worktree, so the composer could never enter one)
   and offers the repository's worktrees, a new worktree, an existing worktree
-  folder on disk, a remote branch, and any other folder. The new-task page's
-  folder field uses the same vocabulary, so a task can start in a worktree
-  without visiting the Worktrees page first. Choosing a different location
+  folder on disk, a remote branch, a clone, recent folders, and any other folder.
+  The new-task page's folder field uses the same vocabulary, so a task can
+  start in a worktree without visiting the Worktrees page first. Choosing a different location
   starts a task there; a running session is parked, and an idle session's
   transcript remains on disk.
+
+- **Clone a repository from the working-folder picker.** Enter a URL and folder
+  name, choose a destination, and follow Git's progress or cancel. A successful
+  clone opens as a working folder and joins the sidebar; a failed or cancelled
+  clone is not opened, and Git may leave a partial directory. The new-task picker
+  offers cloning even outside a repository. The Windows job-object cancellation
+  path now runs on the Windows CI leg (`repository_clone::` tests); manual GUI
+  verification remains.
 
 - **Remote branches become local branches that track them.** Choosing a
   remote-tracking ref used to run `git worktree add <path> origin/feat`, which
@@ -27,8 +41,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A worktree folder Git stopped listing can be reconnected.** A directory
   that was moved by hand shows up as prunable, and the picker's
-  "Existing worktree…" row (and the Worktrees page's Advanced menu) re-registers
-  it with `git worktree repair` before opening it.
+  "Existing worktree…" row (and the Worktrees page's Advanced menu) can reconnect
+  the chosen directory with `git worktree repair` before opening it. A worktree
+  whose administrative metadata is gone is reported instead of opened.
+
+- **Rewind a conversation to an earlier message.** A user message's footer now
+  offers a rewind beside its copy action, and the palette's *Rewind to a
+  Message…* lists the same messages for the keyboard. pi forks: the branch up
+  to just before the chosen message is written to a **new** session file, so
+  the conversation you leave stays in the sidebar and nothing is destroyed. The
+  forked-from prompt is handed back to the composer to edit and resend. A run
+  in flight has to stop first, and an extension that cancels the fork leaves
+  everything untouched.
 
 - **Discover session shortcuts by holding ⌘ or Ctrl.** The first nine visible
   sessions show their numbered keycaps while the modifier is held; the hints

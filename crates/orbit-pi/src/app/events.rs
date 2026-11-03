@@ -386,6 +386,7 @@ impl OrbitApp {
                     self.refresh_context_stats();
                 }
                 Event::ProcessExited => {
+                    self.rewind_fork_id = None;
                     self.pending_session_rename = None;
                     self.session_rename_ready = false;
                     self.busy = false;
@@ -857,6 +858,20 @@ impl OrbitApp {
             self.on_entries_response(success, data, error, cx);
             return;
         }
+        // Dismissed or superseded picker requests cannot update a newer
+        // picker or show a stale error after a session change.
+        if command == "get_fork_messages" {
+            if self.rewind_fetch_id.as_deref() != Some(id) {
+                return;
+            }
+            self.rewind_fetch_id = None;
+        }
+        if command == "fork" {
+            if self.rewind_fork_id.as_deref() != Some(id) {
+                return;
+            }
+            self.rewind_fork_id = None;
+        }
         // Error handling (docs #error-handling): a failed command carries an
         // `error` string. Surface it, unwind command-specific optimistic
         // state, and stop — success paths below assume `data` is valid.
@@ -867,6 +882,12 @@ impl OrbitApp {
             }
             self.on_command_failure(command, error, cx);
             match command {
+                "get_fork_messages" => {
+                    // The picker has nothing to show; close it rather than
+                    // leave a spinner over pi's error.
+                    self.rewind_fetching = false;
+                    self.rewind_picker = None;
+                }
                 "compact" => {
                     self.is_compacting = false;
                     self.refresh_context_stats();
@@ -960,6 +981,18 @@ impl OrbitApp {
                 self.toast_info(tr!("events.context_compacted"));
                 self.refresh_context_stats();
                 self.send(CommandBody::GetState, "get_state");
+                return;
+            }
+            // `get_fork_messages` answers the rewind picker. An empty payload is
+            // still an answer: the list is empty, not unknown.
+            "get_fork_messages" => {
+                self.on_fork_messages_response(data, cx);
+                return;
+            }
+            // `fork` moves the process onto a branched session file: treat it
+            // as the session replacement it is (see `on_fork_response`).
+            "fork" => {
+                self.on_fork_response(data, refresh_sessions, cx);
                 return;
             }
             // `clone` duplicates the session and moves the process onto the

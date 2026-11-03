@@ -1127,6 +1127,72 @@ impl Transcript {
         self.text_selection.borrow().selected_text()
     }
 
+    /// The text of every user turn, in transcript order.
+    ///
+    /// This is the pairing key for pi's fork points: `get_fork_messages` names
+    /// an entry id per message and no index, so a rewind started from a row is
+    /// matched by its words (see `rewind::point_for_turn`).
+    /// Translate a displayed row index to its user-turn ordinal, rejecting
+    /// assistant and summary rows instead of guessing a fork point.
+    pub fn user_turn_ordinal(&self, row: usize) -> Option<usize> {
+        self.cached_user_turns()
+            .iter()
+            .position(|&index| index == row)
+    }
+
+    pub fn user_turn_texts(&self) -> Vec<String> {
+        let turns = self.cached_user_turns();
+        let messages = self.messages.borrow();
+        turns
+            .iter()
+            .filter_map(|&ix| messages.get(ix).map(|message| message.text()))
+            .collect()
+    }
+
+    /// Export the latest visible assistant response as its Markdown source.
+    pub fn export_last_response_markdown(&self) -> Option<String> {
+        self.messages
+            .borrow()
+            .iter()
+            .rev()
+            .find(|message| message.is_assistant() && message.has_text())
+            .map(ChatMessage::text)
+    }
+
+    /// Export the currently displayed conversation as Markdown. This is the
+    /// visible projection, not the entire pre-compaction session history.
+    /// Thinking and tool calls are deliberately excluded. Images are noted
+    /// rather than silently represented as if their content had been exported.
+    pub fn export_visible_markdown(&self) -> Option<String> {
+        let messages = self.messages.borrow();
+        let mut out = String::new();
+        for message in messages.iter() {
+            if let Some(summary) = &message.summary {
+                out.push_str("## Context summary\n\n");
+                out.push_str(summary.summary.trim_end());
+                out.push_str("\n\n");
+                continue;
+            }
+            let text = message.text();
+            if text.is_empty() && message.images.is_empty() {
+                continue;
+            }
+            out.push_str(if message.user {
+                "## User\n\n"
+            } else {
+                "## Assistant\n\n"
+            });
+            if !text.is_empty() {
+                out.push_str(&text);
+                out.push_str("\n\n");
+            }
+            if !message.images.is_empty() {
+                out.push_str("[Image attachments omitted from export.]\n\n");
+            }
+        }
+        (!out.is_empty()).then_some(out)
+    }
+
     /// Rebuild the whole transcript from a `get_messages` response payload.
     pub fn load_from(&mut self, data: &Value) {
         self.text_selection.borrow_mut().clear();
@@ -2541,6 +2607,8 @@ impl Transcript {
         agent_calls: crate::agent_call_display::AgentCallDisplay,
         review_changes: Option<crate::transcript_view::ReviewOpener>,
         image_opener: Option<crate::transcript_view::ImageOpener>,
+        rewind: Option<crate::transcript_view::RewindOpener>,
+        export_response: Option<crate::transcript_view::ResponseExporter>,
         search_hits: Option<HashSet<usize>>,
         search_active: Option<usize>,
         cx: &gpui::App,
@@ -2602,6 +2670,8 @@ impl Transcript {
                 summary_usage,
                 review_changes,
                 image_opener,
+                rewind,
+                export_response,
                 search_hits: search_hits.map(|hits| Rc::new(RefCell::new(hits))),
                 search_active: search_active.map(|ix| Rc::new(Cell::new(Some(ix)))),
             },
@@ -2614,6 +2684,44 @@ impl Transcript {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn markdown_export_preserves_text_and_excludes_thinking_and_tools() {
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({"messages": [
+            {"role": "user", "content": "Explain this"},
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "private reasoning"},
+                {"type": "toolCall", "id": "x", "name": "bash", "arguments": {"command": "secret command"}},
+                {"type": "text", "text": "Answer:\n\n```rust\nfn main() {}\n```"}
+            ]}
+        ]}));
+        let exported = transcript.export_visible_markdown().unwrap();
+        assert!(exported.contains("## User\n\nExplain this"));
+        assert!(exported.contains("## Assistant\n\nAnswer:\n\n```rust\nfn main() {}\n```"));
+        assert!(!exported.contains("private reasoning"));
+        assert!(!exported.contains("secret command"));
+    }
+
+    #[test]
+    fn markdown_export_of_empty_transcript_is_none() {
+        assert!(Transcript::new().export_visible_markdown().is_none());
+        assert!(Transcript::new().export_last_response_markdown().is_none());
+    }
+
+    #[test]
+    fn markdown_export_of_last_response_uses_only_assistant_text() {
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({"messages": [
+            {"role": "assistant", "content": "first answer"},
+            {"role": "user", "content": "next question"},
+            {"role": "assistant", "content": [{"type":"text", "text":"last **answer**"}]}
+        ]}));
+        assert_eq!(
+            transcript.export_last_response_markdown().as_deref(),
+            Some("last **answer**")
+        );
+    }
 
     /// Sending a prompt must put the live row up at once — the regression is a
     /// transcript that stays silent from Enter until the first token lands.
@@ -3993,6 +4101,42 @@ mod tests {
         assert!(t.tail_summary.get());
         assert_eq!(t.scroller.item_count(), 3);
         assert_eq!(t.changed_files_summary(), vec![("a.rs".into(), 2, 1)]);
+    }
+
+    /// A follow-up delivered by pi becomes a user row between the previous
+    /// answer and the next assistant response, not just a queue-bar entry.
+    #[test]
+    fn delivered_follow_up_appears_inline_once() {
+        let mut transcript = Transcript::new();
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "user", "content": "first"}),
+        });
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": "answer"}),
+        });
+        transcript.apply_event(&Event::AgentEnd { will_retry: false });
+        let follow_up = json!({"role": "user", "content": "next"});
+        transcript.apply_event(&Event::MessageStart {
+            value: follow_up.clone(),
+        });
+        transcript.apply_event(&Event::MessageEnd { value: follow_up });
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": "next answer"}),
+        });
+        let messages = transcript.messages.borrow();
+        let rows: Vec<_> = messages
+            .iter()
+            .map(|message| (message.user, message.text()))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                (true, "first".to_owned()),
+                (false, "answer".to_owned()),
+                (true, "next".to_owned()),
+                (false, "next answer".to_owned()),
+            ]
+        );
     }
 
     #[test]

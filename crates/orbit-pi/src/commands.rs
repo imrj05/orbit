@@ -31,6 +31,10 @@ pub enum CommandId {
     RenameSession,
     PinSession,
     CloneSession,
+    /// Fork the conversation before an earlier user message. Palette-only: the
+    /// transcript's message footer is the pointer path to the same picker.
+    RewindConversation,
+    ExportVisibleTranscript,
     CopySessionId,
     DeleteSession,
     // Agent
@@ -335,6 +339,20 @@ pub static COMMANDS: &[CommandSpec] = &[
         "icons/git-fork.svg",
         "command_palette.clone_session",
         "clone duplicate fork copy session branch conversation",
+    ),
+    command(
+        CommandId::RewindConversation,
+        Session,
+        "icons/rotate-ccw.svg",
+        "command_palette.rewind_conversation",
+        "rewind fork revert undo back earlier message prompt turn history",
+    ),
+    command(
+        CommandId::ExportVisibleTranscript,
+        Session,
+        "icons/file.svg",
+        "command_palette.export_visible_transcript",
+        "export save download conversation transcript markdown",
     ),
     command(
         CommandId::CopySessionId,
@@ -1230,6 +1248,8 @@ fn action_binding(binding: &Binding) -> Option<KeyBinding> {
         CommandId::RenameSession
         | CommandId::PinSession
         | CommandId::CloneSession
+        | CommandId::RewindConversation
+        | CommandId::ExportVisibleTranscript
         | CommandId::CopySessionId
         | CommandId::DeleteSession
         | CommandId::FocusComposer

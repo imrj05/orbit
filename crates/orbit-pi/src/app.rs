@@ -852,6 +852,19 @@ pub struct OrbitApp {
     add_menu_focus: FocusHandle,
     /// Git branch picker anchored to the status-bar branch chip.
     branch_picker: Option<Entity<BranchPicker>>,
+    /// Rewind picker (the `fork` list), a centered modal.
+    rewind_picker: Option<Entity<crate::rewind_picker::RewindPicker>>,
+    /// A `get_fork_messages` request is in flight (the picker shows a quiet
+    /// loading row until it lands).
+    rewind_fetching: bool,
+    /// Only the current picker's own response may fill it.
+    rewind_fetch_id: Option<String>,
+    /// Session replacement is in flight; prevent another operation from
+    /// moving this process or sending a prompt until pi answers.
+    rewind_fork_id: Option<String>,
+    /// The user turn a `get_fork_messages` answer should preselect, when the
+    /// rewind was started from a transcript row rather than the palette.
+    rewind_preselect: Option<usize>,
     /// Folder selector anchored under the new-task page's workspace field.
     workspace_picker: Option<Entity<WorkspacePicker>>,
     /// A checkout/create is running on the background executor.
@@ -1712,6 +1725,9 @@ impl OrbitApp {
             if let Some(picker) = &this.branch_picker {
                 picker.update(cx, |_, cx| cx.notify());
             }
+            if let Some(picker) = &this.rewind_picker {
+                picker.update(cx, |_, cx| cx.notify());
+            }
             if let Some(picker) = &this.workspace_picker {
                 picker.update(cx, |_, cx| cx.notify());
             }
@@ -2206,6 +2222,11 @@ impl OrbitApp {
             add_menu_highlight: 0,
             add_menu_focus: cx.focus_handle(),
             branch_picker: None,
+            rewind_picker: None,
+            rewind_fetching: false,
+            rewind_fetch_id: None,
+            rewind_fork_id: None,
+            rewind_preselect: None,
             workspace_picker: None,
             branch_operation_pending: false,
             open_in_prefs: platform::OpenInPrefs::load(),
@@ -3765,6 +3786,7 @@ mod pi_update_ui;
 mod pickers;
 mod plugin_update_ui;
 mod retention_ui;
+mod rewind_ui;
 mod runtime;
 mod search;
 mod session;
@@ -3774,6 +3796,7 @@ mod sidebar;
 mod skills_ui;
 mod temp_ui;
 mod toast_ui;
+mod transcript_export;
 mod updater_ui;
 mod view;
 mod worktrees;
@@ -3810,6 +3833,8 @@ mod process_exit_cleanup_tests;
 mod queue_edit_tests;
 #[cfg(test)]
 mod refresh_tests;
+#[cfg(test)]
+mod rewind_tests;
 #[cfg(test)]
 mod search_tests;
 #[cfg(test)]

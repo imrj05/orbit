@@ -67,6 +67,12 @@ pub(crate) type ReviewOpener = Rc<dyn Fn(&mut Window, &mut App)>;
 /// from the app so an image tile can open a surface it doesn't own.
 pub(crate) type ImageOpener = Rc<dyn Fn(Arc<Image>, &mut Window, &mut App)>;
 
+/// Opens the rewind picker on the `usize`-th user turn. Handed down from the
+/// app so a message footer can offer a fork without owning session state.
+pub(crate) type RewindOpener = Rc<dyn Fn(usize, &mut Window, &mut App)>;
+/// Saves the exact response text selected by its footer.
+pub(crate) type ResponseExporter = Rc<dyn Fn(String, &mut Window, &mut App)>;
+
 /// The transcript content column's max width.
 /// Normal message content keeps this centered measure. Assistant tables
 /// break out to the transcript pane's width; their scroll viewport must not
@@ -294,6 +300,11 @@ pub(crate) struct TranscriptView {
     /// Opens an attachment image in the full-window lightbox; `None` leaves
     /// the tiles non-interactive.
     pub image_opener: Option<ImageOpener>,
+    /// Opens the rewind picker from a user message's footer. The app always
+    /// supplies it; `None` (tests, previews) simply draws no rewind action.
+    pub rewind: Option<RewindOpener>,
+    /// Opens the native save dialog for an assistant response.
+    pub export_response: Option<ResponseExporter>,
     /// Message indices matching the open find query; `None` when find is
     /// closed. Rows get a quiet wash.
     pub search_hits: Option<Rc<RefCell<HashSet<usize>>>>,
@@ -1149,6 +1160,9 @@ struct RowPaint {
     thinking_detached: ThinkingDetached,
     hovered_usage: Rc<Cell<Option<usize>>>,
     image_opener: Option<ImageOpener>,
+    /// The rewind action, present only on user rows.
+    rewind: Option<RewindOpener>,
+    export_response: Option<ResponseExporter>,
     search_hit: bool,
     search_active: bool,
     /// Tables alone can extend beyond the centered message column.
@@ -1211,6 +1225,8 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
     let summary_usage = view.summary_usage.clone();
     let review_changes = view.review_changes.clone();
     let image_opener = view.image_opener.clone();
+    let rewind = view.rewind.clone();
+    let export_response = view.export_response.clone();
     let search_hits = view.search_hits.clone();
     let search_active = view.search_active.clone();
 
@@ -1398,6 +1414,8 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
                     theme,
                     copied.clone(),
                     hovered_usage.clone(),
+                    rewind.clone(),
+                    export_response.clone(),
                 ));
             return div()
                 .id(ElementId::NamedInteger("transcript-row".into(), ix as u64))
@@ -1447,6 +1465,8 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
                 thinking_detached: thinking_detached.clone(),
                 hovered_usage: hovered_usage.clone(),
                 image_opener: image_opener.clone(),
+                rewind: rewind.clone(),
+                export_response: export_response.clone(),
                 search_hit: search_hits
                     .as_ref()
                     .is_some_and(|hits| hits.borrow().contains(&ix)),
@@ -2156,6 +2176,8 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint, cx: &gpui::App) -
             theme,
             paint.copied_at.clone(),
             paint.hovered_usage.clone(),
+            paint.rewind.clone(),
+            None,
         ))
 }
 
@@ -2504,6 +2526,8 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
             theme,
             paint.copied_at.clone(),
             paint.hovered_usage.clone(),
+            paint.rewind.clone(),
+            paint.export_response.clone(),
         ));
     }
 
@@ -4894,7 +4918,10 @@ fn render_message_footer(
     theme: Theme,
     copied_at: Rc<RefCell<HashMap<usize, Instant>>>,
     hovered_usage: Rc<Cell<Option<usize>>>,
+    rewind: Option<RewindOpener>,
+    export_response: Option<ResponseExporter>,
 ) -> impl IntoElement {
+    let response_text = copy_text.clone();
     let button = icon_button_frame(
         div().id(ElementId::NamedInteger("copy-response".into(), ix as u64)),
         &theme,
@@ -4927,14 +4954,63 @@ fn render_message_footer(
         .items_center()
         .gap(DynamicSpacing::Base01.px(&theme))
         .when(align_right, |row| row.justify_end());
+    // Rewind sits before the copy action: both are quiet footer affordances,
+    // and the pointer path to rewind belongs where the message ends rather
+    // than behind a hover-only rail (DESIGN.md: never hide a state-changing
+    // action behind hover).
+    let rewind_button = rewind.map(|opener| {
+        icon_button_frame(
+            div().id(ElementId::NamedInteger("rewind-turn".into(), ix as u64)),
+            &theme,
+            FOOTER_BUTTON,
+        )
+        .debug_selector(move || format!("rewind-turn-{ix}"))
+        .tip(if align_right {
+            tr!("transcript.rewind_to_here")
+        } else {
+            tr!("transcript.fork_conversation")
+        })
+        .cursor_pointer()
+        .hover_on_glass(&theme)
+        .child(glyph(
+            if align_right {
+                "icons/rotate-ccw.svg"
+            } else {
+                "icons/git-fork.svg"
+            },
+            FOOTER_BUTTON.icon_size().px(&theme),
+            theme.text_muted,
+        ))
+        .on_click(move |_, window, cx| opener(ix, window, cx))
+    });
+    let export_button = export_response.map(|export| {
+        icon_button_frame(
+            div().id(ElementId::NamedInteger("export-response".into(), ix as u64)),
+            &theme,
+            FOOTER_BUTTON,
+        )
+        .debug_selector(move || format!("export-response-{ix}"))
+        .tip(tr!("transcript.export_response_markdown"))
+        .cursor_pointer()
+        .hover_on_glass(&theme)
+        .child(glyph(
+            "icons/arrow-down.svg",
+            FOOTER_BUTTON.icon_size().px(&theme),
+            theme.text_muted,
+        ))
+        .on_click(move |_, window, cx| export(response_text.clone(), window, cx))
+    });
     if align_right {
         // Right-aligned footer: timestamp first, then actions.
         if let Some(stamp) = stamp {
             footer = footer.child(stamp);
         }
-        footer = footer.child(button);
+        footer = footer.children(rewind_button).child(button);
     } else {
-        footer = footer.child(button);
+        footer = footer
+            .child(button)
+            .children(export_button)
+            .children(rewind_button);
         if let Some(stamp) = stamp {
             footer = footer.child(stamp);
         }
@@ -10114,6 +10190,8 @@ mod tests {
             summary_usage: None,
             review_changes: None,
             image_opener: None,
+            rewind: None,
+            export_response: None,
             search_hits: None,
             search_active: None,
         }
@@ -10161,6 +10239,102 @@ mod tests {
                 self.image_opener.clone(),
             )
         }
+    }
+
+    /// Both prompt and response footers expose the fork picker. The response
+    /// footer also saves the exact response, not whichever happens to be last.
+    #[gpui::test]
+    fn response_footer_offers_fork_and_exports_its_own_text(cx: &mut gpui::TestAppContext) {
+        struct RowsView {
+            messages: Rc<RefCell<Vec<ChatMessage>>>,
+            state: TextSelectionState,
+            scroller: MessageScrollerState,
+            exported: Rc<RefCell<Vec<String>>>,
+            forked: Rc<RefCell<Vec<usize>>>,
+        }
+
+        impl gpui::Render for RowsView {
+            fn render(&mut self, _: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+                let mut view = test_view(
+                    self.state.clone(),
+                    self.messages.clone(),
+                    self.scroller.clone(),
+                );
+                let forked = self.forked.clone();
+                view.rewind = Some(Rc::new(move |row, _, _| forked.borrow_mut().push(row)));
+                view.viewport_height = px(300.);
+                let exported = self.exported.clone();
+                view.export_response =
+                    Some(Rc::new(move |text, _, _| exported.borrow_mut().push(text)));
+                render_transcript(view, cx)
+            }
+        }
+
+        cx.update(|cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let message = |user: bool, text: &str| ChatMessage {
+            user,
+            summary: None,
+            steps: vec![Step {
+                text: text.into(),
+                ..Step::default()
+            }],
+            images: Vec::new(),
+            elapsed: None,
+            finished_at: None,
+            error: None,
+            aborted: false,
+        };
+        let messages = Rc::new(RefCell::new(vec![
+            message(true, "first prompt"),
+            message(false, "first answer"),
+        ]));
+        let exported = Rc::new(RefCell::new(Vec::new()));
+        let forked = Rc::new(RefCell::new(Vec::new()));
+        let (view, cx) = cx.add_window_view(|_, _| RowsView {
+            messages,
+            state: Rc::new(RefCell::new(TextSelection::new())),
+            scroller: MessageScrollerState::new(2),
+            exported: exported.clone(),
+            forked: forked.clone(),
+        });
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(300.)),
+            |_, _| view.clone(),
+        );
+        assert!(
+            cx.debug_bounds("rewind-turn-0").is_some(),
+            "the user message's footer offers a rewind"
+        );
+        assert!(
+            cx.debug_bounds("rewind-turn-1").is_some(),
+            "the assistant response offers the fork picker"
+        );
+        let button = cx
+            .debug_bounds("export-response-1")
+            .expect("response export button");
+        let position = button.center();
+        cx.simulate_mouse_move(position, None, gpui::Modifiers::none());
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(300.)),
+            |_, _| view.clone(),
+        );
+        cx.simulate_click(position, gpui::Modifiers::none());
+        assert_eq!(
+            &*exported.borrow(),
+            &["first answer".to_string()],
+            "button bounds: {button:?}"
+        );
+        let fork = cx.debug_bounds("rewind-turn-1").unwrap().center();
+        cx.simulate_mouse_move(fork, None, gpui::Modifiers::none());
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(300.)),
+            |_, _| view.clone(),
+        );
+        cx.simulate_click(fork, gpui::Modifiers::none());
+        assert_eq!(&*forked.borrow(), &[1]);
     }
 
     #[gpui::test]

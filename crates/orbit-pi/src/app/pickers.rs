@@ -232,6 +232,9 @@ impl OrbitApp {
     /// move, the spawn, and the reset, but no focus change. The caller
     /// notifies.
     pub(super) fn start_task_in_folder_quiet(&mut self, folder: PathBuf, cx: &mut Context<Self>) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         if self.is_running() {
             // Blocking native requests stay pending with the parked session.
             self.cancel_custom_surfaces(cx);
@@ -581,6 +584,8 @@ impl OrbitApp {
                 }
             }
             CommandId::CloneSession => self.clone_session(cx),
+            CommandId::RewindConversation => self.open_rewind_picker(window, cx),
+            CommandId::ExportVisibleTranscript => self.export_markdown(false, cx),
             CommandId::CopySessionId => {
                 if let Some(id) = self.session_id.clone() {
                     cx.write_to_clipboard(ClipboardItem::new_string(id));

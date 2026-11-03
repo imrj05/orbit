@@ -194,6 +194,7 @@ impl OrbitApp {
             self.error_source = None;
         }
         self.client = None;
+        self.rewind_fork_id = None;
         self.runtime = RuntimeStatus::default();
         self.abort_requested = false;
         // A prompt the departing process never answered cannot be recognised
@@ -593,6 +594,9 @@ impl OrbitApp {
 
     /// Stop the pi process (Stop button).
     pub(super) fn runtime_stop(&mut self, cx: &mut Context<Self>) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         if self.client.is_none() {
             return;
         }
@@ -608,6 +612,9 @@ impl OrbitApp {
     /// Stop then start the pi process (Restart button, and the automatic
     /// respawn after an exit).
     pub(super) fn runtime_restart(&mut self, cx: &mut Context<Self>) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         self.drop_client();
         self.runtime_start(cx);
         self.reattach_current_session();
@@ -621,6 +628,9 @@ impl OrbitApp {
     /// Spawning happens before teardown: if the platform refuses to launch a
     /// second instance, the current session is left exactly as it was.
     pub(super) fn reload_app(&mut self, cx: &mut Context<Self>) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         if self.reloading_app {
             return;
         }

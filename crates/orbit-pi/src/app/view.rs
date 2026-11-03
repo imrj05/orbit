@@ -1114,6 +1114,8 @@ impl Render for OrbitApp {
                                     self.agent_calls,
                                     Some(self.review_opener(cx)),
                                     Some(self.image_opener(cx)),
+                                    Some(self.rewind_opener(cx)),
+                                    Some(self.response_exporter(cx)),
                                     self.search_hits(),
                                     self.search_active(),
                                     cx,
@@ -1383,6 +1385,13 @@ impl Render for OrbitApp {
                 self.command_palette
                     .clone()
                     .map(|palette| command_palette::layer(palette).into_any_element()),
+            )
+            // ── rewind picker — the conversation's fork points, a modal opened
+            // from a message's footer or from the palette.
+            .children(
+                self.rewind_picker
+                    .clone()
+                    .map(|picker| crate::rewind_picker::layer(picker).into_any_element()),
             )
             // ── extension dialog (select / confirm / input / editor) — a
             // blocking modal above every other surface; pi holds the run until
@@ -4110,6 +4119,7 @@ impl OrbitApp {
             || self.model_selector.is_some()
             || self.branch_picker.is_some()
             || self.workspace_picker.is_some()
+            || self.rewind_picker.is_some()
             || self.dialog.is_some()
             || self.lightbox.is_some()
             || self.updater_dialog.is_some()

@@ -1,8 +1,9 @@
 # Plan — Working folder ("Work in")
 
-**Status:** P0–P2 implemented. P3 (clone from a URL) is in progress: the picker and clone flow
-are implemented, including Windows job-object cancellation; Windows runtime and manual GUI
-verification remain. See §13 for the phase gates and §17 for what shipped versus the plan assumed.
+**Status:** P0–P2 implemented. P3 (clone from a URL) is implemented, including Windows job-object
+cancellation; the Windows runtime case now has a CI leg (`repository_clone::`, `working_folder::`,
+and `worktree::` tests on `windows-latest`), and manual GUI verification remains. See §13 for the
+phase gates, §17 for what shipped versus what the plan assumed, and §12 for the tests that exist.
 **Scope:** one new pure module (`crates/orbit-pi/src/working_folder.rs`), a rewrite of the status
 bar's folder/location controls (`app/worktrees.rs`, `app/view.rs`), the new-task page's folder
 field (`workspace_picker.rs`, `app/pickers.rs`), three new `WorktreeManager` methods
@@ -11,6 +12,12 @@ field (`workspace_picker.rs`, `app/pickers.rs`), three new `WorktreeManager` met
 `app/pickers.rs` (`start_task_in_folder`, `toggle_workspace_picker`), `app/session.rs`
 (`browse_for_folder`, resume + `WorktreeDialog::Unavailable`), `sessions.rs`
 (`canonical_workspace_path`), `git_ops::list_refs` / `git::RefKind::Remote`.
+
+Sections 2–11 and 13–16 preserve the original pre-implementation snapshot and proposal, not
+current behavior. §12 records the tests that shipped (the proposal's names mostly did not survive)
+and §17 records what was built, where it deviates from the proposal, and what still needs
+verification. The user-facing reference is
+[`crates/orbit-pi/docs/worktrees.md`](../../crates/orbit-pi/docs/worktrees.md).
 
 ---
 
@@ -303,28 +310,81 @@ New keys (append after the existing `worktree.work_in.*` block in `en.yml`, then
 
 Delete: `worktree.work_in.*` (five keys) once no call site remains.
 
-## 12. Tests
+## 12. Tests (as shipped)
 
-**`worktree.rs` (real temp repos, the existing `TempRepo` helper):**
-- `a_remote_ref_creates_a_tracking_branch_not_a_detached_head` — asserts `branch == Some("feat")`
-  and `detached == false` after `create_from_existing_branch("wt", path, "origin/feat")`.
-- `a_remote_ref_whose_short_name_is_taken_is_suffixed` — `local_branch_for` + creation.
-- `a_detached_request_is_explicit_and_labeled` — `--detach` path reports `detached == true`.
-- `a_moved_worktree_is_repaired_to_its_new_path` — `repair` then `list()` shows the new path.
-- `a_worktree_without_admin_files_is_not_reported_as_healthy` — classification, no porcelain call.
+There is no `app/working_folder_tests.rs`: the gpui tests live beside the picker they drive, in
+`app/worktree_chip_tests.rs`, with the layout regressions in `app/workspace_picker_layout_tests.rs`.
+Run them with `cargo test -p orbit-pi --bin orbit-pi <filter>`; `repository_clone::`,
+`working_folder::`, and `worktree::` are the three non-gpui modules that also run on the Windows CI
+leg (see §13, P3), because the job-object cancellation path has no local Windows coverage.
 
-**`app/working_folder_tests.rs` (gpui, no network):**
-- `the_work_in_chip_is_present_at_the_main_checkout` (replaces
-  `worktree_chip_tests.rs::the_work_in_chip_is_absent_at_the_main_checkout`).
-- `the_chip_is_absent_outside_a_repository` (keeps the existing non-repo assertion).
-- `the_picker_lists_local_then_worktrees_then_sources` — row order and grouping.
-- `a_remote_row_builds_a_tracking_spec` — no Git, pure spec.
-- `choosing_a_new_worktree_row_opens_the_dialog_without_spawning` — the honesty rule in §7.3.
-- `a_broken_worktree_row_never_sets_the_workspace` — `current_workspace` unchanged.
-- `filter_matches_branch_and_path` — the picker's type-to-filter over new rows.
+**`crates/orbit-pi/src/worktree.rs`** (real temp repos, the in-file `TempRepo` helper):
+- `a_remote_ref_creates_a_tracking_branch_not_a_detached_head` — the P0 regression: `branch ==
+  Some("feat")`, `detached == false`.
+- `create_routes_a_remote_only_ref_to_a_tracking_branch` — the `create` guard (rule 1 in §6).
+- `a_tracking_branch_whose_local_name_is_taken_is_named_not_suffixed` — asserts both callers:
+  `create_tracking_branch` refuses with `BranchExists`, and `create` picks `feat-2` for a caller that
+  has no name yet (see §17).
+- `a_tracking_branch_rejects_an_unknown_remote_ref`.
+- `a_moved_worktree_is_adopted_at_its_new_path`, `adopting_a_plain_folder_reports_not_a_worktree`,
+  `repair_succeeds_on_a_healthy_repository`.
+- No `--detach` test, because no UI can request a detached worktree (see §17).
 
-**Update:** `worktree_chip_tests.rs` (3 assertions), `new_task_panels_tests.rs` (picker rows),
-`worktree_howto_tests.rs` if the how-to card names the chip.
+**`crates/orbit-pi/src/working_folder.rs`** (filesystem only, no Git child):
+`the_main_checkout_classifies_as_local`, `a_plain_folder_is_not_a_worktree`,
+`a_linked_worktree_reports_its_owner`, `a_worktree_whose_admin_entry_is_gone_is_broken_not_usable`
+(the §3 G4 unrecoverable state), `a_missing_directory_is_broken`,
+`an_unreadable_gitfile_is_broken`, `location_rows_put_local_first_then_worktrees`,
+`location_rows_are_empty_without_a_main_worktree`, `a_plain_folder_row_is_labelled_by_its_directory_name`,
+`a_local_folder_is_labelled_local`, `remote_rows_skip_head_and_build_a_local_branch`,
+`remote_rows_suffix_a_local_branch_that_is_taken`, `two_remotes_with_the_same_branch_stay_reachable`,
+`a_remote_with_a_slash_is_split_at_the_longest_name`, `a_deleted_remotes_ref_still_produces_a_row`,
+`local_branch_for_keeps_the_name_when_free`.
+
+**`crates/orbit-pi/src/app/worktree_chip_tests.rs`** (gpui, no network):
+- Chip: `the_chip_is_present_at_the_main_checkout_and_reads_local` (replaces the deleted
+  `the_work_in_chip_is_absent_at_the_main_checkout`), `the_work_in_chip_is_absent_outside_a_repository`,
+  `the_chip_names_the_active_linked_worktree`.
+- Rows: `the_picker_lists_locations_then_the_ways_to_a_new_one`,
+  `choosing_the_active_folder_is_not_a_change`, `a_prunable_row_goes_through_the_repair_path`,
+  `a_remote_row_opens_the_dialog_on_a_tracking_branch`.
+- Honesty (§10): `a_missing_recent_folder_does_not_change_the_workspace`,
+  `a_broken_recent_worktree_does_not_change_the_workspace`.
+- Recents: `recent_folders_are_deduplicated_from_worktrees_and_limited`,
+  `keyboard_navigation_reveals_the_last_recent_folder`.
+- Keyboard and layout: `working_folder_hints_match_the_registered_keys`,
+  `work_in_keyboard_hints_fit_at_maximum_ui_scale`, `escape_leaves_the_remote_level_before_closing_the_picker`,
+  `remote_rows_fit_without_overlap_and_keyboard_reveals_the_last`,
+  `long_remote_details_are_keyboard_accessible_and_bounded`,
+  `the_status_bar_picker_rows_tile_at_one_two_line_height`.
+- Clone (P3): `clone_action_opens_a_dialog_without_starting_a_task`,
+  `clone_dialog_rejects_missing_inputs_without_starting`,
+  `clone_dialog_keyboard_walks_controls_and_submits_validation`,
+  `clone_dialog_keyboard_clones_a_local_repository`, `clone_dialog_cancellation_signals_the_operation`.
+- Missing-worktree recovery: `missing_worktree_local_is_found_only_while_git_lists_it`,
+  `resuming_a_missing_cold_session_does_not_redirect_it`,
+  `missing_worktree_only_offers_local_when_an_owner_is_known`,
+  `ambiguous_missing_worktree_owner_has_no_local_fallback`.
+
+**`crates/orbit-pi/src/app/workspace_picker_layout_tests.rs`** — the two-line row box:
+`picker_rows_tile_at_one_two_line_height`, `a_filter_that_matches_nothing_keeps_the_action_rows`.
+
+**`crates/orbit-pi/src/app/new_task_panels_tests.rs`** —
+`clone_is_available_on_the_new_task_page_outside_a_repository`.
+
+**`crates/orbit-pi/src/repository_clone.rs`** — `clones_a_local_bare_repository_and_reports_progress`,
+`clones_a_local_bare_repository_from_a_file_url` (Unix), `clones_into_an_existing_empty_directory`,
+`missing_repository_reports_git_failure`, `failure_does_not_overwrite_existing_files`,
+`cancellation_after_progress_does_not_report_success`, `cancellation_before_start_does_not_create_destination`,
+`long_unterminated_stderr_is_chunked_and_keeps_a_bounded_tail` (Unix),
+plus the process-tree cases: `cancellation_stops_transport_children` and
+`cancellation_stops_transport_after_parent_exits` (Unix) and the job-object equivalent,
+`cancellation_stops_windows_transport_after_parent_exits` (Windows only — see §13).
+
+**Not written, and why:** `a_remote_ref_whose_short_name_is_taken_is_suffixed` became
+`a_tracking_branch_whose_local_name_is_taken_is_named_not_suffixed`; `a_detached_request_is_explicit_and_labeled`
+has no subject because the UI cannot request a detach; `filter_matches_branch_and_path` has no
+subject because the status-bar popover has no type-to-filter (see §17).
 
 ## 13. Phases
 
@@ -333,7 +393,7 @@ Delete: `worktree.work_in.*` (five keys) once no call site remains.
 | **P0** | `working_folder.rs` (classification, specs, `local_branch_for`); `WorktreeManager::create_tracking_branch` + the `create` remote guard; `repair`-on-open path | `cargo test -p orbit-pi worktree::` green, incl. the detached-HEAD regression |
 | **P1** | status bar: merged chip, always visible in a repo; popover sections; remotes in the fetch; DESIGN.md amendment | `cargo test -p orbit-pi working_folder` + manual `bacon run`: main checkout → New worktree → task starts there; remote row → tracking branch, `↑0 ↓0` visible |
 | **P2** | new-task page uses the same picker; `FolderRow`/`on_run` in `WorkspacePicker`; "parks the running session" line; Adopt folder… on the Worktrees page | new-task tests + manual: pick an existing worktree from the empty state |
-| **P3** | `Clone(CloneSpec)`: directory choice, off-thread clone with progress, cancel, then `Local`; sidebar registration | clone tests against a local bare repo fixture; manual clone of a public repo |
+| **P3** | `Clone(CloneSpec)`: directory choice, off-thread clone with progress, cancel, then `Local`; sidebar registration | clone tests against a local bare repo fixture, including the Windows job-object case, which now runs on the `windows-latest` CI leg; manual clone of a public repo |
 | **P4** | polish: recents merge, keycaps, CHANGELOG + README/INTENT *Implementation status* | docs consistency pass |
 
 **Verification per phase** (AGENT.md): `cargo check -p orbit-pi` → filtered `cargo test -p orbit-pi
@@ -371,7 +431,7 @@ prompt (a title-driven name would start the task before the workspace exists).
    then reconnects through `OrbitApp::adopt_worktree`. Defaulting to the worktree root would hide
    the folders Orbit does not know about, which is the case this row exists for.
 
-## 17. Implementation notes (what P0–P2 shipped)
+## 17. Implementation notes (shipped work and remaining verification)
 
 - **`working_folder.rs`** — `classify` (filesystem only), `Location` / `BrokenReason`, `FolderRow`,
   `location_rows`, `remote_ref_rows`, `local_branch_for`, `short_branch_name`. Unit tests cover the
@@ -420,8 +480,47 @@ prompt (a title-driven name would start the task before the workspace exists).
 - **P4 recents**: the status-bar picker lists up to eight recent session folders after the actions,
   excluding the active folder and listed worktrees. Missing or broken folders are reported instead
   of opened. Keyboard navigation scrolls the highlighted row into view.
-- **P3 in progress**: the status-bar and new-task pickers offer cloning via a URL, folder name,
+- **P3 (clone) — code and non-GUI tests shipped; manual GUI verification pending**: the
+  status-bar and new-task pickers offer cloning via a URL, folder name,
   and destination picker. Git runs in the background with progress and process-tree cancellation
   (a process group on Unix, a job object on Windows); a successful clone opens as a working folder
   and is added to the sidebar. Local bare-repository tests and a public GitHub backend clone pass.
-  Windows runtime tests and manual GUI verification remain.
+  Failed or cancelled clones are not opened, but Git may leave a partial directory; interactive
+  terminal credential prompts are disabled. The Windows job-object case has a test
+  (`cancellation_stops_windows_transport_after_parent_exits`) but nothing ran it: CI built on
+  `windows-latest` and ran no tests. `.github/workflows/ci.yml` now runs the three platform-sensitive
+  modules (`repository_clone::`, `working_folder::`, `worktree::`) on every leg, with the general
+  no-tests-in-CI rule unchanged elsewhere. Manual GUI verification of the clone flow still remains.
+
+### Deviations from the proposal above
+
+Recorded so the document stops promising things the tree does not do:
+
+- **Explicit detach is not exposed.** §6 lists a `--detach` row and §11 a `detached_note` string;
+  neither exists. Every path to a worktree goes through a branch, so the *no detached HEAD by
+  accident* rule holds by having no detach at all. `Location::Worktree.detached` is still parsed and
+  labelled, because a hand-made detached worktree can appear in `git worktree list`.
+- **A taken local branch name is split by caller, not by the manager.** `create_tracking_branch`
+  refuses an existing name with `WorktreeError::BranchExists` (rendered by `worktree.error.branch_exists`),
+  and a caller that has not chosen a name yet — the create dialog's existing-branch list — goes through
+  `create`, which picks the free name itself via `local_branch_for` (`origin/feat` → `feat-2`). One
+  function never guesses and the other never asks; both tests assert the pair.
+- **Adopt lives in the Worktrees page's Advanced menu** (`wa-adopt`), not as a page-header action
+  (§7.4). One menu entry, same `adopt_worktree` path.
+- **The status-bar popover has no type-to-filter.** §7.1 proposed reusing the picker's filter on
+  both levels. The popover is a compact menu with keyboard navigation instead; only the new-task
+  page's `WorkspacePicker` keeps a filter field, and the remote level is reached with a *Branch
+  details* row rather than a search.
+- **No `worktree_stale` flag.** §9's "opening the picker marks the catalog stale" became
+  `worktree_remotes_busy` plus the existing `worktree_fetch` guard; the remotes list is loaded on
+  demand (`load_worktree_remotes`) rather than folded into `refresh_worktrees`.
+- **i18n keys renamed while writing the UI.** `working_folder.local_hint` became `local` (a chip
+  label, not a hint line), `remote_local_name` became `local_detail_label`, and `clone` became
+  `clone_title` plus the `clone_*` family (`clone_url`, `clone_name`, `clone_parent`,
+  `clone_fields_required`, `clone_action`, `clone_running`). `switch_parks`, `repair`, and
+  `detached_note` never landed: the parks sentence is `working_folder.new_task_note`, shown only
+  when a conversation would be left; repair reuses `worktree.advanced.repair`. Keys the plan did not
+  anticipate: `hint_navigate`, `hint_select`, `tracking_hint`, `connecting`, `repaired`,
+  `remote_details`, `remote_empty`, `remote_creates`, `prunable`.
+- **No `app/working_folder_tests.rs`.** The gpui coverage sits in `app/worktree_chip_tests.rs` and
+  `app/workspace_picker_layout_tests.rs`; §12 lists the shipped names.

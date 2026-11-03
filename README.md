@@ -50,6 +50,7 @@ summary sparkline to read that day across the whole row:
   click away; every other Mermaid diagram type keeps the honest source block instead of a fake
   preview
 - In-transcript find (⌘F) and a full-window image lightbox
+- Save any settled response as Markdown from its footer, or export the **visible transcript** from the command palette. Both use a native save dialog and refuse to overwrite files. Exports omit thinking, tool output, and image data; the visible transcript may omit earlier history after compaction
 - **Compressed image attachments** — images you attach or paste are downscaled and re-encoded at ingest (1400 px longest edge, 512 KiB base64, JPEG; transparency keeps lossless WebP), so a large screenshot no longer bloats the prompt or the session history; the status line reports the before/after size
 - **An attachment tray for images, files, and long pastes** — every queued item is one chip above the input showing what it is (image thumbnail or file-type badge), its name, its size or line count, and its own remove button; two or more chips add a count header with **Clear**. Dropping or picking a non-image file, or pasting one copied in macOS Finder or Windows Explorer, queues it as a file chip instead of splicing a path into the sentence, and on send it folds into the prompt as an `@path` mention the agent opens with its tools. The sent message shows those files as the same chips under the bubble (the path stays selectable), so a reloaded session looks like the live send. Pasting an image file copied in Finder or Windows Explorer attaches its contents rather than its file icon. On Linux, file URI lists exposed as clipboard text are supported; file-only clipboard offers are not yet supported. All three kinds share one eight-item budget
 - Tool activity — bash, edit, read, and thinking rows drawn natively, expanding into Arguments/Output cards with per-section copy
@@ -87,7 +88,7 @@ Settings → **Git Accounts** inspects local Git author settings, generic and ho
 - The commit bar's **Generate** button has its own model picker — a searchable chip beside it — so commit messages can run on a different (or smaller, local) model than the chat session, with **Active session model** restoring the default
 - Git page's Issues and Pull requests tabs through `gh`: browse and filter, file issues and PRs, comment, apply labels, close/reopen, review, merge, and check out a PR's branch — with repository templates and an AI **Generate** action that drafts a title and body from the branch, its commits, optional notes, and the repo's own template
 - Git worktrees as first-class workspaces — a Worktrees page lists and creates worktrees (`repo/.wt/113` → `feature/issue-113`), opens them as the active workspace so the Explorer, terminal, Git page, Review, and agent all run there, and supports rename / move / lock / remove / prune / repair
-- The status bar's **Work in** chip names where the next task runs: `Local`, linked worktrees, recent folders, a new or existing worktree, a remote branch (as a local branch that tracks it), a clone, or another folder. The new-task picker offers the same choices; there, remote branches are selected in the create dialog
+- In a repository, the status bar's **Work in** chip names where the next task runs: `Local`, linked worktrees, recent folders, a new or existing worktree, a remote branch (as a local branch that tracks it), a clone, or another folder. The new-task picker offers the same choices; there, remote branches are selected in the create dialog. Outside a repository, the status bar uses a folder chip; the new-task picker still offers cloning
 - An optional per-repository setup script runs asynchronously with `ORBIT_ROOT_PATH` and `ORBIT_WORKTREE_PATH`
 
 **Explorer and Files**
@@ -190,11 +191,12 @@ issue before starting.
 | Voice dictation | Composer | Dictate prompts into the composer. | Planned | — |
 | Diff review and terminal | Workbench | Inline diff review and an integrated terminal. | Shipped — Review pane with per-turn checkpoints and view controls, plus a login-shell terminal (⌘J) | — |
 | Terminal tabs | Terminal | Run several shells in the bottom panel without losing the ones in the background. | Shipped — ⌘T / ⌘W / ⌘⇧] / ⌘⇧[, each tab holding its own PTY | — |
-| Git worktrees | Workbench | List, create, open, move, lock, repair, and prune worktrees, and work in one as the active workspace. | Shipped — Worktrees page, a **Work in** chip in the status bar and on the new-task page (Local / worktree / new / existing / remote branch / folder), and an optional per-repository setup script | — |
+| Git worktrees | Workbench | List, create, open, move, lock, repair, and prune worktrees, and work in one as the active workspace. | Shipped — Worktrees page, **Work in** on the status bar in a repository and on the new-task page, plus an optional per-repository setup script. Clone from URL is implemented, with the Windows job-object cancellation path covered on the Windows CI leg; manual GUI verification remains. | — |
 | Session retention | Workbench | Keep pi's session store from growing without bound. | Shipped — Settings → Privacy archives or deletes idle sessions on a schedule, alongside Orbit and pi scratch-file cleanup | — |
 | Parallel sessions | Sessions | Run multiple agents / sessions side by side. | Planned | — |
 | Explorer gaps | Explorer | Quick-open, sticky scroll, and directory folding in the file tree. | Planned — expand/collapse, filter, hidden toggle, and git badges ship today | — |
-| Conversation fork/rewind | Sessions | Branch and rewind a conversation (clone ships today). | Planned | — |
+| Markdown export | Transcript | Save the visible transcript or an individual response as Markdown. | In progress — response footer and transcript palette actions are implemented; GUI verification remains | — |
+| Conversation fork/rewind | Sessions | Branch and rewind a conversation. | In progress — user-message rewind, response-footer fork picker, and a palette action create a new session and leave the old one in the sidebar. The response footer opens a chooser because pi forks before user messages; GUI verification remains | — |
 | Scroll-perf measurement | Performance | On-device measurement of transcript scroll performance. | Planned | — |
 | Design-system unification | Design | One token layer (colour, geometry, state, motion) across every surface, with the interaction-state and motion contracts enforced by scripts. | Done — see [DESIGN.md](DESIGN.md) and [docs/design-system-audit.md](docs/design-system-audit.md) | — |
 
@@ -213,7 +215,7 @@ issue before starting.
 - [x] **Session retention** — archive or delete idle sessions on a schedule
 - [ ] **Parallel sessions** — multiple agents / sessions at once
 - [ ] **Explorer gaps** — quick-open, sticky scroll, directory folding
-- [ ] **Conversation fork/rewind** — branch and rewind a session
+- [x] **Conversation fork/rewind** — branch and rewind a session
 - [ ] **Scroll-perf measurement** — on-device transcript scroll benchmark
 
 ---
