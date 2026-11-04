@@ -5,17 +5,40 @@
 //! not a truncation: the response handler resets exactly what `new_session`
 //! resets, then reloads the transcript from the branch pi kept.
 //!
-//! Two ways in, one behaviour: the transcript's per-message action and the
-//! palette's *Rewind to a message…* both open [`RewindPicker`], and the picker
-//! is the only thing that sends `fork`. A transcript row that cannot be matched
-//! to a pi entry just opens the list, which is honest about what is on offer
-//! instead of forking at the wrong message.
+//! Two actions share that fork. A **rewind** (the transcript's per-message
+//! action and the palette's *Rewind to a message…*) opens [`RewindPicker`] and
+//! hands the prompt back for editing. A **regenerate** clicks a response and
+//! sends its prompt again: the message is already chosen, so it forks without
+//! the list, and refuses rather than guess when the prompt cannot be
+//! identified. A transcript row that cannot be matched to a pi entry opens the
+//! list, which is honest about what is on offer instead of forking at the
+//! wrong message.
 
 use super::*;
-use crate::rewind::{self, ForkPoint};
+use crate::rewind::{self, ForkIntent, ForkPoint};
 use crate::rewind_picker::RewindPicker;
 
 impl OrbitApp {
+    /// Forget a fork whose reply can never be applied, and say whether one
+    /// was outstanding.
+    ///
+    /// A process teardown (stop, restart, MCP apply, credential reload) drops
+    /// the client, so the reply that would have moved Orbit onto the branch is
+    /// lost. pi may already have written the branch file before it answered,
+    /// which is why callers warn and reload the session list instead of
+    /// pretending nothing happened.
+    pub(super) fn take_pending_fork(&mut self) -> bool {
+        let interrupted = self.rewind_fork_id.take().is_some();
+        self.rewind_picker = None;
+        self.rewind_fetching = false;
+        self.rewind_fetch_id = None;
+        self.rewind_preselect = None;
+        self.rewind_intent = ForkIntent::Edit;
+        self.pending_regenerate = None;
+        self.rewind_prompt_images.clear();
+        interrupted
+    }
+
     /// Do not replace the process or submit into it while pi is forking.
     /// The fork reply determines which session owns the process.
     pub(super) fn rewind_transition_pending(&mut self, cx: &mut Context<Self>) -> bool {
@@ -30,26 +53,49 @@ impl OrbitApp {
 
     /// Palette path: open the list at the newest user message.
     pub(super) fn open_rewind_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_rewind_picker_at(None, window, cx);
+        self.open_rewind_picker_at(None, ForkIntent::Edit, window, cx);
     }
 
-    /// Transcript path: `turn` is the displayed message row, not its ordinal
-    /// among user messages.
+    /// Transcript path: a user row or its assistant response identifies the
+    /// prompt to fork before. Unmatched rows require an explicit selection.
     pub(super) fn rewind_to_turn(
         &mut self,
         turn: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(ordinal) = self.transcript.user_turn_ordinal(turn) else {
+        let ordinal = self
+            .transcript
+            .rewind_user_turn_ordinal(turn)
+            .unwrap_or(usize::MAX);
+        self.open_rewind_picker_at(Some(ordinal), ForkIntent::Edit, window, cx);
+    }
+
+    /// Transcript path: send the prompt behind this response again on a new
+    /// branch. pi has no regenerate command, so this is a rewind whose fork
+    /// reply is followed by the prompt pi hands back. A response whose prompt
+    /// cannot be identified reliably is refused, never guessed: the user is
+    /// pointed at the rewind list instead.
+    pub(super) fn regenerate_turn(
+        &mut self,
+        turn: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(ordinal) = self.transcript.rewind_user_turn_ordinal(turn) else {
+            // Compaction removed the prompt, or the row is not an assistant
+            // response with a user message behind it.
+            self.toast_info(tr!("regenerate.no_prompt"));
+            cx.notify();
             return;
         };
-        self.open_rewind_picker_at(Some(ordinal), window, cx);
+        self.open_rewind_picker_at(Some(ordinal), ForkIntent::Regenerate, window, cx);
     }
 
     fn open_rewind_picker_at(
         &mut self,
         turn: Option<usize>,
+        intent: ForkIntent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -71,7 +117,10 @@ impl OrbitApp {
         // A fork mid-run would leave a live run writing into a session pi has
         // just replaced, so ask for the stop instead of guessing at it.
         if self.is_running() {
-            self.toast_warning(tr!("rewind.stop_first"));
+            self.toast_warning(match intent {
+                ForkIntent::Edit => tr!("rewind.stop_first"),
+                ForkIntent::Regenerate => tr!("regenerate.stop_first"),
+            });
             cx.notify();
             return;
         }
@@ -93,6 +142,20 @@ impl OrbitApp {
         // Always ask pi for the list: it is one cheap command, and a cached
         // copy would be wrong the moment a prompt is sent or a run compacts.
         self.rewind_preselect = turn;
+        self.rewind_intent = intent;
+        // Capture the prompt's images before the fork replaces the transcript
+        // that holds them. A rewind hands the text back for editing and leaves
+        // images to the person editing; a regenerate resends the whole prompt.
+        self.rewind_prompt_images = match (intent, turn) {
+            (ForkIntent::Regenerate, Some(ordinal)) => self
+                .transcript
+                .user_turn_images(ordinal)
+                .iter()
+                .enumerate()
+                .map(|(index, image)| Attachment::from_image(image, index))
+                .collect(),
+            _ => Vec::new(),
+        };
         self.rewind_fetching = true;
         let Some(request_id) = self.send_tracked(CommandBody::GetForkMessages, "get_fork_messages")
         else {
@@ -100,9 +163,19 @@ impl OrbitApp {
             // so, and a picker stuck on its loading row would not.
             self.rewind_fetching = false;
             self.rewind_preselect = None;
+            self.rewind_intent = ForkIntent::Edit;
+            self.rewind_prompt_images.clear();
             return;
         };
         self.rewind_fetch_id = Some(request_id);
+
+        // A regenerate does not open the list: the message is already chosen,
+        // and the reply decides whether it can be identified. Only a rewind
+        // needs the user to pick one.
+        if intent == ForkIntent::Regenerate {
+            cx.notify();
+            return;
+        }
 
         let this = cx.weak_entity();
         let on_pick = Box::new(move |entry: String, _window: &mut Window, cx: &mut App| {
@@ -146,6 +219,8 @@ impl OrbitApp {
             self.rewind_preselect = None;
             self.rewind_fetch_id = None;
             self.rewind_fetching = false;
+            self.rewind_intent = ForkIntent::Edit;
+            self.rewind_prompt_images.clear();
             self.input.read(cx).focus(window);
             cx.notify();
         }
@@ -157,21 +232,30 @@ impl OrbitApp {
         let this = cx.weak_entity();
         Rc::new(move |row, window, cx| {
             this.update(cx, |app, cx| {
-                if app.transcript.user_turn_ordinal(row).is_some() {
-                    app.rewind_to_turn(row, window, cx);
-                } else {
-                    // pi's RPC forks before user messages, not assistant
-                    // responses. Let the user choose the fork point instead
-                    // of pretending the response itself is one.
-                    app.open_rewind_picker(window, cx);
-                }
+                app.rewind_to_turn(row, window, cx);
             })
             .ok();
         })
     }
 
-    /// Apply a `get_fork_messages` reply: cache the list and refill the open
-    /// picker in place.
+    /// The transcript's regenerate action: fork at the response's prompt and
+    /// send pi's copy of it again on the new branch.
+    pub(super) fn regenerate_opener(
+        &self,
+        cx: &Context<Self>,
+    ) -> crate::transcript_view::RegenerateOpener {
+        let this = cx.weak_entity();
+        Rc::new(move |row, window, cx| {
+            this.update(cx, |app, cx| {
+                app.regenerate_turn(row, window, cx);
+            })
+            .ok();
+        })
+    }
+
+    /// Apply a `get_fork_messages` reply. A rewind refills the open picker in
+    /// place; a regenerate either sends the fork its reply identified or says
+    /// why it cannot.
     pub(super) fn on_fork_messages_response(
         &mut self,
         data: Option<&serde_json::Value>,
@@ -182,6 +266,20 @@ impl OrbitApp {
         let from_message = self.rewind_preselect.is_some();
         let preselect = self.preselect_for(self.rewind_preselect, &points);
         self.rewind_preselect = None;
+        if self.rewind_intent == ForkIntent::Regenerate {
+            match preselect {
+                Some(entry_id) => self.request_rewind(entry_id, cx),
+                None => {
+                    // Duplicate prompts and compaction make the entry for this
+                    // response unidentifiable. Never fork a different one.
+                    self.rewind_intent = ForkIntent::Edit;
+                    self.rewind_prompt_images.clear();
+                    self.toast_info(tr!("regenerate.not_found"));
+                    cx.notify();
+                }
+            }
+            return;
+        }
         if let Some(picker) = self.rewind_picker.clone() {
             picker.update(cx, |picker, cx| {
                 let ambiguous = from_message && preselect.is_none();
@@ -202,6 +300,15 @@ impl OrbitApp {
         if self.rewind_transition_pending(cx) {
             return;
         }
+        if self.is_running() {
+            // A run started while the list was loading; the intent no longer
+            // applies to a fork that did not happen.
+            self.rewind_intent = ForkIntent::Edit;
+            self.rewind_prompt_images.clear();
+            self.toast_warning(tr!("rewind.stop_first"));
+            cx.notify();
+            return;
+        }
         self.rewind_picker = None;
         self.rewind_preselect = None;
         self.rewind_fork_id = self.send_tracked(CommandBody::Fork { entry_id }, "fork");
@@ -220,12 +327,19 @@ impl OrbitApp {
         refresh_sessions: &mut bool,
         cx: &mut Context<Self>,
     ) {
+        let intent = std::mem::take(&mut self.rewind_intent);
+        // Taken before the transcript is cleared: these are the prompt's own
+        // images, and a regenerate sends them with the prompt again.
+        let prompt_images = std::mem::take(&mut self.rewind_prompt_images);
         let cancelled = data
             .and_then(|data| data.get("cancelled"))
             .and_then(serde_json::Value::as_bool)
             == Some(true);
         if cancelled {
-            self.toast_info(tr!("rewind.cancelled"));
+            self.toast_info(match intent {
+                ForkIntent::Edit => tr!("rewind.cancelled"),
+                ForkIntent::Regenerate => tr!("regenerate.cancelled"),
+            });
             cx.notify();
             return;
         }
@@ -278,11 +392,40 @@ impl OrbitApp {
         self.sync_review_context(cx);
         *refresh_sessions = true;
         // pi hands the forked-from prompt back so it can be sent again with an
-        // edit — the whole point of rewinding rather than retyping.
-        if can_prefill && !text.trim().is_empty() {
-            self.input.update(cx, |input, cx| input.set_text(text, cx));
+        // edit — the whole point of rewinding rather than retyping. A
+        // regenerate goes further: the reply's own text is queued for the
+        // branch reload, then sent as the next prompt. Without a known source
+        // session the composer may hold a different draft, so a regenerate
+        // never sends: doing so would fold that draft's attachments into it.
+        let can_resend = can_prefill && !text.trim().is_empty();
+        if intent == ForkIntent::Edit {
+            if can_resend {
+                self.input.update(cx, |input, cx| input.set_text(text, cx));
+            }
+            self.toast_success(tr!("rewind.done"));
+            self.reload_forked_branch(cx);
+            return;
         }
-        self.toast_success(tr!("rewind.done"));
+        if can_resend {
+            self.toast_success(tr!("regenerate.done"));
+            self.send(CommandBody::GetMessages, "get_messages");
+            if let Some(state_id) = self.send_tracked(CommandBody::GetState, "get_state") {
+                self.pending_regenerate = Some(PendingRegenerate {
+                    state_id,
+                    text,
+                    images: prompt_images,
+                });
+            }
+            self.refresh_context_stats();
+        } else {
+            self.toast_warning(tr!("regenerate.kept_draft"));
+            self.reload_forked_branch(cx);
+        }
+        cx.notify();
+    }
+
+    /// Re-read the branch a successful fork left behind.
+    fn reload_forked_branch(&mut self, cx: &mut Context<Self>) {
         self.send(CommandBody::GetMessages, "get_messages");
         self.send(CommandBody::GetState, "get_state");
         self.refresh_context_stats();

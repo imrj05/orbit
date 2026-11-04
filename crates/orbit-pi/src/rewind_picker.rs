@@ -146,6 +146,7 @@ impl RewindPicker {
         });
         self.rows = Self::rows(&points);
         let filtered = self.filtered(&self.last_filter);
+        let count = filtered.len();
         self.highlighted = match anchor {
             Some(entry) => filtered
                 .iter()
@@ -153,7 +154,15 @@ impl RewindPicker {
                 .unwrap_or(usize::MAX),
             None => filtered.len().saturating_sub(1),
         };
-        self.list_scroll.set_offset(point(px(0.), px(0.)));
+        // The list has not been laid out yet when the RPC reply arrives, so
+        // ScrollHandle::scroll_to_item cannot use its viewport bounds here.
+        // Position the fixed-height row at the top; GPUI clamps at the end.
+        let offset = if self.highlighted < count {
+            self.highlighted as f32 * row_stride(theme::get(cx))
+        } else {
+            0.
+        };
+        self.list_scroll.set_offset(point(px(0.), px(-offset)));
         cx.notify();
     }
 
@@ -161,6 +170,7 @@ impl RewindPicker {
     /// different prompt. Enter is inert until the user selects a row.
     pub(crate) fn clear_highlight(&mut self, cx: &mut Context<Self>) {
         self.highlighted = usize::MAX;
+        self.list_scroll.set_offset(point(px(0.), px(0.)));
         cx.notify();
     }
 
@@ -224,23 +234,7 @@ impl RewindPicker {
             self.highlighted.saturating_sub(1)
         };
         self.highlighted = next;
-        let theme = theme::get(cx);
-        let (row_h, stride) = (row_h(theme), row_stride(theme));
-        let row_top = next as f32 * stride;
-        // `ScrollHandle`'s offset is negative once scrolled down.
-        let current = -f32::from(self.list_scroll.offset().y);
-        let n = count as f32;
-        let content_h = n * row_h + (n - 1.).max(0.) * row_gap(theme);
-        let viewport_h = content_h.min(list_max_h(theme));
-        let mut offset = current;
-        if row_top < current {
-            offset = row_top;
-        } else if row_top + row_h > current + viewport_h {
-            offset = row_top + row_h - viewport_h;
-        }
-        let max_offset = (content_h - viewport_h).max(0.);
-        self.list_scroll
-            .set_offset(point(px(0.), px(-offset.clamp(0., max_offset))));
+        self.list_scroll.scroll_to_item(next);
         cx.notify();
     }
 
@@ -273,6 +267,7 @@ impl RewindPicker {
             div().id(ElementId::NamedInteger("rewind-row".into(), ix as u64)),
             &theme,
         )
+        .debug_selector(move || format!("rewind-row-{ix}"))
         .h(px(row_h(&theme)))
         .flex_none()
         .cursor_pointer()
@@ -394,6 +389,22 @@ impl Render for RewindPicker {
                                 .child(rows.len().to_string()),
                         )
                     }),
+            )
+            .when(
+                !self.loading && self.highlighted == usize::MAX && !rows.is_empty(),
+                |card| {
+                    card.child(
+                        div()
+                            .id("rewind-choose-message")
+                            .debug_selector(|| "rewind-choose-message".to_string())
+                            .px(picker::search_padding_x(&theme))
+                            .pb(DynamicSpacing::Base02.px(&theme))
+                            .whitespace_normal()
+                            .text_size(TextSize::XSmall.px(&theme))
+                            .text_color(theme.text_secondary)
+                            .child(tr!("rewind.choose_message")),
+                    )
+                },
             )
             .child(if self.loading {
                 div()
@@ -641,6 +652,51 @@ mod tests {
                 );
             });
         });
+    }
+
+    #[gpui::test]
+    fn preselected_message_is_visible_in_a_long_list(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let (entity, cx) = cx.add_window_view(|_, cx| {
+            RewindPicker::new(Box::new(|_, _, _| {}), Box::new(|_, _, _| {}), cx)
+        });
+        let viewport = cx.update(|window, _| window.viewport_size());
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            let _ = cx.draw(gpui::point(px(0.), px(0.)), viewport, |_, _| entity.clone());
+        };
+        draw(cx); // The picker first appears while pi is loading.
+        let points = (0..17)
+            .map(|ix| ForkPoint {
+                entry_id: format!("e{ix}"),
+                text: format!("prompt {ix}"),
+            })
+            .collect();
+        cx.update(|_, cx| {
+            entity.update(cx, |picker, cx| {
+                picker.set_points(points, Some("e15".into()), cx)
+            })
+        });
+        draw(cx);
+        draw(cx);
+        cx.update(|_, cx| assert_eq!(entity.read(cx).highlighted_entry().as_deref(), Some("e15")));
+        let list = cx.debug_bounds("rewind-list").unwrap();
+        let selected = cx.debug_bounds("rewind-row-15").unwrap();
+        assert!(
+            selected.top() >= list.top() && selected.bottom() <= list.bottom(),
+            "selected {selected:?} outside list {list:?}"
+        );
+        for _ in 0..15 {
+            cx.update(|_, cx| entity.update(cx, |picker, cx| picker.step_for_test(-1, cx)));
+            draw(cx);
+        }
+        let first = cx.debug_bounds("rewind-row-0").unwrap();
+        let list = cx.debug_bounds("rewind-list").unwrap();
+        assert!(first.top() >= list.top() && first.bottom() <= list.bottom());
+        cx.update(|_, cx| entity.update(cx, |picker, cx| picker.clear_highlight(cx)));
+        draw(cx);
+        assert!(cx.debug_bounds("rewind-choose-message").is_some());
+        cx.update(|_, cx| entity.update(cx, |picker, cx| picker.step_for_test(1, cx)));
+        cx.update(|_, cx| assert_eq!(entity.read(cx).highlighted_entry().as_deref(), Some("e0")));
     }
 
     #[gpui::test]

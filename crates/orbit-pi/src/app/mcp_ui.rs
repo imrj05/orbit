@@ -244,6 +244,15 @@ impl OrbitApp {
             // Nothing running to refresh; the next spawn reads the new config.
             return;
         }
+        if self.rewind_transition_pending(cx) {
+            // Dropping the client under an in-flight fork would lose its reply
+            // and could leave an unseen branch file. Keep the apply deferred;
+            // the debounce retries once the fork has answered.
+            self.mcp_apply_pending = true;
+            self.mcp_apply_forced = forced;
+            self.mcp_apply_at = Some(Instant::now() + MCP_APPLY_DEBOUNCE);
+            return;
+        }
         if self.busy || self.is_compacting {
             self.mcp_apply_pending = true;
             // The deferred apply must remember it was forced (sign-out).

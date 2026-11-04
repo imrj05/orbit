@@ -216,6 +216,9 @@ impl OrbitApp {
         if self.rewind_transition_pending(cx) {
             return;
         }
+        // A manual send supersedes a regenerate still waiting for its branch
+        // reload; otherwise the queued prompt would follow this one.
+        self.pending_regenerate = None;
         // Collect any paste that raced the submit tick, then fold the long
         // pastes back in: a pill is only a compact way to *hold* text.
         self.drain_pasted_files(cx);
@@ -393,6 +396,9 @@ impl OrbitApp {
         self.rewind_fetching = false;
         self.rewind_fetch_id = None;
         self.rewind_preselect = None;
+        self.rewind_intent = ForkIntent::Edit;
+        self.pending_regenerate = None;
+        self.rewind_prompt_images.clear();
     }
 
     /// Forget the queued-message mirror — the queue belongs to the previous
@@ -1496,6 +1502,11 @@ impl OrbitApp {
     /// or transcript entry; its `setSessionName` comes back as
     /// `session_info_changed` (handled in `events.rs`).
     pub(super) fn generate_session_title(&mut self, cx: &mut Context<Self>) {
+        // The command is a prompt: during a fork pi would run it on the new
+        // branch, and the reply's session reset would clear the spinner.
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         if self.session_id.is_none() || !self.can_generate_title() {
             return;
         }

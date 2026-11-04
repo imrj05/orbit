@@ -1546,7 +1546,19 @@ impl OrbitApp {
 
     /// Restart the agent so a catalog refreshed on disk is loaded, resuming the
     /// active session when one exists. Mirrors the credential-reload restart.
-    fn restart_pi_for_catalog(&mut self, cx: &mut Context<Self>) {
+    ///
+    /// The refresh runs off the main thread, so the state is re-checked here:
+    /// a run or a fork may have started while `pi --models` was running, and
+    /// neither may be yanked out from under.
+    pub(super) fn restart_pi_for_catalog(&mut self, cx: &mut Context<Self>) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
+        if self.busy || self.transcript.is_streaming() {
+            self.toast_warning(tr!("settings.finish_turn_before_restart"));
+            cx.notify();
+            return;
+        }
         let resume = self
             .current_session_path
             .clone()
@@ -6030,6 +6042,9 @@ impl OrbitApp {
     }
 
     pub(super) fn compact_now(&mut self, cx: &mut Context<Self>) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         if self.is_compacting {
             return;
         }
@@ -6062,6 +6077,11 @@ impl OrbitApp {
     }
 
     pub(super) fn rename_session(&mut self, cx: &mut Context<Self>) {
+        // The fork reply resets the session under the popover; a rename now
+        // would either land on the wrong branch or be wiped by that reset.
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         if self.pending_session_rename.is_some() {
             return;
         }
@@ -8442,6 +8462,11 @@ impl OrbitApp {
     /// `auth.json` only at startup, so this is the "use it" step. Resumes the
     /// active session on the fresh process when one exists.
     pub(super) fn provider_apply_credentials(&mut self, cx: &mut Context<Self>) {
+        // A fork owns the process until its reply lands; restarting now would
+        // lose the branch and the answer that moves Orbit onto it.
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         // Never yank the process out from under a live turn.
         if self.busy || self.transcript.is_streaming() {
             self.toast_warning(tr!("settings.finish_turn_before_restart"));

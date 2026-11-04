@@ -71,6 +71,7 @@ use crate::platform::{self, ExternalApp};
 use crate::plugins::{PackageScope, PluginPackage, PluginUpdate};
 use crate::providers::{self, CustomProvider};
 use crate::quota::{QuotaManager, QuotaSupport};
+use crate::rewind::ForkIntent;
 use crate::sessions::{self, SessionInfo};
 use crate::sidepane::{SidePane, SidePaneResize};
 use crate::skills::Skill;
@@ -118,6 +119,7 @@ const STATUS_MESSAGE_TTL: Duration = Duration::from_secs(6);
 /// command, so it needs its own identity: the next clean `message_end` clears
 /// the banner by comparing this tag rather than the banner's translated text.
 const AGENT_ERROR_SOURCE: &str = "agent_error";
+const REWIND_INTERRUPTED_ERROR_SOURCE: &str = "rewind_interrupted";
 
 /// How often the app polls pi for new quota-bridge session entries. The
 /// bridge appends only on change, so this is a cheap idempotent read.
@@ -865,6 +867,20 @@ pub struct OrbitApp {
     /// The user turn a `get_fork_messages` answer should preselect, when the
     /// rewind was started from a transcript row rather than the palette.
     rewind_preselect: Option<usize>,
+    /// What the pending or next `fork` reply does with the forked-from prompt:
+    /// hand it back for editing, or send it again on the new branch.
+    rewind_intent: ForkIntent,
+    /// The prompt a regenerate will resend once the branch's `get_state` reply
+    /// proves the new session is current.
+    pending_regenerate: Option<PendingRegenerate>,
+    /// The prompt's own images, captured before the fork so a regenerate can
+    /// resend the whole prompt instead of just its text.
+    rewind_prompt_images: Vec<Attachment>,
+    /// A fork reply was lost to a process teardown and pi may already have
+    /// written the branch file. The next tick reloads the session list.
+    sessions_refresh_pending: bool,
+    /// Preview files stay alive while external PDF viewers may still read them.
+    pdf_previews: Vec<tempfile::TempDir>,
     /// Folder selector anchored under the new-task page's workspace field.
     workspace_picker: Option<Entity<WorkspacePicker>>,
     /// A checkout/create is running on the background executor.
@@ -1287,6 +1303,20 @@ impl ComposerDraft {
             && self.files.is_empty()
             && self.pasted_texts.is_empty()
     }
+}
+
+/// A regenerate waiting for the branch's state reload.
+///
+/// A prompt sent before `get_messages` answers would be wiped out by that
+/// snapshot (pi does not echo user prompts in RPC mode), so the resend waits
+/// for the `get_state` reply that proves the new session is current. The
+/// request id keeps a stale or unrelated state reply from firing it. The
+/// images are the prompt's own, captured before the fork separated the
+/// transcript from them.
+struct PendingRegenerate {
+    state_id: String,
+    text: String,
+    images: Vec<Attachment>,
 }
 
 /// An image queued to ride along with the next prompt.
@@ -2227,6 +2257,11 @@ impl OrbitApp {
             rewind_fetch_id: None,
             rewind_fork_id: None,
             rewind_preselect: None,
+            rewind_intent: ForkIntent::Edit,
+            pending_regenerate: None,
+            rewind_prompt_images: Vec::new(),
+            sessions_refresh_pending: false,
+            pdf_previews: Vec::new(),
             workspace_picker: None,
             branch_operation_pending: false,
             open_in_prefs: platform::OpenInPrefs::load(),

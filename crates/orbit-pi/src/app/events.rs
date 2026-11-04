@@ -62,6 +62,15 @@ impl OrbitApp {
         }
         // Background update checks and the install handoff report here.
         self.drain_updater_events(cx);
+        // A fork reply lost to a restart path (not an RPC event) can still
+        // have created a branch file. Reload the list on the next tick even
+        // when no session event follows, so the new session is not invisible.
+        if std::mem::take(&mut self.sessions_refresh_pending) {
+            self.sessions = sessions::load_sessions();
+            self.prune_workflow_store();
+            self.sync_session_menu(cx);
+            cx.notify();
+        }
         // Sessions can be written by the CLI or another Orbit window; the
         // watcher has already scanned off-thread, so this only swaps the list.
         if let Some(reloaded) = self
@@ -386,7 +395,7 @@ impl OrbitApp {
                     self.refresh_context_stats();
                 }
                 Event::ProcessExited => {
-                    self.rewind_fork_id = None;
+                    let fork_interrupted = self.take_pending_fork();
                     self.pending_session_rename = None;
                     self.session_rename_ready = false;
                     self.busy = false;
@@ -421,6 +430,13 @@ impl OrbitApp {
                     // An exit the app can recover from on its own is a restart,
                     // not a failure to leave on screen — see `on_process_exited`.
                     self.on_process_exited(cx);
+                    if fork_interrupted {
+                        self.set_error_from(
+                            REWIND_INTERRUPTED_ERROR_SOURCE,
+                            tr!("rewind.interrupted"),
+                        );
+                        refresh_sessions = true;
+                    }
                 }
                 Event::MessageEnd { value } => {
                     // A failed LLM call ends the assistant message with
@@ -880,6 +896,10 @@ impl OrbitApp {
                 self.pending_session_rename = None;
                 self.session_rename_ready = false;
             }
+            if command == "get_state" {
+                // The branch reload a regenerate waits on never completed.
+                self.pending_regenerate = None;
+            }
             self.on_command_failure(command, error, cx);
             match command {
                 "get_fork_messages" => {
@@ -887,6 +907,8 @@ impl OrbitApp {
                     // leave a spinner over pi's error.
                     self.rewind_fetching = false;
                     self.rewind_picker = None;
+                    self.rewind_intent = ForkIntent::Edit;
+                    self.rewind_prompt_images.clear();
                 }
                 "compact" => {
                     self.is_compacting = false;
@@ -1120,6 +1142,22 @@ impl OrbitApp {
                 // A `new_session` birth may still need its default model
                 // pushed; this is a no-op otherwise.
                 self.apply_default_model(cx);
+                // A regenerate queued its prompt behind this reload: sending
+                // it before `get_messages` landed would be wiped out by that
+                // snapshot. The request id keeps an unrelated state reply from
+                // firing a stale prompt.
+                if self
+                    .pending_regenerate
+                    .as_ref()
+                    .is_some_and(|pending| pending.state_id == id)
+                {
+                    if let Some(pending) = self.pending_regenerate.take() {
+                        // The prompt's own images ride the resend, so the
+                        // model sees the prompt it answered the first time.
+                        self.attachments = pending.images;
+                        self.submit(pending.text, cx);
+                    }
+                }
             }
             "get_messages" => {
                 self.apply_messages_snapshot(data);

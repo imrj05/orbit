@@ -1115,6 +1115,7 @@ impl Render for OrbitApp {
                                     Some(self.review_opener(cx)),
                                     Some(self.image_opener(cx)),
                                     Some(self.rewind_opener(cx)),
+                                    Some(self.regenerate_opener(cx)),
                                     Some(self.response_exporter(cx)),
                                     self.search_hits(),
                                     self.search_active(),
@@ -5360,7 +5361,10 @@ impl OrbitApp {
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| {
-                            this.error = None;
+                            if this.error_source.as_deref() != Some(REWIND_INTERRUPTED_ERROR_SOURCE)
+                            {
+                                this.error = None;
+                            }
                             this.runtime_restart(cx);
                         }),
                     )

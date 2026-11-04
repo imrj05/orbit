@@ -38,6 +38,10 @@ gpui = { version = "0.2.2", default-features = false, features = [
 rust-i18n = "4.2"
 # Native open/folder dialogs (NSOpenPanel on macOS) for folder selection
 rfd = "0.15"
+# Offline Markdown-to-PDF rendering; the optional network feature stays off.
+markdown2pdf = { version = "1.6.2", default-features = false }
+# Private empty image root for rendering untrusted transcript Markdown.
+tempfile = "3"
 orbit-rpc = { path = "../orbit-rpc" }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -187,6 +191,8 @@ windows-sys = { version = "0.61", features = [
 embed-resource = "3"
 
 [dev-dependencies]
+lopdf = { version = "0.44", default-features = false }
+rustybuzz = "0.20"
 gpui = { version = "0.2.2", default-features = false, features = [
     "font-kit",
     "runtime_shaders",

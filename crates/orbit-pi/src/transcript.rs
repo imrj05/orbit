@@ -23,6 +23,12 @@ use crate::transcript_view::{self, TranscriptView};
 use orbit_rpc::{AssistantMessageEvent, Event, MessageUsage};
 use serde_json::Value;
 
+/// A snapshot of one PDF section and its attached images.
+pub(crate) struct PdfSection {
+    pub markdown: String,
+    pub images: Vec<Arc<Image>>,
+}
+
 /// One streaming step of an assistant turn: the reasoning it did, the tool
 /// calls it made, and the text it produced — rendered in sequence.
 #[derive(Clone, Default)]
@@ -1140,6 +1146,41 @@ impl Transcript {
             .position(|&index| index == row)
     }
 
+    /// The prompt for a clicked user or assistant row, without crossing a
+    /// summary boundary where the corresponding prompt may no longer be visible.
+    pub(crate) fn rewind_user_turn_ordinal(&self, row: usize) -> Option<usize> {
+        let messages = self.messages.borrow();
+        let message = messages.get(row)?;
+        let prompt_row = if message.user {
+            row
+        } else if message.is_assistant() {
+            (0..row)
+                .rev()
+                .take_while(|&ix| !messages[ix].is_summary())
+                .find(|&ix| messages[ix].user)?
+        } else {
+            return None;
+        };
+        drop(messages);
+        self.user_turn_ordinal(prompt_row)
+    }
+
+    /// The images attached to the `ordinal`-th visible user turn.
+    ///
+    /// These are the bytes pi stored for that prompt (or the previews appended
+    /// when Orbit sent it), so sending them again reproduces the prompt rather
+    /// than a text-only copy of it.
+    pub(crate) fn user_turn_images(&self, ordinal: usize) -> Vec<Arc<Image>> {
+        let Some(row) = self.cached_user_turns().get(ordinal).copied() else {
+            return Vec::new();
+        };
+        self.messages
+            .borrow()
+            .get(row)
+            .map(|message| message.images.clone())
+            .unwrap_or_default()
+    }
+
     pub fn user_turn_texts(&self) -> Vec<String> {
         let turns = self.cached_user_turns();
         let messages = self.messages.borrow();
@@ -1157,6 +1198,53 @@ impl Transcript {
             .rev()
             .find(|message| message.is_assistant() && message.has_text())
             .map(ChatMessage::text)
+    }
+
+    /// Snapshot only the selected assistant response and its attachments.
+    pub(crate) fn export_response_pdf(&self, row: usize, text: &str) -> Option<PdfSection> {
+        let messages = self.messages.borrow();
+        let message = messages.get(row)?;
+        (message.is_assistant() && message.text() == text).then(|| PdfSection {
+            markdown: text.to_owned(),
+            images: message.images.clone(),
+        })
+    }
+
+    /// Snapshot the latest visible assistant response and its attachments.
+    pub(crate) fn export_last_response_pdf(&self) -> Option<PdfSection> {
+        let messages = self.messages.borrow();
+        let message = messages.iter().rev().find(|message| {
+            message.is_assistant() && (message.has_text() || !message.images.is_empty())
+        })?;
+        Some(PdfSection {
+            markdown: message.text(),
+            images: message.images.clone(),
+        })
+    }
+
+    /// Snapshot the visible projection, preserving each message's attachments.
+    pub(crate) fn export_visible_pdf(&self) -> Option<Vec<PdfSection>> {
+        let messages = self.messages.borrow();
+        let mut sections = Vec::new();
+        for message in messages.iter() {
+            if let Some(summary) = &message.summary {
+                sections.push(PdfSection {
+                    markdown: format!("## Context summary\n\n{}", summary.summary.trim_end()),
+                    images: Vec::new(),
+                });
+                continue;
+            }
+            let text = message.text();
+            if text.is_empty() && message.images.is_empty() {
+                continue;
+            }
+            let role = if message.user { "User" } else { "Assistant" };
+            sections.push(PdfSection {
+                markdown: format!("## {role}\n\n{text}"),
+                images: message.images.clone(),
+            });
+        }
+        (!sections.is_empty()).then_some(sections)
     }
 
     /// Export the currently displayed conversation as Markdown. This is the
@@ -2608,6 +2696,7 @@ impl Transcript {
         review_changes: Option<crate::transcript_view::ReviewOpener>,
         image_opener: Option<crate::transcript_view::ImageOpener>,
         rewind: Option<crate::transcript_view::RewindOpener>,
+        regenerate: Option<crate::transcript_view::RegenerateOpener>,
         export_response: Option<crate::transcript_view::ResponseExporter>,
         search_hits: Option<HashSet<usize>>,
         search_active: Option<usize>,
@@ -2671,6 +2760,7 @@ impl Transcript {
                 review_changes,
                 image_opener,
                 rewind,
+                regenerate,
                 export_response,
                 search_hits: search_hits.map(|hits| Rc::new(RefCell::new(hits))),
                 search_active: search_active.map(|ix| Rc::new(Cell::new(Some(ix)))),
@@ -2684,6 +2774,46 @@ impl Transcript {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn rewind_prompt_for_response_does_not_cross_summary_boundaries() {
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({"messages": [
+            {"role":"user", "content":"first prompt"},
+            {"role":"assistant", "content":"first answer"},
+            {"role":"compactionSummary", "summary":"earlier work", "tokensBefore":100},
+            {"role":"assistant", "content":"orphan answer"},
+            {"role":"user", "content":"second prompt"},
+            {"role":"assistant", "content":"second answer"}
+        ]}));
+        assert_eq!(transcript.rewind_user_turn_ordinal(0), Some(0));
+        assert_eq!(transcript.rewind_user_turn_ordinal(1), Some(0));
+        assert_eq!(transcript.rewind_user_turn_ordinal(2), None);
+        assert_eq!(transcript.rewind_user_turn_ordinal(3), None);
+        assert_eq!(transcript.rewind_user_turn_ordinal(4), Some(1));
+        assert_eq!(transcript.rewind_user_turn_ordinal(5), Some(1));
+        assert_eq!(transcript.rewind_user_turn_ordinal(6), None);
+    }
+
+    #[test]
+    fn the_images_of_a_user_turn_are_kept_for_a_regenerate() {
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({"messages": [
+            {"role": "user", "content": [
+                {"type": "text", "text": "look at this"},
+                {"type": "image", "mimeType": "image/png", "data": "aGVsbG8="}
+            ]},
+            {"role": "assistant", "content": "seen"}
+        ]}));
+        let images = transcript.user_turn_images(0);
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].format, gpui::ImageFormat::Png);
+        assert_eq!(images[0].bytes, b"hello");
+        assert!(
+            transcript.user_turn_images(1).is_empty(),
+            "an out-of-range turn has no images"
+        );
+    }
 
     #[test]
     fn markdown_export_preserves_text_and_excludes_thinking_and_tools() {

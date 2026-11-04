@@ -997,6 +997,11 @@ impl OrbitApp {
     }
 
     pub(super) fn set_model(&mut self, id: String, provider: String, cx: &mut Context<Self>) {
+        // pi would apply the change to the branch a pending fork is about to
+        // open, not the session the picker described.
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         // A manual choice supersedes the session-birth default push. The push
         // itself sends `SetModel` directly so it doesn't disarm itself.
         self.default_model_armed = false;
@@ -1011,6 +1016,9 @@ impl OrbitApp {
     }
 
     pub(super) fn set_thinking_level(&mut self, level: String, cx: &mut Context<Self>) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         // A manual level choice likewise supersedes the pending default.
         self.default_model_armed = false;
         self.send(

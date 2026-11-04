@@ -586,6 +586,8 @@ impl OrbitApp {
             CommandId::CloneSession => self.clone_session(cx),
             CommandId::RewindConversation => self.open_rewind_picker(window, cx),
             CommandId::ExportVisibleTranscript => self.export_markdown(false, cx),
+            CommandId::ExportVisibleTranscriptPdf => self.export_visible_pdf(cx),
+            CommandId::ExportLastResponsePdf => self.export_last_response_pdf(cx),
             CommandId::CopySessionId => {
                 if let Some(id) = self.session_id.clone() {
                     cx.write_to_clipboard(ClipboardItem::new_string(id));

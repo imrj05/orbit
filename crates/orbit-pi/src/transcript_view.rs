@@ -70,8 +70,11 @@ pub(crate) type ImageOpener = Rc<dyn Fn(Arc<Image>, &mut Window, &mut App)>;
 /// Opens the rewind picker on the `usize`-th user turn. Handed down from the
 /// app so a message footer can offer a fork without owning session state.
 pub(crate) type RewindOpener = Rc<dyn Fn(usize, &mut Window, &mut App)>;
+/// Forks at the `usize`-th row's prompt and sends it again on the new branch.
+/// Handed down like [`RewindOpener`]; `None` draws no regenerate action.
+pub(crate) type RegenerateOpener = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 /// Saves the exact response text selected by its footer.
-pub(crate) type ResponseExporter = Rc<dyn Fn(String, &mut Window, &mut App)>;
+pub(crate) type ResponseExporter = Rc<dyn Fn(String, bool, usize, &mut Window, &mut App)>;
 
 /// The transcript content column's max width.
 /// Normal message content keeps this centered measure. Assistant tables
@@ -303,6 +306,8 @@ pub(crate) struct TranscriptView {
     /// Opens the rewind picker from a user message's footer. The app always
     /// supplies it; `None` (tests, previews) simply draws no rewind action.
     pub rewind: Option<RewindOpener>,
+    /// Forks at an assistant response's prompt and sends it again.
+    pub regenerate: Option<RegenerateOpener>,
     /// Opens the native save dialog for an assistant response.
     pub export_response: Option<ResponseExporter>,
     /// Message indices matching the open find query; `None` when find is
@@ -1162,6 +1167,8 @@ struct RowPaint {
     image_opener: Option<ImageOpener>,
     /// The rewind action, present only on user rows.
     rewind: Option<RewindOpener>,
+    /// The regenerate action, present only on assistant rows.
+    regenerate: Option<RegenerateOpener>,
     export_response: Option<ResponseExporter>,
     search_hit: bool,
     search_active: bool,
@@ -1226,6 +1233,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
     let review_changes = view.review_changes.clone();
     let image_opener = view.image_opener.clone();
     let rewind = view.rewind.clone();
+    let regenerate = view.regenerate.clone();
     let export_response = view.export_response.clone();
     let search_hits = view.search_hits.clone();
     let search_active = view.search_active.clone();
@@ -1394,6 +1402,14 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
                 .borrow()
                 .get(&last_ix)
                 .is_some_and(|at| at.elapsed() < COPY_FEEDBACK);
+            // Regenerate belongs to a response; an interrupted run's tail is a
+            // user prompt with no answer to replace.
+            let summary_regenerate = messages
+                .borrow()
+                .get(last_ix)
+                .is_some_and(|message| message.is_assistant() && message.has_text())
+                .then(|| regenerate.clone())
+                .flatten();
             let stamp = summary_finished_at
                 .map(|millis| footer_time_stamp(summary_time_label(millis), theme));
             let summary_generation = messages
@@ -1415,6 +1431,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
                     copied.clone(),
                     hovered_usage.clone(),
                     rewind.clone(),
+                    summary_regenerate,
                     export_response.clone(),
                 ));
             return div()
@@ -1466,6 +1483,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
                 hovered_usage: hovered_usage.clone(),
                 image_opener: image_opener.clone(),
                 rewind: rewind.clone(),
+                regenerate: regenerate.clone(),
                 export_response: export_response.clone(),
                 search_hit: search_hits
                     .as_ref()
@@ -2178,6 +2196,7 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint, cx: &gpui::App) -
             paint.hovered_usage.clone(),
             paint.rewind.clone(),
             None,
+            None,
         ))
 }
 
@@ -2484,7 +2503,12 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
     // model). pi carries the message in `errorMessage`; render it so a
     // failed turn is never an empty row.
     if let Some(error) = &message.error {
-        content = content.child(render_assistant_error(error, ix, theme));
+        // With text, the response footer already offers regenerate; without
+        // it, this card is the only place the failure can be retried.
+        let retry = (!paint.live && !message.has_text())
+            .then(|| paint.regenerate.clone())
+            .flatten();
+        content = content.child(render_assistant_error(error, ix, theme, retry));
     }
 
     // A cancelled turn keeps its partial content and says so, quietly —
@@ -2527,6 +2551,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
             paint.copied_at.clone(),
             paint.hovered_usage.clone(),
             paint.rewind.clone(),
+            paint.regenerate.clone(),
             paint.export_response.clone(),
         ));
     }
@@ -2537,7 +2562,40 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
 /// A settled assistant turn that failed: the provider/agent `errorMessage`
 /// pi carries on the message, as a red card. Mirrors the app-level error
 /// banner so the failure is visible in context too.
-fn render_assistant_error(error: &str, ix: usize, theme: Theme) -> AnyElement {
+///
+/// `retry` is the same fork-and-resend as the response footer's regenerate;
+/// it is supplied only when the turn has no text of its own, so the card never
+/// duplicates a footer action.
+fn render_assistant_error(
+    error: &str,
+    ix: usize,
+    theme: Theme,
+    retry: Option<RegenerateOpener>,
+) -> AnyElement {
+    let retry_button = retry.map(|opener| {
+        button_frame(
+            div().id(ElementId::NamedInteger("retry-response".into(), ix as u64)),
+            &theme,
+            ButtonSize::Default,
+        )
+        .debug_selector(move || format!("retry-response-{ix}"))
+        .flex_none()
+        .border_1()
+        .border_color(theme.border)
+        .raised(theme.surface_elevated, &theme)
+        .cursor_pointer()
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(theme.text_secondary)
+        .hover_state(&theme)
+        .tip(tr!("transcript.retry_hint"))
+        .child(glyph(
+            "icons/refresh.svg",
+            ButtonSize::Default.icon_size().px(&theme),
+            theme.text_muted,
+        ))
+        .child(tr!("transcript.retry"))
+        .on_click(move |_, window, cx| opener(ix, window, cx))
+    });
     div()
         .w_full()
         .max_w_full()
@@ -2597,6 +2655,7 @@ fn render_assistant_error(error: &str, ix: usize, theme: Theme) -> AnyElement {
                         }),
                 ),
         )
+        .children(retry_button)
         .into_any_element()
 }
 
@@ -4919,6 +4978,7 @@ fn render_message_footer(
     copied_at: Rc<RefCell<HashMap<usize, Instant>>>,
     hovered_usage: Rc<Cell<Option<usize>>>,
     rewind: Option<RewindOpener>,
+    regenerate: Option<RegenerateOpener>,
     export_response: Option<ResponseExporter>,
 ) -> impl IntoElement {
     let response_text = copy_text.clone();
@@ -4983,6 +5043,49 @@ fn render_message_footer(
         ))
         .on_click(move |_, window, cx| opener(ix, window, cx))
     });
+    // Regenerate is a response action and always says what it does: pi forks
+    // the conversation into a new session and sends the prompt again there.
+    let regenerate_button = regenerate.map(|opener| {
+        icon_button_frame(
+            div().id(ElementId::NamedInteger(
+                "regenerate-response".into(),
+                ix as u64,
+            )),
+            &theme,
+            FOOTER_BUTTON,
+        )
+        .debug_selector(move || format!("regenerate-response-{ix}"))
+        .tip(tr!("transcript.regenerate"))
+        .cursor_pointer()
+        .hover_on_glass(&theme)
+        .child(glyph(
+            "icons/refresh.svg",
+            FOOTER_BUTTON.icon_size().px(&theme),
+            theme.text_muted,
+        ))
+        .on_click(move |_, window, cx| opener(ix, window, cx))
+    });
+    let pdf_text = response_text.clone();
+    let pdf_button = export_response.clone().map(|export| {
+        icon_button_frame(
+            div().id(ElementId::NamedInteger(
+                "export-response-pdf".into(),
+                ix as u64,
+            )),
+            &theme,
+            FOOTER_BUTTON,
+        )
+        .debug_selector(move || format!("export-response-pdf-{ix}"))
+        .tip(tr!("transcript.export_response_pdf"))
+        .cursor_pointer()
+        .hover_on_glass(&theme)
+        .child(glyph(
+            "icons/file.svg",
+            FOOTER_BUTTON.icon_size().px(&theme),
+            theme.text_muted,
+        ))
+        .on_click(move |_, window, cx| export(pdf_text.clone(), true, ix, window, cx))
+    });
     let export_button = export_response.map(|export| {
         icon_button_frame(
             div().id(ElementId::NamedInteger("export-response".into(), ix as u64)),
@@ -4998,7 +5101,7 @@ fn render_message_footer(
             FOOTER_BUTTON.icon_size().px(&theme),
             theme.text_muted,
         ))
-        .on_click(move |_, window, cx| export(response_text.clone(), window, cx))
+        .on_click(move |_, window, cx| export(response_text.clone(), false, ix, window, cx))
     });
     if align_right {
         // Right-aligned footer: timestamp first, then actions.
@@ -5009,7 +5112,9 @@ fn render_message_footer(
     } else {
         footer = footer
             .child(button)
+            .children(regenerate_button)
             .children(export_button)
+            .children(pdf_button)
             .children(rewind_button);
         if let Some(stamp) = stamp {
             footer = footer.child(stamp);
@@ -10191,6 +10296,7 @@ mod tests {
             review_changes: None,
             image_opener: None,
             rewind: None,
+            regenerate: None,
             export_response: None,
             search_hits: None,
             search_active: None,
@@ -10249,8 +10355,9 @@ mod tests {
             messages: Rc<RefCell<Vec<ChatMessage>>>,
             state: TextSelectionState,
             scroller: MessageScrollerState,
-            exported: Rc<RefCell<Vec<String>>>,
+            exported: Rc<RefCell<Vec<(String, bool)>>>,
             forked: Rc<RefCell<Vec<usize>>>,
+            regenerated: Rc<RefCell<Vec<usize>>>,
         }
 
         impl gpui::Render for RowsView {
@@ -10262,10 +10369,14 @@ mod tests {
                 );
                 let forked = self.forked.clone();
                 view.rewind = Some(Rc::new(move |row, _, _| forked.borrow_mut().push(row)));
+                let regenerated = self.regenerated.clone();
+                view.regenerate =
+                    Some(Rc::new(move |row, _, _| regenerated.borrow_mut().push(row)));
                 view.viewport_height = px(300.);
                 let exported = self.exported.clone();
-                view.export_response =
-                    Some(Rc::new(move |text, _, _| exported.borrow_mut().push(text)));
+                view.export_response = Some(Rc::new(move |text, pdf, _, _, _| {
+                    exported.borrow_mut().push((text, pdf))
+                }));
                 render_transcript(view, cx)
             }
         }
@@ -10290,12 +10401,14 @@ mod tests {
         ]));
         let exported = Rc::new(RefCell::new(Vec::new()));
         let forked = Rc::new(RefCell::new(Vec::new()));
+        let regenerated = Rc::new(RefCell::new(Vec::new()));
         let (view, cx) = cx.add_window_view(|_, _| RowsView {
             messages,
             state: Rc::new(RefCell::new(TextSelection::new())),
             scroller: MessageScrollerState::new(2),
             exported: exported.clone(),
             forked: forked.clone(),
+            regenerated: regenerated.clone(),
         });
         let _ = cx.draw(
             point(px(0.), px(0.)),
@@ -10323,9 +10436,18 @@ mod tests {
         cx.simulate_click(position, gpui::Modifiers::none());
         assert_eq!(
             &*exported.borrow(),
-            &["first answer".to_string()],
+            &[("first answer".to_string(), false)],
             "button bounds: {button:?}"
         );
+        let pdf = cx.debug_bounds("export-response-pdf-1").unwrap().center();
+        cx.simulate_mouse_move(pdf, None, gpui::Modifiers::none());
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(300.)),
+            |_, _| view.clone(),
+        );
+        cx.simulate_click(pdf, gpui::Modifiers::none());
+        assert_eq!(exported.borrow()[1], ("first answer".to_string(), true));
         let fork = cx.debug_bounds("rewind-turn-1").unwrap().center();
         cx.simulate_mouse_move(fork, None, gpui::Modifiers::none());
         let _ = cx.draw(
@@ -10335,6 +10457,154 @@ mod tests {
         );
         cx.simulate_click(fork, gpui::Modifiers::none());
         assert_eq!(&*forked.borrow(), &[1]);
+        assert!(
+            cx.debug_bounds("regenerate-response-0").is_none(),
+            "a user message has no regenerate action"
+        );
+        let regenerate = cx
+            .debug_bounds("regenerate-response-1")
+            .expect("the response offers regenerate")
+            .center();
+        cx.simulate_mouse_move(regenerate, None, gpui::Modifiers::none());
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(300.)),
+            |_, _| view.clone(),
+        );
+        cx.simulate_click(regenerate, gpui::Modifiers::none());
+        assert_eq!(&*regenerated.borrow(), &[1]);
+    }
+
+    /// A failed turn without text has no footer, so its error card carries the
+    /// retry. A failed turn with text uses the footer's regenerate instead, so
+    /// the two affordances never sit on top of each other.
+    #[gpui::test]
+    fn an_error_only_response_retries_from_its_error_card(cx: &mut gpui::TestAppContext) {
+        struct ErrorView {
+            messages: Rc<RefCell<Vec<ChatMessage>>>,
+            state: TextSelectionState,
+            scroller: MessageScrollerState,
+            retried: Rc<RefCell<Vec<usize>>>,
+        }
+
+        impl gpui::Render for ErrorView {
+            fn render(&mut self, _: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+                let mut view = test_view(
+                    self.state.clone(),
+                    self.messages.clone(),
+                    self.scroller.clone(),
+                );
+                let retried = self.retried.clone();
+                view.regenerate = Some(Rc::new(move |row, _, _| retried.borrow_mut().push(row)));
+                view.viewport_height = px(300.);
+                render_transcript(view, cx)
+            }
+        }
+
+        cx.update(|cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let messages = Rc::new(RefCell::new(vec![
+            ChatMessage {
+                user: true,
+                summary: None,
+                steps: vec![Step {
+                    text: "first prompt".into(),
+                    ..Step::default()
+                }],
+                images: Vec::new(),
+                elapsed: None,
+                finished_at: None,
+                error: None,
+                aborted: false,
+            },
+            ChatMessage {
+                user: false,
+                summary: None,
+                steps: Vec::new(),
+                images: Vec::new(),
+                elapsed: None,
+                finished_at: None,
+                error: Some("provider overloaded".into()),
+                aborted: false,
+            },
+        ]));
+        let retried = Rc::new(RefCell::new(Vec::new()));
+        let (view, cx) = cx.add_window_view(|_, _| ErrorView {
+            messages: messages.clone(),
+            state: Rc::new(RefCell::new(TextSelection::new())),
+            scroller: MessageScrollerState::new(2),
+            retried: retried.clone(),
+        });
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            let _ = cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(900.), px(300.)),
+                |_, _| view.clone(),
+            );
+        };
+        draw(cx);
+        assert!(
+            cx.debug_bounds("regenerate-response-1").is_none(),
+            "an error-only turn has no response footer"
+        );
+        let retry = cx
+            .debug_bounds("retry-response-1")
+            .expect("the error card offers retry")
+            .center();
+        cx.simulate_mouse_move(retry, None, gpui::Modifiers::none());
+        draw(cx);
+        cx.simulate_click(retry, gpui::Modifiers::none());
+        assert_eq!(&*retried.borrow(), &[1]);
+
+        // The same failed turn with text moves the action into the footer, so
+        // the card does not duplicate it. A fresh view keeps the assertion
+        // independent of the previous frame's painted tree.
+        let with_text = vec![
+            ChatMessage {
+                user: true,
+                summary: None,
+                steps: vec![Step {
+                    text: "first prompt".into(),
+                    ..Step::default()
+                }],
+                images: Vec::new(),
+                elapsed: None,
+                finished_at: None,
+                error: None,
+                aborted: false,
+            },
+            ChatMessage {
+                user: false,
+                summary: None,
+                steps: vec![Step {
+                    text: "partial answer".into(),
+                    ..Step::default()
+                }],
+                images: Vec::new(),
+                elapsed: None,
+                finished_at: None,
+                error: Some("provider overloaded".into()),
+                aborted: false,
+            },
+        ];
+        let (text_view, text_cx) = cx.add_window_view(|_, _| ErrorView {
+            messages: Rc::new(RefCell::new(with_text)),
+            state: Rc::new(RefCell::new(TextSelection::new())),
+            scroller: MessageScrollerState::new(2),
+            retried: Rc::new(RefCell::new(Vec::new())),
+        });
+        let _ = text_cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(300.)),
+            |_, _| text_view.clone(),
+        );
+        assert!(
+            text_cx.debug_bounds("retry-response-1").is_none(),
+            "the card does not duplicate the footer action"
+        );
+        assert!(
+            text_cx.debug_bounds("regenerate-response-1").is_some(),
+            "the footer offers regenerate for a response with text"
+        );
     }
 
     #[gpui::test]

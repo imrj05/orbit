@@ -35,6 +35,8 @@ pub enum CommandId {
     /// transcript's message footer is the pointer path to the same picker.
     RewindConversation,
     ExportVisibleTranscript,
+    ExportVisibleTranscriptPdf,
+    ExportLastResponsePdf,
     CopySessionId,
     DeleteSession,
     // Agent
@@ -353,6 +355,20 @@ pub static COMMANDS: &[CommandSpec] = &[
         "icons/file.svg",
         "command_palette.export_visible_transcript",
         "export save download conversation transcript markdown",
+    ),
+    command(
+        CommandId::ExportVisibleTranscriptPdf,
+        Session,
+        "icons/file.svg",
+        "command_palette.export_visible_transcript_pdf",
+        "export save download conversation transcript pdf",
+    ),
+    command(
+        CommandId::ExportLastResponsePdf,
+        Session,
+        "icons/file.svg",
+        "command_palette.export_last_response_pdf",
+        "export save download last response answer pdf",
     ),
     command(
         CommandId::CopySessionId,
@@ -1250,6 +1266,8 @@ fn action_binding(binding: &Binding) -> Option<KeyBinding> {
         | CommandId::CloneSession
         | CommandId::RewindConversation
         | CommandId::ExportVisibleTranscript
+        | CommandId::ExportVisibleTranscriptPdf
+        | CommandId::ExportLastResponsePdf
         | CommandId::CopySessionId
         | CommandId::DeleteSession
         | CommandId::FocusComposer

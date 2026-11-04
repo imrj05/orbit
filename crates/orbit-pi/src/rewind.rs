@@ -13,6 +13,21 @@
 
 use serde_json::Value;
 
+/// What a `fork` reply should do with the forked-from prompt.
+///
+/// pi has no regenerate command: a regenerate is the same fork a rewind
+/// performs, followed by sending pi's own copy of the prompt again. Keeping the
+/// intent beside the fork request means the reply — not a second guess at the
+/// text — decides what is re-sent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ForkIntent {
+    /// Hand the prompt back to the composer so it can be edited.
+    #[default]
+    Edit,
+    /// Send the prompt again on the new branch.
+    Regenerate,
+}
+
 /// One user message pi will fork before.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ForkPoint {
@@ -68,7 +83,7 @@ pub fn point_for_turn<'a>(
     turn: usize,
 ) -> Option<&'a ForkPoint> {
     let wanted = key(texts.get(turn)?);
-    if wanted.is_empty() {
+    if wanted.is_empty() || texts.iter().filter(|text| key(text) == wanted).count() != 1 {
         return None;
     }
     // `get_fork_messages` can include abandoned branches, so matching text
@@ -187,6 +202,14 @@ mod tests {
             point("b", "continue"),
             point("c", "continue"),
         ];
+        let turns = texts(&["continue", "continue"]);
+        assert_eq!(point_for_turn(&points, &turns, 0), None);
+        assert_eq!(point_for_turn(&points, &turns, 1), None);
+    }
+
+    #[test]
+    fn duplicate_visible_turns_are_not_matched_to_a_single_fork_point() {
+        let points = vec![point("a", "continue")];
         let turns = texts(&["continue", "continue"]);
         assert_eq!(point_for_turn(&points, &turns, 0), None);
         assert_eq!(point_for_turn(&points, &turns, 1), None);
