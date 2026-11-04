@@ -25,9 +25,9 @@ struct ComposerRowProbe {
 }
 
 impl Render for ComposerRowProbe {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.app.update(cx, |app, cx| {
-            div().w(px(900.)).child(app.composer_row(false, cx))
+            div().w(px(900.)).child(app.composer_row(false, window, cx))
         })
     }
 }
@@ -595,4 +595,102 @@ fn follow_up_suggestions_stay_inside_the_composer_column(cx: &mut gpui::TestAppC
         assert!(app.read(cx).extension_widgets.is_empty());
         assert!(app.read(cx).input.read(cx).text().is_empty());
     });
+}
+
+/// The send control is a labelled pill at rest and a circle mid-run, and both
+/// states must wear the shared button metrics. The labelled pill used to
+/// reserve a fixed width for its label — no gap, and side padding that shrank
+/// as the UI font grew — while the folded state kept the hidden label's space,
+/// pushing the glyph off the circle's centre.
+#[gpui::test]
+fn the_send_control_keeps_the_button_padding_gap_and_centre(cx: &mut gpui::TestAppContext) {
+    use crate::theme::tokens::{button, ButtonSize};
+    use crate::theme::{MotionPreference, Theme, ThemeId};
+
+    // Reduced Motion resolves the morph on the frame it is asked for, so the
+    // geometry below is the state's final one rather than a travelling frame.
+    cx.update(|cx| {
+        let mut theme = Theme::for_id(ThemeId::Orbit);
+        theme.ui.motion = MotionPreference::Reduced;
+        cx.set_global(theme);
+    });
+    let theme = cx.update(|cx| *crate::theme::get(cx));
+    let app = cx.update(|cx| cx.new(OrbitApp::new));
+    let window = cx.add_empty_window();
+    window.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.input
+                .update(cx, |input, cx| input.set_text("hello", cx));
+        });
+    });
+
+    // At rest the pill is exactly its content plus the shared horizontal
+    // padding, with the shared icon–label gap in between.
+    let _ = window.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(900.), px(60.)),
+        |_, cx| cx.new(|_| ComposerRowProbe { app: app.clone() }),
+    );
+    let send = window
+        .debug_bounds("send-btn")
+        .expect("send button laid out");
+    let icon = window
+        .debug_bounds("send-btn-icon")
+        .expect("send glyph laid out");
+    let label = window
+        .debug_bounds("send-btn-label")
+        .expect("send label laid out");
+    let pad = ButtonSize::Medium.padding_x(&theme);
+    let gap = button::gap(&theme);
+    assert!(
+        label.size.width > px(0.),
+        "the resting pill shows its label: {label:?}"
+    );
+    let left_pad = icon.origin.x - send.origin.x;
+    let icon_gap = label.origin.x - (icon.origin.x + icon.size.width);
+    let right_pad = (send.origin.x + send.size.width) - (label.origin.x + label.size.width);
+    for (name, actual, expected) in [
+        ("left padding", left_pad, pad),
+        ("icon–label gap", icon_gap, gap),
+        ("right padding", right_pad, pad),
+    ] {
+        assert!(
+            (actual - expected).abs() < px(1.),
+            "{name} should be {expected:?}, got {actual:?} — send {send:?}, icon {icon:?}, label {label:?}"
+        );
+    }
+
+    // Mid-run the label folds to zero width: the glyph owns the square and
+    // stays on its centre.
+    window.update(|_, cx| {
+        app.update(cx, |app, _| app.transcript.expect_reply());
+    });
+    let _ = window.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(900.), px(60.)),
+        |_, cx| cx.new(|_| ComposerRowProbe { app: app.clone() }),
+    );
+    let send = window
+        .debug_bounds("send-btn")
+        .expect("folded send laid out");
+    let icon = window
+        .debug_bounds("send-btn-icon")
+        .expect("folded glyph laid out");
+    let square = ButtonSize::Medium.height(&theme);
+    assert!(
+        (send.size.width - square).abs() < px(1.) && (send.size.height - square).abs() < px(1.),
+        "the folded control is the square its height defines: {send:?} vs {square:?}"
+    );
+    let glyph_centre = icon.origin.x + icon.size.width / 2.;
+    let button_centre = send.origin.x + send.size.width / 2.;
+    assert!(
+        (glyph_centre - button_centre).abs() < px(0.5),
+        "the folded glyph sits on the circle's centre: glyph {icon:?}, button {send:?}"
+    );
+    if let Some(label) = window.debug_bounds("send-btn-label") {
+        assert!(
+            label.size.width < px(0.5),
+            "the folded label holds no space: {label:?}"
+        );
+    }
 }

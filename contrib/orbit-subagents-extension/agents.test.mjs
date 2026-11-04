@@ -13,6 +13,7 @@ import test from "node:test";
 
 import {
   buildDescription,
+  buildPromptGuidelines,
   ceilingForTools,
   classifyTool,
   discoverAgents,
@@ -169,7 +170,25 @@ test("the description is built from the enabled agents", () => {
     { name: "scout", description: "Recon", ceiling: "read" },
     { name: "worker", description: "Implementation", ceiling: "exec" },
   ]);
+  // The trigger comes first: the decision to delegate is made before reading.
+  assert.match(text, /^Call this first for broad work:/);
+  assert.match(text, /Agents \(built in, or files in ~\/\.pi\/agent\/agents\):/);
   assert.match(text, /scout\s+read only · Recon/);
   assert.match(text, /worker\s+runs commands · Implementation/);
-  assert.match(text, /Returns a short report, not a transcript/);
+  assert.match(text, /a short report, not a transcript/);
+  // The cost caveat closes the block, after the trigger has landed.
+  assert.match(text, /Skip it for one file you already know/);
+  assert.ok(text.indexOf("Call this first") < text.indexOf("Agents"));
+  assert.ok(text.indexOf("Agents") < text.indexOf("Skip it"));
+});
+
+test("prompt guidelines name the tool and only the enabled agents", () => {
+  const lines = buildPromptGuidelines([{ name: "scout" }, { name: "reviewer" }]);
+  assert.ok(lines.every((line) => line.includes("subagent")));
+  assert.ok(lines.some((line) => line.includes('"reviewer"')));
+  assert.ok(lines.some((line) => line.includes('"scout"')));
+
+  const withoutScout = buildPromptGuidelines([{ name: "worker" }]);
+  assert.ok(withoutScout.every((line) => !line.includes('"scout"')));
+  assert.ok(withoutScout.every((line) => !line.includes('"reviewer"')));
 });

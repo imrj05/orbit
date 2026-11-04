@@ -22,7 +22,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn as nodeSpawn } from "node:child_process";
 
-import { buildDescription, discoverAgents, loadBuiltins, userAgentDir } from "./agents.js";
+import { buildDescription, buildPromptGuidelines, discoverAgents, loadBuiltins, userAgentDir } from "./agents.js";
 import {
   HARD_CAPS,
   agentEntry,
@@ -55,6 +55,15 @@ import {
 
 /** The tool's name. Prompts and muscle memory already use it (D-C). */
 export const TOOL_NAME = "subagent";
+
+/**
+ * The tool's one-line entry in the `<tools>` section of the system prompt. pi
+ * shows it only while the tool is active, and without it the model is told
+ * only "Additional tools may be available" — the tool was never considered
+ * early enough to win against doing the work inline.
+ */
+export const PROMPT_SNIPPET =
+  "Delegate a scoped task to a child agent with its own context window.";
 
 /**
  * One JSON Schema for all three modes (D-I). Plain JSON Schema, not TypeBox:
@@ -125,19 +134,24 @@ export default function activate(pi, overrides = {}) {
 
   let registered = null;
 
-  /** Build the description from the enabled agents and register on change. */
+  /** Build the prompt surface from the enabled agents and register on change. */
   function refreshDescription() {
     const builtins = safeBuiltins();
     const { agents } = discoverAgents({ builtins, userDir: userAgentDir(deps.home) });
     const config = loadConfig(configPath(deps));
     const enabled = agents.filter((agent) => agentEntry(config, agent.name).enabled);
-    const description = buildDescription(enabled);
-    if (description === registered) return enabled;
-    registered = description;
+    const prompt = {
+      description: buildDescription(enabled),
+      promptGuidelines: buildPromptGuidelines(enabled),
+    };
+    const signature = JSON.stringify(prompt);
+    if (signature === registered) return enabled;
+    registered = signature;
     pi.registerTool({
       name: TOOL_NAME,
       label: "Subagent",
-      description,
+      ...prompt,
+      promptSnippet: PROMPT_SNIPPET,
       parameters: PARAMETERS,
       async execute(toolCallId, params, signal, onUpdate, ctx) {
         return executeTool({ params, signal, onUpdate, ctx, pi, deps });

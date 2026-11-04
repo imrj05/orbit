@@ -478,6 +478,31 @@ pub(crate) fn icon_dyn(path: SharedString, size: impl Into<Pixels>, color: Hsla)
         .group_hover(BUTTON_GROUP, move |style| style.text_color(hover))
 }
 
+/// The advance width of one line of UI text at `size`, shaped with the app's
+/// UI face.
+///
+/// A control that reserves room for a label it is about to reveal needs the
+/// label's real width: a fixed reserve stops fitting as soon as the UI font
+/// size, the spacing density or the locale changes. Shaping goes through the
+/// window's text system, so callers pass the window they are rendering.
+pub(crate) fn text_width(window: &Window, text: &str, size: Pixels) -> Pixels {
+    if text.is_empty() {
+        return px(0.);
+    }
+    let run = gpui::TextRun {
+        len: text.len(),
+        font: gpui::font(theme::ui_font_family()),
+        color: Hsla::transparent_black(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    window
+        .text_system()
+        .shape_line(SharedString::from(text.to_string()), size, &[run], None)
+        .width
+}
+
 /// The app's shared loading spinner: `loader.svg` rotating once per 900 ms,
 /// and rendered static under reduce-motion so the perpetual loop can be turned
 /// off. In-flight affordances (buttons, panels, tool cards) share this so

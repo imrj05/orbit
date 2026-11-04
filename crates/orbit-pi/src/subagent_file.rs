@@ -319,14 +319,6 @@ impl Agent {
         ceiling_for_tools(self.fields.tools.as_deref())
     }
 
-    /// The capability tier as the page's radio group understands it.
-    pub(crate) fn tier(&self) -> Option<Tier> {
-        match self.fields.tools.as_deref() {
-            Some(tools) => Tier::from_tools(tools),
-            None => None,
-        }
-    }
-
     /// The content hash the page captured when it loaded this file, used to
     /// refuse a save that would clobber an external edit.
     pub(crate) fn hash(&self) -> Option<u64> {

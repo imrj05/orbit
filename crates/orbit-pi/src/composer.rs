@@ -142,14 +142,11 @@ pub struct ComposerInput {
     focus_handle: FocusHandle,
     content: String,
     placeholder: SharedString,
-    /// True while the field still uses the shared default placeholder, which
-    /// is resolved at paint time so a language change is picked up live.
-    placeholder_is_default: bool,
-    /// Translation key for the placeholder, resolved at paint time (like the
-    /// default placeholder) so switching the interface language updates the
-    /// field without rebuilding it. Preferred over [`Self::with_placeholder`]
-    /// for user-facing copy; `with_placeholder` stays for literal text such
-    /// as `sk-…` or a URL example.
+    /// Translation key for the placeholder, resolved at paint time so
+    /// switching the interface language updates the field without rebuilding
+    /// it. Preferred over [`Self::with_placeholder`] for user-facing copy;
+    /// `with_placeholder` stays for literal text such as `sk-…` or a URL
+    /// example. A field with neither paints no placeholder.
     placeholder_key: Option<SharedString>,
     /// Named `%{…}` values substituted into [`Self::placeholder_key`] at paint
     /// time. Empty for keys without interpolation.
@@ -257,7 +254,6 @@ impl ComposerInput {
             focus_handle: cx_focus_handle(_cx),
             content: String::new(),
             placeholder: "".into(),
-            placeholder_is_default: true,
             placeholder_key: None,
             placeholder_vars: Vec::new(),
             element_id: "composer-input".into(),
@@ -306,7 +302,6 @@ impl ComposerInput {
         self.placeholder = placeholder.into();
         self.placeholder_key = None;
         self.placeholder_vars.clear();
-        self.placeholder_is_default = false;
         self
     }
 
@@ -317,7 +312,6 @@ impl ComposerInput {
         self.placeholder_key = Some(key.into());
         self.placeholder = SharedString::default();
         self.placeholder_vars.clear();
-        self.placeholder_is_default = false;
         self
     }
 
@@ -334,32 +328,23 @@ impl ComposerInput {
 
     /// Switch the placeholder key at runtime — the chat composer names what
     /// Enter will do (describe the task / queue a follow-up / steer the live
-    /// turn). `None` goes back to the shared default. A no-op when the key is
-    /// unchanged, so it is safe to call from the heartbeat every tick.
-    pub fn set_placeholder_key(&mut self, key: Option<&str>, cx: &mut Context<Self>) {
-        let unchanged = match key {
-            Some(key) => {
-                !self.placeholder_is_default
-                    && self.placeholder_key.as_ref().map(|k| k.as_ref()) == Some(key)
-            }
-            None => self.placeholder_is_default,
-        };
-        if unchanged {
+    /// turn). A no-op when the key is unchanged, so it is safe to call from
+    /// the heartbeat every tick.
+    pub fn set_placeholder_key(&mut self, key: &str, cx: &mut Context<Self>) {
+        if self.placeholder_key.as_ref().map(|k| k.as_ref()) == Some(key) {
             return;
         }
-        self.placeholder_key = key.map(|key| SharedString::from(key.to_string()));
+        self.placeholder_key = Some(SharedString::from(key.to_string()));
         self.placeholder = SharedString::default();
         self.placeholder_vars.clear();
-        self.placeholder_is_default = key.is_none();
         cx.notify();
     }
 
-    /// The placeholder text to paint in the current locale. Default, keyed,
-    /// and literal placeholders all converge here so the paint path and tests
-    /// share one implementation.
+    /// The placeholder text to paint in the current locale. Keyed and literal
+    /// placeholders both converge here so the paint path and tests share one
+    /// implementation.
     pub(crate) fn resolved_placeholder(&self) -> SharedString {
         resolve_placeholder(
-            self.placeholder_is_default,
             self.placeholder_key.as_ref().map(|key| key.as_ref()),
             &self.placeholder,
             &self.placeholder_vars,
@@ -1717,20 +1702,13 @@ fn horizontal_scroll(caret_x: Pixels, line_width: Pixels, visible_width: Pixels)
 
 /// Resolve a placeholder for `locale` (or the active locale when `locale` is
 /// `None`). Shared by the paint path and tests so both agree on precedence:
-/// default key → explicit key (+ interpolated vars) → literal.
+/// explicit key (+ interpolated vars) → literal.
 fn resolve_placeholder(
-    placeholder_is_default: bool,
     placeholder_key: Option<&str>,
     placeholder: &str,
     vars: &[(SharedString, SharedString)],
     locale: Option<&str>,
 ) -> String {
-    if placeholder_is_default {
-        return match locale {
-            Some(locale) => crate::i18n::translate_in(locale, "composer.placeholder"),
-            None => tr!("composer.placeholder"),
-        };
-    }
     let Some(key) = placeholder_key else {
         return placeholder.to_owned();
     };
@@ -2450,25 +2428,14 @@ mod tests {
         assert_eq!(runs[0].len, "refactor ".len());
     }
 
-    /// The placeholder names what Enter does: the shared default when idle, a
+    /// The placeholder names what Enter does: the idle key normally, a
     /// send-mode key while a turn is in flight.
     #[test]
     fn running_placeholders_name_the_send_mode() {
-        let idle = resolve_placeholder(true, None, "", &[], Some("en"));
-        let queue = resolve_placeholder(
-            false,
-            Some("composer.placeholder_follow_up"),
-            "",
-            &[],
-            Some("en"),
-        );
-        let steer = resolve_placeholder(
-            false,
-            Some("composer.placeholder_steer"),
-            "",
-            &[],
-            Some("en"),
-        );
+        let idle = resolve_placeholder(Some("composer.placeholder"), "", &[], Some("en"));
+        let queue =
+            resolve_placeholder(Some("composer.placeholder_follow_up"), "", &[], Some("en"));
+        let steer = resolve_placeholder(Some("composer.placeholder_steer"), "", &[], Some("en"));
         assert_eq!(idle, "Describe the task…");
         assert_eq!(queue, "Queue a follow-up…");
         assert_eq!(steer, "Steer the current task…");
@@ -2481,22 +2448,25 @@ mod tests {
     /// that were constructed long before (the provider/model/settings filters).
     #[test]
     fn placeholder_keys_follow_the_locale() {
-        let en = resolve_placeholder(false, Some("app.search_providers"), "", &[], Some("en"));
-        let zh = resolve_placeholder(false, Some("app.search_providers"), "", &[], Some("zh-CN"));
+        let en = resolve_placeholder(Some("app.search_providers"), "", &[], Some("en"));
+        let zh = resolve_placeholder(Some("app.search_providers"), "", &[], Some("zh-CN"));
         assert_eq!(en, "Search providers…");
         assert_ne!(en, zh, "keyed placeholder still renders English in zh-CN");
         assert!(!zh.is_empty());
 
         // A literal placeholder (`sk-…`, a URL example) is never translated.
         assert_eq!(
-            resolve_placeholder(false, None, "sk-…", &[], Some("zh-CN")),
+            resolve_placeholder(None, "sk-…", &[], Some("zh-CN")),
             "sk-…"
         );
 
-        // The shared default placeholder follows the locale too.
+        // A field with neither a key nor literal text paints nothing.
+        assert_eq!(resolve_placeholder(None, "", &[], Some("en")), "");
+
+        // The chat composer's idle key follows the locale too.
         assert_ne!(
-            resolve_placeholder(true, None, "", &[], Some("en")),
-            resolve_placeholder(true, None, "", &[], Some("zh-CN")),
+            resolve_placeholder(Some("composer.placeholder"), "", &[], Some("en")),
+            resolve_placeholder(Some("composer.placeholder"), "", &[], Some("zh-CN")),
         );
     }
 
@@ -2548,13 +2518,8 @@ mod tests {
     #[test]
     fn keyed_placeholder_vars_are_interpolated() {
         let vars = [(SharedString::from("workspace"), SharedString::from("orbit"))];
-        let text = resolve_placeholder(
-            false,
-            Some("branch_picker.search_branches"),
-            "",
-            &vars,
-            Some("en"),
-        );
+        let text =
+            resolve_placeholder(Some("branch_picker.search_branches"), "", &vars, Some("en"));
         assert!(text.contains("orbit"), "{text}");
         assert!(!text.contains("%{workspace}"), "{text}");
     }
@@ -2564,8 +2529,8 @@ mod tests {
     /// locale, so the active one is English here.
     #[test]
     fn resolved_placeholder_uses_the_active_locale() {
-        let live = resolve_placeholder(false, Some("app.search_providers"), "", &[], None);
-        let en = resolve_placeholder(false, Some("app.search_providers"), "", &[], Some("en"));
+        let live = resolve_placeholder(Some("app.search_providers"), "", &[], None);
+        let en = resolve_placeholder(Some("app.search_providers"), "", &[], Some("en"));
         assert_eq!(live, en);
     }
 

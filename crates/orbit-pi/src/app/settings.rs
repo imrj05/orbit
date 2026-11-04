@@ -7523,6 +7523,7 @@ impl OrbitApp {
             | SettingsSelect::AgentCalls
             | SettingsSelect::DefaultModel
             | SettingsSelect::DefaultThinking
+            | SettingsSelect::SubagentModel
             | SettingsSelect::ActiveModel
             | SettingsSelect::ModelProvider
             | SettingsSelect::RetentionMode
@@ -7647,6 +7648,7 @@ impl OrbitApp {
             | SettingsSelect::SuggestionsModel
             | SettingsSelect::ReportModel
             | SettingsSelect::DefaultModel
+            | SettingsSelect::SubagentModel
                 if selected > 0 =>
             {
                 self.available_models
@@ -7756,6 +7758,7 @@ impl OrbitApp {
                 | SettingsSelect::SuggestionsModel
                 | SettingsSelect::ReportModel
                 | SettingsSelect::DefaultModel
+                | SettingsSelect::SubagentModel
         )
         .then(|| {
             self.available_models
@@ -8204,6 +8207,25 @@ impl OrbitApp {
                 cx.notify();
                 return true;
             }
+            SettingsSelect::SubagentModel => {
+                // Index 0 inherits the session's model; the rest are this
+                // machine's catalog, written as the file's `provider/id`.
+                let value = match ix {
+                    0 => String::new(),
+                    _ => match self.available_models.get(ix - 1) {
+                        Some(model) => format!("{}/{}", model.provider, model.id),
+                        // A pinned model the catalog cannot resolve is shown
+                        // for honesty; clicking that row must not rewrite it.
+                        None => return true,
+                    },
+                };
+                if let Some(editor) = self.subagent_editor.as_ref() {
+                    let model = editor.model.clone();
+                    model.update(cx, |input, cx| input.set_text(value, cx));
+                }
+                cx.notify();
+                return true;
+            }
             SettingsSelect::ActiveModel => {
                 if let Some(model) = self.available_models.get(ix) {
                     let (id, provider) = (model.id.clone(), model.provider.clone());
@@ -8294,6 +8316,7 @@ impl OrbitApp {
             | SettingsSelect::AgentCalls
             | SettingsSelect::DefaultModel
             | SettingsSelect::DefaultThinking
+            | SettingsSelect::SubagentModel
             | SettingsSelect::ActiveModel
             | SettingsSelect::ModelProvider
             | SettingsSelect::RetentionMode

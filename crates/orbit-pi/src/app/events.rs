@@ -1486,11 +1486,11 @@ impl OrbitApp {
     pub(super) fn sync_composer_placeholder(&mut self, cx: &mut Context<Self>) {
         let key = if self.is_running() {
             match theme::get(cx).ui.composer_send_mode {
-                SendMode::FollowUp => Some("composer.placeholder_follow_up"),
-                SendMode::Steer => Some("composer.placeholder_steer"),
+                SendMode::FollowUp => "composer.placeholder_follow_up",
+                SendMode::Steer => "composer.placeholder_steer",
             }
         } else {
-            None
+            "composer.placeholder"
         };
         self.input
             .update(cx, |input, cx| input.set_placeholder_key(key, cx));

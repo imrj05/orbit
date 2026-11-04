@@ -16,7 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import test, { beforeEach } from "node:test";
 
-import activate, { PARAMETERS, executeTool, parseRequest, runPool } from "./index.js";
+import activate, { PARAMETERS, PROMPT_SNIPPET, executeTool, parseRequest, runPool } from "./index.js";
 
 let home;
 
@@ -138,6 +138,25 @@ test("activation registers one tool with the fixed schema", () => {
   assert.match(definition.description, /worker\s+runs commands/);
   assert.ok(PARAMETERS.properties.agent && PARAMETERS.properties.chain && PARAMETERS.properties.tasks);
   assert.equal(typeof definition.execute, "function");
+  // The prompt surface: a `<tools>` line and `<rules>` bullets, so the tool is
+  // visible before the model starts reading rather than only in its schema.
+  assert.equal(definition.promptSnippet, PROMPT_SNIPPET);
+  assert.ok(Array.isArray(definition.promptGuidelines));
+  assert.ok(definition.promptGuidelines.length >= 1);
+  for (const guideline of definition.promptGuidelines) {
+    assert.match(guideline, /subagent/, "pi appends these flat, so each names the tool");
+  }
+  assert.ok(definition.promptGuidelines.some((line) => line.includes('"reviewer"')));
+  assert.ok(definition.promptGuidelines.some((line) => line.includes('"scout"')));
+});
+
+test("a disabled agent drops its prompt guideline", () => {
+  writeOrbitFile("subagents.json", { disabled: ["reviewer"] });
+  const pi = fakePi();
+  activate(pi, deps(fakeSpawn()));
+  const [definition] = pi.tools;
+  assert.ok(definition.promptGuidelines.every((line) => !line.includes('"reviewer"')));
+  assert.ok(definition.promptGuidelines.some((line) => line.includes('"scout"')));
 });
 
 test("activation re-registers only when the catalog changes", () => {
@@ -145,7 +164,7 @@ test("activation re-registers only when the catalog changes", () => {
   activate(pi, deps(fakeSpawn()));
   assert.equal(pi.tools.length, 1);
   // A second activation in the same process is a new extension instance; the
-  // description is identical, so a single registration is the expected cost.
+  // prompt surface is identical, so a single registration is the expected cost.
   activate(pi, deps(fakeSpawn()));
   assert.equal(pi.tools.length, 2);
 });

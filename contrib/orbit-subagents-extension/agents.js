@@ -261,9 +261,10 @@ export function discoverAgents({ builtins = [], userDir = userAgentDir() } = {})
 /** The tool description, built from the agents the model can actually pick. */
 export function buildDescription(agents) {
   const lines = [
-    "Delegate a scoped task to a subagent with its own context window.",
+    "Call this first for broad work: reviewing a diff, finding where something is wired, or a",
+    "second opinion. The child has its own context window; the parent pays only for the report.",
     "",
-    "Agents (user scope, ~/.pi/agent/agents):",
+    "Agents (built in, or files in ~/.pi/agent/agents):",
   ];
   for (const agent of agents) {
     const capability = agent.ceiling === "read" ? "read only" : agent.ceiling === "edit" ? "edits files" : "runs commands";
@@ -272,14 +273,34 @@ export function buildDescription(agents) {
   lines.push(
     "",
     "The capability shown is what the agent may do; do not ask an agent to exceed it.",
-    "",
     "Modes: single {agent, task}; chain {chain:[…]} with {previous}; parallel {tasks:[…]}.",
-    "The child sees only the task; it does not see this conversation. Put everything it needs",
-    "in `task` (paths, what was decided, what to return). Returns a short report, not a transcript.",
+    "The child sees only `task`, so put paths, decisions and the wanted result in it; it returns",
+    "a short report, not a transcript.",
     "",
-    "Delegate when the work is broad (finding where something is wired, reviewing a diff,",
-    "a second opinion) and skip it for one file you already know: a child starts cold and",
-    "costs a process, so delegation pays when it saves more reading than it costs.",
+    "Skip it for one file you already know: a child starts cold and costs a process.",
   );
   return lines.join("\n");
+}
+
+/**
+ * The `<rules>` bullets pi appends while the tool is active. Each bullet names
+ * the tool, because pi renders them flat with no tool prefix; the agent names
+ * come from the enabled catalog, so a disabled agent is never advertised.
+ */
+export function buildPromptGuidelines(agents = []) {
+  const names = new Set(agents.map((agent) => agent.name));
+  const guidelines = [
+    "Use subagent when a job needs more reading than the answer needs writing; the child sees only `task`, so put paths and decisions in it.",
+  ];
+  if (names.has("reviewer")) {
+    guidelines.push(
+      'Use subagent with agent: "reviewer" when asked to review a diff or a change, instead of reading the whole change yourself.',
+    );
+  }
+  if (names.has("scout")) {
+    guidelines.push(
+      'Use subagent with agent: "scout" to locate code across the repository before reading files one by one.',
+    );
+  }
+  return guidelines;
 }

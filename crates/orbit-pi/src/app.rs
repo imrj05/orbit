@@ -1585,6 +1585,7 @@ impl OrbitApp {
         let prompt_history = crate::composer::PromptHistory::shared();
         let input = cx.new(|cx| {
             ComposerInput::new(cx)
+                .with_placeholder_key("composer.placeholder")
                 .with_key_context("Composer ChatComposer")
                 .with_autocomplete(autocomplete.clone())
                 .with_prompt_history(prompt_history.clone())
@@ -2015,6 +2016,7 @@ impl OrbitApp {
         let clone_url_input = cx.new(|cx| {
             ComposerInput::new(cx)
                 .with_element_id("clone-url-input")
+                .with_placeholder_key("working_folder.clone_url_placeholder")
                 .with_key_context("Composer CloneDialog")
                 .with_max_lines(1)
                 .with_wrap(false)
@@ -2022,6 +2024,7 @@ impl OrbitApp {
         let clone_name_input = cx.new(|cx| {
             ComposerInput::new(cx)
                 .with_element_id("clone-name-input")
+                .with_placeholder_key("working_folder.clone_name_placeholder")
                 .with_key_context("Composer CloneDialog")
                 .with_max_lines(1)
                 .with_wrap(false)
@@ -3880,6 +3883,9 @@ enum SettingsSelect {
     DefaultModel,
     /// The default model's thinking level (Settings → Agent).
     DefaultThinking,
+    /// The model an agent is pinned to (Settings → Subagents). The options are
+    /// this machine's models; the leading row inherits the session's.
+    SubagentModel,
     /// The session's active model (Settings → Models).
     ActiveModel,
     /// The Models page's provider scope filter.

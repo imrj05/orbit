@@ -1085,8 +1085,10 @@ impl OrbitApp {
     /// branch is never renamed — only the directory.
     pub(super) fn start_rename_worktree(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         let name = self.worktree_display_name(&path);
-        self.worktree_field_input
-            .update(cx, |input, cx| input.set_text(name, cx));
+        self.worktree_field_input.update(cx, |input, cx| {
+            input.set_placeholder_key("worktree.field.new_name_placeholder", cx);
+            input.set_text(name, cx);
+        });
         self.worktree_dialog = Some(WorktreeDialog::Rename { path });
         self.worktree_dialog_error = None;
         self.worktree_menu = None;
@@ -1099,8 +1101,10 @@ impl OrbitApp {
             .parent()
             .map(|parent| parent.to_string_lossy().into_owned())
             .unwrap_or_default();
-        self.worktree_field_input
-            .update(cx, |input, cx| input.set_text(parent, cx));
+        self.worktree_field_input.update(cx, |input, cx| {
+            input.set_placeholder_key("worktree.field.destination_placeholder", cx);
+            input.set_text(parent, cx);
+        });
         self.worktree_dialog = Some(WorktreeDialog::Move { path });
         self.worktree_dialog_error = None;
         self.worktree_menu = None;

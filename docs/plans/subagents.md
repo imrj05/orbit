@@ -399,6 +399,13 @@ The tool description is generated from **enabled** agents, and the page renders 
 with its character count ("adds 412 characters to every request"). Descriptions are capped at 200
 characters with an inline warning, because they are paid for on every turn of every session.
 
+The registration also carries pi's `promptSnippet` and `promptGuidelines`: the snippet puts the
+tool's name and purpose in the `<tools>` section, and the bullets route review and recon requests
+to `reviewer` and `scout` in `<rules>`. Both are fixed text except for those agent names, which
+follow the enabled set for the same reason the description does — a disabled agent must not be
+advertised. The page preview still renders the description only; the snippet and bullets are not
+shown there.
+
 **Consequence — the catalog is part of the request prefix.** A tool description is fixed at
 registration, so a new or edited agent cannot reach the model by being rediscovered at call time.
 The extension re-registers when the enabled set or a description actually changes, which costs one
@@ -730,22 +737,31 @@ Registration happens at activation. The description is built from discovery, so 
 guessing agent names:
 
 ```
-Delegate a scoped task to a subagent with its own context window.
+Call this first for broad work: reviewing a diff, finding where something is wired, or a
+second opinion. The child has its own context window; the parent pays only for the report.
 
-Agents (user scope, ~/.pi/agent/agents):
-  scout     read only · Fast local codebase recon — files, entry points, flow, risks.
-  worker    runs commands · Implementation work in this workspace.
-  reviewer  read only · Read-only review of a change.
+Agents (built in, or files in ~/.pi/agent/agents):
+  reviewer   read only · Read-only review of a change: correctness, edge cases, and what the tests miss.
+  scout      read only · Fast local codebase recon — relevant files, entry points, data flow, risks.
+  worker     runs commands · Implementation work in this workspace: edit files, run the checks, report what changed.
 
 The capability shown is what the agent may do; do not ask an agent to exceed it.
-
 Modes: single {agent, task}; chain {chain:[…]} with {previous}; parallel {tasks:[…]}.
-The child sees only the task; it does not see this conversation. Put everything it needs
-in `task` (paths, what was decided, what to return). Returns a short report, not a transcript.
+The child sees only `task`, so put paths, decisions and the wanted result in it; it returns
+a short report, not a transcript.
 
-Delegate when the work is broad (finding where something is wired, reviewing a diff,
-a second opinion) and skip it for one file you already know: a child starts cold and
-costs a process, so delegation pays when it saves more reading than it costs.
+Skip it for one file you already know: a child starts cold and costs a process.
+```
+
+The same registration carries pi's prompt surface, so the tool is visible before the model starts
+reading rather than only in its schema: a `<tools>` line
+("Delegate a scoped task to a child agent with its own context window.") and `<rules>` bullets that
+route work to an agent, naming `reviewer` and `scout` only while they are enabled:
+
+```
+- Use subagent when a job needs more reading than the answer needs writing; the child sees only `task`, so put paths and decisions in it.
+- Use subagent with agent: "reviewer" when asked to review a diff or a change, instead of reading the whole change yourself.
+- Use subagent with agent: "scout" to locate code across the repository before reading files one by one.
 ```
 
 Execution outline:
@@ -1025,8 +1041,9 @@ Then, in this order:
    sentence: "Runs read tools only. Orbit denies anything else in this child, even in Full access."
 2. **Mode** — `Inherit the session` / `Plan` / `Build` / `Ask`, each with one line of what it does,
    plus the resolved rule (D-R) computed live against the current session's mode.
-3. **Model** — `Inherit the session model` (writes no `model:` line) or the existing model picker
-   (writes `provider/model`). **Thinking level** beside it: `Inherit` or an explicit level, written as
+3. **Model** — `Session: <model>` (writes no `model:` line) or one of this machine's models from a
+   select (writes `provider/model`); a pin the catalog cannot resolve keeps its own row instead of
+   being displayed as inherited. **Thinking level** beside it: `Inherit` or an explicit level, written as
    the file's `thinking:` line (`pi-subagents`' own key, D-P) and passed to the child as `--thinking`.
    One field, one store — the page never holds a second copy in `subagents.json`.
 4. **Description** — single line, live character count, cap warning at 200 (D-S), helper text

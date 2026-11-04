@@ -1203,7 +1203,11 @@ impl Render for OrbitApp {
                                                 .on_drag_move(cx.listener(Self::on_file_drag_move))
                                                 .children(self.attachments_row(cx))
                                                 .child(self.input.clone())
-                                                .child(self.composer_row(composer_compact, cx))
+                                                .child(self.composer_row(
+                                                    composer_compact,
+                                                    window,
+                                                    cx,
+                                                ))
                                                 // Drop-target overlay: fades
                                                 // in over the box while files are
                                                 // dragged across it. Absolute, so
@@ -1797,6 +1801,7 @@ impl OrbitApp {
     pub(super) fn composer_row(
         &self,
         compact: bool,
+        window: &Window,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         div()
@@ -1818,7 +1823,7 @@ impl OrbitApp {
             .child(div().flex_1())
             .child(self.model_chip(compact, cx))
             .children(self.thinking_chip(cx))
-            .child(self.send_controls(cx))
+            .child(self.send_controls(window, cx))
     }
 
     /// The access-mode chip: a lock glyph, the active mode's label, and a
@@ -4124,7 +4129,7 @@ impl OrbitApp {
     /// primary slot wears that mode's glyph instead of always showing a paper
     /// plane. Stop is always the *secondary* slot: stopping is a normal action,
     /// not a warning, so it rests neutral and only turns red under the pointer.
-    pub(super) fn send_controls(&self, cx: &Context<Self>) -> AnyElement {
+    pub(super) fn send_controls(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
         let theme = *theme::get(cx);
         let running = self.is_running();
         // The same rule `submit_as` uses: text, images, or a collapsed paste
@@ -4140,13 +4145,13 @@ impl OrbitApp {
         }
         if !running {
             return row
-                .child(self.send_button(has_payload, false, theme, cx))
+                .child(self.send_button(has_payload, false, theme, window, cx))
                 .into_any_element();
         }
         // Mid-run with nothing typed, stop is the only action and takes the
         // primary seat rather than sitting beside a dead send.
         if has_payload {
-            row = row.child(self.send_button(true, true, theme, cx));
+            row = row.child(self.send_button(true, true, theme, window, cx));
         }
         row.child(self.stop_button(theme, cx)).into_any_element()
     }
@@ -4201,6 +4206,7 @@ impl OrbitApp {
         has_payload: bool,
         running: bool,
         theme: Theme,
+        window: &Window,
         cx: &Context<Self>,
     ) -> AnyElement {
         let mode = theme.ui.composer_send_mode;
@@ -4223,16 +4229,22 @@ impl OrbitApp {
             // land. The tooltip says why instead of naming a shortcut that
             // would do nothing.
             let tooltip = tr!("composer.nothing_to_send");
-            return icon_button_frame(div().id("send-btn"), &theme, ButtonSize::Medium)
-                .rounded_full()
-                .bg(theme.overlay)
-                .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into())
-                .child(icon(
-                    icon_path,
-                    ButtonSize::Medium.icon_size().px(&theme),
-                    theme.text_disabled,
-                ))
-                .into_any_element();
+            return icon_button_frame(
+                div()
+                    .id("send-btn")
+                    .debug_selector(|| "send-btn".to_string()),
+                &theme,
+                ButtonSize::Medium,
+            )
+            .rounded_full()
+            .bg(theme.overlay)
+            .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into())
+            .child(icon(
+                icon_path,
+                ButtonSize::Medium.icon_size().px(&theme),
+                theme.text_disabled,
+            ))
+            .into_any_element();
         }
         let shortcut = if running {
             mode.shortcut_label(mode)
@@ -4245,19 +4257,37 @@ impl OrbitApp {
             action = action.clone()
         );
         let square = ButtonSize::Medium.height(&theme);
-        // Wider than a square by the label, the gap and the button's own right
-        // padding, so the glyph keeps its centre and the label does not crowd it.
-        let labelled = square + px(52.);
         let icon_size = ButtonSize::Medium.icon_size().px(&theme);
+        let label_size = button::label_size(ButtonSize::Medium).px(&theme);
+        let padding_x = ButtonSize::Medium.padding_x(&theme);
+        let gap = button::gap(&theme);
+        // The labelled pill is exactly its content plus the padding every
+        // labelled button uses, measured for this label at this UI size. A
+        // fixed reserve used to stand in for the label, so the padding shrank
+        // as the UI font grew (and a longer translation would clip), while the
+        // icon and the label sat flush with no gap between them.
+        let label_width = text_width(window, &label, label_size);
+        let labelled = (padding_x * 2. + icon_size + gap + label_width).max(square);
+        // One ink for the whole control: the glyph and the label both read
+        // `action_fg`, the foreground role of the fill they sit on. The label
+        // used to inherit the page ink, so in dark mode it stayed near-white
+        // while the fill was light — invisible on the button, however readable
+        // it was on the canvas.
         let label_color = theme.action_fg;
-        let control = icon_button_frame(div().id("send-btn"), &theme, ButtonSize::Medium)
-            .rounded_full()
-            .raised(theme.action, &theme)
-            .pressed_state(&theme, PressedRamp::Action)
-            .cursor_pointer()
-            .overflow_hidden()
-            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_send_click))
-            .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into());
+        let control = icon_button_frame(
+            div()
+                .id("send-btn")
+                .debug_selector(|| "send-btn".to_string()),
+            &theme,
+            ButtonSize::Medium,
+        )
+        .rounded_full()
+        .raised(theme.action, &theme)
+        .pressed_state(&theme, PressedRamp::Action)
+        .cursor_pointer()
+        .overflow_hidden()
+        .on_mouse_up(MouseButton::Left, cx.listener(Self::on_send_click))
+        .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into());
         // One wrapper owns both values: the hover fades `action` into
         // `action_hover`, and the state morphs the square into a labelled
         // button on the longer Travel role. Width and label ride the same
@@ -4280,12 +4310,24 @@ impl OrbitApp {
                         hover,
                     ))
                     .w(square + (labelled - square) * morphed)
-                    .child(icon(icon_path, icon_size, label_color))
+                    .child(
+                        icon(icon_path, icon_size, label_color)
+                            .debug_selector(|| "send-btn-icon".to_string()),
+                    )
+                    // The label owns its share of the width, so an icon-only
+                    // morph collapses it to nothing: a hidden label that kept
+                    // its space pushed the glyph off the circle's centre.
                     .child(
                         div()
-                            .min_w_0()
+                            .debug_selector(|| "send-btn-label".to_string())
+                            .flex_none()
                             .overflow_hidden()
                             .whitespace_nowrap()
+                            .text_size(label_size)
+                            .line_height(relative(1.))
+                            .text_color(label_color)
+                            .ml(gap * morphed)
+                            .w(label_width * morphed)
                             .child(label.clone())
                             .opacity(morphed),
                     )
