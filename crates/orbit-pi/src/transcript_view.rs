@@ -24,16 +24,18 @@ use std::{
 };
 
 use gpui::{
-    anchored, canvas, deferred, div, img, linear_color_stop, linear_gradient, list, point,
-    prelude::*, px, relative, Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem,
-    CursorStyle, DispatchPhase, Element, ElementId, Font, FontFeatures, FontStyle, FontWeight,
-    GlobalElementId, Hitbox, HitboxBehavior, Hsla, Image, ImageSource, InspectorElementId,
-    InteractiveText, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ObjectFit, Pixels, ScrollHandle, ScrollWheelEvent, SharedString, StrikethroughStyle,
-    StyledText, TextAlign, TextLayout, TextRun, TransformationMatrix, UnderlineStyle, Window,
+    canvas, deferred, div, img, linear_color_stop, linear_gradient, list, point, prelude::*, px,
+    relative, Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem, CursorStyle,
+    DispatchPhase, Element, ElementId, Font, FontFeatures, FontStyle, FontWeight, GlobalElementId,
+    Hitbox, HitboxBehavior, Hsla, Image, ImageSource, InspectorElementId, InteractiveText,
+    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels,
+    ScrollHandle, ScrollWheelEvent, SharedString, StrikethroughStyle, StyledText, TextAlign,
+    TextLayout, TextRun, TransformationMatrix, UnderlineStyle, Window,
 };
 
 use std::ops::Range;
+
+mod color_swatches;
 
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -43,8 +45,9 @@ use orbit_rpc::MessageUsage;
 
 use crate::agent_call_display::AgentCallDisplay;
 use crate::app::{
-    button_frame, file_badge, file_glyph, file_icon_tile, icon_button_frame, nerd_font_family,
-    picker_entry, picker_surface, OrbitApp, TipExt, BUTTON_GROUP,
+    anchored_popover_at, button_frame, disclosure_chevron, file_badge, file_glyph, file_icon_tile,
+    icon_button_frame, nerd_font_family, picker_entry, picker_surface, ControlExt, OrbitApp,
+    TipExt, BUTTON_GROUP,
 };
 use crate::context_meter::{format_tokens, hit_percent_label};
 use crate::highlight::{self, Token};
@@ -52,8 +55,8 @@ use crate::message_scroller::{self, MessageScrollerState};
 use crate::shimmer::ShimmerText;
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
-    button, context_menu, panel, picker, popover, BufferLineHeight, ButtonSize, DynamicSpacing,
-    IconSize, Radius, StyledExt, TextSize, BORDER_WIDTH,
+    button, context_menu, looping, panel, picker, popover, BufferLineHeight, ButtonSize,
+    DynamicSpacing, IconSize, Motion, Radius, StyledExt, TextSize, BORDER_WIDTH,
 };
 use crate::theme::{self, Theme, ThemeMode};
 use crate::transcript::{ChatMessage, Step, SummaryRow, ToolCall, ToolFacts};
@@ -66,6 +69,15 @@ pub(crate) type ReviewOpener = Rc<dyn Fn(&mut Window, &mut App)>;
 /// Opens one attachment image in the app's full-window lightbox. Handed down
 /// from the app so an image tile can open a surface it doesn't own.
 pub(crate) type ImageOpener = Rc<dyn Fn(Arc<Image>, &mut Window, &mut App)>;
+
+/// Opens the rewind picker on the `usize`-th user turn. Handed down from the
+/// app so a message footer can offer a fork without owning session state.
+pub(crate) type RewindOpener = Rc<dyn Fn(usize, &mut Window, &mut App)>;
+/// Forks at the `usize`-th row's prompt and sends it again on the new branch.
+/// Handed down like [`RewindOpener`]; `None` draws no regenerate action.
+pub(crate) type RegenerateOpener = Rc<dyn Fn(usize, &mut Window, &mut App)>;
+/// Saves the exact response text selected by its footer.
+pub(crate) type ResponseExporter = Rc<dyn Fn(String, bool, usize, &mut Window, &mut App)>;
 
 /// The transcript content column's max width.
 /// Normal message content keeps this centered measure. Assistant tables
@@ -80,9 +92,9 @@ const FOOTER_BUTTON: ButtonSize = ButtonSize::Medium;
 const COPY_FEEDBACK: Duration = Duration::from_secs(2);
 /// The copy affordance is quiet at rest and brightens while the pointer is
 /// over its code section. In is shorter than out so crossing the plane does
-/// not flicker; both are short enough to read as direct feedback.
-const COPY_HOVER_IN: Duration = Duration::from_millis(120);
-const COPY_HOVER_OUT: Duration = Duration::from_millis(180);
+/// not flicker; both are motion roles rather than typed durations — the fade in
+/// is `Interaction`, the fade out is `Layout`, which is exactly the spec's
+/// 120–160 and 160–220 bands.
 const COPY_REST_OPACITY: f32 = 0.45;
 const NAVIGATION_RAIL_LEFT: f32 = 16.0;
 const NAVIGATION_RAIL_WIDTH: f32 = 44.0;
@@ -168,7 +180,9 @@ impl Default for SectionHover {
             from: COPY_REST_OPACITY,
             to: COPY_REST_OPACITY,
             started: Instant::now(),
-            duration: COPY_HOVER_IN,
+            // Settled: `opacity_at` treats a zero duration as "already there",
+            // which is also what Reduce Motion resolves a role to.
+            duration: Duration::ZERO,
             generation: 0,
         }
     }
@@ -176,14 +190,23 @@ impl Default for SectionHover {
 
 impl SectionHover {
     fn opacity_at(&self, elapsed: Duration) -> f32 {
-        let progress = (elapsed.as_secs_f32() / self.duration.as_secs_f32()).clamp(0.0, 1.0);
+        // A zero duration is the Reduce Motion answer: the transition is
+        // already at its target, so it must not divide by zero here.
+        let progress = if self.duration.is_zero() {
+            1.0
+        } else {
+            (elapsed.as_secs_f32() / self.duration.as_secs_f32()).clamp(0.0, 1.0)
+        };
         let eased = 1.0 - (1.0 - progress).powi(3);
         self.from + (self.to - self.from) * eased
     }
 
     /// Point the transition at the hovered or resting opacity. Returns true
     /// when the target actually changed, so the caller knows to repaint.
-    fn retarget(&mut self, hovered: bool) -> bool {
+    ///
+    /// The durations come from the roles, so Reduce Motion resolves them to
+    /// zero and the fade collapses to the new opacity instead of animating.
+    fn retarget(&mut self, hovered: bool, theme: &Theme) -> bool {
         let target = if hovered { 1.0 } else { COPY_REST_OPACITY };
         if (self.to - target).abs() < f32::EPSILON {
             return false;
@@ -193,9 +216,9 @@ impl SectionHover {
         self.to = target;
         self.started = now;
         self.duration = if hovered {
-            COPY_HOVER_IN
+            Motion::Interaction.duration(theme)
         } else {
-            COPY_HOVER_OUT
+            Motion::Layout.duration(theme)
         };
         self.generation = self.generation.wrapping_add(1);
         true
@@ -292,6 +315,13 @@ pub(crate) struct TranscriptView {
     /// Opens an attachment image in the full-window lightbox; `None` leaves
     /// the tiles non-interactive.
     pub image_opener: Option<ImageOpener>,
+    /// Opens the rewind picker from a user message's footer. The app always
+    /// supplies it; `None` (tests, previews) simply draws no rewind action.
+    pub rewind: Option<RewindOpener>,
+    /// Forks at an assistant response's prompt and sends it again.
+    pub regenerate: Option<RegenerateOpener>,
+    /// Opens the native save dialog for an assistant response.
+    pub export_response: Option<ResponseExporter>,
     /// Message indices matching the open find query; `None` when find is
     /// closed. Rows get a quiet wash.
     pub search_hits: Option<Rc<RefCell<HashSet<usize>>>>,
@@ -739,6 +769,7 @@ thread_local! {
 struct TextScope {
     state: TextSelectionState,
     message_ix: usize,
+    color_swatches: bool,
 }
 
 struct TextScopeGuard(Option<TextScope>);
@@ -998,7 +1029,11 @@ fn register_text_selection(
             }
             let url = state.borrow_mut().finish_selection(event.position);
             if let Some(url) = url {
-                cx.open_url(&url);
+                if let Some(value) = url.strip_prefix("orbit-color-copy:") {
+                    cx.write_to_clipboard(ClipboardItem::new_string(value.to_owned()));
+                } else {
+                    cx.open_url(&url);
+                }
             }
             window.refresh();
         }
@@ -1057,29 +1092,24 @@ fn text_selection_menu(menu: &TextMenu, state: TextSelectionState, theme: Theme)
         },
     );
     let dismiss = state.clone();
-    deferred(
-        anchored()
-            .position(menu.position)
-            .snap_to_window_with_margin(popover::WINDOW_MARGIN)
-            .child(
-                picker_surface(div().id("transcript-text-menu"), &theme)
-                    .w(px(220.))
-                    .py(picker::list_padding_y(&theme))
-                    .flex()
-                    .flex_col()
-                    .gap(DynamicSpacing::Base01.px(&theme))
-                    .overflow_hidden()
-                    .occlude()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_mouse_down_out(move |_, window, _| {
-                        dismiss.borrow_mut().menu = None;
-                        window.refresh();
-                    })
-                    .child(copy_selection_item)
-                    .child(copy_message_item),
-            ),
+    anchored_popover_at(
+        menu.position,
+        picker_surface(div().id("transcript-text-menu"), &theme)
+            .w(px(220.))
+            .py(picker::list_padding_y(&theme))
+            .flex()
+            .flex_col()
+            .gap(DynamicSpacing::Base01.px(&theme))
+            .overflow_hidden()
+            .occlude()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down_out(move |_, window, _| {
+                dismiss.borrow_mut().menu = None;
+                window.refresh();
+            })
+            .child(copy_selection_item)
+            .child(copy_message_item), "anchored_popover_at-in-1", &theme,
     )
-    .into_any_element()
 }
 
 fn selection_menu_item(
@@ -1099,11 +1129,12 @@ fn selection_menu_item(
             theme.text_muted
         })
         .when(enabled, |item| {
-            item.cursor_pointer()
-                .hover(|style| style.bg(theme.surface_hover).text_color(theme.text_primary))
-                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            item.cursor_pointer().hover_state(&theme).on_mouse_down(
+                MouseButton::Left,
+                move |_, window, cx| {
                     on_click(window, cx);
-                })
+                },
+            )
         })
         .child(crate::app::icon(
             icon_path,
@@ -1151,6 +1182,11 @@ struct RowPaint {
     thinking_detached: ThinkingDetached,
     hovered_usage: Rc<Cell<Option<usize>>>,
     image_opener: Option<ImageOpener>,
+    /// The rewind action, present only on user rows.
+    rewind: Option<RewindOpener>,
+    /// The regenerate action, present only on assistant rows.
+    regenerate: Option<RegenerateOpener>,
+    export_response: Option<ResponseExporter>,
     search_hit: bool,
     search_active: bool,
     /// Tables alone can extend beyond the centered message column.
@@ -1171,7 +1207,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
     {
         let mut selection = text_selection.borrow_mut();
         selection.begin_frame();
-        if view.streaming.get().is_none() || theme.ui.reduce_motion {
+        if view.streaming.get().is_none() || theme.reduce_motion() {
             selection.stream_fades.clear();
         }
     }
@@ -1213,6 +1249,9 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
     let summary_usage = view.summary_usage.clone();
     let review_changes = view.review_changes.clone();
     let image_opener = view.image_opener.clone();
+    let rewind = view.rewind.clone();
+    let regenerate = view.regenerate.clone();
+    let export_response = view.export_response.clone();
     let search_hits = view.search_hits.clone();
     let search_active = view.search_active.clone();
 
@@ -1275,7 +1314,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
                 .unwrap_or(&[])
                 .iter()
                 .take_while(|message| !message.user)
-                .find(|message| !message.text().trim().is_empty())
+                .find(|message| message.has_text())
                 .map(|message| snippet(&message.text(), 240))
                 .unwrap_or_default();
             Some((prompt, response))
@@ -1380,6 +1419,14 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
                 .borrow()
                 .get(&last_ix)
                 .is_some_and(|at| at.elapsed() < COPY_FEEDBACK);
+            // Regenerate belongs to a response; an interrupted run's tail is a
+            // user prompt with no answer to replace.
+            let summary_regenerate = messages
+                .borrow()
+                .get(last_ix)
+                .is_some_and(|message| message.is_assistant() && message.has_text())
+                .then(|| regenerate.clone())
+                .flatten();
             let stamp = summary_finished_at
                 .map(|millis| footer_time_stamp(summary_time_label(millis), theme));
             let summary_generation = messages
@@ -1400,6 +1447,9 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
                     theme,
                     copied.clone(),
                     hovered_usage.clone(),
+                    rewind.clone(),
+                    summary_regenerate,
+                    export_response.clone(),
                 ));
             return div()
                 .id(ElementId::NamedInteger("transcript-row".into(), ix as u64))
@@ -1449,6 +1499,9 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
                 thinking_detached: thinking_detached.clone(),
                 hovered_usage: hovered_usage.clone(),
                 image_opener: image_opener.clone(),
+                rewind: rewind.clone(),
+                regenerate: regenerate.clone(),
+                export_response: export_response.clone(),
                 search_hit: search_hits
                     .as_ref()
                     .is_some_and(|hits| hits.borrow().contains(&ix)),
@@ -1674,7 +1727,7 @@ fn render_navigation_rail(
                                 .w(px(width))
                                 .rounded_full()
                                 .bg(color)
-                                .hover(|style| style.bg(theme.text_primary)),
+                                .hover_inverse(&theme),
                         )
                 })),
         )
@@ -1886,6 +1939,7 @@ fn render_row(paint: RowPaint, cx: &gpui::App) -> AnyElement {
     let _scope = TextScopeGuard::enter(TextScope {
         state: paint.text_selection.clone(),
         message_ix: paint.ix,
+        color_swatches: !message.user && message.summary.is_none(),
     });
     let followup = starts_followup_turn(&messages, paint.ix);
     let first = paint.ix == 0;
@@ -1973,7 +2027,7 @@ fn render_summary_card(row: &SummaryRow, paint: &RowPaint) -> AnyElement {
             header.rounded_b(panel::RADIUS.px(&theme))
         })
         .cursor_pointer()
-        .hover(|style| style.bg(theme.overlay_strong))
+        .hover_on_glass(&theme)
         .on_click({
             let expanded_turns = paint.expanded_turns.clone();
             let scroller = paint.scroller.clone();
@@ -2004,14 +2058,14 @@ fn render_summary_card(row: &SummaryRow, paint: &RowPaint) -> AnyElement {
             )
         })
         .when(!has_detail, |header| header.child(div().flex_1()))
-        .child(glyph(
-            if expanded {
-                "icons/chevron-down.svg"
-            } else {
-                "icons/chevron-right.svg"
-            },
+        // The card's own caret: one glyph turning a quarter turn, keyed to the
+        // row so two summary cards never share a transition.
+        .child(disclosure_chevron(
+            format!("summary-caret-{ix}"),
+            expanded,
             IconSize::XSmall.px(&theme),
             theme.text_muted,
+            &theme,
         ));
 
     let mut card = div()
@@ -2098,8 +2152,7 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint, cx: &gpui::App) -
                             .overflow_hidden()
                             .bg(theme.surface_elevated)
                             .when(opener.is_some(), |tile| {
-                                tile.cursor_pointer()
-                                    .hover(|s| s.border_color(theme.border_strong))
+                                tile.cursor_pointer().hover_border(&theme)
                             })
                             .child(
                                 img(ImageSource::Image(image.clone()))
@@ -2159,6 +2212,9 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint, cx: &gpui::App) -
             theme,
             paint.copied_at.clone(),
             paint.hovered_usage.clone(),
+            paint.rewind.clone(),
+            None,
+            None,
         ))
 }
 
@@ -2247,6 +2303,22 @@ fn user_file_chip(
         .into_any_element()
 }
 
+/// Whether a turn's trailing work is pulled up above its answer.
+///
+/// A model that thinks again after writing leaves a lone thought below a
+/// finished answer — a "1 thought" pill stranded at the bottom, reading as if it
+/// came after the reply. When everything after the first answer text is thinking
+/// (no tool calls), that thought joins the reasoning above the answer, where the
+/// reader expects it. The test is the *kind* of work, not the count of text
+/// blocks: a thought has no side effects and no order to preserve.
+///
+/// Tool calls never hoist: they have effects, they interleave with what the agent
+/// says about them, and a turn that speaks and then runs commands must show those
+/// commands where they happened.
+pub(crate) fn hoists_trailing_thought(steps: &[Step], answer_start: Option<usize>) -> bool {
+    answer_start.is_none_or(|answer| steps[answer + 1..].iter().all(|step| step.tools.is_empty()))
+}
+
 fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement {
     let theme = paint.theme;
     let ix = paint.ix;
@@ -2287,6 +2359,20 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
         .steps
         .iter()
         .position(|step| !step.thinking.is_empty() || !step.tools.is_empty());
+    // A turn with ONE answer block hoists all of its work above that block:
+    // reasoning and tool calls are what produced the answer, and a model that
+    // thinks again after writing would otherwise leave a "1 thought" pill
+    // stranded under a finished answer. A turn that interleaves — text, work,
+    // more text — keeps each group where it happened, because hoisting would
+    // rewrite the order the work actually arrived in.
+    let hoist = hoists_trailing_thought(&message.steps, answer_start);
+    let group_at = work_start.map(|work| {
+        if hoist {
+            answer_start.map_or(work, |answer| answer.min(work))
+        } else {
+            work
+        }
+    });
     // First step index whose post-answer work is NOT yet absorbed into a
     // rendered activity group (see the in-sequence group block below).
     let mut covered_until = 0usize;
@@ -2294,19 +2380,25 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
     for (step_ix, step) in message.steps.iter().enumerate() {
         // The group sits where the turn's first work happened, so any text
         // that preceded it stays above; the rest of the text follows below.
-        if Some(step_ix) == work_start {
-            let before_answer = answer_start.is_none_or(|answer| step_ix < answer);
+        if Some(step_ix) == group_at {
+            let before_answer =
+                work_start.is_some_and(|work| answer_start.is_some_and(|answer| work < answer));
             // Pre-answer work hides behind the turn fold; later work stays
             // visible as a collapsed, expandable group.
             let show_work = paint.live || paint.fold_open || !before_answer;
             if show_work {
-                // The group covers the work up to and including the step
-                // that produced the first answer text; work in later steps
-                // gets its own group further down, so tool calls stay in
-                // sequence with the text — live included: a turn that speaks
-                // and then works again must not hoist that work above the
-                // answer that preceded it.
-                let group_end = answer_start.map_or(message.steps.len(), |answer| answer + 1);
+                // A single-answer turn: the group covers every step, so a
+                // thought the model had after writing sits with the reasoning
+                // that produced the answer instead of below it.
+                // An interleaved turn: the group stops at the first answer
+                // block and later work gets its own group further down, so the
+                // order the work arrived in survives — hoisting there would
+                // rewrite history.
+                let group_end = if hoist {
+                    message.steps.len()
+                } else {
+                    answer_start.map_or(message.steps.len(), |answer| answer + 1)
+                };
                 let group_live = activity_group_is_live(paint.live, group_end, &message.steps);
                 let open = paint
                     .expanded_activities
@@ -2366,15 +2458,17 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
             );
         }
 
-        // Work in a step that FOLLOWS answer text (the assistant spoke,
-        // then kept thinking/calling tools) renders as its own group here,
-        // in sequence, instead of being pulled up into the first group.
+        // Interleaved turns only: work in a step that FOLLOWS an earlier
+        // answer block renders as its own group here, in sequence, instead of
+        // being pulled up into the first group. A trailing *thought* is the
+        // one exception (`hoists_trailing_thought`).
         // The group absorbs every following work-only step, so a run of
         // tool calls between two text blocks is ONE group ("Ran 4
         // commands · 5 thoughts"), never a stack of per-step rows. While
         // live, the currently streaming work-only step is absorbed too,
         // so the group sits where the agent actually resumed working.
-        if answer_start.is_some_and(|answer| step_ix > answer)
+        if !hoist
+            && answer_start.is_some_and(|answer| step_ix > answer)
             && step_ix >= covered_until
             && (!step.thinking.is_empty() || !step.tools.is_empty())
         {
@@ -2427,7 +2521,12 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
     // model). pi carries the message in `errorMessage`; render it so a
     // failed turn is never an empty row.
     if let Some(error) = &message.error {
-        content = content.child(render_assistant_error(error, ix, theme));
+        // With text, the response footer already offers regenerate; without
+        // it, this card is the only place the failure can be retried.
+        let retry = (!paint.live && !message.has_text())
+            .then(|| paint.regenerate.clone())
+            .flatten();
+        content = content.child(render_assistant_error(error, ix, theme, retry));
     }
 
     // A cancelled turn keeps its partial content and says so, quietly —
@@ -2454,7 +2553,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
         .items_start()
         .child(content);
 
-    if !paint.live && !paint.suppress_footer && !message.text().is_empty() {
+    if !paint.live && !paint.suppress_footer && message.has_text() {
         row = row.child(render_message_footer(
             message.text(),
             ix,
@@ -2469,6 +2568,9 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
             theme,
             paint.copied_at.clone(),
             paint.hovered_usage.clone(),
+            paint.rewind.clone(),
+            paint.regenerate.clone(),
+            paint.export_response.clone(),
         ));
     }
 
@@ -2478,7 +2580,40 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
 /// A settled assistant turn that failed: the provider/agent `errorMessage`
 /// pi carries on the message, as a red card. Mirrors the app-level error
 /// banner so the failure is visible in context too.
-fn render_assistant_error(error: &str, ix: usize, theme: Theme) -> AnyElement {
+///
+/// `retry` is the same fork-and-resend as the response footer's regenerate;
+/// it is supplied only when the turn has no text of its own, so the card never
+/// duplicates a footer action.
+fn render_assistant_error(
+    error: &str,
+    ix: usize,
+    theme: Theme,
+    retry: Option<RegenerateOpener>,
+) -> AnyElement {
+    let retry_button = retry.map(|opener| {
+        button_frame(
+            div().id(ElementId::NamedInteger("retry-response".into(), ix as u64)),
+            &theme,
+            ButtonSize::Default,
+        )
+        .debug_selector(move || format!("retry-response-{ix}"))
+        .flex_none()
+        .border_1()
+        .border_color(theme.border)
+        .raised(theme.surface_elevated, &theme)
+        .cursor_pointer()
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(theme.text_secondary)
+        .hover_state(&theme)
+        .tip(tr!("transcript.retry_hint"))
+        .child(glyph(
+            "icons/refresh.svg",
+            ButtonSize::Default.icon_size().px(&theme),
+            theme.text_muted,
+        ))
+        .child(tr!("transcript.retry"))
+        .on_click(move |_, window, cx| opener(ix, window, cx))
+    });
     div()
         .w_full()
         .max_w_full()
@@ -2538,6 +2673,7 @@ fn render_assistant_error(error: &str, ix: usize, theme: Theme) -> AnyElement {
                         }),
                 ),
         )
+        .children(retry_button)
         .into_any_element()
 }
 
@@ -2546,10 +2682,14 @@ fn render_assistant_error(error: &str, ix: usize, theme: Theme) -> AnyElement {
 /// read · 1 thought", "Ran 2 commands · 3 file reads · 1 file edit".
 fn activity_title(steps: &[Step], live: bool) -> String {
     let mut parts: Vec<String> = Vec::new();
-    let (mut commands, mut reads, mut edits, mut other, mut thoughts) =
-        (0usize, 0usize, 0usize, 0usize, 0usize);
+    let (mut delegations, mut commands, mut reads, mut edits, mut other, mut thoughts) =
+        (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
     for step in steps {
         for tool in &step.tools {
+            if crate::subagent::is_subagent_tool(&tool.name) {
+                delegations += 1;
+                continue;
+            }
             match tool.name.as_str() {
                 "bash" | "shell" | "terminal" | "exec" | "run" => commands += 1,
                 "read" | "view" | "grep" | "find" | "glob" | "search" | "list" | "ls" | "tree" => {
@@ -2570,6 +2710,16 @@ fn activity_title(steps: &[Step], live: bool) -> String {
             tr!(other, count = count)
         }
     };
+    if delegations > 0 {
+        parts.insert(
+            0,
+            unit(
+                delegations,
+                "transcript_view.delegated_to_agents_one",
+                "transcript_view.delegated_to_agents_other",
+            ),
+        );
+    }
     if commands > 0 {
         parts.push(unit(
             commands,
@@ -2707,11 +2857,7 @@ fn render_activity_group(
                 theme.border
             })
             .cursor_pointer()
-            .hover(|style| {
-                style
-                    .raised(theme.surface_hover, &theme)
-                    .text_color(theme.text_primary)
-            })
+            .hover_state(&theme)
             .child(
                 div()
                     .flex_none()
@@ -2736,14 +2882,12 @@ fn render_activity_group(
                     .text_color(theme.text_secondary)
                     .child(title),
             )
-            .child(glyph(
-                if open {
-                    "icons/chevron-down.svg"
-                } else {
-                    "icons/chevron-right.svg"
-                },
+            .child(disclosure_chevron(
+                format!("activity-caret-{ix}-{}", key.1),
+                open,
                 IconSize::XSmall.px(&theme),
                 theme.text_muted,
+                &theme,
             ))
             .on_click({
                 let expanded_activities = expanded_activities.clone();
@@ -2918,7 +3062,7 @@ fn render_thinking_body(
     let id = (key.0 as u64) << 16 | key.1 as u64;
     // The reasoning glyph: brand accent while the card streams (with a slow
     // opacity pulse, reduce-motion aware), muted once it settles.
-    let thought_icon: AnyElement = if live && !theme.ui.reduce_motion {
+    let thought_icon: AnyElement = if live && !theme.reduce_motion() {
         div()
             .flex_none()
             .child(glyph(
@@ -2928,7 +3072,7 @@ fn render_thinking_body(
             ))
             .with_animation(
                 ElementId::NamedInteger("thought-icon".into(), id),
-                Animation::new(Duration::from_millis(1600)).repeat(),
+                Animation::new(looping::PULSE).repeat(),
                 |el, delta| el.opacity(0.4 + 0.6 * (delta * std::f32::consts::TAU).sin().abs()),
             )
             .into_any_element()
@@ -2967,7 +3111,7 @@ fn render_thinking_body(
                 .cursor_pointer()
                 .text_size(TextSize::Default.px(&theme))
                 .line_height(theme.ui_px(17.))
-                .hover(|style| style.text_color(theme.text_primary))
+                .hover_ink(&theme)
                 .child(thought_icon)
                 .child(
                     div()
@@ -2994,14 +3138,12 @@ fn render_thinking_body(
                             )
                         }),
                 )
-                .child(glyph(
-                    if collapsed {
-                        "icons/chevron-right.svg"
-                    } else {
-                        "icons/chevron-down.svg"
-                    },
+                .child(disclosure_chevron(
+                    format!("thought-caret-{}-{}", key.0, key.1),
+                    collapsed,
                     IconSize::XSmall.px(&theme),
                     theme.text_muted,
+                    &theme,
                 ))
                 .on_click({
                     let collapsed_thoughts = collapsed_thoughts.clone();
@@ -3392,6 +3534,411 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
     card.into_any_element()
 }
 
+/// The collapsed header's middle slot for one child: what it is doing now, or
+/// the terminal state. Data (a tool preview) passes through untranslated; the
+/// status words are keys.
+fn subagent_status_label(child: &crate::subagent::SubagentChild) -> String {
+    use crate::subagent::{Phase, Status};
+    match child.phase {
+        Phase::Queued => tr!("transcript_view.subagent_waiting_slot"),
+        Phase::Spawning => tr!("transcript_view.subagent_starting"),
+        Phase::Refused => tr!("transcript_view.subagent_refused"),
+        _ => match child.status {
+            Status::Running => tr!("transcript_view.subagent_thinking"),
+            Status::Done => tr!("transcript_view.subagent_done"),
+            Status::Failed => tr!("transcript_view.subagent_failed"),
+            Status::Aborted => tr!("transcript_view.subagent_aborted"),
+        },
+    }
+}
+
+/// The delegation card: one row per child, the run's cost, the reason a run was
+/// refused or blocked, and — expanded — the steps a child actually took and the
+/// report it returned.
+///
+/// Nothing here is computed from the child's prose: the phase, counts and cost
+/// are the extension's `details` and pi's own usage (§9.4, D-V).
+fn render_subagent_card(
+    run: &crate::subagent::SubagentRun,
+    pulse: bool,
+    theme: Theme,
+    key: (usize, usize),
+    tool_open: bool,
+    expanded_tools: ExpandedTools,
+    scroller: MessageScrollerState,
+) -> AnyElement {
+    use crate::subagent::Status;
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as i64)
+        .unwrap_or(0);
+    let id = (key.0 as u64) << 16 | key.1 as u64;
+    let failed = run
+        .children
+        .iter()
+        .any(|child| matches!(child.status, Status::Failed));
+
+    let mut card = div()
+        .id(ElementId::NamedInteger("subagent-card".into(), id))
+        .debug_selector(move || format!("subagent-card-{}-{}", key.0, key.1))
+        .w_full()
+        .min_w_0()
+        .overflow_hidden()
+        .rounded(panel::RADIUS.px(&theme))
+        .border_1()
+        .border_color(if failed { theme.error } else { theme.border })
+        .bg(theme.overlay)
+        .flex()
+        .flex_col();
+
+    for (ix, child) in run.children.iter().enumerate() {
+        let mut row = div()
+            .id(ElementId::NamedInteger(
+                "subagent-row".into(),
+                id << 8 | ix as u64,
+            ))
+            .when(ix == 0, |row| row.rounded_t(panel::RADIUS.px(&theme)))
+            .h(DynamicSpacing::Base32.px(&theme))
+            .px(DynamicSpacing::Base08.px(&theme))
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base08.px(&theme))
+            .text_size(TextSize::Default.px(&theme))
+            .line_height(BufferLineHeight::Standard.relative())
+            .cursor_pointer()
+            .hover_on_glass(&theme)
+            .on_click({
+                let expanded = expanded_tools.clone();
+                let scroller = scroller.clone();
+                move |_, _, cx| {
+                    let mut open = expanded.borrow_mut();
+                    if !open.remove(&key) {
+                        open.insert(key);
+                    }
+                    drop(open);
+                    scroller.remeasure_toggle(key.0);
+                    cx.refresh_windows();
+                }
+            });
+
+        let tone = if matches!(child.status, Status::Failed) {
+            theme.error
+        } else if child.is_live() && pulse {
+            theme.accent_text
+        } else if child.is_live() {
+            theme.text_secondary
+        } else {
+            theme.text_muted
+        };
+        let icon = match child.status {
+            Status::Failed => "icons/stop.svg",
+            Status::Done => "icons/check.svg",
+            Status::Aborted => "icons/circle-x.svg",
+            Status::Running => "icons/task.svg",
+        };
+        row = row
+            .child(glyph(icon, IconSize::Small.px(&theme), tone))
+            .child(
+                div()
+                    .flex_none()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.text_primary)
+                    .child(SharedString::from(child.label().to_string())),
+            );
+        if let Some(capability) = child.capability_label() {
+            row = row.child(
+                div()
+                    .flex_none()
+                    .px(DynamicSpacing::Base06.px(&theme))
+                    .py(px(1.))
+                    .rounded(Radius::Small.px(&theme))
+                    .bg(theme.overlay_strong)
+                    .text_size(TextSize::XSmall.px(&theme))
+                    .line_height(theme.ui_px(14.))
+                    .text_color(theme.text_muted)
+                    .child(SharedString::from(capability)),
+            );
+        }
+        let middle = child
+            .current
+            .clone()
+            .filter(|current| !current.trim().is_empty())
+            .unwrap_or_else(|| subagent_status_label(child));
+        row = row.child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_color(theme.text_secondary)
+                .child(SharedString::from(middle)),
+        );
+        if child.tools > 0 {
+            row = row.child(
+                div()
+                    .flex_none()
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_muted)
+                    .child(if child.tools == 1 {
+                        tr!("transcript_view.subagent_tools_one", count = 1)
+                    } else {
+                        tr!("transcript_view.subagent_tools_other", count = child.tools)
+                    }),
+            );
+        }
+        if let Some(elapsed) =
+            crate::subagent::format_elapsed(child.started_at, child.ended_at, now_ms)
+        {
+            row = row.child(
+                div()
+                    .flex_none()
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_muted)
+                    .child(elapsed),
+            );
+        }
+        if let Some(model) = child.model.clone() {
+            row = row.child(
+                div()
+                    .flex_none()
+                    .max_w(px(160.))
+                    .truncate()
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_muted)
+                    .child(SharedString::from(model)),
+            );
+        }
+        card = card.child(row);
+    }
+
+    // A run that never started says why, in the extension's own sentence.
+    if let Some(child) = run
+        .children
+        .iter()
+        .find(|child| matches!(child.phase, crate::subagent::Phase::Refused))
+    {
+        card = card.child(render_subagent_strip(
+            child.error.as_deref().unwrap_or(""),
+            theme,
+        ));
+    } else if let Some(child) = run.children.iter().find(|child| !child.blocked.is_empty()) {
+        let call = &child.blocked[0];
+        let call = match &call.target {
+            Some(target) if !target.is_empty() => format!("{} {target}", call.tool),
+            _ => call.tool.clone(),
+        };
+        let mode = match child.workflow_mode.as_deref() {
+            Some("plan") => tr!("transcript_view.subagent_mode_plan"),
+            Some("ask") => tr!("transcript_view.subagent_mode_ask"),
+            _ => tr!("transcript_view.subagent_mode_build"),
+        };
+        card = card.child(render_subagent_strip(
+            &tr!(
+                "transcript_view.subagent_blocked_by",
+                mode = mode,
+                call = call
+            ),
+            theme,
+        ));
+    } else if let Some(child) = run
+        .children
+        .iter()
+        .find(|child| matches!(child.status, Status::Failed))
+    {
+        if let Some(error) = child.error.as_deref() {
+            card = card.child(render_subagent_strip(error, theme));
+        }
+    }
+
+    // Footer: the run's state and what it cost.
+    let mut footer = div()
+        .w_full()
+        .border_t_1()
+        .border_color(theme.border)
+        .when(!tool_open, |footer| {
+            footer.rounded_b(panel::RADIUS.px(&theme))
+        })
+        .h(DynamicSpacing::Base32.px(&theme))
+        .px(DynamicSpacing::Base08.px(&theme))
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base06.px(&theme))
+        .text_size(TextSize::Small.px(&theme))
+        .line_height(theme.ui_px(15.))
+        .text_color(theme.text_muted);
+    let state = if run.is_live() {
+        tr!(
+            "transcript_view.subagent_running_of",
+            running = run.running(),
+            total = run.children.len()
+        )
+    } else {
+        let done = run
+            .children
+            .iter()
+            .filter(|child| matches!(child.status, Status::Done))
+            .count();
+        if done == 1 {
+            tr!("transcript_view.subagent_done_one", count = 1)
+        } else {
+            tr!("transcript_view.subagent_done_other", count = done)
+        }
+    };
+    footer = footer.child(state);
+    if run.total_tools() > 0 {
+        footer = footer.child(div().flex_none().child(if run.total_tools() == 1 {
+            tr!("transcript_view.subagent_tools_one", count = 1)
+        } else {
+            tr!(
+                "transcript_view.subagent_tools_other",
+                count = run.total_tools()
+            )
+        }));
+    }
+    if matches!(run.mode, crate::subagent::Mode::Chain) && !run.children.is_empty() {
+        let step = run
+            .children
+            .iter()
+            .position(|child| child.is_live())
+            .map(|ix| ix + 1)
+            .unwrap_or(run.children.len());
+        footer = footer.child(tr!(
+            "transcript_view.subagent_step_of",
+            step = step,
+            total = run.children.len()
+        ));
+    }
+    footer = footer.child(div().flex_1());
+    if let Some(usage) = run.usage() {
+        let mut label = format!(
+            "↑{} ↓{}",
+            crate::context_meter::format_tokens(usage.input),
+            crate::context_meter::format_tokens(usage.output)
+        );
+        if let Some(cost) = usage.cost.filter(|cost| *cost > 0.0) {
+            label.push_str(" · ");
+            label.push_str(&crate::context_meter::format_cost(cost));
+        }
+        footer = footer.child(div().flex_none().child(SharedString::from(label)));
+    }
+    card = card.child(footer);
+
+    if tool_open {
+        card = card.child(render_subagent_detail(run, theme));
+    }
+
+    card.into_any_element()
+}
+
+/// A red-washed reason line: refused before spawn, blocked by the mode, or a
+/// failed child. One sentence, never a stack trace.
+fn render_subagent_strip(message: &str, theme: Theme) -> impl IntoElement {
+    div()
+        .w_full()
+        .border_t_1()
+        .border_color(theme.border)
+        .bg(theme.error.opacity(0.07))
+        .px(DynamicSpacing::Base08.px(&theme))
+        .py(DynamicSpacing::Base04.px(&theme))
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base06.px(&theme))
+        .flex_none()
+        .child(glyph(
+            "icons/alert-circle.svg",
+            IconSize::XSmall.px(&theme),
+            theme.error,
+        ))
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .whitespace_normal()
+                .text_size(TextSize::Small.px(&theme))
+                .line_height(theme.ui_px(16.))
+                .text_color(theme.error)
+                .child(SharedString::from(message.to_string())),
+        )
+}
+
+/// The expanded body: each child's real steps, then the report it returned.
+fn render_subagent_detail(run: &crate::subagent::SubagentRun, theme: Theme) -> impl IntoElement {
+    let mut body = div()
+        .w_full()
+        .min_w_0()
+        .border_t_1()
+        .border_color(theme.border)
+        .rounded_b(panel::RADIUS.px(&theme))
+        .px(DynamicSpacing::Base08.px(&theme))
+        .py(DynamicSpacing::Base06.px(&theme))
+        .flex()
+        .flex_col()
+        .gap(DynamicSpacing::Base06.px(&theme));
+    for child in &run.children {
+        if !child.steps.is_empty() {
+            body = body.child(
+                div()
+                    .text_size(TextSize::XSmall.px(&theme))
+                    .text_color(theme.text_muted)
+                    .child(tr!("transcript_view.subagent_steps")),
+            );
+            for step in &child.steps {
+                body = body.child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .flex()
+                        .items_center()
+                        .gap(DynamicSpacing::Base08.px(&theme))
+                        .text_size(TextSize::Small.px(&theme))
+                        .line_height(theme.ui_px(16.))
+                        .child(
+                            div()
+                                .flex_none()
+                                .font_family(theme::code_font_family())
+                                .text_size(theme.code_px(12.))
+                                .text_color(theme.text_muted)
+                                .child(SharedString::from(step.name.clone())),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .flex_1()
+                                .truncate()
+                                .text_color(theme.text_secondary)
+                                .child(SharedString::from(step.preview.clone())),
+                        ),
+                );
+            }
+            if child.steps_total > child.steps.len() as u64 {
+                body = body.child(
+                    div()
+                        .text_size(TextSize::XSmall.px(&theme))
+                        .text_color(theme.text_muted)
+                        .child(tr!(
+                            "transcript_view.subagent_earlier",
+                            count = child.steps_total - child.steps.len() as u64
+                        )),
+                );
+            }
+        }
+        if let Some(report) = child.report.as_deref() {
+            body = body.child(div().w_full().min_w_0().child(render_markdown_document(
+                &cap_chars(report, DETAIL_TEXT_CAP),
+                theme,
+            )));
+        } else if !child.is_live() && !matches!(child.phase, crate::subagent::Phase::Refused) {
+            body = body.child(
+                div()
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_muted)
+                    .child(tr!("transcript_view.subagent_no_closing_message")),
+            );
+        }
+    }
+    body
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_activity_card(
     tool: &ToolCall,
@@ -3414,6 +3961,19 @@ fn render_activity_card(
         && !crate::ask::questions_from_args(tool.args.as_ref()).is_empty()
     {
         return render_ask_card(tool, theme, key);
+    }
+    // A delegation gets its own card: the agent, its current step and the run's
+    // cost are the claims a "Task" row cannot make (§9).
+    if let Some(run) = crate::subagent::SubagentRun::from_tool(tool) {
+        return render_subagent_card(
+            &run,
+            pulse,
+            theme,
+            key,
+            tool_open,
+            expanded_tools.clone(),
+            scroller.clone(),
+        );
     }
     let mcp = mcp_tool_parts(&tool.name);
     let action = match mcp {
@@ -3503,7 +4063,7 @@ fn render_activity_card(
                     row.rounded_b(panel::RADIUS.px(&theme))
                 })
                 .when(has_detail, |row| row.cursor_pointer())
-                .hover(|style| style.bg(theme.overlay_strong))
+                .hover_on_glass(&theme)
                 .child(activity_badge(icon, tone, theme))
                 .child(
                     div()
@@ -3650,7 +4210,7 @@ fn render_activity_card(
                         )
                         .tip(tr!("transcript.copy_diff"))
                         .cursor_pointer()
-                        .hover(|style| style.bg(theme.overlay_strong))
+                        .hover_on_glass(&theme)
                         .child(glyph(
                             if copied {
                                 "icons/check.svg"
@@ -3674,21 +4234,18 @@ fn render_activity_card(
                         }),
                     )
                 })
-                .child(glyph(
-                    if has_detail && tool_open {
-                        "icons/chevron-down.svg"
-                    } else if has_detail {
-                        "icons/chevron-right.svg"
-                    } else {
-                        // Placeholder keeps the row height stable either way.
-                        "icons/chevron-right.svg"
-                    },
+                // Always drawn, so the row height is stable either way; with no
+                // detail it is simply invisible.
+                .child(disclosure_chevron(
+                    format!("activity-card-caret-{}-{}", key.0, key.1),
+                    has_detail && tool_open,
                     IconSize::XSmall.px(&theme),
                     if has_detail {
                         theme.text_muted
                     } else {
                         theme.text_muted.opacity(0.)
                     },
+                    &theme,
                 )),
         );
     // A failed run carries its first error line right on the card — the
@@ -4099,10 +4656,13 @@ fn render_detail_section(
     let mut copy_hasher = DefaultHasher::new();
     (hover_key, hover.generation, copied).hash(&mut copy_hasher);
     let copy_seed = copy_hasher.finish() as usize;
-    let copy_duration = if copied {
-        Duration::from_millis(1)
+    // The role is named at the animation site rather than smuggled in as a
+    // duration: entering is an interaction, and leaving settles on the layout
+    // band. `scripts/check_motion.py` reads this as the role it is.
+    let copy_role = if hover.to > COPY_REST_OPACITY {
+        Motion::Interaction
     } else {
-        hover.duration
+        Motion::Layout
     };
     let (icon_from, icon_to) = if copied {
         (1.0, 1.0)
@@ -4117,26 +4677,35 @@ fn render_detail_section(
         }
     };
     let (label_from, label_to) = (label_range(hover.from), label_range(hover.to));
-    let copy_icon = div()
-        .flex_none()
-        .child(glyph(
-            if copied {
-                "icons/check.svg"
-            } else {
-                "icons/copy.svg"
-            },
-            ButtonSize::Default.icon_size().px(&theme),
-            if copied {
-                theme.success
-            } else {
-                theme.text_muted
-            },
-        ))
-        .with_animation(
-            ElementId::NamedInteger("copy-section-icon".into(), copy_seed as u64),
-            Animation::new(copy_duration).with_easing(gpui::ease_out_quint()),
-            move |icon, delta| icon.opacity(icon_from + (icon_to - icon_from) * delta),
-        );
+    // A role that resolves to zero is Reduce Motion's answer: paint the end
+    // state. `Animation::new(Duration::ZERO)` would divide 0 by 0 inside gpui
+    // and trip its delta assertion, so the animation element is never mounted.
+    // The copied confirmation is a swap, not a fade, so it never animates.
+    let animate_copy = !copied && !copy_role.duration(&theme).is_zero();
+    let copy_icon = div().flex_none().child(glyph(
+        if copied {
+            "icons/check.svg"
+        } else {
+            "icons/copy.svg"
+        },
+        ButtonSize::Default.icon_size().px(&theme),
+        if copied {
+            theme.success
+        } else {
+            theme.text_muted
+        },
+    ));
+    let copy_icon: AnyElement = if animate_copy {
+        copy_icon
+            .with_animation(
+                ElementId::NamedInteger("copy-section-icon".into(), copy_seed as u64),
+                Animation::new(copy_role.duration(&theme)),
+                move |icon, delta| icon.opacity(icon_from + (icon_to - icon_from) * delta),
+            )
+            .into_any_element()
+    } else {
+        copy_icon.opacity(icon_to).into_any_element()
+    };
     let copy_label = div()
         .flex_none()
         .text_size(TextSize::XSmall.px(&theme))
@@ -4151,12 +4720,18 @@ fn render_detail_section(
             tr!("common.copied")
         } else {
             tr!("common.copy")
-        })
-        .with_animation(
-            ElementId::NamedInteger("copy-section-label".into(), copy_seed as u64),
-            Animation::new(copy_duration).with_easing(gpui::ease_out_quint()),
-            move |label, delta| label.opacity(label_from + (label_to - label_from) * delta),
-        );
+        });
+    let copy_label: AnyElement = if animate_copy {
+        copy_label
+            .with_animation(
+                ElementId::NamedInteger("copy-section-label".into(), copy_seed as u64),
+                Animation::new(copy_role.duration(&theme)),
+                move |label, delta| label.opacity(label_from + (label_to - label_from) * delta),
+            )
+            .into_any_element()
+    } else {
+        copy_label.opacity(label_to).into_any_element()
+    };
     let copy_button = icon_button_frame(
         div().id(ElementId::NamedInteger(
             "copy-activity-section".into(),
@@ -4213,10 +4788,13 @@ fn render_detail_section(
             "tool-code-section".into(),
             section_seed,
         ))
+        // `theme` is captured rather than read from the app: the hover fires on
+        // a bare test context too, and a repaint after a theme change rebuilds
+        // this closure with the new value.
         .on_hover(move |hovering, _, cx| {
             let mut states = hovered_sections_for_event.borrow_mut();
             let state = states.entry(hover_key).or_default();
-            if state.retarget(*hovering) {
+            if state.retarget(*hovering, &theme) {
                 drop(states);
                 cx.refresh_windows();
             }
@@ -4303,15 +4881,13 @@ fn render_detail_section(
             .cursor_pointer()
             .font_weight(FontWeight::MEDIUM)
             .text_color(theme.text_muted)
-            .hover(|style| style.text_color(theme.text_primary))
-            .child(glyph(
-                if expanded {
-                    "icons/chevron-down.svg"
-                } else {
-                    "icons/chevron-right.svg"
-                },
+            .hover_ink(&theme)
+            .child(disclosure_chevron(
+                format!("section-fold-caret-{}-{}-{section}", key.0, key.1),
+                expanded,
                 IconSize::XSmall.px(&theme),
                 theme.text_muted,
+                &theme,
             ))
             .child(toggle_label)
             .when(paint_clipped, |toggle| {
@@ -4665,15 +5241,13 @@ fn render_edit_diff(
             .cursor_pointer()
             .font_weight(FontWeight::MEDIUM)
             .text_color(theme.text_muted)
-            .hover(|style| style.text_color(theme.text_primary))
-            .child(glyph(
-                if expanded {
-                    "icons/chevron-down.svg"
-                } else {
-                    "icons/chevron-right.svg"
-                },
+            .hover_ink(&theme)
+            .child(disclosure_chevron(
+                format!("edit-diff-caret-{}-{}", key.0, key.1),
+                expanded,
                 IconSize::XSmall.px(&theme),
                 theme.text_muted,
+                &theme,
             ))
             .child(label)
             .when(clipped, |toggle| {
@@ -4863,7 +5437,11 @@ fn render_message_footer(
     theme: Theme,
     copied_at: Rc<RefCell<HashMap<usize, Instant>>>,
     hovered_usage: Rc<Cell<Option<usize>>>,
+    rewind: Option<RewindOpener>,
+    regenerate: Option<RegenerateOpener>,
+    export_response: Option<ResponseExporter>,
 ) -> impl IntoElement {
+    let response_text = copy_text.clone();
     let button = icon_button_frame(
         div().id(ElementId::NamedInteger("copy-response".into(), ix as u64)),
         &theme,
@@ -4871,7 +5449,7 @@ fn render_message_footer(
     )
     .tip(tr!("transcript.copy_message"))
     .cursor_pointer()
-    .hover(|style| style.bg(theme.overlay_strong))
+    .hover_on_glass(&theme)
     .child(glyph(
         if copied {
             "icons/check.svg"
@@ -4896,14 +5474,108 @@ fn render_message_footer(
         .items_center()
         .gap(DynamicSpacing::Base01.px(&theme))
         .when(align_right, |row| row.justify_end());
+    // Rewind sits before the copy action: both are quiet footer affordances,
+    // and the pointer path to rewind belongs where the message ends rather
+    // than behind a hover-only rail (DESIGN.md: never hide a state-changing
+    // action behind hover).
+    let rewind_button = rewind.map(|opener| {
+        icon_button_frame(
+            div().id(ElementId::NamedInteger("rewind-turn".into(), ix as u64)),
+            &theme,
+            FOOTER_BUTTON,
+        )
+        .debug_selector(move || format!("rewind-turn-{ix}"))
+        .tip(if align_right {
+            tr!("transcript.rewind_to_here")
+        } else {
+            tr!("transcript.fork_conversation")
+        })
+        .cursor_pointer()
+        .hover_on_glass(&theme)
+        .child(glyph(
+            if align_right {
+                "icons/rotate-ccw.svg"
+            } else {
+                "icons/git-fork.svg"
+            },
+            FOOTER_BUTTON.icon_size().px(&theme),
+            theme.text_muted,
+        ))
+        .on_click(move |_, window, cx| opener(ix, window, cx))
+    });
+    // Regenerate is a response action and always says what it does: pi forks
+    // the conversation into a new session and sends the prompt again there.
+    let regenerate_button = regenerate.map(|opener| {
+        icon_button_frame(
+            div().id(ElementId::NamedInteger(
+                "regenerate-response".into(),
+                ix as u64,
+            )),
+            &theme,
+            FOOTER_BUTTON,
+        )
+        .debug_selector(move || format!("regenerate-response-{ix}"))
+        .tip(tr!("transcript.regenerate"))
+        .cursor_pointer()
+        .hover_on_glass(&theme)
+        .child(glyph(
+            "icons/refresh.svg",
+            FOOTER_BUTTON.icon_size().px(&theme),
+            theme.text_muted,
+        ))
+        .on_click(move |_, window, cx| opener(ix, window, cx))
+    });
+    let pdf_text = response_text.clone();
+    let pdf_button = export_response.clone().map(|export| {
+        icon_button_frame(
+            div().id(ElementId::NamedInteger(
+                "export-response-pdf".into(),
+                ix as u64,
+            )),
+            &theme,
+            FOOTER_BUTTON,
+        )
+        .debug_selector(move || format!("export-response-pdf-{ix}"))
+        .tip(tr!("transcript.export_response_pdf"))
+        .cursor_pointer()
+        .hover_on_glass(&theme)
+        .child(glyph(
+            "icons/file.svg",
+            FOOTER_BUTTON.icon_size().px(&theme),
+            theme.text_muted,
+        ))
+        .on_click(move |_, window, cx| export(pdf_text.clone(), true, ix, window, cx))
+    });
+    let export_button = export_response.map(|export| {
+        icon_button_frame(
+            div().id(ElementId::NamedInteger("export-response".into(), ix as u64)),
+            &theme,
+            FOOTER_BUTTON,
+        )
+        .debug_selector(move || format!("export-response-{ix}"))
+        .tip(tr!("transcript.export_response_markdown"))
+        .cursor_pointer()
+        .hover_on_glass(&theme)
+        .child(glyph(
+            "icons/arrow-down.svg",
+            FOOTER_BUTTON.icon_size().px(&theme),
+            theme.text_muted,
+        ))
+        .on_click(move |_, window, cx| export(response_text.clone(), false, ix, window, cx))
+    });
     if align_right {
         // Right-aligned footer: timestamp first, then actions.
         if let Some(stamp) = stamp {
             footer = footer.child(stamp);
         }
-        footer = footer.child(button);
+        footer = footer.children(rewind_button).child(button);
     } else {
-        footer = footer.child(button);
+        footer = footer
+            .child(button)
+            .children(regenerate_button)
+            .children(export_button)
+            .children(pdf_button)
+            .children(rewind_button);
         if let Some(stamp) = stamp {
             footer = footer.child(stamp);
         }
@@ -5209,16 +5881,14 @@ fn render_turn_fold(
             .cursor_pointer()
             .font_weight(FontWeight::MEDIUM)
             .text_color(theme.text_muted)
-            .hover(|style| style.text_color(theme.text_secondary))
+            .hover_ink_quiet(&theme)
             .child(label)
-            .child(glyph(
-                if expanded {
-                    "icons/chevron-down.svg"
-                } else {
-                    "icons/chevron-right.svg"
-                },
+            .child(disclosure_chevron(
+                format!("turn-fold-caret-{ix}"),
+                expanded,
                 IconSize::XSmall.px(&theme),
                 theme.text_muted,
+                &theme,
             ))
             .on_click(move |_, _, cx| {
                 toggle_index(&expanded_turns, ix);
@@ -5247,7 +5917,24 @@ fn working_wave_dots(theme: Theme, elapsed_ms: u128) -> impl IntoElement {
 /// Reasoning is named in the live indicator; tool details already appear in
 /// the activity group above and should not be repeated here.
 fn working_activity_label(step: &Step) -> Option<String> {
-    if !step.tools.is_empty() {
+    if let Some(tool) = step.tools.last() {
+        // While a child runs, the parent's own turn is blocked, so this line is
+        // the user's main signal: say what the child is doing (§9.5).
+        if let Some(run) = crate::subagent::SubagentRun::from_tool(tool) {
+            return match run.live_activity()? {
+                crate::subagent::Activity::Agent { agent, action } => Some(tr!(
+                    "transcript_view.subagent_working_one",
+                    agent = agent,
+                    action = action
+                        .map(str::to_string)
+                        .unwrap_or_else(|| tr!("transcript_view.subagent_thinking"))
+                )),
+                crate::subagent::Activity::Agents(count) => Some(tr!(
+                    "transcript_view.subagent_working_agents",
+                    count = count
+                )),
+            };
+        }
         return None;
     }
     // Reasoning is only the current activity while the step has no answer
@@ -5309,7 +5996,7 @@ fn render_working_indicator(
     // The live label carries the sidebar's running-session shimmer — the same
     // accent band sweeping across the ink. Reduce-motion keeps the accent
     // signal without the perpetual sweep.
-    let label_el: AnyElement = if theme.ui.reduce_motion {
+    let label_el: AnyElement = if theme.reduce_motion() {
         div()
             .min_w_0()
             .truncate()
@@ -5323,7 +6010,7 @@ fn render_working_indicator(
         ShimmerText::new(label, theme.text_muted, theme.accent)
             .with_animation(
                 ElementId::NamedInteger("working-shimmer".into(), 0),
-                Animation::new(Duration::from_millis(2000)).repeat(),
+                Animation::new(looping::SHIMMER).repeat(),
                 |mut text, delta| {
                     text.phase = delta;
                     text
@@ -5877,6 +6564,89 @@ fn inline_runs(
     (body.into(), runs, links, marks)
 }
 
+/// Highlight colour literals in place. Text and byte offsets never change,
+/// so wrapping, selection, streaming and links keep their original layout.
+fn highlight_color_values(
+    body: &str,
+    runs: Vec<TextRun>,
+    mut links: Vec<(Range<usize>, String)>,
+    live: bool,
+    theme: Theme,
+) -> (Vec<TextRun>, Vec<(Range<usize>, String)>) {
+    let found: Vec<_> = color_swatches::find(body, live)
+        .into_iter()
+        .filter(|m| {
+            !links
+                .iter()
+                .any(|(r, _)| r.start < m.range.end && m.range.start < r.end)
+        })
+        .collect();
+    for m in &found {
+        links.push((
+            m.range.clone(),
+            format!("orbit-color-copy:{}", &body[m.range.clone()]),
+        ));
+    }
+    let mut output = Vec::new();
+    let mut offset = 0;
+    for run in runs {
+        let end = offset + run.len;
+        let mut pos = offset;
+        for m in &found {
+            let start = m.range.start.max(offset);
+            let stop = m.range.end.min(end);
+            if start >= stop {
+                continue;
+            }
+            if pos < start {
+                output.push(TextRun {
+                    len: start - pos,
+                    ..run.clone()
+                });
+            }
+            let surface: gpui::Rgba = run.background_color.unwrap_or(theme.background).into();
+            let [r, g, b, a] = m.rgba;
+            let alpha = f32::from(a) / 255.;
+            let mix = |v: u8, base: f32| f32::from(v) / 255. * alpha + base * (1. - alpha);
+            let color = gpui::Rgba {
+                r: mix(r, surface.r),
+                g: mix(g, surface.g),
+                b: mix(b, surface.b),
+                a: 1.,
+            };
+            let linear = |v: f32| {
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            let luminance =
+                0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b);
+            let foreground = if luminance > 0.179 {
+                gpui::rgb(0x000000)
+            } else {
+                gpui::rgb(0xffffff)
+            };
+            output.push(TextRun {
+                len: stop - start,
+                background_color: Some(color.into()),
+                color: foreground.into(),
+                ..run.clone()
+            });
+            pos = stop;
+        }
+        if pos < end {
+            output.push(TextRun {
+                len: end - pos,
+                ..run
+            });
+        }
+        offset = end;
+    }
+    (output, links)
+}
+
 /// Blank the font glyphs the autolink mark runs carry; [`paint_link_mark`]
 /// draws the hugeicon arrow over that space instead. The run stays in the
 /// text, so the click target and copied selection still cover the mark.
@@ -6021,6 +6791,11 @@ fn paragraph_text_live(
 ) -> impl IntoElement {
     let spans = parse_inline(text);
     let (body, runs, links, marks) = inline_runs(&spans, weight, color, theme);
+    let (runs, links) = if text_scope().is_some_and(|scope| scope.color_swatches) {
+        highlight_color_values(body.as_ref(), runs, links, live, theme)
+    } else {
+        (runs, links)
+    };
     let wrapper = div()
         .w_full()
         .min_w_0()
@@ -6032,13 +6807,25 @@ fn paragraph_text_live(
         // The font's arrow would pick a fallback/emoji face; the hugeicon
         // paints crisper and on-theme (see `paint_link_mark`).
         let mut runs = hide_autolink_marks(runs, &marks);
-        if live && !theme.ui.reduce_motion {
+        if live && !theme.reduce_motion() {
             let mut state = scope.state.borrow_mut();
             let fade = state.stream_fades.entry(key.clone()).or_default();
             runs = fade.apply(body.as_ref(), runs, Instant::now());
         }
         let range = scope.state.borrow().range_for(&key, body.as_ref());
-        let runs = highlight_runs(runs, range, selection_color(theme));
+        let mut runs = highlight_runs(runs, range.clone(), theme.selection);
+        // The colour literal may have black or white ink of its own. A text
+        // selection must use the selection palette, not that literal's ink.
+        if let Some(range) = range {
+            let mut offset = 0;
+            for run in &mut runs {
+                let end = offset + run.len;
+                if offset < range.end && end > range.start {
+                    run.color = theme.selection_fg;
+                }
+                offset = end;
+            }
+        }
         let plain = body.clone();
         wrapper
             .child(
@@ -7226,17 +8013,15 @@ fn render_code_block(
                 .text_size(TextSize::Small.px(&theme))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme.text_secondary)
-                .hover(|style| style.bg(theme.surface_hover).text_color(theme.text_primary))
+                .hover_state(&theme)
                 .child(label)
                 .child(div().flex_1())
-                .child(glyph(
-                    if expanded {
-                        "icons/chevron-down.svg"
-                    } else {
-                        "icons/chevron-right.svg"
-                    },
+                .child(disclosure_chevron(
+                    format!("code-caret-{ix}-{block_ix}"),
+                    expanded,
                     IconSize::XSmall.px(&theme),
                     theme.text_muted,
+                    &theme,
                 ))
                 .on_click(move |_, _, cx| {
                     let key = (ix, id_namespace, block_ix);
@@ -7280,7 +8065,7 @@ fn code_copy_button(
     )
     .tip(tr!("transcript.copy_code"))
     .cursor_pointer()
-    .hover(|style| style.bg(theme.overlay_strong))
+    .hover_on_glass(&theme)
     .child(glyph(
         if copied {
             "icons/check.svg"
@@ -7464,17 +8249,15 @@ fn render_mermaid_block(
         .text_size(TextSize::Small.px(&theme))
         .font_weight(FontWeight::MEDIUM)
         .text_color(theme.text_secondary)
-        .hover(|style| style.bg(theme.surface_hover).text_color(theme.text_primary))
+        .hover_state(&theme)
         .child(toggle_label)
         .child(div().flex_1())
-        .child(glyph(
-            if showing_source {
-                "icons/chevron-down.svg"
-            } else {
-                "icons/chevron-right.svg"
-            },
+        .child(disclosure_chevron(
+            format!("mermaid-caret-{ix}-{block_ix}"),
+            showing_source,
             IconSize::XSmall.px(&theme),
             theme.text_muted,
+            &theme,
         ))
         .on_click(move |_, _, cx| {
             let key = (ix, id_namespace, block_ix);
@@ -7915,11 +8698,7 @@ pub(crate) fn render_changed_files(
         .cursor_pointer()
         .font_weight(FontWeight::MEDIUM)
         .text_color(theme.text_secondary)
-        .hover(|style| {
-            style
-                .raised(theme.surface_hover, &theme)
-                .text_color(theme.text_primary)
-        })
+        .hover_state(&theme)
         .child(glyph(
             "icons/file-diff.svg",
             ButtonSize::Medium.icon_size().px(&theme),
@@ -8024,7 +8803,7 @@ pub(crate) fn render_changed_files(
             .text_size(TextSize::Small.px(&theme))
             .font_weight(FontWeight::MEDIUM)
             .text_color(theme.text_secondary)
-            .hover(|style| style.bg(theme.surface_hover).text_color(theme.text_primary))
+            .hover_state(&theme)
             .child(label);
         if clipped {
             toggle = toggle.child(
@@ -8045,14 +8824,12 @@ pub(crate) fn render_changed_files(
         card = card.child(
             toggle
                 .child(div().flex_1())
-                .child(glyph(
-                    if expanded {
-                        "icons/chevron-down.svg"
-                    } else {
-                        "icons/chevron-right.svg"
-                    },
+                .child(disclosure_chevron(
+                    format!("files-caret-{message_ix}"),
+                    expanded,
                     IconSize::XSmall.px(&theme),
                     theme.text_muted,
+                    &theme,
                 ))
                 .on_click(move |_, _, cx| {
                     toggle_index(&expanded_files, message_ix);
@@ -8278,18 +9055,34 @@ mod tests {
 
     #[test]
     fn copy_hover_retargets_from_the_visible_opacity() {
+        let theme = Theme::dark();
+        let half = Motion::Interaction.duration(&theme) / 2;
         let mut hover = SectionHover::default();
-        assert!(hover.retarget(true));
+        assert!(hover.retarget(true, &theme));
         // Repeating the same target must not restart the transition.
-        assert!(!hover.retarget(true));
+        assert!(!hover.retarget(true, &theme));
         assert!((hover.opacity_at(Duration::ZERO) - COPY_REST_OPACITY).abs() < 0.001);
-        let mid = hover.opacity_at(COPY_HOVER_IN / 2);
+        let mid = hover.opacity_at(half);
         assert!(mid > COPY_REST_OPACITY && mid < 1.0);
         // Make the transition half-elapsed, then reverse it. The new target
         // must begin at the value that was already on screen.
-        hover.started = Instant::now() - COPY_HOVER_IN / 2;
-        assert!(hover.retarget(false));
+        hover.started = Instant::now() - half;
+        assert!(hover.retarget(false, &theme));
         assert!((hover.opacity_at(Duration::ZERO) - mid).abs() < 0.001);
+    }
+
+    /// Reduce Motion collapses the fade instead of animating it — the leak this
+    /// fade used to have, because it read the role's `nominal()` duration.
+    #[test]
+    fn copy_hover_collapses_under_reduce_motion() {
+        let mut theme = Theme::dark();
+        theme.ui.motion = crate::theme::MotionPreference::Reduced;
+        let mut hover = SectionHover::default();
+        assert!(hover.retarget(true, &theme));
+        assert_eq!(hover.duration, Duration::ZERO);
+        assert_eq!(hover.opacity_at(Duration::ZERO), 1.0);
+        assert!(hover.retarget(false, &theme));
+        assert_eq!(hover.opacity_at(Duration::ZERO), COPY_REST_OPACITY);
     }
 
     #[test]
@@ -8387,6 +9180,34 @@ mod tests {
     }
 
     #[test]
+    fn activity_title_counts_delegations_instead_of_other_tools() {
+        // A delegation is not "Ran 1 tool": the turn delegated work, and the
+        // children's own calls are not the parent's (§9.6).
+        let tool = |name: &str| ToolCall {
+            name: name.to_string(),
+            summary: String::new(),
+            path: None,
+            added: 0,
+            removed: 0,
+            id: None,
+            args: None,
+            output: None,
+            failed: false,
+            facts: Default::default(),
+            details: None,
+        };
+        let steps = vec![Step {
+            thinking: "plan".into(),
+            tools: vec![tool("subagent"), tool("subagent"), tool("bash")],
+            ..Step::default()
+        }];
+        assert_eq!(
+            activity_title(&steps, false),
+            "Delegated to 2 agents · Ran 1 command · 1 thought"
+        );
+    }
+
+    #[test]
     fn activity_title_aggregates_every_step() {
         let tool = |name: &str| ToolCall {
             name: name.to_string(),
@@ -8399,6 +9220,7 @@ mod tests {
             output: None,
             failed: false,
             facts: Default::default(),
+            details: None,
         };
         // Two steps' worth of work lands on one summary line — counts span
         // every step instead of one "Ran …" row per step.
@@ -8442,6 +9264,7 @@ mod tests {
                     output: None,
                     failed: false,
                     facts: Default::default(),
+                    details: None,
                 })
                 .collect(),
             ..Step::default()
@@ -8810,6 +9633,7 @@ mod tests {
             output: None,
             failed: false,
             facts: Default::default(),
+            details: None,
         };
         assert_eq!(tool_command(&bash).as_deref(), Some("ls -la"));
         // The header preview shows the command, not the raw JSON summary.
@@ -8837,6 +9661,7 @@ mod tests {
             output: None,
             failed: false,
             facts: Default::default(),
+            details: None,
         };
         assert_eq!(
             activity_preview(&codemode),
@@ -8857,6 +9682,7 @@ mod tests {
             output: None,
             failed: false,
             facts: Default::default(),
+            details: None,
         };
         assert_eq!(
             tool_url(&fetch).as_deref(),
@@ -8879,6 +9705,7 @@ mod tests {
             output: None,
             failed: false,
             facts: Default::default(),
+            details: None,
         };
         assert_eq!(
             tool_search_query(&search).as_deref(),
@@ -8903,6 +9730,7 @@ mod tests {
             output: None,
             failed: false,
             facts: Default::default(),
+            details: None,
         };
         assert_eq!(file_preview_path(&read), Some("src/main.rs"));
         // The preview still shows the path (unchanged behavior).
@@ -8930,6 +9758,7 @@ mod tests {
             output: None,
             failed: false,
             facts: Default::default(),
+            details: None,
         };
         assert_eq!(
             activity_preview(&tool),
@@ -8978,6 +9807,7 @@ mod tests {
             output: None,
             failed: false,
             facts: Default::default(),
+            details: None,
         };
         let rows = build_edit_diff(&tool).expect("diff");
         assert_eq!(rows.len(), 2);
@@ -9005,6 +9835,7 @@ mod tests {
             output: None,
             failed: false,
             facts: Default::default(),
+            details: None,
         };
         let rows = build_edit_diff(&tool).expect("diff");
         assert_eq!(rows.len(), 2);
@@ -9583,6 +10414,40 @@ mod tests {
     }
 
     #[test]
+    fn color_highlights_preserve_text_links_and_correct_background() {
+        for theme in [Theme::dark(), Theme::light()] {
+            let spans =
+                parse_inline("🎨 `#F4711D` and [#fff](https://example.com) then rgb(244 113 29)");
+            let (body, runs, links, _) =
+                inline_runs(&spans, FontWeight::NORMAL, theme.text_primary, theme);
+            let (runs, links) = highlight_color_values(&body, runs, links, false, theme);
+            assert_eq!(runs.iter().map(|r| r.len).sum::<usize>(), body.len());
+            assert_eq!(&body[links[0].0.clone()], "#fff");
+            assert_eq!(links[0].1, "https://example.com");
+            let mut offset = 0;
+            let mut highlighted = Vec::new();
+            for run in &runs {
+                let range = offset..offset + run.len;
+                if let Some(bg) = run.background_color {
+                    if &body[range.clone()] == "#F4711D" {
+                        let actual: gpui::Rgba = bg.into();
+                        assert!((actual.r - 244. / 255.).abs() < 0.01);
+                        assert!((actual.g - 113. / 255.).abs() < 0.01);
+                        assert!((actual.b - 29. / 255.).abs() < 0.01);
+                        highlighted.push(range);
+                    }
+                }
+                offset += run.len;
+            }
+            assert_eq!(highlighted.len(), 1);
+            assert!(links
+                .iter()
+                .any(|(range, target)| &body[range.clone()] == "#F4711D"
+                    && target == "orbit-color-copy:#F4711D"));
+        }
+    }
+
+    #[test]
     fn bare_urls_autolink_and_trim_trailing_punctuation() {
         let spans = parse_inline("see https://pi.dev/docs. and http://a.b/(x) now");
         let links: Vec<&str> = spans.iter().filter_map(|s| s.link.as_deref()).collect();
@@ -9636,6 +10501,67 @@ mod tests {
         assert!(hidden.iter().any(|run| run.color.a == 0.0));
     }
 
+    struct SwatchParagraphView {
+        selection: TextSelectionState,
+    }
+
+    impl gpui::Render for SwatchParagraphView {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            self.selection.borrow_mut().begin_frame();
+            let _scope = TextScopeGuard::enter(TextScope {
+                state: self.selection.clone(),
+                message_ix: 0,
+                color_swatches: true,
+            });
+            let theme = Theme::dark();
+            div().w_full().child(paragraph_text(
+                "Accent #F4711D.",
+                14.,
+                26.,
+                FontWeight::NORMAL,
+                theme.assistant_text,
+                ElementId::Name("swatch-test".into()),
+                theme,
+            ))
+        }
+    }
+
+    #[gpui::test]
+    fn color_highlight_has_unmodified_text_and_click_target(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let selection = Rc::new(RefCell::new(TextSelection::new()));
+        let view = cx.update(|_, cx| {
+            cx.new(|_| SwatchParagraphView {
+                selection: selection.clone(),
+            })
+        });
+        cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(600.), px(200.)),
+            |_, _| view.clone(),
+        );
+        let position = {
+            let state = selection.borrow();
+            let block = &state.blocks[0];
+            assert_eq!(block.text.as_ref(), "Accent #F4711D.");
+            let value = &block.links[0].0;
+            assert_eq!(&block.text[value.clone()], "#F4711D");
+            let start = block.layout.position_for_index(value.start).unwrap();
+            let end = block.layout.position_for_index(value.start + 1).unwrap();
+            assert!(end.x > start.x);
+            point(
+                (start.x + end.x) * 0.5,
+                start.y + block.layout.line_height() * 0.5,
+            )
+        };
+        let mut state = selection.borrow_mut();
+        state.begin_selection(position);
+        assert_eq!(
+            state.finish_selection(position).as_deref(),
+            Some("orbit-color-copy:#F4711D")
+        );
+    }
+
     struct AutolinkParagraphView {
         selection: TextSelectionState,
     }
@@ -9646,6 +10572,7 @@ mod tests {
             let _scope = TextScopeGuard::enter(TextScope {
                 state: self.selection.clone(),
                 message_ix: 0,
+                color_swatches: true,
             });
             let theme = theme::Theme::for_id(theme::ThemeId::Orbit);
             div().w_full().child(paragraph_text(
@@ -9788,6 +10715,7 @@ mod tests {
             output: None,
             failed: false,
             facts: Default::default(),
+            details: None,
         };
         let step = Step {
             tools: vec![bash],
@@ -9806,6 +10734,7 @@ mod tests {
             output: None,
             failed: false,
             facts: Default::default(),
+            details: None,
         };
         let step = Step {
             tools: vec![read],
@@ -10087,6 +11016,9 @@ mod tests {
             summary_usage: None,
             review_changes: None,
             image_opener: None,
+            rewind: None,
+            regenerate: None,
+            export_response: None,
             search_hits: None,
             search_active: None,
         }
@@ -10117,6 +11049,7 @@ mod tests {
                 }),
                 failed: false,
                 facts: ToolFacts::default(),
+                details: None,
             };
             render_activity_card(
                 &tool,
@@ -10134,6 +11067,370 @@ mod tests {
                 self.image_opener.clone(),
             )
         }
+    }
+
+    struct SubagentCardTestView {
+        open: ExpandedTools,
+        scroller: MessageScrollerState,
+        status: &'static str,
+        phase: &'static str,
+    }
+
+    impl gpui::Render for SubagentCardTestView {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            let details = serde_json::json!({
+                "orbit": "subagent/1",
+                "mode": "parallel",
+                "children": [
+                    {
+                        "agent": "scout",
+                        "status": self.status,
+                        "phase": self.phase,
+                        "current": "grep /auth/ in src/",
+                        "capability": "read",
+                        "workflowMode": "build",
+                        "model": "anthropic/claude-haiku-4-5",
+                        "tools": 12,
+                        "toolCounts": {"read": 4, "grep": 7, "bash": 1},
+                        "steps": [{"kind": "tool", "name": "grep", "preview": "auth in src/"}],
+                        "stepsTotal": 13,
+                        "report": "Auth lives in `src/auth.rs`.",
+                        "error": null,
+                        "usage": {"input": 3100, "output": 812, "cost": 0.0123},
+                        "startedAt": 1_000,
+                        "endedAt": if self.status == "running" { 0 } else { 34_000 }
+                    },
+                    {
+                        "agent": "worker",
+                        "status": "failed",
+                        "phase": "refused",
+                        "capability": "exec",
+                        "workflowMode": "plan",
+                        "error": "worker runs commands; this session is Plan · Full access",
+                        "blocked": [{"tool": "edit", "target": "src/auth.rs", "reason": "Blocked: Plan mode"}],
+                        "usage": {"input": 0, "output": 0}
+                    }
+                ]
+            });
+            let mut tool = ToolCall {
+                name: "subagent".into(),
+                summary: String::new(),
+                path: None,
+                added: 0,
+                removed: 0,
+                id: None,
+                args: None,
+                output: None,
+                failed: self.status == "failed",
+                facts: ToolFacts::default(),
+                details: None,
+            };
+            tool.details = Some(details);
+            let run = crate::subagent::SubagentRun::from_tool(&tool).expect("details parse");
+            render_subagent_card(
+                &run,
+                self.status == "running",
+                theme::Theme::for_id(theme::ThemeId::Orbit),
+                (0, 0),
+                self.open.borrow().contains(&(0, 0)),
+                self.open.clone(),
+                self.scroller.clone(),
+            )
+        }
+    }
+
+    /// The delegation card paints in every state and at both zoom levels: the
+    /// rows while it runs, the reason a child was refused, and the expanded
+    /// steps + report. Layout is asserted by drawing, not by restating it.
+    #[gpui::test]
+    fn subagent_cards_render_collapsed_and_expanded(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        for (status, phase) in [
+            ("running", "tool"),
+            ("done", "settled"),
+            ("failed", "refused"),
+        ] {
+            for open in [false, true] {
+                let view = cx.update(|_, cx| {
+                    cx.new(|_| SubagentCardTestView {
+                        open: Rc::new(RefCell::new(if open {
+                            HashSet::from([(0, 0)])
+                        } else {
+                            HashSet::new()
+                        })),
+                        scroller: MessageScrollerState::new(1),
+                        status,
+                        phase,
+                    })
+                });
+                cx.draw(
+                    point(px(0.), px(0.)),
+                    gpui::size(px(900.), px(600.)),
+                    |_, _| view.clone(),
+                );
+            }
+        }
+    }
+
+    /// Both prompt and response footers expose the fork picker. The response
+    /// footer also saves the exact response, not whichever happens to be last.
+    #[gpui::test]
+    fn response_footer_offers_fork_and_exports_its_own_text(cx: &mut gpui::TestAppContext) {
+        struct RowsView {
+            messages: Rc<RefCell<Vec<ChatMessage>>>,
+            state: TextSelectionState,
+            scroller: MessageScrollerState,
+            exported: Rc<RefCell<Vec<(String, bool)>>>,
+            forked: Rc<RefCell<Vec<usize>>>,
+            regenerated: Rc<RefCell<Vec<usize>>>,
+        }
+
+        impl gpui::Render for RowsView {
+            fn render(&mut self, _: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+                let mut view = test_view(
+                    self.state.clone(),
+                    self.messages.clone(),
+                    self.scroller.clone(),
+                );
+                let forked = self.forked.clone();
+                view.rewind = Some(Rc::new(move |row, _, _| forked.borrow_mut().push(row)));
+                let regenerated = self.regenerated.clone();
+                view.regenerate =
+                    Some(Rc::new(move |row, _, _| regenerated.borrow_mut().push(row)));
+                view.viewport_height = px(300.);
+                let exported = self.exported.clone();
+                view.export_response = Some(Rc::new(move |text, pdf, _, _, _| {
+                    exported.borrow_mut().push((text, pdf))
+                }));
+                render_transcript(view, cx)
+            }
+        }
+
+        cx.update(|cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let message = |user: bool, text: &str| ChatMessage {
+            user,
+            summary: None,
+            steps: vec![Step {
+                text: text.into(),
+                ..Step::default()
+            }],
+            images: Vec::new(),
+            elapsed: None,
+            finished_at: None,
+            error: None,
+            aborted: false,
+        };
+        let messages = Rc::new(RefCell::new(vec![
+            message(true, "first prompt"),
+            message(false, "first answer"),
+        ]));
+        let exported = Rc::new(RefCell::new(Vec::new()));
+        let forked = Rc::new(RefCell::new(Vec::new()));
+        let regenerated = Rc::new(RefCell::new(Vec::new()));
+        let (view, cx) = cx.add_window_view(|_, _| RowsView {
+            messages,
+            state: Rc::new(RefCell::new(TextSelection::new())),
+            scroller: MessageScrollerState::new(2),
+            exported: exported.clone(),
+            forked: forked.clone(),
+            regenerated: regenerated.clone(),
+        });
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(300.)),
+            |_, _| view.clone(),
+        );
+        assert!(
+            cx.debug_bounds("rewind-turn-0").is_some(),
+            "the user message's footer offers a rewind"
+        );
+        assert!(
+            cx.debug_bounds("rewind-turn-1").is_some(),
+            "the assistant response offers the fork picker"
+        );
+        let button = cx
+            .debug_bounds("export-response-1")
+            .expect("response export button");
+        let position = button.center();
+        cx.simulate_mouse_move(position, None, gpui::Modifiers::none());
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(300.)),
+            |_, _| view.clone(),
+        );
+        cx.simulate_click(position, gpui::Modifiers::none());
+        assert_eq!(
+            &*exported.borrow(),
+            &[("first answer".to_string(), false)],
+            "button bounds: {button:?}"
+        );
+        let pdf = cx.debug_bounds("export-response-pdf-1").unwrap().center();
+        cx.simulate_mouse_move(pdf, None, gpui::Modifiers::none());
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(300.)),
+            |_, _| view.clone(),
+        );
+        cx.simulate_click(pdf, gpui::Modifiers::none());
+        assert_eq!(exported.borrow()[1], ("first answer".to_string(), true));
+        let fork = cx.debug_bounds("rewind-turn-1").unwrap().center();
+        cx.simulate_mouse_move(fork, None, gpui::Modifiers::none());
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(300.)),
+            |_, _| view.clone(),
+        );
+        cx.simulate_click(fork, gpui::Modifiers::none());
+        assert_eq!(&*forked.borrow(), &[1]);
+        assert!(
+            cx.debug_bounds("regenerate-response-0").is_none(),
+            "a user message has no regenerate action"
+        );
+        let regenerate = cx
+            .debug_bounds("regenerate-response-1")
+            .expect("the response offers regenerate")
+            .center();
+        cx.simulate_mouse_move(regenerate, None, gpui::Modifiers::none());
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(300.)),
+            |_, _| view.clone(),
+        );
+        cx.simulate_click(regenerate, gpui::Modifiers::none());
+        assert_eq!(&*regenerated.borrow(), &[1]);
+    }
+
+    /// A failed turn without text has no footer, so its error card carries the
+    /// retry. A failed turn with text uses the footer's regenerate instead, so
+    /// the two affordances never sit on top of each other.
+    #[gpui::test]
+    fn an_error_only_response_retries_from_its_error_card(cx: &mut gpui::TestAppContext) {
+        struct ErrorView {
+            messages: Rc<RefCell<Vec<ChatMessage>>>,
+            state: TextSelectionState,
+            scroller: MessageScrollerState,
+            retried: Rc<RefCell<Vec<usize>>>,
+        }
+
+        impl gpui::Render for ErrorView {
+            fn render(&mut self, _: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+                let mut view = test_view(
+                    self.state.clone(),
+                    self.messages.clone(),
+                    self.scroller.clone(),
+                );
+                let retried = self.retried.clone();
+                view.regenerate = Some(Rc::new(move |row, _, _| retried.borrow_mut().push(row)));
+                view.viewport_height = px(300.);
+                render_transcript(view, cx)
+            }
+        }
+
+        cx.update(|cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let messages = Rc::new(RefCell::new(vec![
+            ChatMessage {
+                user: true,
+                summary: None,
+                steps: vec![Step {
+                    text: "first prompt".into(),
+                    ..Step::default()
+                }],
+                images: Vec::new(),
+                elapsed: None,
+                finished_at: None,
+                error: None,
+                aborted: false,
+            },
+            ChatMessage {
+                user: false,
+                summary: None,
+                steps: Vec::new(),
+                images: Vec::new(),
+                elapsed: None,
+                finished_at: None,
+                error: Some("provider overloaded".into()),
+                aborted: false,
+            },
+        ]));
+        let retried = Rc::new(RefCell::new(Vec::new()));
+        let (view, cx) = cx.add_window_view(|_, _| ErrorView {
+            messages: messages.clone(),
+            state: Rc::new(RefCell::new(TextSelection::new())),
+            scroller: MessageScrollerState::new(2),
+            retried: retried.clone(),
+        });
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            let _ = cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(900.), px(300.)),
+                |_, _| view.clone(),
+            );
+        };
+        draw(cx);
+        assert!(
+            cx.debug_bounds("regenerate-response-1").is_none(),
+            "an error-only turn has no response footer"
+        );
+        let retry = cx
+            .debug_bounds("retry-response-1")
+            .expect("the error card offers retry")
+            .center();
+        cx.simulate_mouse_move(retry, None, gpui::Modifiers::none());
+        draw(cx);
+        cx.simulate_click(retry, gpui::Modifiers::none());
+        assert_eq!(&*retried.borrow(), &[1]);
+
+        // The same failed turn with text moves the action into the footer, so
+        // the card does not duplicate it. A fresh view keeps the assertion
+        // independent of the previous frame's painted tree.
+        let with_text = vec![
+            ChatMessage {
+                user: true,
+                summary: None,
+                steps: vec![Step {
+                    text: "first prompt".into(),
+                    ..Step::default()
+                }],
+                images: Vec::new(),
+                elapsed: None,
+                finished_at: None,
+                error: None,
+                aborted: false,
+            },
+            ChatMessage {
+                user: false,
+                summary: None,
+                steps: vec![Step {
+                    text: "partial answer".into(),
+                    ..Step::default()
+                }],
+                images: Vec::new(),
+                elapsed: None,
+                finished_at: None,
+                error: Some("provider overloaded".into()),
+                aborted: false,
+            },
+        ];
+        let (text_view, text_cx) = cx.add_window_view(|_, _| ErrorView {
+            messages: Rc::new(RefCell::new(with_text)),
+            state: Rc::new(RefCell::new(TextSelection::new())),
+            scroller: MessageScrollerState::new(2),
+            retried: Rc::new(RefCell::new(Vec::new())),
+        });
+        let _ = text_cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(900.), px(300.)),
+            |_, _| text_view.clone(),
+        );
+        assert!(
+            text_cx.debug_bounds("retry-response-1").is_none(),
+            "the card does not duplicate the footer action"
+        );
+        assert!(
+            text_cx.debug_bounds("regenerate-response-1").is_some(),
+            "the footer offers regenerate for a response with text"
+        );
     }
 
     #[gpui::test]
@@ -10264,6 +11561,7 @@ mod tests {
             let _scope = TextScopeGuard::enter(TextScope {
                 state: self.selection.clone(),
                 message_ix: 0,
+                color_swatches: true,
             });
             div().w_full().child(render_table(
                 &self.header,
@@ -10846,6 +12144,7 @@ mod tests {
             output: None,
             failed: false,
             facts: Default::default(),
+            details: None,
         };
         messages.borrow_mut()[0].steps = vec![
             Step { text: prose.clone(), thinking: "First thought\nChecking references".into(), tools: vec![tool.clone()], ..Step::default() },
@@ -10974,6 +12273,7 @@ mod tests {
                     output: None,
                     failed: false,
                     facts: Default::default(),
+                    details: None,
                 }],
                 ..Step::default()
             });
@@ -11041,6 +12341,66 @@ mod tests {
             (px(0.)..px(100.)).contains(&(height - last_tool.bottom())),
             "only the footer and row padding should follow the settled work"
         );
+    }
+
+    /// The rule is a judgement about *what kind* of work trails, not just how
+    /// much: a thought after the answer hoists, tool calls never do.
+    #[test]
+    fn only_a_trailing_thought_hoists_above_the_answer() {
+        fn step(text: &str, thinking: &str, tools: usize) -> Step {
+            let mut step = Step {
+                text: text.into(),
+                thinking: thinking.into(),
+                ..Default::default()
+            };
+            for _ in 0..tools {
+                step.tools.push(crate::transcript::ToolCall {
+                    name: "read".into(),
+                    summary: String::new(),
+                    path: None,
+                    added: 0,
+                    removed: 0,
+                    id: None,
+                    args: None,
+                    output: None,
+                    failed: false,
+                    facts: Default::default(),
+                    details: None,
+                });
+            }
+            step
+        }
+
+        // Answer, then a trailing thought: hoist.
+        let trailing_thought = [step("answer", "", 0), step("", "hmm", 0)];
+        assert!(hoists_trailing_thought(&trailing_thought, Some(0)));
+
+        // Answer, then tool calls: never hoist — those effects happened after
+        // the sentence that announced them.
+        let trailing_tools = [step("answer", "", 0), step("", "hmm", 2)];
+        assert!(!hoists_trailing_thought(&trailing_tools, Some(0)));
+
+        // Work between two text blocks reads in the order it was spoken.
+        let interleaved = [
+            step("first", "", 0),
+            step("", "hmm", 2),
+            step("second", "", 0),
+        ];
+        assert!(!hoists_trailing_thought(&interleaved, Some(0)));
+
+        // Two text blocks with only thinking after them still hoist: a thought
+        // has no effects and no order to preserve, so it belongs with the
+        // reasoning above the answer rather than stranded at the bottom.
+        let two_texts = [
+            step("first", "", 0),
+            step("second", "", 0),
+            step("", "hmm", 0),
+        ];
+        assert!(hoists_trailing_thought(&two_texts, Some(0)));
+
+        // No answer at all: everything hoists into one group at the top.
+        let work_only = [step("", "hmm", 1)];
+        assert!(hoists_trailing_thought(&work_only, None));
     }
 
     #[gpui::test]
@@ -11391,6 +12751,7 @@ mod tests {
                             output: Some("fn main() {}".into()),
                             failed: false,
                             facts: Default::default(),
+                            details: None,
                         }],
                         ..Step::default()
                     }],

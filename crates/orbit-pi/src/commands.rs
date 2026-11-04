@@ -31,6 +31,12 @@ pub enum CommandId {
     RenameSession,
     PinSession,
     CloneSession,
+    /// Fork the conversation before an earlier user message. Palette-only: the
+    /// transcript's message footer is the pointer path to the same picker.
+    RewindConversation,
+    ExportVisibleTranscript,
+    ExportVisibleTranscriptPdf,
+    ExportLastResponsePdf,
     CopySessionId,
     DeleteSession,
     // Agent
@@ -49,6 +55,7 @@ pub enum CommandId {
     // Navigation
     ToggleCommandPalette,
     ToggleSearch,
+    FocusSessionSearch,
     PrevTurn,
     NextTurn,
     CopyLastResponse,
@@ -88,6 +95,8 @@ pub enum CommandId {
     OpenShortcutHelp,
     CheckForUpdates,
     Quit,
+    /// Settings → Subagents, palette-only.
+    ManageSubagents,
     // MCP (Settings → MCP; palette-only, plus dynamic per-server rows)
     OpenMcpSettings,
     AddMcpServer,
@@ -146,6 +155,10 @@ pub struct CommandSpec {
     /// through [`CommandSpec::shortcut`]; the actual keymap rows live in
     /// [`BINDINGS`].
     pub chord: Option<&'static str>,
+    /// A second advertised chord for the same command. The palette opens on
+    /// both `⌘P` and `⌘K`, and a user who learned the latter from the issue
+    /// must not be told the other one exists instead.
+    pub alt_chord: Option<&'static str>,
     /// Palette fuzzy-search keywords (never displayed).
     pub keywords: &'static str,
     /// List in the command palette.
@@ -155,16 +168,33 @@ pub struct CommandSpec {
 }
 
 impl CommandSpec {
-    /// The platform's display chip for this command's advertised chord.
-    pub fn shortcut(&self) -> Option<String> {
+    /// Every advertised chord as its own display chip, primary first. The
+    /// palette opens on two, so a surface that draws keycaps gets both.
+    pub fn shortcuts(&self) -> Vec<String> {
         match self.id {
             // One command, nine chords — show the span, not just ⌘1.
-            CommandId::OpenSessionSlot => Some(format!(
+            CommandId::OpenSessionSlot => vec![format!(
                 "{}–{}",
                 shortcuts::label(shortcuts::FIRST_SESSION_SLOT),
                 shortcuts::label(shortcuts::LAST_SESSION_SLOT)
-            )),
-            _ => self.chord.map(shortcuts::label),
+            )],
+            _ => self
+                .chord
+                .into_iter()
+                .chain(self.alt_chord)
+                .map(shortcuts::label)
+                .collect(),
+        }
+    }
+
+    /// The platform's display chip for this command's advertised chords —
+    /// one string, for a tooltip or a single inline chip.
+    pub fn shortcut(&self) -> Option<String> {
+        let chips = self.shortcuts();
+        if chips.is_empty() {
+            None
+        } else {
+            Some(chips.join(" / "))
         }
     }
 }
@@ -192,6 +222,7 @@ const fn command(
         title_key,
         alt_title_key: None,
         chord: None,
+        alt_chord: None,
         keywords,
         palette: true,
         help: false,
@@ -207,6 +238,12 @@ const fn with_chord(mut spec: CommandSpec, chord: &'static str) -> CommandSpec {
 
 const fn with_alt_title(mut spec: CommandSpec, alt_title_key: &'static str) -> CommandSpec {
     spec.alt_title_key = Some(alt_title_key);
+    spec
+}
+
+/// A command reachable from two chords: the primary one plus an alias.
+const fn with_alt_chord(mut spec: CommandSpec, alt_chord: &'static str) -> CommandSpec {
+    spec.alt_chord = Some(alt_chord);
     spec
 }
 
@@ -308,6 +345,34 @@ pub static COMMANDS: &[CommandSpec] = &[
         "clone duplicate fork copy session branch conversation",
     ),
     command(
+        CommandId::RewindConversation,
+        Session,
+        "icons/rotate-ccw.svg",
+        "command_palette.rewind_conversation",
+        "rewind fork revert undo back earlier message prompt turn history",
+    ),
+    command(
+        CommandId::ExportVisibleTranscript,
+        Session,
+        "icons/file.svg",
+        "command_palette.export_visible_transcript",
+        "export save download conversation transcript markdown",
+    ),
+    command(
+        CommandId::ExportVisibleTranscriptPdf,
+        Session,
+        "icons/file.svg",
+        "command_palette.export_visible_transcript_pdf",
+        "export save download conversation transcript pdf",
+    ),
+    command(
+        CommandId::ExportLastResponsePdf,
+        Session,
+        "icons/file.svg",
+        "command_palette.export_last_response_pdf",
+        "export save download last response answer pdf",
+    ),
+    command(
         CommandId::CopySessionId,
         Session,
         "icons/copy.svg",
@@ -379,15 +444,18 @@ pub static COMMANDS: &[CommandSpec] = &[
         shortcuts::STOP,
     ),
     // ── Navigation ─────────────────────────────────────────────────────
-    with_chord(
-        help_only(command(
-            CommandId::ToggleCommandPalette,
-            Navigation,
-            "icons/search.svg",
-            "menu.command_palette",
-            "command palette search quick open",
-        )),
-        shortcuts::PALETTE,
+    with_alt_chord(
+        with_chord(
+            help_only(command(
+                CommandId::ToggleCommandPalette,
+                Navigation,
+                "icons/search.svg",
+                "menu.command_palette",
+                "command palette search quick open",
+            )),
+            shortcuts::PALETTE,
+        ),
+        shortcuts::PALETTE_ALT,
     ),
     with_chord(
         command(
@@ -398,6 +466,16 @@ pub static COMMANDS: &[CommandSpec] = &[
             "find search transcript messages",
         ),
         shortcuts::FIND,
+    ),
+    with_chord(
+        command(
+            CommandId::FocusSessionSearch,
+            Navigation,
+            "icons/filter.svg",
+            "menu.search_sessions",
+            "search sessions sidebar filter find",
+        ),
+        shortcuts::SESSION_SEARCH,
     ),
     with_chord(
         command(
@@ -761,6 +839,13 @@ pub static COMMANDS: &[CommandSpec] = &[
     ),
     // ── MCP ────────────────────────────────────────────────────────────
     command(
+        CommandId::ManageSubagents,
+        Application,
+        "icons/task.svg",
+        "command_palette.manage_subagents",
+        "subagents agents delegate child task scout worker reviewer",
+    ),
+    command(
         CommandId::OpenMcpSettings,
         Agent,
         "icons/tools/mcp.svg",
@@ -932,6 +1017,11 @@ pub static BINDINGS: &[Binding] = &[
         chord: shortcuts::FIND,
         context: None,
         id: CommandId::ToggleSearch,
+    },
+    Binding {
+        chord: shortcuts::SESSION_SEARCH,
+        context: None,
+        id: CommandId::FocusSessionSearch,
     },
     Binding {
         chord: shortcuts::PREV_TURN,
@@ -1113,9 +1203,9 @@ pub fn tooltip(id: CommandId, alternate: bool) -> String {
 /// The typed gpui binding for one row, or `None` for palette-only commands.
 fn action_binding(binding: &Binding) -> Option<KeyBinding> {
     use crate::{
-        AbortRun, CheckForUpdates, CloseTerminalTab, CopyLastResponse, FocusSessions,
-        GitTabChanges, GitTabGraph, GitTabHistory, GitTabIssues, GitTabPulls, GitTabStashes,
-        NewSession, NewTerminalTab, NextSession, NextTerminalTab, NextTurn, OpenGit,
+        AbortRun, CheckForUpdates, CloseTerminalTab, CopyLastResponse, FocusSessionSearch,
+        FocusSessions, GitTabChanges, GitTabGraph, GitTabHistory, GitTabIssues, GitTabPulls,
+        GitTabStashes, NewSession, NewTerminalTab, NextSession, NextTerminalTab, NextTurn, OpenGit,
         OpenSessionSlot, OpenSettings, OpenShortcutHelp, PrevSession, PrevTerminalTab, PrevTurn,
         Quit, RefreshSessions, ReviewChanges, ReviewClose, ReviewCollapseAll, ReviewExpandAll,
         ReviewFileNext, ReviewFilePrev, ReviewHunkNext, ReviewHunkPrev, ReviewTreeNext,
@@ -1151,6 +1241,7 @@ fn action_binding(binding: &Binding) -> Option<KeyBinding> {
         CommandId::OpenShortcutHelp => KeyBinding::new(chord, OpenShortcutHelp, context),
         CommandId::ToggleCommandPalette => KeyBinding::new(chord, ToggleCommandPalette, context),
         CommandId::ToggleSearch => KeyBinding::new(chord, ToggleSearch, context),
+        CommandId::FocusSessionSearch => KeyBinding::new(chord, FocusSessionSearch, context),
         CommandId::PrevTurn => KeyBinding::new(chord, PrevTurn, context),
         CommandId::NextTurn => KeyBinding::new(chord, NextTurn, context),
         CommandId::CopyLastResponse => KeyBinding::new(chord, CopyLastResponse, context),
@@ -1182,6 +1273,10 @@ fn action_binding(binding: &Binding) -> Option<KeyBinding> {
         CommandId::RenameSession
         | CommandId::PinSession
         | CommandId::CloneSession
+        | CommandId::RewindConversation
+        | CommandId::ExportVisibleTranscript
+        | CommandId::ExportVisibleTranscriptPdf
+        | CommandId::ExportLastResponsePdf
         | CommandId::CopySessionId
         | CommandId::DeleteSession
         | CommandId::FocusComposer
@@ -1192,7 +1287,8 @@ fn action_binding(binding: &Binding) -> Option<KeyBinding> {
         | CommandId::OpenWorktrees
         | CommandId::AddMcpServer
         | CommandId::RefreshMcpServers
-        | CommandId::ReconnectMcpServers => return None,
+        | CommandId::ReconnectMcpServers
+        | CommandId::ManageSubagents => return None,
     })
 }
 
@@ -1248,6 +1344,57 @@ mod tests {
         }
     }
 
+    /// Every chord the app advertises must be one gpui can parse. A typo here
+    /// is a shortcut that silently never fires — the failure mode is invisible
+    /// in the app and only shows up as "that key does nothing".
+    #[test]
+    fn every_binding_chord_parses() {
+        for binding in BINDINGS {
+            assert!(
+                gpui::Keystroke::parse(binding.chord).is_ok(),
+                "{:?}: unparseable chord {:?}",
+                binding.id,
+                binding.chord
+            );
+        }
+        for spec in COMMANDS {
+            for chord in spec.chord.into_iter().chain(spec.alt_chord) {
+                assert!(
+                    gpui::Keystroke::parse(chord).is_ok(),
+                    "{:?}: unparseable advertised chord {chord:?}",
+                    spec.id
+                );
+            }
+        }
+    }
+
+    /// Two bindings on the same chord in the same context is a shadowed
+    /// command: one of them can never run, and nothing says which.
+    #[test]
+    fn no_two_bindings_share_a_chord_in_one_context() {
+        let mut seen: Vec<(String, Option<&str>, CommandId)> = Vec::new();
+        for binding in BINDINGS {
+            let keystroke = gpui::Keystroke::parse(binding.chord).expect("parsed above");
+            let key = keystroke.unparse();
+            if let Some((_, _, other)) = seen
+                .iter()
+                .find(|(chord, context, _)| *chord == key && *context == binding.context)
+            {
+                panic!(
+                    "{} and {:?} both bind {key} in {:?}",
+                    other_label(*other),
+                    binding.id,
+                    binding.context
+                );
+            }
+            seen.push((key, binding.context, binding.id));
+        }
+
+        fn other_label(id: CommandId) -> &'static str {
+            spec(id).title_key
+        }
+    }
+
     #[test]
     fn every_binding_has_a_spec() {
         for binding in BINDINGS {
@@ -1287,13 +1434,70 @@ mod tests {
     #[test]
     fn advertised_chords_match_a_keymap_row() {
         for spec in COMMANDS {
-            let Some(chord) = spec.chord else { continue };
+            for chord in spec.chord.into_iter().chain(spec.alt_chord) {
+                assert!(
+                    BINDINGS
+                        .iter()
+                        .any(|binding| { binding.id == spec.id && binding.chord == chord }),
+                    "{:?} advertises {chord} but no keymap row binds it",
+                    spec.id
+                );
+            }
+        }
+    }
+
+    /// The palette opens on `⌘P` and `⌘K`. Advertising only the first tells a
+    /// user who learned the second that their shortcut does not exist.
+    #[test]
+    fn the_palette_advertises_both_of_its_chords() {
+        let chip = spec(CommandId::ToggleCommandPalette)
+            .shortcut()
+            .expect("the palette has chords");
+        assert!(
+            chip.contains(&shortcuts::label(shortcuts::PALETTE)),
+            "{chip}"
+        );
+        assert!(
+            chip.contains(&shortcuts::label(shortcuts::PALETTE_ALT)),
+            "{chip}"
+        );
+    }
+
+    /// Phase 6's done-gate, read against what the registry actually ships.
+    ///
+    /// The gate is "every action reachable from a menu or a shortcut is also
+    /// reachable from the palette". Two kinds of command cannot honestly be a
+    /// palette row, and both are marked `help_only` (in the Shortcuts
+    /// reference, never in the list):
+    ///
+    /// * **Context-local commands** — the review tree's ↑/↓, the Git tab
+    ///   chords. A global row would offer an action that does nothing until a
+    ///   specific pane has focus.
+    /// * **The palette itself** — `⌘P`/`⌘K` cannot open the palette from inside
+    ///   the palette.
+    ///
+    /// `OpenSessionSlot` is the third shape: one command whose chord carries
+    /// the slot (⌘1–⌘9), so a row would have to pick a slot for the user.
+    ///
+    /// Everything else chorded must be listed. Chordless palette rows are
+    /// fine — that is a chip's only keyboard route.
+    #[test]
+    fn every_chorded_command_has_a_route() {
+        for spec in COMMANDS {
+            if spec.chord.is_some() || spec.alt_chord.is_some() {
+                assert!(
+                    spec.palette || spec.help,
+                    "{:?} has a chord but neither a palette row nor a help entry",
+                    spec.id
+                );
+            }
+        }
+        for binding in BINDINGS {
+            let spec = spec(binding.id);
             assert!(
-                BINDINGS
-                    .iter()
-                    .any(|binding| { binding.id == spec.id && binding.chord == chord }),
-                "{:?} advertises {chord} but no keymap row binds it",
-                spec.id
+                spec.palette || spec.help,
+                "{:?} is bound but has no route",
+                binding.id
             );
         }
     }

@@ -36,7 +36,7 @@ use gpui::{
     App, ClickEvent, ClipboardItem, Context, Corner, CursorStyle, DragMoveEvent, ElementId, Entity,
     ExternalPaths, FocusHandle, Focusable, FontWeight, Hsla, Image, ImageSource, IntoElement,
     ListAlignment, ListState, MouseButton, MouseDownEvent, MouseUpEvent, ObjectFit,
-    PathPromptOptions, Pixels, Point, Render, Resource, ScrollStrategy, SharedString,
+    PathPromptOptions, Pixels, Point, Render, Resource, ScrollHandle, ScrollStrategy, SharedString,
     StatefulInteractiveElement, Subscription, TextAlign, Transformation, UniformListScrollHandle,
     Window,
 };
@@ -71,6 +71,7 @@ use crate::platform::{self, ExternalApp};
 use crate::plugins::{PackageScope, PluginPackage, PluginUpdate};
 use crate::providers::{self, CustomProvider};
 use crate::quota::{QuotaManager, QuotaSupport};
+use crate::rewind::ForkIntent;
 use crate::sessions::{self, SessionInfo};
 use crate::sidepane::{SidePane, SidePaneResize};
 use crate::skills::Skill;
@@ -83,10 +84,10 @@ use crate::watch;
 use crate::widgets::{ExtensionWidget, WidgetPlacement};
 use crate::workflow::WorkflowMode;
 use crate::workspace_mark::WorkspaceMark;
-use crate::workspace_picker::{WorkspaceEntry, WorkspacePicker};
+use crate::workspace_picker::{EntryMark, PickerAction, WorkspaceEntry, WorkspacePicker};
 
 const SIDEBAR_DEFAULT_W: f32 = 248.;
-const SIDEBAR_MIN_W: f32 = 200.;
+pub(crate) const SIDEBAR_MIN_W: f32 = 200.;
 /// Sessions shown under each workspace group before "Show more" appears.
 const SIDEBAR_GROUP_SESSIONS_VISIBLE: usize = 3;
 /// Room the side-pane resize keeps for the transcript column.
@@ -118,6 +119,7 @@ const STATUS_MESSAGE_TTL: Duration = Duration::from_secs(6);
 /// command, so it needs its own identity: the next clean `message_end` clears
 /// the banner by comparing this tag rather than the banner's translated text.
 const AGENT_ERROR_SOURCE: &str = "agent_error";
+const REWIND_INTERRUPTED_ERROR_SOURCE: &str = "rewind_interrupted";
 
 /// How often the app polls pi for new quota-bridge session entries. The
 /// bridge appends only on change, so this is a cheap idempotent read.
@@ -266,6 +268,26 @@ pub(crate) enum ReviewMark {
     Failed,
 }
 
+/// Who asked the app to quit. The wait a pending fork imposes is the same for
+/// both; only what the person is told differs, because the updater's quit ends
+/// in an install and relaunch rather than an exit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum QuitRequest {
+    /// Cmd-Q, the menu item, or the palette's Quit command.
+    User,
+    /// The updater's helper, waiting to swap in a staged build.
+    Update,
+}
+
+/// What a quit request does when a fork is in flight.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum QuitPlan {
+    /// Quit now.
+    Now,
+    /// Wait for the fork reply, then quit.
+    Wait,
+}
+
 pub struct OrbitApp {
     client: Option<PiClient>,
     /// Live state of the active pi process, surfaced in Settings → Runtime.
@@ -324,6 +346,13 @@ pub struct OrbitApp {
     workspace_watch_dir: Option<PathBuf>,
     sidebar_list: ListState,
     sidebar_visible: bool,
+    /// Whether the persisted arrangement has been pushed onto the live panels
+    /// yet. The restore needs a window (opening the terminal spawns a shell),
+    /// so it runs on the first frame rather than in `new`.
+    layout_restored: bool,
+    /// Re-record the arrangement whenever a panel opens or closes, so the next
+    /// launch lands in the same shape.
+    _layout_subs: Vec<Subscription>,
     /// Bumped on every sidebar toggle. The render keys its slide animation on
     /// it, so an open→close→open cycle animates every time (a boolean key
     /// would let the repeat skip) while the first frame — generation 0 — draws
@@ -477,8 +506,14 @@ pub struct OrbitApp {
     /// kind travels with the entity; creating/dropping this *is* the
     /// open/closed state. Each popup is anchored above its own chip.
     model_selector: Option<(PickerKind, Entity<ModelSelector>)>,
-    /// The window-wide command palette (⌘P / sidebar Search row), if open.
+    /// The window-wide command palette (⌘P / ⌘K / sidebar Search row), if open.
     command_palette: Option<Entity<CommandPalette>>,
+    /// Whatever held focus when the palette opened, so dismissing it can hand
+    /// focus back rather than guessing (`DESIGN.md`: restore focus to the
+    /// control that opened a modal). Weak: the opener may be torn down while
+    /// the palette is up, in which case `restore_palette_focus` falls back to
+    /// the composer.
+    palette_return_focus: Option<gpui::WeakFocusHandle>,
     /// A blocking extension dialog (`extension_ui_request`), if one is open.
     /// pi holds the run until the answer is sent, so this is a modal surface.
     dialog: Option<Entity<Dialog>>,
@@ -582,11 +617,27 @@ pub struct OrbitApp {
     settings_search: Entity<ComposerInput>,
     /// Re-render the settings surface as the search is typed.
     _settings_search_sub: Subscription,
+    /// Sidebar session search. The field owns the text; `sidebar_query` mirrors
+    /// it so the row builder and keyboard navigation filter without needing a
+    /// context.
+    sidebar_search: Entity<ComposerInput>,
+    sidebar_query: String,
+    /// Show numbered session shortcuts while the platform modifier is held.
+    sidebar_shortcut_hints: bool,
+    _sidebar_search_sub: Subscription,
+    /// The name field for "save the current arrangement". Shown in the sidebar's
+    /// view menu while `naming_layout` is on.
+    layout_name: Entity<ComposerInput>,
+    naming_layout: bool,
     /// Settings → General: which notification channels are on (persisted to
     /// `~/.orbit-pi/notifications.json`), plus the last macOS permission
     /// read. The read drives the honest "blocked" / "unbundled" rows — a
     /// switch the OS is blocking must not look like it is working.
     notification_prefs: notifications::Prefs,
+    /// Settings → General: whether Markdown/PDF exports carry reasoning and
+    /// tool output (persisted to `~/.orbit-pi/exports.json`). Off by default —
+    /// the visible projection is what the conversation reads as.
+    export_prefs: crate::export_prefs::Prefs,
     notification_auth: notifications::DesktopAuth,
     notification_auth_pending: bool,
     /// Whether this window is frontmost. Notifications are held while it is:
@@ -672,11 +723,30 @@ pub struct OrbitApp {
     worktree_howto_dismissed: bool,
     /// Whether the status bar's "Work in" picker (Local / worktrees) is open.
     work_in_menu_open: bool,
+    /// The picker's remote-branch level is showing instead of the location
+    /// rows.
+    work_in_remote_open: bool,
+    /// Full details for the highlighted remote branch.
+    work_in_details_open: bool,
     /// Highlighted row in the "Work in" picker.
     work_in_menu_highlight: usize,
+    work_in_scroll: ScrollHandle,
+    /// Highlighted row in the picker's remote-branch level.
+    work_in_remote_highlight: usize,
     /// Focus handle that carries the `WorkInMenu` key context while the picker
     /// is open (focus moves here so ↑/↓/Enter/Escape hit it).
     work_in_menu_focus: FocusHandle,
+    /// Remote-tracking refs for the picker's remote level. Fetched on demand
+    /// when that level opens; empty until then.
+    worktree_remotes: Vec<crate::git_ops::RefEntry>,
+    /// The repository's configured remotes, so `origin/feat` splits in the
+    /// right place.
+    worktree_remote_names: Vec<String>,
+    /// Local branch names, for choosing a free name when a remote branch is
+    /// checked out as a new local branch.
+    worktree_local_branches: Vec<String>,
+    /// A remote-ref fetch is in flight.
+    worktree_remotes_busy: bool,
     /// Linked worktrees Git reports for the active repository (main first).
     worktrees: Vec<crate::worktree::Worktree>,
     /// Main worktree root of the active repository, cached from the last
@@ -705,6 +775,17 @@ pub struct OrbitApp {
     worktree_refresh_due: Option<Instant>,
     /// The open Worktrees dialog, if any.
     worktree_dialog: Option<WorktreeDialog>,
+    /// Clone dialog inputs and in-flight operation.
+    clone_url_input: Entity<ComposerInput>,
+    clone_name_input: Entity<ComposerInput>,
+    clone_browse_focus: FocusHandle,
+    clone_confirm_focus: FocusHandle,
+    clone_cancel_focus: FocusHandle,
+    clone_window: Option<gpui::AnyWindowHandle>,
+    #[cfg(test)]
+    clone_test_parent: Option<PathBuf>,
+    clone_parent: Option<PathBuf>,
+    clone_operation: Option<CloneOperation>,
     /// Create dialog: worktree name.
     worktree_name_input: Entity<ComposerInput>,
     /// Create dialog: new-branch name.
@@ -739,6 +820,9 @@ pub struct OrbitApp {
     /// Live context-window usage from `get_session_stats`. `None` when pi
     /// hasn't advertised a window (no model) or the command isn't supported.
     context: Option<ContextUsage>,
+    /// Coalesce stats refreshes while a request is in flight.
+    context_stats_in_flight: Option<String>,
+    context_stats_pending: bool,
     /// Cumulative session token/cost totals from the same `get_session_stats`
     /// response. Unlike `context`, this spans the whole session (all turns,
     /// tools, and compaction summaries), so the popup can show cost + cache.
@@ -797,6 +881,40 @@ pub struct OrbitApp {
     add_menu_focus: FocusHandle,
     /// Git branch picker anchored to the status-bar branch chip.
     branch_picker: Option<Entity<BranchPicker>>,
+    /// Rewind picker (the `fork` list), a centered modal.
+    rewind_picker: Option<Entity<crate::rewind_picker::RewindPicker>>,
+    /// A `get_fork_messages` request is in flight (the picker shows a quiet
+    /// loading row until it lands).
+    rewind_fetching: bool,
+    /// Only the current picker's own response may fill it.
+    rewind_fetch_id: Option<String>,
+    /// Session replacement is in flight; prevent another operation from
+    /// moving this process or sending a prompt until pi answers.
+    rewind_fork_id: Option<String>,
+    /// The user turn a `get_fork_messages` answer should preselect, when the
+    /// rewind was started from a transcript row rather than the palette.
+    rewind_preselect: Option<usize>,
+    /// What the pending or next `fork` reply does with the forked-from prompt:
+    /// hand it back for editing, or send it again on the new branch.
+    rewind_intent: ForkIntent,
+    /// The prompt a regenerate will resend once the branch's `get_state` reply
+    /// proves the new session is current.
+    pending_regenerate: Option<PendingRegenerate>,
+    /// The prompt's own images, captured before the fork so a regenerate can
+    /// resend the whole prompt instead of just its text.
+    rewind_prompt_images: Vec<Attachment>,
+    /// The user asked to quit while a fork was in flight. The fork reply moves
+    /// the process onto the branch pi wrote, so quitting before it lands would
+    /// leave a branch on disk that this run never adopted; the heartbeat quits
+    /// once that reply (and a regenerate's resend) has settled. A second quit
+    /// request clears the patience — a fork that never answers must not trap
+    /// the app.
+    quit_when_fork_settles: bool,
+    /// A fork reply was lost to a process teardown and pi may already have
+    /// written the branch file. The next tick reloads the session list.
+    sessions_refresh_pending: bool,
+    /// Preview files stay alive while external PDF viewers may still read them.
+    pdf_previews: Vec<tempfile::TempDir>,
     /// Folder selector anchored under the new-task page's workspace field.
     workspace_picker: Option<Entity<WorkspacePicker>>,
     /// A checkout/create is running on the background executor.
@@ -1050,17 +1168,43 @@ pub struct OrbitApp {
     skill_delete_confirm: Option<PathBuf>,
     /// Re-render the skill list as the filter is typed.
     _skills_filter_sub: Subscription,
+    /// Settings → Subagents: filter field for the agent list.
+    subagents_filter: Entity<ComposerInput>,
+    /// Every agent the `subagent` tool can pick (builtins + user files).
+    subagents: Vec<crate::subagent_file::Agent>,
+    /// User files that could not be read as agents.
+    subagents_skipped: Vec<(PathBuf, String)>,
+    /// The selected agent, by name.
+    selected_subagent: Option<String>,
+    /// The form editing the selection, rebuilt whenever it changes.
+    subagent_editor: Option<subagents_ui::SubagentEditor>,
+    /// Orbit-only agent settings (`~/.orbit-pi/subagents.json`).
+    subagent_config: crate::subagents::Config,
+    /// A user agent deleted this session; Undo restores its exact bytes.
+    subagent_undo: Option<subagents_ui::SubagentUndo>,
+    /// The Delete button has been pressed once.
+    subagent_delete_confirm: bool,
+    /// Why the last save/delete failed, shown under the form.
+    subagent_error: Option<String>,
+    /// Re-render the agent list as the filter is typed.
+    _subagents_filter_sub: Subscription,
     /// Background updater status mirrored from the global: `Idle` (nothing to
-    /// show), `Available` (the footer and settings offer the update),
-    /// `Updating` (spinning until the app quits to install). The payload
-    /// details stay on the worker; only the release version rides along.
+    /// show), `Available` (a newer release is on offer, nothing downloaded),
+    /// `Downloading` (verified bytes arriving), `Ready` (staged, waiting for
+    /// the restart), `Updating` (spinning until the app quits to install). The
+    /// payload details stay on the worker; only the release version rides
+    /// along.
     updater_status: crate::updater::UpdateStatus,
-    /// The staged release's version (e.g. `0.0.3`), mirrored beside
-    /// `updater_status` so the settings buttons can name the download.
+    /// The release's version (e.g. `0.0.3`), mirrored beside `updater_status`
+    /// so the modal and the settings buttons can name the target either before
+    /// or after it is downloaded.
     updater_version: Option<String>,
-    /// The staged release's notes from the feed, mirrored for the update
-    /// modal's changelog.
+    /// The release's notes from the feed, mirrored for the update modal's
+    /// changelog. Available before the download, since the check carries them.
     updater_notes: Option<String>,
+    /// The download in flight, as (downloaded, total) bytes. `None` when
+    /// nothing is downloading; the modal's bar reads it.
+    updater_progress: Option<(u64, u64)>,
     /// The feed's releases, newest first, mirrored for the modal's Version
     /// History. Empty until the first check answers.
     updater_history: Vec<crate::updater::Release>,
@@ -1219,6 +1363,20 @@ impl ComposerDraft {
             && self.files.is_empty()
             && self.pasted_texts.is_empty()
     }
+}
+
+/// A regenerate waiting for the branch's state reload.
+///
+/// A prompt sent before `get_messages` answers would be wiped out by that
+/// snapshot (pi does not echo user prompts in RPC mode), so the resend waits
+/// for the `get_state` reply that proves the new session is current. The
+/// request id keeps a stale or unrelated state reply from firing it. The
+/// images are the prompt's own, captured before the fork separated the
+/// transcript from them.
+struct PendingRegenerate {
+    state_id: String,
+    text: String,
+    images: Vec<Attachment>,
 }
 
 /// An image queued to ride along with the next prompt.
@@ -1430,6 +1588,7 @@ impl OrbitApp {
         let prompt_history = crate::composer::PromptHistory::shared();
         let input = cx.new(|cx| {
             ComposerInput::new(cx)
+                .with_placeholder_key("composer.placeholder")
                 .with_key_context("Composer ChatComposer")
                 .with_autocomplete(autocomplete.clone())
                 .with_prompt_history(prompt_history.clone())
@@ -1457,6 +1616,33 @@ impl OrbitApp {
                 .with_wrap(false)
         });
         let settings_search_sub = cx.observe(&settings_search, |_, _, cx| cx.notify());
+        // The sidebar's own search: one field over the session list, kept as a
+        // mirrored string so the row builder and ⌘↑/↓ navigation agree on what
+        // is visible without threading a context through both.
+        let sidebar_search = cx.new(|cx| {
+            ComposerInput::new(cx)
+                .with_element_id("sidebar-search-input")
+                .with_placeholder_key("sidebar.search_sessions")
+                .with_key_context("Composer Picker")
+                .with_max_lines(1)
+                .with_wrap(false)
+        });
+        let layout_name = cx.new(|cx| {
+            ComposerInput::new(cx)
+                .with_element_id("layout-name-input")
+                .with_placeholder_key("sidebar.layout_name_placeholder")
+                .with_key_context("Composer Picker")
+                .with_max_lines(1)
+                .with_wrap(false)
+        });
+        let sidebar_search_sub = cx.observe(&sidebar_search, |app: &mut Self, input, cx| {
+            let text = input.read(cx).text().trim().to_lowercase();
+            if app.sidebar_query != text {
+                app.sidebar_query = text;
+                app.sidebar_cursor = None;
+                cx.notify();
+            }
+        });
         // Settings → Report a bug: the issue title, the description, and the
         // optional reproduction steps. The description fields carry the
         // `Editor` context so Enter inserts a newline rather than submitting
@@ -1538,6 +1724,15 @@ impl OrbitApp {
 
         // Settings → Skills: the list filter. `Composer Picker` keeps editing
         // keys live so typing filters the master list.
+        let subagents_filter = cx.new(|cx| {
+            ComposerInput::new(cx)
+                .with_element_id("subagents-filter")
+                .with_key_context("Composer Picker")
+                .with_max_lines(1)
+                .with_wrap(false)
+                .with_placeholder_key("subagents_ui.search_agents")
+        });
+        let subagents_filter_sub = cx.observe(&subagents_filter, |_, _, cx| cx.notify());
         let skills_filter = cx.new(|cx| {
             ComposerInput::new(cx)
                 .with_element_id("skills-filter")
@@ -1628,6 +1823,9 @@ impl OrbitApp {
             this.git_panel.update(cx, |_, cx| cx.notify());
             this.usage.update(cx, |_, cx| cx.notify());
             if let Some(picker) = &this.branch_picker {
+                picker.update(cx, |_, cx| cx.notify());
+            }
+            if let Some(picker) = &this.rewind_picker {
                 picker.update(cx, |_, cx| cx.notify());
             }
             if let Some(picker) = &this.workspace_picker {
@@ -1742,6 +1940,20 @@ impl OrbitApp {
                 cx,
             )
         });
+        // Any open/close on a dock or the shell re-records the arrangement, so
+        // the next launch lands in the same shape. The store compares first, so
+        // an unrelated notify (a terminal tab, a tree refresh) costs nothing.
+        let layout_subs = vec![
+            cx.observe(&project_panel, |app: &mut Self, _, cx| {
+                app.record_arrangement(cx);
+            }),
+            cx.observe(&sidepane, |app: &mut Self, _, cx| {
+                app.record_arrangement(cx);
+            }),
+            cx.observe(&terminal_panel, |app: &mut Self, _, cx| {
+                app.record_arrangement(cx);
+            }),
+        ];
         // Full-page read-only file viewer.
         let viewer_weak = cx.entity().downgrade();
         let file_viewer = cx.new(|cx| {
@@ -1804,6 +2016,22 @@ impl OrbitApp {
         });
         // Create / rename / move dialog fields. The create dialog's start
         // point defaults to HEAD (empty input).
+        let clone_url_input = cx.new(|cx| {
+            ComposerInput::new(cx)
+                .with_element_id("clone-url-input")
+                .with_placeholder_key("working_folder.clone_url_placeholder")
+                .with_key_context("Composer CloneDialog")
+                .with_max_lines(1)
+                .with_wrap(false)
+        });
+        let clone_name_input = cx.new(|cx| {
+            ComposerInput::new(cx)
+                .with_element_id("clone-name-input")
+                .with_placeholder_key("working_folder.clone_name_placeholder")
+                .with_key_context("Composer CloneDialog")
+                .with_max_lines(1)
+                .with_wrap(false)
+        });
         let worktree_name_input = cx.new(|cx| {
             ComposerInput::new(cx)
                 .with_element_id("worktree-name-input")
@@ -1941,6 +2169,7 @@ impl OrbitApp {
             available_thinking_levels: Vec::new(),
             model_selector: None,
             command_palette: None,
+            palette_return_focus: None,
             dialog: None,
             dialog_focus_pending: false,
             approval: None,
@@ -1970,6 +2199,12 @@ impl OrbitApp {
             settings_filter,
             settings_search: settings_search.clone(),
             _settings_search_sub: settings_search_sub,
+            sidebar_search: sidebar_search.clone(),
+            sidebar_query: String::new(),
+            sidebar_shortcut_hints: false,
+            _sidebar_search_sub: sidebar_search_sub,
+            layout_name,
+            naming_layout: false,
             settings_select_highlight: None,
             settings_select_scroll: UniformListScrollHandle::new(),
             bug_report_title,
@@ -1983,6 +2218,7 @@ impl OrbitApp {
             bug_report_busy: false,
             bug_report_error: None,
             notification_prefs: notifications::Prefs::load(),
+            export_prefs: crate::export_prefs::Prefs::load(),
             notification_auth: notifications::DesktopAuth::Unknown,
             notification_auth_pending: false,
             window_active: true,
@@ -1992,6 +2228,8 @@ impl OrbitApp {
             session_history: Vec::new(),
             history_index: 0,
             collapsed_workspaces: HashSet::new(),
+            layout_restored: false,
+            _layout_subs: layout_subs,
             expanded_workspace_groups: HashSet::new(),
             expanded_session_groups: HashMap::new(),
             workspaces: workspace_store.workspaces,
@@ -2013,8 +2251,16 @@ impl OrbitApp {
                 worktrees::WORKTREE_HOWTO_HINT_KEY,
             ),
             work_in_menu_open: false,
+            work_in_remote_open: false,
+            work_in_details_open: false,
             work_in_menu_highlight: 0,
+            work_in_scroll: ScrollHandle::new(),
+            work_in_remote_highlight: 0,
             work_in_menu_focus: cx.focus_handle(),
+            worktree_remotes: Vec::new(),
+            worktree_remote_names: Vec::new(),
+            worktree_local_branches: Vec::new(),
+            worktree_remotes_busy: false,
             worktrees: Vec::new(),
             worktree_repo_root: None,
             worktrees_busy: false,
@@ -2027,6 +2273,16 @@ impl OrbitApp {
             worktree_advanced_open: false,
             worktree_refresh_due: None,
             worktree_dialog: None,
+            clone_url_input,
+            clone_name_input,
+            clone_browse_focus: cx.focus_handle(),
+            clone_confirm_focus: cx.focus_handle(),
+            clone_cancel_focus: cx.focus_handle(),
+            clone_window: None,
+            #[cfg(test)]
+            clone_test_parent: None,
+            clone_parent: None,
+            clone_operation: None,
             worktree_name_input: worktree_name_input.clone(),
             worktree_branch_input: worktree_branch_input.clone(),
             worktree_start_input: worktree_start_input.clone(),
@@ -2044,6 +2300,8 @@ impl OrbitApp {
             current_session_path: None,
             menu_dismissed_at: None,
             context: None,
+            context_stats_in_flight: None,
+            context_stats_pending: false,
             session_usage: None,
             context_popup: ContextPopup::None,
             autocomplete,
@@ -2069,6 +2327,17 @@ impl OrbitApp {
             add_menu_highlight: 0,
             add_menu_focus: cx.focus_handle(),
             branch_picker: None,
+            rewind_picker: None,
+            rewind_fetching: false,
+            rewind_fetch_id: None,
+            rewind_fork_id: None,
+            rewind_preselect: None,
+            rewind_intent: ForkIntent::Edit,
+            pending_regenerate: None,
+            quit_when_fork_settles: false,
+            rewind_prompt_images: Vec::new(),
+            sessions_refresh_pending: false,
+            pdf_previews: Vec::new(),
             workspace_picker: None,
             branch_operation_pending: false,
             open_in_prefs: platform::OpenInPrefs::load(),
@@ -2149,6 +2418,14 @@ impl OrbitApp {
             models_provider_filter: None,
             models_refreshing: false,
             skills: Vec::new(),
+            subagents: Vec::new(),
+            subagents_skipped: Vec::new(),
+            selected_subagent: None,
+            subagent_editor: None,
+            subagent_config: crate::subagents::Config::default(),
+            subagent_undo: None,
+            subagent_delete_confirm: false,
+            subagent_error: None,
             plugins: Vec::new(),
             plugins_error: None,
             plugin_source_input: plugin_source_input.clone(),
@@ -2168,6 +2445,8 @@ impl OrbitApp {
             skill_content: None,
             skill_delete_confirm: None,
             _skills_filter_sub: skills_filter_sub,
+            subagents_filter: subagents_filter.clone(),
+            _subagents_filter_sub: subagents_filter_sub,
             mcp,
             mcp_filter: mcp_filter.clone(),
             _mcp_filter_sub: mcp_filter_sub,
@@ -2194,6 +2473,7 @@ impl OrbitApp {
                 .try_global::<crate::updater::UpdaterState>()
                 .and_then(|state| state.0.as_ref())
                 .and_then(|updater| updater.available_version()),
+            updater_progress: None,
             updater_notes: cx
                 .try_global::<crate::updater::UpdaterState>()
                 .and_then(|state| state.0.as_ref())
@@ -2334,8 +2614,17 @@ impl OrbitApp {
     /// registration, so the field starts truthful.
     pub(crate) fn watch_window_activation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.window_active = window.is_window_active();
-        let activation = cx.observe_window_activation(window, |app, window, _| {
+        let activation = cx.observe_window_activation(window, |app, window, cx| {
             app.window_active = window.is_window_active();
+            app.sidebar_shortcut_hints =
+                app.window_active && sidebar::show_session_shortcuts(window.modifiers());
+            cx.notify();
+            // The OS Reduce Motion preference can only have changed while the
+            // user was elsewhere, so a window becoming active is the moment to
+            // re-read it. A repaint picks up the new value on the next frame.
+            if app.window_active {
+                theme::refresh_os_reduce_motion();
+            }
         });
         // Closing the window ends the observer above on its last value — and
         // the window usually was frontmost when the user closed it — which
@@ -2801,15 +3090,20 @@ pub(crate) enum SidebarGroupBy {
     #[default]
     Workspace,
     OneList,
+    /// What you have been working on: every pinned, open and running session,
+    /// then the most recent of the rest. Not a filter on the project list —
+    /// a smaller list for a smaller question.
+    Recent,
 }
 
 impl SidebarGroupBy {
-    pub(crate) const ALL: [SidebarGroupBy; 2] = [Self::Workspace, Self::OneList];
+    pub(crate) const ALL: [SidebarGroupBy; 3] = [Self::Workspace, Self::OneList, Self::Recent];
 
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Workspace => "workspace",
             Self::OneList => "one_list",
+            Self::Recent => "recent",
         }
     }
 
@@ -2817,6 +3111,7 @@ impl SidebarGroupBy {
         match key {
             "workspace" => Self::Workspace,
             "one_list" => Self::OneList,
+            "recent" => Self::Recent,
             // A store written while the tree mode existed falls back to the
             // grouped default rather than an unknown state.
             _ => Self::default(),
@@ -2827,6 +3122,7 @@ impl SidebarGroupBy {
         match self {
             Self::Workspace => "sidebar.group_workspace",
             Self::OneList => "sidebar.group_one_list",
+            Self::Recent => "sidebar.group_recent",
         }
     }
 
@@ -2834,6 +3130,7 @@ impl SidebarGroupBy {
         match self {
             Self::Workspace => "icons/folder.svg",
             Self::OneList => "icons/unified-view.svg",
+            Self::Recent => "icons/clock.svg",
         }
     }
 }
@@ -2887,13 +3184,46 @@ impl SidebarArchivedFilter {
     }
 }
 
-/// `~/.orbit-pi/workspaces.json` — the folders Orbit lists in its sidebar,
-/// when each was added, and how the sidebar orders them. Orbit-owned: pi owns
-/// the session files, this only records which projects the user added.
+/// Keep tests' workspace preferences out of the user's real Orbit store.
+/// Each test thread has its own self-cleaning directory, so parallel tests do
+/// not change each other's workspace list or last-workspace state either.
+#[cfg(test)]
+struct TestWorkspaceStoreDir(PathBuf);
+
+#[cfg(test)]
+impl Drop for TestWorkspaceStoreDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_WORKSPACE_STORE_DIR: TestWorkspaceStoreDir = {
+        static NEXT_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+        TestWorkspaceStoreDir(std::env::temp_dir().join(format!(
+            "orbit-workspace-store-test-{}-{nanos}-{id}", std::process::id()
+        )))
+    };
+}
+
+fn workspace_store_dir() -> PathBuf {
+    #[cfg(test)]
+    {
+        TEST_WORKSPACE_STORE_DIR.with(|dir| dir.0.clone())
+    }
+    #[cfg(not(test))]
+    {
+        crate::platform::home_dir().join(".orbit-pi")
+    }
+}
+
+/// Orbit's project list: the folders in the sidebar, when each was added,
+/// and how they are ordered. This never writes to pi's session files.
 fn workspaces_path() -> PathBuf {
-    crate::platform::home_dir()
-        .join(".orbit-pi")
-        .join("workspaces.json")
+    workspace_store_dir().join("workspaces.json")
 }
 
 /// The parsed workspaces store. Keeping `added_at` beside the path list gives
@@ -3082,9 +3412,7 @@ fn workspace_store_json(store: &WorkspaceStore) -> Value {
 /// new-task page restores this instead of showing `/`. Orbit-owned, like the
 /// workspaces list.
 fn last_workspace_path() -> PathBuf {
-    crate::platform::home_dir()
-        .join(".orbit-pi")
-        .join("last-workspace.json")
+    workspace_store_dir().join("last-workspace.json")
 }
 
 /// The remembered folder, if the store is readable and the folder still
@@ -3183,6 +3511,7 @@ pub(crate) enum SettingsSection {
     Providers,
     Models,
     Skills,
+    Subagents,
     Plugins,
     Mcp,
     About,
@@ -3216,6 +3545,8 @@ pub(crate) struct PendingWorktreeCreate {
 /// The open Worktrees dialog, if any.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WorktreeDialog {
+    /// Clone a repository into a new working folder.
+    Clone,
     /// Name / branch / location / setup fields.
     Create,
     /// First setup-script run in this repository.
@@ -3232,7 +3563,22 @@ pub(crate) enum WorktreeDialog {
     /// The workspace a session points at is gone (e.g. its worktree was
     /// removed). The session is never silently re-pointed at another
     /// workspace (§22).
-    Unavailable { path: PathBuf },
+    Unavailable {
+        path: PathBuf,
+        local: Option<PathBuf>,
+    },
+}
+
+struct CloneOperation {
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+    progress: Arc<std::sync::Mutex<String>>,
+}
+
+impl Drop for CloneOperation {
+    fn drop(&mut self) {
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
 }
 
 /// Setup-script progress for the most recent worktree creation.
@@ -3265,14 +3611,19 @@ pub(crate) struct WorktreeMenu {
 pub(crate) enum UpdateDialog {
     /// A check is in flight; the modal shows "Searching for a new version…".
     Checking,
-    /// A signed release is staged and ready. `from_check` picks the secondary
-    /// button's label: a check offers Cancel, the download control offers
-    /// Later.
+    /// A release is on offer or staged. The version and notes came from the
+    /// feed, so this is the same surface before and after the download —
+    /// `updater_status` decides whether the primary button downloads or
+    /// restarts. `from_check` picks the secondary button's label: a check
+    /// offers Cancel, the download control offers Later.
     Available {
         version: String,
         notes: Option<String>,
         from_check: bool,
     },
+    /// The verified artifact is downloading. The bar reads
+    /// `OrbitApp::updater_progress`; the version is the target being fetched.
+    Downloading { version: String },
     /// The check completed and this build is current.
     UpToDate,
     /// The check or install failed, with the message to show inline.
@@ -3537,6 +3888,9 @@ enum SettingsSelect {
     DefaultModel,
     /// The default model's thinking level (Settings → Agent).
     DefaultThinking,
+    /// The model an agent is pinned to (Settings → Subagents). The options are
+    /// this machine's models; the leading row inherits the session's.
+    SubagentModel,
     /// The session's active model (Settings → Models).
     ActiveModel,
     /// The Models page's provider scope filter.
@@ -3563,6 +3917,7 @@ mod pi_update_ui;
 mod pickers;
 mod plugin_update_ui;
 mod retention_ui;
+mod rewind_ui;
 mod runtime;
 mod search;
 mod session;
@@ -3570,8 +3925,10 @@ mod session_status;
 mod settings;
 mod sidebar;
 mod skills_ui;
+mod subagents_ui;
 mod temp_ui;
 mod toast_ui;
+mod transcript_export;
 mod updater_ui;
 mod view;
 mod worktrees;
@@ -3589,13 +3946,19 @@ mod composer_draft_tests;
 #[cfg(test)]
 mod composer_layout_tests;
 #[cfg(test)]
+mod context_meter_tests;
+#[cfg(test)]
 mod devicons_tests;
 #[cfg(test)]
 mod error_label_tests;
 #[cfg(test)]
+mod git_chip_tests;
+#[cfg(test)]
 mod new_task_panels_tests;
 #[cfg(test)]
 mod new_task_reconnect_tests;
+#[cfg(test)]
+mod perf_sampler_tests;
 #[cfg(test)]
 mod popup_layout_tests;
 #[cfg(test)]
@@ -3604,6 +3967,8 @@ mod process_exit_cleanup_tests;
 mod queue_edit_tests;
 #[cfg(test)]
 mod refresh_tests;
+#[cfg(test)]
+mod rewind_tests;
 #[cfg(test)]
 mod search_tests;
 #[cfg(test)]
@@ -3619,11 +3984,15 @@ mod sidebar_active_reveal_tests;
 #[cfg(test)]
 mod sidebar_group_tests;
 #[cfg(test)]
+mod sidebar_menu_tests;
+#[cfg(test)]
 mod sidebar_placeholder_tests;
 #[cfg(test)]
 mod sidebar_remove_tests;
 #[cfg(test)]
 mod sidebar_review_tests;
+#[cfg(test)]
+mod sidebar_search_tests;
 #[cfg(test)]
 mod sidebar_sort_tests;
 #[cfg(test)]
@@ -3637,19 +4006,23 @@ mod titlebar_layout_tests;
 #[cfg(test)]
 mod window_watch_tests;
 #[cfg(test)]
+mod workspace_picker_layout_tests;
+#[cfg(test)]
 mod worktree_chip_tests;
 #[cfg(test)]
 mod worktree_howto_tests;
 
 // `icon` and friends are part of the crate-wide UI kit; keep their original
 // `crate::app::…` paths stable for the other modules that import them.
-pub(crate) use crate::theme::tokens::RaisedExt;
+pub(crate) use crate::theme::tokens::{Motion, RaisedExt};
 pub(crate) use helpers::{
-    button_frame, context_menu_entry, context_menu_separator, context_menu_surface, empty_state,
-    file_badge, file_glyph, file_icon_tile, icon, icon_button_frame, icon_dyn, input_field_frame,
-    menu_header, nerd_font_family, picker_entry, picker_search_frame, picker_surface, press,
-    provider_mark_color, refresh_glyph, running_spinner, spinner, EmptyFill, TipExt, BUTTON_GROUP,
-    PRESS_DIM,
+    anchored_popover, anchored_popover_at, button_frame, context_menu_entry,
+    context_menu_separator, context_menu_surface, disclosure_chevron, empty_state, file_badge,
+    file_glyph, file_icon_tile, icon, icon_button_frame, icon_dyn, input_field_frame, menu_header,
+    modal_card, modal_scrim, nerd_font_family, picker_entry, picker_row_height,
+    picker_search_frame, picker_surface, press, provider_mark_color, refresh_glyph,
+    running_spinner, spinner, working_folder_keyboard_hints, AccentWash, ControlExt, EmptyFill,
+    PickerRow, PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
 };
 use sidebar::sessions_with_placeholder;
 

@@ -2,9 +2,10 @@ use super::helpers::*;
 use super::*;
 use crate::quota::note_should_render;
 use crate::theme::tokens::{
-    button, button_shadow, context_menu, input, modal, panel, picker, popover, BufferLineHeight,
-    ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize, BORDER_WIDTH,
+    button, context_menu, input, modal, panel, picker, popover, BufferLineHeight, ButtonSize,
+    DynamicSpacing, HeadlineSize, IconSize, Radius, TextSize, BORDER_WIDTH,
 };
+use crate::theme::MotionPreference;
 use gpui::{canvas, Bounds, DispatchPhase, Hitbox, HitboxBehavior, MouseMoveEvent};
 
 /// A Plugins-page button action, dispatched through one entry point.
@@ -34,7 +35,7 @@ const PLUGIN_REFRESH_FEEDBACK: Duration = Duration::from_millis(650);
 
 /// The settings select chip's size. Its dropdown is offset by this height
 /// plus `popover::MENU_OFFSET`, so the two must move together.
-const SELECT_CHIP_SIZE: ButtonSize = ButtonSize::Medium;
+const SELECT_CHIP_SIZE: ButtonSize = ButtonSize::Large;
 
 /// Wallpaper slider geometry: the painted track width, rail height, handle
 /// diameter, and the row they are centered in. The drag math reads the same
@@ -191,6 +192,11 @@ const SETTINGS_SECTIONS: &[(SettingsSection, &str, &str)] = &[
         "settings.skills",
     ),
     (
+        SettingsSection::Subagents,
+        "icons/task.svg",
+        "settings.subagents",
+    ),
+    (
         SettingsSection::Plugins,
         "icons/extensions.svg",
         "settings.plugins",
@@ -260,6 +266,11 @@ const SETTINGS_SEARCH_INDEX: &[(SettingsSection, &str, &str)] = &[
         SettingsSection::General,
         "settings.notification_sound",
         "notifications sound alert audio",
+    ),
+    (
+        SettingsSection::General,
+        "settings.include_reasoning_and_tools",
+        "export exports markdown pdf transcript save reasoning thinking tool calls output",
     ),
     // Runtime
     (
@@ -448,13 +459,18 @@ const SETTINGS_SEARCH_INDEX: &[(SettingsSection, &str, &str)] = &[
     (
         SettingsSection::Appearance,
         "settings.reduce_motion",
-        "motion animation reduce layout",
+        "motion animation reduce layout system full",
     ),
     // Resources and extensions
     (
         SettingsSection::Skills,
         "settings.skills",
         "skills skill.md instructions agent",
+    ),
+    (
+        SettingsSection::Subagents,
+        "settings.subagents",
+        "subagents agents delegate child task scout worker reviewer",
     ),
     (
         SettingsSection::Plugins,
@@ -538,6 +554,30 @@ fn settings_search_hits(needle: &str) -> Vec<(SettingsSection, &'static str, &'s
         .collect()
 }
 
+/// The label a Reduce Motion segment carries.
+fn motion_preference_label(preference: MotionPreference) -> String {
+    match preference {
+        MotionPreference::System => tr!("settings.motion_system"),
+        MotionPreference::Reduced => tr!("settings.motion_reduced"),
+        MotionPreference::Full => tr!("settings.motion_full"),
+    }
+}
+
+/// What the Reduce Motion row says is actually in force.
+///
+/// `System` is not a state the user can read off the segments, so the row names
+/// the resolution: following the system, following it into reduced motion, the
+/// user's own answer either way, or `Full` overriding a system that asks.
+fn motion_status(preference: MotionPreference, os_asks: bool) -> String {
+    match preference {
+        MotionPreference::System if os_asks => tr!("settings.motion_status_system_reduced"),
+        MotionPreference::System => tr!("settings.motion_status_system"),
+        MotionPreference::Reduced => tr!("settings.motion_status_reduced"),
+        MotionPreference::Full if os_asks => tr!("settings.motion_status_full_overriding"),
+        MotionPreference::Full => tr!("settings.motion_status_full"),
+    }
+}
+
 /// The operation a background plugin task runs.
 #[derive(Clone, Copy)]
 enum PluginOp {
@@ -594,14 +634,14 @@ impl OrbitApp {
                                     div()
                                         .id("settings-back")
                                         .w_full()
-                                        .h(ButtonSize::Medium.height(&theme))
+                                        .h(ButtonSize::Large.height(&theme))
                                         .px(DynamicSpacing::Base08.px(&theme))
                                         .rounded(button::RADIUS.px(&theme))
                                         .flex()
                                         .items_center()
                                         .gap(DynamicSpacing::Base08.px(&theme))
                                         .cursor_pointer()
-                                        .hover(|s| s.bg(theme.surface_hover)),
+                                        .hover_state(&theme),
                                 )
                                 .on_mouse_up(MouseButton::Left, cx.listener(Self::on_settings_back))
                                 .child(icon(
@@ -637,6 +677,7 @@ impl OrbitApp {
                     .child(
                         div()
                             .id("settings-navigation")
+                            .debug_selector(|| "settings-navigation".to_string())
                             .flex_1()
                             .min_h_0()
                             .overflow_y_scroll()
@@ -664,6 +705,8 @@ impl OrbitApp {
                                         .id(ElementId::Name(format!("settings-nav-{label}").into()))
                                         .w_full()
                                         .h(ButtonSize::Large.height(&theme))
+                                        .flex_none()
+                                        .debug_selector(move || format!("settings-nav-{label_key}"))
                                         .px(DynamicSpacing::Base08.px(&theme))
                                         .rounded(Radius::Medium.px(&theme))
                                         .text_size(TextSize::Default.px(&theme))
@@ -673,12 +716,9 @@ impl OrbitApp {
                                         .cursor_pointer()
                                         .when(selected, |row| {
                                             row.font_weight(FontWeight::MEDIUM)
-                                                .bg(theme.surface_selected)
-                                                .hover(|s| s.bg(theme.surface_selected))
+                                                .bg(theme.surface_hover)
                                         })
-                                        .when(!selected, |row| {
-                                            row.hover(|s| s.bg(theme.surface_hover))
-                                        })
+                                        .when(!selected, |row| row.hover_state(&theme))
                                         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                                             this.update(cx, |app, cx| {
                                                 app.set_settings_section(section, cx);
@@ -686,7 +726,7 @@ impl OrbitApp {
                                         })
                                         .child(icon(
                                             section_icon,
-                                            IconSize::Small.px(&theme),
+                                            IconSize::Medium.px(&theme),
                                             if selected {
                                                 theme.accent_text
                                             } else {
@@ -695,8 +735,11 @@ impl OrbitApp {
                                         ))
                                         .child(
                                             div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .truncate()
                                                 .text_color(if selected {
-                                                    theme.selection_fg
+                                                    theme.text_primary
                                                 } else {
                                                     theme.text_secondary
                                                 })
@@ -704,6 +747,7 @@ impl OrbitApp {
                                         );
                                     if group_start {
                                         div()
+                                            .flex_none()
                                             .flex()
                                             .flex_col()
                                             .gap(DynamicSpacing::Base02.px(&theme))
@@ -760,6 +804,8 @@ impl OrbitApp {
                     self.settings_search_results(theme, this.clone(), cx)
                 } else if self.settings_section == SettingsSection::Skills {
                     self.render_skills_page(theme, this.clone(), cx)
+                } else if self.settings_section == SettingsSection::Subagents {
+                    self.render_subagents_page(theme, this.clone(), cx)
                 } else {
                     self.settings_body(theme, this.clone(), cx)
                 }
@@ -819,6 +865,7 @@ impl OrbitApp {
             .child(
                 div()
                     .id("settings-content")
+                    .debug_selector(|| "settings-content".to_string())
                     .flex_1()
                     .min_h_0()
                     .w_full()
@@ -929,7 +976,7 @@ impl OrbitApp {
                 .items_center()
                 .gap(DynamicSpacing::Base12.px(&theme))
                 .cursor_pointer()
-                .hover(|s| s.bg(theme.surface_hover)),
+                .hover_state(&theme),
         )
         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
             this.update(cx, |app, cx| {
@@ -978,6 +1025,10 @@ impl OrbitApp {
                 (tr!("git_accounts.title"), tr!("git_accounts.description"))
             }
             SettingsSection::Skills => (tr!("settings.skills"), tr!("settings.skills_description")),
+            SettingsSection::Subagents => (
+                tr!("settings.subagents"),
+                tr!("settings.subagents_description"),
+            ),
             SettingsSection::Plugins => {
                 (tr!("settings.plugins"), tr!("settings.plugins_description"))
             }
@@ -1016,7 +1067,8 @@ impl OrbitApp {
             })
             .child(
                 div()
-                    .text_size(TextSize::Large.px(&theme))
+                    .debug_selector(|| "settings-page-title".to_string())
+                    .text_size(HeadlineSize::Large.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
                     .line_height(BufferLineHeight::Standard.relative())
                     .text_color(theme.text_primary)
@@ -1024,8 +1076,8 @@ impl OrbitApp {
             )
             .child(
                 div()
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.text_muted)
+                    .text_size(TextSize::Default.px(&theme))
+                    .text_color(theme.text_secondary)
                     .child(subtitle.to_string()),
             )
     }
@@ -1081,6 +1133,7 @@ impl OrbitApp {
                     rows.push(updates);
                 }
                 rows.push(self.notification_rows(theme, this.clone()));
+                rows.push(self.export_rows(theme, this.clone()));
                 // The last group is the escape hatch: a clean relaunch kills
                 // every live run, so it sits below the preferences rather than
                 // beside the everyday controls.
@@ -1110,6 +1163,8 @@ impl OrbitApp {
             SettingsSection::GitAccounts => self.git_accounts_rows(theme, this.clone()),
             // Rendered by `skills_ui::render_skills_page`, not the card body.
             SettingsSection::Skills => Vec::new(),
+            // Rendered by `subagents_ui::render_subagents_page`.
+            SettingsSection::Subagents => Vec::new(),
             SettingsSection::Plugins => self.plugin_rows(theme, this.clone(), cx),
             // The MCP page's rows are owned by `mcp_ui`; it needs the cursor
             // and filter state that lives beside the manager.
@@ -1265,7 +1320,7 @@ impl OrbitApp {
         .when(!self.models_favorites_only, |button| {
             button
                 .raised(theme.surface_elevated, &theme)
-                .hover(|s| s.raised(theme.surface_hover, &theme))
+                .hover_state(&theme)
         })
         .on_mouse_up(MouseButton::Left, {
             let this = this.clone();
@@ -1303,8 +1358,8 @@ impl OrbitApp {
             .raised(theme.surface_elevated, &theme)
             .cursor_pointer()
             .when(self.models_refreshing, |button| button.opacity(0.6))
-            .hover(|style| style.raised(theme.surface_hover, &theme))
-            .active(|style| style.raised(theme.surface_active, &theme))
+            .hover_state(&theme)
+            .pressed_state(&theme, PressedRamp::Wash)
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, _, cx| {
@@ -1540,7 +1595,19 @@ impl OrbitApp {
 
     /// Restart the agent so a catalog refreshed on disk is loaded, resuming the
     /// active session when one exists. Mirrors the credential-reload restart.
-    fn restart_pi_for_catalog(&mut self, cx: &mut Context<Self>) {
+    ///
+    /// The refresh runs off the main thread, so the state is re-checked here:
+    /// a run or a fork may have started while `pi --models` was running, and
+    /// neither may be yanked out from under.
+    pub(super) fn restart_pi_for_catalog(&mut self, cx: &mut Context<Self>) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
+        if self.busy || self.transcript.is_streaming() {
+            self.toast_warning(tr!("settings.finish_turn_before_restart"));
+            cx.notify();
+            return;
+        }
         let resume = self
             .current_session_path
             .clone()
@@ -1717,7 +1784,7 @@ impl OrbitApp {
             tr!("settings.favorite")
         })
         .cursor_pointer()
-        .hover(|s| s.bg(theme.surface_hover))
+        .hover_state(&theme)
         .on_mouse_up(MouseButton::Left, {
             let this = this.clone();
             let (provider, id) = (provider.clone(), id.clone());
@@ -1826,9 +1893,7 @@ impl OrbitApp {
             .flex_col()
             .gap(DynamicSpacing::Base08.px(&theme))
             .cursor_pointer()
-            .when(!active, |card| {
-                card.hover(|s| s.bg(theme.surface_hover).border_color(theme.border_strong))
-            })
+            .when(!active, |card| card.hover_bordered(&theme))
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, _, cx| {
@@ -2299,7 +2364,7 @@ impl OrbitApp {
                 .border_color(theme.border)
                 .raised(theme.surface_elevated, &theme)
                 .text_color(theme.text_muted)
-                .hover(|style| style.raised(theme.surface_hover, &theme))
+                .hover_state(&theme)
         };
         chip.on_mouse_up(MouseButton::Left, move |_, _, cx| {
             this.update(cx, |app, cx| {
@@ -2337,8 +2402,8 @@ impl OrbitApp {
             (
                 base.raised(theme.action, &theme)
                     .text_color(theme.action_fg)
-                    .hover(|style| style.raised(theme.action_hover, &theme))
-                    .active(|style| style.raised(theme.action_pressed, &theme)),
+                    .hover_action(&theme)
+                    .pressed_state(&theme, PressedRamp::Action),
                 theme.action_fg,
             )
         } else {
@@ -2347,7 +2412,7 @@ impl OrbitApp {
                     .border_color(theme.border)
                     .raised(theme.surface_elevated, &theme)
                     .text_color(theme.text_secondary)
-                    .hover(|style| style.raised(theme.surface_hover, &theme)),
+                    .hover_state(&theme),
                 theme.text_secondary,
             )
         };
@@ -2443,8 +2508,8 @@ impl OrbitApp {
             .raised(theme.surface_elevated, &theme)
             .cursor_pointer()
             .when(self.providers_refreshing, |button| button.opacity(0.6))
-            .hover(|style| style.raised(theme.surface_hover, &theme))
-            .active(|style| style.raised(theme.surface_active, &theme))
+            .hover_state(&theme)
+            .pressed_state(&theme, PressedRamp::Wash)
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, _, cx| {
@@ -2462,8 +2527,8 @@ impl OrbitApp {
         let add_button = button_frame(div().id("providers-add"), &theme, ButtonSize::Large)
             .raised(theme.action, &theme)
             .cursor_pointer()
-            .hover(|style| style.raised(theme.action_hover, &theme))
-            .active(|style| style.raised(theme.action_pressed, &theme))
+            .hover_action(&theme)
+            .pressed_state(&theme, PressedRamp::Action)
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, window, cx| {
@@ -2678,52 +2743,15 @@ impl OrbitApp {
 
     /// A red note card for a config read error.
     pub(super) fn provider_error_card(&self, theme: Theme, title: &str, error: &str) -> AnyElement {
-        div()
-            .w_full()
-            .bg(theme.error.opacity(0.08))
-            .border_1()
-            .border_color(theme.error.opacity(0.35))
-            .rounded(panel::RADIUS.px(&theme))
-            .px(DynamicSpacing::Base12.px(&theme))
-            .py(DynamicSpacing::Base12.px(&theme))
-            .flex()
-            .items_start()
-            .gap(DynamicSpacing::Base08.px(&theme))
-            .child(icon(
-                "icons/info.svg",
-                IconSize::Medium.px(&theme),
-                theme.error,
-            ))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap(DynamicSpacing::Base04.px(&theme))
-                    .child(
-                        div()
-                            .text_size(TextSize::Default.px(&theme))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_primary)
-                            .child(title.to_string()),
-                    )
-                    .child(
-                        div()
-                            .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_secondary)
-                            .child(error.to_string()),
-                    )
-                    .child(
-                        div()
-                            .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_muted)
-                            .child(tr!(
-                                "settings.fix_or_remove_the_file_before_editing_providers_"
-                            )),
-                    ),
-            )
-            .into_any_element()
+        error_state(
+            theme,
+            title,
+            Some(error),
+            Some(&tr!(
+                "settings.fix_or_remove_the_file_before_editing_providers_"
+            )),
+            None,
+        )
     }
 
     /// Every provider pi ships with, merged with the live catalog, models.json,
@@ -3775,24 +3803,20 @@ impl OrbitApp {
             ProviderButtonStyle::Primary => button
                 .raised(theme.action, &theme)
                 .text_color(theme.action_fg)
-                .hover(|style| style.raised(theme.action_hover, &theme))
-                .active(|style| style.raised(theme.action_pressed, &theme)),
+                .hover_action(&theme)
+                .pressed_state(&theme, PressedRamp::Action),
             ProviderButtonStyle::Ghost => button
                 .border_1()
                 .border_color(theme.border)
                 .raised(theme.surface_elevated, &theme)
                 .text_color(theme.text_secondary)
-                .hover(|style| style.raised(theme.surface_hover, &theme)),
+                .hover_state(&theme),
             ProviderButtonStyle::Danger => button
                 .border_1()
                 .border_color(theme.border)
                 .raised(theme.surface_elevated, &theme)
                 .text_color(theme.error)
-                .hover(|style| {
-                    style
-                        .border_color(theme.error.opacity(0.6))
-                        .raised(theme.error.opacity(0.08), &theme)
-                }),
+                .hover_danger_soft(&theme),
         };
         let icon_color = match style {
             ProviderButtonStyle::Primary => theme.action_fg,
@@ -3911,7 +3935,7 @@ impl OrbitApp {
             .border_color(theme.border)
             .raised(theme.surface_elevated, &theme)
             .cursor_pointer()
-            .hover(|style| style.raised(theme.surface_hover, &theme))
+            .hover_state(&theme)
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, _, cx| {
@@ -3927,17 +3951,10 @@ impl OrbitApp {
                     .child(tr!("settings.close")),
             );
 
-        let card = div()
+        let card = modal_card(&theme)
             .w_full()
             .max_w(px(460.))
             .max_h(relative(1.))
-            .elevation_3(&theme)
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .occlude()
-            .font_family(theme::ui_font_family())
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_action(cx.listener(Self::provider_editor_cancel))
             .child(
                 div()
@@ -4015,7 +4032,13 @@ impl OrbitApp {
                 .items_center()
                 .justify_center()
                 .on_mouse_down(MouseButton::Left, cx.listener(Self::provider_editor_scrim))
-                .child(card)
+                .child(crate::motion::enter(
+                    card,
+                    "provider-usage-card-in",
+                    &theme,
+                    crate::theme::tokens::Motion::Layout,
+                    None,
+                ))
                 .into_any_element(),
         )
     }
@@ -4114,7 +4137,7 @@ impl OrbitApp {
             .border_color(theme.border)
             .raised(theme.surface_elevated, &theme)
             .cursor_pointer()
-            .hover(|style| style.raised(theme.surface_hover, &theme))
+            .hover_state(&theme)
             .on_mouse_up(MouseButton::Left, {
                 let this = this.clone();
                 move |_, _, cx| {
@@ -4138,17 +4161,10 @@ impl OrbitApp {
             ProviderAction::SaveKey,
         );
 
-        let card = div()
+        let card = modal_card(&theme)
             .w_full()
             .max_w(px(460.))
             .max_h(relative(1.))
-            .elevation_3(&theme)
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .occlude()
-            .font_family(theme::ui_font_family())
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_action(cx.listener(Self::provider_editor_cancel))
             .on_action(cx.listener(Self::provider_editor_confirm))
             .child(
@@ -4229,7 +4245,13 @@ impl OrbitApp {
                 .items_center()
                 .justify_center()
                 .on_mouse_down(MouseButton::Left, cx.listener(Self::provider_editor_scrim))
-                .child(card)
+                .child(crate::motion::enter(
+                    card,
+                    "provider-key-card-in",
+                    &theme,
+                    crate::theme::tokens::Motion::Layout,
+                    None,
+                ))
                 .into_any_element(),
         )
     }
@@ -4310,7 +4332,7 @@ impl OrbitApp {
                     &theme,
                 )
                 .cursor_pointer()
-                .hover(|style| style.raised(theme.surface_hover, &theme))
+                .hover_state(&theme)
                 .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                     this.update(cx, |app, cx| {
                         if let Some(editor) = app.provider_editor.as_mut() {
@@ -4410,17 +4432,10 @@ impl OrbitApp {
                 editor.models.clone(),
             ));
 
-        let mut card = div()
+        let mut card = modal_card(&theme)
             .w_full()
             .max_w(px(520.))
             .max_h(px(560.))
-            .elevation_3(&theme)
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .occlude()
-            .font_family(theme::ui_font_family())
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_action(cx.listener(Self::provider_editor_cancel))
             .on_action(cx.listener(Self::provider_editor_confirm))
             .child(
@@ -4490,7 +4505,7 @@ impl OrbitApp {
             .border_color(theme.border)
             .raised(theme.surface_elevated, &theme)
             .cursor_pointer()
-            .hover(|style| style.raised(theme.surface_hover, &theme))
+            .hover_state(&theme)
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                 this.update(cx, |app, cx| {
                     app.provider_editor = None;
@@ -4508,8 +4523,8 @@ impl OrbitApp {
             button_frame(div().id("provider-editor-save"), &theme, ButtonSize::Large)
                 .raised(theme.action, &theme)
                 .cursor_pointer()
-                .hover(|style| style.raised(theme.action_hover, &theme))
-                .active(|style| style.raised(theme.action_pressed, &theme))
+                .hover_action(&theme)
+                .pressed_state(&theme, PressedRamp::Action)
                 .on_mouse_up(MouseButton::Left, move |_, window, cx| {
                     this.update(cx, |app, cx| app.provider_save(window, cx));
                 })
@@ -4565,12 +4580,18 @@ impl OrbitApp {
                 .items_center()
                 .justify_center()
                 .on_mouse_down(MouseButton::Left, cx.listener(Self::provider_editor_scrim))
-                .child(card)
+                .child(crate::motion::enter(
+                    card,
+                    "provider-editor-card-in",
+                    &theme,
+                    crate::theme::tokens::Motion::Layout,
+                    None,
+                ))
                 .into_any_element(),
         )
     }
 
-    /// A settings section: an 11px uppercase label over one grouped board.
+    /// A settings section: a readable label over one grouped board.
     /// The label sits closer to its board than to the section above it.
     pub(super) fn settings_section(
         &self,
@@ -4593,6 +4614,7 @@ impl OrbitApp {
     ) -> AnyElement {
         div()
             .w_full()
+            .flex_none()
             .flex()
             .flex_col()
             .gap(DynamicSpacing::Base08.px(&theme))
@@ -4604,15 +4626,15 @@ impl OrbitApp {
                     .gap(DynamicSpacing::Base02.px(&theme))
                     .child(
                         div()
-                            .text_size(TextSize::XSmall.px(&theme))
+                            .text_size(TextSize::Default.px(&theme))
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_muted)
-                            .child(label.to_uppercase()),
+                            .text_color(theme.text_primary)
+                            .child(label.to_string()),
                     )
                     .children(desc.map(|desc| {
                         div()
-                            .text_size(TextSize::Small.px(&theme))
-                            .text_color(theme.text_muted)
+                            .text_size(TextSize::Default.px(&theme))
+                            .text_color(theme.text_secondary)
                             .child(desc.to_string())
                     })),
             )
@@ -4662,6 +4684,8 @@ impl OrbitApp {
     ) -> AnyElement {
         div()
             .w_full()
+            .flex_none()
+            .min_h(ButtonSize::Large.height(&theme) + DynamicSpacing::Base08.px(&theme))
             .px(DynamicSpacing::Base16.px(&theme))
             .py(DynamicSpacing::Base12.px(&theme))
             .flex()
@@ -4683,7 +4707,7 @@ impl OrbitApp {
                     )
                     .children(desc.map(|d| {
                         div()
-                            .text_size(TextSize::Small.px(&theme))
+                            .text_size(TextSize::Default.px(&theme))
                             .text_color(theme.text_secondary)
                             .child(d.to_string())
                     }))
@@ -4695,7 +4719,17 @@ impl OrbitApp {
                             .child(m.to_string())
                     })),
             )
-            .children(control.map(|c| div().flex_none().child(c)))
+            // A control keeps its intrinsic size but may never claim the
+            // whole row: the title shares the width, so a long control (a
+            // path, a version string) truncates instead of squeezing the
+            // title down to one letter per line.
+            .children(control.map(|c| {
+                div()
+                    .flex_none()
+                    .min_w_0()
+                    .max_w(gpui::relative(0.6))
+                    .child(c)
+            }))
             .into_any_element()
     }
 
@@ -4741,7 +4775,7 @@ impl OrbitApp {
             .font_weight(FontWeight::MEDIUM)
             .text_color(theme.text_secondary)
             .cursor_pointer()
-            .hover(|s| s.raised(theme.surface_hover, &theme))
+            .hover_state(&theme)
             .child(icon(
                 "icons/arrow-up-right.svg",
                 ButtonSize::Medium.icon_size().px(&theme),
@@ -4772,9 +4806,12 @@ impl OrbitApp {
                 .filter(|spec| spec.help && spec.category == category)
                 .map(|spec| {
                     let title = tr!(spec.title_key);
-                    match spec.shortcut() {
-                        Some(chip) => self.shortcut_row(theme, &title, &[chip.as_str()]),
-                        None => self.setting_row(theme, &title, None, None, None),
+                    let chips = spec.shortcuts();
+                    if chips.is_empty() {
+                        self.setting_row(theme, &title, None, None, None)
+                    } else {
+                        let keys: Vec<&str> = chips.iter().map(String::as_str).collect();
+                        self.shortcut_row(theme, &title, &keys)
                     }
                 })
                 .collect();
@@ -5016,6 +5053,45 @@ impl OrbitApp {
         .detach();
     }
 
+    // ── Settings → General: exports ─────────────────────────────────────
+
+    /// The export board: what a Markdown/PDF export carries beyond the answer.
+    /// Off by default — the reasoning and tool trail is the agent's working
+    /// noise, not the conversation.
+    pub(super) fn export_rows(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
+        let rows = vec![self.setting_row(
+            theme,
+            &tr!("settings.include_reasoning_and_tools"),
+            Some(&tr!("settings.include_reasoning_and_tools_description")),
+            None,
+            Some(self.settings_toggle(
+                "export-work-toggle",
+                self.export_prefs.include_thinking_and_tools,
+                theme,
+                this,
+                Self::toggle_export_work,
+            )),
+        )];
+        self.settings_section_desc(
+            theme,
+            &tr!("settings.transcript_export"),
+            Some(&tr!("settings.transcript_export_description")),
+            rows,
+        )
+    }
+
+    /// Flip whether exports append reasoning and tool calls, and persist it so
+    /// the next export in any session honours the choice.
+    pub(super) fn toggle_export_work(&mut self, cx: &mut Context<Self>) {
+        self.export_prefs.include_thinking_and_tools =
+            !self.export_prefs.include_thinking_and_tools;
+        self.export_prefs.persist();
+        if self.export_prefs.include_thinking_and_tools {
+            self.toast_info(tr!("settings.exports_include_reasoning_and_tools"));
+        }
+        cx.notify();
+    }
+
     // ── Settings → Runtime ─────────────────────────────────────────────
 
     /// The Runtime section: the live pi process, its details, and
@@ -5149,11 +5225,21 @@ impl OrbitApp {
             None,
             Some(runtime_text(theme, tr!("settings.transport_stdio"))),
         ));
+        // The package root the patches land in is a deep `node_modules` path.
+        // It rides the row's truncating meta line rather than the control
+        // slot: a control never shrinks, so a path there eats the whole row
+        // and leaves the title one letter per line. Home-shortened, it still
+        // makes a stale saved root obvious.
+        let package_root = self
+            .rpc_patches
+            .package_root
+            .as_ref()
+            .map(|root| crate::usage::format::short_path(&root.display().to_string()));
         process.push(self.setting_row(
             theme,
             "RPC patches",
             Some(&self.rpc_patches.summary()),
-            None,
+            package_root.as_deref(),
             Some(self.settings_toggle(
                 "rpc-patches-toggle",
                 self.rpc_patches.enabled,
@@ -5162,15 +5248,6 @@ impl OrbitApp {
                 OrbitApp::toggle_rpc_patches,
             )),
         ));
-        if let Some(root) = &self.rpc_patches.package_root {
-            process.push(self.setting_row(
-                theme,
-                "Package root",
-                None,
-                None,
-                Some(runtime_path(theme, root.display().to_string())),
-            ));
-        }
         if let Some(error) = &self.runtime.error {
             process.push(self.setting_row(
                 theme,
@@ -5699,7 +5776,7 @@ impl OrbitApp {
             .children(modes.into_iter().enumerate().map(|(index, mode)| {
                 let this = this.clone();
                 let active = mode == theme.ui.composer_send_mode;
-                segmented_segment(
+                let segment = segmented_segment(
                     div().id(("composer-send-mode", index)),
                     &theme,
                     ButtonSize::Medium,
@@ -5707,19 +5784,35 @@ impl OrbitApp {
                 )
                 .font_weight(FontWeight::MEDIUM)
                 .cursor_pointer()
-                .when(active, |b| {
-                    b.raised_flat(theme.surface_active)
-                        .text_color(theme.text_primary)
-                })
-                .when(!active, |b| {
-                    b.raised_flat(theme.surface_elevated)
-                        .text_color(theme.text_secondary)
-                        .hover(|s| s.raised_flat(theme.surface_hover))
-                })
+                .raised_flat(theme.surface_elevated)
                 .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                     this.update(cx, |app, cx| app.set_composer_send_mode(mode, cx));
                 })
-                .child(mode.label())
+                .child(mode.label());
+                crate::motion::control(
+                    segment,
+                    format!("composer-send-mode-{index}"),
+                    &theme,
+                    crate::theme::tokens::Motion::Interaction,
+                    crate::theme::tokens::Motion::Interaction,
+                    if active { 1.0 } else { 0.0 },
+                    move |segment, hover, selected| {
+                        let fill = crate::motion::blend(
+                            crate::motion::blend(
+                                theme.surface_elevated,
+                                theme.surface_hover,
+                                hover,
+                            ),
+                            theme.surface_active,
+                            selected,
+                        );
+                        segment.bg(fill).text_color(crate::motion::blend(
+                            theme.text_secondary,
+                            theme.text_primary,
+                            selected,
+                        ))
+                    },
+                )
             }))
             .into_any_element()
     }
@@ -5729,6 +5822,62 @@ impl OrbitApp {
         ui.composer_send_mode = mode;
         theme::set_ui_prefs(cx, ui);
         cx.notify();
+    }
+
+    /// Appearance → Reduce motion: a three-way control, because a switch
+    /// cannot express `Full` — the state that stops the OS from overruling the
+    /// user's own answer.
+    fn motion_preference_control(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
+        let options = MotionPreference::ALL;
+        let active = theme.ui.motion;
+        let count = options.len();
+        div()
+            .flex()
+            .items_center()
+            .children(options.into_iter().enumerate().map(|(index, preference)| {
+                let this = this.clone();
+                let selected = preference == active;
+                let segment = segmented_segment(
+                    div().id(("motion-preference", index)),
+                    &theme,
+                    ButtonSize::Medium,
+                    SegmentPosition::at(index, count),
+                )
+                .font_weight(FontWeight::MEDIUM)
+                .cursor_pointer()
+                .raised_flat(theme.surface_elevated)
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    this.update(cx, |app, cx| app.set_motion_preference(preference, cx));
+                })
+                .child(motion_preference_label(preference));
+                // Both states are the layer's: the hover wash and the chosen
+                // half cross-fade together instead of one winning outright.
+                crate::motion::control(
+                    segment,
+                    format!("motion-preference-{index}"),
+                    &theme,
+                    crate::theme::tokens::Motion::Interaction,
+                    crate::theme::tokens::Motion::Interaction,
+                    if selected { 1.0 } else { 0.0 },
+                    move |segment, hover, selected| {
+                        let fill = crate::motion::blend(
+                            crate::motion::blend(
+                                theme.surface_elevated,
+                                theme.surface_hover,
+                                hover,
+                            ),
+                            theme.surface_active,
+                            selected,
+                        );
+                        segment.bg(fill).text_color(crate::motion::blend(
+                            theme.text_secondary,
+                            theme.text_primary,
+                            selected,
+                        ))
+                    },
+                )
+            }))
+            .into_any_element()
     }
 
     /// Two-button segmented control for the follow-up delivery mode.
@@ -5768,7 +5917,7 @@ impl OrbitApp {
                             b.border_color(theme.border)
                                 .raised_flat(theme.surface_elevated)
                                 .text_color(theme.text_secondary)
-                                .hover(|s| s.raised_flat(theme.surface_hover))
+                                .hover_state(&theme)
                         })
                         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                             this.update(cx, |app, cx| app.set_follow_up_mode(value_all, cx));
@@ -5796,25 +5945,9 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         action: fn(&mut OrbitApp, &mut Context<OrbitApp>),
     ) -> AnyElement {
-        div()
-            .id(id)
-            .w(px(36.))
-            .h(DynamicSpacing::Base20.px(&theme))
-            .rounded_full()
-            .p(DynamicSpacing::Base02.px(&theme))
-            .border_1()
-            .border_color(theme.border)
-            .flex()
-            .items_center()
-            .cursor_pointer()
-            .when(on, |t| t.bg(theme.accent).justify_end())
-            .when(!on, |t| t.bg(theme.surface_elevated).justify_start())
-            .hover(|t| t.border_color(theme.border_strong))
-            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                this.update(cx, action);
-            })
-            .child(div().size(px(14.)).rounded_full().bg(theme.toggle_knob))
-            .into_any_element()
+        switch(id, on, &theme, move |_, _, cx| {
+            this.update(cx, action);
+        })
     }
 
     /// Settings → Privacy: local-only controls such as session retention.
@@ -5884,17 +6017,21 @@ impl OrbitApp {
                 tools = remembered.join(", ")
             )
         };
-        let mut clear = button_frame(div().id("clear-remembered-approvals"), &theme, ButtonSize::Large)
-            .border_1()
-            .border_color(theme.border)
-            .raised(theme.surface_elevated, &theme)
-            .text_color(theme.text_secondary)
-            .child(tr!("settings.remembered_approvals_clear"));
+        let mut clear = button_frame(
+            div().id("clear-remembered-approvals"),
+            &theme,
+            ButtonSize::Large,
+        )
+        .border_1()
+        .border_color(theme.border)
+        .raised(theme.surface_elevated, &theme)
+        .text_color(theme.text_secondary)
+        .child(tr!("settings.remembered_approvals_clear"));
         if !remembered.is_empty() {
             clear = clear
                 .cursor_pointer()
-                .hover(|style| style.raised(theme.surface_hover, &theme))
-                .active(|style| style.raised(theme.surface_active, &theme))
+                .hover_state(&theme)
+                .pressed_state(&theme, PressedRamp::Wash)
                 .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                     this.update(cx, |app, cx| app.clear_remembered_approvals(cx));
                 });
@@ -5917,10 +6054,9 @@ impl OrbitApp {
     pub(super) fn clear_remembered_approvals(&mut self, cx: &mut Context<Self>) {
         match crate::access::clear_remembered_approvals() {
             Ok(0) => self.toast_info(tr!("settings.remembered_approvals_none")),
-            Ok(count) => self.toast_success(tr!(
-                "settings.remembered_approvals_cleared",
-                count = count
-            )),
+            Ok(count) => {
+                self.toast_success(tr!("settings.remembered_approvals_cleared", count = count))
+            }
             Err(error) => self.toast_error(error),
         }
         cx.notify();
@@ -5989,8 +6125,8 @@ impl OrbitApp {
             .border_color(theme.border)
             .raised(theme.surface_elevated, &theme)
             .cursor_pointer()
-            .hover(|style| style.raised(theme.surface_hover, &theme))
-            .active(|style| style.raised(theme.surface_active, &theme))
+            .hover_state(&theme)
+            .pressed_state(&theme, PressedRamp::Wash)
             .text_color(theme.text_secondary)
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                 this.update(cx, |app, cx| app.run_session_retention(cx));
@@ -6053,21 +6189,25 @@ impl OrbitApp {
         cx.notify();
     }
 
-    /// Appearance → Reduce motion: persist the preference; every paint site
-    /// reads it through `Theme.ui`, so the change is live.
-    pub(super) fn toggle_reduce_motion(&mut self, cx: &mut Context<Self>) {
+    /// Appearance → Reduce motion: persist the three-way choice. Every paint
+    /// site reads the resolved value through `Theme::reduce_motion`, so the
+    /// change is live and `Full` overrides an OS that asks for reduced motion.
+    pub(super) fn set_motion_preference(
+        &mut self,
+        preference: MotionPreference,
+        cx: &mut Context<Self>,
+    ) {
         let mut ui = theme::get(cx).ui;
-        ui.reduce_motion = !ui.reduce_motion;
+        ui.motion = preference;
         theme::set_ui_prefs(cx, ui);
-        self.set_status(if ui.reduce_motion {
-            tr!("settings.reduce_motion_on")
-        } else {
-            tr!("settings.reduce_motion_off")
-        });
+        self.set_status(motion_status(preference, theme::os_reduce_motion()));
         cx.notify();
     }
 
     pub(super) fn compact_now(&mut self, cx: &mut Context<Self>) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         if self.is_compacting {
             return;
         }
@@ -6100,6 +6240,11 @@ impl OrbitApp {
     }
 
     pub(super) fn rename_session(&mut self, cx: &mut Context<Self>) {
+        // The fork reply resets the session under the popover; a rename now
+        // would either land on the wrong branch or be wiped by that reset.
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         if self.pending_session_rename.is_some() {
             return;
         }
@@ -6159,30 +6304,41 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         action: fn(&mut OrbitApp, &mut Context<OrbitApp>),
     ) -> AnyElement {
-        let mut button = button_frame(div().id(id), &theme, ButtonSize::Medium)
+        let button = button_frame(div().id(id), &theme, ButtonSize::Large)
             .group(BUTTON_GROUP)
             .cursor_pointer()
             .font_weight(FontWeight::MEDIUM);
-        if primary {
-            button = button
-                .raised(theme.action, &theme)
-                .text_color(theme.action_fg)
-                .hover(|s| s.raised(theme.action_hover, &theme))
-                .active(|s| s.raised(theme.action_pressed, &theme));
+        // The hover is a fade on the Interaction role, not a swap: primary
+        // buttons cross-fade `action` → `action_hover`, secondary ones fade the
+        // raised fill into the wash.
+        let (button, hover) = if primary {
+            (
+                button
+                    .raised(theme.action, &theme)
+                    .text_color(theme.action_fg)
+                    .pressed_state(&theme, PressedRamp::Action),
+                crate::motion::Hover::fill(theme.action, theme.action_hover),
+            )
         } else {
-            button = button
-                .border_1()
-                .border_color(theme.border)
-                .raised(theme.surface_elevated, &theme)
-                .text_color(theme.text_secondary)
-                .hover(|s| s.raised(theme.surface_hover, &theme));
-        }
-        press(button)
-            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                this.update(cx, action);
-            })
-            .child(label.to_string())
-            .into_any_element()
+            (
+                button
+                    .border_1()
+                    .border_color(theme.border)
+                    .raised(theme.surface_elevated, &theme)
+                    .text_color(theme.text_secondary),
+                crate::motion::Hover::fill(theme.surface_elevated, theme.surface_hover),
+            )
+        };
+        crate::motion::hover(
+            press(button)
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    this.update(cx, action);
+                })
+                .child(label.to_string()),
+            format!("runtime-button-{id}"),
+            &theme,
+            hover,
+        )
     }
 
     // ── Appearance ─────────────────────────────────────────────────────
@@ -6355,14 +6511,10 @@ impl OrbitApp {
                         Some(&tr!(
                             "settings.stop_looping_animations_spinners_and_the_running"
                         )),
-                        None,
-                        Some(self.settings_toggle(
-                            "reduce-motion",
-                            theme.ui.reduce_motion,
-                            theme,
-                            this.clone(),
-                            Self::toggle_reduce_motion,
-                        )),
+                        // Name what is actually in force, so `System` on a Mac
+                        // that asks for reduced motion is never a guess.
+                        Some(&motion_status(theme.ui.motion, theme::os_reduce_motion())),
+                        Some(self.motion_preference_control(theme, this.clone())),
                     ),
                 ],
             ),
@@ -6720,7 +6872,6 @@ impl OrbitApp {
                             .border_1()
                             .border_color(theme.border_strong)
                             .bg(theme.toggle_knob)
-                            .shadow(button_shadow(&theme))
                             .group_hover("wallpaper-slider", |s| s.border_color(theme.accent)),
                     )
                     .child(events),
@@ -6813,7 +6964,7 @@ impl OrbitApp {
                             b.border_color(theme.border)
                                 .raised_flat(theme.surface_elevated)
                                 .text_color(theme.text_secondary)
-                                .hover(|s| s.raised_flat(theme.surface_hover))
+                                .hover_state(&theme)
                         })
                         .on_click(move |_, _, cx| {
                             this.update(cx, |app, cx| app.set_design_system(system, cx));
@@ -6948,7 +7099,7 @@ impl OrbitApp {
                             b.border_color(theme.border)
                                 .raised_flat(theme.surface_elevated)
                                 .text_color(theme.text_secondary)
-                                .hover(|s| s.raised_flat(theme.surface_hover))
+                                .hover_state(&theme)
                         })
                         .on_click(move |_, _, cx| {
                             this.update(cx, |app, cx| app.set_appearance_mode(mode, cx));
@@ -7372,6 +7523,7 @@ impl OrbitApp {
             | SettingsSelect::AgentCalls
             | SettingsSelect::DefaultModel
             | SettingsSelect::DefaultThinking
+            | SettingsSelect::SubagentModel
             | SettingsSelect::ActiveModel
             | SettingsSelect::ModelProvider
             | SettingsSelect::RetentionMode
@@ -7469,8 +7621,7 @@ impl OrbitApp {
     }
 
     /// [`select_control`](Self::select_control) at an explicit chip size, so a
-    /// toolbar control can match the 32px action buttons beside it while the
-    /// settings rows keep the 28px chip.
+    /// toolbar control can choose its size independently of settings rows.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn select_control_sized(
         &self,
@@ -7497,6 +7648,7 @@ impl OrbitApp {
             | SettingsSelect::SuggestionsModel
             | SettingsSelect::ReportModel
             | SettingsSelect::DefaultModel
+            | SettingsSelect::SubagentModel
                 if selected > 0 =>
             {
                 self.available_models
@@ -7530,7 +7682,7 @@ impl OrbitApp {
                     )
                     .cursor_pointer()
                     .text_color(theme.text_secondary)
-                    .hover(|s| s.raised(theme.overlay, &theme))
+                    .hover_overlay(&theme)
                     .on_mouse_up(MouseButton::Left, move |_, window, cx| {
                         chip_this.update(cx, |app, cx| {
                             // A dismissal from this same click's mouse-down
@@ -7606,6 +7758,7 @@ impl OrbitApp {
                 | SettingsSelect::SuggestionsModel
                 | SettingsSelect::ReportModel
                 | SettingsSelect::DefaultModel
+                | SettingsSelect::SubagentModel
         )
         .then(|| {
             self.available_models
@@ -7635,9 +7788,12 @@ impl OrbitApp {
                 .w_full()
                 .py(list_pad_y)
                 .child(
-                    picker_entry(div(), &theme)
-                        .text_color(theme.text_muted)
-                        .child(tr!("settings.no_matches")),
+                    picker_entry(
+                        div().debug_selector(|| "settings-select-empty".to_string()),
+                        &theme,
+                    )
+                    .text_color(theme.text_muted)
+                    .child(tr!("settings.no_matches")),
                 )
                 .into_any_element()
         } else {
@@ -7686,7 +7842,14 @@ impl OrbitApp {
                             ElementId::NamedInteger("settings-select-row".into(), orig_ix as u64);
                         children.push(
                             div().h(row_h).w_full().child(
-                                picker_entry(div().id(row_id), &theme)
+                                picker_entry(
+                                    div()
+                                        .id(row_id)
+                                        .debug_selector(move || {
+                                            format!("settings-select-row-{orig_ix}")
+                                        }),
+                                    &theme,
+                                )
                                     .h(row_h)
                                     .justify_between()
                                     .cursor_pointer()
@@ -7696,7 +7859,7 @@ impl OrbitApp {
                                         row.bg(theme.surface_active)
                                     })
                                     .when(!highlighted_row && !selected_row, |row| {
-                                        row.hover(|style| style.bg(theme.surface_hover))
+                                        row.hover_state(&theme)
                                     })
                                     .text_color(if selected_row || highlighted_row {
                                         theme.text_primary
@@ -7756,13 +7919,20 @@ impl OrbitApp {
                 },
             )
             .w_full()
+            .debug_selector(|| "settings-select-list".to_string())
             .h(list_h)
             .track_scroll(self.settings_select_scroll.clone())
             .py(list_pad_y)
             .into_any_element()
         };
-        let popup = picker_surface(div(), &theme)
-            .min_w(px(360.))
+        // An explicit width, not `min_w`: the list below is `w_full`, and a
+        // percentage width inside an auto-width parent resolves to 0, which
+        // laid every option row out at a negative width — an empty panel.
+        let popup = picker_surface(
+            div().debug_selector(|| "settings-select-popup".to_string()),
+            &theme,
+        )
+        .w(px(360.))
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -7830,13 +8000,13 @@ impl OrbitApp {
                 .top_0()
                 .right_0()
                 .size(px(0.))
-                .child(
-                    anchored()
-                        .position_mode(AnchoredPositionMode::Window)
-                        .anchor(Corner::TopRight)
-                        .offset(point(px(0.), size.height(&theme) + popover::MENU_OFFSET))
-                        .child(deferred(popup)),
-                )
+                .child(anchored_popover_in_window(
+                    Corner::TopRight,
+                    point(px(0.), size.height(&theme) + popover::MENU_OFFSET),
+                    popup,
+                    "anchored_popover_in_window-in-11",
+                    &theme,
+                ))
                 .into_any_element(),
         )
     }
@@ -8037,6 +8207,25 @@ impl OrbitApp {
                 cx.notify();
                 return true;
             }
+            SettingsSelect::SubagentModel => {
+                // Index 0 inherits the session's model; the rest are this
+                // machine's catalog, written as the file's `provider/id`.
+                let value = match ix {
+                    0 => String::new(),
+                    _ => match self.available_models.get(ix - 1) {
+                        Some(model) => format!("{}/{}", model.provider, model.id),
+                        // A pinned model the catalog cannot resolve is shown
+                        // for honesty; clicking that row must not rewrite it.
+                        None => return true,
+                    },
+                };
+                if let Some(editor) = self.subagent_editor.as_ref() {
+                    let model = editor.model.clone();
+                    model.update(cx, |input, cx| input.set_text(value, cx));
+                }
+                cx.notify();
+                return true;
+            }
             SettingsSelect::ActiveModel => {
                 if let Some(model) = self.available_models.get(ix) {
                     let (id, provider) = (model.id.clone(), model.provider.clone());
@@ -8127,6 +8316,7 @@ impl OrbitApp {
             | SettingsSelect::AgentCalls
             | SettingsSelect::DefaultModel
             | SettingsSelect::DefaultThinking
+            | SettingsSelect::SubagentModel
             | SettingsSelect::ActiveModel
             | SettingsSelect::ModelProvider
             | SettingsSelect::RetentionMode
@@ -8235,6 +8425,7 @@ impl OrbitApp {
             }
             SettingsSection::Privacy => self.refresh_temp_files(cx),
             SettingsSection::Skills => self.refresh_skills(cx),
+            SettingsSection::Subagents => self.refresh_subagents(cx),
             SettingsSection::Plugins => self.refresh_plugins(cx),
             SettingsSection::Mcp => self.mcp_section_opened(cx),
             _ => {}
@@ -8484,6 +8675,11 @@ impl OrbitApp {
     /// `auth.json` only at startup, so this is the "use it" step. Resumes the
     /// active session on the fresh process when one exists.
     pub(super) fn provider_apply_credentials(&mut self, cx: &mut Context<Self>) {
+        // A fork owns the process until its reply lands; restarting now would
+        // lose the branch and the answer that moves Orbit onto it.
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         // Never yank the process out from under a live turn.
         if self.busy || self.transcript.is_streaming() {
             self.toast_warning(tr!("settings.finish_turn_before_restart"));

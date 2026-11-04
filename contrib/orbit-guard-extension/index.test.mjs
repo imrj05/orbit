@@ -242,3 +242,32 @@ test("parallel prompts are serialized, never stacked", async () => {
   ]);
   assert.equal(maxActive, 1, "only one prompt in flight at a time");
 });
+
+test("a child's ceiling is enforced even under full-access", async () => {
+  setMode("full-access");
+  process.env.ORBIT_SUBAGENT_CEILING = "read";
+  process.env.ORBIT_SUBAGENT_AGENT = "scout";
+  try {
+    const pi = fakePi();
+    activate(pi);
+    const allowed = await pi.fire("tool_call", { toolName: "grep", input: { pattern: "x" } }, fakeCtx());
+    assert.equal(allowed, undefined, "read tool runs");
+    const blocked = await pi.fire("tool_call", { toolName: "bash", input: { command: "rm -rf x" } }, fakeCtx({ hasUI: false }));
+    assert.equal(blocked.block, true);
+    assert.match(blocked.reason, /Blocked: Subagent scout is read-only and cannot use bash/);
+    assert.equal(selectCalls, 0, "a tier is not something the user can approve away");
+  } finally {
+    delete process.env.ORBIT_SUBAGENT_CEILING;
+    delete process.env.ORBIT_SUBAGENT_AGENT;
+  }
+});
+
+test("no ceiling leaves the previous behaviour untouched", async () => {
+  setMode("supervised");
+  delete process.env.ORBIT_SUBAGENT_CEILING;
+  const pi = fakePi();
+  activate(pi);
+  const result = await pi.fire("tool_call", { toolName: "edit", input: { path: "a" } }, fakeCtx());
+  assert.equal(result, undefined);
+  assert.equal(selectCalls, 1);
+});

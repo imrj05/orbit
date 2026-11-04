@@ -381,7 +381,7 @@ impl OrbitApp {
                 .h(row_h)
                 .cursor_pointer()
                 .when(selected, |row| row.bg(theme.surface_selected))
-                .hover(|style| style.bg(theme.surface_hover))
+                .hover_state(&theme)
                 .on_click(move |_, _, cx| {
                     this.update(cx, |app, cx| app.commit_entry(entry.clone(), cx))
                         .ok();
@@ -452,13 +452,12 @@ impl OrbitApp {
             .child(list);
 
         Some(
-            anchored()
-                .position_mode(AnchoredPositionMode::Local)
-                .anchor(Corner::BottomLeft)
-                .offset(point(px(0.), -popover::MENU_OFFSET))
-                .snap_to_window_with_margin(popover::WINDOW_MARGIN)
-                .child(deferred(popup))
-                .into_any_element(),
+            anchored_popover(
+                Corner::BottomLeft,
+                point(px(0.), -popover::MENU_OFFSET),
+                popup, "anchored_popover-in-4", &theme,
+            )
+            .into_any_element(),
         )
     }
 
@@ -499,7 +498,7 @@ impl OrbitApp {
                         button_frame(div().id("attachments-clear"), &theme, ButtonSize::Compact)
                             .debug_selector(|| "attachments-clear".to_string())
                             .cursor_pointer()
-                            .hover(|style| style.bg(theme.surface_hover))
+                            .hover_state(&theme)
                             .tip(tr!("composer.clear_attachments"))
                             .child(icon(
                                 "icons/x.svg",
@@ -677,7 +676,7 @@ impl OrbitApp {
         .border_1()
         .border_color(theme.border)
         .raised(theme.surface_elevated, theme)
-        .hover(|style| style.border_color(theme.border_strong))
+        .hover_border(theme)
         .child(visual)
         .child(
             div()
@@ -699,7 +698,7 @@ impl OrbitApp {
             button_frame(div(), theme, ButtonSize::Compact)
                 .debug_selector(move || remove_debug)
                 .cursor_pointer()
-                .hover(|style| style.bg(theme.overlay_strong))
+                .hover_on_glass(theme)
                 .tip(tr!("composer.remove_attachment"))
                 .child(icon(
                     "icons/x.svg",
@@ -880,7 +879,7 @@ impl OrbitApp {
         self.context_popup = ContextPopup::None;
         self.access_menu_open = false;
         self.workflow_menu_open = false;
-        self.work_in_menu_open = false;
+        self.dismiss_work_in_menu();
         self.autocomplete_dismissed = true;
         self.autocomplete.borrow_mut().open = false;
         self.add_menu_open = true;
@@ -998,6 +997,11 @@ impl OrbitApp {
     }
 
     pub(super) fn set_model(&mut self, id: String, provider: String, cx: &mut Context<Self>) {
+        // pi would apply the change to the branch a pending fork is about to
+        // open, not the session the picker described.
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         // A manual choice supersedes the session-birth default push. The push
         // itself sends `SetModel` directly so it doesn't disarm itself.
         self.default_model_armed = false;
@@ -1012,6 +1016,9 @@ impl OrbitApp {
     }
 
     pub(super) fn set_thinking_level(&mut self, level: String, cx: &mut Context<Self>) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         // A manual level choice likewise supersedes the pending default.
         self.default_model_armed = false;
         self.send(
@@ -1049,7 +1056,7 @@ impl OrbitApp {
         self.model_selector = None;
         self.context_popup = ContextPopup::None;
         self.add_menu_open = false;
-        self.work_in_menu_open = false;
+        self.dismiss_work_in_menu();
         self.autocomplete_dismissed = true;
         self.autocomplete.borrow_mut().open = false;
         self.access_menu_open = true;
@@ -1172,7 +1179,7 @@ impl OrbitApp {
         self.context_popup = ContextPopup::None;
         self.access_menu_open = false;
         self.add_menu_open = false;
-        self.work_in_menu_open = false;
+        self.dismiss_work_in_menu();
         self.autocomplete_dismissed = true;
         self.autocomplete.borrow_mut().open = false;
         self.workflow_menu_open = true;

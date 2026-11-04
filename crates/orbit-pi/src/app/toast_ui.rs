@@ -56,7 +56,7 @@ impl OrbitApp {
             return None;
         }
         let theme = *theme::get(cx);
-        let reduce_motion = theme.ui.reduce_motion;
+        let reduce_motion = theme.reduce_motion();
         Some(
             div()
                 .debug_selector(|| "toast-stack".to_string())
@@ -155,7 +155,7 @@ impl OrbitApp {
             div()
                 .id(ElementId::Name("plugin-update-close".into()))
                 .cursor_pointer()
-                .hover(|style| style.bg(theme.surface_hover))
+                .hover_state(&theme)
                 .on_mouse_up(
                     MouseButton::Left,
                     cx.listener(|this, _, _, cx| this.skip_plugin_updates(cx)),
@@ -177,7 +177,7 @@ impl OrbitApp {
         ))
         .cursor_pointer()
         .text_color(theme.text_muted)
-        .hover(|style| style.bg(theme.surface_hover).text_color(theme.text_primary))
+        .hover_state(&theme)
         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
             this.update(cx, |app, cx| app.skip_plugin_updates(cx));
         })
@@ -192,8 +192,8 @@ impl OrbitApp {
         .cursor_pointer()
         .raised(theme.action, &theme)
         .text_color(theme.action_fg)
-        .hover(|style| style.raised(theme.action_hover, &theme))
-        .active(|style| style.raised(theme.action_pressed, &theme))
+        .hover_action(&theme)
+        .pressed_state(&theme, PressedRamp::Action)
         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
             this.update(cx, |app, cx| app.apply_plugin_updates(cx));
         })
@@ -320,7 +320,7 @@ impl OrbitApp {
             div()
                 .id(ElementId::Name(format!("toast-close-{id}").into()))
                 .cursor_pointer()
-                .hover(|style| style.bg(theme.surface_hover)),
+                .hover_state(&theme),
             &theme,
             toast_tokens::CLOSE_BUTTON,
         ))
@@ -344,7 +344,7 @@ impl OrbitApp {
         .items_start()
         .gap(toast_tokens::content_gap(&theme))
         .cursor_pointer()
-        .hover(|style| style.border_color(theme.border_strong))
+        .hover_border(&theme)
         .on_mouse_up(
             MouseButton::Left,
             cx.listener(move |this, _, _, cx| this.dismiss_toast(id, cx)),
@@ -397,6 +397,9 @@ impl OrbitApp {
         let fade = crate::toast::FADE.as_secs_f32();
         let enter = toast_tokens::ENTER.as_secs_f32();
         let total = ttl + fade;
+        // The duration here is the toast's own lifetime, not a motion choice:
+        // the bar is a countdown, so it is data rather than a `Motion` role.
+        // The guard above is what keeps it still under Reduce Motion.
         card.with_animation(
             ElementId::Name(format!("toast-life-{id}-{}", toast.revision).into()),
             Animation::new(Duration::from_secs_f32(total)),

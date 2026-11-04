@@ -62,6 +62,7 @@ mod custom_ui;
 mod dialog;
 mod diff_view;
 mod explorer;
+mod export_prefs;
 mod favorites;
 mod gh;
 mod gh_templates;
@@ -81,18 +82,26 @@ mod mermaid;
 mod message_scroller;
 mod model_selector;
 mod model_selector_match;
+mod motion;
 mod notifications;
 mod onboarding;
 mod pi_install;
 mod pi_update;
 mod pins;
 mod platform;
+// Frame-time sampling for the render baseline. Debug builds only: a release
+// binary must not carry a frame hook or a recorder.
+#[cfg(debug_assertions)]
+mod perf;
 mod plugins;
 mod providers;
 mod quota;
 mod quota_hidden;
 mod recent_models;
+mod repository_clone;
 mod review;
+mod rewind;
+mod rewind_picker;
 mod rpc_patches;
 mod session_defaults;
 mod session_retention;
@@ -100,6 +109,9 @@ mod sessions;
 mod shimmer;
 mod sidepane;
 mod skills;
+mod subagent;
+mod subagent_file;
+mod subagents;
 mod temp_files;
 mod terminal;
 mod theme;
@@ -113,6 +125,7 @@ mod wallpaper_fx;
 mod watch;
 mod widgets;
 mod workflow;
+mod working_folder;
 mod workspace_logo;
 mod workspace_mark;
 mod workspace_picker;
@@ -176,6 +189,10 @@ actions!(
         SteerRun,
         SendAlternate,
         ToggleSearch,
+        /// Record frame times while the user drives the app. The binding is
+        /// debug-only; the action type is not, so the root can always register a
+        /// handler and the handler body is what compiles away.
+        RecordFrameTimes,
         SearchNext,
         SearchPrev,
         SearchClose,
@@ -183,6 +200,7 @@ actions!(
         ToggleProjectPanel,
         ToggleSidebar,
         FocusSessions,
+        FocusSessionSearch,
         NextSession,
         PrevSession,
         ReviewChanges,
@@ -260,8 +278,14 @@ actions!(
         WorkInMenuNext,
         WorkInMenuPrev,
         WorkInMenuConfirm,
-        WorkInMenuClose
+        WorkInMenuClose,
+        WorkInMenuDetails
     ]
+);
+
+actions!(
+    clone_dialog_keys,
+    [CloneDialogNext, CloneDialogPrev, CloneDialogActivate]
 );
 
 // Workflow-mode picker actions (bound to the `WorkflowMenu` context, which
@@ -365,12 +389,23 @@ pub struct OpenSessionSlot {
     pub slot: usize,
 }
 
-fn bind_keys(cx: &mut App) {
+pub(crate) fn bind_keys(cx: &mut App) {
     // The app-command keymap comes from the command registry
     // (`commands::BINDINGS`), so a chord and the chip that advertises it can
     // never drift apart. Text-entry and modal keymaps below stay literal:
     // they are conventions, not commands.
     cx.bind_keys(commands::key_bindings());
+    // ⌘⌥P starts or stops a frame-time capture (`src/perf.rs`). Debug builds
+    // only, and deliberately outside the command registry: it is a developer
+    // tool, not a user command, so it must not appear in the palette or help.
+    // Two chords, on purpose: `alt` participates in macOS character composition
+    // (⌥P types "π"), and a chord that never fires is indistinguishable from a
+    // sampler that never ran. `⌘⇧P` carries no such ambiguity.
+    #[cfg(debug_assertions)]
+    cx.bind_keys([
+        KeyBinding::new("secondary-alt-p", RecordFrameTimes, None),
+        KeyBinding::new("secondary-shift-p", RecordFrameTimes, None),
+    ]);
     cx.bind_keys([
         // Focus traversal: every surface with a focus handle is reachable
         // without the mouse. The composer's `Tab` (autocomplete accept) and
@@ -475,9 +510,14 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("down", AccessMenuNext, Some("AccessMenu")),
         // Work-in picker keys — same shape again.
         KeyBinding::new("escape", WorkInMenuClose, Some("WorkInMenu")),
+        KeyBinding::new("space", WorkInMenuDetails, Some("WorkInMenu")),
         KeyBinding::new("enter", WorkInMenuConfirm, Some("WorkInMenu")),
         KeyBinding::new("up", WorkInMenuPrev, Some("WorkInMenu")),
         KeyBinding::new("down", WorkInMenuNext, Some("WorkInMenu")),
+        KeyBinding::new("tab", CloneDialogNext, Some("CloneDialog")),
+        KeyBinding::new("shift-tab", CloneDialogPrev, Some("CloneDialog")),
+        KeyBinding::new("enter", CloneDialogActivate, Some("CloneDialog")),
+        KeyBinding::new("space", CloneDialogActivate, Some("CloneDialogButton")),
         // Workflow-mode picker keys — same shape again.
         KeyBinding::new("escape", WorkflowMenuClose, Some("WorkflowMenu")),
         KeyBinding::new("enter", WorkflowMenuConfirm, Some("WorkflowMenu")),
@@ -691,6 +731,21 @@ fn main() {
         // new window is up so it can commit the swap instead of rolling back.
         updater::signal_relaunch_ready();
 
-        cx.on_action(|_: &Quit, cx| cx.quit());
+        // `Quit` is an app-level action, but a fork in flight belongs to the
+        // app entity: route the request through it so the quit can wait for
+        // pi's reply instead of leaving a branch this run never adopted.
+        cx.on_action(|_: &Quit, cx| {
+            let parked = cx
+                .try_global::<main_window::Shell>()
+                .and_then(|shell| shell.0.borrow().clone());
+            match parked {
+                Some(app) => {
+                    app.update(cx, |app, cx| {
+                        app.request_quit(crate::app::QuitRequest::User, cx)
+                    });
+                }
+                None => cx.quit(),
+            }
+        });
     });
 }

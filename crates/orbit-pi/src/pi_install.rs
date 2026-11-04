@@ -2,17 +2,14 @@
 //! it with pi's official installer, update it with pi's own updater, and
 //! verify the result.
 //!
-//! Orbit never installs or updates the pi CLI through npm. On macOS and Linux
-//! the official installer (`https://pi.dev/install.sh`) creates a pinned,
-//! self-updating *managed* install under `~/.pi/agent/install`, a launcher at
-//! `~/.pi/agent/bin/pi`, and an entrypoint symlink on the user's PATH. When it
-//! finds an npm global install it migrates it: the managed install is created
-//! first, then the npm package is removed. Later updates go through
-//! `pi update`, which the installer itself documents.
-//!
-//! Windows has no managed installer (pi's installer supports macOS and Linux
-//! only), so Orbit reports the documented command instead of running npm
-//! itself.
+//! Orbit never installs or updates the pi CLI through npm. pi's official
+//! installer — `https://pi.dev/install.sh` on macOS and Linux, the documented
+//! `https://pi.dev/install.ps1` PowerShell one-liner on Windows — creates a
+//! pinned, self-updating *managed* install under `<agent>/install`
+//! (`~/.pi/agent/install`), a launcher under `<agent>/bin`, and an entrypoint
+//! on the user's PATH. When it finds an npm global install it migrates it: the
+//! managed install is created first, then the npm package is removed. Later
+//! updates go through `pi update`, which the installer itself documents.
 //!
 //! Everything here blocks; the app calls it from the background executor. No
 //! function reads a credential or touches `~/.pi/agent` user data beyond the
@@ -24,15 +21,22 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-/// pi's official installer, exactly as the project documents it.
+/// pi's official installer for macOS and Linux, exactly as the project
+/// documents it.
 pub const INSTALL_SCRIPT_URL: &str = "https://pi.dev/install.sh";
-/// The copyable one-liner shown to a user who has no pi yet.
+/// pi's official installer for Windows.
+pub const INSTALL_SCRIPT_URL_WINDOWS: &str = "https://pi.dev/install.ps1";
+/// The copyable installer one-liner for macOS and Linux.
 ///
-/// The official installer is macOS/Linux-only, so only the onboarding hint
-/// there and the tests that keep the hint and the executed command in sync
-/// refer to it; on Windows the hint shows pi's documented npm command.
-#[cfg(any(test, target_os = "macos", target_os = "linux"))]
+/// This is the command Orbit executes on those platforms, so the onboarding
+/// hint, the migration path, and the tests that keep the two in sync all read
+/// from it rather than restating it.
 pub const INSTALL_COMMAND: &str = "curl -fsSL https://pi.dev/install.sh | sh";
+/// The copyable installer one-liner for Windows, exactly as pi documents it.
+pub const INSTALL_COMMAND_WINDOWS: &str = "powershell -c \"irm https://pi.dev/install.ps1 | iex\"";
+/// pi's documented npm form, for platforms its installer does not cover.
+pub const NPM_INSTALL_COMMAND: &str =
+    "npm install -g --ignore-scripts @earendil-works/pi-coding-agent";
 /// The npm package that identifies a pi install inside a `node_modules` tree.
 pub const PI_PACKAGE_NAME: &str = "@earendil-works/pi-coding-agent";
 /// The marker the official installer writes into the managed install root.
@@ -220,7 +224,16 @@ fn managed_root_for_bin(bin: &Path, agent_dir: &Path) -> Option<PathBuf> {
 }
 
 /// The npm package root inside `node_modules`, walking up from a launcher.
+///
+/// Windows npm exposes `pi.cmd` as a *sibling* of `node_modules` rather than
+/// a symlink into the package, so each ancestor is also checked for its own
+/// `node_modules/@earendil-works/pi-coding-agent`.
 fn walk_up_to_package_root(path: &Path) -> Option<PathBuf> {
+    // A launcher that is not on disk is not a pi install; without this a
+    // nonexistent `<prefix>/pi` would resolve through `<prefix>/node_modules`.
+    if !path.exists() {
+        return None;
+    }
     let real = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let start = if real.is_dir() {
         real
@@ -231,6 +244,10 @@ fn walk_up_to_package_root(path: &Path) -> Option<PathBuf> {
     for _ in 0..12 {
         if is_pi_package(&dir) {
             return Some(dir);
+        }
+        let nested = dir.join("node_modules").join(PI_PACKAGE_NAME);
+        if is_pi_package(&nested) {
+            return Some(nested);
         }
         dir = dir.parent()?.to_path_buf();
     }
@@ -331,19 +348,38 @@ pub struct Invocation {
     pub args: Vec<String>,
 }
 
-/// pi's managed installer supports macOS and Linux; other platforms must use
-/// their own documented mechanism.
+/// pi's managed installer covers macOS, Linux, and Windows. Other platforms
+/// must use their own documented mechanism, so Orbit reports the command
+/// instead of running an installer that cannot work.
 pub fn official_install_supported() -> bool {
     supported_platform(std::env::consts::OS)
 }
 
 fn supported_platform(os: &str) -> bool {
-    matches!(os, "macos" | "linux")
+    matches!(os, "macos" | "linux" | "windows")
+}
+
+/// The copyable one-liner that installs pi on `os`, spelled exactly as pi
+/// documents it. Platforms the official installer does not cover get pi's
+/// documented npm form.
+pub fn install_command_for(os: &str) -> &'static str {
+    match os {
+        "windows" => INSTALL_COMMAND_WINDOWS,
+        "macos" | "linux" => INSTALL_COMMAND,
+        _ => NPM_INSTALL_COMMAND,
+    }
+}
+
+/// The copyable one-liner that installs pi on this host.
+pub fn install_command() -> &'static str {
+    install_command_for(std::env::consts::OS)
 }
 
 /// Build the official installer invocation, honoring Orbit's test seams.
 ///
-/// Default (macOS/Linux): `sh -c "curl -fsSL https://pi.dev/install.sh | sh"`.
+/// macOS/Linux: `sh -c "curl -fsSL https://pi.dev/install.sh | sh"`.
+/// Windows: `powershell -c "irm https://pi.dev/install.ps1 | iex"`, the
+/// one-liner pi documents for that platform.
 /// Returns `None` on an unsupported platform so the caller can report the
 /// documented command instead of invoking a shell installer that cannot work.
 pub fn installer_invocation() -> Option<Invocation> {
@@ -364,16 +400,31 @@ fn installer_invocation_for(
     if !supported_platform(os) {
         return None;
     }
+    // Windows has no `sh`; the documented installer is a PowerShell
+    // one-liner, so both the override and the default run through `powershell`.
+    let windows = os == "windows";
+    let shell = if windows { "powershell" } else { "sh" };
     if let Some(command) = command_override.filter(|c| !c.trim().is_empty()) {
         return Some(Invocation {
-            program: "sh".to_string(),
+            program: shell.to_string(),
             args: vec!["-c".to_string(), command],
         });
     }
-    let url = url_override.unwrap_or_else(|| INSTALL_SCRIPT_URL.to_string());
+    let url = url_override.unwrap_or_else(|| {
+        if windows {
+            INSTALL_SCRIPT_URL_WINDOWS.to_string()
+        } else {
+            INSTALL_SCRIPT_URL.to_string()
+        }
+    });
+    let command = if windows {
+        format!("irm {url} | iex")
+    } else {
+        format!("curl -fsSL {url} | sh")
+    };
     Some(Invocation {
-        program: "sh".to_string(),
-        args: vec!["-c".to_string(), format!("curl -fsSL {url} | sh")],
+        program: shell.to_string(),
+        args: vec!["-c".to_string(), command],
     })
 }
 
@@ -403,7 +454,7 @@ pub fn run_official_installer() -> io::Result<Output> {
     let invocation = installer_invocation().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::Unsupported,
-            "the official pi installer supports macOS and Linux only",
+            "the official pi installer supports macOS, Linux, and Windows",
         )
     })?;
     run_invocation(&invocation)
@@ -595,19 +646,44 @@ mod tests {
         );
     }
 
+    /// Windows has no `sh`, and pi documents its installer there as a
+    /// PowerShell one-liner. Running the shell form would fail the spawn.
+    #[test]
+    fn windows_runs_the_documented_powershell_installer() {
+        let inv = installer_invocation_for("windows", None, None).expect("windows supported");
+        assert_eq!(inv.program, "powershell");
+        assert_eq!(
+            inv.args,
+            vec![
+                "-c".to_string(),
+                "irm https://pi.dev/install.ps1 | iex".to_string()
+            ]
+        );
+        // The copyable hint and the executed command are the same one-liner.
+        assert_eq!(
+            INSTALL_COMMAND_WINDOWS,
+            format!("{} -c \"{}\"", inv.program, inv.args[1])
+        );
+    }
+
     #[test]
     fn install_and_update_helpers_target_the_official_script() {
         // The default URL is the documented one, and the copyable command
         // matches it, so the UI hint and the executed command cannot drift.
         assert!(INSTALL_COMMAND.contains(INSTALL_SCRIPT_URL));
         assert_eq!(INSTALL_COMMAND, "curl -fsSL https://pi.dev/install.sh | sh");
+        assert!(INSTALL_COMMAND_WINDOWS.contains(INSTALL_SCRIPT_URL_WINDOWS));
+        assert_eq!(install_command_for("windows"), INSTALL_COMMAND_WINDOWS);
+        assert_eq!(install_command_for("macos"), INSTALL_COMMAND);
+        assert_eq!(install_command_for("linux"), INSTALL_COMMAND);
+        assert_eq!(install_command_for("freebsd"), NPM_INSTALL_COMMAND);
     }
 
     #[test]
     fn unsupported_platforms_get_no_shell_installer() {
         assert!(installer_invocation_for("macos", None, None).is_some());
         assert!(installer_invocation_for("linux", None, None).is_some());
-        assert!(installer_invocation_for("windows", None, None).is_none());
+        assert!(installer_invocation_for("windows", None, None).is_some());
         assert!(installer_invocation_for("freebsd", None, None).is_none());
     }
 
@@ -639,6 +715,26 @@ mod tests {
         let other = dir.join("custom").join("pi");
         write_script(&other, "#!/bin/sh\necho pi\n");
         assert_eq!(classify(&other, &agent), InstallKind::Other);
+
+        // Windows npm layout: the launcher is a shim *beside* `node_modules`
+        // rather than a symlink into the package, so it has to be recognised
+        // from its parent directory.
+        let shim_prefix = dir.join("appdata-npm");
+        let shim_package = shim_prefix.join("node_modules").join(PI_PACKAGE_NAME);
+        fs::create_dir_all(&shim_package).unwrap();
+        fs::write(
+            shim_package.join("package.json"),
+            format!(r#"{{"name":"{PI_PACKAGE_NAME}","version":"0.99.2"}}"#),
+        )
+        .unwrap();
+        let shim = shim_prefix.join("pi.cmd");
+        write_script(&shim, "@echo off\n");
+        assert_eq!(
+            classify(&shim, &agent),
+            InstallKind::Npm {
+                package_root: fs::canonicalize(&shim_package).unwrap()
+            }
+        );
 
         fs::remove_dir_all(&dir).ok();
     }

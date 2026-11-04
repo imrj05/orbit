@@ -1,8 +1,9 @@
 use super::*;
 use crate::platform::WindowCommand;
 use crate::theme::tokens::{
-    self, button, context_menu, input, list, list_item, panel, picker, ButtonSize, DynamicSpacing,
-    IconSize, Radius, StyledExt, TextSize,
+    self, button, context_menu, input, list, list_item, looping, panel, picker, popover,
+    BufferLineHeight, ButtonSize, DynamicSpacing, IconSize, InteractionState, Motion, Radius,
+    StyledExt, TextSize,
 };
 use crate::usage::tooltip::Tooltip;
 use gpui::{Font, FontFeatures, FontStyle, InteractiveElement};
@@ -23,6 +24,384 @@ pub(crate) trait TipExt: InteractiveElement {
 }
 
 impl<T: InteractiveElement> TipExt for T {}
+
+/// A compact keyboard key, suitable for an inline shortcut hint.
+pub(crate) fn kbd_key(label: impl Into<SharedString>, theme: &Theme) -> AnyElement {
+    div()
+        .h(ButtonSize::Compact.height(theme))
+        .min_w(ButtonSize::Compact.height(theme))
+        .px(DynamicSpacing::Base04.px(theme))
+        .rounded(Radius::Small.px(theme))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(theme.overlay_strong)
+        .text_size(TextSize::XSmall.px(theme))
+        .text_color(theme.text_secondary)
+        .child(label.into())
+        .into_any_element()
+}
+
+/// Keyboard legend shared by both working-folder pickers. The remote level
+/// uses Escape to go back; elsewhere it closes the picker.
+pub(crate) fn working_folder_keyboard_hints(theme: &Theme, back: bool) -> gpui::Div {
+    let group = |id: &'static str, keys: &[&str], label: String| {
+        div()
+            .debug_selector(move || id.to_string())
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base02.px(theme))
+            .children(
+                keys.iter()
+                    .map(|key| kbd_key(crate::platform::shortcuts::label(key), theme)),
+            )
+            .child(div().whitespace_nowrap().child(label))
+    };
+    div()
+        .debug_selector(|| "working-folder-keyboard-hints".to_string())
+        .flex_none()
+        .w_full()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(DynamicSpacing::Base08.px(theme))
+        .px(picker::search_padding_x(theme))
+        .py(DynamicSpacing::Base06.px(theme))
+        .border_t_1()
+        .border_color(theme.border)
+        .text_size(TextSize::XSmall.px(theme))
+        .text_color(theme.text_muted)
+        .child(group(
+            "working-folder-hint-navigate",
+            &["up", "down"],
+            tr!("working_folder.hint_navigate"),
+        ))
+        .child(group(
+            "working-folder-hint-select",
+            &["enter"],
+            tr!("working_folder.hint_select"),
+        ))
+        .child(group(
+            if back {
+                "working-folder-hint-back"
+            } else {
+                "working-folder-hint-close"
+            },
+            &["escape"],
+            if back {
+                tr!("common.back")
+            } else {
+                tr!("common.close")
+            },
+        ))
+}
+
+/// Group the platform-specific key labels of a canonical shortcut chord.
+pub(crate) fn kbd_shortcut(chord: &str, theme: &Theme) -> AnyElement {
+    div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base02.px(theme))
+        .children(
+            chord
+                .split('-')
+                .filter(|part| !part.is_empty())
+                .map(|part| kbd_key(crate::platform::shortcuts::label(part), theme)),
+        )
+        .into_any_element()
+}
+
+/// The interaction-state contract, applied to an element.
+///
+/// Every interactive surface answers the same six states, and the colours come
+/// from [`InteractionState`] rather than from the call site. Phase 2 of the
+/// UI/UX Modernization epic routes existing call sites through this trait, so a
+/// surface that wants a hover no longer names `surface_hover` itself.
+///
+/// ```ignore
+/// button_frame(div().id("save"), &theme, ButtonSize::Default)
+///     .hover_state(&theme)
+///     .child(label)
+/// ```
+pub(crate) trait ControlExt: InteractiveElement + Styled + Sized {
+    /// Hover: the contract's fill under primary ink. Replaces
+    /// `.hover(|s| s.bg(theme.surface_hover))` and its `raised` twins.
+    fn hover_state(self, theme: &Theme) -> Self {
+        let fill = InteractionState::Hover.fill(theme).expect("Hover fills");
+        let ink = InteractionState::Hover.control_ink(theme);
+        self.hover(move |style| style.bg(fill).text_color(ink))
+    }
+
+    /// Hover for a control that floats over a translucent surface or the
+    /// wallpaper (header chips, in-scroller affordances, glass trays). The
+    /// wash is ink at low alpha — `overlay_strong` — so what is behind the
+    /// control stays visible; `surface_hover` would paint an opaque slab.
+    fn hover_on_glass(self, theme: &Theme) -> Self {
+        let wash = InteractionState::Glass.glass_fill(theme);
+        self.hover(move |style| style.bg(wash))
+    }
+
+    /// Hover for a field or track: the frame steps to `border_strong` and the
+    /// fill does not change. Used where the control is defined by its outline
+    /// — text fields, sliders, and segmented tracks.
+    fn hover_border(self, theme: &Theme) -> Self {
+        let edge = InteractionState::Hover
+            .border(theme)
+            .unwrap_or(theme.border_strong);
+        self.hover(move |style| style.border_color(edge))
+    }
+
+    /// Hover for a primary action: the fill steps to `action_hover`, the step
+    /// the `action` role exists for.
+    fn hover_action(self, theme: &Theme) -> Self {
+        let fill = theme.action_hover;
+        self.hover(move |style| style.bg(fill))
+    }
+
+    /// Hover for a destructive control: the fill steps to `error_hover`.
+    fn hover_danger(self, theme: &Theme) -> Self {
+        let fill = theme.error_hover;
+        self.hover(move |style| style.bg(fill))
+    }
+
+    /// Hover for a destructive control that is quiet at rest: an error-tinted
+    /// border and wash, with the error ink appearing only under the pointer.
+    fn hover_danger_soft(self, theme: &Theme) -> Self {
+        let border = theme.error.opacity(0.6);
+        let fill = theme.error.opacity(0.08);
+        let ink = theme.error;
+        self.hover(move |style| style.border_color(border).bg(fill).text_color(ink))
+    }
+
+    /// Hover for an accent-filled control: the fill steps to `accent_hover`.
+    fn hover_accent(self, theme: &Theme) -> Self {
+        let fill = theme.accent_hover;
+        self.hover(move |style| style.bg(fill))
+    }
+
+    /// Hover on a raised surface: the elevated fill.
+    fn hover_elevated(self, theme: &Theme) -> Self {
+        let fill = theme.surface_elevated;
+        self.hover(move |style| style.bg(fill))
+    }
+
+    /// Hover for a control that is defined by its outline: the wash plus the
+    /// strong hairline, no ink change.
+    fn hover_bordered(self, theme: &Theme) -> Self {
+        let fill = InteractionState::Hover.fill(theme).expect("Hover fills");
+        let edge = theme.border_strong;
+        self.hover(move |style| style.bg(fill).border_color(edge))
+    }
+
+    /// `hover_bordered`, and the ink lifts to primary as well.
+    fn hover_bordered_ink(self, theme: &Theme) -> Self {
+        let fill = InteractionState::Hover.fill(theme).expect("Hover fills");
+        let edge = theme.border_strong;
+        let ink = theme.text_primary;
+        self.hover(move |style| style.bg(fill).border_color(edge).text_color(ink))
+    }
+
+    /// A wash that keeps secondary ink — a row whose label must not brighten
+    /// just because the pointer crossed it.
+    fn hover_quiet(self, theme: &Theme) -> Self {
+        let fill = InteractionState::Hover.fill(theme).expect("Hover fills");
+        let ink = theme.text_secondary;
+        self.hover(move |style| style.bg(fill).text_color(ink))
+    }
+
+    /// Ink only: a control with no fill of its own brightens to primary.
+    fn hover_ink(self, theme: &Theme) -> Self {
+        let ink = theme.text_primary;
+        self.hover(move |style| style.text_color(ink))
+    }
+
+    /// Ink only, stepping *down* to secondary: used where the resting state is
+    /// primary and the pointer should quiet it.
+    fn hover_ink_quiet(self, theme: &Theme) -> Self {
+        let ink = theme.text_secondary;
+        self.hover(move |style| style.text_color(ink))
+    }
+
+    /// Ink only, to the accent's readable role (a link brightening).
+    fn hover_ink_accent(self, theme: &Theme) -> Self {
+        let ink = theme.accent_text;
+        self.hover(move |style| style.text_color(ink))
+    }
+
+    /// The translucent ink wash for a surface that is itself translucent.
+    fn hover_overlay(self, theme: &Theme) -> Self {
+        let wash = theme.overlay;
+        self.hover(move |style| style.bg(wash))
+    }
+
+    /// The stronger translucent wash, with primary ink.
+    fn hover_overlay_strong(self, theme: &Theme) -> Self {
+        let wash = theme.overlay_strong;
+        let ink = theme.text_primary;
+        self.hover(move |style| style.bg(wash).text_color(ink))
+    }
+
+    /// The hover a control takes while its surface is already open: it stays
+    /// on the selected step, because a second wash would read as a new state.
+    fn hover_state_open(self, theme: &Theme, open: bool) -> Self {
+        let fill = if open {
+            InteractionState::Pressed
+                .fill(theme)
+                .expect("Pressed fills")
+        } else {
+            InteractionState::Hover.fill(theme).expect("Hover fills")
+        };
+        self.hover(move |style| style.bg(fill))
+    }
+
+    /// An accent-tinted wash. The hue is always the accent; the call site names
+    /// how strong, never which colour.
+    fn hover_accent_wash(self, theme: &Theme, wash: AccentWash) -> Self {
+        let fill = theme.accent.opacity(wash.alpha());
+        self.hover(move |style| style.bg(fill))
+    }
+
+    /// A hairline that strengthens under the pointer (dividers, tracks).
+    fn hover_divider(self, theme: &Theme) -> Self {
+        let edge = theme.border_strong;
+        self.hover(move |style| style.bg(edge))
+    }
+
+    /// The translucent wash with the strong hairline: a chip over a
+    /// translucent tray that still needs its edge to read.
+    fn hover_overlay_bordered(self, theme: &Theme) -> Self {
+        let wash = theme.overlay;
+        let edge = theme.border_strong;
+        self.hover(move |style| style.bg(wash).border_color(edge))
+    }
+
+    /// A row wash whose ink steps to the accent's readable role — a link row.
+    fn hover_accent_ink(self, theme: &Theme) -> Self {
+        let fill = InteractionState::Hover.fill(theme).expect("Hover fills");
+        let ink = theme.accent_text;
+        self.hover(move |style| style.bg(fill).text_color(ink))
+    }
+
+    /// An inverse fill: the ink colour as a background, for a small sample or
+    /// swatch that previews the foreground it would paint.
+    fn hover_inverse(self, theme: &Theme) -> Self {
+        let fill = theme.text_primary;
+        self.hover(move |style| style.bg(fill))
+    }
+
+    /// A dim rather than a colour change: image thumbs and previews.
+    fn hover_dimmed(self) -> Self {
+        self.hover(|style| style.opacity(0.9))
+    }
+
+    /// Focus: the 1px ring, drawn from the token, on every focusable control.
+    /// A no-op on an element that cannot take focus.
+    fn focus_state(self, theme: &Theme) -> Self {
+        let ring = InteractionState::Focused
+            .border(theme)
+            .expect("Focused draws the ring");
+        self.focus(move |style| style.border_1().border_color(ring))
+    }
+}
+
+impl<T: InteractiveElement + Styled> ControlExt for T {}
+
+/// The fill a control takes while the pointer is down.
+///
+/// A ghost or neutral control deepens its wash ([`PressedRamp::Wash`]).
+/// A filled control steps its own role instead: `surface_active` would paint a
+/// grey wash over a primary, accent or danger fill and change what the button
+/// means while it is being clicked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PressedRamp {
+    /// `surface_active` — the contract's pressed fill.
+    Wash,
+    /// `surface_hover` — for a control that is already sitting on
+    /// `surface_active` because it is selected or its surface is open. The
+    /// ramp has no deeper step, so the press steps back to the hover wash:
+    /// the movement is the feedback, and the control still reads as held.
+    Selected,
+    /// `action_pressed` — a primary button.
+    Action,
+    /// `accent_pressed` — an accent-filled control.
+    Accent,
+    /// `error_hover` — a destructive control.
+    Danger,
+}
+
+impl PressedRamp {
+    fn fill(self, theme: &Theme) -> Hsla {
+        match self {
+            Self::Wash => InteractionState::Pressed
+                .fill(theme)
+                .expect("Pressed fills"),
+            Self::Selected => InteractionState::Hover.fill(theme).expect("Hover fills"),
+            Self::Action => theme.action_pressed,
+            Self::Accent => theme.accent_pressed,
+            Self::Danger => theme.error_hover,
+        }
+    }
+}
+
+/// The three strengths an accent-tinted hover may use. Named so a call site
+/// says how strong, not which colour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AccentWash {
+    /// A quiet tint over a large surface.
+    Faint,
+    /// The default: ask/approve actions.
+    Soft,
+    /// A deliberate highlight, e.g. a drag handle under the pointer.
+    Strong,
+}
+
+impl AccentWash {
+    fn alpha(self) -> f32 {
+        match self {
+            Self::Faint => 0.20,
+            Self::Soft => 0.26,
+            Self::Strong => 0.40,
+        }
+    }
+}
+
+/// The states GPUI only tracks on a keyed element.
+///
+/// Press and pointer affordances live on `StatefulInteractiveElement`, so this
+/// half of the contract is a separate trait; a plain `div()` gets the hover and
+/// focus halves, a `div().id(…)` gets all four.
+pub(crate) trait StatefulControlExt:
+    gpui::StatefulInteractiveElement + Styled + Sized
+{
+    /// Pressed: the control's own ramp, never a colour picked at the call site.
+    fn pressed_state(self, theme: &Theme, ramp: PressedRamp) -> Self {
+        let fill = ramp.fill(theme);
+        self.active(move |style| style.bg(fill))
+    }
+
+    /// Disabled: a state, not an opacity. The disabled fill, ink and quiet
+    /// frame, plus a non-interactive pointer. Callers drop their handlers — a
+    /// control that looks disabled must not still activate.
+    fn disabled_state(self, theme: &Theme) -> Self {
+        let fill = InteractionState::Disabled
+            .fill(theme)
+            .expect("Disabled fills");
+        let border = InteractionState::Disabled
+            .border(theme)
+            .expect("Disabled keeps its frame");
+        let ink = InteractionState::Disabled.control_ink(theme);
+        self.cursor_not_allowed()
+            .bg(fill)
+            .text_color(ink)
+            .border_1()
+            .border_color(border)
+    }
+}
+
+impl<T: gpui::StatefulInteractiveElement + Styled> StatefulControlExt for T {}
 
 /// Turn a wire command name into a short human label, e.g. `set_model` →
 /// `Set model failed`.
@@ -99,6 +478,31 @@ pub(crate) fn icon_dyn(path: SharedString, size: impl Into<Pixels>, color: Hsla)
         .group_hover(BUTTON_GROUP, move |style| style.text_color(hover))
 }
 
+/// The advance width of one line of UI text at `size`, shaped with the app's
+/// UI face.
+///
+/// A control that reserves room for a label it is about to reveal needs the
+/// label's real width: a fixed reserve stops fitting as soon as the UI font
+/// size, the spacing density or the locale changes. Shaping goes through the
+/// window's text system, so callers pass the window they are rendering.
+pub(crate) fn text_width(window: &Window, text: &str, size: Pixels) -> Pixels {
+    if text.is_empty() {
+        return px(0.);
+    }
+    let run = gpui::TextRun {
+        len: text.len(),
+        font: gpui::font(theme::ui_font_family()),
+        color: Hsla::transparent_black(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    window
+        .text_system()
+        .shape_line(SharedString::from(text.to_string()), size, &[run], None)
+        .width
+}
+
 /// The app's shared loading spinner: `loader.svg` rotating once per 900 ms,
 /// and rendered static under reduce-motion so the perpetual loop can be turned
 /// off. In-flight affordances (buttons, panels, tool cards) share this so
@@ -138,18 +542,14 @@ fn spinning_icon(
         .flex_none()
         .size(size.into())
         .text_color(color);
-    if theme.ui.reduce_motion {
+    if theme.reduce_motion() {
         return svg.into_any_element();
     }
-    svg.with_animation(
-        id,
-        Animation::new(Duration::from_millis(900)).repeat(),
-        |svg, delta| {
-            svg.with_transformation(Transformation::rotate(radians(
-                delta * std::f32::consts::TAU,
-            )))
-        },
-    )
+    svg.with_animation(id, Animation::new(looping::SPIN).repeat(), |svg, delta| {
+        svg.with_transformation(Transformation::rotate(radians(
+            delta * std::f32::consts::TAU,
+        )))
+    })
     .into_any_element()
 }
 
@@ -177,12 +577,12 @@ pub(crate) fn refresh_glyph(
         .flex_none()
         .size(size)
         .text_color(theme.accent_text);
-    if theme.ui.reduce_motion {
+    if theme.reduce_motion() {
         return svg.into_any_element();
     }
     svg.with_animation(
         id,
-        Animation::new(Duration::from_millis(700)).repeat(),
+        Animation::new(looping::SPIN_FAST).repeat(),
         |svg, delta| {
             svg.with_transformation(Transformation::rotate(radians(
                 delta * std::f32::consts::TAU,
@@ -190,6 +590,133 @@ pub(crate) fn refresh_glyph(
         },
     )
     .into_any_element()
+}
+
+/// Anchor a popover to its trigger, deferred so it paints above the surface it
+/// belongs to.
+///
+/// Every menu, dropdown and picker in the workbench is positioned this way: the
+/// caller supplies the corner and the offset, the shell supplies the snap-to-
+/// window margin. A menu that measures in window space cannot flip, so it takes
+/// [`anchored_popover_in_window`] instead and does not snap.
+pub(crate) fn anchored_popover(
+    corner: Corner,
+    offset: Point<Pixels>,
+    popup: impl IntoElement + 'static,
+    id: impl Into<SharedString>,
+    theme: &Theme,
+) -> AnyElement {
+    anchored()
+        .position_mode(AnchoredPositionMode::Local)
+        .anchor(corner)
+        .offset(offset)
+        .snap_to_window_with_margin(popover::WINDOW_MARGIN)
+        // Every menu enters here, so a new one cannot forget its entrance.
+        .child(deferred(popover_enter_from(
+            corner,
+            id,
+            div().child(popup),
+            theme,
+        )))
+        .into_any_element()
+}
+
+/// Anchor a popover at a point the caller computed — a context menu at the
+/// pointer, a menu that opens beside a row rather than under a trigger.
+pub(crate) fn anchored_popover_at(
+    position: Point<Pixels>,
+    popup: impl IntoElement + 'static,
+    id: impl Into<SharedString>,
+    theme: &Theme,
+) -> AnyElement {
+    anchored()
+        .position(position)
+        .snap_to_window_with_margin(popover::WINDOW_MARGIN)
+        // A context menu at the pointer has no anchor edge to travel from, so it
+        // fades only.
+        .child(deferred(popover_enter(id, div().child(popup), theme)))
+        .into_any_element()
+}
+
+/// Anchor a popover measured in window space. No snap: the position is
+/// absolute, and sliding it would move the menu away from its trigger.
+pub(crate) fn anchored_popover_in_window(
+    corner: Corner,
+    offset: Point<Pixels>,
+    popup: impl IntoElement + 'static,
+    id: impl Into<SharedString>,
+    theme: &Theme,
+) -> AnyElement {
+    anchored()
+        .position_mode(AnchoredPositionMode::Window)
+        .anchor(corner)
+        .offset(offset)
+        .child(deferred(popover_enter_from(
+            corner,
+            id,
+            div().child(popup),
+            theme,
+        )))
+        .into_any_element()
+}
+
+/// A popover's entrance: fade in on [`Motion::Interaction`], or appear at once
+/// when Reduce Motion is on. The guard and the cadence belong to the shell, so
+/// a new popup cannot forget either.
+pub(crate) fn popover_enter<E>(id: impl Into<SharedString>, el: E, theme: &Theme) -> AnyElement
+where
+    E: Styled + IntoElement + 'static,
+{
+    crate::motion::enter(el, id, theme, Motion::Interaction, None)
+}
+
+/// A menu's entrance: the fade above, plus an 8px travel out of the anchor edge
+/// so the card reads as arriving from the control that opened it. Dismissal
+/// stays instant — a menu that lingers after a click is a tax on the next one.
+pub(crate) fn popover_enter_from<E>(
+    corner: Corner,
+    id: impl Into<SharedString>,
+    el: E,
+    theme: &Theme,
+) -> AnyElement
+where
+    E: Styled + IntoElement + 'static,
+{
+    crate::motion::enter(el, id, theme, Motion::Interaction, Some(corner))
+}
+
+/// The frame every modal shares: the elevated surface, its floating shadow and
+/// panel corner, a clipped column, and a hitbox that stops a click on the card
+/// from reaching the scrim beneath it.
+///
+/// Callers add the layer id, the width and height bounds, the key context, and
+/// the children. Nothing about a dialog's size belongs here — only what every
+/// dialog must be.
+pub(crate) fn modal_card(theme: &Theme) -> gpui::Div {
+    div()
+        .elevation_3(theme)
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .occlude()
+        .font_family(theme::ui_font_family())
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+}
+
+/// The backdrop every modal shares: a full-window scrim that centres its card
+/// and dims the workbench beneath. Callers add the layer id, the dismissal
+/// handler, the key context, and the card.
+pub(crate) fn modal_scrim(theme: &Theme) -> gpui::Div {
+    div()
+        .absolute()
+        .inset_0()
+        .occlude()
+        .bg(theme.scrim_modal())
+        .px(DynamicSpacing::Base24.px(theme))
+        .py(DynamicSpacing::Base24.px(theme))
+        .flex()
+        .items_center()
+        .justify_center()
 }
 
 /// The shell of a context menu, built to Zed's `ContextMenu`: the elevated
@@ -286,7 +813,7 @@ pub(crate) fn picker_search_frame<E: Styled>(el: E, theme: &Theme) -> E {
 /// one Comfortable line of Default text (31px). A row with a secondary line
 /// grows to fit it (see `picker::two_line_entry_height`). Callers add the id,
 /// colors, hover, selection, and click handling.
-pub(crate) fn picker_entry<E: Styled>(el: E, theme: &Theme) -> E {
+pub(crate) fn picker_entry<E: Styled + InteractiveElement>(el: E, theme: &Theme) -> E {
     el.min_h(picker::entry_height(theme))
         .mx(list_item::inset(theme))
         .px(list_item::padding_x(theme))
@@ -296,6 +823,151 @@ pub(crate) fn picker_entry<E: Styled>(el: E, theme: &Theme) -> E {
         .items_center()
         .gap(list_item::content_gap(theme))
         .text_size(picker::TEXT.px(theme))
+        .focus_state(theme)
+}
+
+/// One fixed text line box inside a picker row, at the Comfortable leading
+/// [`picker::two_line_entry_height`] measures. Used by [`PickerRow`].
+fn picker_line_height(size: TextSize, theme: &Theme) -> gpui::Pixels {
+    BufferLineHeight::Comfortable.resolve(size.px(theme))
+}
+
+/// The text body of a two-line picker row: a title over a secondary detail
+/// line, each on a fixed line box so the pair is exactly
+/// [`picker::two_line_entry_height`] tall.
+///
+/// Every picker uses this one builder — the model selector's label column, the
+/// "Work in" lists, the folder picker — so their rows share a rhythm and a row's
+/// text can never spill into the row below it (which is what happens when a
+/// two-line body is given a one-line height).
+pub(crate) struct PickerRow {
+    title: String,
+    detail: Option<String>,
+    detail_mono: bool,
+    weight: gpui::FontWeight,
+    title_color: Hsla,
+    detail_color: Hsla,
+    /// A leading glyph, drawn on the **title's** line.
+    icon: Option<(&'static str, Hsla)>,
+}
+
+impl PickerRow {
+    /// A row body with the picker's regular ink: `title_color` for the title,
+    /// `detail_color` for the second line.
+    pub(crate) fn new(title: impl Into<String>, title_color: Hsla, detail_color: Hsla) -> Self {
+        Self {
+            title: title.into(),
+            detail: None,
+            detail_mono: false,
+            weight: gpui::FontWeight::NORMAL,
+            title_color,
+            detail_color,
+            icon: None,
+        }
+    }
+
+    /// The leading glyph. It is drawn on the title's line and the detail line
+    /// is indented to clear it, so one row reads as one block: glyph and title
+    /// paired, description underneath. Centering the glyph in a two-line row
+    /// instead leaves it floating between the lines, belonging to neither —
+    /// which is what makes a scrolling list look like two things sliding past
+    /// each other.
+    pub(crate) fn icon(mut self, path: &'static str, color: Hsla) -> Self {
+        self.icon = Some((path, color));
+        self
+    }
+
+    /// The second line: a path, a branch, a hint.
+    pub(crate) fn detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    /// Draw the second line in the code face — paths and branches are machine
+    /// text, the same register the model picker uses for an id.
+    pub(crate) fn mono(mut self) -> Self {
+        self.detail_mono = true;
+        self
+    }
+
+    /// The title's weight. Pickers mark the highlighted/selected row with
+    /// Medium rather than a second color.
+    pub(crate) fn weight(mut self, weight: gpui::FontWeight) -> Self {
+        self.weight = weight;
+        self
+    }
+
+    /// The row body. It is the flexible child (`flex_1` + `min_w_0`), so the
+    /// row's trailing slot — a check, an age, a tag — lands at the right edge
+    /// and long text ellipsizes inside the row instead of spilling past it.
+    /// Wrap it in another div and that promise is gone.
+    pub(crate) fn into_element(self, theme: &Theme) -> AnyElement {
+        let gap = list_item::content_gap(theme);
+        let icon_size = context_menu::ICON.px(theme);
+        let leading = self.icon.map(|(path, color)| {
+            div()
+                .debug_selector(|| "picker-row-leading".to_string())
+                .flex_none()
+                // Exactly the title's line box, so the glyph and the title
+                // share one optical line whatever the row's total height.
+                .h(picker_line_height(picker::TEXT, theme))
+                .flex()
+                .items_center()
+                .child(icon(path, icon_size, color))
+        });
+        let indent = if leading.is_some() {
+            icon_size + gap
+        } else {
+            gpui::px(0.)
+        };
+        let detail = self.detail.map(|detail| {
+            let line = div()
+                .w_full()
+                .pl(indent)
+                .truncate()
+                .text_size(picker::SECONDARY_TEXT.px(theme))
+                .line_height(picker_line_height(picker::SECONDARY_TEXT, theme))
+                .text_color(self.detail_color)
+                .child(detail);
+            if self.detail_mono {
+                line.font_family(theme::code_font_family())
+                    .into_any_element()
+            } else {
+                line.into_any_element()
+            }
+        });
+        div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap(gap)
+                    .children(leading)
+                    .child(
+                        div()
+                            .debug_selector(|| "picker-row-title".to_string())
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .font_weight(self.weight)
+                            .line_height(picker_line_height(picker::TEXT, theme))
+                            .text_color(self.title_color)
+                            .child(self.title),
+                    ),
+            )
+            .children(detail)
+            .into_any_element()
+    }
+}
+
+/// The row height a two-line [`PickerRow`] fills exactly.
+pub(crate) fn picker_row_height(theme: &Theme) -> gpui::Pixels {
+    picker::two_line_entry_height(theme)
 }
 
 /// A labeled button's frame, Zed's `ButtonLike`: the size's height and
@@ -321,7 +993,7 @@ pub(crate) fn button_frame<E: Styled + gpui::InteractiveElement>(
         .whitespace_nowrap()
         .text_size(button::label_size(size).px(theme))
         .line_height(relative(1.))
-        .focus(|style| style.border_1().border_color(theme.focus_ring))
+        .focus_state(theme)
 }
 
 /// Where a segment sits inside a segmented control (a grouped row of
@@ -369,6 +1041,106 @@ pub(crate) fn segmented_segment<E: Styled + gpui::InteractiveElement>(
     }
 }
 
+/// The app's one disclosure chevron: `chevron-right`, turning a quarter turn to
+/// point down while `open`, on [`Motion::Interaction`].
+///
+/// One glyph rotates instead of two glyphs swapping, because a swap cannot be
+/// animated — the eye reads a jump where the shape should carry through. Reduce
+/// Motion turns it instantly, which is the same picture without the travel.
+///
+/// `id` must be unique per chevron: it keys the transition.
+pub(crate) fn disclosure_chevron(
+    id: impl Into<SharedString>,
+    open: bool,
+    size: impl Into<Pixels>,
+    color: Hsla,
+    theme: &Theme,
+) -> AnyElement {
+    let svg = gpui::svg()
+        .path("icons/chevron-right.svg")
+        .flex_none()
+        .size(size.into())
+        .text_color(color);
+    crate::motion::state(
+        svg,
+        id,
+        theme,
+        Motion::Interaction,
+        if open { 1.0 } else { 0.0 },
+        |svg, value| svg.with_transformation(Transformation::rotate(radians(chevron_angle(value)))),
+    )
+}
+
+/// The angle for a point on the chevron's turn: 0 while closed, a quarter turn
+/// (90°) while open.
+fn chevron_angle(value: f32) -> f32 {
+    std::f32::consts::FRAC_PI_2 * value.clamp(0.0, 1.0)
+}
+
+/// The app's one switch: a 36×20 track and a 14px knob that travels between the
+/// ends on [`Motion::Interaction`], with the track cross-fading from
+/// `surface_elevated` to `accent`.
+///
+/// The three settings switches (Reduce Motion, automatic updates, a skill's
+/// enablement) all render through this, so a switch cannot drift in shape or in
+/// motion. `id` must be unique per switch — it keys the transition as well as
+/// the element.
+pub(crate) fn switch(
+    id: impl Into<SharedString>,
+    on: bool,
+    theme: &Theme,
+    on_click: impl Fn(&gpui::MouseUpEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    let theme = *theme;
+    let id = id.into();
+    let padding = DynamicSpacing::Base02.px(&theme);
+    let travel = switch_travel(&theme);
+    let track = div()
+        .id(gpui::ElementId::Name(id.clone()))
+        .w(px(36.))
+        .h(DynamicSpacing::Base20.px(&theme))
+        .rounded_full()
+        .p(padding)
+        .border_1()
+        .border_color(theme.border)
+        .flex()
+        .items_center()
+        .cursor_pointer()
+        .hover_border(&theme)
+        .on_mouse_up(MouseButton::Left, on_click);
+    crate::motion::state(
+        track,
+        id,
+        &theme,
+        Motion::Interaction,
+        if on { 1.0 } else { 0.0 },
+        move |track, value| {
+            track
+                .bg(crate::motion::blend(
+                    theme.surface_elevated,
+                    theme.accent,
+                    value,
+                ))
+                .child(
+                    div()
+                        .flex_none()
+                        .size(px(14.))
+                        .rounded_full()
+                        .bg(theme.toggle_knob)
+                        // Relative, so the knob travels without re-laying out the
+                        // track — and without moving the hitbox the click lands on.
+                        .relative()
+                        .left(travel * value),
+                )
+        },
+    )
+}
+
+/// How far a switch's knob travels: the track, less its padding and the knob.
+fn switch_travel(theme: &Theme) -> Pixels {
+    px(36.) - DynamicSpacing::Base02.px(theme) * 2.0 - px(14.)
+}
+
 /// An icon-only button's frame, Zed's `IconButton`: a square as tall as its
 /// [`ButtonSize`], [`button::radius`], the icon centered at
 /// [`ButtonSize::icon_size`]. Callers keep colors, hover, press, tooltip, and
@@ -384,7 +1156,7 @@ pub(crate) fn icon_button_frame<E: Styled + gpui::InteractiveElement>(
         .items_center()
         .justify_center()
         .rounded(button::radius(size).px(theme))
-        .focus(|style| style.border_1().border_color(theme.focus_ring))
+        .focus_state(theme)
 }
 
 /// A text field's box, Zed's `InputField`: at least 32px tall, `px_2`
@@ -594,8 +1366,8 @@ pub(crate) fn star_project_banner(
         .items_center()
         .gap(DynamicSpacing::Base08.px(&theme))
         .cursor_pointer()
-        .hover(|s| s.bg(theme.surface_hover).border_color(theme.border_strong))
-        .active(|s| s.opacity(PRESS_DIM))
+        .hover_bordered(&theme)
+        .pressed_state(&theme, PressedRamp::Wash)
         .on_mouse_up(MouseButton::Left, |_, _, cx| {
             cx.open_url(env!("CARGO_PKG_REPOSITORY"));
         })
@@ -640,7 +1412,6 @@ pub(crate) fn header_chip<S: Styled + InteractiveElement>(el: S, theme: &Theme) 
     el.border_1()
         .border_color(theme.border)
         .bg(header_fill(theme))
-        .shadow(tokens::button_shadow(theme))
         .hover(move |_| lifted)
 }
 
@@ -692,7 +1463,7 @@ pub(crate) fn header_ghost_button(
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .hover(|s| s.bg(theme.surface_hover)),
+            .hover_state(theme),
     )
     .child(child)
 }
@@ -1141,11 +1912,79 @@ pub(crate) fn runtime_path(theme: Theme, text: String) -> AnyElement {
         .into_any_element()
 }
 
-/// A Runtime error value (critical color).
+/// An error surface: what failed, and what to do next.
+///
+/// Every error in the workbench renders through this or [`error_text`]. The
+/// rule is the phase-8 one: a bare error string is a defect. `title` says what
+/// failed, `detail` carries the underlying message (wrapped, never truncated),
+/// and the last line is always an action — a button when there is something to
+/// press, otherwise a `hint` that names the next step in words.
+pub(crate) fn error_state(
+    theme: Theme,
+    title: &str,
+    detail: Option<&str>,
+    hint: Option<&str>,
+    action: Option<AnyElement>,
+) -> AnyElement {
+    let mut body = div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap(DynamicSpacing::Base04.px(&theme))
+        .child(
+            div()
+                .text_size(TextSize::Default.px(&theme))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.text_primary)
+                .child(title.to_string()),
+        );
+    if let Some(detail) = detail.filter(|d| !d.trim().is_empty()) {
+        body = body.child(
+            div()
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_secondary)
+                .child(detail.to_string()),
+        );
+    }
+    if let Some(hint) = hint.filter(|h| !h.trim().is_empty()) {
+        body = body.child(
+            div()
+                .text_size(TextSize::Small.px(&theme))
+                .text_color(theme.text_muted)
+                .child(hint.to_string()),
+        );
+    }
+
+    let mut card = div()
+        .w_full()
+        .bg(theme.error.opacity(0.07))
+        .border_1()
+        .border_color(theme.error.opacity(0.35))
+        .rounded(panel::RADIUS.px(&theme))
+        .px(DynamicSpacing::Base12.px(&theme))
+        .py(DynamicSpacing::Base12.px(&theme))
+        .flex()
+        .items_start()
+        .gap(DynamicSpacing::Base08.px(&theme))
+        .child(icon(
+            "icons/info.svg",
+            IconSize::Medium.px(&theme),
+            theme.error,
+        ))
+        .child(body);
+    if let Some(action) = action {
+        card = card.child(action);
+    }
+    card.into_any_element()
+}
+
+/// A Runtime error value: the same two facts as [`error_state`], sized for a
+/// settings row. It wraps instead of truncating — an error a user cannot read
+/// is not an error message.
 pub(crate) fn runtime_error(theme: Theme, text: String) -> AnyElement {
     div()
         .min_w_0()
-        .truncate()
         .text_size(TextSize::Small.px(&theme))
         .text_color(theme.error)
         .child(text)
@@ -1186,6 +2025,49 @@ pub(crate) fn format_uptime(elapsed: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The chevron's turn is a quarter turn and nothing else: the same glyph in
+    /// the same place, so the row does not appear to swap icons.
+    #[test]
+    fn a_disclosure_chevron_turns_exactly_a_quarter_turn() {
+        assert_eq!(chevron_angle(0.0), 0.0, "closed points right");
+        assert!(
+            (chevron_angle(1.0) - std::f32::consts::FRAC_PI_2).abs() < 1e-6,
+            "open points down"
+        );
+        assert!(
+            (chevron_angle(0.5) - std::f32::consts::FRAC_PI_4).abs() < 1e-6,
+            "halfway is halfway"
+        );
+        // Clamped, so a delayed frame cannot over-rotate the glyph.
+        assert!((chevron_angle(2.0) - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        assert_eq!(chevron_angle(-1.0), 0.0);
+    }
+
+    /// A switch's knob travels the track's inner span, and the span has to stay
+    /// positive at every spacing density the user can choose — at Compact the
+    /// padding shrinks and the knob has further to go, not less.
+    #[test]
+    fn a_switch_knob_travels_the_tracks_inner_span() {
+        for density in crate::theme::SPACING_DENSITIES {
+            let mut theme = Theme::dark();
+            theme.ui.spacing_density = density;
+            let travel = switch_travel(&theme);
+            let padding = DynamicSpacing::Base02.px(&theme);
+            assert!(
+                travel > px(0.),
+                "the knob would fall off the track at {density}% density"
+            );
+            // Track = padding + knob + travel + padding.
+            assert_eq!(
+                padding + px(14.) + travel + padding,
+                px(36.),
+                "the knob must land flush with the far edge at {density}%"
+            );
+        }
+        // The default density is the geometry the design system states.
+        assert_eq!(switch_travel(&Theme::dark()), px(18.));
+    }
 
     /// `header_chip` dresses the surface (hairline, glass, hover lift) but
     /// must leave the caller's rounding alone: a circular control may use

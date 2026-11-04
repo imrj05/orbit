@@ -1,10 +1,13 @@
-//! Workspace picker — the new-task page's folder selector.
+//! Workspace picker — the new-task page's "Work in" selector.
 //!
-//! Replaces the bare OS dialog with a popover that answers the common case
-//! first: the folders you already run sessions in, newest activity first,
-//! filterable, keyboard-driven. The native dialog is still one row away
-//! ("Choose folder…") for anywhere else. Follows the same popover conventions
-//! as [`crate::branch_picker::BranchPicker`].
+//! The same question the status bar's chip answers, asked before there is a
+//! session: *where does this task run?* It lists the repository's locations
+//! first (the main checkout, then each linked worktree), then the folders you
+//! already run sessions in, newest activity first, then the ways to reach a new
+//! place — a new worktree, an existing worktree folder, a remote branch — and
+//! the native dialog ("Choose folder…") for anywhere else. Filterable and
+//! keyboard-driven, following the popover conventions of
+//! [`crate::branch_picker::BranchPicker`].
 
 use std::path::PathBuf;
 
@@ -14,9 +17,12 @@ use gpui::{
     Subscription, Window,
 };
 
-use crate::app::{icon, menu_header, picker_entry, picker_search_frame, picker_surface};
+use crate::app::{
+    icon, menu_header, picker_entry, picker_row_height, picker_search_frame, picker_surface,
+    working_folder_keyboard_hints, ControlExt, PickerRow,
+};
 use crate::composer::ComposerInput;
-use crate::theme::tokens::{context_menu, input, list, picker, DynamicSpacing};
+use crate::theme::tokens::{context_menu, input, list, picker};
 use crate::theme::{self, Theme};
 
 /// The field caps at this width; the popover matches it exactly. Feeds
@@ -28,18 +34,25 @@ pub const FIELD_MAX_W: f32 = 400.;
 pub const PAGE_PAD: f32 = 24.;
 /// Smallest the popover ever gets (very narrow windows).
 const POPOVER_MIN_W: f32 = 240.;
-/// Folder rows visible before the recents list scrolls.
-const VISIBLE_ROWS: f32 = 4.;
+/// Rows visible before the list scrolls. Deliberately fractional: the list
+/// ends on a cut row, which is how the popover says there is more without a
+/// scrollbar. Two-line rows are taller than the single-line rows this used to
+/// count, so the count came down to keep the whole popover inside the window.
+const VISIBLE_ROWS: f32 = 3.5;
 
-/// A folder row: a one-line picker entry. Layout and the keyboard reveal
-/// math both read it, so they can never disagree.
+/// Every row is a two-line picker entry — a title over a detail line (a path,
+/// a hint, a branch) — so one height covers the folders, the actions, and the
+/// browse row. Layout, the scroll viewport, and the keyboard reveal math all
+/// read this one number, so they cannot disagree; a row that is taller than
+/// the height the list assumes is exactly how text ends up overlapping the row
+/// beneath it.
 fn row_h(theme: &Theme) -> f32 {
-    picker::entry_height(theme).into()
+    picker_row_height(theme).into()
 }
 
-/// Tallest the recents list grows before scrolling (≈ 4 rows). Sized so the
-/// whole popover still fits below the centered field at the 960×640 minimum
-/// window, instead of `snap_to_window` shoving it up over the card.
+/// Tallest the list grows before scrolling (≈ 4 rows). Sized so the whole
+/// popover still fits below the centered field at the 960×640 minimum window,
+/// instead of `snap_to_window` shoving it up over the card.
 fn list_max_h(theme: &Theme) -> f32 {
     VISIBLE_ROWS * row_h(theme)
 }
@@ -50,6 +63,8 @@ pub const MAX_RECENTS: usize = 8;
 type WorkspacePick = Box<dyn Fn(PathBuf, &mut Window, &mut App)>;
 /// Browse callback: open the native folder dialog.
 type WorkspaceBrowse = Box<dyn Fn(&mut Window, &mut App)>;
+/// Action callback: the action's index in [`PickerAction`] order.
+type WorkspaceAction = Box<dyn Fn(usize, &mut Window, &mut App)>;
 /// Dismiss callback; `bool` is true when an outside mouse-down closed it.
 type WorkspacePickerDismiss = Box<dyn Fn(bool, &mut Window, &mut App)>;
 
@@ -63,19 +78,60 @@ pub fn width_for_window(viewport_w: f32) -> f32 {
     (viewport_w - 2. * PAGE_PAD).clamp(POPOVER_MIN_W, FIELD_MAX_W)
 }
 
-/// One selectable folder: a recent workspace or the current one.
+/// What a row's leading glyph says about the place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryMark {
+    /// The repository's main checkout.
+    Local,
+    /// A linked worktree.
+    Worktree,
+    /// Any other folder.
+    Folder,
+}
+
+impl EntryMark {
+    fn icon_path(self) -> &'static str {
+        match self {
+            Self::Local => "icons/monitor.svg",
+            Self::Worktree => "icons/branch.svg",
+            Self::Folder => "icons/folder.svg",
+        }
+    }
+}
+
+/// One selectable folder: a location in the repository, a recent workspace, or
+/// the current one.
 #[derive(Debug, Clone)]
 pub struct WorkspaceEntry {
     /// Folder display name (`workspace_label`).
     pub name: String,
     pub path: PathBuf,
-    /// Age of the newest session here (`2h`); `None` for a folder with no
-    /// sessions yet.
-    pub last_active: Option<String>,
+    /// The row's trailing note: the age of the newest session here (`2h`) for a
+    /// recent folder, or the branch a location is on. `None` when there is
+    /// nothing to add.
+    pub note: Option<String>,
+    /// Which glyph the row leads with.
+    pub mark: EntryMark,
+}
+
+/// A row that is a verb rather than a folder ("New worktree…"). Actions sit
+/// below the folders, above the native-dialog row, and never take part in the
+/// filter: they are always one step away.
+#[derive(Debug, Clone)]
+pub struct PickerAction {
+    /// Stable id the app dispatches on (`new-worktree`, `existing-worktree`,
+    /// `remote-branch`).
+    pub id: &'static str,
+    pub icon: &'static str,
+    pub label: String,
+    pub hint: Option<String>,
 }
 
 pub struct WorkspacePicker {
     entries: Vec<WorkspaceEntry>,
+    /// Verb rows under the folders; empty when the workspace is not a
+    /// repository.
+    actions: Vec<PickerAction>,
     current: Option<PathBuf>,
     /// Matches the field's rendered width — the app measures the window at
     /// open time so the popover never overflows or juts past the card.
@@ -88,17 +144,21 @@ pub struct WorkspacePicker {
     _filter_sub: Subscription,
     on_pick: WorkspacePick,
     on_browse: WorkspaceBrowse,
+    on_action: WorkspaceAction,
     /// `bool` = dismissed by an outside mouse-down (vs. escape).
     on_dismiss: WorkspacePickerDismiss,
 }
 
 impl WorkspacePicker {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         entries: Vec<WorkspaceEntry>,
+        actions: Vec<PickerAction>,
         current: Option<PathBuf>,
         width: f32,
         on_pick: WorkspacePick,
         on_browse: WorkspaceBrowse,
+        on_action: WorkspaceAction,
         on_dismiss: WorkspacePickerDismiss,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -120,6 +180,7 @@ impl WorkspacePicker {
         });
         Self {
             entries,
+            actions,
             current,
             width,
             filter,
@@ -129,6 +190,7 @@ impl WorkspacePicker {
             _filter_sub: filter_sub,
             on_pick,
             on_browse,
+            on_action,
             on_dismiss,
         }
     }
@@ -166,6 +228,14 @@ impl WorkspacePicker {
 
     // ── internals ────────────────────────────────────────────────────────
 
+    /// Test seam: type into the filter the way a user would, so a layout test
+    /// can assert what the list does when nothing matches.
+    #[cfg(test)]
+    pub(crate) fn set_filter_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.filter
+            .update(cx, |input, cx| input.set_text(text.to_string(), cx));
+    }
+
     /// Folder rows matching the filter (name or path substring).
     fn filtered(&self, needle: &str) -> Vec<WorkspaceEntry> {
         let needle = needle.trim().to_lowercase();
@@ -184,9 +254,9 @@ impl WorkspacePicker {
             .collect()
     }
 
-    /// Selectable row count: folder rows plus the "Choose folder…" row.
+    /// Selectable rows: folders, then actions, then "Choose folder…".
     fn row_count(&self, rows: &[WorkspaceEntry]) -> usize {
-        rows.len() + 1
+        rows.len() + self.actions.len() + 1
     }
 
     fn step(&mut self, dir: isize, cx: &mut Context<Self>) {
@@ -198,11 +268,12 @@ impl WorkspacePicker {
         let pos = self.highlighted.min(count - 1) as isize;
         let next = (pos + dir).rem_euclid(count as isize) as usize;
         self.highlighted = next;
-        self.ensure_visible(rows.len(), theme::get(cx));
+        self.ensure_visible(rows.len() + self.actions.len(), theme::get(cx));
         cx.notify();
     }
 
-    fn ensure_visible(&mut self, folder_rows: usize, theme: &Theme) {
+    fn ensure_visible(&mut self, list_rows: usize, theme: &Theme) {
+        let folder_rows = list_rows;
         let row_h = row_h(theme);
         // The browse row sits below the list: scroll to the very bottom.
         let row_top = if self.highlighted >= folder_rows {
@@ -232,13 +303,21 @@ impl WorkspacePicker {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match rows.get(ix) {
-            Some(entry) if self.current.as_ref() == Some(&entry.path) => {
-                (self.on_dismiss)(false, window, cx)
+        if ix < rows.len() {
+            match &rows[ix] {
+                entry if self.current.as_ref() == Some(&entry.path) => {
+                    (self.on_dismiss)(false, window, cx)
+                }
+                entry => (self.on_pick)(entry.path.clone(), window, cx),
             }
-            Some(entry) => (self.on_pick)(entry.path.clone(), window, cx),
-            None => (self.on_browse)(window, cx),
+            return;
         }
+        let action_ix = ix - rows.len();
+        if action_ix < self.actions.len() {
+            (self.on_action)(action_ix, window, cx);
+            return;
+        }
+        (self.on_browse)(window, cx);
     }
 }
 
@@ -258,6 +337,7 @@ impl Render for WorkspacePicker {
         // ── folder rows ──
         let mut list = div()
             .id("workspace-picker-list")
+            .debug_selector(|| "workspace-picker-list".to_string())
             .w_full()
             .max_h(px(list_max_h(&theme)))
             .overflow_y_scroll()
@@ -265,11 +345,39 @@ impl Render for WorkspacePicker {
             .py(picker::list_padding_y(&theme))
             .flex()
             .flex_col();
+        let mut entry_list = div()
+            .debug_selector(|| "workspace-rows".to_string())
+            .w_full()
+            .flex()
+            .flex_col();
+        // Zed's no-match state: one muted two-line row where the folders would
+        // be. The verbs below stay put, because "new worktree" is exactly what
+        // a search that found nothing should still offer.
+        if rows.is_empty() {
+            entry_list = entry_list.child(
+                picker_entry(div(), &theme)
+                    .h(px(row_h(&theme)))
+                    .flex_none()
+                    .child(
+                        PickerRow::new(
+                            tr!("workspace_picker.no_folders_match"),
+                            theme.text_muted,
+                            theme.text_muted,
+                        )
+                        .icon("icons/search.svg", theme.text_muted)
+                        .detail(tr!(
+                            "workspace_picker.try_another_name_or_choose_a_folder_below"
+                        ))
+                        .weight(FontWeight::MEDIUM)
+                        .into_element(&theme),
+                    ),
+            );
+        }
         for (ix, entry) in rows.iter().enumerate() {
             let is_current = self.current.as_ref() == Some(&entry.path);
             let highlighted = ix == self.highlighted;
             let this = this.clone();
-            list = list.child(
+            entry_list = entry_list.child(
                 picker_entry(
                     div().id(ElementId::NamedInteger("workspace-row".into(), ix as u64)),
                     &theme,
@@ -284,9 +392,7 @@ impl Render for WorkspacePicker {
                 .when(!highlighted && is_current, |row| {
                     row.bg(theme.surface_selected)
                 })
-                .when(!highlighted && !is_current, |row| {
-                    row.hover(|s| s.bg(theme.surface_hover))
-                })
+                .when(!highlighted && !is_current, |row| row.hover_state(&theme))
                 // Pointer movement moves the highlight; a scroll sliding rows
                 // under a stationary pointer must not hijack ↑/↓ navigation.
                 .on_mouse_move({
@@ -309,55 +415,33 @@ impl Render for WorkspacePicker {
                 )
                 // The check carries "current" — the icon stays quiet, one
                 // accent signal per fact.
-                .child(icon(
-                    "icons/folder.svg",
-                    context_menu::ICON.px(&theme),
-                    theme.text_muted,
-                ))
                 .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .items_baseline()
-                        .gap(DynamicSpacing::Base08.px(&theme))
-                        .child(
-                            div()
-                                .flex_none()
-                                .max_w(px(170.))
-                                .truncate()
-                                .font_weight(if highlighted || is_current {
-                                    FontWeight::MEDIUM
-                                } else {
-                                    FontWeight::NORMAL
-                                })
-                                .text_color(if highlighted {
-                                    theme.text_primary
-                                } else if is_current {
-                                    theme.selection_fg
-                                } else {
-                                    theme.text_secondary
-                                })
-                                .child(entry.name.clone()),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                // Paths are machine text — mono, like the
-                                // model picker's id line.
-                                .font_family(theme::code_font_family())
-                                .text_size(picker::SECONDARY_TEXT.px(&theme))
-                                .text_color(if highlighted || is_current {
-                                    theme.text_secondary
-                                } else {
-                                    theme.text_muted
-                                })
-                                .child(entry.path.to_string_lossy().into_owned()),
-                        ),
+                    PickerRow::new(
+                        entry.name.clone(),
+                        if highlighted {
+                            theme.text_primary
+                        } else if is_current {
+                            theme.selection_fg
+                        } else {
+                            theme.text_secondary
+                        },
+                        if highlighted || is_current {
+                            theme.text_secondary
+                        } else {
+                            theme.text_muted
+                        },
+                    )
+                    .icon(entry.mark.icon_path(), theme.text_muted)
+                    .detail(entry.path.to_string_lossy().into_owned())
+                    .mono()
+                    .weight(if highlighted || is_current {
+                        FontWeight::MEDIUM
+                    } else {
+                        FontWeight::NORMAL
+                    })
+                    .into_element(&theme),
                 )
-                .when_some(entry.last_active.clone(), |row, ago| {
+                .when_some(entry.note.clone(), |row, note| {
                     row.child(
                         div()
                             .flex_none()
@@ -367,7 +451,7 @@ impl Render for WorkspacePicker {
                             } else {
                                 theme.text_muted
                             })
-                            .child(ago),
+                            .child(note),
                     )
                 })
                 .when(is_current, |row| {
@@ -380,9 +464,96 @@ impl Render for WorkspacePicker {
             );
         }
 
-        let browse_highlighted = self.highlighted == rows.len();
+        list = list.child(entry_list);
+
+        // ── action rows ──
+        // Verbs, not folders: "new worktree", "existing worktree", "remote
+        // branch". They sit under a hairline so they never read as another
+        // folder, and they stay put while the filter narrows the list.
+        let mut action_list = div()
+            .debug_selector(|| "workspace-actions".to_string())
+            .w_full()
+            .flex()
+            .flex_col();
+        for (action_ix, action) in self.actions.iter().enumerate() {
+            let ix = rows.len() + action_ix;
+            let highlighted = self.highlighted == ix;
+            let this = this.clone();
+            action_list = action_list.child(
+                div()
+                    // A hairline above the verbs, drawn inside the first
+                    // action's own box: the list's row count stays exactly what
+                    // the reveal math assumes.
+                    .when(action_ix == 0, |row| {
+                        row.border_t_1().border_color(theme.border)
+                    })
+                    .child(
+                        picker_entry(
+                            div().id(ElementId::Name(
+                                format!("workspace-action-{}", action.id).into(),
+                            )),
+                            &theme,
+                        )
+                        .h(px(row_h(&theme)))
+                        .flex_none()
+                        .cursor_pointer()
+                        .when(highlighted, |row| row.bg(theme.surface_selected))
+                        .when(!highlighted, |row| row.hover_state(&theme))
+                        .on_mouse_move({
+                            let this = this.clone();
+                            move |_, _, cx| {
+                                this.update(cx, |picker, cx| {
+                                    if picker.highlighted != ix {
+                                        picker.highlighted = ix;
+                                        cx.notify();
+                                    }
+                                });
+                            }
+                        })
+                        .on_mouse_up(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |picker, _, window, cx| {
+                                (picker.on_action)(action_ix, window, cx);
+                            }),
+                        )
+                        .child({
+                            let mut row = PickerRow::new(
+                                action.label.clone(),
+                                if highlighted {
+                                    theme.text_primary
+                                } else {
+                                    theme.text_secondary
+                                },
+                                theme.text_muted,
+                            )
+                            .icon(
+                                action.icon,
+                                if highlighted {
+                                    theme.accent_text
+                                } else {
+                                    theme.text_muted
+                                },
+                            )
+                            .weight(if highlighted {
+                                FontWeight::MEDIUM
+                            } else {
+                                FontWeight::NORMAL
+                            });
+                            if let Some(hint) = action.hint.clone() {
+                                row = row.detail(hint);
+                            }
+                            row.into_element(&theme)
+                        }),
+                    ),
+            );
+        }
+
+        list = list.child(action_list);
+
+        let browse_highlighted = self.highlighted == rows.len() + self.actions.len();
 
         picker_surface(div(), &theme)
+            .debug_selector(|| "workspace-picker-popup".to_string())
             .w(px(self.width))
             .flex()
             .flex_col()
@@ -397,13 +568,17 @@ impl Render for WorkspacePicker {
             .child(
                 picker_search_frame(div(), &theme)
                     .text_color(theme.text_primary)
-                    .child(icon("icons/search.svg", input::ICON.px(&theme), theme.text_muted))
+                    .child(icon(
+                        "icons/search.svg",
+                        input::ICON.px(&theme),
+                        theme.text_muted,
+                    ))
                     .child(div().flex_1().min_w_0().child(self.filter.clone())),
             )
             // section label — a count on the right, like every other list
             // header, in a trailing slot on the sub-header's own metrics.
             .child(
-                menu_header(tr!("workspace_picker.recent_folders"), &theme)
+                menu_header(tr!("working_folder.title"), &theme)
                     .pt(picker::list_padding_y(&theme))
                     .when(!rows.is_empty(), |header| {
                         header.child(
@@ -419,42 +594,7 @@ impl Render for WorkspacePicker {
                         )
                     }),
             )
-            .child(if rows.is_empty() {
-                // Zed's no-match state: one muted picker entry.
-                div()
-                    .py(picker::list_padding_y(&theme))
-                    .child(
-                        picker_entry(div(), &theme)
-                            .text_color(theme.text_muted)
-                            .child(icon(
-                                "icons/search.svg",
-                                context_menu::ICON.px(&theme),
-                                theme.text_muted,
-                            ))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .child(
-                                        div()
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .child(tr!("workspace_picker.no_folders_match")),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(picker::SECONDARY_TEXT.px(&theme))
-                                            .child(tr!(
-                                                "workspace_picker.try_another_name_or_choose_a_folder_below"
-                                            )),
-                                    ),
-                            ),
-                    )
-                    .into_any_element()
-            } else {
-                list.into_any_element()
-            })
+            .child(list)
             // browse row — the OS dialog, one step away, below a full-width
             // hairline like Zed's picker footer.
             .child(
@@ -467,15 +607,13 @@ impl Render for WorkspacePicker {
                             .h(px(row_h(&theme)))
                             .cursor_pointer()
                             .when(browse_highlighted, |row| row.bg(theme.surface_selected))
-                            .when(!browse_highlighted, |row| {
-                                row.hover(|s| s.bg(theme.surface_hover))
-                            })
+                            .when(!browse_highlighted, |row| row.hover_state(&theme))
                             .on_mouse_move({
                                 let this = this.clone();
                                 move |_, _, cx| {
                                     this.update(cx, |picker, cx| {
-                                        let browse_ix =
-                                            picker.filtered(&picker.last_filter).len();
+                                        let browse_ix = picker.filtered(&picker.last_filter).len()
+                                            + picker.actions.len();
                                         if picker.highlighted != browse_ix {
                                             picker.highlighted = browse_ix;
                                             cx.notify();
@@ -504,5 +642,6 @@ impl Render for WorkspacePicker {
                             ),
                     ),
             )
+            .child(working_folder_keyboard_hints(&theme, false))
     }
 }

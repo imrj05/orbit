@@ -25,7 +25,7 @@ use gpui::{
 
 use crate::app::{
     button_frame, empty_state, file_badge, file_glyph, icon, icon_button_frame, nerd_font_family,
-    press, EmptyFill, TipExt,
+    press, ControlExt, EmptyFill, TipExt,
 };
 use crate::composer::ComposerInput;
 use crate::highlight::{self, Lang, Token};
@@ -813,9 +813,7 @@ impl FileViewer {
                         .text_size(TextSize::Small.px(&theme))
                         .when(active, |el| el.bg(theme.surface_active))
                         .when(!active, |el| {
-                            el.text_color(theme.text_muted).hover(|el| {
-                                el.bg(theme.surface_hover).text_color(theme.text_secondary)
-                            })
+                            el.text_color(theme.text_muted).hover_quiet(&theme)
                         }),
                 )
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -860,7 +858,7 @@ impl FileViewer {
                     )
                     .tip(tr!("explorer.close_tab"))
                     .cursor_pointer()
-                    .hover(|el| el.bg(theme.surface_hover))
+                    .hover_state(&theme)
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.close_tab(index, cx);
                         // Click handlers bubble: without this the tab's
@@ -904,7 +902,7 @@ impl FileViewer {
                 icon_button_frame(div().id("viewer-close"), &theme, ButtonSize::Default)
                     .tip(tr!("common.close"))
                     .cursor_pointer()
-                    .hover(|el| el.bg(theme.surface_hover))
+                    .hover_state(&theme)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         // Close here — this listener already holds the viewer's
                         // lease, so the app callback must not re-enter `update`
@@ -973,7 +971,7 @@ impl FileViewer {
                         .font_family(theme::ui_font_family())
                         .cursor_pointer()
                         .text_color(theme.text_secondary)
-                        .hover(|el| el.raised(theme.surface_hover, &theme))
+                        .hover_state(&theme)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.toggle_markdown_preview(cx)
                         }))

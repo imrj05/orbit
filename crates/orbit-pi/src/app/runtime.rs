@@ -155,9 +155,15 @@ impl OrbitApp {
     }
 
     /// Re-fetch the current context-window estimate. Cheap; call after
-    /// settle, session switch, compaction, and model changes — never per tick.
+    /// settle, session switch, compaction, and model changes.
     pub(super) fn refresh_context_stats(&mut self) {
-        self.send(CommandBody::GetSessionStats, "get_session_stats");
+        if self.context_stats_in_flight.is_some() {
+            self.context_stats_pending = true;
+            return;
+        }
+        self.context_stats_pending = false;
+        self.context_stats_in_flight =
+            self.send_tracked(CommandBody::GetSessionStats, "get_session_stats");
     }
 
     /// Make `client` the active pi process, resetting uptime / exit state.
@@ -174,7 +180,9 @@ impl OrbitApp {
         };
         self.client = Some(client);
         // A new process starts a new session stream: entry ids from the old
-        // process mean nothing here.
+        // process mean nothing here, and its unanswered stats request is gone.
+        self.context_stats_in_flight = None;
+        self.context_stats_pending = false;
         self.reset_quota_entries();
     }
 
@@ -189,11 +197,22 @@ impl OrbitApp {
         // A process that exited on its own left its exit banner up; dropping
         // it supersedes that failure — a fresh process follows in the task /
         // restart paths, and an explicit stop acknowledges it.
-        if self.runtime.exited {
+        if self.runtime.exited
+            && self.error_source.as_deref() != Some(REWIND_INTERRUPTED_ERROR_SOURCE)
+        {
             self.error = None;
             self.error_source = None;
         }
         self.client = None;
+        // The departing process owed us a stats reply that will never come.
+        self.context_stats_in_flight = None;
+        self.context_stats_pending = false;
+        if self.take_pending_fork() {
+            // The fork reply died with the client, but pi can write the branch
+            // file first: keep the warning and make the sidebar pick it up.
+            self.set_error_from(REWIND_INTERRUPTED_ERROR_SOURCE, tr!("rewind.interrupted"));
+            self.sessions_refresh_pending = true;
+        }
         self.runtime = RuntimeStatus::default();
         self.abort_requested = false;
         // A prompt the departing process never answered cannot be recognised
@@ -593,6 +612,9 @@ impl OrbitApp {
 
     /// Stop the pi process (Stop button).
     pub(super) fn runtime_stop(&mut self, cx: &mut Context<Self>) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         if self.client.is_none() {
             return;
         }
@@ -608,6 +630,9 @@ impl OrbitApp {
     /// Stop then start the pi process (Restart button, and the automatic
     /// respawn after an exit).
     pub(super) fn runtime_restart(&mut self, cx: &mut Context<Self>) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         self.drop_client();
         self.runtime_start(cx);
         self.reattach_current_session();
@@ -621,6 +646,9 @@ impl OrbitApp {
     /// Spawning happens before teardown: if the platform refuses to launch a
     /// second instance, the current session is left exactly as it was.
     pub(super) fn reload_app(&mut self, cx: &mut Context<Self>) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         if self.reloading_app {
             return;
         }
@@ -689,9 +717,10 @@ impl OrbitApp {
     }
 
     /// Whether the queued respawn should still happen. A Start or Stop while
-    /// it waits clears `exited` or fills `client`, so the user wins.
+    /// it waits clears `exited`, so the user wins. The exited client may still
+    /// be held to retain stderr until `runtime_restart` drops it.
     pub(super) fn should_auto_restart_now(&self) -> bool {
-        self.client.is_none() && self.runtime.exited
+        self.runtime.exited && (self.client.is_none() || !self.runtime.alive)
     }
 
     /// Handle the active process exiting: respawn it on its own, or — once the
@@ -707,7 +736,9 @@ impl OrbitApp {
             return;
         }
         if !self.take_auto_restart() {
-            self.set_error(self.process_exited_banner());
+            if self.error_source.as_deref() != Some(REWIND_INTERRUPTED_ERROR_SOURCE) {
+                self.set_error(self.process_exited_banner());
+            }
             return;
         }
         self.auto_restart_scheduled = true;

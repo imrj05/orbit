@@ -18,6 +18,19 @@ impl OrbitApp {
     /// Heartbeat (~90ms): drain protocol events into the UI. Returns whether a
     /// run is in flight so the caller can repaint faster while tokens stream.
     pub(crate) fn tick(&mut self, cx: &mut Context<Self>) -> bool {
+        let active = self.tick_once(cx);
+        // A quit asked for while pi was forking waits for the reply that moves
+        // this process onto the branch. Checked after the drain (not inside
+        // it) so the reply from this tick is applied first, and on ticks with
+        // no client at all, where a teardown may have invalidated the fork.
+        if self.take_deferred_quit() {
+            cx.quit();
+            return false;
+        }
+        active
+    }
+
+    fn tick_once(&mut self, cx: &mut Context<Self>) -> bool {
         // Let a lapsed status message disappear from the status bar.
         if self
             .status_at
@@ -50,6 +63,10 @@ impl OrbitApp {
         self.tick_mcp(cx);
         // Persist a settled panel layout (a drag writes once it stops).
         crate::layout::flush_if_settled();
+        // Debug builds only: time the frames a run actually produces, so a
+        // streaming session can be judged without a stopwatch at the keyboard.
+        #[cfg(debug_assertions)]
+        crate::perf::auto_capture(self.is_running());
         // Bound the warm-session pool: reap idle parked processes past the TTL.
         self.reap_idle_parked();
         // A banner click routes back to the session it announced.
@@ -58,6 +75,15 @@ impl OrbitApp {
         }
         // Background update checks and the install handoff report here.
         self.drain_updater_events(cx);
+        // A fork reply lost to a restart path (not an RPC event) can still
+        // have created a branch file. Reload the list on the next tick even
+        // when no session event follows, so the new session is not invisible.
+        if std::mem::take(&mut self.sessions_refresh_pending) {
+            self.sessions = sessions::load_sessions();
+            self.prune_workflow_store();
+            self.sync_session_menu(cx);
+            cx.notify();
+        }
         // Sessions can be written by the CLI or another Orbit window; the
         // watcher has already scanned off-thread, so this only swaps the list.
         if let Some(reloaded) = self
@@ -382,6 +408,7 @@ impl OrbitApp {
                     self.refresh_context_stats();
                 }
                 Event::ProcessExited => {
+                    let fork_interrupted = self.take_pending_fork();
                     self.pending_session_rename = None;
                     self.session_rename_ready = false;
                     self.busy = false;
@@ -416,6 +443,13 @@ impl OrbitApp {
                     // An exit the app can recover from on its own is a restart,
                     // not a failure to leave on screen — see `on_process_exited`.
                     self.on_process_exited(cx);
+                    if fork_interrupted {
+                        self.set_error_from(
+                            REWIND_INTERRUPTED_ERROR_SOURCE,
+                            tr!("rewind.interrupted"),
+                        );
+                        refresh_sessions = true;
+                    }
                 }
                 Event::MessageEnd { value } => {
                     // A failed LLM call ends the assistant message with
@@ -439,6 +473,11 @@ impl OrbitApp {
                     let (a, r) = transcript::diff_from_message(value);
                     self.added += a;
                     self.removed += r;
+                    // Every finalized message — the prompt, an assistant step,
+                    // or a tool result — grows the context. Re-read the meter
+                    // now so the ring follows the run instead of waiting for
+                    // the settle.
+                    self.refresh_context_stats();
                 }
                 Event::Response {
                     command,
@@ -853,6 +892,30 @@ impl OrbitApp {
             self.on_entries_response(success, data, error, cx);
             return;
         }
+        // Dismissed or superseded picker requests cannot update a newer
+        // picker or show a stale error after a session change.
+        if command == "get_fork_messages" {
+            if self.rewind_fetch_id.as_deref() != Some(id) {
+                return;
+            }
+            self.rewind_fetch_id = None;
+        }
+        if command == "fork" {
+            if self.rewind_fork_id.as_deref() != Some(id) {
+                return;
+            }
+            self.rewind_fork_id = None;
+        }
+        // Only the matching reply releases the coalescing gate. If messages
+        // arrived meanwhile, request one fresh snapshot after this response.
+        if command == "get_session_stats" && self.context_stats_in_flight.as_deref() == Some(id) {
+            self.context_stats_in_flight = None;
+            if success && self.context_stats_pending {
+                self.refresh_context_stats();
+            } else {
+                self.context_stats_pending = false;
+            }
+        }
         // Error handling (docs #error-handling): a failed command carries an
         // `error` string. Surface it, unwind command-specific optimistic
         // state, and stop — success paths below assume `data` is valid.
@@ -861,8 +924,20 @@ impl OrbitApp {
                 self.pending_session_rename = None;
                 self.session_rename_ready = false;
             }
+            if command == "get_state" {
+                // The branch reload a regenerate waits on never completed.
+                self.pending_regenerate = None;
+            }
             self.on_command_failure(command, error, cx);
             match command {
+                "get_fork_messages" => {
+                    // The picker has nothing to show; close it rather than
+                    // leave a spinner over pi's error.
+                    self.rewind_fetching = false;
+                    self.rewind_picker = None;
+                    self.rewind_intent = ForkIntent::Edit;
+                    self.rewind_prompt_images.clear();
+                }
                 "compact" => {
                     self.is_compacting = false;
                     self.refresh_context_stats();
@@ -956,6 +1031,18 @@ impl OrbitApp {
                 self.toast_info(tr!("events.context_compacted"));
                 self.refresh_context_stats();
                 self.send(CommandBody::GetState, "get_state");
+                return;
+            }
+            // `get_fork_messages` answers the rewind picker. An empty payload is
+            // still an answer: the list is empty, not unknown.
+            "get_fork_messages" => {
+                self.on_fork_messages_response(data, cx);
+                return;
+            }
+            // `fork` moves the process onto a branched session file: treat it
+            // as the session replacement it is (see `on_fork_response`).
+            "fork" => {
+                self.on_fork_response(data, refresh_sessions, cx);
                 return;
             }
             // `clone` duplicates the session and moves the process onto the
@@ -1083,6 +1170,22 @@ impl OrbitApp {
                 // A `new_session` birth may still need its default model
                 // pushed; this is a no-op otherwise.
                 self.apply_default_model(cx);
+                // A regenerate queued its prompt behind this reload: sending
+                // it before `get_messages` landed would be wiped out by that
+                // snapshot. The request id keeps an unrelated state reply from
+                // firing a stale prompt.
+                if self
+                    .pending_regenerate
+                    .as_ref()
+                    .is_some_and(|pending| pending.state_id == id)
+                {
+                    if let Some(pending) = self.pending_regenerate.take() {
+                        // The prompt's own images ride the resend, so the
+                        // model sees the prompt it answered the first time.
+                        self.attachments = pending.images;
+                        self.submit(pending.text, cx);
+                    }
+                }
             }
             "get_messages" => {
                 self.apply_messages_snapshot(data);
@@ -1398,11 +1501,11 @@ impl OrbitApp {
     pub(super) fn sync_composer_placeholder(&mut self, cx: &mut Context<Self>) {
         let key = if self.is_running() {
             match theme::get(cx).ui.composer_send_mode {
-                SendMode::FollowUp => Some("composer.placeholder_follow_up"),
-                SendMode::Steer => Some("composer.placeholder_steer"),
+                SendMode::FollowUp => "composer.placeholder_follow_up",
+                SendMode::Steer => "composer.placeholder_steer",
             }
         } else {
-            None
+            "composer.placeholder"
         };
         self.input
             .update(cx, |input, cx| input.set_placeholder_key(key, cx));

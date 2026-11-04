@@ -66,6 +66,22 @@ const EXEC_TOOLS = new Set(["bash", "powershell", "shell", "exec", "terminal"]);
 const MCP_PREFIX = "mcp__";
 
 /**
+ * The delegation tool. It is its own kind because it is the one tool whose
+ * *effect* lives in another session: the child inherits this session's access
+ * and workflow modes, so a delegation can never exceed what this session may
+ * already do. A confirmation would approve nothing (D-Z), so it is allowed;
+ * the subagent extension refuses runs the mode could not finish, before it
+ * spawns anything.
+ */
+const DELEGATE_TOOL = "subagent";
+
+/** A child's maximum risk, as the subagent extension derives it. */
+const CEILING_RANK = { read: 1, edit: 2, exec: 3, all: 4 };
+
+/** What a tool needs from the ceiling. `mcp`/`other` need `all`. */
+const TOOL_RANK = { read: 1, edit: 2, exec: 3, mcp: 4, other: 4, delegate: 4 };
+
+/**
  * Coerce an arbitrary value to a known mode, falling back to
  * [`DEFAULT_MODE`]. Unknown values never allow more than intended.
  */
@@ -80,6 +96,7 @@ export function normalizeMode(raw) {
  */
 export function classify(toolName) {
   const name = String(toolName ?? "").toLowerCase();
+  if (name === DELEGATE_TOOL) return "delegate";
   if (READ_TOOLS.has(name)) return "read";
   if (EDIT_TOOLS.has(name)) return "edit";
   if (EXEC_TOOLS.has(name)) return "exec";
@@ -103,6 +120,10 @@ export function classify(toolName) {
 export function decide(mode, toolName, allowlist = []) {
   const name = String(toolName ?? "");
   const kind = classify(name);
+  // A delegation is allowed in every mode: its child is clamped by that same
+  // mode (the guard's no-UI path denies anything that would prompt), and the
+  // extension refuses a run whose agent needs more than the mode permits.
+  if (kind === "delegate") return "allow";
   if (grantable(name) && allowlist.includes(name)) return "allow";
   const resolved = normalizeMode(mode);
   if (resolved === "full-access") return "allow";
@@ -120,7 +141,37 @@ export function decide(mode, toolName, allowlist = []) {
  */
 export function grantable(toolName) {
   const kind = classify(toolName);
-  return kind !== "exec" && kind !== "mcp" && kind !== "other";
+  return kind !== "exec" && kind !== "mcp" && kind !== "other" && kind !== "delegate";
+}
+
+/** Coerce a ceiling value; `null` means "no ceiling" (the parent session). */
+export function normalizeCeiling(raw) {
+  return typeof raw === "string" && Object.hasOwn(CEILING_RANK, raw) ? raw : null;
+}
+
+/**
+ * Whether a child with `ceiling` may call `toolName` at all.
+ *
+ * This is the second enforcement of the agent's declared tool list: `--tools`
+ * decides what the child is *offered*, and this decides what it may *run*, so
+ * an MCP tool reached through `codemode`, or a tool another extension loaded
+ * into the child, still cannot exceed the agent's tier. A missing ceiling
+ * behaves exactly as before ceilings existed.
+ */
+export function ceilingAllows(ceiling, toolName) {
+  const resolved = normalizeCeiling(ceiling);
+  if (resolved === null) return true;
+  const needed = TOOL_RANK[classify(toolName)] ?? TOOL_RANK.other;
+  return needed <= CEILING_RANK[resolved];
+}
+
+/** A block reason naming the agent, its tier and the refused tool. */
+export function ceilingBlockReason(ceiling, toolName, agent = "") {
+  const resolved = normalizeCeiling(ceiling) ?? "all";
+  const who = agent === "" ? "This subagent" : `Subagent ${agent}`;
+  if (resolved === "read") return `Blocked: ${who} is read-only and cannot use ${toolName}`;
+  if (resolved === "edit") return `Blocked: ${who} may edit files but cannot use ${toolName}`;
+  return `Blocked: ${who} may run commands but may not use ${toolName}`;
 }
 
 /** The path Orbit writes the active mode to. */

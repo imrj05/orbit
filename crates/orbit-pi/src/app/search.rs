@@ -250,7 +250,7 @@ impl OrbitApp {
                     .tip(tr!("common.close"))
                     .cursor_pointer()
                     .text_color(theme.text_secondary)
-                    .hover(|s| s.bg(theme.surface_hover).text_color(theme.text_primary))
+                    .hover_state(&theme)
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(|this, _, window, cx| {
@@ -282,7 +282,7 @@ fn search_nav_button(
         .when(!disabled, |button| {
             press(button)
                 .cursor_pointer()
-                .hover(|s| s.bg(theme.surface_hover))
+                .hover_state(&theme)
                 .on_mouse_up(MouseButton::Left, listener)
         })
         .child(icon(

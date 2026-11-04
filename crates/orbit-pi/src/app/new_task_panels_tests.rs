@@ -13,6 +13,22 @@ fn test_app(cx: &mut gpui::TestAppContext) -> Entity<OrbitApp> {
     })
 }
 
+#[gpui::test]
+fn clone_is_available_on_the_new_task_page_outside_a_repository(cx: &mut gpui::TestAppContext) {
+    let app = test_app(cx);
+    cx.update(|cx| {
+        app.update(cx, |app, _cx| {
+            app.current_workspace = None;
+            app.worktree_repo_root = None;
+            app.worktrees.clear();
+            assert!(app
+                .folder_actions()
+                .iter()
+                .any(|action| action.id == "clone-repository"));
+        });
+    });
+}
+
 /// Open one of each surface the way its toggle does, then assert the
 /// new-task hand-off leaves none of them up.
 #[gpui::test]

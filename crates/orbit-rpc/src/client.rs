@@ -735,7 +735,17 @@ fn env_package_root() -> Result<Option<PathBuf>, String> {
 
 /// Walk up from `start` to a directory whose `package.json` names the pi
 /// package. Handles the npm/pnpm/bun global layout.
+///
+/// Windows npm exposes `pi.cmd` as a *sibling* of `node_modules` rather than a
+/// symlink into the package, so each ancestor's own `node_modules` is checked
+/// as well as the ancestor itself.
 fn walk_up_to_package_root(start: &Path) -> Option<PathBuf> {
+    // A path that is not on disk is not a pi install. Without this, any
+    // nonexistent `<prefix>/pi` would resolve through `<prefix>/node_modules`
+    // on the nested check below.
+    if !start.exists() {
+        return None;
+    }
     let start = if start.is_dir() {
         start
     } else {
@@ -745,6 +755,10 @@ fn walk_up_to_package_root(start: &Path) -> Option<PathBuf> {
     for _ in 0..12 {
         if is_pi_package(&dir) {
             return Some(dir);
+        }
+        let nested = dir.join("node_modules").join(PI_PACKAGE_NAME);
+        if is_pi_package(&nested) {
+            return Some(nested);
         }
         dir = dir.parent()?.to_path_buf();
     }

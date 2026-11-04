@@ -14,7 +14,7 @@ use gpui::{
 };
 use orbit_rpc::{ContextUsage, SessionUsage};
 
-use crate::app::{button_frame, icon_button_frame, TipExt};
+use crate::app::{button_frame, icon_button_frame, ControlExt, TipExt};
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, StyledExt, TextSize};
 use crate::theme::Theme;
@@ -308,7 +308,7 @@ pub fn compact_card(
 
 /// Money label for a session cost in USD. Sub-cent amounts read `<$0.01`
 /// rather than rounding to a misleading `$0.00`.
-fn format_cost(cost: f64) -> String {
+pub(crate) fn format_cost(cost: f64) -> String {
     if !cost.is_finite() || cost <= 0.0 {
         "$0.00".into()
     } else if cost < 0.01 {
@@ -373,7 +373,7 @@ pub fn details_card(
                     icon_button_frame(div().id("context-close"), &theme, ButtonSize::Compact)
                         .tip(tr!("common.close"))
                         .cursor_pointer()
-                        .hover(|s| s.bg(theme.surface_hover))
+                        .hover_state(&theme)
                         .on_click(on_close)
                         .child(glyph(
                             "icons/x.svg",
@@ -430,7 +430,7 @@ fn compact_action(is_compacting: bool, on_compact: Rc<ActionClick>, theme: Theme
         button
             .text_color(theme.text_secondary)
             .cursor_pointer()
-            .hover(|s| s.raised(theme.surface_hover, &theme))
+            .hover_state(&theme)
             .on_click(move |event, window, cx| on_compact(event, window, cx))
             .child(tr!("context_meter.compact_now"))
             .into_any_element()

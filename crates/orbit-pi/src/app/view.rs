@@ -6,8 +6,8 @@ use crate::commands::{self, CommandId};
 use gpui::StyledText;
 
 use crate::theme::tokens::{
-    button, context_menu, input, panel, picker, popover, AnimationDuration, ButtonSize,
-    DynamicSpacing, IconSize, Radius, TextSize,
+    button, context_menu, input, looping, panel, picker, popover, ButtonSize, DynamicSpacing,
+    IconSize, Radius, TextSize,
 };
 use crate::usage::tooltip::Tooltip;
 use crate::widgets as ext_widgets;
@@ -73,6 +73,31 @@ pub(super) const SIDEBAR_EDGE_PAD: f32 = 6.;
 /// titlebar controls sit. Nothing else changes there: the lead still clears
 /// the window edge, and the sidebar's drag strip and wordmark live on other
 /// rows of that column.
+/// The debug recorder's live chip: `REC · 128` while a capture runs, nothing
+/// when it does not. Debug builds only.
+#[cfg(debug_assertions)]
+fn perf_recording_chip(theme: &Theme) -> Option<AnyElement> {
+    crate::perf::is_active().then(|| {
+        let frames = crate::perf::sample_count();
+        div()
+            .flex_none()
+            .h(px(20.))
+            .px(px(6.))
+            .rounded(button::RADIUS.px(theme))
+            .border_1()
+            .border_color(theme.accent_text.opacity(0.4))
+            .bg(theme.accent_text.opacity(0.12))
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .text_size(TextSize::XSmall.px(theme))
+            .font_family(theme::code_font_family())
+            .text_color(theme.accent_text)
+            .child(format!("REC · {frames}"))
+            .into_any_element()
+    })
+}
+
 pub(super) fn titlebar_controls_left(sidebar_visible: bool, sidebar_width: f32) -> f32 {
     if sidebar_visible && !cfg!(windows) {
         sidebar_width - TITLEBAR_CONTROLS_W - SIDEBAR_EDGE_PAD
@@ -130,7 +155,7 @@ fn header_menu_row(
             .flex_none()
             .cursor_pointer()
             .text_color(theme.text_secondary)
-            .hover(|s| s.bg(theme.surface_hover).text_color(theme.text_primary)),
+            .hover_state(&theme),
     )
     .on_mouse_up(MouseButton::Left, listener)
     .child(icon(
@@ -156,9 +181,6 @@ fn header_menu_row(
     .into_any_element()
 }
 
-/// Duration of the sidebar collapse/expand slide.
-const SIDEBAR_SLIDE_MS: u64 = 180;
-
 /// The Access and Workflow mode picker popups share one width.
 const MODE_POPUP_W: f32 = 300.;
 
@@ -167,12 +189,36 @@ const MODE_POPUP_W: f32 = 300.;
 /// top of the window must not collapse the conversation behind the input.
 const TERMINAL_MAIN_RESERVE: f32 = 320.;
 
+/// The narrowest window that still fits the sidebar and a usable workspace.
+/// Below it the sidebar yields: a cramped column beside a cramped transcript is
+/// worse than a transcript with ⌘⇧B to bring the list back.
+const SIDEBAR_MIN_WINDOW_W: f32 = 880.;
+
+/// Whether the sessions sidebar is on screen. The user's toggle is the first
+/// word, but a full-window surface (Settings) and a window too narrow for both
+/// panes each override it — the panel stays mounted and simply does not paint.
+pub(super) fn sidebar_shows(visible: bool, settings_open: bool, window_width: Pixels) -> bool {
+    visible && !settings_open && window_width >= px(SIDEBAR_MIN_WINDOW_W)
+}
+
 impl Render for OrbitApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Cleared here and set again only where the new-task backdrop is drawn,
         // so a frame that covers it (Settings, a feature page) stops the
         // heartbeat repainting for a field nobody can see.
         self.backdrop_live = false;
+        // Land in the arrangement the user left: sizes (read when each panel
+        // was built), open panels, sidebar visibility, collapsed groups. It
+        // needs a window — opening the terminal spawns a shell — so the restore
+        // waits for the first frame instead of running in `new`.
+        // Debug builds only: a capture started from `tick` has no window, so the
+        // frame hook is armed here, on the first frame after it starts.
+        #[cfg(debug_assertions)]
+        crate::perf::ensure_armed(window);
+        if !self.layout_restored {
+            self.layout_restored = true;
+            self.apply_stored_arrangement(window, cx);
+        }
         if self.session_rename_ready {
             self.session_rename_ready = false;
             self.begin_session_rename(window, cx);
@@ -200,15 +246,16 @@ impl Render for OrbitApp {
         // the duration of this frame.
         crate::mermaid::install(window);
         // Sessions the sidebar lists, plus a placeholder for the open one
-        // when its file is not on disk yet. The archived filter is applied
-        // here so row indices match the list the render path receives; the
-        // unfiltered list still drives the per-workspace status glyphs.
+        // when its file is not on disk yet. Apply both filters before building
+        // rows so their indices match the sessions rendered and navigated;
+        // unfiltered sessions still drive the workspace status glyphs.
         let all_sessions = self.sidebar_sessions();
         let archived_set: HashSet<PathBuf> = crate::archive::all().paths();
-        let sidebar_sessions = filter_archived(
+        let sidebar_sessions = filter_sidebar_sessions(
             all_sessions.clone(),
             self.sidebar_archived_filter,
             &archived_set,
+            &self.sidebar_query,
         );
         // A pinned session leads its project group; the sidebar sorts and
         // marks pinned rows from this snapshot (Orbit-owned state).
@@ -216,9 +263,11 @@ impl Render for OrbitApp {
         // Archived sessions, from the Orbit-owned set — rows in "show
         // archived" mode wear a small archive glyph.
         let archived_paths: Rc<HashSet<PathBuf>> = Rc::new(archived_set);
-        // Flat "one list" mode names each row's workspace instead of grouping.
-        let show_workspace = self.sidebar_group_by == SidebarGroupBy::OneList;
+        // Flat lists, including search results, name each row's workspace.
+        let show_workspace =
+            self.sidebar_group_by == SidebarGroupBy::OneList || !self.sidebar_query.is_empty();
         let show_first_message = self.sidebar_show_first_message;
+        let show_shortcuts = self.sidebar_shortcut_hints;
         // Parked (background) sessions mid-run — they keep their row under a
         // collapsed workspace header, like the open session, so a live task
         // is never hidden by a collapse. Also drives the running loader.
@@ -231,11 +280,15 @@ impl Render for OrbitApp {
         );
         // Per-workspace glyph: the user's mark icon when set, otherwise a
         // folder status (current / running / archived-only / idle).
-        let running_workspaces: HashSet<PathBuf> = sidebar_sessions
-            .iter()
-            .filter(|session| running_paths.contains(&session.path))
-            .map(|session| session.cwd.clone())
-            .collect();
+        let running_workspaces: HashSet<PathBuf> = filter_archived(
+            all_sessions.clone(),
+            self.sidebar_archived_filter,
+            &archived_paths,
+        )
+        .iter()
+        .filter(|session| running_paths.contains(&session.path))
+        .map(|session| session.cwd.clone())
+        .collect();
         let archived_only_workspaces: HashSet<PathBuf> = {
             let mut totals: HashMap<PathBuf, (usize, usize)> = HashMap::new();
             for session in &all_sessions {
@@ -333,6 +386,7 @@ impl Render for OrbitApp {
                     &archived_paths,
                     show_workspace,
                     show_first_message,
+                    show_shortcuts,
                     &live_paths,
                     &marks,
                     &workspace_icons,
@@ -387,7 +441,7 @@ impl Render for OrbitApp {
             self.sidebar_visible = true;
         }
         self.pane_full_last = pane_full;
-        let sidebar_shown = self.sidebar_visible && !self.settings_open;
+        let sidebar_shown = sidebar_shows(self.sidebar_visible, self.settings_open, viewport.width);
 
         // Bottom terminal panel. The chat branch is what renders it, so the
         // full-page surfaces (settings / Git / Usage) hide it by construction;
@@ -492,6 +546,13 @@ impl Render for OrbitApp {
         // Hidden entirely on a pi without `quota.*` (or when no provider
         // reports anything), so the bar never shows a fabricated value.
         top_controls = top_controls.children(self.render_quota_chip(compact_chrome, cx));
+        // Debug builds only: while a frame-time capture runs, the bar carries a
+        // live count. It is the only feedback that proves frames are arriving —
+        // a capture that samples nothing writes no report.
+        #[cfg(debug_assertions)]
+        {
+            top_controls = top_controls.children(perf_recording_chip(&theme));
+        }
         top_controls = top_controls.children(self.render_open_in_control(cx));
         top_controls = top_controls
             // Review dock — the side-panel toggle and the working tree's
@@ -690,28 +751,42 @@ impl Render for OrbitApp {
                                                     .text_size(TextSize::Small.px(&theme))
                                                     .font_weight(FontWeight::MEDIUM)
                                                     .text_color(theme.text_muted)
-                                                    .child(
-                                                        if self.sidebar_group_by
-                                                            == SidebarGroupBy::OneList
-                                                        {
+                                                    .child(match self.sidebar_group_by {
+                                                        SidebarGroupBy::OneList => {
                                                             tr!("sidebar.all_sessions")
-                                                        } else {
+                                                        }
+                                                        SidebarGroupBy::Recent => {
+                                                            tr!("sidebar.recent")
+                                                        }
+                                                        SidebarGroupBy::Workspace => {
                                                             tr!("sidebar.projects")
-                                                        },
-                                                    ),
+                                                        }
+                                                    }),
                                             )
                                             .child(sidebar_options_button(
                                                 self.sidebar_group_by,
                                                 self.workspace_sort,
                                                 self.sidebar_archived_filter,
                                                 show_first_message,
+                                                self.naming_layout,
+                                                self.layout_name.clone(),
                                                 self.sidebar_sort_menu,
                                                 cx.entity(),
                                                 theme,
                                             )),
                                     )
+                                    .child(self.sidebar_search_bar(theme))
                                     .child(if side_rows.is_empty() {
-                                        empty_sessions_state(theme).into_any_element()
+                                        if self.sidebar_query.is_empty() {
+                                            empty_sessions_state(theme, cx.entity())
+                                                .into_any_element()
+                                        } else {
+                                            empty_search_state(
+                                                &theme,
+                                                &self.sidebar_query,
+                                                self.sidebar_search.clone(),
+                                            )
+                                        }
                                     } else {
                                         div()
                                             .id("sidebar-sessions")
@@ -753,6 +828,7 @@ impl Render for OrbitApp {
                                                                     &archived_paths,
                                                                     show_workspace,
                                                                     show_first_message,
+                                                                    show_shortcuts,
                                                                     &live_paths,
                                                                     &marks,
                                                                     &workspace_icons,
@@ -813,11 +889,8 @@ impl Render for OrbitApp {
                                                     .rounded(button::RADIUS.px(&theme))
                                                     .cursor_pointer()
                                                     .tip(tr!("view.reconnect"))
-                                                    .hover(|s| {
-                                                        s.bg(theme.surface_hover)
-                                                            .text_color(theme.text_primary)
-                                                    })
-                                                    .active(|s| s.opacity(PRESS_DIM))
+                                                    .hover_state(&theme)
+                                                    .pressed_state(&theme, PressedRamp::Wash)
                                                     .on_mouse_up(
                                                         MouseButton::Left,
                                                         cx.listener(
@@ -837,8 +910,7 @@ impl Render for OrbitApp {
                                                 if retrying && !theme::reduce_motion(cx) {
                                                     dot.with_animation(
                                                         "sidebar-runtime-retrying",
-                                                        Animation::new(Duration::from_millis(900))
-                                                            .repeat(),
+                                                        Animation::new(looping::SPIN).repeat(),
                                                         |dot, phase| {
                                                             let pulse = (phase
                                                                 * std::f32::consts::TAU)
@@ -897,8 +969,8 @@ impl Render for OrbitApp {
                     panel
                         .with_animation(
                             ElementId::Name(format!("sidebar-slide-{gen}").into()),
-                            Animation::new(Duration::from_millis(SIDEBAR_SLIDE_MS))
-                                .with_easing(|d| 1.0 - (1.0 - d).powi(3)),
+                            Animation::new(Motion::Layout.duration(&theme))
+                                .with_easing(Motion::Layout.easing()),
                             move |el, d| {
                                 let w = if open {
                                     panel_w * d
@@ -990,8 +1062,8 @@ impl Render for OrbitApp {
                         let expanding = sidebar_shown;
                         bar.with_animation(
                             ElementId::Name(format!("topbar-lead-{gen}").into()),
-                            Animation::new(Duration::from_millis(SIDEBAR_SLIDE_MS))
-                                .with_easing(|d| 1.0 - (1.0 - d).powi(3)),
+                            Animation::new(Motion::Layout.duration(&theme))
+                                .with_easing(Motion::Layout.easing()),
                             move |el, d| {
                                 let (from, to) = if expanding {
                                     (TITLEBAR_LEADING, 20.)
@@ -1042,6 +1114,9 @@ impl Render for OrbitApp {
                                     self.agent_calls,
                                     Some(self.review_opener(cx)),
                                     Some(self.image_opener(cx)),
+                                    Some(self.rewind_opener(cx)),
+                                    Some(self.regenerate_opener(cx)),
+                                    Some(self.response_exporter(cx)),
                                     self.search_hits(),
                                     self.search_active(),
                                     cx,
@@ -1128,7 +1203,11 @@ impl Render for OrbitApp {
                                                 .on_drag_move(cx.listener(Self::on_file_drag_move))
                                                 .children(self.attachments_row(cx))
                                                 .child(self.input.clone())
-                                                .child(self.composer_row(composer_compact, cx))
+                                                .child(self.composer_row(
+                                                    composer_compact,
+                                                    window,
+                                                    cx,
+                                                ))
                                                 // Drop-target overlay: fades
                                                 // in over the box while files are
                                                 // dragged across it. Absolute, so
@@ -1161,21 +1240,7 @@ impl Render for OrbitApp {
                                                                     "composer.drop_to_attach"
                                                                 )),
                                                         );
-                                                    if theme::reduce_motion(cx) {
-                                                        overlay.into_any_element()
-                                                    } else {
-                                                        overlay
-                                                            .with_animation(
-                                                                "drop-overlay",
-                                                                Animation::new(
-                                                                    Duration::from_millis(120),
-                                                                ),
-                                                                |overlay, delta| {
-                                                                    overlay.opacity(delta)
-                                                                },
-                                                            )
-                                                            .into_any_element()
-                                                    }
+                                                    popover_enter("drop-overlay", overlay, &theme)
                                                 })),
                                         )
                                         // Extension `setWidget` blocks placed
@@ -1287,8 +1352,8 @@ impl Render for OrbitApp {
                     controls
                         .with_animation(
                             ElementId::Name(format!("titlebar-lead-{gen}").into()),
-                            Animation::new(Duration::from_millis(SIDEBAR_SLIDE_MS))
-                                .with_easing(|d| 1.0 - (1.0 - d).powi(3)),
+                            Animation::new(Motion::Layout.duration(&theme))
+                                .with_easing(Motion::Layout.easing()),
                             move |el, d| {
                                 let (from, to) = if expanding {
                                     (pinned, hugging)
@@ -1326,6 +1391,13 @@ impl Render for OrbitApp {
                     .clone()
                     .map(|palette| command_palette::layer(palette).into_any_element()),
             )
+            // ── rewind picker — the conversation's fork points, a modal opened
+            // from a message's footer or from the palette.
+            .children(
+                self.rewind_picker
+                    .clone()
+                    .map(|picker| crate::rewind_picker::layer(picker).into_any_element()),
+            )
             // ── extension dialog (select / confirm / input / editor) — a
             // blocking modal above every other surface; pi holds the run until
             // the user answers. It cancels the incoming request otherwise.
@@ -1355,6 +1427,15 @@ impl Render for OrbitApp {
             // never buried by whatever surface happens to be open.
             .children(self.toast_layer(cx))
             .track_focus(&self.focus_handle(cx))
+            .on_modifiers_changed(
+                cx.listener(|app, event: &gpui::ModifiersChangedEvent, _, cx| {
+                    let show = app.window_active && show_session_shortcuts(event.modifiers);
+                    if app.sidebar_shortcut_hints != show {
+                        app.sidebar_shortcut_hints = show;
+                        cx.notify();
+                    }
+                }),
+            )
             // Sidebar resize: fires for every mouse move while the handle
             // drag is active, wherever the pointer travels.
             .on_drag_move(cx.listener(
@@ -1448,6 +1529,7 @@ impl Render for OrbitApp {
             .on_action(cx.listener(Self::on_prev_terminal_tab))
             .on_action(cx.listener(Self::on_toggle_sidebar_action))
             .on_action(cx.listener(Self::on_focus_sessions))
+            .on_action(cx.listener(Self::on_focus_session_search))
             .on_action(cx.listener(Self::on_open_session_slot))
             .on_action(cx.listener(Self::on_next_session))
             .on_action(cx.listener(Self::on_prev_session))
@@ -1458,6 +1540,10 @@ impl Render for OrbitApp {
             .on_action(cx.listener(Self::on_sidebar_confirm))
             .on_action(cx.listener(Self::on_sidebar_close))
             .on_action(cx.listener(Self::on_toggle_command_palette))
+            // ⌘⌥P starts or stops a frame-time capture (debug builds bind the
+            // chord; the body compiles away in release). Registered at the root
+            // so it works from any surface.
+            .on_action(cx.listener(Self::on_record_frame_times))
             .on_action(cx.listener(Self::on_check_for_updates))
             .on_action(cx.listener(Self::on_toggle_search))
             .on_action(cx.listener(Self::on_toggle_model_menu))
@@ -1596,7 +1682,7 @@ impl OrbitApp {
                             .text_color(theme.text_secondary)
                             .tip(text.clone())
                             .cursor_pointer()
-                            .hover(|style| style.bg(theme.overlay))
+                            .hover_overlay(&theme)
                             .on_click(cx.listener(move |app, _, window, cx| {
                                 app.insert_suggestion(&selected, window, cx);
                             }))
@@ -1624,7 +1710,7 @@ impl OrbitApp {
                     .focus(|style| style.border_1().border_color(theme.focus_ring))
                     .tip(tr!("common.dismiss"))
                     .cursor_pointer()
-                    .hover(|style| style.bg(theme.overlay_strong))
+                    .hover_on_glass(&theme)
                     .child(icon(
                         "icons/x.svg",
                         ButtonSize::Compact.icon_size().px(&theme),
@@ -1715,6 +1801,7 @@ impl OrbitApp {
     pub(super) fn composer_row(
         &self,
         compact: bool,
+        window: &Window,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         div()
@@ -1736,7 +1823,7 @@ impl OrbitApp {
             .child(div().flex_1())
             .child(self.model_chip(compact, cx))
             .children(self.thinking_chip(cx))
-            .child(self.send_controls(cx))
+            .child(self.send_controls(window, cx))
     }
 
     /// The access-mode chip: a lock glyph, the active mode's label, and a
@@ -1764,11 +1851,13 @@ impl OrbitApp {
                 button_frame(div().id("access-chip"), &theme, ButtonSize::Default)
                     .debug_selector(|| "access-chip".to_string())
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.surface_hover))
+                    .hover_state(&theme)
                     .when(self.access_menu_open, |chip| {
                         chip.bg(theme.surface_active).text_color(theme.text_primary)
                     })
-                    .tip(label.clone())
+                    // The label already names the mode when it is visible; the
+                    // tooltip is only the terse (icon-only) chip's label.
+                    .when(terse, |chip| chip.tip(label.clone()))
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(Self::on_access_trigger_click),
@@ -1810,40 +1899,16 @@ impl OrbitApp {
         cx: &Context<Self>,
     ) -> AnyElement {
         let theme = *theme::get(cx);
-        let svg = gpui::svg()
-            .path("icons/chevron-down.svg")
-            .flex_none()
-            .size(IconSize::XSmall.px(&theme))
-            .text_color(if open { fg } else { theme.text_muted })
-            .into_any_element();
-        if !open {
-            return svg;
-        }
-        if theme::reduce_motion(cx) {
-            return gpui::svg()
-                .path("icons/chevron-down.svg")
-                .flex_none()
-                .size(IconSize::XSmall.px(&theme))
-                .text_color(fg)
-                .with_transformation(Transformation::rotate(radians(std::f32::consts::PI)))
-                .into_any_element();
-        }
-        gpui::svg()
-            .path("icons/chevron-down.svg")
-            .flex_none()
-            .size(IconSize::XSmall.px(&theme))
-            .text_color(fg)
-            .with_animation(
-                animation_id,
-                Animation::new(AnimationDuration::Fast.duration())
-                    .with_easing(|d| 1.0 - (1.0 - d).powi(3)),
-                |svg, d| {
-                    svg.with_transformation(Transformation::rotate(radians(
-                        std::f32::consts::PI * d,
-                    )))
-                },
-            )
-            .into_any_element()
+        // One implementation for every caret in the app: a quarter turn on the
+        // Interaction role, instant under Reduce Motion, and the ink quietens
+        // while the menu is closed.
+        disclosure_chevron(
+            animation_id,
+            open,
+            IconSize::XSmall.px(&theme),
+            if open { fg } else { theme.text_muted },
+            &theme,
+        )
     }
 
     /// The access-mode picker popup, while open. Minimal rows: an icon tile,
@@ -1869,9 +1934,7 @@ impl OrbitApp {
                     .when(selected || highlighted, |row| {
                         row.bg(theme.surface_selected)
                     })
-                    .when(!selected && !highlighted, |row| {
-                        row.hover(|style| style.bg(theme.surface_hover))
-                    })
+                    .when(!selected && !highlighted, |row| row.hover_state(&theme))
                     .on_hover(move |hovered, _, cx| {
                         if *hovered {
                             this.update(cx, |app, cx| {
@@ -1972,27 +2035,15 @@ impl OrbitApp {
             }))
             .child(list);
 
-        let popup: AnyElement = if theme::reduce_motion(cx) {
-            popup.into_any_element()
-        } else {
-            popup
-                .with_animation(
-                    "access-menu-in",
-                    Animation::new(Duration::from_millis(130))
-                        .with_easing(|d| 1.0 - (1.0 - d).powi(3)),
-                    |el, d| el.opacity(d),
-                )
-                .into_any_element()
-        };
-
         Some(
-            anchored()
-                .position_mode(AnchoredPositionMode::Local)
-                .anchor(Corner::BottomLeft)
-                .offset(point(px(0.), -popover::MENU_OFFSET))
-                .snap_to_window_with_margin(popover::WINDOW_MARGIN)
-                .child(deferred(popup))
-                .into_any_element(),
+            anchored_popover(
+                Corner::BottomLeft,
+                point(px(0.), -popover::MENU_OFFSET),
+                popup,
+                "anchored_popover-in-12",
+                &theme,
+            )
+            .into_any_element(),
         )
     }
 
@@ -2009,7 +2060,7 @@ impl OrbitApp {
             .child(
                 button_frame(div().id("workflow-chip"), &theme, ButtonSize::Default)
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.surface_hover))
+                    .hover_state(&theme)
                     .when(self.workflow_menu_open, |chip| {
                         chip.bg(theme.surface_active).text_color(theme.text_primary)
                     })
@@ -2071,9 +2122,7 @@ impl OrbitApp {
                     .when(selected || highlighted, |row| {
                         row.bg(theme.surface_selected)
                     })
-                    .when(!selected && !highlighted, |row| {
-                        row.hover(|style| style.bg(theme.surface_hover))
-                    })
+                    .when(!selected && !highlighted, |row| row.hover_state(&theme))
                     .on_hover(move |hovered, _, cx| {
                         if *hovered {
                             this.update(cx, |app, cx| {
@@ -2174,27 +2223,15 @@ impl OrbitApp {
             }))
             .child(list);
 
-        let popup: AnyElement = if theme::reduce_motion(cx) {
-            popup.into_any_element()
-        } else {
-            popup
-                .with_animation(
-                    "workflow-menu-in",
-                    Animation::new(Duration::from_millis(130))
-                        .with_easing(|d| 1.0 - (1.0 - d).powi(3)),
-                    |el, d| el.opacity(d),
-                )
-                .into_any_element()
-        };
-
         Some(
-            anchored()
-                .position_mode(AnchoredPositionMode::Local)
-                .anchor(Corner::BottomLeft)
-                .offset(point(px(0.), -popover::MENU_OFFSET))
-                .snap_to_window_with_margin(popover::WINDOW_MARGIN)
-                .child(deferred(popup))
-                .into_any_element(),
+            anchored_popover(
+                Corner::BottomLeft,
+                point(px(0.), -popover::MENU_OFFSET),
+                popup,
+                "anchored_popover-in-13",
+                &theme,
+            )
+            .into_any_element(),
         )
     }
 
@@ -2222,10 +2259,7 @@ impl OrbitApp {
                                 div()
                                     .debug_selector(|| "composer-hint-keys".to_string())
                                     .flex_none()
-                                    .when(cfg!(target_os = "macos"), |keys| {
-                                        keys.text_size(ButtonSize::Default.icon_size().px(&theme))
-                                    })
-                                    .child(keys),
+                                    .child(kbd_shortcut(keys, &theme)),
                             )
                             .child(
                                 div()
@@ -2252,8 +2286,8 @@ impl OrbitApp {
                     .tip(tr!("composer.add"))
                     .group(BUTTON_GROUP)
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.surface_hover))
-                    .active(|s| s.opacity(PRESS_DIM))
+                    .hover_state(&theme)
+                    .pressed_state(&theme, PressedRamp::Wash)
                     .when(self.add_menu_open, |b| {
                         b.bg(theme.surface_active).text_color(theme.text_primary)
                     })
@@ -2285,7 +2319,7 @@ impl OrbitApp {
                     .flex_none()
                     .cursor_pointer()
                     .when(highlighted, |row| row.bg(theme.surface_selected))
-                    .hover(|style| style.bg(theme.surface_hover))
+                    .hover_state(&theme)
                     .on_hover(move |hovered, _, cx| {
                         if *hovered {
                             this.update(cx, |app, cx| {
@@ -2357,13 +2391,14 @@ impl OrbitApp {
             .child(list);
 
         Some(
-            anchored()
-                .position_mode(AnchoredPositionMode::Local)
-                .anchor(Corner::BottomLeft)
-                .offset(point(px(0.), -popover::MENU_OFFSET))
-                .snap_to_window_with_margin(popover::WINDOW_MARGIN)
-                .child(deferred(popup))
-                .into_any_element(),
+            anchored_popover(
+                Corner::BottomLeft,
+                point(px(0.), -popover::MENU_OFFSET),
+                popup,
+                "anchored_popover-in-14",
+                &theme,
+            )
+            .into_any_element(),
         )
     }
 
@@ -2371,17 +2406,22 @@ impl OrbitApp {
     /// paints it on top of everything; `anchored` takes it out of the layout
     /// and pins its bottom-left corner just above the chip, flipping at the
     /// window edges via `snap_to_window_with_margin`.
-    pub(super) fn chip_popup(&self, kind: PickerKind) -> Option<impl IntoElement + use<>> {
+    pub(super) fn chip_popup(
+        &self,
+        kind: PickerKind,
+        theme: &Theme,
+    ) -> Option<impl IntoElement + use<>> {
         self.model_selector
             .clone()
             .and_then(|(open_kind, selector)| {
                 (open_kind == kind).then(move || {
-                    anchored()
-                        .position_mode(AnchoredPositionMode::Local)
-                        .anchor(Corner::BottomLeft)
-                        .offset(point(px(0.), -popover::MENU_OFFSET))
-                        .snap_to_window_with_margin(popover::WINDOW_MARGIN)
-                        .child(deferred(selector))
+                    anchored_popover(
+                        Corner::BottomLeft,
+                        point(px(0.), -popover::MENU_OFFSET),
+                        selector,
+                        "anchored_popover-in-15",
+                        theme,
+                    )
                 })
             })
     }
@@ -2399,19 +2439,19 @@ impl OrbitApp {
             .flex()
             .flex_col()
             .items_start()
-            .children(self.chip_popup(PickerKind::Model))
+            .children(self.chip_popup(PickerKind::Model, &theme))
             .child(
                 button_frame(div().id("model-chip"), &theme, ButtonSize::Default)
                     .when(!disabled, |chip| {
                         chip.cursor_pointer()
-                            .hover(|s| s.bg(theme.surface_hover))
+                            .hover_state(&theme)
                             .when(open, |chip| chip.bg(theme.surface_active))
                             .on_mouse_up(
                                 MouseButton::Left,
                                 cx.listener(Self::on_model_trigger_click),
                             )
                     })
-                    .when(disabled, |chip| chip.cursor_not_allowed())
+                    .when(disabled, |chip| chip.disabled_state(&theme))
                     .tip(commands::tooltip(CommandId::ChooseModel, false))
                     .child(icon_dyn(
                         provider_icon(&self.model_provider),
@@ -2469,20 +2509,20 @@ impl OrbitApp {
                 .flex()
                 .flex_col()
                 .items_start()
-                .children(self.chip_popup(PickerKind::Thinking))
+                .children(self.chip_popup(PickerKind::Thinking, &theme))
                 .child(
                     button_frame(div().id("thinking-chip"), &theme, ButtonSize::Default)
                         .debug_selector(|| "thinking-chip".to_string())
                         .when(!disabled, |chip| {
                             chip.cursor_pointer()
-                                .hover(|s| s.bg(theme.surface_hover))
+                                .hover_state(&theme)
                                 .when(open, |chip| chip.bg(theme.surface_active))
                                 .on_mouse_up(
                                     MouseButton::Left,
                                     cx.listener(Self::on_thinking_trigger_click),
                                 )
                         })
-                        .when(disabled, |chip| chip.cursor_not_allowed())
+                        .when(disabled, |chip| chip.disabled_state(&theme))
                         .tip(commands::tooltip(CommandId::ChooseThinking, false))
                         .child({
                             let (path, _) = thinking_icon(&self.thinking_label, &theme);
@@ -2783,7 +2823,11 @@ impl OrbitApp {
                                             .text_size(TextSize::XSmall.px(&theme))
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(theme.text_muted)
-                                            .child(tr!("view.workspace")),
+                                            // One vocabulary for one question:
+                                            // the field, the picker's header,
+                                            // and the status bar chip all say
+                                            // "Work in".
+                                            .child(tr!("working_folder.title")),
                                     )
                                     .child(
                                         div()
@@ -2808,10 +2852,7 @@ impl OrbitApp {
                                                     .items_center()
                                                     .gap(px(10.))
                                                     .cursor_pointer()
-                                                    .hover(|s| {
-                                                        s.border_color(theme.border_strong)
-                                                            .bg(theme.overlay)
-                                                    })
+                                                    .hover_overlay_bordered(&theme)
                                                     .on_mouse_up(
                                                         MouseButton::Left,
                                                         cx.listener(|app, _, window, cx| {
@@ -2870,7 +2911,7 @@ impl OrbitApp {
                                                         },
                                                     )),
                                             )
-                                            .children(self.workspace_picker_popup()),
+                                            .children(self.workspace_picker_popup(&theme)),
                                     ),
                             ),
                     ),
@@ -3075,8 +3116,8 @@ impl OrbitApp {
                                         .when(self.refreshing, |b| b.opacity(0.55))
                                         .when(!self.refreshing, |b| {
                                             b.cursor_pointer()
-                                                .hover(|s| s.bg(theme.surface_hover))
-                                                .active(|s| s.bg(theme.surface_active))
+                                                .hover_state(&theme)
+                                                .pressed_state(&theme, PressedRamp::Wash)
                                         })
                                         .on_click({
                                             let this = cx.entity();
@@ -3222,8 +3263,8 @@ impl OrbitApp {
                     .when(migrating, |b| b.opacity(0.55))
                     .when(!migrating, |b| {
                         b.cursor_pointer()
-                            .hover(|s| s.bg(theme.surface_hover))
-                            .active(|s| s.bg(theme.surface_active))
+                            .hover_state(&theme)
+                            .pressed_state(&theme, PressedRamp::Wash)
                     })
                     .on_click({
                         let this = cx.entity();
@@ -3343,7 +3384,7 @@ impl OrbitApp {
                         icon_button_frame(div().id(("copy", ix)), &theme, ButtonSize::Default)
                             .tip(tr!("common.copy"))
                             .cursor_pointer()
-                            .hover(|s| s.bg(theme.surface_hover))
+                            .hover_state(&theme)
                             .on_click(move |_, _window, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(cmd.to_string()));
                             })
@@ -3365,6 +3406,26 @@ impl OrbitApp {
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = *theme::get(cx);
+        // Inside a repository the location control is "Work in" — it names the
+        // main checkout (as `Local`), a worktree, and the ways to reach a new
+        // place, including switching to any other folder. Outside a repository
+        // there is nothing to choose, so the plain folder chip stays: it names
+        // the workspace and the native dialog changes it.
+        let work_in = self.work_in_chip(cx);
+        let folder_chip = work_in.is_none().then(|| {
+            button_frame(div().id("status-workspace"), &theme, ButtonSize::Default)
+                .cursor_pointer()
+                .hover_quiet(&theme)
+                .pressed_state(&theme, PressedRamp::Wash)
+                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_pick_folder_click))
+                .child(icon(
+                    "icons/folder.svg",
+                    ButtonSize::Default.icon_size().px(&theme),
+                    theme.text_muted,
+                ))
+                .child(workspace_label.to_string())
+                .into_any_element()
+        });
         div()
             .pt_1p5()
             .w_full()
@@ -3373,22 +3434,8 @@ impl OrbitApp {
             .gap_4()
             .text_size(TextSize::Small.px(&theme))
             .text_color(theme.text_muted)
-            .child(
-                button_frame(div().id("status-workspace"), &theme, ButtonSize::Default)
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme.surface_hover).text_color(theme.text_secondary))
-                    .active(|s| s.bg(theme.surface_active).text_color(theme.text_primary))
-                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_pick_folder_click))
-                    .child(icon(
-                        "icons/folder.svg",
-                        ButtonSize::Default.icon_size().px(&theme),
-                        theme.text_muted,
-                    ))
-                    .child(workspace_label.to_string()),
-            )
-            // "Work in": Local / linked worktree / New worktree. Hidden when
-            // the active workspace is not a Git repository.
-            .children(self.work_in_chip(cx))
+            .children(folder_chip)
+            .children(work_in)
             .children(self.branch.as_ref().map(|branch| {
                 let open = self.branch_picker.is_some();
                 let pending = self.branch_operation_pending;
@@ -3406,12 +3453,7 @@ impl OrbitApp {
                                     .when(open, |chip| {
                                         chip.bg(theme.surface_active).text_color(theme.text_primary)
                                     })
-                                    .when(!open && !pending, |chip| {
-                                        chip.hover(|s| {
-                                            s.bg(theme.surface_hover)
-                                                .text_color(theme.text_secondary)
-                                        })
-                                    })
+                                    .when(!open && !pending, |chip| chip.hover_quiet(&theme))
                                     .when(pending, |chip| chip.opacity(0.6))
                                     .on_mouse_up(
                                         MouseButton::Left,
@@ -3445,7 +3487,7 @@ impl OrbitApp {
                                             }),
                                     ),
                             )
-                            .children(self.branch_picker_popup()),
+                            .children(self.branch_picker_popup(&theme)),
                     )
                     .into_any_element()
             }))
@@ -3590,7 +3632,7 @@ impl OrbitApp {
                     .justify_center()
                     .when(back_enabled, |b| {
                         b.cursor_pointer()
-                            .hover(|s| s.bg(theme.surface_hover))
+                            .hover_state(&theme)
                             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_history_back))
                     })
                     .tooltip({
@@ -3618,7 +3660,7 @@ impl OrbitApp {
                     .justify_center()
                     .when(forward_enabled, |b| {
                         b.cursor_pointer()
-                            .hover(|s| s.bg(theme.surface_hover))
+                            .hover_state(&theme)
                             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_history_forward))
                     })
                     .tooltip({
@@ -3637,13 +3679,11 @@ impl OrbitApp {
             )
     }
 
-    /// The right dock's single top-bar affordance: the side-panel toggle and
-    /// the working tree's `+N −N` change counts, folded into one chip. The
-    /// counts already opened Review on the uncommitted diff, so a separate
-    /// panel toggle beside them was the same job twice. Dirty — and with the
-    /// pane and the Git page closed — the chip wears the counts instead of the
-    /// glyph; clean, it falls back to the `panel-right` icon. Either way it
-    /// flips the pane and stays lifted while the pane is visible.
+    /// The right dock's top-bar affordance: the working tree's `+N −N` change
+    /// counts when the tree is dirty, and the side-panel toggle otherwise. The
+    /// counts open the Git page's **Changes** tab (the diff they name); the
+    /// plain glyph toggles Review. Either state stays lifted while its target
+    /// is visible.
     pub(super) fn render_review_panel_control(
         &self,
         theme: Theme,
@@ -3708,8 +3748,23 @@ impl OrbitApp {
         } else {
             chip
         };
-        chip.tip(commands::tooltip(CommandId::ToggleSidePanel, pane_visible))
-            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_toggle_side_pane))
+        // The dirty chip is the Git page's Changes tab; the clean chip is the
+        // Review toggle. Label the control by what the current glyph does.
+        let tooltip = if dirty {
+            commands::tooltip(CommandId::OpenGit, false)
+        } else {
+            commands::tooltip(CommandId::ToggleSidePanel, pane_visible)
+        };
+        chip.tip(tooltip).on_mouse_up(
+            MouseButton::Left,
+            cx.listener(move |this, event: &MouseUpEvent, window, cx| {
+                if dirty {
+                    this.open_git_changes(cx);
+                } else {
+                    this.on_toggle_side_pane(event, window, cx);
+                }
+            }),
+        )
     }
 
     /// The top bar's overflow menu: one "…" control holding the surfaces that
@@ -3823,22 +3878,6 @@ impl OrbitApp {
                         this.open_git(cx);
                     }
                 }),
-            ))
-            // Worktrees is a surface, not live state, so it belongs here rather
-            // than in the status row — which is why the "Work in" chip can stay
-            // out of the way at the main checkout. The row keeps the registry's
-            // icon and title, so the menu and the palette cannot drift.
-            .child(header_menu_row(
-                "header-more-worktrees",
-                "icons/branch.svg",
-                commands::title(CommandId::OpenWorktrees, false),
-                commands::spec(CommandId::OpenWorktrees).shortcut(),
-                self.worktrees_open,
-                theme,
-                cx.listener(|this, _: &MouseUpEvent, window, cx| {
-                    this.header_more_open = false;
-                    this.on_open_worktrees(&crate::OpenWorktrees, window, cx);
-                }),
             ));
         Some(
             div()
@@ -3846,14 +3885,13 @@ impl OrbitApp {
                 .bottom_0()
                 .right_0()
                 .size(px(0.))
-                .child(
-                    anchored()
-                        .position_mode(AnchoredPositionMode::Local)
-                        .anchor(Corner::TopRight)
-                        .offset(point(px(0.), popover::MENU_OFFSET))
-                        .snap_to_window_with_margin(popover::WINDOW_MARGIN)
-                        .child(deferred(menu)),
-                )
+                .child(anchored_popover(
+                    Corner::TopRight,
+                    point(px(0.), popover::MENU_OFFSET),
+                    menu,
+                    "anchored_popover-in-16",
+                    &theme,
+                ))
                 .into_any_element(),
         )
     }
@@ -3869,16 +3907,12 @@ impl OrbitApp {
         button_frame(div().id("sidebar-new-session"), &theme, ButtonSize::Large)
             .group(BUTTON_GROUP)
             .w_full()
-            .tip(commands::tooltip(CommandId::NewSession, false))
             .raised(theme.surface_elevated, &theme)
             .border_1()
             .border_color(theme.border)
             .cursor_pointer()
-            .hover(|s| {
-                s.raised(theme.surface_hover, &theme)
-                    .border_color(theme.border_strong)
-            })
-            .active(|s| s.opacity(PRESS_DIM))
+            .hover_bordered(&theme)
+            .pressed_state(&theme, PressedRamp::Wash)
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseUpEvent, w, cx| {
@@ -3911,8 +3945,8 @@ impl OrbitApp {
             )
     }
 
-    /// The sidebar footer's utility icons: Search (command palette), Usage,
-    /// and Settings. Icon-only — each glyph is labelled by its tooltip, which
+    /// The sidebar footer's utility icons: Usage and Settings. Icon-only —
+    /// each glyph is labelled by its tooltip, which
     /// also names its chord — so the column keeps labels for the primary
     /// action and the session list alone.
     pub(super) fn sidebar_footer_actions(
@@ -3920,34 +3954,18 @@ impl OrbitApp {
         theme: Theme,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
-        // Search — opens the command palette (⌘P).
-        let search = icon_button_frame(div().id("sidebar-search"), &theme, ButtonSize::Medium)
-            .tip(commands::tooltip(CommandId::ToggleCommandPalette, false))
-            .cursor_pointer()
-            .hover(|s| s.bg(theme.surface_hover))
-            .active(|s| s.opacity(PRESS_DIM))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _: &MouseUpEvent, w, cx| this.toggle_command_palette(w, cx)),
-            )
-            .child(icon(
-                "icons/search.svg",
-                ButtonSize::Medium.icon_size().px(&theme),
-                theme.text_secondary,
-            ));
         // Usage — opens (or leaves) the Usage page (⌘U).
         let usage = icon_button_frame(div().id("sidebar-usage"), &theme, ButtonSize::Medium)
             .tip(commands::tooltip(CommandId::ToggleUsage, false))
             .when(self.usage_open, |btn| btn.bg(theme.surface_active))
             .cursor_pointer()
-            .hover(|s| {
-                s.bg(if self.usage_open {
-                    theme.surface_active
-                } else {
-                    theme.surface_hover
-                })
+            .hover_state_open(&theme, self.usage_open)
+            .when(self.usage_open, |btn| {
+                btn.pressed_state(&theme, PressedRamp::Selected)
             })
-            .active(|s| s.opacity(PRESS_DIM))
+            .when(!self.usage_open, |btn| {
+                btn.pressed_state(&theme, PressedRamp::Wash)
+            })
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_usage_nav_click))
             .child(icon(
                 "icons/chart-analysis.svg",
@@ -3963,14 +3981,13 @@ impl OrbitApp {
             .tip(commands::tooltip(CommandId::OpenSettings, false))
             .when(self.settings_open, |btn| btn.bg(theme.surface_active))
             .cursor_pointer()
-            .hover(|s| {
-                s.bg(if self.settings_open {
-                    theme.surface_active
-                } else {
-                    theme.surface_hover
-                })
+            .hover_state_open(&theme, self.settings_open)
+            .when(self.settings_open, |btn| {
+                btn.pressed_state(&theme, PressedRamp::Selected)
             })
-            .active(|s| s.opacity(PRESS_DIM))
+            .when(!self.settings_open, |btn| {
+                btn.pressed_state(&theme, PressedRamp::Wash)
+            })
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_settings_gear_click))
             .child(icon(
                 "icons/settings.svg",
@@ -3985,7 +4002,6 @@ impl OrbitApp {
             .flex()
             .items_center()
             .gap(DynamicSpacing::Base06.px(&theme))
-            .child(search)
             .child(usage)
             .child(settings)
     }
@@ -4095,6 +4111,7 @@ impl OrbitApp {
             || self.model_selector.is_some()
             || self.branch_picker.is_some()
             || self.workspace_picker.is_some()
+            || self.rewind_picker.is_some()
             || self.dialog.is_some()
             || self.lightbox.is_some()
             || self.updater_dialog.is_some()
@@ -4112,7 +4129,7 @@ impl OrbitApp {
     /// primary slot wears that mode's glyph instead of always showing a paper
     /// plane. Stop is always the *secondary* slot: stopping is a normal action,
     /// not a warning, so it rests neutral and only turns red under the pointer.
-    pub(super) fn send_controls(&self, cx: &Context<Self>) -> AnyElement {
+    pub(super) fn send_controls(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
         let theme = *theme::get(cx);
         let running = self.is_running();
         // The same rule `submit_as` uses: text, images, or a collapsed paste
@@ -4128,13 +4145,13 @@ impl OrbitApp {
         }
         if !running {
             return row
-                .child(self.send_button(has_payload, false, theme, cx))
+                .child(self.send_button(has_payload, false, theme, window, cx))
                 .into_any_element();
         }
         // Mid-run with nothing typed, stop is the only action and takes the
         // primary seat rather than sitting beside a dead send.
         if has_payload {
-            row = row.child(self.send_button(true, true, theme, cx));
+            row = row.child(self.send_button(true, true, theme, window, cx));
         }
         row.child(self.stop_button(theme, cx)).into_any_element()
     }
@@ -4189,16 +4206,22 @@ impl OrbitApp {
         has_payload: bool,
         running: bool,
         theme: Theme,
+        window: &Window,
         cx: &Context<Self>,
     ) -> AnyElement {
         let mode = theme.ui.composer_send_mode;
-        let (icon_path, action) = if running {
-            match mode {
-                SendMode::FollowUp => ("icons/arrow-up.svg", tr!("composer.queue_follow_up")),
-                SendMode::Steer => ("icons/arrow-up-right.svg", tr!("composer.steer_task")),
-            }
-        } else {
-            ("icons/send.svg", tr!("composer.send"))
+        let (icon_path, action, label) = match (running, mode) {
+            (true, SendMode::FollowUp) => (
+                "icons/arrow-up.svg",
+                tr!("composer.queue_follow_up"),
+                tr!("composer.queue"),
+            ),
+            (true, SendMode::Steer) => (
+                "icons/arrow-up-right.svg",
+                tr!("composer.steer_task"),
+                tr!("composer.steer"),
+            ),
+            (false, _) => ("icons/send.svg", tr!("composer.send"), tr!("composer.send")),
         };
         if !has_payload {
             // Resting, unclickable: a darker well and a disabled glyph, with no
@@ -4206,16 +4229,22 @@ impl OrbitApp {
             // land. The tooltip says why instead of naming a shortcut that
             // would do nothing.
             let tooltip = tr!("composer.nothing_to_send");
-            return icon_button_frame(div().id("send-btn"), &theme, ButtonSize::Medium)
-                .rounded_full()
-                .bg(theme.overlay)
-                .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into())
-                .child(icon(
-                    icon_path,
-                    ButtonSize::Medium.icon_size().px(&theme),
-                    theme.text_disabled,
-                ))
-                .into_any_element();
+            return icon_button_frame(
+                div()
+                    .id("send-btn")
+                    .debug_selector(|| "send-btn".to_string()),
+                &theme,
+                ButtonSize::Medium,
+            )
+            .rounded_full()
+            .bg(theme.overlay)
+            .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into())
+            .child(icon(
+                icon_path,
+                ButtonSize::Medium.icon_size().px(&theme),
+                theme.text_disabled,
+            ))
+            .into_any_element();
         }
         let shortcut = if running {
             mode.shortcut_label(mode)
@@ -4227,20 +4256,83 @@ impl OrbitApp {
             keys = shortcut,
             action = action.clone()
         );
-        icon_button_frame(div().id("send-btn"), &theme, ButtonSize::Medium)
-            .rounded_full()
-            .raised(theme.action, &theme)
-            .hover(|s| s.raised(theme.action_hover, &theme))
-            .active(|s| s.raised(theme.action_pressed, &theme))
-            .cursor_pointer()
-            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_send_click))
-            .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into())
-            .child(icon(
-                icon_path,
-                ButtonSize::Medium.icon_size().px(&theme),
-                theme.action_fg,
-            ))
-            .into_any_element()
+        let square = ButtonSize::Medium.height(&theme);
+        let icon_size = ButtonSize::Medium.icon_size().px(&theme);
+        let label_size = button::label_size(ButtonSize::Medium).px(&theme);
+        let padding_x = ButtonSize::Medium.padding_x(&theme);
+        let gap = button::gap(&theme);
+        // The labelled pill is exactly its content plus the padding every
+        // labelled button uses, measured for this label at this UI size. A
+        // fixed reserve used to stand in for the label, so the padding shrank
+        // as the UI font grew (and a longer translation would clip), while the
+        // icon and the label sat flush with no gap between them.
+        let label_width = text_width(window, &label, label_size);
+        let labelled = (padding_x * 2. + icon_size + gap + label_width).max(square);
+        // One ink for the whole control: the glyph and the label both read
+        // `action_fg`, the foreground role of the fill they sit on. The label
+        // used to inherit the page ink, so in dark mode it stayed near-white
+        // while the fill was light — invisible on the button, however readable
+        // it was on the canvas.
+        let label_color = theme.action_fg;
+        let control = icon_button_frame(
+            div()
+                .id("send-btn")
+                .debug_selector(|| "send-btn".to_string()),
+            &theme,
+            ButtonSize::Medium,
+        )
+        .rounded_full()
+        .raised(theme.action, &theme)
+        .pressed_state(&theme, PressedRamp::Action)
+        .cursor_pointer()
+        .overflow_hidden()
+        .on_mouse_up(MouseButton::Left, cx.listener(Self::on_send_click))
+        .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into());
+        // One wrapper owns both values: the hover fades `action` into
+        // `action_hover`, and the state morphs the square into a labelled
+        // button on the longer Travel role. Width and label ride the same
+        // transition, so the control never changes shape in two steps.
+        crate::motion::control(
+            control,
+            "send-btn",
+            &theme,
+            crate::theme::tokens::Motion::Interaction,
+            crate::theme::tokens::Motion::Travel,
+            // Idle with something to send: the button names the action. While a
+            // turn runs it folds back to a square, because the glyph (queue or
+            // steer) is the whole message then.
+            if running { 0.0 } else { 1.0 },
+            move |control, hover, morphed| {
+                control
+                    .bg(crate::motion::blend(
+                        theme.action,
+                        theme.action_hover,
+                        hover,
+                    ))
+                    .w(square + (labelled - square) * morphed)
+                    .child(
+                        icon(icon_path, icon_size, label_color)
+                            .debug_selector(|| "send-btn-icon".to_string()),
+                    )
+                    // The label owns its share of the width, so an icon-only
+                    // morph collapses it to nothing: a hidden label that kept
+                    // its space pushed the glyph off the circle's centre.
+                    .child(
+                        div()
+                            .debug_selector(|| "send-btn-label".to_string())
+                            .flex_none()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_size(label_size)
+                            .line_height(relative(1.))
+                            .text_color(label_color)
+                            .ml(gap * morphed)
+                            .w(label_width * morphed)
+                            .child(label.clone())
+                            .opacity(morphed),
+                    )
+            },
+        )
     }
 
     /// Stop the run. Neutral at rest — stopping is routine, not a failure — and
@@ -4256,8 +4348,8 @@ impl OrbitApp {
             .group(BUTTON_GROUP)
             .rounded_full()
             .raised(theme.surface_elevated, &theme)
-            .hover(|s| s.raised(theme.error, &theme))
-            .active(|s| s.raised(theme.error_hover, &theme))
+            .hover_danger(&theme)
+            .pressed_state(&theme, PressedRamp::Danger)
             .cursor_pointer()
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_abort_mouse))
             .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into())
@@ -4318,7 +4410,7 @@ impl OrbitApp {
                         button_frame(div().id("cancel-retry"), &theme, ButtonSize::Compact)
                             .text_color(theme.text_secondary)
                             .cursor_pointer()
-                            .hover(|s| s.bg(theme.surface_hover).text_color(theme.text_primary))
+                            .hover_state(&theme)
                             .on_mouse_up(
                                 MouseButton::Left,
                                 cx.listener(|this, _, _, cx| {
@@ -4455,7 +4547,7 @@ impl OrbitApp {
             icon_button_frame(div().id("ask-close"), &theme, ButtonSize::Compact)
                 .tip(tr!("common.close"))
                 .cursor_pointer()
-                .hover(|style| style.bg(theme.overlay_strong))
+                .hover_on_glass(&theme)
                 .child(icon(
                     "icons/x.svg",
                     ButtonSize::Compact.icon_size().px(&theme),
@@ -4552,7 +4644,7 @@ impl OrbitApp {
                 .flex()
                 .items_center()
                 .gap(DynamicSpacing::Base04.px(&theme))
-                .hover(|style| style.bg(theme.overlay_strong))
+                .hover_on_glass(&theme)
                 .child(marker)
                 .child(copy);
             if multi && checked {
@@ -4589,7 +4681,7 @@ impl OrbitApp {
                 .flex()
                 .items_center()
                 .gap(DynamicSpacing::Base08.px(&theme))
-                .hover(|style| style.bg(theme.overlay_strong))
+                .hover_on_glass(&theme)
                 .child(icon(
                     "icons/compose.svg",
                     IconSize::XSmall.px(&theme),
@@ -4710,11 +4802,7 @@ impl OrbitApp {
         } else {
             back = back
                 .cursor_pointer()
-                .hover(|style| {
-                    style
-                        .raised(theme.overlay_strong, &theme)
-                        .text_color(theme.text_primary)
-                })
+                .hover_overlay_strong(&theme)
                 .on_click(cx.listener(|this, _, window, cx| this.ask_prev_question(window, cx)));
         }
         back = back.child(tr!("view.back"));
@@ -4736,7 +4824,7 @@ impl OrbitApp {
         } else {
             next = next
                 .cursor_pointer()
-                .hover(|style| style.raised(theme.accent.opacity(0.26), &theme))
+                .hover_accent_wash(&theme, AccentWash::Soft)
                 .on_click(cx.listener(|this, _, window, cx| this.ask_next_question(window, cx)));
         }
         next = next.child(next_label);
@@ -4815,23 +4903,17 @@ impl OrbitApp {
                 button
                     .raised(theme.accent.opacity(0.16), &theme)
                     .text_color(theme.accent_text)
-                    .hover(|s| s.raised(theme.accent.opacity(0.26), &theme))
+                    .hover_accent_wash(&theme, AccentWash::Soft)
             } else if is_deny {
                 button
                     .raised(theme.overlay, &theme)
                     .text_color(theme.text_secondary)
-                    .hover(|s| {
-                        s.raised(theme.error.opacity(0.14), &theme)
-                            .text_color(theme.error)
-                    })
+                    .hover_danger_soft(&theme)
             } else {
                 button
                     .raised(theme.overlay, &theme)
                     .text_color(theme.text_secondary)
-                    .hover(|s| {
-                        s.raised(theme.overlay_strong, &theme)
-                            .text_color(theme.text_primary)
-                    })
+                    .hover_overlay_strong(&theme)
             };
             // The keyboard cursor reads as a strong border.
             button = button.border_color(if highlighted {
@@ -4911,7 +4993,8 @@ impl OrbitApp {
         } else {
             bar.with_animation(
                 "approval-in",
-                Animation::new(Duration::from_millis(170)).with_easing(|d| 1.0 - (1.0 - d).powi(3)),
+                Animation::new(Motion::Layout.duration(&theme))
+                    .with_easing(Motion::Layout.easing()),
                 move |el, d| el.max_h(px(BAR_H * d)).mb(px(GAP * d)).opacity(d),
             )
             .into_any_element()
@@ -5018,7 +5101,7 @@ impl OrbitApp {
                             .tip(tr!("view.clear_queue"))
                             .cursor_pointer()
                             .text_color(theme.text_muted)
-                            .hover(|s| s.bg(theme.surface_hover).text_color(theme.text_primary))
+                            .hover_state(&theme)
                             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_clear_queue))
                             .child(icon(
                                 "icons/x.svg",
@@ -5109,7 +5192,7 @@ impl OrbitApp {
                                 .tip(tr!("view.queue_save"))
                                 .cursor_pointer()
                                 .text_color(theme.accent_text)
-                                .hover(|s| s.bg(theme.surface_hover))
+                                .hover_state(&theme)
                                 .on_mouse_up(
                                     MouseButton::Left,
                                     cx.listener(Self::on_queue_edit_save),
@@ -5136,7 +5219,7 @@ impl OrbitApp {
                         .tip(tr!("view.queue_cancel"))
                         .cursor_pointer()
                         .text_color(theme.text_muted)
-                        .hover(|s| s.bg(theme.surface_hover).text_color(theme.text_primary))
+                        .hover_state(&theme)
                         .on_mouse_up(
                             MouseButton::Left,
                             cx.listener(Self::on_queue_edit_cancel_click),
@@ -5185,7 +5268,7 @@ impl OrbitApp {
                                 .tip(tr!("view.queue_edit"))
                                 .cursor_pointer()
                                 .text_color(theme.text_muted)
-                                .hover(|s| s.bg(theme.surface_hover).text_color(theme.text_primary))
+                                .hover_state(&theme)
                                 .on_mouse_up(
                                     MouseButton::Left,
                                     cx.listener(move |this, _, window, cx| {
@@ -5213,9 +5296,7 @@ impl OrbitApp {
                                     .tip(tr!("view.queue_send_now"))
                                     .cursor_pointer()
                                     .text_color(theme.text_muted)
-                                    .hover(|s| {
-                                        s.bg(theme.surface_hover).text_color(theme.accent_text)
-                                    })
+                                    .hover_accent_ink(&theme)
                                     .on_mouse_up(
                                         MouseButton::Left,
                                         cx.listener(move |this, _, _, cx| {
@@ -5293,86 +5374,112 @@ impl OrbitApp {
     /// surfaced per the docs' error contract. Persists until dismissed. A
     /// dead pi process offers a one-click Reconnect instead of sending the
     /// user to Settings; every banner can copy its text for a bug report.
+    /// ⌘⌥P (debug builds): toggle a frame-time capture and report the summary.
+    ///
+    /// The first press starts recording and arms the frame hook; the second
+    /// writes the summary to `~/.orbit-pi/perf.jsonl` and reports it in a toast.
+    /// A capture that nobody stops files itself after two minutes.
+    pub(super) fn on_record_frame_times(
+        &mut self,
+        _: &crate::RecordFrameTimes,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        #[cfg(not(debug_assertions))]
+        {
+            let _ = (window, cx);
+        }
+        // Proves the chord reached the handler at all, which is otherwise
+        // indistinguishable from "the key never matched".
+        #[cfg(debug_assertions)]
+        eprintln!("perf: chord received");
+        // Both channels on purpose: the toast is for a window that is running,
+        // and stderr is for a terminal that is watching. A debug tool that only
+        // reports into the UI is hard to trust while wiring it up.
+        #[cfg(debug_assertions)]
+        if crate::perf::start("capture") {
+            crate::perf::arm(window);
+            eprintln!("perf: recording — press ⌘⌥P again to stop");
+            self.toast_info(tr!("perf.recording"));
+        } else if let Some(summary) = crate::perf::finish() {
+            eprintln!("perf: {}", summary.line());
+            self.toast_info(summary.line());
+        } else {
+            eprintln!("perf: no frames were recorded");
+            self.toast_warning(tr!("perf.no_frames"));
+        }
+        cx.notify();
+    }
+
     pub(super) fn error_banner(&self, theme: Theme, cx: &Context<Self>) -> Option<AnyElement> {
-        let message = self.error.as_ref()?;
+        let message = self.error.clone()?;
         let copy_text = message.clone();
         let reconnect = self.runtime.exited;
+        let mut actions = div().flex().flex_none().items_center().gap_1();
+        if reconnect {
+            actions = actions.child(
+                button_frame(div().id("reconnect-runtime"), &theme, ButtonSize::Default)
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text_primary)
+                    .cursor_pointer()
+                    .raised(theme.overlay, &theme)
+                    .hover_on_glass(&theme)
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            if this.error_source.as_deref() != Some(REWIND_INTERRUPTED_ERROR_SOURCE)
+                            {
+                                this.error = None;
+                            }
+                            this.runtime_restart(cx);
+                        }),
+                    )
+                    .child(tr!("view.reconnect")),
+            );
+        }
+        actions = actions
+            .child(
+                icon_button_frame(div().id("copy-error"), &theme, ButtonSize::Compact)
+                    .tip(tr!("common.copy"))
+                    .cursor_pointer()
+                    .text_color(theme.text_secondary)
+                    .hover_state(&theme)
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |_, _, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
+                        }),
+                    )
+                    .child(icon(
+                        "icons/copy.svg",
+                        ButtonSize::Compact.icon_size().px(&theme),
+                        theme.text_secondary,
+                    )),
+            )
+            .child(
+                icon_button_frame(div().id("dismiss-error"), &theme, ButtonSize::Compact)
+                    .tip(tr!("common.dismiss"))
+                    .cursor_pointer()
+                    .text_color(theme.text_secondary)
+                    .hover_state(&theme)
+                    .on_mouse_up(MouseButton::Left, cx.listener(Self::dismiss_error))
+                    .child(icon(
+                        "icons/x.svg",
+                        ButtonSize::Compact.icon_size().px(&theme),
+                        theme.text_secondary,
+                    )),
+            );
         Some(
             div()
                 .w_full()
                 .mb(DynamicSpacing::Base08.px(&theme))
-                .bg(theme.error.opacity(0.1))
-                .border_1()
-                .border_color(theme.error.opacity(0.45))
-                .rounded(panel::RADIUS.px(&theme))
-                .px(DynamicSpacing::Base12.px(&theme))
-                .py(px(9.))
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(icon(
-                    "icons/info.svg",
-                    IconSize::Medium.px(&theme),
-                    theme.error,
+                .child(error_state(
+                    theme,
+                    &message,
+                    None,
+                    Some(&tr!("view.error_hint")),
+                    Some(actions.into_any_element()),
                 ))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_size(TextSize::Small.px(&theme))
-                        .text_color(theme.text_primary)
-                        .child(message.clone()),
-                )
-                .when(reconnect, |banner| {
-                    banner.child(
-                        button_frame(div().id("reconnect-runtime"), &theme, ButtonSize::Default)
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.text_primary)
-                            .cursor_pointer()
-                            .raised(theme.overlay, &theme)
-                            .hover(|s| s.raised(theme.overlay_strong, &theme))
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
-                                    this.error = None;
-                                    this.runtime_restart(cx);
-                                }),
-                            )
-                            .child(tr!("view.reconnect")),
-                    )
-                })
-                .child(
-                    icon_button_frame(div().id("copy-error"), &theme, ButtonSize::Compact)
-                        .tip(tr!("common.copy"))
-                        .cursor_pointer()
-                        .text_color(theme.text_secondary)
-                        .hover(|s| s.bg(theme.surface_hover).text_color(theme.text_primary))
-                        .on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(move |_, _, _, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
-                            }),
-                        )
-                        .child(icon(
-                            "icons/copy.svg",
-                            ButtonSize::Compact.icon_size().px(&theme),
-                            theme.text_secondary,
-                        )),
-                )
-                .child(
-                    icon_button_frame(div().id("dismiss-error"), &theme, ButtonSize::Compact)
-                        .tip(tr!("common.dismiss"))
-                        .cursor_pointer()
-                        .text_size(TextSize::Default.px(&theme))
-                        .text_color(theme.text_secondary)
-                        .hover(|s| s.bg(theme.surface_hover).text_color(theme.text_primary))
-                        .on_mouse_up(MouseButton::Left, cx.listener(Self::dismiss_error))
-                        .child(icon(
-                            "icons/x.svg",
-                            ButtonSize::Compact.icon_size().px(&theme),
-                            theme.text_secondary,
-                        )),
-                )
                 .into_any_element(),
         )
     }

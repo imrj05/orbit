@@ -216,9 +216,7 @@ impl OrbitApp {
             .gap_2p5()
             .cursor_pointer()
             .when(selected, |row| row.bg(theme.surface_selected))
-            .when(!selected, |row| {
-                row.hover(|style| style.bg(theme.surface_hover))
-            })
+            .when(!selected, |row| row.hover_state(&theme))
             .when(!skill.enabled, |row| row.opacity(0.55))
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                 this.update(cx, |app, cx| app.select_skill(file.clone(), cx));
@@ -526,29 +524,14 @@ impl OrbitApp {
     }
 
     fn skill_toggle(&self, skill: &Skill, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
-        let on = skill.enabled;
-        div()
-            .id("skill-toggle")
-            .w(px(36.))
-            .h(px(20.))
-            .rounded_full()
-            .p(px(2.))
-            .border_1()
-            .border_color(theme.border)
-            .flex()
-            .items_center()
-            .cursor_pointer()
-            .when(on, |track| track.bg(theme.accent).justify_end())
-            .when(!on, |track| {
-                track.bg(theme.surface_elevated).justify_start()
-            })
-            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                this.update(cx, |app, cx| {
-                    app.apply_skill_action(SkillAction::Toggle, cx)
-                });
-            })
-            .child(div().size(px(14.)).rounded_full().bg(theme.toggle_knob))
-            .into_any_element()
+        // One switch per skill: the id keys the transition, so two rows sharing
+        // one id would share a knob.
+        let id = format!("skill-toggle-{}", skill.file.display());
+        switch(id, skill.enabled, &theme, move |_, _, cx| {
+            this.update(cx, |app, cx| {
+                app.apply_skill_action(SkillAction::Toggle, cx)
+            });
+        })
     }
 
     fn skill_actions(&self, skill: &Skill, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
@@ -665,11 +648,7 @@ impl OrbitApp {
                     .border_color(theme.border)
                     .raised(theme.surface_elevated, &theme)
                     .text_color(theme.error)
-                    .hover(|style| {
-                        style
-                            .border_color(theme.error.opacity(0.6))
-                            .raised(theme.error.opacity(0.08), &theme)
-                    }),
+                    .hover_danger_soft(&theme),
                 theme.error,
             )
         } else {
@@ -678,7 +657,7 @@ impl OrbitApp {
                     .border_color(theme.border)
                     .raised(theme.surface_elevated, &theme)
                     .text_color(theme.text_secondary)
-                    .hover(|style| style.raised(theme.surface_hover, &theme)),
+                    .hover_state(&theme),
                 theme.text_secondary,
             )
         };

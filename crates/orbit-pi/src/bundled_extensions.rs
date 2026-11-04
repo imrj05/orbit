@@ -1,6 +1,6 @@
 //! Orbit's bundled pi extensions.
 //!
-//! Orbit ships three small pi extensions under `contrib/` and loads them with
+//! Orbit ships six small pi extensions under `contrib/` and loads them with
 //! `pi --extension <path>` on every session process it spawns:
 //!
 //! - **quota bridge** (`contrib/orbit-quota-extension/`) — fetches each
@@ -15,6 +15,11 @@
 //! - **workflow** (`contrib/orbit-workflow-extension/`) — scopes the session
 //!   to Plan/Build/Ask: disables write tools in read-only modes, gates bash to
 //!   a read-only allowlist, and injects mode guidance (see [`crate::workflow`]).
+//! - **subagents** (`contrib/orbit-subagents-extension/`) — registers the
+//!   `subagent` tool: delegates a scoped task to a child `pi` process and
+//!   returns only its report and cost. Every session spawn also exports the
+//!   installed entry points as `ORBIT_BUNDLED_EXTENSIONS`, which the subagent
+//!   tool forwards with `--extension` so a child inherits the guardrails.
 //!
 //!
 //! Nothing is installed and no settings file is touched: each extension is
@@ -40,6 +45,28 @@ const TITLE_HELPERS_JS: &str = include_str!("../../../contrib/orbit-title-extens
 const WORKFLOW_INDEX_JS: &str = include_str!("../../../contrib/orbit-workflow-extension/index.js");
 const WORKFLOW_POLICY_JS: &str =
     include_str!("../../../contrib/orbit-workflow-extension/policy.js");
+const SUBAGENTS_INDEX_JS: &str =
+    include_str!("../../../contrib/orbit-subagents-extension/index.js");
+const SUBAGENTS_AGENTS_JS: &str =
+    include_str!("../../../contrib/orbit-subagents-extension/agents.js");
+const SUBAGENTS_RUN_JS: &str = include_str!("../../../contrib/orbit-subagents-extension/run.js");
+const SUBAGENTS_MODE_JS: &str = include_str!("../../../contrib/orbit-subagents-extension/mode.js");
+const SUBAGENTS_RESOURCES_JS: &str =
+    include_str!("../../../contrib/orbit-subagents-extension/resources.js");
+const SUBAGENTS_BUILTINS_JSON: &str =
+    include_str!("../../../contrib/orbit-subagents-extension/builtins.json");
+
+/// The subagent extension's files. `builtins.json` ships beside the entry
+/// because the extension reads it with `import.meta.url`, and Orbit embeds the
+/// same file so Settings can show and reset the shipped definitions (D-X).
+const SUBAGENTS_FILES: &[(&str, &str)] = &[
+    ("index.js", SUBAGENTS_INDEX_JS),
+    ("agents.js", SUBAGENTS_AGENTS_JS),
+    ("run.js", SUBAGENTS_RUN_JS),
+    ("mode.js", SUBAGENTS_MODE_JS),
+    ("resources.js", SUBAGENTS_RESOURCES_JS),
+    ("builtins.json", SUBAGENTS_BUILTINS_JSON),
+];
 
 /// The bundled extensions materialized on disk, kept for the process lifetime.
 #[derive(Default)]
@@ -57,6 +84,9 @@ pub(crate) struct BundledExtensions {
     /// The workflow extension's `index.js`; `None` when it could not be
     /// written (sessions then run unscoped and the mode chip is honest).
     workflow: Option<PathBuf>,
+    /// The subagent extension's `index.js`; `None` when it could not be
+    /// written (the `subagent` tool is then absent, not broken).
+    subagents: Option<PathBuf>,
 }
 
 impl BundledExtensions {
@@ -69,6 +99,7 @@ impl BundledExtensions {
             title: install_title_extension(),
             suggestions: install_suggestions_extension(),
             workflow: install_workflow_extension(),
+            subagents: install_subagents_extension(),
         }
     }
 
@@ -85,6 +116,24 @@ impl BundledExtensions {
     /// The workflow extension's `index.js`; `None` when it could not be written.
     pub(crate) fn workflow(&self) -> Option<&Path> {
         self.workflow.as_deref()
+    }
+
+    /// The two guardrail entry points as a JSON array for the spawn
+    /// environment. Handed to each session as `ORBIT_BUNDLED_EXTENSIONS` so the
+    /// subagent tool can forward them to a child (D-E).
+    ///
+    /// Only the guard and the workflow extension: a child needs the parent's
+    /// permissions and its Plan/Build/Ask scope, and nothing else. Forwarding
+    /// the quota, title and suggestions bridges would make every delegation
+    /// fetch provider quota or spend a model call on a session title the user
+    /// never sees.
+    pub(crate) fn guardrails_json(&self) -> Option<String> {
+        let guardrails: Vec<PathBuf> = [&self.guard, &self.workflow]
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect();
+        bundled_extensions_env(&guardrails)
     }
 
     /// Spawn a pi session process with every available bundled extension
@@ -114,11 +163,17 @@ impl BundledExtensions {
         } else {
             Vec::new()
         };
-        let env_refs: Vec<(&str, &str)> = env
+        let extensions = self.extension_paths();
+        let bundled = self.guardrails_json();
+        let mut env_refs: Vec<(&str, &str)> = env
             .iter()
             .map(|(key, value)| (key.as_str(), value.as_str()))
             .collect();
-        let extensions = self.extension_paths();
+        // A child session does not inherit extensions implicitly: the subagent
+        // tool reads this list and passes each path on as `--extension`.
+        if let Some(bundled) = bundled.as_deref() {
+            env_refs.push(("ORBIT_BUNDLED_EXTENSIONS", bundled));
+        }
         PiClient::spawn_with_extensions_and_env_and_args(
             workspace,
             None,
@@ -136,6 +191,7 @@ impl BundledExtensions {
             &self.title,
             &self.suggestions,
             &self.workflow,
+            &self.subagents,
         ]
         .into_iter()
         .flatten()
@@ -194,6 +250,10 @@ fn install_suggestions_extension() -> Option<PathBuf> {
     )
 }
 
+fn install_subagents_extension() -> Option<PathBuf> {
+    install_extension(&home_dir()?, "subagents-extension", SUBAGENTS_FILES)
+}
+
 fn install_workflow_extension() -> Option<PathBuf> {
     install_extension(
         &home_dir()?,
@@ -207,6 +267,20 @@ fn install_workflow_extension() -> Option<PathBuf> {
 
 fn home_dir() -> Option<PathBuf> {
     crate::platform::home_dir_opt()
+}
+
+/// The installed entry points as a JSON array for `ORBIT_BUNDLED_EXTENSIONS`.
+/// `None` when nothing installed — the variable is then simply absent, which
+/// the subagent tool treats the same as an empty list.
+fn bundled_extensions_env(paths: &[PathBuf]) -> Option<String> {
+    if paths.is_empty() {
+        return None;
+    }
+    let strings: Vec<String> = paths
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    serde_json::to_string(&strings).ok()
 }
 
 /// Write only when the bytes differ, so relaunches don't churn mtimes (and a
@@ -264,6 +338,77 @@ mod tests {
         // A directory named without an `index.js` yields no entry point.
         assert!(install_extension(&dir, "no-entry", &[("other.js", "x")]).is_none());
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn subagents_extension_ships_every_file_it_imports() {
+        // The entry imports five siblings and reads `builtins.json` beside
+        // itself; every one of them must be in the embedded set, or a child
+        // would fail to load the guardrail extension at all.
+        for name in [
+            "agents.js",
+            "run.js",
+            "mode.js",
+            "resources.js",
+            "builtins.json",
+        ] {
+            assert!(
+                SUBAGENTS_FILES.iter().any(|(file, _)| *file == name),
+                "{name} is installed next to index.js"
+            );
+        }
+        assert!(SUBAGENTS_INDEX_JS.contains("./agents.js"));
+        assert!(SUBAGENTS_INDEX_JS.contains("./run.js"));
+        assert!(SUBAGENTS_INDEX_JS.contains("./mode.js"));
+        assert!(SUBAGENTS_INDEX_JS.contains("./resources.js"));
+        assert!(SUBAGENTS_AGENTS_JS.contains("./builtins.json"));
+
+        // The tool name and the details version are the contract the card
+        // parses; renaming either is a protocol change.
+        assert!(SUBAGENTS_INDEX_JS.contains("\"subagent\""));
+        assert!(SUBAGENTS_RUN_JS.contains("subagent/1"));
+        // The child is a json-mode process with no session to clean up.
+        assert!(SUBAGENTS_RUN_JS.contains("\"--mode\", \"json\""));
+        assert!(SUBAGENTS_RUN_JS.contains("--no-session"));
+        assert!(SUBAGENTS_RUN_JS.contains("--append-system-prompt"));
+    }
+
+    #[test]
+    fn installs_the_subagents_extension_and_returns_its_entry() {
+        let dir = scratch_dir();
+        let entry = install_extension(&dir, "subagents-extension", SUBAGENTS_FILES)
+            .expect("install writes files");
+        assert!(entry.ends_with("subagents-extension/index.js"));
+        assert!(entry.exists());
+        for name in [
+            "agents.js",
+            "run.js",
+            "mode.js",
+            "resources.js",
+            "builtins.json",
+        ] {
+            assert!(entry.with_file_name(name).exists(), "{name} is installed");
+        }
+        // The shipped builtins must parse as JSON: the page embeds this file.
+        let builtins: serde_json::Value =
+            serde_json::from_str(SUBAGENTS_BUILTINS_JSON).expect("builtins.json is valid JSON");
+        let agents = builtins["agents"].as_array().expect("agents array");
+        assert_eq!(agents.len(), 3);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_spawn_env_lists_only_the_guardrail_extensions() {
+        let paths = vec![
+            PathBuf::from("/home/u/.orbit-pi/guard-extension/index.js"),
+            PathBuf::from("/home/u/.orbit-pi/workflow-extension/index.js"),
+        ];
+        let json = bundled_extensions_env(&paths).expect("non-empty list");
+        let parsed: Vec<String> = serde_json::from_str(&json).expect("json array");
+        assert_eq!(parsed.len(), 2);
+        assert!(parsed[0].ends_with("guard-extension/index.js"));
+        assert!(parsed[1].ends_with("workflow-extension/index.js"));
+        assert!(bundled_extensions_env(&[]).is_none());
     }
 
     #[test]

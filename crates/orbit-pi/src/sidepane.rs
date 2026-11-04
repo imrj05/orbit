@@ -24,8 +24,8 @@ use gpui::{
 
 use crate::app::{
     button_frame, context_menu_separator, empty_state, file_glyph, icon, icon_button_frame,
-    nerd_font_family, picker_entry, picker_search_frame, picker_surface, refresh_glyph, EmptyFill,
-    TipExt, BUTTON_GROUP, PRESS_DIM,
+    nerd_font_family, picker_entry, picker_search_frame, picker_surface, refresh_glyph, AccentWash,
+    ControlExt, EmptyFill, PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
 };
 use crate::composer::ComposerInput;
 use crate::diff_view::{
@@ -44,10 +44,10 @@ use crate::usage::tooltip::Tooltip;
 
 /// Pane width defaults / drag clamps.
 const PANE_DEFAULT_W: f32 = 460.;
-const PANE_MIN_W: f32 = 300.;
+pub(crate) const PANE_MIN_W: f32 = 300.;
 /// Ceiling a left-edge drag can reach. Full width is exempt from this cap — it
 /// deliberately takes the whole column beside the sidebar.
-const PANE_MAX_W: f32 = 900.;
+pub(crate) const PANE_MAX_W: f32 = 900.;
 /// Below this width the ±stats collapse out of the toolbar.
 const STATS_MIN_PANE_W: f32 = 380.;
 /// Below this width the file navigator collapses out of the toolbar. It needs
@@ -546,22 +546,6 @@ impl SidePane {
         cx.notify();
     }
 
-    /// Open Review on the working tree's **Uncommitted** changes — the
-    /// top-bar `+N -M` diff-stat chip's action.
-    pub fn show_uncommitted(&mut self, cx: &mut Context<Self>) {
-        self.open = true;
-        if self.source != Source::Uncommitted {
-            self.source = Source::Uncommitted;
-            self.source_menu_open = false;
-            self.clear_diff();
-        }
-        self.review_stale = true;
-        if !self.review_loading {
-            self.load_review(cx);
-        }
-        cx.notify();
-    }
-
     /// Open Review on the working tree and select `path` — the Git page's
     /// changed-file rows call this so a row opens its diff.
     pub fn show_file(&mut self, path: String, cx: &mut Context<Self>) {
@@ -1049,9 +1033,8 @@ impl SidePane {
     // ── rendering ──────────────────────────────────────────────────────
 
     fn body(&mut self, window: &Window, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
-        // Embedded drops the header row (there is no tree toggle or refresh
-        // there) and the changed-files tree: the host surface shows the source
-        // toolbar and the diff list, exactly like the Review pane's flat view.
+        // The embedded browser has no dock header or changed-files tree;
+        // grouped section strips carry its view controls instead.
         if !self.embedded {
             self.sync_tree_rows(cx);
         }
@@ -1108,8 +1091,8 @@ impl SidePane {
                     .group(BUTTON_GROUP)
                     .tip(tr!("sidepane.toggle_tree"))
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.surface_hover))
-                    .active(|s| s.opacity(PRESS_DIM))
+                    .hover_state(&theme)
+                    .pressed_state(&theme, PressedRamp::Wash)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_tree(cx)))
                     .child(icon(
                         "icons/folder.svg",
@@ -1126,8 +1109,8 @@ impl SidePane {
                     .group(BUTTON_GROUP)
                     .tip(tr!("common.refresh"))
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.surface_hover))
-                    .active(|s| s.opacity(PRESS_DIM))
+                    .hover_state(&theme)
+                    .pressed_state(&theme, PressedRamp::Wash)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.refresh_from_button(cx);
                     }))
@@ -1166,8 +1149,8 @@ impl SidePane {
                         .group(BUTTON_GROUP)
                         .tip(tr!("common.close"))
                         .cursor_pointer()
-                        .hover(|s| s.bg(theme.surface_hover))
-                        .active(|s| s.opacity(PRESS_DIM))
+                        .hover_state(&theme)
+                        .pressed_state(&theme, PressedRamp::Wash)
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close(cx)))
                         .child(icon(
                             "icons/x.svg",
@@ -1191,8 +1174,8 @@ impl SidePane {
                 })
                 .raised(theme.surface_elevated, &theme)
                 .cursor_pointer()
-                .hover(|s| s.raised(theme.surface_hover, &theme))
-                .active(|s| s.opacity(PRESS_DIM))
+                .hover_state(&theme)
+                .pressed_state(&theme, PressedRamp::Wash)
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_source_menu(cx)))
                 .child(icon(
                     "icons/file-diff.svg",
@@ -1259,13 +1242,18 @@ impl SidePane {
                     .child(div().text_color(theme.success).child(format!("+{added}")))
                     .child(div().text_color(theme.error).child(format!("-{removed}")))
             }))
-            .children(show_file_nav.then(|| self.file_nav(theme, cx)));
+            .children(show_file_nav.then(|| {
+                let current = self
+                    .review
+                    .as_ref()
+                    .and_then(|snapshot| self.current_file(snapshot));
+                self.file_nav("review", current, theme, cx)
+            }));
 
         let content = self.render_content(window, theme, tree_visible, cx);
 
-        // Embedded drops the dock title row and the toolbar: the host surface
-        // already names the view, and every grouped section strip carries the
-        // browser controls. Only a truncation warning still needs its own row.
+        // The embedded browser puts its controls on the grouped section
+        // strips; only a truncation warning needs a separate row.
         let mut column = div().flex_1().min_h_0().flex().flex_col();
         if self.embedded {
             if truncated {
@@ -1319,8 +1307,8 @@ impl SidePane {
         }
         button
             .cursor_pointer()
-            .hover(|style| style.bg(theme.surface_hover))
-            .active(|style| style.opacity(PRESS_DIM))
+            .hover_state(&theme)
+            .pressed_state(&theme, PressedRamp::Wash)
             .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into())
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| action(this, cx)))
             .into_any_element()
@@ -1407,19 +1395,25 @@ impl SidePane {
     /// Previous / next changed file with the reader's place among them — the
     /// pointer twin of `p` / `n`. The arrows stay in place and go inert at the
     /// ends, so the row never reflows as the reader walks the diff.
-    fn file_nav(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn file_nav(
+        &self,
+        prefix: &str,
+        current: Option<usize>,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let Some(snapshot) = self.review.as_ref() else {
             return div().into_any_element();
         };
         let count = snapshot.files.len();
-        let current = self.current_file(snapshot).unwrap_or(0);
+        let current = current.unwrap_or(0);
         div()
             .flex()
             .flex_none()
             .items_center()
             .gap_0p5()
             .child(self.file_step_button(
-                "review-file-prev",
+                format!("{prefix}-file-prev"),
                 "icons/chevron-up.svg",
                 tr!("sidepane.previous_file"),
                 current > 0,
@@ -1442,7 +1436,7 @@ impl SidePane {
                     .child(format!("{}/{count}", current + 1)),
             )
             .child(self.file_step_button(
-                "review-file-next",
+                format!("{prefix}-file-next"),
                 "icons/chevron-down.svg",
                 tr!("sidepane.next_file"),
                 current + 1 < count,
@@ -1458,7 +1452,7 @@ impl SidePane {
     #[allow(clippy::too_many_arguments)]
     fn file_step_button(
         &self,
-        id: &'static str,
+        id: String,
         icon_path: &'static str,
         tooltip: String,
         enabled: bool,
@@ -1466,25 +1460,29 @@ impl SidePane {
         theme: Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let button = icon_button_frame(div().id(id), &theme, ButtonSize::Default)
-            .group(BUTTON_GROUP)
-            .debug_selector(move || id.to_string())
-            .child(icon(
-                icon_path,
-                IconSize::XSmall.px(&theme),
-                if enabled {
-                    theme.text_muted
-                } else {
-                    theme.text_disabled
-                },
-            ));
+        let button = icon_button_frame(
+            div().id(gpui::ElementId::Name(id.clone().into())),
+            &theme,
+            ButtonSize::Default,
+        )
+        .group(BUTTON_GROUP)
+        .debug_selector(move || id.clone())
+        .child(icon(
+            icon_path,
+            IconSize::XSmall.px(&theme),
+            if enabled {
+                theme.text_muted
+            } else {
+                theme.text_disabled
+            },
+        ));
         if !enabled {
             return button.into_any_element();
         }
         button
             .cursor_pointer()
-            .hover(|style| style.bg(theme.surface_hover))
-            .active(|style| style.opacity(PRESS_DIM))
+            .hover_state(&theme)
+            .pressed_state(&theme, PressedRamp::Wash)
             .tip(tooltip)
             .on_click(
                 cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -1571,10 +1569,17 @@ impl SidePane {
         } else {
             self.unwrapped_content_width(window, theme)
         };
+        // List row renderers run while the list state is borrowed. Capture the
+        // visible file before layout so their navigation controls never borrow it again.
+        let current_file = self.current_file(&snapshot);
         let list_el = gpui::list(self.diff_list.clone(), move |index, _window, cx| {
             entity
                 .upgrade()
-                .map(|entity| entity.update(cx, |this, cx| this.render_diff_line(index, cx)))
+                .map(|entity| {
+                    entity.update(cx, |this, cx| {
+                        this.render_diff_line(index, current_file, cx)
+                    })
+                })
                 .unwrap_or_else(|| div().into_any_element())
         })
         .h_full()
@@ -1711,7 +1716,13 @@ impl SidePane {
                     deletions,
                 }) = snapshot.lines.get(section_index).map(|line| &line.kind)
                 {
-                    let actions = self.section_strip_actions(label, true, theme, cx);
+                    let actions = self.section_strip_actions(
+                        label,
+                        true,
+                        self.current_file(snapshot),
+                        theme,
+                        cx,
+                    );
                     layers =
                         layers.child(div().absolute().top(section_push).left_0().w_full().child(
                             render_section_header(
@@ -1742,6 +1753,7 @@ impl SidePane {
         &self,
         label: &str,
         sticky: bool,
+        current_file: Option<usize>,
         theme: Theme,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
@@ -1755,6 +1767,12 @@ impl SidePane {
         );
         Some(
             row.child(self.view_toggle_group(&prefix, ButtonSize::Medium, theme, cx))
+                .children(
+                    self.review
+                        .as_ref()
+                        .is_some_and(|review| review.files.len() > 1)
+                        .then(|| self.file_nav(&prefix, current_file, theme, cx)),
+                )
                 .into_any_element(),
         )
     }
@@ -1812,7 +1830,7 @@ impl SidePane {
                 .to_string()
             })
             .cursor_pointer()
-            .hover(|style| style.bg(theme.surface_hover))
+            .hover_state(&theme)
             .on_click(
                 cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_file(file_index, cx)),
             );
@@ -1830,7 +1848,12 @@ impl SidePane {
         row.into_any_element()
     }
 
-    fn render_diff_line(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
+    fn render_diff_line(
+        &self,
+        index: usize,
+        current_file: Option<usize>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let Some(snapshot) = self.review.as_ref() else {
             return div().into_any_element();
         };
@@ -1854,7 +1877,7 @@ impl SidePane {
                 additions,
                 deletions,
             } => {
-                let actions = self.section_strip_actions(label, false, theme, cx);
+                let actions = self.section_strip_actions(label, false, current_file, theme, cx);
                 self.pinned_row(
                     render_section_header(
                         label, *icon, *count, *additions, *deletions, actions, theme,
@@ -1945,7 +1968,7 @@ impl SidePane {
                                 .border_color(theme.border)
                         })
                         .cursor_pointer()
-                        .hover(|s| s.bg(theme.overlay_strong))
+                        .hover_on_glass(&theme)
                         .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
                             let direction = if event.modifiers().shift {
                                 ExpansionDirection::All
@@ -1980,7 +2003,7 @@ impl SidePane {
             .when(expandable, |label| {
                 label
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.overlay_strong))
+                    .hover_on_glass(&theme)
                     .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
                         let direction = if event.modifiers().shift {
                             ExpansionDirection::All
@@ -2128,7 +2151,7 @@ impl SidePane {
                         .gap(DynamicSpacing::Base06.px(&theme))
                         .cursor_pointer()
                         .when(cursor, |row| row.bg(theme.overlay_strong))
-                        .when(!cursor, |row| row.hover(|row| row.bg(theme.surface_hover)))
+                        .when(!cursor, |row| row.hover_state(&theme))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             window.focus(&this.tree_focus);
                             this.tree_cursor = Some(index);
@@ -2216,9 +2239,7 @@ impl SidePane {
                             .cursor_pointer()
                             .when(selected, |row| row.bg(theme.surface_selected))
                             .when(!selected && cursor, |row| row.bg(theme.surface_hover))
-                            .when(!selected && !cursor, |row| {
-                                row.hover(|row| row.bg(theme.surface_hover))
-                            })
+                            .when(!selected && !cursor, |row| row.hover_state(&theme))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 window.focus(&this.tree_focus);
                                 this.tree_cursor = Some(index);
@@ -2341,9 +2362,7 @@ fn source_row(
     .flex_none()
     .when(enabled, |row| row.cursor_pointer())
     .when(selected, |row| row.bg(theme.surface_selected))
-    .when(enabled && !selected, |row| {
-        row.hover(|s| s.bg(theme.surface_hover))
-    })
+    .when(enabled && !selected, |row| row.hover_state(&theme))
     .when(enabled && choice.is_some(), |row| {
         row.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
             if let Some(choice) = choice {
@@ -2486,7 +2505,7 @@ impl Render for SidePane {
                     .left(px(9.))
                     .w(px(6.))
                     .cursor(CursorStyle::ResizeLeftRight)
-                    .hover(|style| style.bg(theme.accent.opacity(0.4)))
+                    .hover_accent_wash(&theme, AccentWash::Strong)
                     .on_drag(SidePaneResize, |_, _, _, cx| cx.new(|_| DragGhost)),
             )
             // The dock reads as a rounded card, like the Git/Usage cards in
@@ -2775,6 +2794,52 @@ mod tests {
 
                 pane.review_move_file(1, cx);
                 assert_eq!(pane.selected_file, Some(2));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn embedded_file_navigation_crosses_staged_and_unstaged_sections(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let pane = cx.update(|_, cx| cx.new(SidePane::new));
+        let (staged_stats, staged_patch) = multi_file_patch(&["src/staged.rs"]);
+        let (changes_stats, changes_patch) = multi_file_patch(&["src/changes.rs"]);
+        let sections = [
+            review::SectionInput {
+                label: "Staged".into(),
+                icon: None,
+                numstat: &staged_stats,
+                patch: &staged_patch,
+                complete_context: true,
+            },
+            review::SectionInput {
+                label: "Changes".into(),
+                icon: None,
+                numstat: &changes_stats,
+                patch: &changes_patch,
+                complete_context: true,
+            },
+        ];
+        cx.update(|_, cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_embedded(true, cx);
+                pane.apply_snapshot(review::parse_sections(Source::Uncommitted, &sections));
+            });
+        });
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(700.), px(600.)),
+            |_, _| pane.clone(),
+        );
+        cx.update(|_, cx| {
+            pane.update(cx, |pane, cx| {
+                pane.review_move_file(1, cx);
+                assert_eq!(pane.selected_file, Some(1));
+                pane.review_move_file(-1, cx);
+                assert_eq!(pane.selected_file, Some(0));
             });
         });
     }

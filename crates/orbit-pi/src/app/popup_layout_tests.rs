@@ -1,6 +1,18 @@
 use super::*;
+use crate::app::helpers::anchored_popover_in_window;
 
 // ── settings select popup anchoring ───────────────────────────────────
+
+/// These tests measure where a popup *rests*, and the motion layer's entrance
+/// starts it 8 px toward its anchor. Reduce Motion is the supported way to ask
+/// for the settled frame, so the geometry assertions stay about geometry.
+fn without_motion(cx: &mut gpui::TestAppContext) {
+    cx.update(|cx| {
+        let mut theme = Theme::dark();
+        theme.ui.motion = crate::theme::MotionPreference::Reduced;
+        cx.set_global(theme);
+    });
+}
 
 /// A settings select control: a 26 px chip with its popup anchored to a
 /// zero-size point at the chip's top-right, exactly like `select_control`.
@@ -14,7 +26,7 @@ struct SettingsSelectAnchorProbe {
 }
 
 impl Render for SettingsSelectAnchorProbe {
-    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let vp = window.viewport_size();
         let gap = if self.near_bottom {
             vp.height - px(80.)
@@ -42,12 +54,14 @@ impl Render for SettingsSelectAnchorProbe {
                 .child(deferred(popup))
                 .into_any_element()
         } else {
-            anchored()
-                .position_mode(AnchoredPositionMode::Window)
-                .anchor(Corner::TopRight)
-                .offset(point(px(0.), px(30.)))
-                .child(deferred(popup))
-                .into_any_element()
+            anchored_popover_in_window(
+                Corner::TopRight,
+                point(px(0.), px(30.)),
+                popup,
+                "popover-in-test",
+                crate::theme::get(cx),
+            )
+            .into_any_element()
         };
         div()
             .flex()
@@ -103,6 +117,7 @@ fn local_snap_anchor_covers_the_chip_near_the_viewport_top(cx: &mut gpui::TestAp
 /// other dropdown in the app follows.
 #[gpui::test]
 fn settings_select_popup_opens_below_its_chip(cx: &mut gpui::TestAppContext) {
+    without_motion(cx);
     let cx = cx.add_empty_window();
     let _ = cx.draw(
         point(px(0.), px(0.)),
@@ -132,6 +147,7 @@ fn settings_select_popup_opens_below_its_chip(cx: &mut gpui::TestAppContext) {
 /// snapping over it; it sits flush so the chip stays clickable.
 #[gpui::test]
 fn settings_select_popup_flips_above_near_the_viewport_bottom(cx: &mut gpui::TestAppContext) {
+    without_motion(cx);
     let cx = cx.add_empty_window();
     let _ = cx.draw(
         point(px(0.), px(0.)),
@@ -1136,5 +1152,245 @@ fn model_and_thinking_pickers_stay_shut_while_running(cx: &mut gpui::TestAppCont
     assert!(
         cx.update(|_, cx| app.read(cx).model_selector.is_some()),
         "an idle turn opens the model picker"
+    );
+}
+
+// ── command palette focus ─────────────────────────────────────────────
+
+/// `DESIGN.md`: "After dismissing a popover or modal, restore focus to the
+/// control that opened it." The palette used to hand focus to the composer
+/// unconditionally, so opening it from the sessions sidebar and pressing
+/// Escape dropped the keyboard into the wrong surface.
+#[gpui::test]
+fn dismissing_the_palette_returns_focus_to_its_opener(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+
+    cx.update(|cx| {
+        cx.set_global(Theme::for_id(ThemeId::Orbit));
+        crate::bind_keys(cx);
+    });
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(1200.), px(820.)),
+        |_, _| app.clone(),
+    );
+
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            // Focus the sessions sidebar, then open the palette on top of it.
+            app.on_focus_sessions(&crate::FocusSessions, window, cx);
+            assert!(
+                app.sidebar_focus.is_focused(window),
+                "the sidebar holds focus before the palette opens"
+            );
+            app.on_toggle_command_palette(&crate::ToggleCommandPalette, window, cx);
+            assert!(app.command_palette.is_some(), "⌘P opened the palette");
+        });
+    });
+    // The palette only joins the dispatch tree on the next frame.
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(1200.), px(820.)),
+        |_, _| app.clone(),
+    );
+
+    cx.simulate_keystrokes("escape");
+
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            assert!(app.command_palette.is_none(), "escape closed the palette");
+            assert!(
+                app.sidebar_focus.is_focused(window),
+                "focus went back to the sidebar that opened the palette"
+            );
+            assert!(
+                !app.input.read(cx).focus_handle(cx).is_focused(window),
+                "the composer must not steal focus from the opener"
+            );
+        });
+    });
+}
+
+/// The run path closes the palette and *then* runs the command, so the focus
+/// handle the palette held is gone by the time the command finishes. Without
+/// an explicit restore the window is left with no focused element and typing
+/// does nothing until the user clicks.
+#[gpui::test]
+fn running_a_palette_command_restores_focus(cx: &mut gpui::TestAppContext) {
+    use crate::command_palette::PaletteCommand;
+    use crate::theme::{Theme, ThemeId};
+
+    cx.update(|cx| {
+        cx.set_global(Theme::for_id(ThemeId::Orbit));
+        crate::bind_keys(cx);
+    });
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(1200.), px(820.)),
+        |_, _| app.clone(),
+    );
+
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.on_focus_sessions(&crate::FocusSessions, window, cx);
+            app.on_toggle_command_palette(&crate::ToggleCommandPalette, window, cx);
+            // Exactly what the palette's `on_command` callback does. Copy
+            // Session ID is a no-op with no session loaded, so nothing but the
+            // restore can move focus.
+            app.command_palette = None;
+            app.restore_palette_focus(window, cx);
+            app.run_palette_command(
+                PaletteCommand::Run(crate::commands::CommandId::CopySessionId),
+                window,
+                cx,
+            );
+            assert!(
+                app.sidebar_focus.is_focused(window),
+                "running a row hands focus back to the opener"
+            );
+        });
+    });
+}
+
+/// The 200ms gesture guard exists for one pointer gesture that both dismisses
+/// and re-opens (scrim mouse-down, button mouse-up). A keyboard press is a
+/// separate gesture and must never be swallowed by a menu dismissed a moment
+/// earlier — that reads as "⌘P does not work".
+#[gpui::test]
+fn the_gesture_guard_does_not_swallow_the_keyboard_shortcut(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+
+    cx.update(|cx| {
+        cx.set_global(Theme::for_id(ThemeId::Orbit));
+        crate::bind_keys(cx);
+    });
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(1200.), px(820.)),
+        |_, _| app.clone(),
+    );
+
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            // A chip or row menu was just dismissed with the mouse.
+            app.menu_dismissed_at = Some(std::time::Instant::now());
+            app.on_toggle_command_palette(&crate::ToggleCommandPalette, window, cx);
+            assert!(
+                app.command_palette.is_some(),
+                "⌘P must open even right after a mouse dismissal"
+            );
+
+            // The pointer path still guards the same gesture.
+            app.command_palette = None;
+            app.menu_dismissed_at = Some(std::time::Instant::now());
+            app.toggle_command_palette(window, cx);
+            assert!(
+                app.command_palette.is_none(),
+                "the dismissing click must not re-open the palette"
+            );
+        });
+    });
+}
+
+// ── settings select option rows ───────────────────────────────────────
+
+/// Draw the real app on Settings → Privacy with the retention-mode select
+/// open: the chip reads "Delete", and its list holds "Archive" / "Delete".
+fn privacy_select_open(cx: &mut gpui::VisualTestContext) -> Entity<OrbitApp> {
+    use crate::theme::{Theme, ThemeId};
+
+    cx.update(|_, cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    let viewport = gpui::size(px(1200.), px(820.));
+    let _ = cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.settings_open = true;
+            app.settings_section = SettingsSection::Privacy;
+            app.settings_select = Some(SettingsSelect::RetentionMode);
+            app.settings_select_highlight = Some(1);
+            cx.notify();
+        });
+    });
+    let _ = cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
+    app
+}
+
+/// The popup's rows are `w_full` inside a list that is `w_full` inside the
+/// popup. While the popup's width came only from `min_w`, that percentage
+/// resolved against an auto width and collapsed to 0 — every row laid out at
+/// -8px (its own horizontal margins) and the dropdown painted an empty panel.
+/// Regression test for the blank option lists on every Settings dropdown.
+#[gpui::test]
+fn settings_select_rows_fill_the_popup(cx: &mut gpui::TestAppContext) {
+    let cx = cx.add_empty_window();
+    let _app = privacy_select_open(cx);
+
+    let popup = cx
+        .debug_bounds("settings-select-popup")
+        .expect("the select popup laid out");
+    let list = cx
+        .debug_bounds("settings-select-list")
+        .expect("the option list laid out");
+    assert_eq!(popup.size.width, px(360.), "the popup keeps its width");
+    assert!(
+        list.size.width > popup.size.width - px(4.),
+        "the list {list:?} fills the popup {popup:?} instead of collapsing"
+    );
+
+    for ix in 0..2 {
+        let selector: &'static str = match ix {
+            0 => "settings-select-row-0",
+            _ => "settings-select-row-1",
+        };
+        let row = cx.debug_bounds(selector).expect("the option row laid out");
+        assert!(
+            row.size.width > popup.size.width / 2.,
+            "row {ix} collapsed to {:?} and cannot paint its label",
+            row.size
+        );
+        assert!(
+            row.left() >= popup.left() && row.right() <= popup.right(),
+            "row {ix} {row:?} must sit inside the popup {popup:?}"
+        );
+    }
+}
+
+/// A query that matches no option still says so inside the popup, rather
+/// than leaving an empty panel.
+#[gpui::test]
+fn settings_select_shows_no_matches_inside_the_popup(cx: &mut gpui::TestAppContext) {
+    let cx = cx.add_empty_window();
+    let app = privacy_select_open(cx);
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.settings_filter
+                .update(cx, |filter, cx| filter.set_text("er", cx));
+            cx.notify();
+        });
+    });
+    let viewport = gpui::size(px(1200.), px(820.));
+    let _ = cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
+
+    let popup = cx
+        .debug_bounds("settings-select-popup")
+        .expect("the select popup laid out");
+    let empty = cx
+        .debug_bounds("settings-select-empty")
+        .expect("the no-matches row laid out");
+    assert!(
+        empty.size.width > px(0.),
+        "the no-matches row collapsed to {:?}",
+        empty.size
+    );
+    assert!(
+        empty.left() >= popup.left() && empty.right() <= popup.right(),
+        "the no-matches row {empty:?} must sit inside the popup {popup:?}"
     );
 }

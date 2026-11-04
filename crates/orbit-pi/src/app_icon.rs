@@ -66,8 +66,7 @@ pub fn set_dock_icon() {
                 // thread that owns it, which is the only requirement AppKit
                 // puts on the application's icon.
                 unsafe {
-                    NSApplication::sharedApplication(mtm)
-                        .setApplicationIconImage(Some(&image));
+                    NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&image));
                 }
             }
         }

@@ -23,6 +23,98 @@ use crate::transcript_view::{self, TranscriptView};
 use orbit_rpc::{AssistantMessageEvent, Event, MessageUsage};
 use serde_json::Value;
 
+/// A snapshot of one PDF section and its attached images.
+pub(crate) struct PdfSection {
+    pub markdown: String,
+    pub images: Vec<Arc<Image>>,
+}
+
+/// Extra detail an export may carry beyond the visible answer text.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ExportOptions {
+    /// Append each assistant turn's reasoning and tool calls — including the
+    /// output pi recorded — to the exported Markdown. Off by default: the
+    /// visible projection is what the conversation reads as.
+    pub include_thinking_and_tools: bool,
+}
+
+/// Longest recorded tool output one call contributes to an export. Exports
+/// are read by people; an unbounded tool log buries the conversation, and the
+/// full text stays in the session.
+const EXPORT_TOOL_OUTPUT_CHARS: usize = 4000;
+
+/// One line naming a tool call in an export: what ran, where, and whether it
+/// failed. Raw arguments stay out — they can be whole files, and the recorded
+/// output already reports what came back.
+fn export_tool_heading(tool: &ToolCall) -> String {
+    let mut label = format!("**{}**", tool.name);
+    let detail = tool
+        .args
+        .as_ref()
+        .filter(|_| {
+            matches!(
+                tool.name.as_str(),
+                "bash" | "shell" | "terminal" | "exec" | "run"
+            )
+        })
+        .and_then(|args| args.get("command"))
+        .and_then(Value::as_str)
+        .map(export_inline_code)
+        .or_else(|| tool.path.as_ref().map(|path| export_inline_code(path)))
+        .unwrap_or_else(|| tool.summary.clone());
+    label.push_str(" — ");
+    label.push_str(&detail);
+    if tool.added > 0 || tool.removed > 0 {
+        label.push_str(&format!(" (+{} −{})", tool.added, tool.removed));
+    }
+    if tool.failed {
+        label.push_str(" · failed");
+    }
+    label
+}
+
+/// Inline code a backtick inside `text` cannot break: the delimiter grows
+/// past the longest run, with the padding CommonMark requires when the text
+/// itself starts or ends with a backtick.
+fn export_inline_code(text: &str) -> String {
+    let longest = text.split(|ch| ch != '`').map(str::len).max().unwrap_or(0);
+    let ticks = "`".repeat(longest + 1);
+    if text.starts_with('`') || text.ends_with('`') {
+        format!("{ticks} {text} {ticks}")
+    } else {
+        format!("{ticks}{text}{ticks}")
+    }
+}
+
+/// A fenced code block whose fence is longer than any backtick run in `body`,
+/// so tool output that itself contains fences cannot close the block early.
+fn export_code_block(body: &str) -> String {
+    let longest = body.split(|ch| ch != '`').map(str::len).max().unwrap_or(0);
+    let fence = "`".repeat((longest + 1).max(3));
+    format!("{fence}\n{body}\n{fence}")
+}
+
+/// The reasoning-and-tools appendix for one row, or empty when the export did
+/// not opt in or the row has none.
+fn export_work(message: &ChatMessage, options: ExportOptions) -> String {
+    if !options.include_thinking_and_tools {
+        return String::new();
+    }
+    message.export_work_markdown()
+}
+
+/// A single response's exported body: the answer opens the section, the
+/// appendix follows it when the export opted in.
+fn export_response_body(message: &ChatMessage, options: ExportOptions) -> String {
+    let text = message.text();
+    let work = export_work(message, options);
+    match (text.is_empty(), work.is_empty()) {
+        (_, true) => text,
+        (true, false) => work,
+        (false, false) => format!("{text}\n\n{work}"),
+    }
+}
+
 /// One streaming step of an assistant turn: the reasoning it did, the tool
 /// calls it made, and the text it produced — rendered in sequence.
 #[derive(Clone, Default)]
@@ -103,6 +195,15 @@ impl ChatMessage {
         !self.user && self.summary.is_none()
     }
 
+    /// Whether the message has any visible text, without joining it.
+    ///
+    /// `text()` allocates the whole joined turn; the render path asks whether
+    /// there is any text at all on every visible row on every frame, so that
+    /// question gets its own allocation-free answer.
+    pub fn has_text(&self) -> bool {
+        self.steps.iter().any(|step| !step.text.is_empty())
+    }
+
     /// The concatenated answer text (steps in sequence).
     pub fn text(&self) -> String {
         self.steps
@@ -116,6 +217,45 @@ impl ChatMessage {
     /// Every tool call of the turn, in order.
     pub fn tools(&self) -> impl Iterator<Item = &ToolCall> {
         self.steps.iter().flat_map(|step| step.tools.iter())
+    }
+
+    /// The reasoning-and-tools appendix for this assistant turn, as Markdown.
+    ///
+    /// The answer text comes first in an exported section — this is appended
+    /// after it — so a response export still opens with the response. Empty
+    /// for user and summary rows and for turns that did no work; the caller
+    /// decides whether the export opted in.
+    fn export_work_markdown(&self) -> String {
+        if !self.is_assistant() {
+            return String::new();
+        }
+        let mut out = String::new();
+        let reasoning: Vec<&str> = self
+            .steps
+            .iter()
+            .map(|step| step.thinking.trim())
+            .filter(|thinking| !thinking.is_empty())
+            .collect();
+        if !reasoning.is_empty() {
+            out.push_str("### Reasoning\n\n");
+            out.push_str(&reasoning.join("\n\n"));
+            out.push_str("\n\n");
+        }
+        let tools: Vec<&ToolCall> = self.tools().collect();
+        if !tools.is_empty() {
+            out.push_str("### Tool calls\n\n");
+            for tool in tools {
+                out.push_str(&export_tool_heading(tool));
+                out.push('\n');
+                if let Some(output) = tool.export_output() {
+                    out.push('\n');
+                    out.push_str(&export_code_block(&output));
+                    out.push('\n');
+                }
+                out.push('\n');
+            }
+        }
+        out.trim_end().to_string()
     }
 
     pub fn has_hidden_work(&self) -> bool {
@@ -231,9 +371,57 @@ pub struct ToolCall {
     /// Structured result facts (`details`) — surfaced at a glance on the
     /// card header instead of hiding inside the expanded output.
     pub facts: ToolFacts,
+    /// The result's full `details` payload, kept only when small enough to
+    /// hold (see [`DETAILS_MAX_BYTES`]). Bespoke cards — the subagent card
+    /// today — parse it; everything else ignores it and keeps showing
+    /// [`Self::facts`]. `None` for tools that send none.
+    pub details: Option<Value>,
 }
 
 impl ToolCall {
+    /// The result text an export may carry: pi's envelope is unwrapped the way
+    /// the detail card shows it, non-text payloads are pretty-printed, and very
+    /// long output is cut with an explicit note rather than silently shortened.
+    fn export_output(&self) -> Option<String> {
+        let output = self.output.as_ref()?;
+        let envelope = output.get("content").and_then(Value::as_array).is_some();
+        let text = if envelope {
+            match tool_result_output(output) {
+                Some(value) => value,
+                // An envelope that carried only images: say so instead of
+                // pretending the call returned nothing.
+                None if output
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .is_some_and(|blocks| {
+                        blocks
+                            .iter()
+                            .any(|block| block.get("type").and_then(Value::as_str) == Some("image"))
+                    }) =>
+                {
+                    Value::String("[Tool output images omitted from export.]".to_string())
+                }
+                None => return None,
+            }
+        } else {
+            output.clone()
+        };
+        let text = match text {
+            Value::String(text) => text,
+            other => serde_json::to_string_pretty(&other).unwrap_or_else(|_| other.to_string()),
+        };
+        let text = text.trim_end();
+        if text.is_empty() {
+            return None;
+        }
+        let mut text = text.to_string();
+        if text.chars().count() > EXPORT_TOOL_OUTPUT_CHARS {
+            text = text.chars().take(EXPORT_TOOL_OUTPUT_CHARS).collect();
+            text.push_str("\n[Tool output truncated for export.]");
+        }
+        Some(text)
+    }
+
     fn from_value(name: &str, args: Option<&Value>) -> Self {
         let empty = Value::Null;
         let args = args.unwrap_or(&empty);
@@ -253,6 +441,7 @@ impl ToolCall {
             output: None,
             failed: false,
             facts: ToolFacts::default(),
+            details: None,
         }
     }
 }
@@ -519,11 +708,28 @@ pub(crate) fn image_from_block(block: &Value) -> Option<Arc<Image>> {
     Some(Arc::new(Image::from_bytes(format, bytes)))
 }
 
-/// Extract a tool result message: `(toolCallId, output, isError, facts)`.
+/// The largest `details` payload the transcript will hold. A card parses a
+/// bounded structure; a runaway payload is dropped rather than kept alive for
+/// the session's lifetime.
+const DETAILS_MAX_BYTES: usize = 128 * 1024;
+
+/// A result's `details`, kept only when it is present and within
+/// [`DETAILS_MAX_BYTES`]. Never invented: absent stays `None`.
+fn bounded_details(value: &Value) -> Option<Value> {
+    let details = value.get("details").filter(|details| !details.is_null())?;
+    match serde_json::to_vec(details) {
+        Ok(bytes) if bytes.len() <= DETAILS_MAX_BYTES => Some(details.clone()),
+        _ => None,
+    }
+}
+
+type ToolResultParts = (String, Option<Value>, bool, ToolFacts, Option<Value>);
+
+/// Extract a tool result message: `(toolCallId, output, isError, facts, details)`.
 /// pi sends `role: "toolResult"` messages — not chat rows; their output and
 /// structured `details` belong on the matching tool call (rendered on the
 /// activity card and inside its detail).
-fn tool_result_parts(value: &Value) -> Option<(String, Option<Value>, bool, ToolFacts)> {
+fn tool_result_parts(value: &Value) -> Option<ToolResultParts> {
     let value = value.get("message").unwrap_or(value);
     if value.get("role").and_then(Value::as_str) != Some("toolResult") {
         return None;
@@ -540,7 +746,8 @@ fn tool_result_parts(value: &Value) -> Option<(String, Option<Value>, bool, Tool
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let facts = ToolFacts::from_result(value);
-    Some((id, output, failed, facts))
+    let details = bounded_details(value);
+    Some((id, output, failed, facts, details))
 }
 
 /// Normalize a `tool_execution_*` result payload for display. pi wraps
@@ -608,6 +815,7 @@ fn attach_tool_output(
     output: Option<Value>,
     failed: bool,
     facts: ToolFacts,
+    details: Option<Value>,
 ) {
     for message in messages.iter_mut().rev() {
         let Some(tool) = message
@@ -624,6 +832,9 @@ fn attach_tool_output(
         }
         tool.failed = failed;
         tool.facts = facts;
+        if details.is_some() {
+            tool.details = details;
+        }
         return;
     }
 }
@@ -1118,6 +1329,187 @@ impl Transcript {
         self.text_selection.borrow().selected_text()
     }
 
+    /// The text of every user turn, in transcript order.
+    ///
+    /// This is the pairing key for pi's fork points: `get_fork_messages` names
+    /// an entry id per message and no index, so a rewind started from a row is
+    /// matched by its words (see `rewind::point_for_turn`).
+    /// Translate a displayed row index to its user-turn ordinal, rejecting
+    /// assistant and summary rows instead of guessing a fork point.
+    pub fn user_turn_ordinal(&self, row: usize) -> Option<usize> {
+        self.cached_user_turns()
+            .iter()
+            .position(|&index| index == row)
+    }
+
+    /// The prompt for a clicked user or assistant row, without crossing a
+    /// summary boundary where the corresponding prompt may no longer be visible.
+    pub(crate) fn rewind_user_turn_ordinal(&self, row: usize) -> Option<usize> {
+        let messages = self.messages.borrow();
+        let message = messages.get(row)?;
+        let prompt_row = if message.user {
+            row
+        } else if message.is_assistant() {
+            (0..row)
+                .rev()
+                .take_while(|&ix| !messages[ix].is_summary())
+                .find(|&ix| messages[ix].user)?
+        } else {
+            return None;
+        };
+        drop(messages);
+        self.user_turn_ordinal(prompt_row)
+    }
+
+    /// The images attached to the `ordinal`-th visible user turn.
+    ///
+    /// These are the bytes pi stored for that prompt (or the previews appended
+    /// when Orbit sent it), so sending them again reproduces the prompt rather
+    /// than a text-only copy of it.
+    pub(crate) fn user_turn_images(&self, ordinal: usize) -> Vec<Arc<Image>> {
+        let Some(row) = self.cached_user_turns().get(ordinal).copied() else {
+            return Vec::new();
+        };
+        self.messages
+            .borrow()
+            .get(row)
+            .map(|message| message.images.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn user_turn_texts(&self) -> Vec<String> {
+        let turns = self.cached_user_turns();
+        let messages = self.messages.borrow();
+        turns
+            .iter()
+            .filter_map(|&ix| messages.get(ix).map(|message| message.text()))
+            .collect()
+    }
+
+    /// Export the latest visible assistant response as its Markdown source,
+    /// with its reasoning-and-tools appendix when the export opted in.
+    pub fn export_last_response_markdown(&self, options: ExportOptions) -> Option<String> {
+        let messages = self.messages.borrow();
+        let message = messages
+            .iter()
+            .rev()
+            .find(|message| message.is_assistant() && message.has_text())?;
+        Some(export_response_body(message, options))
+    }
+
+    /// The text of one response, by transcript row, for the footer's save.
+    pub(crate) fn export_response_markdown(
+        &self,
+        row: usize,
+        text: &str,
+        options: ExportOptions,
+    ) -> Option<String> {
+        let messages = self.messages.borrow();
+        let message = messages.get(row)?;
+        (message.is_assistant() && message.text() == text)
+            .then(|| export_response_body(message, options))
+    }
+
+    /// Snapshot only the selected assistant response and its attachments.
+    pub(crate) fn export_response_pdf(
+        &self,
+        row: usize,
+        text: &str,
+        options: ExportOptions,
+    ) -> Option<PdfSection> {
+        let messages = self.messages.borrow();
+        let message = messages.get(row)?;
+        (message.is_assistant() && message.text() == text).then(|| PdfSection {
+            markdown: export_response_body(message, options),
+            images: message.images.clone(),
+        })
+    }
+
+    /// Snapshot the latest visible assistant response and its attachments.
+    pub(crate) fn export_last_response_pdf(&self, options: ExportOptions) -> Option<PdfSection> {
+        let messages = self.messages.borrow();
+        let message = messages.iter().rev().find(|message| {
+            message.is_assistant() && (message.has_text() || !message.images.is_empty())
+        })?;
+        Some(PdfSection {
+            markdown: export_response_body(message, options),
+            images: message.images.clone(),
+        })
+    }
+
+    /// Snapshot the visible projection, preserving each message's attachments.
+    pub(crate) fn export_visible_pdf(&self, options: ExportOptions) -> Option<Vec<PdfSection>> {
+        let messages = self.messages.borrow();
+        let mut sections = Vec::new();
+        for message in messages.iter() {
+            if let Some(summary) = &message.summary {
+                sections.push(PdfSection {
+                    markdown: format!("## Context summary\n\n{}", summary.summary.trim_end()),
+                    images: Vec::new(),
+                });
+                continue;
+            }
+            let text = message.text();
+            let work = export_work(message, options);
+            if text.is_empty() && message.images.is_empty() && work.is_empty() {
+                continue;
+            }
+            let role = if message.user { "User" } else { "Assistant" };
+            let mut markdown = format!("## {role}\n\n{text}");
+            if !work.is_empty() {
+                if !text.is_empty() {
+                    markdown.push_str("\n\n");
+                }
+                markdown.push_str(&work);
+            }
+            sections.push(PdfSection {
+                markdown,
+                images: message.images.clone(),
+            });
+        }
+        (!sections.is_empty()).then_some(sections)
+    }
+
+    /// Export the currently displayed conversation as Markdown. This is the
+    /// visible projection, not the entire pre-compaction session history.
+    /// Reasoning and tool calls are left out unless `options` asks for them.
+    /// Images are noted rather than silently represented as if their content
+    /// had been exported.
+    pub fn export_visible_markdown(&self, options: ExportOptions) -> Option<String> {
+        let messages = self.messages.borrow();
+        let mut out = String::new();
+        for message in messages.iter() {
+            if let Some(summary) = &message.summary {
+                out.push_str("## Context summary\n\n");
+                out.push_str(summary.summary.trim_end());
+                out.push_str("\n\n");
+                continue;
+            }
+            let text = message.text();
+            let work = export_work(message, options);
+            if text.is_empty() && message.images.is_empty() && work.is_empty() {
+                continue;
+            }
+            out.push_str(if message.user {
+                "## User\n\n"
+            } else {
+                "## Assistant\n\n"
+            });
+            if !text.is_empty() {
+                out.push_str(&text);
+                out.push_str("\n\n");
+            }
+            if !work.is_empty() {
+                out.push_str(&work);
+                out.push_str("\n\n");
+            }
+            if !message.images.is_empty() {
+                out.push_str("[Image attachments omitted from export.]\n\n");
+            }
+        }
+        (!out.is_empty()).then_some(out)
+    }
+
     /// Rebuild the whole transcript from a `get_messages` response payload.
     pub fn load_from(&mut self, data: &Value) {
         self.text_selection.borrow_mut().clear();
@@ -1126,8 +1518,8 @@ impl Transcript {
             for message in messages {
                 // Tool results are not chat rows — attach the output to the
                 // matching tool call (by id) and keep the transcript clean.
-                if let Some((id, output, failed, facts)) = tool_result_parts(message) {
-                    attach_tool_output(&mut parsed, &id, output, failed, facts);
+                if let Some((id, output, failed, facts, details)) = tool_result_parts(message) {
+                    attach_tool_output(&mut parsed, &id, output, failed, facts, details);
                     continue;
                 }
                 if let Some(parsed_message) = ChatMessage::from_value(message) {
@@ -1779,7 +2171,7 @@ impl Transcript {
     /// `tool_execution_start`; otherwise scan backwards through the loaded
     /// messages.
     fn attach_tool_result(&mut self, value: &Value) -> bool {
-        let Some((id, output, failed, facts)) = tool_result_parts(value) else {
+        let Some((id, output, failed, facts, details)) = tool_result_parts(value) else {
             return false;
         };
         let position = self.tool_positions.borrow().get(&id).copied();
@@ -1792,13 +2184,27 @@ impl Transcript {
                     .and_then(|step| step.tools.get_mut(tool_ix))
                 {
                     Some(tool) => {
-                        let before = (tool.output.clone(), tool.failed, tool.facts.clone());
+                        let before = (
+                            tool.output.clone(),
+                            tool.failed,
+                            tool.facts.clone(),
+                            tool.details.clone(),
+                        );
                         if tool.output.is_none() {
                             tool.output = output;
                         }
                         tool.failed = failed;
                         tool.facts = facts;
-                        before != (tool.output.clone(), tool.failed, tool.facts.clone())
+                        if details.is_some() {
+                            tool.details = details;
+                        }
+                        before
+                            != (
+                                tool.output.clone(),
+                                tool.failed,
+                                tool.facts.clone(),
+                                tool.details.clone(),
+                            )
                     }
                     None => false,
                 }
@@ -1819,13 +2225,27 @@ impl Transcript {
             else {
                 continue;
             };
-            let before = (tool.output.clone(), tool.failed, tool.facts.clone());
+            let before = (
+                tool.output.clone(),
+                tool.failed,
+                tool.facts.clone(),
+                tool.details.clone(),
+            );
             if tool.output.is_none() {
                 tool.output = output;
             }
             tool.failed = failed;
             tool.facts = facts;
-            return before != (tool.output.clone(), tool.failed, tool.facts.clone());
+            if details.is_some() {
+                tool.details = details;
+            }
+            return before
+                != (
+                    tool.output.clone(),
+                    tool.failed,
+                    tool.facts.clone(),
+                    tool.details.clone(),
+                );
         }
         false
     }
@@ -1854,14 +2274,26 @@ impl Transcript {
                     return false;
                 };
                 let result = value.get("result").or_else(|| value.get("partialResult"));
-                let before = (tool.output.clone(), tool.failed, tool.facts.clone());
+                let before = (
+                    tool.output.clone(),
+                    tool.failed,
+                    tool.facts.clone(),
+                    tool.details.clone(),
+                );
                 tool.facts = result.map(ToolFacts::from_result).unwrap_or_default();
                 tool.output = result.map(normalize_tool_result);
+                tool.details = result.and_then(bounded_details);
                 tool.failed = value
                     .get("isError")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
-                before != (tool.output.clone(), tool.failed, tool.facts.clone())
+                before
+                    != (
+                        tool.output.clone(),
+                        tool.failed,
+                        tool.facts.clone(),
+                        tool.details.clone(),
+                    )
             };
             if changed {
                 self.remeasure_row(mix);
@@ -1965,6 +2397,7 @@ impl Transcript {
         };
         let output = normalize_tool_result(partial);
         let facts = ToolFacts::from_result(partial);
+        let details = bounded_details(partial);
         let mut messages = self.messages.borrow_mut();
         let Some(message) = messages.get_mut(mix) else {
             return false;
@@ -1985,11 +2418,12 @@ impl Transcript {
         else {
             return false;
         };
-        if tool.output.as_ref() == Some(&output) && tool.facts == facts {
+        if tool.output.as_ref() == Some(&output) && tool.facts == facts && tool.details == details {
             return false;
         }
         tool.output = Some(output);
         tool.facts = facts;
+        tool.details = details;
         let detail_open = self.expanded_tools.borrow().contains(&(mix, flat_ix));
         drop(messages);
         if detail_open {
@@ -2532,6 +2966,9 @@ impl Transcript {
         agent_calls: crate::agent_call_display::AgentCallDisplay,
         review_changes: Option<crate::transcript_view::ReviewOpener>,
         image_opener: Option<crate::transcript_view::ImageOpener>,
+        rewind: Option<crate::transcript_view::RewindOpener>,
+        regenerate: Option<crate::transcript_view::RegenerateOpener>,
+        export_response: Option<crate::transcript_view::ResponseExporter>,
         search_hits: Option<HashSet<usize>>,
         search_active: Option<usize>,
         cx: &gpui::App,
@@ -2593,6 +3030,9 @@ impl Transcript {
                 summary_usage,
                 review_changes,
                 image_opener,
+                rewind,
+                regenerate,
+                export_response,
                 search_hits: search_hits.map(|hits| Rc::new(RefCell::new(hits))),
                 search_active: search_active.map(|ix| Rc::new(Cell::new(Some(ix)))),
             },
@@ -2605,6 +3045,316 @@ impl Transcript {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn rewind_prompt_for_response_does_not_cross_summary_boundaries() {
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({"messages": [
+            {"role":"user", "content":"first prompt"},
+            {"role":"assistant", "content":"first answer"},
+            {"role":"compactionSummary", "summary":"earlier work", "tokensBefore":100},
+            {"role":"assistant", "content":"orphan answer"},
+            {"role":"user", "content":"second prompt"},
+            {"role":"assistant", "content":"second answer"}
+        ]}));
+        assert_eq!(transcript.rewind_user_turn_ordinal(0), Some(0));
+        assert_eq!(transcript.rewind_user_turn_ordinal(1), Some(0));
+        assert_eq!(transcript.rewind_user_turn_ordinal(2), None);
+        assert_eq!(transcript.rewind_user_turn_ordinal(3), None);
+        assert_eq!(transcript.rewind_user_turn_ordinal(4), Some(1));
+        assert_eq!(transcript.rewind_user_turn_ordinal(5), Some(1));
+        assert_eq!(transcript.rewind_user_turn_ordinal(6), None);
+    }
+
+    #[test]
+    fn the_images_of_a_user_turn_are_kept_for_a_regenerate() {
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({"messages": [
+            {"role": "user", "content": [
+                {"type": "text", "text": "look at this"},
+                {"type": "image", "mimeType": "image/png", "data": "aGVsbG8="}
+            ]},
+            {"role": "assistant", "content": "seen"}
+        ]}));
+        let images = transcript.user_turn_images(0);
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].format, gpui::ImageFormat::Png);
+        assert_eq!(images[0].bytes, b"hello");
+        assert!(
+            transcript.user_turn_images(1).is_empty(),
+            "an out-of-range turn has no images"
+        );
+    }
+
+    #[test]
+    fn markdown_export_preserves_text_and_excludes_thinking_and_tools() {
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({"messages": [
+            {"role": "user", "content": "Explain this"},
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "private reasoning"},
+                {"type": "toolCall", "id": "x", "name": "bash", "arguments": {"command": "secret command"}},
+                {"type": "text", "text": "Answer:\n\n```rust\nfn main() {}\n```"}
+            ]}
+        ]}));
+        let exported = transcript
+            .export_visible_markdown(ExportOptions::default())
+            .unwrap();
+        assert!(exported.contains("## User\n\nExplain this"));
+        assert!(exported.contains("## Assistant\n\nAnswer:\n\n```rust\nfn main() {}\n```"));
+        assert!(!exported.contains("private reasoning"));
+        assert!(!exported.contains("secret command"));
+        assert!(!exported.contains("### Reasoning"));
+    }
+
+    fn include_work() -> ExportOptions {
+        ExportOptions {
+            include_thinking_and_tools: true,
+        }
+    }
+
+    /// The opt-in appendix follows the answer, so a response export still
+    /// opens with the response, and the tool's recorded output rides along.
+    #[test]
+    fn markdown_export_can_include_reasoning_tools_and_their_output() {
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({"messages": [
+            {"role": "user", "content": "Explain this"},
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "private reasoning"},
+                {"type": "toolCall", "id": "x", "name": "bash", "arguments": {"command": "ls -la"}},
+                {"type": "text", "text": "Answer"}
+            ]},
+            {"role": "toolResult", "toolCallId": "x", "isError": false, "content": [
+                {"type": "text", "text": "total 8"}
+            ]}
+        ]}));
+        let exported = transcript.export_visible_markdown(include_work()).unwrap();
+        assert!(exported
+            .starts_with("## User\n\nExplain this\n\n## Assistant\n\nAnswer\n\n### Reasoning"));
+        assert!(exported.contains("### Reasoning\n\nprivate reasoning"));
+        assert!(exported.contains("### Tool calls\n\n**bash** — `ls -la`"));
+        assert!(exported.contains("```\ntotal 8\n```"));
+    }
+
+    /// A response export appends the appendix after the answer and keeps the
+    /// clicked response as the section head.
+    #[test]
+    fn response_export_appends_work_after_the_answer() {
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({"messages": [
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "planned it"},
+                {"type": "text", "text": "first answer"}
+            ]},
+            {"role": "user", "content": "next"}
+        ]}));
+        let body = transcript
+            .export_response_markdown(0, "first answer", include_work())
+            .unwrap();
+        assert!(body.starts_with("first answer\n\n### Reasoning\n\nplanned it"));
+        assert!(transcript
+            .export_response_markdown(0, "stale text", include_work())
+            .is_none());
+        assert_eq!(
+            transcript
+                .export_response_markdown(0, "first answer", ExportOptions::default())
+                .as_deref(),
+            Some("first answer")
+        );
+        assert_eq!(
+            transcript
+                .export_response_pdf(0, "first answer", include_work())
+                .unwrap()
+                .markdown,
+            body
+        );
+    }
+
+    /// Opting in must not turn a hundred-thousand-character tool log into the
+    /// export; the cut is explicit, not silent.
+    #[test]
+    fn markdown_export_truncates_tool_output_with_a_note() {
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({"messages": [
+            {"role": "assistant", "content": [
+                {"type": "toolCall", "id": "x", "name": "bash", "arguments": {"command": "yes"}},
+                {"type": "text", "text": "Answer"}
+            ]},
+            {"role": "toolResult", "toolCallId": "x", "content": [
+                {"type": "text", "text": "y".repeat(EXPORT_TOOL_OUTPUT_CHARS + 100)}
+            ]}
+        ]}));
+        let exported = transcript.export_visible_markdown(include_work()).unwrap();
+        assert!(exported.contains("[Tool output truncated for export.]"));
+        assert!(!exported.contains(&"y".repeat(EXPORT_TOOL_OUTPUT_CHARS + 1)));
+    }
+
+    /// Tool output that itself contains a code fence must not be able to end
+    /// the block early and leak the rest as prose.
+    #[test]
+    fn markdown_export_grows_the_fence_past_backticks_in_output() {
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({"messages": [
+            {"role": "assistant", "content": [
+                {"type": "toolCall", "id": "x", "name": "bash", "arguments": {"command": "cat notes.md"}},
+                {"type": "text", "text": "Answer"}
+            ]},
+            {"role": "toolResult", "toolCallId": "x", "content": [
+                {"type": "text", "text": "before\n```\ninside\n```\nafter"}
+            ]}
+        ]}));
+        let exported = transcript.export_visible_markdown(include_work()).unwrap();
+        assert!(exported.contains("````\nbefore\n```\ninside\n```\nafter\n````"));
+    }
+
+    /// A command containing backticks must stay inline code rather than leave
+    /// a broken delimiter in the exported heading.
+    #[test]
+    fn markdown_export_keeps_a_backticked_command_inline() {
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({"messages": [
+            {"role": "assistant", "content": [
+                {"type": "toolCall", "id": "x", "name": "bash", "arguments": {"command": "echo `date`"}},
+                {"type": "text", "text": "Answer"}
+            ]}
+        ]}));
+        let exported = transcript.export_visible_markdown(include_work()).unwrap();
+        assert!(exported.contains("**bash** — `` echo `date` ``"));
+    }
+
+    /// A tool that returned only an image cannot be exported, and must say so
+    /// instead of reading as a call that produced nothing.
+    #[test]
+    fn markdown_export_notes_tool_output_images() {
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({"messages": [
+            {"role": "assistant", "content": [
+                {"type": "toolCall", "id": "x", "name": "read", "arguments": {"path": "shot.png"}},
+                {"type": "text", "text": "Answer"}
+            ]},
+            {"role": "toolResult", "toolCallId": "x", "content": [
+                {"type": "image", "mimeType": "image/png", "data": "aGVsbG8="}
+            ]}
+        ]}));
+        let exported = transcript.export_visible_markdown(include_work()).unwrap();
+        assert!(exported.contains("[Tool output images omitted from export.]"));
+    }
+
+    /// A turn that only reasoned and ran tools is skipped by default. Opting
+    /// in exports it instead of dropping the evidence entirely.
+    #[test]
+    fn reasoning_only_turns_export_only_when_opted_in() {
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({"messages": [
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "checked the files"},
+                {"type": "toolCall", "id": "x", "name": "read", "arguments": {"path": "src/main.rs"}}
+            ]},
+            {"role": "user", "content": "continue"}
+        ]}));
+        let plain = transcript
+            .export_visible_markdown(ExportOptions::default())
+            .unwrap();
+        assert_eq!(plain, "## User\n\ncontinue\n\n");
+        let full = transcript.export_visible_markdown(include_work()).unwrap();
+        assert!(full.contains("### Reasoning\n\nchecked the files"));
+        assert!(full.contains("**read** — `src/main.rs`"));
+        assert!(!transcript
+            .export_visible_pdf(ExportOptions::default())
+            .unwrap()
+            .iter()
+            .any(|section| section.markdown.contains("checked the files")));
+        assert!(transcript
+            .export_visible_pdf(include_work())
+            .unwrap()
+            .iter()
+            .any(|section| section.markdown.contains("checked the files")));
+    }
+
+    #[test]
+    fn markdown_export_of_empty_transcript_is_none() {
+        assert!(Transcript::new()
+            .export_visible_markdown(ExportOptions::default())
+            .is_none());
+        assert!(Transcript::new()
+            .export_last_response_markdown(ExportOptions::default())
+            .is_none());
+    }
+
+    #[test]
+    fn markdown_export_of_last_response_uses_only_assistant_text() {
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({"messages": [
+            {"role": "assistant", "content": "first answer"},
+            {"role": "user", "content": "next question"},
+            {"role": "assistant", "content": [{"type":"text", "text":"last **answer**"}]}
+        ]}));
+        assert_eq!(
+            transcript
+                .export_last_response_markdown(ExportOptions::default())
+                .as_deref(),
+            Some("last **answer**")
+        );
+    }
+
+    #[test]
+    fn last_response_export_includes_work_only_when_asked() {
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({"messages": [
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "weighed options"},
+                {"type": "text", "text": "last **answer**"}
+            ]}
+        ]}));
+        assert!(!transcript
+            .export_last_response_markdown(ExportOptions::default())
+            .unwrap()
+            .contains("weighed options"));
+        let full = transcript
+            .export_last_response_markdown(include_work())
+            .unwrap();
+        assert!(full.starts_with("last **answer**\n\n### Reasoning\n\nweighed options"));
+        assert!(transcript
+            .export_last_response_pdf(include_work())
+            .unwrap()
+            .markdown
+            .contains("weighed options"));
+    }
+
+    /// The plan's missing large-session case: a long conversation exports every
+    /// turn in order, and each appendix stays with the answer it belongs to.
+    #[test]
+    fn large_session_markdown_export_keeps_every_turn_and_appendix_in_order() {
+        let mut messages = Vec::new();
+        for turn in 0..300 {
+            messages.push(json!({"role": "user", "content": format!("question {turn}")}));
+            messages.push(json!({"role": "assistant", "content": [
+                {"type": "thinking", "thinking": format!("reasoning {turn}")},
+                {"type": "toolCall", "id": format!("t{turn}"), "name": "bash", "arguments": {"command": format!("echo {turn}")}},
+                {"type": "text", "text": format!("answer {turn}")}
+            ]}));
+            messages.push(
+                json!({"role": "toolResult", "toolCallId": format!("t{turn}"), "content": [
+                    {"type": "text", "text": format!("output {turn}")}
+                ]}),
+            );
+        }
+        let mut transcript = Transcript::new();
+        transcript.load_from(&json!({ "messages": messages }));
+        let exported = transcript.export_visible_markdown(include_work()).unwrap();
+        assert_eq!(exported.matches("### Reasoning").count(), 300);
+        assert_eq!(exported.matches("### Tool calls").count(), 300);
+        let first = exported
+            .find("answer 0\n\n### Reasoning\n\nreasoning 0")
+            .expect("the first turn and its appendix are in order");
+        let last = exported
+            .find("answer 299\n\n### Reasoning\n\nreasoning 299")
+            .expect("the last turn and its appendix are in order");
+        assert!(first < last);
+        assert!(exported.contains("**bash** — `echo 150`"));
+        assert!(exported.contains("```\noutput 150\n```"));
+    }
 
     /// Sending a prompt must put the live row up at once — the regression is a
     /// transcript that stays silent from Enter until the first token lands.
@@ -3986,6 +4736,42 @@ mod tests {
         assert_eq!(t.changed_files_summary(), vec![("a.rs".into(), 2, 1)]);
     }
 
+    /// A follow-up delivered by pi becomes a user row between the previous
+    /// answer and the next assistant response, not just a queue-bar entry.
+    #[test]
+    fn delivered_follow_up_appears_inline_once() {
+        let mut transcript = Transcript::new();
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "user", "content": "first"}),
+        });
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": "answer"}),
+        });
+        transcript.apply_event(&Event::AgentEnd { will_retry: false });
+        let follow_up = json!({"role": "user", "content": "next"});
+        transcript.apply_event(&Event::MessageStart {
+            value: follow_up.clone(),
+        });
+        transcript.apply_event(&Event::MessageEnd { value: follow_up });
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": "next answer"}),
+        });
+        let messages = transcript.messages.borrow();
+        let rows: Vec<_> = messages
+            .iter()
+            .map(|message| (message.user, message.text()))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                (true, "first".to_owned()),
+                (false, "answer".to_owned()),
+                (true, "next".to_owned()),
+                (false, "next answer".to_owned()),
+            ]
+        );
+    }
+
     #[test]
     fn loaded_session_shows_changed_files_summary() {
         let payload = json!({
@@ -4206,6 +4992,108 @@ mod tests {
     }
 
     #[test]
+    fn tool_details_are_retained_on_end_and_on_partial() {
+        let mut transcript = Transcript::new();
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": ""}),
+        });
+        transcript.apply_event(&Event::ToolExecutionStart {
+            value: json!({"toolCallId": "t1", "toolName": "subagent", "args": {}}),
+        });
+        // A streaming partial carries the run state too — the card is live.
+        transcript.apply_event(&Event::ToolExecutionUpdate {
+            value: json!({
+                "toolCallId": "t1",
+                "toolName": "subagent",
+                "partialResult": {
+                    "content": [{"type": "text", "text": "1 of 1 running"}],
+                    "details": {"orbit": "subagent/1", "mode": "single", "children": []}
+                }
+            }),
+        });
+        {
+            let messages = transcript.messages.borrow();
+            let tool = messages[0].tools().next().unwrap();
+            let details = tool.details.as_ref().expect("details from the partial");
+            assert_eq!(
+                details.get("orbit").and_then(Value::as_str),
+                Some("subagent/1")
+            );
+        }
+        transcript.apply_event(&Event::ToolExecutionEnd {
+            value: json!({
+                "toolCallId": "t1",
+                "result": {
+                    "content": [{"type": "text", "text": "done"}],
+                    "details": {"orbit": "subagent/1", "mode": "single", "children": [{"agent": "scout"}]}
+                },
+                "isError": false
+            }),
+        });
+        let messages = transcript.messages.borrow();
+        let tool = messages[0].tools().next().unwrap();
+        let details = tool.details.as_ref().expect("details from the result");
+        assert_eq!(
+            details
+                .get("children")
+                .and_then(Value::as_array)
+                .and_then(|children| children.first())
+                .and_then(|child| child.get("agent"))
+                .and_then(Value::as_str),
+            Some("scout")
+        );
+        // The envelope's text still lands in `output`, not in `details`.
+        assert!(tool.output.is_some());
+    }
+
+    #[test]
+    fn oversize_tool_details_are_dropped() {
+        let mut transcript = Transcript::new();
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": ""}),
+        });
+        transcript.apply_event(&Event::ToolExecutionStart {
+            value: json!({"toolCallId": "t1", "toolName": "subagent", "args": {}}),
+        });
+        let big = "x".repeat(DETAILS_MAX_BYTES + 1024);
+        transcript.apply_event(&Event::ToolExecutionEnd {
+            value: json!({
+                "toolCallId": "t1",
+                "result": {
+                    "content": [{"type": "text", "text": "done"}],
+                    "details": {"orbit": "subagent/1", "blob": big}
+                },
+                "isError": false
+            }),
+        });
+        let messages = transcript.messages.borrow();
+        let tool = messages[0].tools().next().unwrap();
+        assert!(tool.details.is_none());
+        assert!(tool.output.is_some());
+    }
+
+    #[test]
+    fn absent_tool_details_stay_none() {
+        let mut transcript = Transcript::new();
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": ""}),
+        });
+        transcript.apply_event(&Event::ToolExecutionStart {
+            value: json!({"toolCallId": "t1", "toolName": "read", "args": {"path": "a"}}),
+        });
+        transcript.apply_event(&Event::ToolExecutionEnd {
+            value: json!({
+                "toolCallId": "t1",
+                "result": {"content": [{"type": "text", "text": "ok"}], "details": null},
+                "isError": false
+            }),
+        });
+        let messages = transcript.messages.borrow();
+        let tool = messages[0].tools().next().unwrap();
+        assert!(tool.details.is_none());
+    }
+
+    #[test]
     fn tool_execution_update_streams_accumulated_output() {
         let mut transcript = Transcript::new();
         transcript.apply_event(&Event::MessageStart {
@@ -4298,7 +5186,7 @@ mod tests {
         let output = messages[0].tools().next().unwrap().output.as_ref().unwrap();
         assert_eq!(output["content"], content);
         assert_eq!(tool_result_output(output), Some(json!("image read")));
-        let (_, snapshot, _, _) = tool_result_parts(&json!({
+        let (_, snapshot, _, _, _) = tool_result_parts(&json!({
             "role": "toolResult", "toolCallId": "image1", "content": content
         }))
         .unwrap();

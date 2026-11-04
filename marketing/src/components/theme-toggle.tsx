@@ -27,7 +27,6 @@ export function ThemeToggle({ className = "" }: { className?: string }) {
       type="button"
       onClick={toggle}
       aria-label="Toggle color theme"
-      title="Toggle color theme"
       className={`inline-flex size-8 shrink-0 items-center justify-center rounded-[9px] border border-edge-subtle bg-surface-1 text-ink-2 transition-colors hover:border-edge-strong hover:bg-surface-2 hover:text-ink ${className}`}
     >
       <HugeiconsIcon icon={Moon01Icon} className="size-4 light:hidden" />

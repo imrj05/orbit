@@ -46,7 +46,6 @@ export function LanguageSwitcher({
     <details className="group relative [&[open]>summary]:border-edge-strong [&[open]>summary]:bg-surface-2 [&[open]>summary]:text-ink">
       <summary
         aria-label={locale ? `${label}: ${LOCALE_NAMES[locale]}` : label}
-        title={label}
         className="inline-flex h-8 shrink-0 cursor-pointer list-none items-center gap-1.5 rounded-[9px] border border-edge-subtle bg-surface-1 px-2 text-ink-2 transition-colors hover:border-edge-strong hover:bg-surface-2 hover:text-ink [&::-webkit-details-marker]:hidden"
       >
         <HugeiconsIcon icon={LanguageSkillIcon} className="size-4" />

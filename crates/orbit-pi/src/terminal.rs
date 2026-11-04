@@ -54,8 +54,8 @@ use gpui::{
 };
 
 use crate::app::{
-    button_frame, icon, icon_button_frame, nerd_font_family, press, refresh_glyph, TipExt,
-    BUTTON_GROUP,
+    button_frame, icon, icon_button_frame, nerd_font_family, press, refresh_glyph, ControlExt,
+    PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
 };
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{button, panel, ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
@@ -77,7 +77,10 @@ const POLL_MS: u64 = 16;
 const BLINK_TICKS: u32 = 31;
 /// Panel height defaults and drag clamps.
 const PANEL_DEFAULT_H: f32 = 260.;
-const PANEL_MIN_H: f32 = 96.;
+pub(crate) const PANEL_MIN_H: f32 = 96.;
+/// Taller than any window this runs in: a stored height must never restore to
+/// something the shell cannot show, or the chat column disappears on launch.
+pub(crate) const PANEL_MAX_H: f32 = 1200.;
 /// Header height — the tab strip.
 const HEADER_H: f32 = 32.;
 /// The resize handle above the header, where a panel's drag affordance
@@ -1640,7 +1643,7 @@ impl TerminalPanel {
             open: false,
             height: px(crate::layout::terminal_height()
                 .unwrap_or(PANEL_DEFAULT_H)
-                .max(PANEL_MIN_H)),
+                .clamp(PANEL_MIN_H, PANEL_MAX_H)),
             workspace: None,
             tabs: Vec::new(),
             active: 0,
@@ -1670,7 +1673,7 @@ impl TerminalPanel {
     }
 
     pub fn set_height(&mut self, height: Pixels, cx: &mut Context<Self>) {
-        let height = height.clamp(px(PANEL_MIN_H), px(f32::MAX / 2.));
+        let height = height.clamp(px(PANEL_MIN_H), px(PANEL_MAX_H));
         if height != self.height {
             self.height = height;
             crate::layout::set_terminal_height(f32::from(height));
@@ -1878,7 +1881,7 @@ impl TerminalPanel {
             .on_drag(TerminalResize, |_, _, _, cx| cx.new(|_| DragGhost))
             // Hover is the only affordance a borderless splitter can carry on
             // a code surface; it reads as the edge thickening, not a new rule.
-            .hover(|style| style.bg(theme.border))
+            .hover_divider(&theme)
             .into_any_element()
     }
 
@@ -1908,8 +1911,7 @@ impl TerminalPanel {
                 .text_size(TextSize::Small.px(&theme))
                 .when(active, |el| el.bg(theme.surface_active))
                 .when(!active, |el| {
-                    el.text_color(theme.text_muted)
-                        .hover(|el| el.bg(theme.surface_hover).text_color(theme.text_secondary))
+                    el.text_color(theme.text_muted).hover_quiet(&theme)
                 }),
         )
         .on_click(cx.listener(move |this, _: &gpui::ClickEvent, window, cx| {
@@ -1954,7 +1956,7 @@ impl TerminalPanel {
             .group(BUTTON_GROUP)
             .tip(tr!("terminal.close_tab"))
             .cursor_pointer()
-            .hover(|el| el.bg(theme.surface_hover))
+            .hover_state(&theme)
             .on_click(cx.listener(move |this, _: &gpui::ClickEvent, window, cx| {
                 this.close_tab(index, window, cx);
                 // Click handlers bubble: without this the chip's own handler
@@ -2014,8 +2016,8 @@ impl TerminalPanel {
                     .group(BUTTON_GROUP)
                     .tip(tr!("terminal.new_tab"))
                     .cursor_pointer()
-                    .hover(|style| style.bg(theme.surface_hover))
-                    .active(|style| style.bg(theme.surface_active))
+                    .hover_state(&theme)
+                    .pressed_state(&theme, PressedRamp::Wash)
                     .on_click(cx.listener(|this, _: &gpui::ClickEvent, window, cx| {
                         this.new_tab(window, cx);
                     }))
@@ -2046,8 +2048,8 @@ impl TerminalPanel {
                     .group(BUTTON_GROUP)
                     .tip(tr!("terminal.restart"))
                     .cursor_pointer()
-                    .hover(|style| style.bg(theme.surface_hover))
-                    .active(|style| style.bg(theme.surface_active))
+                    .hover_state(&theme)
+                    .pressed_state(&theme, PressedRamp::Wash)
                     .on_click(cx.listener(|this, _: &gpui::ClickEvent, _, cx| this.restart(cx)))
                     .child(refresh_glyph(
                         "terminal-restart-spin",
@@ -2066,7 +2068,7 @@ impl TerminalPanel {
                     .group(BUTTON_GROUP)
                     .tip(tr!("common.close"))
                     .cursor_pointer()
-                    .hover(|style| style.bg(theme.surface_hover))
+                    .hover_state(&theme)
                     .on_click(
                         cx.listener(|this, _: &gpui::ClickEvent, window, cx| {
                             this.toggle(window, cx)
@@ -2124,7 +2126,7 @@ impl TerminalPanel {
                             .cursor_pointer()
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.action_fg)
-                            .hover(|style| style.opacity(0.9))
+                            .hover_dimmed()
                             .on_mouse_up(
                                 MouseButton::Left,
                                 cx.listener(|this, _, _, cx| this.restart(cx)),

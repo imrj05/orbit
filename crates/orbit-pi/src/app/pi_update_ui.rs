@@ -179,9 +179,9 @@ impl OrbitApp {
         if self.pi_migrating {
             return;
         }
-        // The managed installer is macOS/Linux only. Everywhere else, tell the
-        // user which mechanism their platform documents instead of running
-        // something that cannot work.
+        // The official installer covers macOS, Linux, and Windows. Everywhere
+        // else, tell the user which mechanism their platform documents instead
+        // of running something that cannot work.
         if !pi_install::official_install_supported() {
             self.toast_error(tr!("pi_update.migrate_unsupported"));
             return;

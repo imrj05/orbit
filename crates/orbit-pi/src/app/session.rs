@@ -213,6 +213,12 @@ impl OrbitApp {
     }
 
     pub(super) fn submit_as(&mut self, text: String, mode: SendMode, cx: &mut Context<Self>) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
+        // A manual send supersedes a regenerate still waiting for its branch
+        // reload; otherwise the queued prompt would follow this one.
+        self.pending_regenerate = None;
         // Collect any paste that raced the submit tick, then fold the long
         // pastes back in: a pill is only a compact way to *hold* text.
         self.drain_pasted_files(cx);
@@ -384,6 +390,15 @@ impl OrbitApp {
         self.latest_turn = None;
         // The find hits belong to the previous session's transcript.
         self.transcript_search = None;
+        // Fork points belong to the previous session's entries, and a picker
+        // left over it would fork whatever session replaced it.
+        self.rewind_picker = None;
+        self.rewind_fetching = false;
+        self.rewind_fetch_id = None;
+        self.rewind_preselect = None;
+        self.rewind_intent = ForkIntent::Edit;
+        self.pending_regenerate = None;
+        self.rewind_prompt_images.clear();
     }
 
     /// Forget the queued-message mirror — the queue belongs to the previous
@@ -747,7 +762,11 @@ impl OrbitApp {
         // The Worktrees dialog is a modal surface: Escape closes it before
         // anything underneath (menus, the page, a running agent).
         if self.worktree_dialog.is_some() {
+            let clone = matches!(self.worktree_dialog, Some(WorktreeDialog::Clone));
             self.cancel_worktree_dialog(cx);
+            if clone {
+                self.input.read(cx).focus(window);
+            }
             return;
         }
         // A pending access-guard approval is answered first: escape denies it.
@@ -904,6 +923,9 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         // A run in flight must not be sacrificed to start a new task. pi's
         // `new_session` replaces the session and calls `abort()` on the live
         // turn (`agent-session-runtime.teardownCurrent`), which surfaces as
@@ -931,6 +953,9 @@ impl OrbitApp {
     /// switches the process onto it; the `clone` response handler reloads the
     /// transcript and re-keys the session.
     pub(super) fn clone_session(&mut self, cx: &mut Context<Self>) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         self.send(CommandBody::CloneSession, "clone");
         cx.notify();
     }
@@ -942,6 +967,9 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         // Same workspace with a live idle process: reuse it in place. A run
         // in flight is parked instead, so `new_session` never aborts it; a
         // dead process (or a different workspace) always needs its own.
@@ -965,6 +993,9 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         // Custom terminal surfaces cannot run offscreen; native blocking
         // requests are parked with their session and restored on return.
         self.cancel_custom_surfaces(cx);
@@ -1087,6 +1118,9 @@ impl OrbitApp {
         push: bool,
         cx: &mut Context<Self>,
     ) {
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         self.pending_session_rename = None;
         self.session_rename_ready = false;
         // Opening a session means viewing the chat: leave whichever full-page
@@ -1145,7 +1179,25 @@ impl OrbitApp {
         // A busy session is never dropped for staleness: the live run wins,
         // and the new config applies on its next idle reopen.
         let mcp_stamp = self.mcp.fingerprint_for(Some(&session.cwd));
-        if let Some(parked) = self
+        if !session.cwd.is_dir() {
+            // Keep a warm process parked: it may still be finishing a run in
+            // the removed directory, but it cannot safely become active.
+            self.extension_widgets.clear();
+            self.execution = SessionExecution::from_status(
+                self.session_outcomes
+                    .get(&session.path)
+                    .copied()
+                    .unwrap_or_default(),
+            );
+            self.preview_session_transcript(session.path.clone(), cx);
+            self.client = None;
+            self.worktree_dialog_error = None;
+            self.worktree_dialog = Some(WorktreeDialog::Unavailable {
+                path: session.cwd.clone(),
+                local: None,
+            });
+            self.find_missing_worktree_local(session.cwd.clone(), session.path.clone(), cx);
+        } else if let Some(parked) = self
             .lives
             .remove(&session.path)
             .filter(|parked| parked.busy || parked.mcp_stamp == mcp_stamp)
@@ -1206,52 +1258,41 @@ impl OrbitApp {
                     .unwrap_or_default(),
             );
             self.preview_session_transcript(session.path.clone(), cx);
-            if !session.cwd.is_dir() {
-                // The session's workspace is gone (a removed worktree, a
-                // deleted folder). Never spawn the agent in a fallback
-                // directory and never re-point the session silently (§22) —
-                // show the unavailable notice instead.
-                self.client = None;
-                self.worktree_dialog = Some(WorktreeDialog::Unavailable {
-                    path: session.cwd.clone(),
+            // Spawn a dedicated pi process rooted at the session's
+            // workspace and point it at the session file.
+            let secret_env = self.mcp.secret_env();
+            let spawned = self
+                .extensions
+                .spawn(&session.cwd, false, &secret_env)
+                .or_else(|_| {
+                    self.extensions.spawn(
+                        &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                        false,
+                        &secret_env,
+                    )
                 });
-            } else {
-                // Spawn a dedicated pi process rooted at the session's
-                // workspace and point it at the session file.
-                let secret_env = self.mcp.secret_env();
-                let spawned = self
-                    .extensions
-                    .spawn(&session.cwd, false, &secret_env)
-                    .or_else(|_| {
-                        self.extensions.spawn(
-                            &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-                            false,
-                            &secret_env,
-                        )
-                    });
-                match spawned {
-                    Ok(client) => {
-                        self.adopt_client(client);
-                        self.mcp_stamp = mcp_stamp;
-                        self.send(
-                            CommandBody::SwitchSession {
-                                session_path: session.path.to_string_lossy().into_owned(),
-                            },
-                            "switch_session",
-                        );
-                        // `get_state` and the capability probes are sent from
-                        // the switch_session success handler: querying state
-                        // eagerly here races the switch (pi answers with the
-                        // default model), and the probes only get queued after
-                        // the load commands, so a slow auth/quota lookup can't
-                        // delay the transcript.
-                    }
-                    Err(err) => {
-                        let message = tr!("runtime.pi_spawn_failed", error = err);
-                        self.client = None;
-                        self.runtime.error = Some(message.clone());
-                        self.set_status(message);
-                    }
+            match spawned {
+                Ok(client) => {
+                    self.adopt_client(client);
+                    self.mcp_stamp = mcp_stamp;
+                    self.send(
+                        CommandBody::SwitchSession {
+                            session_path: session.path.to_string_lossy().into_owned(),
+                        },
+                        "switch_session",
+                    );
+                    // `get_state` and the capability probes are sent from
+                    // the switch_session success handler: querying state
+                    // eagerly here races the switch (pi answers with the
+                    // default model), and the probes only get queued after
+                    // the load commands, so a slow auth/quota lookup can't
+                    // delay the transcript.
+                }
+                Err(err) => {
+                    let message = tr!("runtime.pi_spawn_failed", error = err);
+                    self.client = None;
+                    self.runtime.error = Some(message.clone());
+                    self.set_status(message);
                 }
             }
         }
@@ -1418,11 +1459,8 @@ impl OrbitApp {
         if !generating {
             button = button
                 .cursor_pointer()
-                .hover(|s| {
-                    s.raised(theme.surface_hover, &theme)
-                        .border_color(theme.border_strong)
-                })
-                .active(|s| s.opacity(PRESS_DIM))
+                .hover_bordered(&theme)
+                .pressed_state(&theme, PressedRamp::Wash)
                 .tooltip({
                     let label = tr!("session.generate_title");
                     move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
@@ -1464,6 +1502,11 @@ impl OrbitApp {
     /// or transcript entry; its `setSessionName` comes back as
     /// `session_info_changed` (handled in `events.rs`).
     pub(super) fn generate_session_title(&mut self, cx: &mut Context<Self>) {
+        // The command is a prompt: during a fork pi would run it on the new
+        // branch, and the reply's session reset would clear the spinner.
+        if self.rewind_transition_pending(cx) {
+            return;
+        }
         if self.session_id.is_none() || !self.can_generate_title() {
             return;
         }
@@ -1497,6 +1540,13 @@ impl OrbitApp {
         self.git_panel.update(cx, |panel, cx| panel.show(cx));
         self.sync_terminal_active(cx);
         cx.notify();
+    }
+
+    /// Open the Git page on its **Changes** tab. The dirty-tree counts chip
+    /// calls this so the files behind the `+N −N` are the first thing shown.
+    pub(super) fn open_git_changes(&mut self, cx: &mut Context<Self>) {
+        self.open_git(cx);
+        self.git_panel.update(cx, |panel, cx| panel.set_tab(0, cx));
     }
 
     /// ⌘⇧G: open the Git page, or leave it when it is already open. The
@@ -1672,7 +1722,7 @@ impl OrbitApp {
         }
         svg.with_animation(
             "sess-rename-check",
-            Animation::new(Duration::from_millis(200)).with_easing(|d| 1.0 - (1.0 - d).powi(3)),
+            Animation::new(Motion::Layout.duration(&theme)).with_easing(Motion::Layout.easing()),
             |svg, d| {
                 let scale = 0.5 + 0.5 * d;
                 svg.opacity(d)
@@ -1786,7 +1836,7 @@ impl OrbitApp {
                                     .raised(theme.surface_elevated, &theme)
                                     .border_color(theme.border)
                                     .text_color(theme.text_primary)
-                                    .hover(|s| s.raised(theme.surface_hover, &theme))
+                                    .hover_state(&theme)
                                     .child(tr!("session.update"));
                             }
                             button
@@ -1845,7 +1895,7 @@ impl OrbitApp {
                     .items_center()
                     .gap(DynamicSpacing::Base08.px(&theme))
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.surface_hover))
+                    .hover_state(&theme)
                     .on_click({
                         let this = this.clone();
                         move |_, _window, cx| {
@@ -1881,7 +1931,7 @@ impl OrbitApp {
                     .items_center()
                     .gap(DynamicSpacing::Base08.px(&theme))
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.surface_hover))
+                    .hover_state(&theme)
                     .on_click({
                         let this = this.clone();
                         move |_, window, cx| {
@@ -1928,14 +1978,11 @@ impl OrbitApp {
                 .bottom_0()
                 .right_0()
                 .size(px(0.))
-                .child(
-                    anchored()
-                        .position_mode(AnchoredPositionMode::Local)
-                        .anchor(Corner::TopRight)
-                        .offset(point(px(0.), popover::MENU_OFFSET))
-                        .snap_to_window_with_margin(popover::WINDOW_MARGIN)
-                        .child(deferred(popup)),
-                )
+                .child(anchored_popover(
+                    Corner::TopRight,
+                    point(px(0.), popover::MENU_OFFSET),
+                    popup, "anchored_popover-in-2", &theme,
+                ))
                 .into_any_element(),
         )
     }
@@ -2150,8 +2197,8 @@ impl OrbitApp {
             icon_button_frame(div().id("quota-refresh"), &theme, ButtonSize::Medium)
                 .group(BUTTON_GROUP)
                 .cursor_pointer()
-                .hover(|style| style.bg(theme.surface_hover))
-                .active(|style| style.bg(theme.surface_active))
+                .hover_state(&theme)
+                .pressed_state(&theme, PressedRamp::Wash)
                 .tooltip({
                     let label = tr!("common.refresh");
                     move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
@@ -2194,7 +2241,7 @@ impl OrbitApp {
                 .when(!selected, |chip| {
                     chip.raised_flat(theme.surface_elevated)
                         .text_color(theme.text_secondary)
-                        .hover(|style| style.raised_flat(theme.surface_hover))
+                        .hover_state(&theme)
                 })
                 .on_mouse_up(MouseButton::Left, {
                     let this = this.clone();
@@ -2317,14 +2364,11 @@ impl OrbitApp {
                 .bottom_0()
                 .right_0()
                 .size(px(0.))
-                .child(
-                    anchored()
-                        .position_mode(AnchoredPositionMode::Local)
-                        .anchor(Corner::TopRight)
-                        .offset(point(px(0.), popover::MENU_OFFSET))
-                        .snap_to_window_with_margin(popover::WINDOW_MARGIN)
-                        .child(deferred(popup)),
-                )
+                .child(anchored_popover(
+                    Corner::TopRight,
+                    point(px(0.), popover::MENU_OFFSET),
+                    popup, "anchored_popover-in-3", &theme,
+                ))
                 .into_any_element(),
         )
     }
@@ -2360,8 +2404,8 @@ impl OrbitApp {
             ButtonSize::Compact,
         )
         .cursor_pointer()
-        .hover(|style| style.bg(theme.surface_hover))
-        .active(|style| style.opacity(PRESS_DIM))
+        .hover_state(&theme)
+        .pressed_state(&theme, PressedRamp::Wash)
         .tooltip({
             let label = label.clone();
             move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into()
@@ -2414,8 +2458,8 @@ impl OrbitApp {
                     .font_weight(FontWeight::MEDIUM)
                     .raised(theme.action, &theme)
                     .text_color(theme.action_fg)
-                    .hover(|style| style.raised(theme.action_hover, &theme))
-                    .active(|style| style.raised(theme.action_pressed, &theme))
+                    .hover_action(&theme)
+                    .pressed_state(&theme, PressedRamp::Action)
                     .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                         this.update(cx, |app, cx| {
                             app.mcp_popup_tab(QuotaPopupTab::Mcp, cx);
@@ -2460,7 +2504,7 @@ impl OrbitApp {
                     .px(DynamicSpacing::Base04.px(&theme))
                     .py(px(2.))
                     .rounded(Radius::Medium.px(&theme))
-                    .hover(|style| style.bg(theme.surface_hover))
+                    .hover_state(&theme)
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::on_quota_hidden_toggle))
                     .child(icon(chevron, IconSize::XSmall.px(&theme), theme.text_muted))
                     .child(
@@ -2666,7 +2710,7 @@ impl OrbitApp {
                 icon_button_frame(div().id(("sess-copy", ix)), &theme, ButtonSize::Compact)
                     .tip(tr!("common.copy"))
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.surface_hover))
+                    .hover_state(&theme)
                     .on_click(move |_, _window, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(v.clone()));
                     })
@@ -2715,12 +2759,11 @@ impl OrbitApp {
                 self.input.read(cx).focus(window);
             }
         }
+        self.record_arrangement(cx);
     }
 
-    /// The top-bar Review control: one chip for the right dock and the
-    /// working tree's `+N −N` counts. With a dirty tree and the pane closed it
-    /// opens Review on the **Uncommitted** diff, so the counts the chip shows
-    /// are what it reveals; otherwise it is a plain toggle.
+    /// The clean top-bar chip: flip the right dock, opening Review. The dirty
+    /// `+N −N` state never reaches here; it opens the Git page's Changes tab.
     pub(super) fn on_toggle_side_pane(
         &mut self,
         _: &MouseUpEvent,
@@ -2730,23 +2773,16 @@ impl OrbitApp {
         self.toggle_side_pane(cx);
     }
 
-    /// Flip the right dock, opening Review on the working tree's Uncommitted
-    /// diff when it is dirty and the pane is closed. Split from the click
-    /// handler so the overflow menu can call it without synthesizing an event.
+    /// Flip the right dock, closing the Git page it shares the window with.
+    /// Split from the click handler so it can be called without synthesizing
+    /// an event.
     pub(super) fn toggle_side_pane(&mut self, cx: &mut Context<Self>) {
         let pane_open = self.sidepane.read(cx).is_open();
         if !pane_open {
             // Opening Review replaces the Git page, which shares the window.
             self.close_git_for_review(cx);
         }
-        let dirty = self.added > 0 || self.removed > 0;
-        self.sidepane.update(cx, |pane, cx| {
-            if pane_open || !dirty {
-                pane.toggle(cx);
-            } else {
-                pane.show_uncommitted(cx);
-            }
-        });
+        self.sidepane.update(cx, |pane, cx| pane.toggle(cx));
         cx.notify();
     }
 

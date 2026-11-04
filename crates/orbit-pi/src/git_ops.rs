@@ -212,6 +212,21 @@ pub fn list_refs(cwd: &Path) -> Vec<RefEntry> {
     out.lines().filter_map(parse_ref).collect()
 }
 
+/// The repository's configured remote names, in Git's order (`git remote`).
+/// Used to split `origin/feat` at the right place — a remote name may itself
+/// contain a slash.
+pub fn list_remotes(cwd: &Path) -> Vec<String> {
+    run_git(cwd, &["remote"])
+        .map(|out| {
+            out.lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn parse_ref(line: &str) -> Option<RefEntry> {
     let (full, date) = match line.split_once('\t') {
         Some((full, date)) => (full, Some(date.trim())),

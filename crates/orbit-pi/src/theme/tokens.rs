@@ -37,12 +37,9 @@
 
 use std::time::Duration;
 
-use gpui::{
-    hsla, linear_color_stop, linear_gradient, point, px, relative, Background, BoxShadow,
-    DefiniteLength, Hsla, Pixels, Styled,
-};
+use gpui::{hsla, point, px, relative, BoxShadow, DefiniteLength, Hsla, Pixels, Styled};
 
-use super::{DesignSystem, Theme, ThemeMode};
+use super::Theme;
 
 // ── Units (`ui/src/styles/units.rs`) ────────────────────────────────────
 
@@ -59,63 +56,47 @@ impl Theme {
 
 // ── Corner radius + borders (`gpui_macros/src/styles.rs`) ───────────────
 
-/// GPUI's `rounded_*` scale. Every step but `None` and `Full` is in rems.
+/// Orbit's corner scale, in pixels before the corner-rounding preference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Radius {
     /// 0px.
     None,
-    /// 2px (0.125rem).
+    /// 2px.
     XSmall,
-    /// 4px (0.25rem) — buttons, list items, menu entries.
+    /// 4px.
     Small,
-    /// 6px (0.375rem) — input fields.
+    /// 5px — compact buttons and list items.
     Medium,
-    /// 8px (0.5rem) — every elevated surface.
+    /// 6px — standard buttons and input fields.
     Large,
-    /// 12px (0.75rem).
+    /// 8px — panels and elevated surfaces.
     XLarge,
-    /// 16px (1rem).
+    /// 10px.
     XXLarge,
-    /// 24px (1.5rem).
+    /// 12px.
     XXXLarge,
     /// 9999px — pills and discs.
     Full,
 }
 
 impl Radius {
+    /// One radius ramp for every palette: the Linear-aligned scale. Shapes are
+    /// part of the design language, not of a palette, so a Classic palette and
+    /// an Operational one draw the same button and the same card.
+    ///
+    /// The user's corner-rounding setting still shifts every corner except
+    /// [`Radius::None`] and [`Radius::Full`], which stay square and circular.
     pub fn px(self, theme: &Theme) -> Pixels {
-        // Restrained Operational Minimalism uses a tighter, fixed radius ramp:
-        // 6px buttons/inputs, 8px panels, 10px dialogs. Classic keeps the
-        // existing rem-based Zed scale.
-        if matches!(self, Self::None | Self::Full) {
-            return if self == Self::None {
-                px(0.)
-            } else {
-                px(9999.)
-            };
-        }
-        let base = if theme.design_system == DesignSystem::Operational {
-            match self {
-                Self::XSmall => px(2.),
-                Self::Small => px(4.),
-                Self::Medium => px(5.),
-                Self::Large => px(6.),
-                Self::XLarge => px(8.),
-                Self::XXLarge => px(10.),
-                Self::XXXLarge => px(12.),
-                Self::None | Self::Full => unreachable!(),
-            }
-        } else {
-            match self {
-                Self::XSmall => theme.rems(0.125),
-                Self::Small => theme.rems(0.25),
-                Self::Medium => theme.rems(0.375),
-                Self::Large => theme.rems(0.5),
-                Self::XLarge => theme.rems(0.75),
-                Self::XXLarge => theme.rems(1.),
-                Self::XXXLarge => theme.rems(1.5),
-                Self::None | Self::Full => unreachable!(),
-            }
+        let base = match self {
+            Self::None => return px(0.),
+            Self::Full => return px(9999.),
+            Self::XSmall => px(2.),
+            Self::Small => px(4.),
+            Self::Medium => px(5.),
+            Self::Large => px(6.),
+            Self::XLarge => px(8.),
+            Self::XXLarge => px(10.),
+            Self::XXXLarge => px(12.),
         };
         base + px(theme
             .ui
@@ -282,13 +263,7 @@ impl TextSize {
             Self::Large => theme.ui_px(16.),
             Self::Default => theme.ui_px(14.),
             Self::Small => theme.ui_px(12.),
-            Self::XSmall => {
-                if theme.design_system == DesignSystem::Operational {
-                    theme.ui_px(11.)
-                } else {
-                    theme.ui_px(10.)
-                }
-            }
+            Self::XSmall => theme.ui_px(11.),
             Self::Ui => px(theme.ui.ui_font_size),
             Self::Editor => px(theme.ui.editor_font_size),
         }
@@ -296,8 +271,7 @@ impl TextSize {
 }
 
 /// Headline sizes on a Major Second scale — Zed's `HeadlineSize`.
-/// Reserved by the modal metrics ([`modal::HEADLINE`]); no surface paints a
-/// page headline through it yet.
+/// Used for page headings and reserved by the modal metrics ([`modal::HEADLINE`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HeadlineSize {
     /// ~14px.
@@ -583,8 +557,8 @@ pub mod list_item {
 pub mod panel {
     use super::*;
 
-    /// Standard panel/card corner. Operational resolves this to 8px;
-    /// Classic keeps the existing 12px card corner.
+    /// Standard panel/card corner: 8px before the rounding preference,
+    /// shared by all palettes.
     pub const RADIUS: Radius = Radius::XLarge;
 }
 
@@ -781,7 +755,7 @@ pub mod toast {
     /// One width keeps every toast in a stack aligned to the same edge.
     pub const WIDTH: Pixels = px(360.);
     pub const BADGE_RADIUS: Radius = Radius::Small;
-    pub const ENTER: Duration = AnimationDuration::Fast.duration();
+    pub const ENTER: Duration = Motion::Interaction.nominal();
     pub const TITLE: TextSize = TextSize::Default;
     pub const BODY: TextSize = TextSize::Small;
     pub const ICON: IconSize = IconSize::Small;
@@ -1013,14 +987,11 @@ pub mod input {
     pub const LABEL: TextSize = TextSize::Small;
     pub const ICON: IconSize = IconSize::Small;
 
-    /// A large, multi-line composer is still an input. Classic keeps its
-    /// existing 16px composer silhouette; Operational uses the standard input
-    /// radius so every field shares one corner value.
+    /// The composer is a field, so it takes the field's corner. A large
+    /// multi-line box is still an input, and one corner value across every
+    /// field is what makes the workbench read as one system.
     pub fn composer_radius(theme: &Theme) -> Pixels {
-        match theme.design_system {
-            DesignSystem::Classic => Radius::XXLarge.px(theme),
-            DesignSystem::Operational => RADIUS.px(theme),
-        }
+        RADIUS.px(theme)
     }
 }
 
@@ -1042,31 +1013,14 @@ pub enum ElevationIndex {
 }
 
 impl ElevationIndex {
-    /// Zed's shadow stack for this layer. Only the two elevated layers cast
-    /// one; the last layer of each is a 1px contact line with no blur.
-    pub fn shadow(self, theme: &Theme) -> Vec<BoxShadow> {
-        // Operational keeps floating surfaces defined by their hairline: one
-        // tight contact layer for popovers, one restrained modal layer. No
-        // broad ambient shadows.
-        if theme.design_system == DesignSystem::Operational {
-            return match self {
-                Self::ElevatedSurface => vec![drop_shadow(1., 2., 0.10)],
-                Self::ModalSurface => vec![drop_shadow(2., 6., 0.16)],
-                Self::Background | Self::Surface | Self::EditorSurface => Vec::new(),
-            };
-        }
-        let light = theme.mode == ThemeMode::Light;
+    /// The shadow stack for this layer. Only the two elevated layers cast one,
+    /// and each is restrained: a floating surface is defined by its hairline
+    /// first and its shadow second. No broad ambient layer, and nothing below
+    /// the elevated surfaces casts anything at all.
+    pub fn shadow(self, _theme: &Theme) -> Vec<BoxShadow> {
         match self {
-            Self::ElevatedSurface => vec![
-                drop_shadow(2., 3., 0.12),
-                drop_shadow(1., 0., if light { 0.03 } else { 0.06 }),
-            ],
-            Self::ModalSurface => vec![
-                drop_shadow(2., 3., if light { 0.06 } else { 0.12 }),
-                drop_shadow(3., 6., if light { 0.06 } else { 0.08 }),
-                drop_shadow(6., 12., 0.04),
-                drop_shadow(1., 0., if light { 0.04 } else { 0.12 }),
-            ],
+            Self::ElevatedSurface => vec![drop_shadow(1., 2., 0.10)],
+            Self::ModalSurface => vec![drop_shadow(2., 6., 0.16)],
             Self::Background | Self::Surface | Self::EditorSurface => Vec::new(),
         }
     }
@@ -1130,74 +1084,139 @@ impl<E: Styled> StyledExt for E {}
 
 // ── Raised buttons ──────────────────────────────────────────────────────
 
-/// A button's fill as a soft top-lit gradient of its own color: a touch
-/// lighter at the top edge, a touch deeper at the bottom, so the face reads
-/// as a raised key rather than a flat sticker. The hue never changes — the
-/// ramp only moves lightness (and, for translucent washes, alpha) — so every
-/// button keeps the identity of the color it was given.
-pub fn raised_fill(color: Hsla) -> Background {
-    const LIFT: f32 = 0.02;
-    const SINK: f32 = 0.012;
-    let translucent = color.a < 0.95;
-    let mut top = color;
-    let mut bottom = color;
-    top.l = (color.l + LIFT).min(1.);
-    bottom.l = (color.l - SINK).max(0.);
-    if translucent {
-        top.a = (color.a * 1.12).min(1.);
-        bottom.a = color.a * 0.94;
-    }
-    linear_gradient(
-        180.,
-        linear_color_stop(top, 0.),
-        linear_color_stop(bottom, 1.),
-    )
-}
-
-/// The shadow that lifts a button off its surface: a 1px contact line plus a
-/// short, soft ambient layer. Tight on purpose — a button sits just above the
-/// page, not over it (menus and modals use [`ElevationIndex`]).
-pub fn button_shadow(theme: &Theme) -> Vec<BoxShadow> {
-    // Operational buttons are flat: the fill and border carry the affordance.
-    if theme.design_system == DesignSystem::Operational {
-        return Vec::new();
-    }
-    let mut contact = theme.shadow_contact;
-    contact.a *= 0.45;
-    let mut ambient = theme.shadow_contact;
-    ambient.a *= 0.25;
-    vec![
-        BoxShadow {
-            color: contact,
-            offset: point(px(0.), px(1.)),
-            blur_radius: px(1.),
-            spread_radius: px(0.),
-        },
-        BoxShadow {
-            color: ambient,
-            offset: point(px(0.), px(1.)),
-            blur_radius: px(3.),
-            spread_radius: px(-1.),
-        },
-    ]
-}
-
-/// Raised-button fills. Works on elements and on hover/active refinements
-/// alike (`.hover(|s| s.raised(theme.surface_hover, &theme))`).
+/// A filled button's treatment. The fill and its 1px border carry the
+/// affordance, so the face is flat: no gradient, no lift shadow. This is the
+/// one place a filled control's treatment is decided, so a caller never paints
+/// its own.
 pub trait RaisedExt: Styled + Sized {
-    /// Gradient face in `color` plus the lift shadow — a standalone button.
-    fn raised(self, color: Hsla, theme: &Theme) -> Self {
-        self.bg(raised_fill(color)).shadow(button_shadow(theme))
+    /// The button's face in `color`. Kept as a method, rather than a bare
+    /// `.bg()`, so the treatment can change once instead of at 209 call sites.
+    fn raised(self, color: Hsla, _theme: &Theme) -> Self {
+        self.bg(color)
     }
 
-    /// Gradient face only — for segments of a grouped control, where a
-    /// per-segment shadow would spill onto the neighbours.
+    /// A segment of a grouped control. Identical to [`Self::raised`] now that
+    /// nothing lifts; retained so a segmented control reads as a deliberate
+    /// choice at the call site.
     fn raised_flat(self, color: Hsla) -> Self {
-        self.bg(raised_fill(color))
+        self.bg(color)
     }
 }
 
 impl<E: Styled> RaisedExt for E {}
+
+// ── Interaction states (§2) ─────────────────────────────────────────────
+
+/// The six states every interactive surface answers to.
+///
+/// This is the colour half of the interaction-state contract, and the one
+/// place a state's fill, frame, and ink are decided. *How* a state is
+/// painted — a flat wash versus a `raised` gradient, a ring versus a border —
+/// stays with the component, because that belongs to the surface's role.
+///
+/// Today most surfaces name `theme.surface_hover` themselves (289 `.hover()`
+/// closures across the crate). Phase 2 of the UI/UX Modernization epic turns
+/// this table into shared primitives and migrates those call sites; until
+/// then the vocabulary exists so the contract can be reviewed before 255
+/// buttons are rewritten against it.
+///
+/// Two roles are deliberately outside this table: primary/action buttons take
+/// their hover and pressed steps from the palette's `action` ramp
+/// (`action_hover` / `action_pressed`), and raised buttons apply a gradient
+/// *treatment* over whatever fill this returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InteractionState {
+    /// No pointer, no focus: the resting treatment.
+    Rest,
+    /// The pointer is over the control.
+    Hover,
+    /// The pointer or space bar is held down.
+    Pressed,
+    /// The control is the object currently being operated on.
+    Selected,
+    /// Keyboard focus is on the control.
+    Focused,
+    /// Present but not operable.
+    Disabled,
+    /// Not a state: the translucent treatment a control takes when it floats
+    /// over the wallpaper. Ink at low alpha, so the surface behind it stays
+    /// visible. Painted by `ControlExt::hover_on_glass`.
+    Glass,
+}
+
+impl InteractionState {
+    pub const ALL: [Self; 6] = [
+        Self::Rest,
+        Self::Hover,
+        Self::Pressed,
+        Self::Selected,
+        Self::Focused,
+        Self::Disabled,
+    ];
+
+    /// The wash painted behind a row, a ghost control, or a menu entry.
+    ///
+    /// `None` means paint nothing: the control keeps the surface beneath it.
+    /// That covers `Rest` and `Focused` (focus is a frame, never a fill —
+    /// `DESIGN.md` §Focus) and the two role exceptions above.
+    pub fn fill(self, theme: &Theme) -> Option<Hsla> {
+        match self {
+            Self::Rest | Self::Focused => None,
+            Self::Hover => Some(theme.surface_hover),
+            Self::Pressed => Some(theme.surface_active),
+            Self::Selected => Some(theme.surface_selected),
+            Self::Disabled | Self::Glass => Some(theme.overlay),
+        }
+    }
+
+    /// The frame around the control.
+    ///
+    /// Only `Focused` carries the focus ring. `Disabled` gets the quiet
+    /// hairline so a disabled field still reads as a field, and every other
+    /// state keeps whatever border its role defines.
+    pub fn border(self, theme: &Theme) -> Option<Hsla> {
+        match self {
+            Self::Focused => Some(theme.focus_ring),
+            Self::Disabled => Some(theme.border_subtle),
+            _ => None,
+        }
+    }
+
+    /// The ink for a label or icon in a row-like control: nav rows, list
+    /// rows, table rows, menu entries.
+    ///
+    /// Rows rest at secondary ink and lift to primary on hover, so the
+    /// hierarchy of a list survives its own pointer feedback.
+    pub fn row_ink(self, theme: &Theme) -> Hsla {
+        match self {
+            Self::Rest => theme.text_secondary,
+            Self::Hover | Self::Pressed | Self::Focused => theme.text_primary,
+            Self::Selected => theme.selection_fg,
+            Self::Disabled => theme.text_disabled,
+            Self::Glass => theme.text_primary,
+        }
+    }
+
+    /// The ink for a label or icon in a button, chip, or field — controls
+    /// that already carry primary ink at rest.
+    pub fn control_ink(self, theme: &Theme) -> Hsla {
+        match self {
+            Self::Selected => theme.selection_fg,
+            Self::Disabled => theme.text_disabled,
+            _ => theme.text_primary,
+        }
+    }
+
+    /// The translucent hover wash for glass controls.
+    pub fn glass_fill(self, theme: &Theme) -> Hsla {
+        theme.overlay_strong
+    }
+}
+
+/// Width of the focus ring. Orbit draws focus as a 1px border in
+/// [`Theme::focus_ring`] rather than a GPUI outline, so the ring costs no
+/// layout and reads the same inside a clipped row.
+pub const FOCUS_RING_WIDTH: Pixels = BORDER_WIDTH;
 
 fn elevated<E: Styled>(el: E, theme: &Theme, index: ElevationIndex, bordered: bool) -> E {
     let el = el
@@ -1239,6 +1258,82 @@ impl From<AnimationDuration> for Duration {
     }
 }
 
+/// Orbit's named motion roles, layered on [`AnimationDuration`].
+///
+/// A surface picks a role, not a number. The roles are the bands `DESIGN.md`
+/// §Motion System defines, and they are the only durations a one-shot
+/// transition may use:
+///
+/// | Role | Duration | Band | Used for |
+/// | -- | --: | -- | -- |
+/// | `Instant` | 50 ms | 0–80 | Focus, press acknowledgement |
+/// | `Interaction` | 150 ms | 120–160 | Hover, selection, menu appearance |
+/// | `Layout` | 200 ms | 160–220 | Panel open/close, disclosure |
+/// | `Travel` | 260 ms | 220–320 | A card moving as a whole: popover travel, dialog entrance, send morph |
+///
+/// `Instant` and `Interaction` are Zed's own values
+/// ([`AnimationDuration::Instant`] / `Fast`). `Layout` and `Travel` are
+/// Orbit's: Zed's `Slow` is 300 ms, which reads as hesitation on a workbench
+/// panel, and a card crossing 200 px in 150 ms reads as a teleport rather than
+/// travel. `Travel` moves a card, never a row — hover, press, focus and
+/// selection stay inside `Interaction`.
+///
+/// **Reduce Motion is a property of the role, not of each call site.**
+/// [`Motion::duration`] returns zero when the setting is on, so a transition
+/// collapses to the new state instead of disappearing. Looping affordances
+/// that report live work (the running-session shimmer, the spinner, the
+/// streaming pulse) are not roles: they read the setting themselves and keep
+/// their glyph while dropping the motion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Motion {
+    /// 50 ms: the state change is already legible, motion only confirms it.
+    Instant,
+    /// 150 ms: the pointer or keyboard moved; the surface follows immediately.
+    Interaction,
+    /// 200 ms: a region of the layout changed size or presence.
+    Layout,
+    /// 260 ms: a surface moves as a whole. Never a row: a hover or a press that
+    /// took this long would lag the pointer.
+    Travel,
+}
+
+impl Motion {
+    pub const ALL: [Self; 4] = [Self::Instant, Self::Interaction, Self::Layout, Self::Travel];
+
+    /// The role's duration before Reduce Motion is considered.
+    pub const fn nominal(self) -> Duration {
+        match self {
+            Self::Instant => AnimationDuration::Instant.duration(),
+            Self::Interaction => AnimationDuration::Fast.duration(),
+            Self::Layout => Duration::from_millis(200),
+            Self::Travel => Duration::from_millis(260),
+        }
+    }
+
+    /// The duration a surface should animate for: [`Self::nominal`], or zero
+    /// when the user has asked for reduced motion.
+    pub fn duration(self, theme: &Theme) -> Duration {
+        if theme.reduce_motion() {
+            Duration::ZERO
+        } else {
+            self.nominal()
+        }
+    }
+
+    /// The role's easing. Orbit does not bounce: every role decelerates out of
+    /// the transition, and `Instant` is linear because it is feedback rather
+    /// than travel.
+    pub fn easing(self) -> fn(f32) -> f32 {
+        fn ease_out_quint(delta: f32) -> f32 {
+            gpui::ease_out_quint()(delta)
+        }
+        match self {
+            Self::Instant => gpui::linear,
+            Self::Interaction | Self::Layout | Self::Travel => ease_out_quint,
+        }
+    }
+}
+
 /// Zed's default easing for one-shot transitions. Re-exported vocabulary,
 /// like the rest of this module, before any surface animates with it.
 #[allow(unused_imports)]
@@ -1249,6 +1344,89 @@ pub const SLIDE_IN_DISTANCE: Pixels = px(40.);
 
 /// Where a fading animate-in starts.
 pub const FADE_IN_START_OPACITY: f32 = 0.4;
+
+// ── Looping affordances (§3) ────────────────────────────────────────────
+
+/// Cadences for the loops that report live state: a spinner, a shimmer, a
+/// streaming pulse, an indeterminate progress bar.
+///
+/// A loop is not a transition. It runs for as long as the state it reports
+/// lasts, so it has a cadence rather than a [`Motion`] role — and every one of
+/// them is guarded by Reduce Motion at its call site, where the glyph stays and
+/// the motion drops.
+pub mod looping {
+    use std::time::Duration;
+
+    /// A spinner turning in place.
+    pub const SPIN: Duration = Duration::from_millis(900);
+    /// The refresh glyph: a shorter turn, because it reads as "again" rather
+    /// than "working".
+    pub const SPIN_FAST: Duration = Duration::from_millis(700);
+    /// The running-session shimmer sweeping a title.
+    pub const SHIMMER: Duration = Duration::from_millis(2000);
+    /// A streaming or thinking pulse.
+    pub const PULSE: Duration = Duration::from_millis(1600);
+    /// An indeterminate progress segment crossing its track.
+    pub const PROGRESS: Duration = Duration::from_millis(1100);
+}
+
+// ── Data visualisation (§3) ─────────────────────────────────────────────
+
+/// Chart motion: a longer, gentler arc than any UI transition.
+///
+/// These durations are deliberately **outside** the [`Motion`] bands. A chart
+/// reveal is the data arriving, not a control changing state, and it must never
+/// be used for chrome. Every caller still guards on Reduce Motion — a chart that
+/// cannot animate just paints its final frame.
+pub mod chart {
+    use std::time::Duration;
+
+    /// First paint of a chart or sparkline.
+    pub const DRAW: Duration = Duration::from_millis(900);
+    /// Morph between two data sets.
+    pub const MORPH: Duration = Duration::from_millis(500);
+    /// A canvas reveal — the usage chart's one-shot fill.
+    pub const REVEAL: Duration = Duration::from_millis(1100);
+
+    /// The chart easing: a symmetric cubic that starts and ends quietly, so a
+    /// reveal reads as drawing rather than sliding. Built by the motion layer's
+    /// one curve builder, so a chart and a transition cannot drift apart.
+    pub fn ease() -> impl Fn(f32) -> f32 {
+        crate::motion::ease::bezier(0.85, 0.0, 0.15, 1.0)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// A chart cadence is not a transition: it must sit outside the Motion
+        /// bands, so nobody reuses it for chrome.
+        #[test]
+        fn chart_cadence_is_longer_than_any_transition_band() {
+            for duration in [DRAW, MORPH, REVEAL] {
+                for motion in crate::theme::tokens::Motion::ALL {
+                    assert!(
+                        duration > motion.nominal(),
+                        "{duration:?} must stay outside the {motion:?} band"
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn the_chart_easing_starts_and_ends_on_the_endpoints() {
+            let ease = ease();
+            assert!(ease(0.).abs() < 1e-6);
+            assert!((ease(1.) - 1.).abs() < 1e-6);
+            let mut previous = 0.0;
+            for step in 0..=100 {
+                let value = ease(step as f32 / 100.);
+                assert!(value >= previous - 1e-6, "the curve never travels back");
+                previous = value;
+            }
+        }
+    }
+}
 
 // ── Scrollbars (`ui/src/components/scrollbar.rs`) ───────────────────────
 
@@ -1290,15 +1468,12 @@ mod tests {
 
     #[test]
     fn corner_rounding_adjusts_shared_shapes_without_changing_pills_or_square_edges() {
-        for design_system in [DesignSystem::Classic, DesignSystem::Operational] {
-            let mut theme = Theme::dark();
-            theme.design_system = design_system;
-            let base = Radius::Large.px(&theme);
-            theme.ui.corner_rounding = crate::theme::MAX_CORNER_ROUNDING;
-            assert_eq!(Radius::Large.px(&theme), base + px(4.));
-            assert_eq!(Radius::None.px(&theme), px(0.));
-            assert_eq!(Radius::Full.px(&theme), px(9999.));
-        }
+        let mut theme = Theme::dark();
+        let base = Radius::Large.px(&theme);
+        theme.ui.corner_rounding = crate::theme::MAX_CORNER_ROUNDING;
+        assert_eq!(Radius::Large.px(&theme), base + px(4.));
+        assert_eq!(Radius::None.px(&theme), px(0.));
+        assert_eq!(Radius::Full.px(&theme), px(9999.));
     }
 
     fn theme_with(ui_font_size: f32, spacing_density: u32) -> Theme {
@@ -1330,11 +1505,11 @@ mod tests {
         assert!(close(TextSize::Large.px(&theme), 16.));
         assert!(close(TextSize::Default.px(&theme), 14.));
         assert!(close(TextSize::Small.px(&theme), 12.));
-        assert!(close(TextSize::XSmall.px(&theme), 10.));
+        assert!(close(TextSize::XSmall.px(&theme), 11.));
         assert!(close(ButtonSize::Default.height(&theme), 22.));
         assert!(close(ButtonSize::Medium.height(&theme), 28.));
         assert!(close(Radius::Small.px(&theme), 4.));
-        assert!(close(Radius::Large.px(&theme), 8.));
+        assert!(close(Radius::Large.px(&theme), 6.));
         assert!(close(tooltip::max_width(&theme), 288.));
         assert!(close(HeadlineSize::Small.px(&theme), 16.));
     }
@@ -1403,60 +1578,86 @@ mod tests {
 
     #[test]
     fn panel_and_composer_radii_are_semantic() {
-        let classic = default_theme();
-        assert!(close(panel::RADIUS.px(&classic), 12.));
-        assert!(close(input::composer_radius(&classic), 16.));
-
-        let operational = Theme::for_id(crate::theme::ThemeId::Operational);
-        assert!(close(panel::RADIUS.px(&operational), 8.));
-        assert!(close(input::composer_radius(&operational), 6.));
-        assert_eq!(
-            input::composer_radius(&operational),
-            input::RADIUS.px(&operational),
-            "Operational composers share the field radius"
-        );
-    }
-
-    #[test]
-    fn operational_geometry_is_tighter_and_flatter() {
-        let theme = Theme::for_id(crate::theme::ThemeId::Operational);
-        assert!(close(Radius::Small.px(&theme), 4.));
-        assert!(close(Radius::Medium.px(&theme), 5.));
-        assert!(close(Radius::Large.px(&theme), 6.));
-        assert!(close(Radius::XLarge.px(&theme), 8.));
-        assert!(close(TextSize::XSmall.px(&theme), 11.));
-        assert!(button_shadow(&theme).is_empty(), "flat buttons");
-        assert_eq!(
-            ElevationIndex::ElevatedSurface.shadow(&theme).len(),
-            1,
-            "one restrained popover layer"
-        );
-        assert_eq!(
-            ElevationIndex::ModalSurface.shadow(&theme).len(),
-            1,
-            "one restrained modal layer"
-        );
-    }
-
-    #[test]
-    fn classic_geometry_keeps_the_existing_scale() {
         let theme = default_theme();
-        assert!(close(Radius::Large.px(&theme), 8.));
-        assert!(close(TextSize::XSmall.px(&theme), 10.));
-        assert_eq!(button_shadow(&theme).len(), 2);
+        assert!(close(panel::RADIUS.px(&theme), 8.));
+        assert!(close(input::RADIUS.px(&theme), 6.));
+        assert_eq!(
+            input::composer_radius(&theme),
+            input::RADIUS.px(&theme),
+            "the composer shares the field radius"
+        );
+        assert_eq!(list_item::RADIUS, Radius::Medium);
+    }
+
+    /// Phase 9 baseline, not a gate: prints the cost of the two pure paths a
+    /// launch pays for — resolving every shipped palette, and restoring the
+    /// persisted layout. Run with
+    /// `cargo test -p orbit-pi --bin orbit-pi baseline -- --ignored --nocapture`.
+    ///
+    /// Rendering paths (transcript scroll, panel resize, streaming frame
+    /// budget) cannot be measured headlessly; they need the GPU harness and are
+    /// listed as unmeasured in `docs/performance-baseline.md`.
+    #[test]
+    #[ignore = "baseline measurement"]
+    fn baseline_palette_and_layout_costs() {
+        use std::time::Instant;
+
+        let rounds = 1_000;
+        let start = Instant::now();
+        for _ in 0..rounds {
+            for id in crate::theme::ThemeId::ALL {
+                std::hint::black_box(Theme::for_id(id));
+            }
+        }
+        let per_palette = start.elapsed() / (rounds * crate::theme::ThemeId::ALL.len() as u32);
+        println!("palette resolve: {per_palette:?} per palette");
+
+        let payload = r#"{"sidebar_width":248.0,"sidepane_width":460.0,"explorer_width":300.0,"terminal_height":260.0}"#;
+        let start = Instant::now();
+        for _ in 0..rounds {
+            std::hint::black_box(crate::layout::from_json_for_baseline(payload));
+        }
+        let per_restore = start.elapsed() / rounds;
+        println!("layout restore: {per_restore:?} per launch");
+
+        let start = Instant::now();
+        for _ in 0..rounds {
+            std::hint::black_box(crate::commands::COMMANDS.len());
+        }
+        println!("registry scan: {:?} per 1000 launches", start.elapsed());
     }
 
     #[test]
-    fn raised_buttons_cast_a_short_shadow_in_both_modes() {
-        for theme in [default_theme(), Theme::light()] {
-            let shadow = button_shadow(&theme);
-            assert_eq!(shadow.len(), 2, "contact line + soft ambient");
-            for layer in &shadow {
-                assert!(layer.color.a > 0., "{:?} shadow is visible", theme.mode);
-                assert!(
-                    layer.blur_radius <= px(4.),
-                    "a button sits just above the page"
-                );
+    fn one_linear_geometry_ramp_serves_every_palette() {
+        // Shapes belong to the design language, not to a palette. A Classic
+        // palette and an Operational one must resolve every radius, caption
+        // size and elevation the same way.
+        for id in crate::theme::ThemeId::ALL {
+            let theme = Theme::for_id(id);
+            assert!(close(Radius::XSmall.px(&theme), 2.), "{id:?}");
+            assert!(close(Radius::Small.px(&theme), 4.), "{id:?}");
+            assert!(close(Radius::Medium.px(&theme), 5.), "{id:?}");
+            assert!(close(Radius::Large.px(&theme), 6.), "{id:?}");
+            assert!(close(Radius::XLarge.px(&theme), 8.), "{id:?}");
+            assert!(close(Radius::XXLarge.px(&theme), 10.), "{id:?}");
+            assert!(close(Radius::XXXLarge.px(&theme), 12.), "{id:?}");
+            assert!(close(TextSize::XSmall.px(&theme), 11.), "{id:?}");
+            assert_eq!(
+                ElevationIndex::ElevatedSurface.shadow(&theme).len(),
+                1,
+                "{id:?}: one restrained popover layer"
+            );
+            assert_eq!(
+                ElevationIndex::ModalSurface.shadow(&theme).len(),
+                1,
+                "{id:?}: one restrained modal layer"
+            );
+            for layer in [
+                ElevationIndex::Background,
+                ElevationIndex::Surface,
+                ElevationIndex::EditorSurface,
+            ] {
+                assert!(layer.shadow(&theme).is_empty(), "{id:?}: {layer:?}");
             }
         }
     }
@@ -1490,7 +1691,7 @@ mod tests {
     }
 
     #[test]
-    fn elevation_shadows_match_zed() {
+    fn elevation_shadows_are_restrained() {
         let dark = Theme::dark();
         let light = Theme::light();
         for index in [
@@ -1500,22 +1701,25 @@ mod tests {
         ] {
             assert!(index.shadow(&dark).is_empty(), "{index:?} casts no shadow");
         }
-        let elevated = ElevationIndex::ElevatedSurface.shadow(&dark);
-        assert_eq!(elevated.len(), 2);
-        assert_eq!(elevated[0].offset, point(px(0.), px(2.)));
-        assert_eq!(elevated[0].blur_radius, px(3.));
-        assert_eq!(elevated[1].blur_radius, px(0.));
-        assert!((elevated[1].color.a - 0.06).abs() < 1e-6);
-        let elevated_light = ElevationIndex::ElevatedSurface.shadow(&light);
-        assert!((elevated_light[1].color.a - 0.03).abs() < 1e-6);
+        for theme in [dark, light] {
+            let elevated = ElevationIndex::ElevatedSurface.shadow(&theme);
+            assert_eq!(elevated.len(), 1, "one hairline-shaped popover layer");
+            assert_eq!(elevated[0].offset, point(px(0.), px(1.)));
+            assert_eq!(elevated[0].blur_radius, px(2.));
 
-        let modal = ElevationIndex::ModalSurface.shadow(&dark);
-        assert_eq!(modal.len(), 4);
-        assert_eq!(modal[2].offset, point(px(0.), px(6.)));
-        assert_eq!(modal[2].blur_radius, px(12.));
-        for shadow in elevated.iter().chain(&modal) {
-            assert_eq!(shadow.spread_radius, px(0.));
-            assert_eq!(shadow.offset.x, px(0.));
+            let modal = ElevationIndex::ModalSurface.shadow(&theme);
+            assert_eq!(modal.len(), 1, "one restrained modal layer");
+            assert_eq!(modal[0].offset, point(px(0.), px(2.)));
+            assert_eq!(modal[0].blur_radius, px(6.));
+
+            for shadow in elevated.iter().chain(&modal) {
+                assert_eq!(shadow.spread_radius, px(0.));
+                assert_eq!(shadow.offset.x, px(0.));
+                assert!(
+                    shadow.color.a <= 0.2,
+                    "a floating surface is defined by its hairline first"
+                );
+            }
         }
     }
 
@@ -1542,5 +1746,156 @@ mod tests {
             AnimationDuration::Slow.duration(),
             Duration::from_millis(300)
         );
+    }
+
+    #[test]
+    fn motion_roles_fill_the_spec_bands() {
+        let ms = |motion: Motion| motion.nominal().as_millis() as u64;
+        // DESIGN.md §Motion System: instant 0–80, interaction 120–160,
+        // layout 160–220, travel 220–320. The bands are a contract, not a
+        // suggestion.
+        assert!((0..=80).contains(&ms(Motion::Instant)));
+        assert!((120..=160).contains(&ms(Motion::Interaction)));
+        assert!((160..=220).contains(&ms(Motion::Layout)));
+        assert!((220..=320).contains(&ms(Motion::Travel)));
+        assert!(ms(Motion::Instant) < ms(Motion::Interaction));
+        assert!(ms(Motion::Interaction) < ms(Motion::Layout));
+        assert!(ms(Motion::Layout) < ms(Motion::Travel));
+    }
+
+    #[test]
+    fn motion_collapses_to_nothing_under_reduce_motion() {
+        let mut theme = Theme::dark();
+        for motion in Motion::ALL {
+            assert_eq!(motion.duration(&theme), motion.nominal());
+        }
+        theme.ui.motion = crate::theme::MotionPreference::Reduced;
+        for motion in Motion::ALL {
+            assert_eq!(motion.duration(&theme), Duration::ZERO, "{motion:?}");
+        }
+    }
+
+    /// `System` follows the OS on its own: a user whose system asks for reduced
+    /// motion gets instant transitions without touching Orbit's setting.
+    #[test]
+    fn the_os_reduce_motion_preference_is_honoured() {
+        let mut theme = Theme::dark();
+        theme.ui.motion = crate::theme::MotionPreference::System;
+        crate::theme::set_os_reduce_motion_for_test(true);
+        assert!(theme.reduce_motion(), "the OS asks for it");
+        assert_eq!(Motion::Interaction.duration(&theme), Duration::ZERO);
+
+        crate::theme::set_os_reduce_motion_for_test(false);
+        assert!(!theme.reduce_motion());
+        assert_eq!(
+            Motion::Interaction.duration(&theme),
+            Motion::Interaction.nominal()
+        );
+    }
+
+    #[test]
+    fn motion_roles_ease_from_zero_to_one_without_overshoot() {
+        for motion in Motion::ALL {
+            let easing = motion.easing();
+            assert!(close_px(easing(0.), 0.), "{motion:?} starts at 0");
+            assert!(close_px(easing(1.), 1.), "{motion:?} ends at 1");
+            // A decelerating curve never travels backwards, and Orbit does not
+            // bounce — a value outside the interval would be either.
+            for step in 1..100 {
+                let t = step as f32 / 100.;
+                let eased = easing(t);
+                assert!(
+                    (0. ..=1.).contains(&eased),
+                    "{motion:?} left the unit interval at {t}: {eased}"
+                );
+            }
+        }
+    }
+
+    fn close_px(a: f32, b: f32) -> bool {
+        (a - b).abs() < 0.0001
+    }
+
+    #[test]
+    fn interaction_states_never_collide() {
+        // Hover, pressed and selected are three different answers. A palette
+        // that collapsed any two would make a hovered row and a pressed row
+        // indistinguishable, which is exactly the bug the state table exists
+        // to prevent — so the check runs over every shipped palette, not just
+        // the default one.
+        for id in crate::theme::ThemeId::ALL {
+            let theme = Theme::for_id(id);
+            let hover = InteractionState::Hover.fill(&theme).expect("hover fills");
+            let pressed = InteractionState::Pressed
+                .fill(&theme)
+                .expect("pressed fills");
+            let selected = InteractionState::Selected
+                .fill(&theme)
+                .expect("selected fills");
+            assert_ne!(hover, pressed, "{id:?}: hover and pressed are one colour");
+            assert_ne!(selected, hover, "{id:?}: selected and hover are one colour");
+            assert_ne!(
+                selected, pressed,
+                "{id:?}: selected and pressed are one colour"
+            );
+        }
+    }
+
+    #[test]
+    fn only_focus_paints_the_ring_and_only_disabled_paints_the_hairline() {
+        let theme = Theme::dark();
+        assert_eq!(
+            InteractionState::Focused.border(&theme),
+            Some(theme.focus_ring)
+        );
+        assert_eq!(
+            InteractionState::Disabled.border(&theme),
+            Some(theme.border_subtle)
+        );
+        for state in [
+            InteractionState::Rest,
+            InteractionState::Hover,
+            InteractionState::Pressed,
+            InteractionState::Selected,
+        ] {
+            assert_eq!(state.border(&theme), None, "{state:?} draws no frame");
+        }
+        for state in [InteractionState::Rest, InteractionState::Focused] {
+            assert_eq!(state.fill(&theme), None, "{state:?} paints no fill");
+        }
+        assert_eq!(FOCUS_RING_WIDTH, BORDER_WIDTH);
+    }
+
+    #[test]
+    fn disabled_and_selected_ink_are_their_own_roles() {
+        for theme in [Theme::dark(), Theme::light()] {
+            assert_eq!(
+                InteractionState::Disabled.row_ink(&theme),
+                theme.text_disabled
+            );
+            assert_eq!(
+                InteractionState::Disabled.control_ink(&theme),
+                theme.text_disabled
+            );
+            assert_eq!(
+                InteractionState::Selected.row_ink(&theme),
+                theme.selection_fg
+            );
+            assert_eq!(
+                InteractionState::Selected.control_ink(&theme),
+                theme.selection_fg
+            );
+            // A control rests at primary ink; a row rests at secondary, so a
+            // row's hover lift is visible against its own rest state.
+            assert_eq!(
+                InteractionState::Rest.control_ink(&theme),
+                theme.text_primary
+            );
+            assert_eq!(InteractionState::Rest.row_ink(&theme), theme.text_secondary);
+            assert_ne!(
+                InteractionState::Hover.row_ink(&theme),
+                InteractionState::Rest.row_ink(&theme)
+            );
+        }
     }
 }

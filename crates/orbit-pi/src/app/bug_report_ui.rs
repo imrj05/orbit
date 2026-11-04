@@ -226,7 +226,7 @@ impl OrbitApp {
                 seg.bg(theme.surface_elevated)
                     .text_color(theme.text_secondary)
                     .border_color(theme.border)
-                    .hover(|style| style.bg(theme.surface_hover))
+                    .hover_state(&theme)
             };
             row = row.child(
                 press(seg)
@@ -338,7 +338,7 @@ impl OrbitApp {
                         .border_color(theme.border)
                         .raised(theme.surface_elevated, &theme)
                         .cursor_pointer()
-                        .hover(|style| style.raised(theme.overlay, &theme))
+                        .hover_overlay(&theme)
                         .child(visual)
                         .child(
                             div()

@@ -282,7 +282,6 @@ function Control({
     <button
       type="button"
       aria-label={label}
-      title={label}
       onClick={onClick}
       disabled={disabled}
       className={`inline-flex size-9 items-center justify-center rounded-full bg-black/75 text-white/90 transition-colors hover:bg-black/85 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 disabled:pointer-events-none disabled:opacity-35 ${className}`}

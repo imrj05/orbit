@@ -96,16 +96,16 @@ impl OrbitApp {
             .raised(theme.surface_elevated, &theme)
             .when(self.git_accounts_loading, |button| button.opacity(0.6))
             .when(!self.git_accounts_loading, |button| {
-                button
-                    .cursor_pointer()
-                    .hover(|s| s.raised(theme.surface_hover, &theme))
-                    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                button.cursor_pointer().hover_state(&theme).on_mouse_up(
+                    MouseButton::Left,
+                    move |_, _, cx| {
                         this.update(cx, |app, cx| {
                             if !app.git_accounts_loading {
                                 app.refresh_git_accounts_for_workspace(cx);
                             }
                         });
-                    })
+                    },
+                )
             })
             .child(refresh_glyph(
                 "git-accounts-refresh-spin",
@@ -185,12 +185,12 @@ impl OrbitApp {
             .raised(theme.surface_elevated, &theme)
             .when(checking, |button| button.opacity(0.6))
             .when(!checking, |button| {
-                button
-                    .cursor_pointer()
-                    .hover(|s| s.raised(theme.surface_hover, &theme))
-                    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                button.cursor_pointer().hover_state(&theme).on_mouse_up(
+                    MouseButton::Left,
+                    move |_, _, cx| {
                         this.update(cx, |app, cx| app.check_gh_release(cx));
-                    })
+                    },
+                )
             })
             .text_color(theme.text_secondary)
             .child(tr!("git_accounts.update_check"))

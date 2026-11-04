@@ -776,7 +776,7 @@ mod tests {
             };
             cx.set_global(prefs);
             let ui = super::super::UiPrefs {
-                reduce_motion: true,
+                motion: crate::theme::MotionPreference::Reduced,
                 ..super::super::UiPrefs::default()
             };
             cx.set_global(Theme::for_id(ThemeId::Flexoki).with_ui(ui));

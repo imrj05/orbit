@@ -8,7 +8,10 @@
 use gpui::{div, prelude::*, px, AnyElement, ClickEvent, FontWeight, Hsla, Window};
 
 use crate::app::helpers::empty_state_glyph;
-use crate::app::{button_frame, icon, icon_button_frame, press, BUTTON_GROUP};
+use crate::app::{
+    button_frame, icon, icon_button_frame, press, ControlExt, PressedRamp, StatefulControlExt,
+    BUTTON_GROUP,
+};
 use crate::git::RefKind;
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{ButtonSize, DynamicSpacing, IconSize, Radius, TextSize};
@@ -82,8 +85,8 @@ pub fn action_button(
             .raised(theme.action, &theme)
             .text_color(theme.action_fg)
             .cursor_pointer()
-            .hover(|s| s.raised(theme.action_hover, &theme))
-            .active(|s| s.raised(theme.action_pressed, &theme))
+            .hover_action(&theme)
+            .pressed_state(&theme, PressedRamp::Action)
             .on_click(listener);
     } else {
         button = press(button)
@@ -92,10 +95,7 @@ pub fn action_button(
             .raised(theme.surface_elevated, &theme)
             .text_color(theme.text_primary)
             .cursor_pointer()
-            .hover(|s| {
-                s.raised(theme.surface_hover, &theme)
-                    .border_color(theme.border_strong)
-            })
+            .hover_bordered(&theme)
             .on_click(listener);
     }
     if let Some(leading) = leading {
@@ -123,7 +123,7 @@ pub fn row_button(
         )
         .group(BUTTON_GROUP)
         .cursor_pointer()
-        .hover(|s| s.bg(theme.surface_hover)),
+        .hover_state(&theme),
     )
     .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into())
     .on_click(move |event, window, cx| {
@@ -176,7 +176,7 @@ pub fn load_more(
             .border_color(theme.border)
             .cursor_pointer()
             .text_color(theme.text_secondary)
-            .hover(|s| s.bg(theme.surface_hover)),
+            .hover_state(&theme),
     )
     .on_click(listener)
     .child(if loading {

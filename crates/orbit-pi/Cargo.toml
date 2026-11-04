@@ -38,10 +38,16 @@ gpui = { version = "0.2.2", default-features = false, features = [
 rust-i18n = "4.2"
 # Native open/folder dialogs (NSOpenPanel on macOS) for folder selection
 rfd = "0.15"
+# Offline Markdown-to-PDF rendering; the optional network feature stays off.
+markdown2pdf = { version = "1.6.2", default-features = false }
+# Private empty image root for rendering untrusted transcript Markdown.
+tempfile = "3"
 orbit-rpc = { path = "../orbit-rpc" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 unicode-segmentation = "1"
+# Parse CSS colour literals displayed in assistant responses.
+csscolorparser = { version = "0.9", default-features = false, features = ["std"] }
 include_dir = "0.7"
 # The Explorer's workspace walker. Ripgrep's recursive walker already exists
 # transitively (via `notify`/`globset`), so naming it adds no new package; it
@@ -102,6 +108,7 @@ crossbeam-channel = "0.5.17"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std",
+    "NSAccessibility",
     "NSApplication",
     "NSBitmapImageRep",
     # Rasterizing a detected app's icon into a bitmap rep of the exact pixel
@@ -162,6 +169,8 @@ libc = "0.2"
 # needs the window's native handle. Already in the graph through gpui, so this
 # adds no package — it only names the version gpui itself uses.
 [target.'cfg(windows)'.dependencies]
+# Start Git suspended in a job object so cancellation also stops transports.
+process-wrap = { version = "10.0.1", default-features = false, features = ["std", "job-object"] }
 raw-window-handle = "0.6"
 # Enumerate installed editors/terminals and extract their icons for the
 # header's "open in" menu. Already in the graph through gpui, so this adds no
@@ -184,6 +193,8 @@ windows-sys = { version = "0.61", features = [
 embed-resource = "3"
 
 [dev-dependencies]
+lopdf = { version = "0.44", default-features = false }
+rustybuzz = "0.20"
 gpui = { version = "0.2.2", default-features = false, features = [
     "font-kit",
     "runtime_shaders",

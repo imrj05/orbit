@@ -24,6 +24,8 @@ import {
   OPTION_ALLOW_ONCE,
   OPTION_ALWAYS_ALLOW,
   addToAllowlist,
+  ceilingAllows,
+  ceilingBlockReason,
   confirmOptions,
   decide,
   formatTitle,
@@ -55,6 +57,16 @@ export default function activate(pi) {
   pi.on("tool_call", async (event, ctx) => {
     const mode = readMode();
     const tool = String(event.toolName ?? "");
+
+    // A child session carries the ceiling its agent's tool list implies. This
+    // runs before any prompt: a tier is not something the user can approve
+    // away, and a json-mode child has nobody to ask anyway.
+    const ceiling = process.env.ORBIT_SUBAGENT_CEILING;
+    if (ceiling && !ceilingAllows(ceiling, tool)) {
+      const agent = process.env.ORBIT_SUBAGENT_AGENT ?? "";
+      return { block: true, reason: ceilingBlockReason(ceiling, tool, agent) };
+    }
+
     if (decide(mode, tool, readAllowlist(mode)) === "allow") return;
 
     // No UI (print / json mode): there is no way to ask, so deny rather than

@@ -7,6 +7,187 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Subagents.** The agent can delegate a scoped task to a child `pi` process
+  with its own context window and get back a short report plus its cost, instead
+  of spending the session's context on the reading. One tool, three shapes —
+  single, chain with `{previous}`, and parallel — bounded at 8 tasks per run,
+  4 concurrent, 24 per session and depth 1. Agents are markdown files in
+  `~/.pi/agent/agents/` (the path `pi-subagents` reads); `scout`, `worker` and
+  `reviewer` ship built in. A child inherits the session's access and workflow
+  modes and is clamped to the ceiling its declared tools imply, so a read-only
+  agent cannot edit even under Full access. A delegation the session mode cannot
+  finish — a command-running agent under Supervised or Plan — is refused before
+  it spends anything. Abort kills the whole child process group; a child's cost
+  lands in the session usage meter. The transcript shows a delegation card —
+  each child's agent, capability, current step, tool count, elapsed time and
+  model, the run's cost, and the mode that blocked or refused a call; expanding
+  it reveals the child's real steps and the report it returned. The parent's
+  working line names what the child is doing, and the turn header counts
+  delegations. **Settings → Subagents** manages the library in-app: create,
+  duplicate, rename, disable, delete (with Undo) and reset an agent to its
+  shipped definition; edit its capability tier, workflow mode, model, thinking
+  level, description and prompt; and see the exact description block the model
+  will read. Saves touch only the five keys Orbit owns and refuse to clobber a
+  file edited elsewhere. Inspectable child transcripts are not built yet.
+
+- **Export a response or visible transcript as Markdown.** Each settled response's
+  footer offers a save action; the command palette can export the visible transcript.
+  Both open a native save dialog and exclude thinking, tool output, and image data.
+  The visible transcript can omit earlier history after compaction. Existing files
+  are never overwritten. GUI verification remains.
+
+- **"Work in" is one control, and it answers for every kind of place.** The
+  status bar's chip now reads `Local` at the repository's main checkout (it
+  used to appear only inside a worktree, so the composer could never enter one)
+  and offers the repository's worktrees, a new worktree, an existing worktree
+  folder on disk, a remote branch, a clone, recent folders, and any other folder.
+  The new-task page's folder field uses the same vocabulary, so a task can
+  start in a worktree without visiting the Worktrees page first. Choosing a different location
+  starts a task there; a running session is parked, and an idle session's
+  transcript remains on disk.
+
+- **Clone a repository from the working-folder picker.** Enter a URL and folder
+  name, choose a destination, and follow Git's progress or cancel. A successful
+  clone opens as a working folder and joins the sidebar; a failed or cancelled
+  clone is not opened, and Git may leave a partial directory. The new-task picker
+  offers cloning even outside a repository. The Windows job-object cancellation
+  path now runs on the Windows CI leg (`repository_clone::` tests); manual GUI
+  verification remains.
+
+- **Remote branches become local branches that track them.** Choosing a
+  remote-tracking ref used to run `git worktree add <path> origin/feat`, which
+  leaves a **detached** worktree with no branch to push. It now creates
+  `feat` (or `feat-2` when that name is taken) with `--track`, and the create
+  dialog says which branch it will create before you press Create.
+
+- **A worktree folder Git stopped listing can be reconnected.** A directory
+  that was moved by hand shows up as prunable, and the picker's
+  "Existing worktree…" row (and the Worktrees page's Advanced menu) can reconnect
+  the chosen directory with `git worktree repair` before opening it. A worktree
+  whose administrative metadata is gone is reported instead of opened.
+
+- **Rewind a conversation to an earlier message.** A user message's footer now
+  offers a rewind beside its copy action, and the palette's *Rewind to a
+  Message…* lists the same messages for the keyboard. pi forks: the branch up
+  to just before the chosen message is written to a **new** session file, so
+  the conversation you leave stays in the sidebar and nothing is destroyed. The
+  forked-from prompt is handed back to the composer to edit and resend. A run
+  in flight has to stop first, and an extension that cancels the fork leaves
+  everything untouched.
+
+- **Discover session shortcuts by holding ⌘ or Ctrl.** The first nine visible
+  sessions show their numbered keycaps while the modifier is held; the hints
+  follow the current sidebar order and disappear on release.
+
+- **The command palette advertises both of its shortcuts.** `⌘P` and `⌘K` have
+  always both opened it, but only `⌘P` was shown on Settings → Shortcuts.
+  Both chords now appear, so a user who learned `⌘K` is not told otherwise.
+
+### Changed
+
+- **A check reads the feed; downloading is your decision.** The updater used to
+  fetch and stage the whole artifact during the background check, so the footer
+  pill appeared only after 20–40 MB had already moved and clicking it went
+  straight to the swap. A check now stops after the feed and names the target
+  version beside the running one, with a **Changelog** link to the release page
+  and the notes already rendered, before any bytes are requested. **Download**
+  fetches, verifies, and stages with a real progress bar and a Cancel; when it
+  finishes the same card offers **Restart & Update**, which is what hands the
+  swap to the installer helper. The pill's glyph follows suit: a download arrow
+  while the release is only offered, a restart arrow once it is on disk. Two
+  consequences worth knowing: the modal's copy no longer promises that
+  downloading installs, and a silent launch check costs one small request
+  instead of a download.
+
+- **The `+N −N` chip opens the Git page's Changes tab.** The dirty-tree
+  counts now reveal the files they count instead of opening the Review dock;
+  the plain side-panel glyph still toggles Review.
+
+- **Labelled buttons no longer repeat their label on hover.** New Task, the
+  Git page tabs, a widened access-mode chip, and sidebar session titles drop
+  the tooltip that restated text already on screen; icon-only controls and
+  truncated previews keep theirs. Session rows now show their shortcut hint
+  on hover instead of a title tooltip.
+
+- **Composer delivery hints use keycaps.** Queue and Steer show the same
+  platform-aware keyboard styling as the sidebar while keeping the shortcuts
+  matched to the selected Enter behavior.
+
+- **Settings is easier to scan and use.** Navigation rows keep their full
+  height in short windows, page and section headings have clearer hierarchy,
+  descriptions use the regular UI text size, and select controls match the
+  app's 32px buttons. The selected navigation row uses a neutral surface.
+
+- **Session search shows the command palette shortcut.** Compact keycaps in
+  the empty sidebar input show ⌘P / Ctrl+P for the separate command palette.
+  The footer Search icon is removed. ⌘⇧F / Ctrl+Shift+F now focuses session
+  search, while ⌘P / ⌘K (Ctrl+P / Ctrl+K) open the command palette.
+
+- **Workspace icons fill more of their existing sidebar frames.** Project logos
+  and marks have less inner padding, and their frames use a neutral surface
+  instead of an accent tint. The frame size is unchanged.
+
+- **Windows installs and updates pi with pi's own installer.** Orbit used to
+  tell Windows users to run `npm install -g` itself and refused to migrate an
+  npm install there, on the belief that pi shipped no installer for the
+  platform. pi documents one — `powershell -c "irm https://pi.dev/install.ps1 | iex"`
+  — and it lays down the same pinned, self-updating managed install under
+  `%USERPROFILE%\.pi\agent\install`, so install, migration, and `pi update`
+  now work on Windows the way they already did on macOS and Linux. The setup
+  page's copyable hint follows the platform, and an npm global install on
+  Windows (whose `pi.cmd` shim sits beside `node_modules` rather than inside
+  it) is now recognised as an npm install instead of being reported as a
+  package manager Orbit will not touch.
+
+- **Typing in the command palette no longer rebuilds its rows.** Session,
+  command, settings, and MCP rows are built once when the palette opens and a
+  keystroke only filters and ranks them, instead of re-deriving every label
+  (and re-reading every session title) on each key. A row whose *name* matches
+  now outranks one that only matched a search keyword.
+
+### Fixed
+
+- **Settings dropdowns paint their options again.** Every select in Settings —
+  theme, font, model, retention, language — opened an empty panel: the option
+  list is `w_full` inside a popup that carried only a `min_w`, and a
+  percentage width inside an auto-width parent resolves to 0, so each row laid
+  out 8px *narrower than nothing*. The popup now sets an explicit width, and a
+  layout test checks the list and its rows keep a real width.
+
+- **Tests no longer add temporary projects to the real sidebar.** Workspace
+  preferences and the last-workspace file use isolated, self-cleaning test
+  directories instead of the user's Orbit files.
+
+- **Sidebar session search now filters the visible list.** Search results and
+  keyboard navigation use the same sessions, respect the archive filter, and
+  show each result's workspace. Clearing the search restores the list.
+
+- **The active sidebar session uses the hover surface.** Its background stays
+  neutral even with a custom accent; the border still marks the open session.
+  Other list rows use their palette's selected surface, while text selection
+  keeps its own highlight.
+
+- **Runtime settings show where pi actually is.** The page listed the pi
+  *package root* — a `node_modules/@earendil-works/pi-coding-agent` path deep
+  enough to take the whole row — and because a control never shrinks it
+  squeezed "Package root" into one letter per line. The deep path now rides
+  the RPC-patches row as a home-shortened, truncating detail line, and the
+  binary row keeps naming the launcher Orbit spawns, which is what `which pi`
+  prints.
+
+- **Dismissing the command palette returns focus to whatever opened it.** It
+  always went to the composer, so opening it from the sessions sidebar and
+  pressing Escape dropped the keyboard into the wrong surface; running a row
+  left the window with no focused element at all, so typing did nothing until
+  the next click.
+
+- **`⌘P` / `⌘K` are no longer swallowed just after a menu closes.** The 200 ms
+  guard that stops a dismissing click from immediately re-opening a popover was
+  applied to the keyboard path too, so a shortcut pressed right after closing a
+  chip or a row menu silently did nothing.
+
 ## [0.2.15] - 2026-11-01
 
 ### Added

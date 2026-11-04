@@ -172,8 +172,8 @@ impl OrbitApp {
             .border_color(theme.border)
             .raised(theme.surface_elevated, &theme)
             .cursor_pointer()
-            .hover(|style| style.raised(theme.surface_hover, &theme))
-            .active(|style| style.raised(theme.surface_active, &theme))
+            .hover_state(&theme)
+            .pressed_state(&theme, PressedRamp::Wash)
             .text_color(theme.text_secondary)
             .on_mouse_up(MouseButton::Left, move |_, _, _| {
                 let target = crate::temp_files::ensure_dir().unwrap_or_else(|_| dir.clone());
@@ -189,8 +189,8 @@ impl OrbitApp {
             .border_color(theme.border)
             .raised(theme.surface_elevated, &theme)
             .cursor_pointer()
-            .hover(|style| style.raised(theme.surface_hover, &theme))
-            .active(|style| style.raised(theme.surface_active, &theme))
+            .hover_state(&theme)
+            .pressed_state(&theme, PressedRamp::Wash)
             .text_color(theme.text_secondary)
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                 this.update(cx, |app, cx| app.clean_temp_files(cx));
@@ -267,8 +267,8 @@ impl OrbitApp {
             .border_color(theme.border)
             .raised(theme.surface_elevated, &theme)
             .cursor_pointer()
-            .hover(|style| style.raised(theme.surface_hover, &theme))
-            .active(|style| style.raised(theme.surface_active, &theme))
+            .hover_state(&theme)
+            .pressed_state(&theme, PressedRamp::Wash)
             .text_color(theme.text_secondary)
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                 this.update(cx, |app, cx| app.clean_ai_temp_files(cx));

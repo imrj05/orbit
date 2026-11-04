@@ -88,15 +88,16 @@ impl SendMode {
     }
 }
 
-/// Resolve labels at paint time so language and preference changes are live.
-pub fn shortcut_hints(default: SendMode, running: bool) -> Vec<(String, String)> {
+/// Canonical chords and localized labels, resolved for the current send mode.
+/// Callers render the chords for the current platform.
+pub fn shortcut_hints(default: SendMode, running: bool) -> Vec<(&'static str, String)> {
     if running {
         [default, default.opposite()]
             .into_iter()
-            .map(|mode| (mode.shortcut_label(default), mode.hint_label()))
+            .map(|mode| (mode.shortcut(default), mode.hint_label()))
             .collect()
     } else {
-        vec![(keys::label(keys::SEND), tr!("composer.send"))]
+        vec![(keys::SEND, tr!("composer.send"))]
     }
 }
 
@@ -162,10 +163,7 @@ mod tests {
         ] {
             assert_eq!(
                 shortcut_hints(default, true),
-                vec![
-                    (keys::label(keys::SEND), primary),
-                    (keys::label(keys::SEND_ALTERNATE), alternate)
-                ]
+                vec![(keys::SEND, primary), (keys::SEND_ALTERNATE, alternate)]
             );
         }
     }
@@ -516,7 +514,7 @@ mod tests {
         for default in [SendMode::FollowUp, SendMode::Steer] {
             assert_eq!(
                 shortcut_hints(default, false),
-                vec![(keys::label(keys::SEND), tr!("composer.send"))]
+                vec![(keys::SEND, tr!("composer.send"))]
             );
         }
     }

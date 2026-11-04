@@ -16,6 +16,8 @@ import {
   MODES,
   addToAllowlist,
   allowlistPath,
+  ceilingAllows,
+  ceilingBlockReason,
   classify,
   confirmOptions,
   decide,
@@ -178,4 +180,54 @@ test("path helpers point under ~/.orbit-pi", () => {
   } finally {
     process.env.HOME = prev;
   }
+});
+
+test("the delegation tool is its own kind and is always allowed", () => {
+  assert.equal(classify("subagent"), "delegate");
+  assert.equal(classify("SUBAGENT"), "delegate");
+  for (const mode of MODES) {
+    assert.equal(decide(mode, "subagent"), "allow", mode);
+  }
+  // It is never grantable: there is no prompt to offer it from.
+  assert.equal(grantable("subagent"), false);
+});
+
+test("a child's ceiling clamps what it may run", () => {
+  // read blocks edit, exec and anything unrecognised
+  assert.ok(ceilingAllows("read", "read"));
+  assert.ok(ceilingAllows("read", "grep"));
+  assert.ok(!ceilingAllows("read", "edit"));
+  assert.ok(!ceilingAllows("read", "bash"));
+  assert.ok(!ceilingAllows("read", "mcp__github__create_issue"));
+  assert.ok(!ceilingAllows("read", "some_extension_tool"));
+  assert.ok(!ceilingAllows("read", "subagent"));
+
+  // edit blocks exec and above
+  assert.ok(ceilingAllows("edit", "read"));
+  assert.ok(ceilingAllows("edit", "write"));
+  assert.ok(!ceilingAllows("edit", "bash"));
+  assert.ok(!ceilingAllows("edit", "mcp__x"));
+
+  // exec blocks MCP / custom tools, which need `all`
+  assert.ok(ceilingAllows("exec", "bash"));
+  assert.ok(ceilingAllows("exec", "powershell"));
+  assert.ok(!ceilingAllows("exec", "mcp__x"));
+  assert.ok(!ceilingAllows("exec", "some_extension_tool"));
+
+  // all is unrestricted
+  assert.ok(ceilingAllows("all", "mcp__x"));
+  assert.ok(ceilingAllows("all", "some_extension_tool"));
+  assert.ok(ceilingAllows("all", "subagent"));
+});
+
+test("no ceiling behaves exactly as before", () => {
+  assert.ok(ceilingAllows(undefined, "bash"));
+  assert.ok(ceilingAllows(null, "mcp__x"));
+  assert.ok(ceilingAllows("bogus", "bash"));
+});
+
+test("a ceiling block names the agent and the tool", () => {
+  assert.match(ceilingBlockReason("read", "bash", "scout"), /Subagent scout is read-only and cannot use bash/);
+  assert.match(ceilingBlockReason("edit", "bash", "worker"), /may edit files but cannot use bash/);
+  assert.match(ceilingBlockReason("exec", "mcp__x", "worker"), /may run commands but may not use mcp__x/);
 });

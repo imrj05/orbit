@@ -112,7 +112,7 @@ impl OrbitApp {
         }
         self.open_in_menu_open = !self.open_in_menu_open;
         if self.open_in_menu_open {
-            self.work_in_menu_open = false;
+            self.dismiss_work_in_menu();
             self.open_in_filter
                 .update(cx, |filter, cx| filter.clear(cx));
             let handle = self.open_in_filter.read(cx).focus_handle(cx);
@@ -145,7 +145,7 @@ impl OrbitApp {
             .rounded_tl(header_ctrl_radius(&theme))
             .rounded_bl(header_ctrl_radius(&theme))
             .cursor_pointer()
-            .active(|s| s.bg(theme.surface_active).text_color(theme.text_primary))
+            .pressed_state(&theme, PressedRamp::Wash)
             .child(
                 img(ImageSource::Image(preferred_icon))
                     .size(APP_ICON.px(&theme))
@@ -240,7 +240,7 @@ impl OrbitApp {
                 .flex_none()
                 .cursor_pointer()
                 .when(selected, |row| row.bg(theme.surface_selected))
-                .hover(|style| style.bg(theme.surface_hover))
+                .hover_state(&theme)
                 .child(
                     img(ImageSource::Image(app_icon))
                         .size(APP_ICON.px(&theme))
@@ -319,14 +319,11 @@ impl OrbitApp {
                 .bottom_0()
                 .right_0()
                 .size(px(0.))
-                .child(
-                    anchored()
-                        .position_mode(AnchoredPositionMode::Local)
-                        .anchor(Corner::TopRight)
-                        .offset(point(px(0.), popover::MENU_OFFSET))
-                        .snap_to_window_with_margin(popover::WINDOW_MARGIN)
-                        .child(deferred(popup)),
-                )
+                .child(anchored_popover(
+                    Corner::TopRight,
+                    point(px(0.), popover::MENU_OFFSET),
+                    popup, "anchored_popover-in-10", &theme,
+                ))
                 .into_any_element(),
         )
     }

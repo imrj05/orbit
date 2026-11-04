@@ -27,7 +27,7 @@ export default async function WorktreesPage({
       locale={locale}
       current="/docs/worktrees"
       title="Worktrees"
-      intro="A Git worktree is a second working directory backed by the same repository, checked out to its own branch. Orbit treats one as a first-class workspace, so two branches can run side by side with two agents."
+      intro="A Git worktree is a second working directory backed by the same repository, checked out to its own branch. Orbit treats each one as a first-class workspace for sessions on different branches."
     >
       <h2>What a worktree is</h2>
       <p>
@@ -38,7 +38,7 @@ export default async function WorktreesPage({
       </p>
 
       <h2>Names, branches, and paths</h2>
-      <p>Orbit keeps three identities separate and never derives one from another:</p>
+      <p>Orbit keeps three identities separate:</p>
       <pre>{`name    113
 branch  feature/issue-113
 path    ~/Projects/my-project/.wt/113`}</pre>
@@ -51,20 +51,22 @@ path    ~/Projects/my-project/.wt/113`}</pre>
           The <strong>branch</strong> is the Git branch checked out there.
         </li>
         <li>
-          The <strong>path</strong> is always <code>&lt;worktree root&gt;/&lt;name&gt;</code>.
+          The <strong>path</strong> starts at{" "}
+          <code>&lt;worktree root&gt;/&lt;name&gt;</code> and can be moved later.
         </li>
       </ul>
 
       <h2>Creating one</h2>
       <ol>
         <li>
-          Open the <strong>Worktrees</strong> page — from the command palette, or
-          from the status bar&apos;s <strong>Work in</strong> chip.
+          Open the <strong>Worktrees</strong> page from the command palette or
+          the workspace menu, or choose <strong>New worktree</strong> from the
+          status bar&apos;s <strong>Work in</strong> picker.
         </li>
         <li>
-          Choose <strong>New worktree</strong>, then enter a name and pick an
-          existing branch or create a new one. A new branch defaults to a slug
-          of the name.
+          In the create dialog, enter a name and pick an existing branch or
+          create a new one. A new branch defaults to a slug of the name; both
+          are editable. A remote-tracking ref creates a local tracking branch.
         </li>
         <li>
           Create it. Orbit runs <code>git worktree add</code> and, by default,
@@ -140,11 +142,23 @@ ORBIT_WORKTREE_PATH=/Users/you/project/.wt/113`}</pre>
 
       <h2>Switching workspaces</h2>
       <p>
-        The status bar&apos;s <strong>Work in</strong> chip switches the active
-        workspace between <strong>Local</strong> (the main checkout) and any
-        linked worktree, and offers a quick create for a new one. Because a
-        worktree is just a workspace path, sessions opened while it is active are
-        rooted there and appear under its own project in the sidebar.
+        In a repository, the status bar&apos;s <strong>Work in</strong> chip
+        offers <strong>Local</strong> (the main checkout), linked worktrees,
+        recent folders, and actions to create or reconnect a worktree, work from
+        a remote branch, clone a repository, or choose another folder. Choosing
+        a different location starts a task there: a running session is parked,
+        and an idle session&apos;s transcript remains on disk. The new-task
+        page offers the same choices; its remote branch action opens the create
+        dialog. Outside a repository, the status bar shows a folder chip, while
+        the new-task picker still offers cloning and folder selection.
+      </p>
+      <p>
+        Cloning asks for a URL, a folder name, and a destination directory. Git
+        runs in the background with progress and cancellation. A successful
+        clone opens as a working folder and appears in the sidebar; a failed or
+        cancelled clone is not opened, though Git may leave a partial directory.
+        The Windows job-object cancellation path runs on the Windows CI leg;
+        manual GUI verification remains.
       </p>
     </DocsPage>
   );
