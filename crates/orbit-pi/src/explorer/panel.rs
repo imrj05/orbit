@@ -24,9 +24,9 @@ use super::tree::{self, Row, StatusBadge, TreeIndex};
 use super::walk;
 use crate::app::{
     anchored_popover_at, button_frame, context_menu_entry, context_menu_separator,
-    context_menu_surface, empty_state, file_badge, file_glyph, icon, icon_button_frame,
-    nerd_font_family, picker_search_frame, press, refresh_glyph, AccentWash, ControlExt, EmptyFill,
-    TipExt, BUTTON_GROUP,
+    context_menu_surface, disclosure_chevron, empty_state, file_badge, file_glyph, icon,
+    icon_button_frame, nerd_font_family, picker_search_frame, press, refresh_glyph, AccentWash,
+    ControlExt, EmptyFill, TipExt, BUTTON_GROUP,
 };
 use crate::composer::ComposerInput;
 use crate::git;
@@ -1126,14 +1126,14 @@ impl ProjectPanel {
 
         if row.is_dir() {
             content = content
-                .child(icon(
-                    if row.expanded() {
-                        "icons/chevron-down.svg"
-                    } else {
-                        "icons/chevron-right.svg"
-                    },
+                // One glyph turning a quarter turn, not two glyphs swapping —
+                // the row is the same object between the two states.
+                .child(disclosure_chevron(
+                    format!("explorer-caret-{}", row.path),
+                    row.expanded(),
                     IconSize::Indicator.px(&theme),
                     icon_color,
+                    &theme,
                 ))
                 .child(icon(
                     "icons/folder.svg",
@@ -1411,7 +1411,7 @@ impl ProjectPanel {
             // above/left when it would overflow the window — the default
             // `SwitchAnchor` fit mode. Previously it was pinned to the panel's
             // top-left regardless of where the row was clicked.
-            anchored_popover_at(menu.position, popup),
+            anchored_popover_at(menu.position, popup, "anchored_popover_at-in-17", &theme),
         )
     }
 

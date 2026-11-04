@@ -20,7 +20,9 @@ struct PickerProbe {
 
 impl Render for PickerProbe {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let popup = self.app.update(cx, |app, _cx| app.workspace_picker_popup());
+        let popup = self.app.update(cx, |app, _cx| {
+            app.workspace_picker_popup(&crate::theme::Theme::dark())
+        });
         div().w(px(420.)).h(px(640.)).children(popup)
     }
 }

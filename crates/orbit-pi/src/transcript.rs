@@ -371,6 +371,11 @@ pub struct ToolCall {
     /// Structured result facts (`details`) — surfaced at a glance on the
     /// card header instead of hiding inside the expanded output.
     pub facts: ToolFacts,
+    /// The result's full `details` payload, kept only when small enough to
+    /// hold (see [`DETAILS_MAX_BYTES`]). Bespoke cards — the subagent card
+    /// today — parse it; everything else ignores it and keeps showing
+    /// [`Self::facts`]. `None` for tools that send none.
+    pub details: Option<Value>,
 }
 
 impl ToolCall {
@@ -436,6 +441,7 @@ impl ToolCall {
             output: None,
             failed: false,
             facts: ToolFacts::default(),
+            details: None,
         }
     }
 }
@@ -702,11 +708,28 @@ pub(crate) fn image_from_block(block: &Value) -> Option<Arc<Image>> {
     Some(Arc::new(Image::from_bytes(format, bytes)))
 }
 
-/// Extract a tool result message: `(toolCallId, output, isError, facts)`.
+/// The largest `details` payload the transcript will hold. A card parses a
+/// bounded structure; a runaway payload is dropped rather than kept alive for
+/// the session's lifetime.
+const DETAILS_MAX_BYTES: usize = 128 * 1024;
+
+/// A result's `details`, kept only when it is present and within
+/// [`DETAILS_MAX_BYTES`]. Never invented: absent stays `None`.
+fn bounded_details(value: &Value) -> Option<Value> {
+    let details = value.get("details").filter(|details| !details.is_null())?;
+    match serde_json::to_vec(details) {
+        Ok(bytes) if bytes.len() <= DETAILS_MAX_BYTES => Some(details.clone()),
+        _ => None,
+    }
+}
+
+/// Extract a tool result message: `(toolCallId, output, isError, facts, details)`.
 /// pi sends `role: "toolResult"` messages — not chat rows; their output and
 /// structured `details` belong on the matching tool call (rendered on the
 /// activity card and inside its detail).
-fn tool_result_parts(value: &Value) -> Option<(String, Option<Value>, bool, ToolFacts)> {
+fn tool_result_parts(
+    value: &Value,
+) -> Option<(String, Option<Value>, bool, ToolFacts, Option<Value>)> {
     let value = value.get("message").unwrap_or(value);
     if value.get("role").and_then(Value::as_str) != Some("toolResult") {
         return None;
@@ -723,7 +746,8 @@ fn tool_result_parts(value: &Value) -> Option<(String, Option<Value>, bool, Tool
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let facts = ToolFacts::from_result(value);
-    Some((id, output, failed, facts))
+    let details = bounded_details(value);
+    Some((id, output, failed, facts, details))
 }
 
 /// Normalize a `tool_execution_*` result payload for display. pi wraps
@@ -791,6 +815,7 @@ fn attach_tool_output(
     output: Option<Value>,
     failed: bool,
     facts: ToolFacts,
+    details: Option<Value>,
 ) {
     for message in messages.iter_mut().rev() {
         let Some(tool) = message
@@ -807,6 +832,9 @@ fn attach_tool_output(
         }
         tool.failed = failed;
         tool.facts = facts;
+        if details.is_some() {
+            tool.details = details;
+        }
         return;
     }
 }
@@ -1490,8 +1518,8 @@ impl Transcript {
             for message in messages {
                 // Tool results are not chat rows — attach the output to the
                 // matching tool call (by id) and keep the transcript clean.
-                if let Some((id, output, failed, facts)) = tool_result_parts(message) {
-                    attach_tool_output(&mut parsed, &id, output, failed, facts);
+                if let Some((id, output, failed, facts, details)) = tool_result_parts(message) {
+                    attach_tool_output(&mut parsed, &id, output, failed, facts, details);
                     continue;
                 }
                 if let Some(parsed_message) = ChatMessage::from_value(message) {
@@ -2143,7 +2171,7 @@ impl Transcript {
     /// `tool_execution_start`; otherwise scan backwards through the loaded
     /// messages.
     fn attach_tool_result(&mut self, value: &Value) -> bool {
-        let Some((id, output, failed, facts)) = tool_result_parts(value) else {
+        let Some((id, output, failed, facts, details)) = tool_result_parts(value) else {
             return false;
         };
         let position = self.tool_positions.borrow().get(&id).copied();
@@ -2156,13 +2184,27 @@ impl Transcript {
                     .and_then(|step| step.tools.get_mut(tool_ix))
                 {
                     Some(tool) => {
-                        let before = (tool.output.clone(), tool.failed, tool.facts.clone());
+                        let before = (
+                            tool.output.clone(),
+                            tool.failed,
+                            tool.facts.clone(),
+                            tool.details.clone(),
+                        );
                         if tool.output.is_none() {
                             tool.output = output;
                         }
                         tool.failed = failed;
                         tool.facts = facts;
-                        before != (tool.output.clone(), tool.failed, tool.facts.clone())
+                        if details.is_some() {
+                            tool.details = details;
+                        }
+                        before
+                            != (
+                                tool.output.clone(),
+                                tool.failed,
+                                tool.facts.clone(),
+                                tool.details.clone(),
+                            )
                     }
                     None => false,
                 }
@@ -2183,13 +2225,27 @@ impl Transcript {
             else {
                 continue;
             };
-            let before = (tool.output.clone(), tool.failed, tool.facts.clone());
+            let before = (
+                tool.output.clone(),
+                tool.failed,
+                tool.facts.clone(),
+                tool.details.clone(),
+            );
             if tool.output.is_none() {
                 tool.output = output;
             }
             tool.failed = failed;
             tool.facts = facts;
-            return before != (tool.output.clone(), tool.failed, tool.facts.clone());
+            if details.is_some() {
+                tool.details = details;
+            }
+            return before
+                != (
+                    tool.output.clone(),
+                    tool.failed,
+                    tool.facts.clone(),
+                    tool.details.clone(),
+                );
         }
         false
     }
@@ -2218,14 +2274,26 @@ impl Transcript {
                     return false;
                 };
                 let result = value.get("result").or_else(|| value.get("partialResult"));
-                let before = (tool.output.clone(), tool.failed, tool.facts.clone());
+                let before = (
+                    tool.output.clone(),
+                    tool.failed,
+                    tool.facts.clone(),
+                    tool.details.clone(),
+                );
                 tool.facts = result.map(ToolFacts::from_result).unwrap_or_default();
                 tool.output = result.map(normalize_tool_result);
+                tool.details = result.and_then(bounded_details);
                 tool.failed = value
                     .get("isError")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
-                before != (tool.output.clone(), tool.failed, tool.facts.clone())
+                before
+                    != (
+                        tool.output.clone(),
+                        tool.failed,
+                        tool.facts.clone(),
+                        tool.details.clone(),
+                    )
             };
             if changed {
                 self.remeasure_row(mix);
@@ -2329,6 +2397,7 @@ impl Transcript {
         };
         let output = normalize_tool_result(partial);
         let facts = ToolFacts::from_result(partial);
+        let details = bounded_details(partial);
         let mut messages = self.messages.borrow_mut();
         let Some(message) = messages.get_mut(mix) else {
             return false;
@@ -2349,11 +2418,12 @@ impl Transcript {
         else {
             return false;
         };
-        if tool.output.as_ref() == Some(&output) && tool.facts == facts {
+        if tool.output.as_ref() == Some(&output) && tool.facts == facts && tool.details == details {
             return false;
         }
         tool.output = Some(output);
         tool.facts = facts;
+        tool.details = details;
         let detail_open = self.expanded_tools.borrow().contains(&(mix, flat_ix));
         drop(messages);
         if detail_open {
@@ -4922,6 +4992,108 @@ mod tests {
     }
 
     #[test]
+    fn tool_details_are_retained_on_end_and_on_partial() {
+        let mut transcript = Transcript::new();
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": ""}),
+        });
+        transcript.apply_event(&Event::ToolExecutionStart {
+            value: json!({"toolCallId": "t1", "toolName": "subagent", "args": {}}),
+        });
+        // A streaming partial carries the run state too — the card is live.
+        transcript.apply_event(&Event::ToolExecutionUpdate {
+            value: json!({
+                "toolCallId": "t1",
+                "toolName": "subagent",
+                "partialResult": {
+                    "content": [{"type": "text", "text": "1 of 1 running"}],
+                    "details": {"orbit": "subagent/1", "mode": "single", "children": []}
+                }
+            }),
+        });
+        {
+            let messages = transcript.messages.borrow();
+            let tool = messages[0].tools().next().unwrap();
+            let details = tool.details.as_ref().expect("details from the partial");
+            assert_eq!(
+                details.get("orbit").and_then(Value::as_str),
+                Some("subagent/1")
+            );
+        }
+        transcript.apply_event(&Event::ToolExecutionEnd {
+            value: json!({
+                "toolCallId": "t1",
+                "result": {
+                    "content": [{"type": "text", "text": "done"}],
+                    "details": {"orbit": "subagent/1", "mode": "single", "children": [{"agent": "scout"}]}
+                },
+                "isError": false
+            }),
+        });
+        let messages = transcript.messages.borrow();
+        let tool = messages[0].tools().next().unwrap();
+        let details = tool.details.as_ref().expect("details from the result");
+        assert_eq!(
+            details
+                .get("children")
+                .and_then(Value::as_array)
+                .and_then(|children| children.first())
+                .and_then(|child| child.get("agent"))
+                .and_then(Value::as_str),
+            Some("scout")
+        );
+        // The envelope's text still lands in `output`, not in `details`.
+        assert!(tool.output.is_some());
+    }
+
+    #[test]
+    fn oversize_tool_details_are_dropped() {
+        let mut transcript = Transcript::new();
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": ""}),
+        });
+        transcript.apply_event(&Event::ToolExecutionStart {
+            value: json!({"toolCallId": "t1", "toolName": "subagent", "args": {}}),
+        });
+        let big = "x".repeat(DETAILS_MAX_BYTES + 1024);
+        transcript.apply_event(&Event::ToolExecutionEnd {
+            value: json!({
+                "toolCallId": "t1",
+                "result": {
+                    "content": [{"type": "text", "text": "done"}],
+                    "details": {"orbit": "subagent/1", "blob": big}
+                },
+                "isError": false
+            }),
+        });
+        let messages = transcript.messages.borrow();
+        let tool = messages[0].tools().next().unwrap();
+        assert!(tool.details.is_none());
+        assert!(tool.output.is_some());
+    }
+
+    #[test]
+    fn absent_tool_details_stay_none() {
+        let mut transcript = Transcript::new();
+        transcript.apply_event(&Event::MessageStart {
+            value: json!({"role": "assistant", "content": ""}),
+        });
+        transcript.apply_event(&Event::ToolExecutionStart {
+            value: json!({"toolCallId": "t1", "toolName": "read", "args": {"path": "a"}}),
+        });
+        transcript.apply_event(&Event::ToolExecutionEnd {
+            value: json!({
+                "toolCallId": "t1",
+                "result": {"content": [{"type": "text", "text": "ok"}], "details": null},
+                "isError": false
+            }),
+        });
+        let messages = transcript.messages.borrow();
+        let tool = messages[0].tools().next().unwrap();
+        assert!(tool.details.is_none());
+    }
+
+    #[test]
     fn tool_execution_update_streams_accumulated_output() {
         let mut transcript = Transcript::new();
         transcript.apply_event(&Event::MessageStart {
@@ -5014,7 +5186,7 @@ mod tests {
         let output = messages[0].tools().next().unwrap().output.as_ref().unwrap();
         assert_eq!(output["content"], content);
         assert_eq!(tool_result_output(output), Some(json!("image read")));
-        let (_, snapshot, _, _) = tool_result_parts(&json!({
+        let (_, snapshot, _, _, _) = tool_result_parts(&json!({
             "role": "toolResult", "toolCallId": "image1", "content": content
         }))
         .unwrap();

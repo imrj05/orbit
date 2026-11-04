@@ -443,7 +443,15 @@ impl Render for Dialog {
             .id("dialog-layer")
             .debug_selector(|| "dialog-layer".to_string())
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_scrim_down))
-            .child(card)
+            // The layer's dialog entrance: fade on the Layout role. gpui has no
+            // box transform, so the card cannot scale — see DESIGN.md.
+            .child(crate::motion::enter(
+                card,
+                "dialog-card-in",
+                &theme,
+                crate::theme::tokens::Motion::Layout,
+                None,
+            ))
     }
 }
 

@@ -583,31 +583,17 @@ impl OrbitApp {
         theme: Theme,
         this: Entity<OrbitApp>,
     ) -> AnyElement {
-        let on = self.automatic_updates_enabled;
-        div()
-            .id("settings-automatic-updates")
-            .w(px(36.))
-            .h(px(20.))
-            .rounded_full()
-            .p(px(2.))
-            .border_1()
-            .border_color(theme.border)
-            .flex()
-            .items_center()
-            .cursor_pointer()
-            .when(on, |track| track.bg(theme.accent).justify_end())
-            .when(!on, |track| {
-                track.bg(theme.surface_elevated).justify_start()
-            })
-            .hover_border(&theme)
-            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+        switch(
+            "settings-automatic-updates",
+            self.automatic_updates_enabled,
+            &theme,
+            move |_, _, cx| {
                 this.update(cx, |app, cx| {
                     let next = !app.automatic_updates_enabled;
                     app.set_automatic_updates(next, cx);
                 });
-            })
-            .child(div().size(px(14.)).rounded_full().bg(theme.toggle_knob))
-            .into_any_element()
+            },
+        )
     }
 
     /// The settings update control shared by General and About: a check button
@@ -1026,7 +1012,13 @@ impl OrbitApp {
                         this.dismiss_update_dialog(window, cx)
                     }),
                 )
-                .child(card)
+                .child(crate::motion::enter(
+                    card,
+                    "update-dialog-in",
+                    &theme,
+                    crate::theme::tokens::Motion::Layout,
+                    None,
+                ))
                 .into_any_element(),
         )
     }

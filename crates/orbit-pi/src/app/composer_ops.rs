@@ -455,7 +455,7 @@ impl OrbitApp {
             anchored_popover(
                 Corner::BottomLeft,
                 point(px(0.), -popover::MENU_OFFSET),
-                popup,
+                popup, "anchored_popover-in-4", &theme,
             )
             .into_any_element(),
         )

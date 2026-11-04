@@ -220,8 +220,8 @@ does today, so this section never describes a surface that has not shipped.
 | Density over air: 28px rows, 13–14px body | `ButtonSize::Medium` 28px, `list_item` rows, `TextSize::Default` | Shipped |
 | Accent is identity, never a button fill | `accent` marks selection, focus, tints; primary fills read `action` | Shipped |
 | One type family, 400–600, no tracking | `TextSize` 10–16, weights 400/500/600 | Shipped |
-| Motion is fast and decelerating | `Motion::Instant` / `Interaction` / `Layout` | Tokens shipped; adoption is phase 3 |
-| Every interactive surface answers the same states | `interaction::InteractionState` | Vocabulary shipped; adoption is phase 2 |
+| Motion is fast and decelerating | `Motion` roles (`Instant` / `Interaction` / `Layout` / `Travel`) plus `motion::hover` · `control` · `state` · `enter` · `disclosure_chevron` · `switch` | Shipped in §Motion System; hover is adopted on four controls, and the per-site rollout is the remaining work |
+| Every interactive surface answers the same states | `interaction::InteractionState` resolves the colours; `motion::hover` fades them | Shipped; a surface still on `.hover_state()` swaps instead of fading |
 | Keyboard is a first-class path | Command registry + palette; every chip has a `command()` route | Shipped |
 
 Four things Orbit deliberately does **not** take from Linear:
@@ -973,26 +973,114 @@ Text fields and editors should follow platform expectations:
 
 Motion communicates state; it does not decorate the interface.
 
+Motion is layered. A surface never picks a duration — it picks a **role** — and every
+interaction the pointer or keyboard can produce answers through the **interaction
+layer** rather than with a colour swapped on a single frame. States defined without
+transitions read as reduced motion even when the setting is off, which is why the layer
+is a contract and not a polish pass.
+
+The roles ship today, and so do the primitives (`crates/orbit-pi/src/motion/`) and the
+three-way preference. The interaction layer that composes them lands surface by surface;
+`docs/design-system-audit.md` §10 records which surfaces have adopted it and which still
+render the instant swap.
+
 ### Roles
 
-A surface picks a **role**, never a number. The three roles are the only durations a
-one-shot transition may use, and they live in `theme::tokens::Motion`:
+The roles are the only durations a one-shot transition may use, and they live in
+`theme::tokens::Motion`:
 
-| Role | Duration | Band | Used for |
-| -- | --: | -- | -- |
-| `Instant` | 50ms | 0–80ms | Focus, simple visual feedback |
-| `Interaction` | 150ms | 120–160ms | Hover, selection, menu appearance |
-| `Layout` | 200ms | 160–220ms | Panel open/close, disclosure, contextual transitions |
+| Role | Duration | Band | Used for | Status |
+| -- | --: | -- | -- | -- |
+| `Instant` | 50ms | 0–80ms | Press acknowledgement, focus, simple visual feedback | Shipped |
+| `Interaction` | 150ms | 120–160ms | Hover, selection, menu appearance | Shipped |
+| `Layout` | 200ms | 160–220ms | Panel open/close, disclosure, contextual transitions | Shipped |
+| `Travel` | 260ms | 220–320ms | A card moving as a whole: popover travel, dialog entrance, composer dock, send morph | Shipped |
 
 `Instant` and `Interaction` are Zed's own values (`AnimationDuration::Instant` /
 `Fast`), so a surface ported from Zed keeps its cadence. `Layout` is Orbit's: Zed's
-`Slow` is 300ms, which reads as hesitation on a workbench panel.
+`Slow` is 300ms, which reads as hesitation on a workbench panel. `Travel` is Orbit's
+too: a card crossing 200px in 150ms reads as a teleport, and in 260ms it reads as
+travel.
 
 - **Easing is part of the role.** `Instant` is linear (it is feedback, not travel);
-  `Interaction` and `Layout` decelerate (ease-out quint). Nothing bounces, nothing
-  overshoots.
+  `Interaction`, `Layout`, and `Travel` decelerate (ease-out quint). Nothing bounces,
+  nothing overshoots.
 - **Streaming is not a role.** Content updates are driven by incoming state and must
   not introduce layout animation; nothing animates text position.
+- **`Travel` moves a card, never a row.** Hover, press, focus, and selection are
+  bounded by `Interaction`; only a floating surface, or a control that changes both
+  size and meaning, may travel.
+
+### The interaction layer
+
+Every interactive surface answers the same states through `app/helpers.rs`, and each
+answer is a transition rather than a frame swap. A component inherits them the way it
+inherits hover fills from `InteractionState`: it does not decide them again.
+
+| Interaction | Where it applies | Role | What moves | Reduce Motion |
+| -- | -- | -- | -- | -- |
+| Hover in | row, button, icon button, menu entry | `Interaction` | fill and ink crossfade out of the painted value | both swap at once |
+| Hover out | the same | `Interaction` | the same fade in reverse, from what is on screen | both swap |
+| Press | button, icon button, chip, segment | `Instant` | the pressed ramp; the toolkit offers no transform for a box, so a press cannot scale | the ramp still applies |
+| Release | the same | settle | back to rest, no overshoot | snap to rest |
+| Focus | field, row, card, dialog | `Instant` | the focus ring fades in; the control reserves that 1px border at rest so no layout moves | ring appears at once |
+| Selection | row, tab, segment | `Interaction` | selected wash and ink crossfade, on top of the hover's own fade (`motion::control` owns both) | swap |
+| Disclosure | chevron, expandable section | `Interaction` | the chevron turns a quarter turn (`helpers::disclosure_chevron`); the section's height is measured at the current width, then eased | rotation completes instantly, height snaps |
+| Switch | settings toggle (`helpers::switch`) | `Interaction` | the knob travels 18px (the track's inner span) and the track crossfades `surface_elevated` → `accent` | the knob jumps |
+| Menu / popover open | anchored card, context menu | `Interaction` + travel | fade plus an 8px travel out of the anchor edge, as one card; `anchored_popover_at` (a context menu at the pointer) fades only, because it has no edge | the card appears at once |
+| Dialog open | modal card | `Layout` | the card fades in over the scrim; it cannot scale for the reason below | the card appears at once |
+| Panel open / close | sidebar, side pane, explorer, terminal, Git | `Layout` / `Spring` | the panel's own width; chips on its edge ride the same curve | panels snap |
+| Send morph | composer submit | `Travel` (state) + `Interaction` (hover) | the square grows into a labelled button that names the action, and folds back to a square while a turn runs; width and label ride one transition | the end state is drawn immediately |
+
+Four rules hold across the table:
+
+- **One answer per interaction.** A hover is not instant in one surface and faded in
+  another. If a treatment exists, it is the treatment everywhere.
+- **Interruptible.** A reversal restarts from the last painted value, never from the
+  role's start. That is why a retargetable primitive carries a generation key: a fresh
+  element id snaps the value back to `from`.
+- **Motion never gates the action.** The new state is committed before the frame is
+  requested, so a suppressed or interrupted transition cannot swallow a click.
+- **Hover, press, focus, and selection never exceed `Interaction`.** Only a surface
+  that moves across the window, or a control that changes size and meaning, may use
+  `Travel`.
+
+Popovers and dialogs are the layer's chokepoints: every anchored surface is built
+through `anchored_popover` and every modal through `modal_card`, so a popup added later
+inherits its entrance instead of opting in.
+
+Two cells above are shaped by the toolkit rather than by taste, and both are recorded
+because a future upgrade can reopen them:
+
+- **A press cannot scale.** gpui 0.2.2 has no transform for a box: `with_transformation`
+  is an `Svg` method and `Style` carries no transform field. A press therefore reports
+  through its ramp — a real but quiet state change — instead of shrinking by 1.5 %.
+- **A focus ring cannot fade unless it is reserved.** A ring that is absent at rest
+  costs a 1px border the moment it appears, which moves every sibling. A control that
+  wants the fade reserves the border at rest and fades its colour.
+
+### Primitives
+
+Every treatment above resolves to one of five primitives, kept together in
+`src/motion/` so a call site composes them rather than inventing a curve:
+
+- **`Transition`** — `from` / `to` / `started` / `generation`. `retarget()` samples the
+  value currently on screen and fades from there, so a reversal resumes instead of
+  snapping. `SectionHover` in `transcript_view.rs` is the shape it generalises.
+- **`Spring`** — critically damped, velocity preserved across a retarget, exact settle
+  within 0.2px. It reaches the target without passing it, which is what keeps it inside
+  *nothing bounces*.
+- **`Disclosure`** — measures the child at the current width and interpolates its
+  height, so a section that grows while the window is being resized eases from a real
+  measurement instead of an estimate.
+- **`Travel`** — fade plus an offset out of an anchor side, for popovers and dialogs.
+- **`bezier(t, x1, y1, x2, y2)`** — the one easing-curve builder; `Motion::easing` and
+  `chart::ease` both resolve through it.
+
+A frame-driven primitive owns its own start instant and is sampled at paint; it does
+not start a timer that competes with the display. Each exposes its curve as a pure
+function, so the shape is asserted without a window: monotonic, bounded, settle exact,
+and identical at 60, 90, 120, and 144 Hz.
 
 ### Data visualisation
 
@@ -1008,16 +1096,33 @@ Reduce Motion is a property of the role, not of each call site: `Motion::duratio
 returns zero when motion is suppressed, so a transition collapses to the new state
 instead of disappearing. A looping affordance keeps its glyph and drops the motion.
 
-There are two sources, and either one suppresses motion:
+The preference is three-way — `System`, `Reduced`, or `Full` — and **the in-app
+choice is authoritative**:
 
-- **Orbit's own toggle** — Settings → Accessibility → Reduce Motion.
-- **The operating system's preference** — `NSWorkspace.accessibilityDisplayShouldReduceMotion`
-  on macOS, read at launch and re-read whenever a window becomes active. A user who
-  turns on Reduce Motion system-wide does not also have to find Orbit's switch.
+| Setting | macOS Reduce Motion | Result |
+| -- | -- | -- |
+| `System` (default) | off | motion |
+| `System` (default) | on | suppressed |
+| `Reduced` | either | suppressed |
+| `Full` | either | motion |
 
-Surfaces read `theme.reduce_motion()`, never `ui.reduce_motion`, so the system
-preference cannot be half-honoured. Linux and Windows expose no equivalent read;
-there the in-app toggle is the only input.
+`System` is the default, so a user who turns Reduce Motion on system-wide does not have
+to find Orbit's switch. `Full` exists because the OS value can arrive without a
+deliberate choice — a migrated profile or a preset — and an app-level setting the user
+changed on purpose must not be silently overruled in the other direction either.
+
+The OS read is `NSWorkspace.accessibilityDisplayShouldReduceMotion` on macOS, cached
+and re-read at launch and whenever a window becomes active: the preference can only
+have changed while the user was elsewhere. Linux and Windows expose no equivalent read,
+so `System` and `Full` both resolve to motion there and `Reduced` is the only way to
+suppress it.
+
+Surfaces read `theme.reduce_motion()` and never the raw preference, so the three-way
+resolution happens in exactly one place — `MotionPreference::suppresses_motion` in
+`theme.rs`. Settings → Accessibility names the source in force ("Following the system",
+"Motion suppressed", or "Animating anyway — the system asks for reduced motion"), so the
+resolved state is never a guess. A legacy `reduce_motion: bool` in `ui.json` migrates to
+`Reduced`, and both keys are written for one release so a downgrade keeps the choice.
 
 ### Loops
 
@@ -1032,15 +1137,29 @@ A loop is sanctioned only when it reports live state. Everything else is decorat
   whose light crosses the monogram on a twenty-second pass. It is the page's texture
   rather than an event, it is drawn behind everything, it never moves a glyph or a box,
   and Reduce Motion freezes it on the frame it was showing.
-- No other decorative looping animation. No parallax. No spring-heavy motion.
+- No other decorative looping animation. No parallax, no overshoot, no bounce; a
+  critically damped spring is allowed only where the interaction layer names one.
 - Loading animation must communicate actual work, not elapsed time.
 
 ### Motion Rules
 
-- Do not animate large areas when a small state transition is sufficient.
-- A transition is interruptible by the user's next action.
-- Motion never gates an action: the new state is applied even if the frame never paints.
-- The transcript is exempt from every entry animation. Its motion is the stream.
+- **A surface picks a role, never a number.** A one-shot transition is written as
+  `Animation::new(Motion::<role>.duration(&theme))` and nothing else.
+- **Never call `.nominal()` outside `theme/tokens.rs`.** It skips the Reduce Motion
+  guard, and the guard belongs to the role rather than to the call site.
+- **Never hand-roll a state transition at a call site.** A hover, press, focus, or
+  selection treatment that is not in the interaction layer is a second answer to a
+  question the layer already answers; add it to the layer instead.
+- **Interruptible, always.** Reversing mid-flight resumes from the painted value; a
+  transition that restarts from `from` is a snap with extra steps.
+- **Motion never gates an action.** The new state is applied even if the frame never
+  paints.
+- **Do not animate large areas when a small state transition is sufficient.** A hover
+  fades a wash; it does not move the row.
+- **Nothing animates on first paint of existing content.** No stagger-in, no list
+  entrance, no scroll-triggered reveal.
+- **The transcript is exempt from every entry animation.** Its motion is the stream;
+  a word-level fade on arriving text is part of the stream, not an entrance.
 
 ## Agent Interaction States
 
@@ -1480,7 +1599,7 @@ is pinned in px (hairlines, the 200px menu minimum width, scrollbar metrics).
 | Spacing | 0, 1, 2, 3, 4, 6, 8, 12, 16, 20, 24, 32, 40, 48px | `DynamicSpacing` |
 | Separators | 1px | `BORDER_WIDTH` |
 | Focus ring | 1px border | `FOCUS_RING_WIDTH` |
-| Motion | 50 / 150 / 200ms | `Motion` |
+| Motion | 50 / 150 / 200 / 260ms | `Motion` |
 
 ### Verification
 
@@ -1494,11 +1613,24 @@ these tests, which run over every shipped palette:
 - Interaction states — `interaction_states_never_collide` (hover, pressed and selected are
   three different colours in all twelve palettes).
 - Motion — `motion_roles_fill_the_spec_bands`,
-  `motion_collapses_to_nothing_under_reduce_motion`.
+  `motion_collapses_to_nothing_under_reduce_motion`,
+  `the_motion_preference_resolves_in_one_place`.
+- Micro-interactions — the layer's adoption gate, landing with it:
+  `every_control_state_resolves_to_a_role`, `a_reversal_resumes_from_the_painted_value`,
+  `a_spring_settles_without_overshoot_at_any_refresh_rate`,
+  `a_disclosure_measures_at_the_current_width`, `travel_moves_a_card_never_a_row`,
+  `popovers_enter_through_the_chokepoint`.
 - Geometry — `default_settings_resolve_to_zeds_default_pixels`,
   `elevation_shadows_match_zed`.
 
+`scripts/check_motion.py` enforces the two negative rules mechanically: no animation
+types its own duration, and no file outside `theme/tokens.rs` calls `.nominal()`.
+`scripts/check_states.py` enforces that a call site does not name a state colour, which
+is the same contract one layer down.
+
 A change to this file that is not also a change to those tests is a wish, not a rule.
+The micro-interaction set is the one deliberate exception: it is the gate the
+layer must pass before it is called shipped, not a description of today.
 
 ## Quality Bar
 
@@ -1555,8 +1687,11 @@ performance, and visual restraint make long agent sessions feel natural.
 - **Don't** use display fonts, decorative gradients, glass, glow, or emoji in the
   chrome.
 - **Don't** animate decoration; a one-shot transition uses a `Motion` role
-  (`Instant` / `Interaction` / `Layout`) and only confirms a state change (hover,
-  expand, selection, chart re-scale).
+  (`Instant` / `Interaction` / `Layout` / `Travel`) and only confirms a state change
+  (hover, press, focus, expand, selection, chart re-scale).
+- **Don't** write a transition inline at a call site, and don't leave an interactive
+  state with no transition: an instant swap next to a faded one is two answers to the
+  same question.
 - **Don't** show a metric the underlying data cannot support — no invented latency,
   cost, or retry counts.
 - **Don't** ship a chip that appears in every state "just in case". Give it a rule for

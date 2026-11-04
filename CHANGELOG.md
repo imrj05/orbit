@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Subagents.** The agent can delegate a scoped task to a child `pi` process
+  with its own context window and get back a short report plus its cost, instead
+  of spending the session's context on the reading. One tool, three shapes —
+  single, chain with `{previous}`, and parallel — bounded at 8 tasks per run,
+  4 concurrent, 24 per session and depth 1. Agents are markdown files in
+  `~/.pi/agent/agents/` (the path `pi-subagents` reads); `scout`, `worker` and
+  `reviewer` ship built in. A child inherits the session's access and workflow
+  modes and is clamped to the ceiling its declared tools imply, so a read-only
+  agent cannot edit even under Full access. A delegation the session mode cannot
+  finish — a command-running agent under Supervised or Plan — is refused before
+  it spends anything. Abort kills the whole child process group; a child's cost
+  lands in the session usage meter. The transcript shows a delegation card —
+  each child's agent, capability, current step, tool count, elapsed time and
+  model, the run's cost, and the mode that blocked or refused a call; expanding
+  it reveals the child's real steps and the report it returned. The parent's
+  working line names what the child is doing, and the turn header counts
+  delegations. **Settings → Subagents** manages the library in-app: create,
+  duplicate, rename, disable, delete (with Undo) and reset an agent to its
+  shipped definition; edit its capability tier, workflow mode, model, thinking
+  level, description and prompt; and see the exact description block the model
+  will read. Saves touch only the five keys Orbit owns and refuse to clobber a
+  file edited elsewhere. Inspectable child transcripts are not built yet.
+
 - **Export a response or visible transcript as Markdown.** Each settled response's
   footer offers a save action; the command palette can export the visible transcript.
   Both open a native save dialog and exclude thinking, tool output, and image data.

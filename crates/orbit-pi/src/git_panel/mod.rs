@@ -2988,7 +2988,7 @@ impl GitPanel {
                 .child(anchored_popover(
                     Corner::BottomLeft,
                     point(px(0.), px(-6.)),
-                    menu,
+                    menu, "anchored_popover-in-18", &theme,
                 ))
                 .into_any_element(),
         )
@@ -3986,7 +3986,7 @@ impl GitPanel {
                 .child(anchored_popover(
                     Corner::TopRight,
                     point(px(0.), px(6.)),
-                    menu,
+                    menu, "anchored_popover-in-19", &theme,
                 ))
                 .into_any_element(),
         )
@@ -4083,7 +4083,7 @@ impl GitPanel {
                 .child(anchored_popover(
                     Corner::TopRight,
                     point(px(0.), px(6.)),
-                    menu,
+                    menu, "anchored_popover-in-20", &theme,
                 ))
                 .into_any_element(),
         )

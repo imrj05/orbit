@@ -760,6 +760,13 @@ fn a_remote_row_opens_the_dialog_on_a_tracking_branch(cx: &mut gpui::TestAppCont
 fn remote_rows_fit_without_overlap_and_keyboard_reveals_the_last(cx: &mut gpui::TestAppContext) {
     let fixture = Fixture::new("remote-layout");
     let app = test_app(cx);
+    // The menu's entrance starts it 8 px toward its anchor; this test asserts
+    // the settled rows, so it asks for the settled frame.
+    cx.update(|cx| {
+        let mut theme = *crate::theme::get(cx);
+        theme.ui.motion = crate::theme::MotionPreference::Reduced;
+        cx.set_global(theme);
+    });
     let window_cx = cx.add_empty_window();
     let viewport = window_cx.update(|window, _| window.viewport_size());
     window_cx.update(|_, cx| app.update(cx, |app, _| {

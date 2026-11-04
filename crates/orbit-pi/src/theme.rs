@@ -447,6 +447,57 @@ impl Global for Theme {}
 /// `Language` name stays stable for the settings surface.
 pub use crate::i18n::AppLanguage as Language;
 
+/// How motion is decided: by the operating system, suppressed outright, or
+/// always allowed.
+///
+/// `DESIGN.md` §Motion System makes the in-app choice authoritative, so
+/// [`Self::Reduced`] suppresses even when the OS does not ask and [`Self::Full`]
+/// animates even when it does. [`Self::System`] is the default, so a user who
+/// turns Reduce Motion on system-wide does not also have to find this setting —
+/// and a user who deliberately chose otherwise is not silently overruled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MotionPreference {
+    /// Follow the operating system's Reduce Motion preference.
+    System,
+    /// Suppress motion whatever the OS says.
+    Reduced,
+    /// Animate whatever the OS says.
+    Full,
+}
+
+impl MotionPreference {
+    pub const ALL: [Self; 3] = [Self::System, Self::Reduced, Self::Full];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Reduced => "reduced",
+            Self::Full => "full",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "system" => Some(Self::System),
+            "reduced" => Some(Self::Reduced),
+            "full" => Some(Self::Full),
+            _ => None,
+        }
+    }
+
+    /// Whether motion is suppressed, given whether the OS asks for it.
+    ///
+    /// This is the whole policy in one function: every surface reaches it
+    /// through [`Theme::reduce_motion`].
+    pub fn suppresses_motion(self, os_asks: bool) -> bool {
+        match self {
+            Self::System => os_asks,
+            Self::Reduced => true,
+            Self::Full => false,
+        }
+    }
+}
+
 /// Orbit UI preferences: language, type sizes, density, and composer behavior.
 /// Every size is px with the built-in defaults (UI 14, terminal / editor 13);
 /// only spacing density remains a percentage.
@@ -463,9 +514,10 @@ pub struct UiPrefs {
     pub spacing_density: u32,
     /// Extra rounding in pixels for shared rectangular component shapes.
     pub corner_rounding: u32,
-    /// Honor reduce-motion: perpetual/looping animations (spinners, the
-    /// running-session shimmer, the drop-overlay fade) render static.
-    pub reduce_motion: bool,
+    /// How motion is decided. `Reduced` and `Full` are the user's own answer;
+    /// `System` follows the OS. Every surface reads the resolved value through
+    /// [`Theme::reduce_motion`], never this field.
+    pub motion: MotionPreference,
     /// Enter's delivery mode while the agent is working (Orbit-only).
     pub composer_send_mode: crate::composer_send::SendMode,
 }
@@ -489,7 +541,7 @@ impl Default for UiPrefs {
             editor_font_size: 13.,
             spacing_density: 100,
             corner_rounding: 0,
-            reduce_motion: false,
+            motion: MotionPreference::System,
             composer_send_mode: crate::composer_send::SendMode::default(),
         }
     }
@@ -571,8 +623,20 @@ impl UiPrefs {
                 prefs.corner_rounding = rounding as u32;
             }
         }
-        if let Some(reduce) = value.get("reduce_motion").and_then(Value::as_bool) {
-            prefs.reduce_motion = reduce;
+        if let Some(motion) = value
+            .get("motion")
+            .and_then(Value::as_str)
+            .and_then(MotionPreference::parse)
+        {
+            prefs.motion = motion;
+        } else if let Some(reduce) = value.get("reduce_motion").and_then(Value::as_bool) {
+            // Legacy single switch. `true` was the only way to suppress motion;
+            // `false` meant "whatever the system says", which is `System`.
+            prefs.motion = if reduce {
+                MotionPreference::Reduced
+            } else {
+                MotionPreference::System
+            };
         }
         if let Some(mode) = value
             .get("composer_send_mode")
@@ -600,7 +664,10 @@ impl UiPrefs {
             "editor_font_size": self.editor_font_size,
             "spacing_density": self.spacing_density,
             "corner_rounding": self.corner_rounding,
-            "reduce_motion": self.reduce_motion,
+            "motion": self.motion.as_str(),
+            // Kept for one release so a downgrade keeps the choice: the older
+            // build reads this bool and ORs the OS read exactly as it used to.
+            "reduce_motion": self.motion == MotionPreference::Reduced,
             "composer_send_mode": self.composer_send_mode.as_str(),
         })
     }
@@ -1542,11 +1609,15 @@ impl Theme {
     /// rems resolve against the UI font size (`ui_font_size /
     /// DEFAULT_UI_FONT_SIZE`). Chrome sizes are authored at the 14px default,
     /// so at the default setting this resolves to the authored pixel value.
-    /// Whether motion should be suppressed: the user's own setting, or the OS
-    /// asking for it. A surface reads this, never `ui.reduce_motion`, so the
-    /// system preference cannot be half-honoured.
+    /// Whether motion should be suppressed.
+    ///
+    /// The one resolution point: [`MotionPreference::suppresses_motion`] reads
+    /// the three-way choice against the cached OS preference. A surface reads
+    /// this, never `ui.motion`, so the policy cannot be half-honoured.
     pub fn reduce_motion(self) -> bool {
-        self.ui.reduce_motion || OS_REDUCE_MOTION.load(std::sync::atomic::Ordering::Relaxed)
+        self.ui
+            .motion
+            .suppresses_motion(OS_REDUCE_MOTION.load(std::sync::atomic::Ordering::Relaxed))
     }
 
     pub fn ui_px(&self, value: f32) -> Pixels {
@@ -1772,7 +1843,7 @@ pub fn get(cx: &App) -> &Theme {
 /// Whether the user asked to reduce motion. Looping animations should render
 /// static when this is true.
 pub fn reduce_motion(cx: &App) -> bool {
-    get(cx).ui.reduce_motion || os_reduce_motion()
+    get(cx).ui.motion.suppresses_motion(os_reduce_motion())
 }
 
 /// The operating system's Reduce Motion preference, cached because it is read
@@ -1832,6 +1903,68 @@ pub fn set_ui_prefs(cx: &mut App, ui: UiPrefs) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The whole Reduce Motion policy is one function, and every surface
+    /// reaches it through `Theme::reduce_motion`. This is the gate the motion
+    /// plan's P2 names.
+    #[test]
+    fn the_motion_preference_resolves_in_one_place() {
+        // `System` follows the OS in both directions.
+        assert!(!MotionPreference::System.suppresses_motion(false));
+        assert!(MotionPreference::System.suppresses_motion(true));
+        // `Reduced` suppresses whatever the OS says…
+        assert!(MotionPreference::Reduced.suppresses_motion(false));
+        assert!(MotionPreference::Reduced.suppresses_motion(true));
+        // …and `Full` animates whatever the OS says, so an app-level choice is
+        // never silently overruled.
+        assert!(!MotionPreference::Full.suppresses_motion(false));
+        assert!(!MotionPreference::Full.suppresses_motion(true));
+
+        // The string form is what `ui.json` stores, so it has to round-trip.
+        for preference in MotionPreference::ALL {
+            assert_eq!(
+                MotionPreference::parse(preference.as_str()),
+                Some(preference)
+            );
+        }
+        assert_eq!(MotionPreference::parse("nonsense"), None);
+    }
+
+    /// A `ui.json` written before the three-way preference existed must keep
+    /// the choice the user made, and a downgrade must still see it.
+    #[test]
+    fn a_legacy_reduce_motion_file_migrates_to_the_preference() {
+        let on = UiPrefs::from_value(&serde_json::json!({"reduce_motion": true}));
+        assert_eq!(on.motion, MotionPreference::Reduced);
+        let off = UiPrefs::from_value(&serde_json::json!({"reduce_motion": false}));
+        assert_eq!(off.motion, MotionPreference::System);
+        // The new key wins when both are present, and the default is `System`.
+        let both = UiPrefs::from_value(&serde_json::json!({
+            "motion": "full",
+            "reduce_motion": true,
+        }));
+        assert_eq!(both.motion, MotionPreference::Full);
+        assert_eq!(
+            UiPrefs::from_value(&serde_json::json!({})).motion,
+            MotionPreference::System
+        );
+
+        // Both keys are written for one release: the old build reads the bool,
+        // the new one reads the preference.
+        let written = UiPrefs {
+            motion: MotionPreference::Reduced,
+            ..UiPrefs::default()
+        }
+        .to_value();
+        assert_eq!(written["motion"], serde_json::json!("reduced"));
+        assert_eq!(written["reduce_motion"], serde_json::json!(true));
+        let full = UiPrefs {
+            motion: MotionPreference::Full,
+            ..UiPrefs::default()
+        }
+        .to_value();
+        assert_eq!(full["reduce_motion"], serde_json::json!(false));
+    }
 
     #[test]
     fn design_system_keys_round_trip() {

@@ -2297,7 +2297,15 @@ impl OrbitApp {
                     MouseButton::Left,
                     cx.listener(Self::on_worktree_dialog_scrim),
                 )
-                .child(body)
+                // `body` is already an `AnyElement`, which is not `Styled`; the
+                // plain div is the smallest thing the entrance can fade.
+                .child(crate::motion::enter(
+                    div().child(body),
+                    "worktree-dialog-in",
+                    &theme,
+                    crate::theme::tokens::Motion::Layout,
+                    None,
+                ))
                 .into_any_element(),
         )
     }
@@ -4034,7 +4042,7 @@ impl OrbitApp {
             anchored_popover(
                 Corner::BottomLeft,
                 point(px(0.), -popover::MENU_OFFSET),
-                popup,
+                popup, "anchored_popover-in-9", &theme,
             )
             .into_any_element(),
         )

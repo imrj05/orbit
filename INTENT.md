@@ -338,6 +338,30 @@ makes the silent launch check cost one small request.
 progress cross into a frame. Anything that gates on "staged" must gate on
 `Ready`, and the modal's primary action changes meaning with that status.
 
+### D18 — Subagents: a delegation tool over child `pi` processes
+
+**Choice:** Orbit ships one bundled extension (`contrib/orbit-subagents-extension/`) that registers a
+`subagent` tool. A call spawns a child `pi --mode json -p --no-session` process per task and returns
+the child's final text plus its summed `usage`; the child's transcript, tool arguments and file
+contents never enter the parent's context. An agent is a markdown file in
+`~/.pi/agent/agents/*.md` (the path `pi-subagents` reads) with `name`, `description`, `model`,
+`thinking` and `tools`. The child's **ceiling** is derived from that `tools:` line, passed as
+`ORBIT_SUBAGENT_CEILING`, and the guard clamps every child tool call against it even under Full
+access. Before spawning, the extension intersects the ceiling with the session's access and workflow
+modes: a run that cannot finish is refused with the remedy instead of spending tokens and dying on
+its first denied call.
+**Rationale:** the parent's context and the user's money are the scarce resources. Delegation pays
+only when the child's reading stays in the child, so the report is capped at 4 KiB, the cost rides
+the tool result (pi folds it into session totals), and the child is a normal session in the same
+workspace with the same guardrails — there is no second permission system to drift. The tool stands
+down when another extension already owns the name (`pi-subagents`), because two implementations
+racing for one name is worse than one honest absence.
+**Consequence:** `subagent/1` is the `details` contract the transcript card parses (absent or foreign
+details degrade to the generic card). The guard classifies `subagent` as `delegate` and allows it in
+every mode: the child cannot exceed the mode and the extension refuses impossible runs, so a prompt
+would approve nothing. Depth is 1 and applies to Orbit's own tool; a third-party delegation extension
+loaded in the child is not constrained by it.
+
 ## The feature parity contract
 
 Everything below must behave identically in the GPUI app (against the pi CLI) as it does in the
@@ -363,6 +387,18 @@ legacy app today:
 ### Implementation status (living)
 
 Settings → Git Accounts provides the local-only, read-only Git diagnostics described in D16; it does not check remote access or manage credentials.
+
+Subagents (D18) ship the delegation tool, agent discovery, the three run modes, the caps, the
+mode/ceiling pre-flight, child cost reporting and the delegation card (per-child rows with the
+current step, the run's usage and mode, a blocked/refused banner, and — expanded — the child's real
+steps and its report). The parent's working line names the child while it runs, and the turn header
+counts delegations instead of "Ran 1 tool". Settings → Subagents manages the whole
+library in-app: the list groups builtins and user files, and the detail column edits the capability
+tier (which writes the `tools:` line and derives the child's ceiling), the workflow mode, the model,
+the thinking level, the description and the prompt. Saves are surgical — only the five keys Orbit
+owns change, and a file edited elsewhere is never clobbered without an explicit overwrite; a user
+agent can be created, duplicated, renamed, disabled, deleted (Undo restores the exact bytes) and
+reset to builtin. The inspectable-run viewer in `docs/plans/subagents.md` is not built.
 
 The Report a bug draft generator has a searchable model selector. It defaults to the active session model and saves an independent override in `~/.orbit-pi/bug-report-model.json`, leaving both the session and commit-message model unchanged.
 

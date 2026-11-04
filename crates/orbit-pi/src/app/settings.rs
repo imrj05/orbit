@@ -5,6 +5,7 @@ use crate::theme::tokens::{
     button, context_menu, input, modal, panel, picker, popover, BufferLineHeight, ButtonSize,
     DynamicSpacing, HeadlineSize, IconSize, Radius, TextSize, BORDER_WIDTH,
 };
+use crate::theme::MotionPreference;
 use gpui::{canvas, Bounds, DispatchPhase, Hitbox, HitboxBehavior, MouseMoveEvent};
 
 /// A Plugins-page button action, dispatched through one entry point.
@@ -189,6 +190,11 @@ const SETTINGS_SECTIONS: &[(SettingsSection, &str, &str)] = &[
         SettingsSection::Skills,
         "icons/magic-wand.svg",
         "settings.skills",
+    ),
+    (
+        SettingsSection::Subagents,
+        "icons/task.svg",
+        "settings.subagents",
     ),
     (
         SettingsSection::Plugins,
@@ -453,13 +459,18 @@ const SETTINGS_SEARCH_INDEX: &[(SettingsSection, &str, &str)] = &[
     (
         SettingsSection::Appearance,
         "settings.reduce_motion",
-        "motion animation reduce layout",
+        "motion animation reduce layout system full",
     ),
     // Resources and extensions
     (
         SettingsSection::Skills,
         "settings.skills",
         "skills skill.md instructions agent",
+    ),
+    (
+        SettingsSection::Subagents,
+        "settings.subagents",
+        "subagents agents delegate child task scout worker reviewer",
     ),
     (
         SettingsSection::Plugins,
@@ -541,6 +552,30 @@ fn settings_search_hits(needle: &str) -> Vec<(SettingsSection, &'static str, &'s
         })
         .copied()
         .collect()
+}
+
+/// The label a Reduce Motion segment carries.
+fn motion_preference_label(preference: MotionPreference) -> String {
+    match preference {
+        MotionPreference::System => tr!("settings.motion_system"),
+        MotionPreference::Reduced => tr!("settings.motion_reduced"),
+        MotionPreference::Full => tr!("settings.motion_full"),
+    }
+}
+
+/// What the Reduce Motion row says is actually in force.
+///
+/// `System` is not a state the user can read off the segments, so the row names
+/// the resolution: following the system, following it into reduced motion, the
+/// user's own answer either way, or `Full` overriding a system that asks.
+fn motion_status(preference: MotionPreference, os_asks: bool) -> String {
+    match preference {
+        MotionPreference::System if os_asks => tr!("settings.motion_status_system_reduced"),
+        MotionPreference::System => tr!("settings.motion_status_system"),
+        MotionPreference::Reduced => tr!("settings.motion_status_reduced"),
+        MotionPreference::Full if os_asks => tr!("settings.motion_status_full_overriding"),
+        MotionPreference::Full => tr!("settings.motion_status_full"),
+    }
 }
 
 /// The operation a background plugin task runs.
@@ -769,6 +804,8 @@ impl OrbitApp {
                     self.settings_search_results(theme, this.clone(), cx)
                 } else if self.settings_section == SettingsSection::Skills {
                     self.render_skills_page(theme, this.clone(), cx)
+                } else if self.settings_section == SettingsSection::Subagents {
+                    self.render_subagents_page(theme, this.clone(), cx)
                 } else {
                     self.settings_body(theme, this.clone(), cx)
                 }
@@ -988,6 +1025,10 @@ impl OrbitApp {
                 (tr!("git_accounts.title"), tr!("git_accounts.description"))
             }
             SettingsSection::Skills => (tr!("settings.skills"), tr!("settings.skills_description")),
+            SettingsSection::Subagents => (
+                tr!("settings.subagents"),
+                tr!("settings.subagents_description"),
+            ),
             SettingsSection::Plugins => {
                 (tr!("settings.plugins"), tr!("settings.plugins_description"))
             }
@@ -1122,6 +1163,8 @@ impl OrbitApp {
             SettingsSection::GitAccounts => self.git_accounts_rows(theme, this.clone()),
             // Rendered by `skills_ui::render_skills_page`, not the card body.
             SettingsSection::Skills => Vec::new(),
+            // Rendered by `subagents_ui::render_subagents_page`.
+            SettingsSection::Subagents => Vec::new(),
             SettingsSection::Plugins => self.plugin_rows(theme, this.clone(), cx),
             // The MCP page's rows are owned by `mcp_ui`; it needs the cursor
             // and filter state that lives beside the manager.
@@ -3989,7 +4032,13 @@ impl OrbitApp {
                 .items_center()
                 .justify_center()
                 .on_mouse_down(MouseButton::Left, cx.listener(Self::provider_editor_scrim))
-                .child(card)
+                .child(crate::motion::enter(
+                    card,
+                    "provider-usage-card-in",
+                    &theme,
+                    crate::theme::tokens::Motion::Layout,
+                    None,
+                ))
                 .into_any_element(),
         )
     }
@@ -4196,7 +4245,13 @@ impl OrbitApp {
                 .items_center()
                 .justify_center()
                 .on_mouse_down(MouseButton::Left, cx.listener(Self::provider_editor_scrim))
-                .child(card)
+                .child(crate::motion::enter(
+                    card,
+                    "provider-key-card-in",
+                    &theme,
+                    crate::theme::tokens::Motion::Layout,
+                    None,
+                ))
                 .into_any_element(),
         )
     }
@@ -4525,7 +4580,13 @@ impl OrbitApp {
                 .items_center()
                 .justify_center()
                 .on_mouse_down(MouseButton::Left, cx.listener(Self::provider_editor_scrim))
-                .child(card)
+                .child(crate::motion::enter(
+                    card,
+                    "provider-editor-card-in",
+                    &theme,
+                    crate::theme::tokens::Motion::Layout,
+                    None,
+                ))
                 .into_any_element(),
         )
     }
@@ -5715,7 +5776,7 @@ impl OrbitApp {
             .children(modes.into_iter().enumerate().map(|(index, mode)| {
                 let this = this.clone();
                 let active = mode == theme.ui.composer_send_mode;
-                segmented_segment(
+                let segment = segmented_segment(
                     div().id(("composer-send-mode", index)),
                     &theme,
                     ButtonSize::Medium,
@@ -5723,19 +5784,35 @@ impl OrbitApp {
                 )
                 .font_weight(FontWeight::MEDIUM)
                 .cursor_pointer()
-                .when(active, |b| {
-                    b.raised_flat(theme.surface_active)
-                        .text_color(theme.text_primary)
-                })
-                .when(!active, |b| {
-                    b.raised_flat(theme.surface_elevated)
-                        .text_color(theme.text_secondary)
-                        .hover_state(&theme)
-                })
+                .raised_flat(theme.surface_elevated)
                 .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                     this.update(cx, |app, cx| app.set_composer_send_mode(mode, cx));
                 })
-                .child(mode.label())
+                .child(mode.label());
+                crate::motion::control(
+                    segment,
+                    format!("composer-send-mode-{index}"),
+                    &theme,
+                    crate::theme::tokens::Motion::Interaction,
+                    crate::theme::tokens::Motion::Interaction,
+                    if active { 1.0 } else { 0.0 },
+                    move |segment, hover, selected| {
+                        let fill = crate::motion::blend(
+                            crate::motion::blend(
+                                theme.surface_elevated,
+                                theme.surface_hover,
+                                hover,
+                            ),
+                            theme.surface_active,
+                            selected,
+                        );
+                        segment.bg(fill).text_color(crate::motion::blend(
+                            theme.text_secondary,
+                            theme.text_primary,
+                            selected,
+                        ))
+                    },
+                )
             }))
             .into_any_element()
     }
@@ -5745,6 +5822,62 @@ impl OrbitApp {
         ui.composer_send_mode = mode;
         theme::set_ui_prefs(cx, ui);
         cx.notify();
+    }
+
+    /// Appearance → Reduce motion: a three-way control, because a switch
+    /// cannot express `Full` — the state that stops the OS from overruling the
+    /// user's own answer.
+    fn motion_preference_control(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
+        let options = MotionPreference::ALL;
+        let active = theme.ui.motion;
+        let count = options.len();
+        div()
+            .flex()
+            .items_center()
+            .children(options.into_iter().enumerate().map(|(index, preference)| {
+                let this = this.clone();
+                let selected = preference == active;
+                let segment = segmented_segment(
+                    div().id(("motion-preference", index)),
+                    &theme,
+                    ButtonSize::Medium,
+                    SegmentPosition::at(index, count),
+                )
+                .font_weight(FontWeight::MEDIUM)
+                .cursor_pointer()
+                .raised_flat(theme.surface_elevated)
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    this.update(cx, |app, cx| app.set_motion_preference(preference, cx));
+                })
+                .child(motion_preference_label(preference));
+                // Both states are the layer's: the hover wash and the chosen
+                // half cross-fade together instead of one winning outright.
+                crate::motion::control(
+                    segment,
+                    format!("motion-preference-{index}"),
+                    &theme,
+                    crate::theme::tokens::Motion::Interaction,
+                    crate::theme::tokens::Motion::Interaction,
+                    if selected { 1.0 } else { 0.0 },
+                    move |segment, hover, selected| {
+                        let fill = crate::motion::blend(
+                            crate::motion::blend(
+                                theme.surface_elevated,
+                                theme.surface_hover,
+                                hover,
+                            ),
+                            theme.surface_active,
+                            selected,
+                        );
+                        segment.bg(fill).text_color(crate::motion::blend(
+                            theme.text_secondary,
+                            theme.text_primary,
+                            selected,
+                        ))
+                    },
+                )
+            }))
+            .into_any_element()
     }
 
     /// Two-button segmented control for the follow-up delivery mode.
@@ -5812,25 +5945,9 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         action: fn(&mut OrbitApp, &mut Context<OrbitApp>),
     ) -> AnyElement {
-        div()
-            .id(id)
-            .w(px(36.))
-            .h(DynamicSpacing::Base20.px(&theme))
-            .rounded_full()
-            .p(DynamicSpacing::Base02.px(&theme))
-            .border_1()
-            .border_color(theme.border)
-            .flex()
-            .items_center()
-            .cursor_pointer()
-            .when(on, |t| t.bg(theme.accent).justify_end())
-            .when(!on, |t| t.bg(theme.surface_elevated).justify_start())
-            .hover_border(&theme)
-            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                this.update(cx, action);
-            })
-            .child(div().size(px(14.)).rounded_full().bg(theme.toggle_knob))
-            .into_any_element()
+        switch(id, on, &theme, move |_, _, cx| {
+            this.update(cx, action);
+        })
     }
 
     /// Settings → Privacy: local-only controls such as session retention.
@@ -6072,17 +6189,18 @@ impl OrbitApp {
         cx.notify();
     }
 
-    /// Appearance → Reduce motion: persist the preference; every paint site
-    /// reads it through `Theme.ui`, so the change is live.
-    pub(super) fn toggle_reduce_motion(&mut self, cx: &mut Context<Self>) {
+    /// Appearance → Reduce motion: persist the three-way choice. Every paint
+    /// site reads the resolved value through `Theme::reduce_motion`, so the
+    /// change is live and `Full` overrides an OS that asks for reduced motion.
+    pub(super) fn set_motion_preference(
+        &mut self,
+        preference: MotionPreference,
+        cx: &mut Context<Self>,
+    ) {
         let mut ui = theme::get(cx).ui;
-        ui.reduce_motion = !ui.reduce_motion;
+        ui.motion = preference;
         theme::set_ui_prefs(cx, ui);
-        self.set_status(if ui.reduce_motion {
-            tr!("settings.reduce_motion_on")
-        } else {
-            tr!("settings.reduce_motion_off")
-        });
+        self.set_status(motion_status(preference, theme::os_reduce_motion()));
         cx.notify();
     }
 
@@ -6186,30 +6304,41 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         action: fn(&mut OrbitApp, &mut Context<OrbitApp>),
     ) -> AnyElement {
-        let mut button = button_frame(div().id(id), &theme, ButtonSize::Large)
+        let button = button_frame(div().id(id), &theme, ButtonSize::Large)
             .group(BUTTON_GROUP)
             .cursor_pointer()
             .font_weight(FontWeight::MEDIUM);
-        if primary {
-            button = button
-                .raised(theme.action, &theme)
-                .text_color(theme.action_fg)
-                .hover_action(&theme)
-                .pressed_state(&theme, PressedRamp::Action);
+        // The hover is a fade on the Interaction role, not a swap: primary
+        // buttons cross-fade `action` → `action_hover`, secondary ones fade the
+        // raised fill into the wash.
+        let (button, hover) = if primary {
+            (
+                button
+                    .raised(theme.action, &theme)
+                    .text_color(theme.action_fg)
+                    .pressed_state(&theme, PressedRamp::Action),
+                crate::motion::Hover::fill(theme.action, theme.action_hover),
+            )
         } else {
-            button = button
-                .border_1()
-                .border_color(theme.border)
-                .raised(theme.surface_elevated, &theme)
-                .text_color(theme.text_secondary)
-                .hover_state(&theme);
-        }
-        press(button)
-            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                this.update(cx, action);
-            })
-            .child(label.to_string())
-            .into_any_element()
+            (
+                button
+                    .border_1()
+                    .border_color(theme.border)
+                    .raised(theme.surface_elevated, &theme)
+                    .text_color(theme.text_secondary),
+                crate::motion::Hover::fill(theme.surface_elevated, theme.surface_hover),
+            )
+        };
+        crate::motion::hover(
+            press(button)
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    this.update(cx, action);
+                })
+                .child(label.to_string()),
+            format!("runtime-button-{id}"),
+            &theme,
+            hover,
+        )
     }
 
     // ── Appearance ─────────────────────────────────────────────────────
@@ -6382,14 +6511,10 @@ impl OrbitApp {
                         Some(&tr!(
                             "settings.stop_looping_animations_spinners_and_the_running"
                         )),
-                        None,
-                        Some(self.settings_toggle(
-                            "reduce-motion",
-                            theme.ui.reduce_motion,
-                            theme,
-                            this.clone(),
-                            Self::toggle_reduce_motion,
-                        )),
+                        // Name what is actually in force, so `System` on a Mac
+                        // that asks for reduced motion is never a guess.
+                        Some(&motion_status(theme.ui.motion, theme::os_reduce_motion())),
+                        Some(self.motion_preference_control(theme, this.clone())),
                     ),
                 ],
             ),
@@ -7859,6 +7984,8 @@ impl OrbitApp {
                     Corner::TopRight,
                     point(px(0.), size.height(&theme) + popover::MENU_OFFSET),
                     popup,
+                    "anchored_popover_in_window-in-11",
+                    &theme,
                 ))
                 .into_any_element(),
         )
@@ -8258,6 +8385,7 @@ impl OrbitApp {
             }
             SettingsSection::Privacy => self.refresh_temp_files(cx),
             SettingsSection::Skills => self.refresh_skills(cx),
+            SettingsSection::Subagents => self.refresh_subagents(cx),
             SettingsSection::Plugins => self.refresh_plugins(cx),
             SettingsSection::Mcp => self.mcp_section_opened(cx),
             _ => {}

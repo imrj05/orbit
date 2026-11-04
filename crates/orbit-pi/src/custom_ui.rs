@@ -468,7 +468,13 @@ impl Render for CustomUi {
             .id("custom-ui-layer")
             .debug_selector(|| "custom-ui-layer".to_string())
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_scrim_down))
-            .child(card)
+            .child(crate::motion::enter(
+                card,
+                "custom-ui-card-in",
+                &theme,
+                crate::theme::tokens::Motion::Layout,
+                None,
+            ))
     }
 }
 

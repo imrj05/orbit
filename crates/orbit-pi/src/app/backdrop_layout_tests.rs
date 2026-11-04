@@ -119,7 +119,7 @@ fn the_backdrop_clock_runs_only_on_the_new_task_page(cx: &mut gpui::TestAppConte
     let frozen = cx.update(|cx| app.read(cx).backdrop_phase);
     cx.update(|cx| {
         let mut theme = Theme::for_id(ThemeId::Orbit);
-        theme.ui.reduce_motion = true;
+        theme.ui.motion = crate::theme::MotionPreference::Reduced;
         cx.set_global(theme);
     });
     std::thread::sleep(std::time::Duration::from_millis(25));

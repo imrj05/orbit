@@ -2443,7 +2443,13 @@ impl OrbitApp {
                     let this = this;
                     move |_, _, cx| this.update(cx, |app, cx| app.mcp_editor_close(cx))
                 })
-                .child(card)
+                .child(crate::motion::enter(
+                    card,
+                    "mcp-editor-card-in",
+                    &theme,
+                    crate::theme::tokens::Motion::Layout,
+                    None,
+                ))
                 .into_any_element(),
         )
     }

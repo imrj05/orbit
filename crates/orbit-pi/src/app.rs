@@ -1165,6 +1165,26 @@ pub struct OrbitApp {
     skill_delete_confirm: Option<PathBuf>,
     /// Re-render the skill list as the filter is typed.
     _skills_filter_sub: Subscription,
+    /// Settings → Subagents: filter field for the agent list.
+    subagents_filter: Entity<ComposerInput>,
+    /// Every agent the `subagent` tool can pick (builtins + user files).
+    subagents: Vec<crate::subagent_file::Agent>,
+    /// User files that could not be read as agents.
+    subagents_skipped: Vec<(PathBuf, String)>,
+    /// The selected agent, by name.
+    selected_subagent: Option<String>,
+    /// The form editing the selection, rebuilt whenever it changes.
+    subagent_editor: Option<subagents_ui::SubagentEditor>,
+    /// Orbit-only agent settings (`~/.orbit-pi/subagents.json`).
+    subagent_config: crate::subagents::Config,
+    /// A user agent deleted this session; Undo restores its exact bytes.
+    subagent_undo: Option<subagents_ui::SubagentUndo>,
+    /// The Delete button has been pressed once.
+    subagent_delete_confirm: bool,
+    /// Why the last save/delete failed, shown under the form.
+    subagent_error: Option<String>,
+    /// Re-render the agent list as the filter is typed.
+    _subagents_filter_sub: Subscription,
     /// Background updater status mirrored from the global: `Idle` (nothing to
     /// show), `Available` (a newer release is on offer, nothing downloaded),
     /// `Downloading` (verified bytes arriving), `Ready` (staged, waiting for
@@ -1700,6 +1720,15 @@ impl OrbitApp {
 
         // Settings → Skills: the list filter. `Composer Picker` keeps editing
         // keys live so typing filters the master list.
+        let subagents_filter = cx.new(|cx| {
+            ComposerInput::new(cx)
+                .with_element_id("subagents-filter")
+                .with_key_context("Composer Picker")
+                .with_max_lines(1)
+                .with_wrap(false)
+                .with_placeholder_key("subagents_ui.search_agents")
+        });
+        let subagents_filter_sub = cx.observe(&subagents_filter, |_, _, cx| cx.notify());
         let skills_filter = cx.new(|cx| {
             ComposerInput::new(cx)
                 .with_element_id("skills-filter")
@@ -2381,6 +2410,14 @@ impl OrbitApp {
             models_provider_filter: None,
             models_refreshing: false,
             skills: Vec::new(),
+            subagents: Vec::new(),
+            subagents_skipped: Vec::new(),
+            selected_subagent: None,
+            subagent_editor: None,
+            subagent_config: crate::subagents::Config::default(),
+            subagent_undo: None,
+            subagent_delete_confirm: false,
+            subagent_error: None,
             plugins: Vec::new(),
             plugins_error: None,
             plugin_source_input: plugin_source_input.clone(),
@@ -2400,6 +2437,8 @@ impl OrbitApp {
             skill_content: None,
             skill_delete_confirm: None,
             _skills_filter_sub: skills_filter_sub,
+            subagents_filter: subagents_filter.clone(),
+            _subagents_filter_sub: subagents_filter_sub,
             mcp,
             mcp_filter: mcp_filter.clone(),
             _mcp_filter_sub: mcp_filter_sub,
@@ -3464,6 +3503,7 @@ pub(crate) enum SettingsSection {
     Providers,
     Models,
     Skills,
+    Subagents,
     Plugins,
     Mcp,
     About,
@@ -3874,6 +3914,7 @@ mod session_status;
 mod settings;
 mod sidebar;
 mod skills_ui;
+mod subagents_ui;
 mod temp_ui;
 mod toast_ui;
 mod transcript_export;
@@ -3963,12 +4004,12 @@ mod worktree_howto_tests;
 pub(crate) use crate::theme::tokens::{Motion, RaisedExt};
 pub(crate) use helpers::{
     anchored_popover, anchored_popover_at, button_frame, context_menu_entry,
-    context_menu_separator, context_menu_surface, empty_state, file_badge, file_glyph,
-    file_icon_tile, icon, icon_button_frame, icon_dyn, input_field_frame, menu_header, modal_card,
-    modal_scrim, nerd_font_family, picker_entry, picker_row_height, picker_search_frame,
-    picker_surface, press, provider_mark_color, refresh_glyph, running_spinner, spinner,
-    working_folder_keyboard_hints, AccentWash, ControlExt, EmptyFill, PickerRow, PressedRamp,
-    StatefulControlExt, TipExt, BUTTON_GROUP,
+    context_menu_separator, context_menu_surface, disclosure_chevron, empty_state, file_badge,
+    file_glyph, file_icon_tile, icon, icon_button_frame, icon_dyn, input_field_frame, menu_header,
+    modal_card, modal_scrim, nerd_font_family, picker_entry, picker_row_height,
+    picker_search_frame, picker_surface, press, provider_mark_color, refresh_glyph,
+    running_spinner, spinner, working_folder_keyboard_hints, AccentWash, ControlExt, EmptyFill,
+    PickerRow, PressedRamp, StatefulControlExt, TipExt, BUTTON_GROUP,
 };
 use sidebar::sessions_with_placeholder;
 

@@ -71,8 +71,9 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/app/pickers.rs    model, command-palette, branch, and new-task workspace pickers
   src/app/composer_ops.rs autocomplete, attachments, "+" add-menu, model/thinking chips
   src/app/sidebar.rs    sidebar rows + session/workspace row menus; project-list prefs
-  src/app/settings.rs   Settings surface: General/Runtime/Agent/Skills/Plugins/Models/Appearance/Providers/About (+ provider CRUD, plugin install, model list)
+  src/app/settings.rs   Settings surface: General/Runtime/Agent/Skills/Subagents/Plugins/Models/Appearance/Providers/About (+ provider CRUD, plugin install, model list)
   src/app/skills_ui.rs  Settings → Skills master-detail page and its controllers
+  src/app/subagents_ui.rs  Settings → Subagents: master-detail list (builtins / user files) + the detail form (tier, mode, model, thinking, description, prompt, model-facing preview), with create/duplicate/rename/disable/delete/undo/reset
   src/app/mcp_ui.rs     Settings → MCP: server list, add/edit modal, probe/apply lifecycle
   src/mcp.rs            MCP domain model: servers, transports, exposure, status, typed errors,
                         secret-reference parsing and error redaction (no MCP protocol code)
@@ -133,7 +134,10 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/access.rs         access mode (Supervised / Auto-accept edits / Full access): persistence to `~/.orbit-pi/access.json`, which the guard extension reads
   src/layout.rs         persisted workbench layout: resizable panel sizes in `~/.orbit-pi/layout.json` (recorded on drag, flushed by the heartbeat once a drag settles)
   src/workflow.rs       workflow mode (Plan / Build / Ask): per-session persistence to `~/.orbit-pi/workflow.json`, which the workflow extension reads
-  src/bundled_extensions.rs  materializes the bundled pi extensions (quota bridge + access guard + auto-title + workflow) under `~/.orbit-pi/` and spawns every session with `--extension`
+  src/subagent_file.rs  the agent file format: a lenient reader for `~/.pi/agent/agents/*.md` and a surgical writer that changes only the five keys Orbit owns (name, description, model, thinking, tools), preserving comments, key order, foreign keys and the body
+  src/subagents.rs      the Orbit-only half of an agent: `~/.orbit-pi/subagents.json` (enabled, pinned workflow mode, limits), lenient + atomic, preserved for unknown entry fields
+  src/subagent.rs       the delegation card's pure half: parses the `subagent/1` details payload leniently and exposes the run's facts (live activity, counts, usage, elapsed); unknown shapes degrade to the generic activity card
+  src/bundled_extensions.rs  materializes the bundled pi extensions (quota bridge + access guard + auto-title + workflow + subagents) under `~/.orbit-pi/`, spawns every session with `--extension`, and exports the entry points as `ORBIT_BUNDLED_EXTENSIONS` for child sessions
   src/commit_message.rs one-shot, tool-free `pi -p` conventional-commit generation
   assets/icons/         HugeIcons SVGs (MIT) + provider brand marks
   assets/fonts/         SymbolsNerdFont-Regular.ttf
@@ -188,6 +192,16 @@ contrib/orbit-workflow-extension/  Orbit's bundled pi extension (loaded with
                         Reads the per-session mode from `~/.orbit-pi/workflow.json`
                         fresh on every hook; policy.js is the pure decision
                         table and both files are `node --test` covered
+contrib/orbit-subagents-extension/  Orbit's bundled pi extension (loaded with
+                        `pi --extension`): registers the `subagent` tool, which
+                        runs one child `pi --mode json -p --no-session` per
+                        delegated task and returns only its report and cost.
+                        agents.js discovers `~/.pi/agent/agents/*.md` and derives
+                        the child's ceiling from its `tools:` line; run.js is the
+                        argv/env/prompt + JSONL fold; mode.js reads
+                        `~/.orbit-pi/{subagents,workflow,access}.json` and decides
+                        what the session mode permits; resources.js forwards the
+                        inherited guardrail extensions. All `node --test` covered
 assets/icons/           logo-icon.png app-icon source + icon.icns / icon.ico / icon.png
                         + alpha-logo.png / alpha-logo.icns (macOS debug builds)
 PRODUCT.md  INTENT.md  README.md  AGENT.md  PRIVACY.md

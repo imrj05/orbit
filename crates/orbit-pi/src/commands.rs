@@ -95,6 +95,8 @@ pub enum CommandId {
     OpenShortcutHelp,
     CheckForUpdates,
     Quit,
+    /// Settings → Subagents, palette-only.
+    ManageSubagents,
     // MCP (Settings → MCP; palette-only, plus dynamic per-server rows)
     OpenMcpSettings,
     AddMcpServer,
@@ -837,6 +839,13 @@ pub static COMMANDS: &[CommandSpec] = &[
     ),
     // ── MCP ────────────────────────────────────────────────────────────
     command(
+        CommandId::ManageSubagents,
+        Application,
+        "icons/task.svg",
+        "command_palette.manage_subagents",
+        "subagents agents delegate child task scout worker reviewer",
+    ),
+    command(
         CommandId::OpenMcpSettings,
         Agent,
         "icons/tools/mcp.svg",
@@ -1278,7 +1287,8 @@ fn action_binding(binding: &Binding) -> Option<KeyBinding> {
         | CommandId::OpenWorktrees
         | CommandId::AddMcpServer
         | CommandId::RefreshMcpServers
-        | CommandId::ReconnectMcpServers => return None,
+        | CommandId::ReconnectMcpServers
+        | CommandId::ManageSubagents => return None,
     })
 }
 

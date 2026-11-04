@@ -524,29 +524,14 @@ impl OrbitApp {
     }
 
     fn skill_toggle(&self, skill: &Skill, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
-        let on = skill.enabled;
-        div()
-            .id("skill-toggle")
-            .w(px(36.))
-            .h(px(20.))
-            .rounded_full()
-            .p(px(2.))
-            .border_1()
-            .border_color(theme.border)
-            .flex()
-            .items_center()
-            .cursor_pointer()
-            .when(on, |track| track.bg(theme.accent).justify_end())
-            .when(!on, |track| {
-                track.bg(theme.surface_elevated).justify_start()
-            })
-            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                this.update(cx, |app, cx| {
-                    app.apply_skill_action(SkillAction::Toggle, cx)
-                });
-            })
-            .child(div().size(px(14.)).rounded_full().bg(theme.toggle_knob))
-            .into_any_element()
+        // One switch per skill: the id keys the transition, so two rows sharing
+        // one id would share a knob.
+        let id = format!("skill-toggle-{}", skill.file.display());
+        switch(id, skill.enabled, &theme, move |_, _, cx| {
+            this.update(cx, |app, cx| {
+                app.apply_skill_action(SkillAction::Toggle, cx)
+            });
+        })
     }
 
     fn skill_actions(&self, skill: &Skill, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {

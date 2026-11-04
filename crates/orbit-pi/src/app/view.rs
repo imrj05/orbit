@@ -1894,40 +1894,16 @@ impl OrbitApp {
         cx: &Context<Self>,
     ) -> AnyElement {
         let theme = *theme::get(cx);
-        let svg = gpui::svg()
-            .path("icons/chevron-down.svg")
-            .flex_none()
-            .size(IconSize::XSmall.px(&theme))
-            .text_color(if open { fg } else { theme.text_muted })
-            .into_any_element();
-        if !open {
-            return svg;
-        }
-        if theme::reduce_motion(cx) {
-            return gpui::svg()
-                .path("icons/chevron-down.svg")
-                .flex_none()
-                .size(IconSize::XSmall.px(&theme))
-                .text_color(fg)
-                .with_transformation(Transformation::rotate(radians(std::f32::consts::PI)))
-                .into_any_element();
-        }
-        gpui::svg()
-            .path("icons/chevron-down.svg")
-            .flex_none()
-            .size(IconSize::XSmall.px(&theme))
-            .text_color(fg)
-            .with_animation(
-                animation_id,
-                Animation::new(Motion::Interaction.duration(&theme))
-                    .with_easing(|d| 1.0 - (1.0 - d).powi(3)),
-                |svg, d| {
-                    svg.with_transformation(Transformation::rotate(radians(
-                        std::f32::consts::PI * d,
-                    )))
-                },
-            )
-            .into_any_element()
+        // One implementation for every caret in the app: a quarter turn on the
+        // Interaction role, instant under Reduce Motion, and the ink quietens
+        // while the menu is closed.
+        disclosure_chevron(
+            animation_id,
+            open,
+            IconSize::XSmall.px(&theme),
+            if open { fg } else { theme.text_muted },
+            &theme,
+        )
     }
 
     /// The access-mode picker popup, while open. Minimal rows: an icon tile,
@@ -2054,13 +2030,13 @@ impl OrbitApp {
             }))
             .child(list);
 
-        let popup = popover_enter("access-menu-in", popup, &theme);
-
         Some(
             anchored_popover(
                 Corner::BottomLeft,
                 point(px(0.), -popover::MENU_OFFSET),
                 popup,
+                "anchored_popover-in-12",
+                &theme,
             )
             .into_any_element(),
         )
@@ -2242,13 +2218,13 @@ impl OrbitApp {
             }))
             .child(list);
 
-        let popup = popover_enter("workflow-menu-in", popup, &theme);
-
         Some(
             anchored_popover(
                 Corner::BottomLeft,
                 point(px(0.), -popover::MENU_OFFSET),
                 popup,
+                "anchored_popover-in-13",
+                &theme,
             )
             .into_any_element(),
         )
@@ -2414,6 +2390,8 @@ impl OrbitApp {
                 Corner::BottomLeft,
                 point(px(0.), -popover::MENU_OFFSET),
                 popup,
+                "anchored_popover-in-14",
+                &theme,
             )
             .into_any_element(),
         )
@@ -2423,7 +2401,11 @@ impl OrbitApp {
     /// paints it on top of everything; `anchored` takes it out of the layout
     /// and pins its bottom-left corner just above the chip, flipping at the
     /// window edges via `snap_to_window_with_margin`.
-    pub(super) fn chip_popup(&self, kind: PickerKind) -> Option<impl IntoElement + use<>> {
+    pub(super) fn chip_popup(
+        &self,
+        kind: PickerKind,
+        theme: &Theme,
+    ) -> Option<impl IntoElement + use<>> {
         self.model_selector
             .clone()
             .and_then(|(open_kind, selector)| {
@@ -2432,6 +2414,8 @@ impl OrbitApp {
                         Corner::BottomLeft,
                         point(px(0.), -popover::MENU_OFFSET),
                         selector,
+                        "anchored_popover-in-15",
+                        theme,
                     )
                 })
             })
@@ -2450,7 +2434,7 @@ impl OrbitApp {
             .flex()
             .flex_col()
             .items_start()
-            .children(self.chip_popup(PickerKind::Model))
+            .children(self.chip_popup(PickerKind::Model, &theme))
             .child(
                 button_frame(div().id("model-chip"), &theme, ButtonSize::Default)
                     .when(!disabled, |chip| {
@@ -2520,7 +2504,7 @@ impl OrbitApp {
                 .flex()
                 .flex_col()
                 .items_start()
-                .children(self.chip_popup(PickerKind::Thinking))
+                .children(self.chip_popup(PickerKind::Thinking, &theme))
                 .child(
                     button_frame(div().id("thinking-chip"), &theme, ButtonSize::Default)
                         .debug_selector(|| "thinking-chip".to_string())
@@ -2922,7 +2906,7 @@ impl OrbitApp {
                                                         },
                                                     )),
                                             )
-                                            .children(self.workspace_picker_popup()),
+                                            .children(self.workspace_picker_popup(&theme)),
                                     ),
                             ),
                     ),
@@ -3498,7 +3482,7 @@ impl OrbitApp {
                                             }),
                                     ),
                             )
-                            .children(self.branch_picker_popup()),
+                            .children(self.branch_picker_popup(&theme)),
                     )
                     .into_any_element()
             }))
@@ -3900,6 +3884,8 @@ impl OrbitApp {
                     Corner::TopRight,
                     point(px(0.), popover::MENU_OFFSET),
                     menu,
+                    "anchored_popover-in-16",
+                    &theme,
                 ))
                 .into_any_element(),
         )
@@ -4218,13 +4204,18 @@ impl OrbitApp {
         cx: &Context<Self>,
     ) -> AnyElement {
         let mode = theme.ui.composer_send_mode;
-        let (icon_path, action) = if running {
-            match mode {
-                SendMode::FollowUp => ("icons/arrow-up.svg", tr!("composer.queue_follow_up")),
-                SendMode::Steer => ("icons/arrow-up-right.svg", tr!("composer.steer_task")),
-            }
-        } else {
-            ("icons/send.svg", tr!("composer.send"))
+        let (icon_path, action, label) = match (running, mode) {
+            (true, SendMode::FollowUp) => (
+                "icons/arrow-up.svg",
+                tr!("composer.queue_follow_up"),
+                tr!("composer.queue"),
+            ),
+            (true, SendMode::Steer) => (
+                "icons/arrow-up-right.svg",
+                tr!("composer.steer_task"),
+                tr!("composer.steer"),
+            ),
+            (false, _) => ("icons/send.svg", tr!("composer.send"), tr!("composer.send")),
         };
         if !has_payload {
             // Resting, unclickable: a darker well and a disabled glyph, with no
@@ -4253,20 +4244,53 @@ impl OrbitApp {
             keys = shortcut,
             action = action.clone()
         );
-        icon_button_frame(div().id("send-btn"), &theme, ButtonSize::Medium)
+        let square = ButtonSize::Medium.height(&theme);
+        // Wider than a square by the label, the gap and the button's own right
+        // padding, so the glyph keeps its centre and the label does not crowd it.
+        let labelled = square + px(52.);
+        let icon_size = ButtonSize::Medium.icon_size().px(&theme);
+        let label_color = theme.action_fg;
+        let control = icon_button_frame(div().id("send-btn"), &theme, ButtonSize::Medium)
             .rounded_full()
             .raised(theme.action, &theme)
-            .hover_action(&theme)
             .pressed_state(&theme, PressedRamp::Action)
             .cursor_pointer()
+            .overflow_hidden()
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_send_click))
-            .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into())
-            .child(icon(
-                icon_path,
-                ButtonSize::Medium.icon_size().px(&theme),
-                theme.action_fg,
-            ))
-            .into_any_element()
+            .tooltip(move |_, cx| cx.new(|_| Tooltip::new(tooltip.clone())).into());
+        // One wrapper owns both values: the hover fades `action` into
+        // `action_hover`, and the state morphs the square into a labelled
+        // button on the longer Travel role. Width and label ride the same
+        // transition, so the control never changes shape in two steps.
+        crate::motion::control(
+            control,
+            "send-btn",
+            &theme,
+            crate::theme::tokens::Motion::Interaction,
+            crate::theme::tokens::Motion::Travel,
+            // Idle with something to send: the button names the action. While a
+            // turn runs it folds back to a square, because the glyph (queue or
+            // steer) is the whole message then.
+            if running { 0.0 } else { 1.0 },
+            move |control, hover, morphed| {
+                control
+                    .bg(crate::motion::blend(
+                        theme.action,
+                        theme.action_hover,
+                        hover,
+                    ))
+                    .w(square + (labelled - square) * morphed)
+                    .child(icon(icon_path, icon_size, label_color))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .child(label.clone())
+                            .opacity(morphed),
+                    )
+            },
+        )
     }
 
     /// Stop the run. Neutral at rest — stopping is routine, not a failure — and

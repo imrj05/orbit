@@ -77,6 +77,7 @@ summary sparkline to read that day across the whole row:
 - Enforced by a bundled pi extension that hooks `tool_call` and confirms mutating calls the mode does not auto-approve
 - An inline bar above the composer offers **Allow once / Always allow this tool / Deny** (↑ ↓ ⏎ esc), with the allowlist recorded per mode
 - A confirmation guard, not a sandbox — pi ships no sandbox, and Orbit does not add one
+- **Subagents** — the model can delegate a scoped task to a child `pi` process with its own context window and get back a short report plus its cost. Children inherit the session's access and workflow modes; a delegation the session mode cannot finish is refused before it spends anything
 
 **Review and Git**
 

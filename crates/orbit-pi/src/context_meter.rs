@@ -308,7 +308,7 @@ pub fn compact_card(
 
 /// Money label for a session cost in USD. Sub-cent amounts read `<$0.01`
 /// rather than rounding to a misleading `$0.00`.
-fn format_cost(cost: f64) -> String {
+pub(crate) fn format_cost(cost: f64) -> String {
     if !cost.is_finite() || cost <= 0.0 {
         "$0.00".into()
     } else if cost < 0.01 {

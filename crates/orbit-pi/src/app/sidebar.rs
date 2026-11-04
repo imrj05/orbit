@@ -2524,7 +2524,7 @@ pub(crate) fn sidebar_options_popup(
             px(0.),
             ButtonSize::Compact.height(&theme) + popover::MENU_OFFSET,
         ),
-        popup,
+        popup, "anchored_popover-in-5", &theme,
     )
     .into_any_element()
 }

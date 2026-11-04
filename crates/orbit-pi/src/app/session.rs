@@ -1981,7 +1981,7 @@ impl OrbitApp {
                 .child(anchored_popover(
                     Corner::TopRight,
                     point(px(0.), popover::MENU_OFFSET),
-                    popup,
+                    popup, "anchored_popover-in-2", &theme,
                 ))
                 .into_any_element(),
         )
@@ -2367,7 +2367,7 @@ impl OrbitApp {
                 .child(anchored_popover(
                     Corner::TopRight,
                     point(px(0.), popover::MENU_OFFSET),
-                    popup,
+                    popup, "anchored_popover-in-3", &theme,
                 ))
                 .into_any_element(),
         )

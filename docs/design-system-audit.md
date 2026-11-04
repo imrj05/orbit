@@ -386,8 +386,8 @@ millisecond duration, so a new surface cannot reintroduce one.
 | Sidebar navigation | slide `Layout`; running-session shimmer | slide snaps; shimmer freezes on a frame |
 | Buttons and icon buttons | none — states are instant | n/a |
 | Tabs and active indicators | none — states are instant | n/a |
-| Dropdowns and popovers | `popover_enter` fade on `Interaction` | appears at once |
-| Dialogs and modals | none — they appear fully formed | n/a |
+| Dropdowns and popovers | fade on `Interaction`; the access and workflow menus also travel 8 px out of the anchor edge | appears at once |
+| Dialogs and modals | fade in on `Layout` (all 8 modals); no scale, because gpui has no box transform | the card appears at once |
 | Toasts | enter on `Interaction`; the life bar runs the toast's own TTL | card is static; TTL still expires it |
 | Expandable sections | chevron rotation on `Interaction` | rotation completes instantly |
 | Command palette | none — it appears fully formed | n/a |
@@ -402,6 +402,54 @@ Two durations stay outside the roles, by verdict rather than omission:
   motion choice. It is guarded like everything else.
 * **Chart reveals** use the `chart` module; a test asserts they are longer than
   every transition so the cadence cannot leak into chrome.
+
+### Micro-interaction layer (shipping, not finished)
+
+`DESIGN.md` §Motion System specifies the layer every interactive surface answers
+through: hover and selection crossfades, a press ramp, a focus-ring fade, a
+travelling switch knob, a segment that fades both states, a rotating disclosure
+chevron, a travelling popover, a fading dialog, panel slides and the composer's
+send morph.
+
+Shipped since: the five primitives (`src/motion/`, 29 headless tests), the fourth
+role `Travel` (260 ms, band-asserted), the three-way Reduce Motion preference,
+`motion::interactive` (`hover`, `control`, `state`), `motion::enter`, and
+`helpers::{switch, disclosure_chevron}`. Two rows of the spec cannot be built on
+gpui 0.2.2 — a press has no transform to scale with, and an unreserved focus ring
+would shift layout — so `DESIGN.md` states both limits instead of promising them.
+
+Coverage today. "Specified" is the layer's contract, not a promise for this file:
+
+| Coverage | Today | Specified |
+| -- | --: | --: |
+| `with_animation` sites in the tree | 26 | — |
+| Of those, inside `src/motion/` (hover, control, state, enter) | 4 | every transition and entrance routes through the layer |
+| Of those, loops (`looping::`) and chart cadences (`chart::`) | 7 + 3 | unchanged by the layer, by design |
+| `hover_state(…)` call sites still swapping | 208 | fade through `ControlExt` |
+| `pressed_state(…)` call sites | 53 | inherit the press ramp |
+| Controls whose hover fades (`motion::hover`) | 2 helpers + 2 segments | every interactive surface |
+| Anchored popovers entering through the chokepoint | 19 of 19 (16 travel) | every anchored surface |
+| Modal cards entering through `motion::enter` | 8 of 8 | 8 of 8 |
+| Switches travelling through `motion::state` | 3 of 3 | 3 of 3 |
+| Segments fading hover *and* selection | 2 of 2 in Settings | every segmented control |
+| Disclosure chevrons that rotate | every one — no glyph swap remains | all, via `helpers::disclosure_chevron` |
+| Send button morph | 1 of 1 | 1 of 1 |
+| Panel slides | 0 of 4 (explorer, Review, terminal, Git) | every panel |
+| `Motion::Instant` uses | 0 | press and focus acknowledgement |
+| `Motion::*::nominal()` outside `theme/tokens.rs` | 0 | enforced by `check_motion.py` |
+
+The two `nominal()` call sites are fixed: the copy-section fade resolves its
+duration through `Motion::duration(&theme)`, so Reduce Motion collapses it, and it
+never mounts the animation element when the role resolves to zero — gpui divides
+by the duration, and a zero-duration `Animation` is a NaN, not a still frame.
+`wallpaper.rs` had the same `nominal()` and now resolves through the role too;
+`check_motion.py` fails the build on any future call.
+
+That fade is the shape the motion layer generalises: `SectionHover` samples the
+opacity on screen at every flip and `hover.generation` rides in the element id
+(`transcript_view.rs:4271, 4297`), so a reversal resumes from the painted value
+instead of snapping. What it still lacks is a home outside one surface's state —
+`motion::Transition` plus `motion::Transitions` is that home.
 
 ## 11. Phase 6 verification
 

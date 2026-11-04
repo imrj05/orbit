@@ -46,6 +46,8 @@ orbit-rpc = { path = "../orbit-rpc" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 unicode-segmentation = "1"
+# Parse CSS colour literals displayed in assistant responses.
+csscolorparser = { version = "0.9", default-features = false, features = ["std"] }
 include_dir = "0.7"
 # The Explorer's workspace walker. Ripgrep's recursive walker already exists
 # transitively (via `notify`/`globset`), so naming it adds no new package; it

@@ -668,6 +668,12 @@ impl OrbitApp {
             CommandId::OpenSettings => {
                 self.on_open_settings(&crate::OpenSettings, window, cx);
             }
+            CommandId::ManageSubagents => {
+                self.command_palette = None;
+                self.settings_open = true;
+                self.set_settings_section(SettingsSection::Subagents, cx);
+                self.sync_terminal_active(cx);
+            }
             CommandId::OpenMcpSettings => {
                 self.command_palette = None;
                 self.settings_open = true;
@@ -866,7 +872,7 @@ impl OrbitApp {
     }
 
     /// Popover anchored below the new-task page's workspace field.
-    pub(super) fn workspace_picker_popup(&self) -> Option<AnyElement> {
+    pub(super) fn workspace_picker_popup(&self, theme: &crate::theme::Theme) -> Option<AnyElement> {
         self.workspace_picker.clone().map(|picker| {
             div()
                 .absolute()
@@ -877,13 +883,15 @@ impl OrbitApp {
                     Corner::TopLeft,
                     point(px(0.), popover::MENU_OFFSET),
                     picker,
+                    "anchored_popover-in-7",
+                    theme,
                 ))
                 .into_any_element()
         })
     }
 
     /// Popover anchored above the status-bar branch chip.
-    pub(super) fn branch_picker_popup(&self) -> Option<AnyElement> {
+    pub(super) fn branch_picker_popup(&self, theme: &crate::theme::Theme) -> Option<AnyElement> {
         self.branch_picker.clone().map(|picker| {
             div()
                 .absolute()
@@ -894,6 +902,8 @@ impl OrbitApp {
                     Corner::BottomLeft,
                     point(px(0.), -popover::MENU_OFFSET),
                     picker,
+                    "anchored_popover-in-8",
+                    theme,
                 ))
                 .into_any_element()
         })

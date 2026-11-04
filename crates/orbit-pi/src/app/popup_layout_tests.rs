@@ -3,6 +3,17 @@ use crate::app::helpers::anchored_popover_in_window;
 
 // ── settings select popup anchoring ───────────────────────────────────
 
+/// These tests measure where a popup *rests*, and the motion layer's entrance
+/// starts it 8 px toward its anchor. Reduce Motion is the supported way to ask
+/// for the settled frame, so the geometry assertions stay about geometry.
+fn without_motion(cx: &mut gpui::TestAppContext) {
+    cx.update(|cx| {
+        let mut theme = Theme::dark();
+        theme.ui.motion = crate::theme::MotionPreference::Reduced;
+        cx.set_global(theme);
+    });
+}
+
 /// A settings select control: a 26 px chip with its popup anchored to a
 /// zero-size point at the chip's top-right, exactly like `select_control`.
 /// `legacy` reproduces the old `Local` + snap anchoring; the fixed code
@@ -15,7 +26,7 @@ struct SettingsSelectAnchorProbe {
 }
 
 impl Render for SettingsSelectAnchorProbe {
-    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let vp = window.viewport_size();
         let gap = if self.near_bottom {
             vp.height - px(80.)
@@ -43,8 +54,14 @@ impl Render for SettingsSelectAnchorProbe {
                 .child(deferred(popup))
                 .into_any_element()
         } else {
-            anchored_popover_in_window(Corner::TopRight, point(px(0.), px(30.)), popup)
-                .into_any_element()
+            anchored_popover_in_window(
+                Corner::TopRight,
+                point(px(0.), px(30.)),
+                popup,
+                "popover-in-test",
+                crate::theme::get(cx),
+            )
+            .into_any_element()
         };
         div()
             .flex()
@@ -100,6 +117,7 @@ fn local_snap_anchor_covers_the_chip_near_the_viewport_top(cx: &mut gpui::TestAp
 /// other dropdown in the app follows.
 #[gpui::test]
 fn settings_select_popup_opens_below_its_chip(cx: &mut gpui::TestAppContext) {
+    without_motion(cx);
     let cx = cx.add_empty_window();
     let _ = cx.draw(
         point(px(0.), px(0.)),
@@ -129,6 +147,7 @@ fn settings_select_popup_opens_below_its_chip(cx: &mut gpui::TestAppContext) {
 /// snapping over it; it sits flush so the chip stays clickable.
 #[gpui::test]
 fn settings_select_popup_flips_above_near_the_viewport_bottom(cx: &mut gpui::TestAppContext) {
+    without_motion(cx);
     let cx = cx.add_empty_window();
     let _ = cx.draw(
         point(px(0.), px(0.)),

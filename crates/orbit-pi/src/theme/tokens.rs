@@ -1260,19 +1260,23 @@ impl From<AnimationDuration> for Duration {
 
 /// Orbit's named motion roles, layered on [`AnimationDuration`].
 ///
-/// A surface picks a role, not a number. The roles are the three bands
-/// `DESIGN.md` §Motion System defines, and they are the only durations a
-/// one-shot transition may use:
+/// A surface picks a role, not a number. The roles are the bands `DESIGN.md`
+/// §Motion System defines, and they are the only durations a one-shot
+/// transition may use:
 ///
 /// | Role | Duration | Band | Used for |
 /// | -- | --: | -- | -- |
 /// | `Instant` | 50 ms | 0–80 | Focus, press acknowledgement |
 /// | `Interaction` | 150 ms | 120–160 | Hover, selection, menu appearance |
 /// | `Layout` | 200 ms | 160–220 | Panel open/close, disclosure |
+/// | `Travel` | 260 ms | 220–320 | A card moving as a whole: popover travel, dialog entrance, send morph |
 ///
 /// `Instant` and `Interaction` are Zed's own values
-/// ([`AnimationDuration::Instant`] / `Fast`). `Layout` is Orbit's: Zed's
-/// `Slow` is 300 ms, which reads as hesitation on a workbench panel.
+/// ([`AnimationDuration::Instant`] / `Fast`). `Layout` and `Travel` are
+/// Orbit's: Zed's `Slow` is 300 ms, which reads as hesitation on a workbench
+/// panel, and a card crossing 200 px in 150 ms reads as a teleport rather than
+/// travel. `Travel` moves a card, never a row — hover, press, focus and
+/// selection stay inside `Interaction`.
 ///
 /// **Reduce Motion is a property of the role, not of each call site.**
 /// [`Motion::duration`] returns zero when the setting is on, so a transition
@@ -1288,10 +1292,13 @@ pub enum Motion {
     Interaction,
     /// 200 ms: a region of the layout changed size or presence.
     Layout,
+    /// 260 ms: a surface moves as a whole. Never a row: a hover or a press that
+    /// took this long would lag the pointer.
+    Travel,
 }
 
 impl Motion {
-    pub const ALL: [Self; 3] = [Self::Instant, Self::Interaction, Self::Layout];
+    pub const ALL: [Self; 4] = [Self::Instant, Self::Interaction, Self::Layout, Self::Travel];
 
     /// The role's duration before Reduce Motion is considered.
     pub const fn nominal(self) -> Duration {
@@ -1299,6 +1306,7 @@ impl Motion {
             Self::Instant => AnimationDuration::Instant.duration(),
             Self::Interaction => AnimationDuration::Fast.duration(),
             Self::Layout => Duration::from_millis(200),
+            Self::Travel => Duration::from_millis(260),
         }
     }
 
@@ -1321,7 +1329,7 @@ impl Motion {
         }
         match self {
             Self::Instant => gpui::linear,
-            Self::Interaction | Self::Layout => ease_out_quint,
+            Self::Interaction | Self::Layout | Self::Travel => ease_out_quint,
         }
     }
 }
@@ -1381,39 +1389,10 @@ pub mod chart {
     pub const REVEAL: Duration = Duration::from_millis(1100);
 
     /// The chart easing: a symmetric cubic that starts and ends quietly, so a
-    /// reveal reads as drawing rather than sliding.
+    /// reveal reads as drawing rather than sliding. Built by the motion layer's
+    /// one curve builder, so a chart and a transition cannot drift apart.
     pub fn ease() -> impl Fn(f32) -> f32 {
-        cubic_bezier(0.85, 0.0, 0.15, 1.0)
-    }
-
-    /// A cubic Bézier easing curve, parameterised by its two control points.
-    fn cubic_bezier(x1: f32, y1: f32, x2: f32, y2: f32) -> impl Fn(f32) -> f32 {
-        move |t: f32| {
-            let x = t.clamp(0.0, 1.0);
-            if x <= 0.0 {
-                return 0.0;
-            }
-            if x >= 1.0 {
-                return 1.0;
-            }
-            // x(s) is monotone for these curves, so bisection finds the curve
-            // parameter that lands on this x; then read y there.
-            let (mut low, mut high) = (0.0_f32, 1.0_f32);
-            for _ in 0..18 {
-                let mid = (low + high) / 2.0;
-                if bezier(mid, x1, x2) < x {
-                    low = mid;
-                } else {
-                    high = mid;
-                }
-            }
-            bezier((low + high) / 2.0, y1, y2).clamp(0.0, 1.0)
-        }
-    }
-
-    fn bezier(t: f32, p1: f32, p2: f32) -> f32 {
-        let mt = 1.0 - t;
-        3.0 * mt * mt * t * p1 + 3.0 * mt * t * t * p2 + t * t * t
+        crate::motion::ease::bezier(0.85, 0.0, 0.15, 1.0)
     }
 
     #[cfg(test)]
@@ -1425,7 +1404,12 @@ pub mod chart {
         #[test]
         fn chart_cadence_is_longer_than_any_transition_band() {
             for duration in [DRAW, MORPH, REVEAL] {
-                assert!(duration > crate::theme::tokens::Motion::Layout.nominal());
+                for motion in crate::theme::tokens::Motion::ALL {
+                    assert!(
+                        duration > motion.nominal(),
+                        "{duration:?} must stay outside the {motion:?} band"
+                    );
+                }
             }
         }
 
@@ -1768,12 +1752,15 @@ mod tests {
     fn motion_roles_fill_the_spec_bands() {
         let ms = |motion: Motion| motion.nominal().as_millis() as u64;
         // DESIGN.md §Motion System: instant 0–80, interaction 120–160,
-        // layout 160–220. The bands are a contract, not a suggestion.
+        // layout 160–220, travel 220–320. The bands are a contract, not a
+        // suggestion.
         assert!((0..=80).contains(&ms(Motion::Instant)));
         assert!((120..=160).contains(&ms(Motion::Interaction)));
         assert!((160..=220).contains(&ms(Motion::Layout)));
+        assert!((220..=320).contains(&ms(Motion::Travel)));
         assert!(ms(Motion::Instant) < ms(Motion::Interaction));
         assert!(ms(Motion::Interaction) < ms(Motion::Layout));
+        assert!(ms(Motion::Layout) < ms(Motion::Travel));
     }
 
     #[test]
@@ -1782,18 +1769,18 @@ mod tests {
         for motion in Motion::ALL {
             assert_eq!(motion.duration(&theme), motion.nominal());
         }
-        theme.ui.reduce_motion = true;
+        theme.ui.motion = crate::theme::MotionPreference::Reduced;
         for motion in Motion::ALL {
             assert_eq!(motion.duration(&theme), Duration::ZERO, "{motion:?}");
         }
     }
 
-    /// The OS preference is honoured on its own: a user whose system asks for
-    /// reduced motion gets instant transitions even with Orbit's own toggle off.
+    /// `System` follows the OS on its own: a user whose system asks for reduced
+    /// motion gets instant transitions without touching Orbit's setting.
     #[test]
     fn the_os_reduce_motion_preference_is_honoured() {
         let mut theme = Theme::dark();
-        theme.ui.reduce_motion = false;
+        theme.ui.motion = crate::theme::MotionPreference::System;
         crate::theme::set_os_reduce_motion_for_test(true);
         assert!(theme.reduce_motion(), "the OS asks for it");
         assert_eq!(Motion::Interaction.duration(&theme), Duration::ZERO);

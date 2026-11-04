@@ -578,13 +578,21 @@ pub(crate) fn anchored_popover(
     corner: Corner,
     offset: Point<Pixels>,
     popup: impl IntoElement + 'static,
+    id: impl Into<SharedString>,
+    theme: &Theme,
 ) -> AnyElement {
     anchored()
         .position_mode(AnchoredPositionMode::Local)
         .anchor(corner)
         .offset(offset)
         .snap_to_window_with_margin(popover::WINDOW_MARGIN)
-        .child(deferred(popup))
+        // Every menu enters here, so a new one cannot forget its entrance.
+        .child(deferred(popover_enter_from(
+            corner,
+            id,
+            div().child(popup),
+            theme,
+        )))
         .into_any_element()
 }
 
@@ -593,11 +601,15 @@ pub(crate) fn anchored_popover(
 pub(crate) fn anchored_popover_at(
     position: Point<Pixels>,
     popup: impl IntoElement + 'static,
+    id: impl Into<SharedString>,
+    theme: &Theme,
 ) -> AnyElement {
     anchored()
         .position(position)
         .snap_to_window_with_margin(popover::WINDOW_MARGIN)
-        .child(deferred(popup))
+        // A context menu at the pointer has no anchor edge to travel from, so it
+        // fades only.
+        .child(deferred(popover_enter(id, div().child(popup), theme)))
         .into_any_element()
 }
 
@@ -607,32 +619,45 @@ pub(crate) fn anchored_popover_in_window(
     corner: Corner,
     offset: Point<Pixels>,
     popup: impl IntoElement + 'static,
+    id: impl Into<SharedString>,
+    theme: &Theme,
 ) -> AnyElement {
     anchored()
         .position_mode(AnchoredPositionMode::Window)
         .anchor(corner)
         .offset(offset)
-        .child(deferred(popup))
+        .child(deferred(popover_enter_from(
+            corner,
+            id,
+            div().child(popup),
+            theme,
+        )))
         .into_any_element()
 }
 
 /// A popover's entrance: fade in on [`Motion::Interaction`], or appear at once
 /// when Reduce Motion is on. The guard and the cadence belong to the shell, so
 /// a new popup cannot forget either.
-pub(crate) fn popover_enter<E>(id: impl Into<ElementId>, el: E, theme: &Theme) -> AnyElement
+pub(crate) fn popover_enter<E>(id: impl Into<SharedString>, el: E, theme: &Theme) -> AnyElement
 where
     E: Styled + IntoElement + 'static,
 {
-    let motion = Motion::Interaction;
-    if theme.reduce_motion() {
-        return el.into_any_element();
-    }
-    el.with_animation(
-        id,
-        Animation::new(motion.duration(theme)).with_easing(motion.easing()),
-        |el, delta| el.opacity(delta),
-    )
-    .into_any_element()
+    crate::motion::enter(el, id, theme, Motion::Interaction, None)
+}
+
+/// A menu's entrance: the fade above, plus an 8px travel out of the anchor edge
+/// so the card reads as arriving from the control that opened it. Dismissal
+/// stays instant — a menu that lingers after a click is a tax on the next one.
+pub(crate) fn popover_enter_from<E>(
+    corner: Corner,
+    id: impl Into<SharedString>,
+    el: E,
+    theme: &Theme,
+) -> AnyElement
+where
+    E: Styled + IntoElement + 'static,
+{
+    crate::motion::enter(el, id, theme, Motion::Interaction, Some(corner))
 }
 
 /// The frame every modal shares: the elevated surface, its floating shadow and
@@ -989,6 +1014,106 @@ pub(crate) fn segmented_segment<E: Styled + gpui::InteractiveElement>(
         SegmentPosition::Last => el.rounded_r(radius).border_l_0(),
         SegmentPosition::Middle => el.border_l_0(),
     }
+}
+
+/// The app's one disclosure chevron: `chevron-right`, turning a quarter turn to
+/// point down while `open`, on [`Motion::Interaction`].
+///
+/// One glyph rotates instead of two glyphs swapping, because a swap cannot be
+/// animated — the eye reads a jump where the shape should carry through. Reduce
+/// Motion turns it instantly, which is the same picture without the travel.
+///
+/// `id` must be unique per chevron: it keys the transition.
+pub(crate) fn disclosure_chevron(
+    id: impl Into<SharedString>,
+    open: bool,
+    size: impl Into<Pixels>,
+    color: Hsla,
+    theme: &Theme,
+) -> AnyElement {
+    let svg = gpui::svg()
+        .path("icons/chevron-right.svg")
+        .flex_none()
+        .size(size.into())
+        .text_color(color);
+    crate::motion::state(
+        svg,
+        id,
+        theme,
+        Motion::Interaction,
+        if open { 1.0 } else { 0.0 },
+        |svg, value| svg.with_transformation(Transformation::rotate(radians(chevron_angle(value)))),
+    )
+}
+
+/// The angle for a point on the chevron's turn: 0 while closed, a quarter turn
+/// (90°) while open.
+fn chevron_angle(value: f32) -> f32 {
+    std::f32::consts::FRAC_PI_2 * value.clamp(0.0, 1.0)
+}
+
+/// The app's one switch: a 36×20 track and a 14px knob that travels between the
+/// ends on [`Motion::Interaction`], with the track cross-fading from
+/// `surface_elevated` to `accent`.
+///
+/// The three settings switches (Reduce Motion, automatic updates, a skill's
+/// enablement) all render through this, so a switch cannot drift in shape or in
+/// motion. `id` must be unique per switch — it keys the transition as well as
+/// the element.
+pub(crate) fn switch(
+    id: impl Into<SharedString>,
+    on: bool,
+    theme: &Theme,
+    on_click: impl Fn(&gpui::MouseUpEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    let theme = *theme;
+    let id = id.into();
+    let padding = DynamicSpacing::Base02.px(&theme);
+    let travel = switch_travel(&theme);
+    let track = div()
+        .id(gpui::ElementId::Name(id.clone()))
+        .w(px(36.))
+        .h(DynamicSpacing::Base20.px(&theme))
+        .rounded_full()
+        .p(padding)
+        .border_1()
+        .border_color(theme.border)
+        .flex()
+        .items_center()
+        .cursor_pointer()
+        .hover_border(&theme)
+        .on_mouse_up(MouseButton::Left, on_click);
+    crate::motion::state(
+        track,
+        id,
+        &theme,
+        Motion::Interaction,
+        if on { 1.0 } else { 0.0 },
+        move |track, value| {
+            track
+                .bg(crate::motion::blend(
+                    theme.surface_elevated,
+                    theme.accent,
+                    value,
+                ))
+                .child(
+                    div()
+                        .flex_none()
+                        .size(px(14.))
+                        .rounded_full()
+                        .bg(theme.toggle_knob)
+                        // Relative, so the knob travels without re-laying out the
+                        // track — and without moving the hitbox the click lands on.
+                        .relative()
+                        .left(travel * value),
+                )
+        },
+    )
+}
+
+/// How far a switch's knob travels: the track, less its padding and the knob.
+fn switch_travel(theme: &Theme) -> Pixels {
+    px(36.) - DynamicSpacing::Base02.px(theme) * 2.0 - px(14.)
 }
 
 /// An icon-only button's frame, Zed's `IconButton`: a square as tall as its
@@ -1875,6 +2000,49 @@ pub(crate) fn format_uptime(elapsed: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The chevron's turn is a quarter turn and nothing else: the same glyph in
+    /// the same place, so the row does not appear to swap icons.
+    #[test]
+    fn a_disclosure_chevron_turns_exactly_a_quarter_turn() {
+        assert_eq!(chevron_angle(0.0), 0.0, "closed points right");
+        assert!(
+            (chevron_angle(1.0) - std::f32::consts::FRAC_PI_2).abs() < 1e-6,
+            "open points down"
+        );
+        assert!(
+            (chevron_angle(0.5) - std::f32::consts::FRAC_PI_4).abs() < 1e-6,
+            "halfway is halfway"
+        );
+        // Clamped, so a delayed frame cannot over-rotate the glyph.
+        assert!((chevron_angle(2.0) - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        assert_eq!(chevron_angle(-1.0), 0.0);
+    }
+
+    /// A switch's knob travels the track's inner span, and the span has to stay
+    /// positive at every spacing density the user can choose — at Compact the
+    /// padding shrinks and the knob has further to go, not less.
+    #[test]
+    fn a_switch_knob_travels_the_tracks_inner_span() {
+        for density in crate::theme::SPACING_DENSITIES {
+            let mut theme = Theme::dark();
+            theme.ui.spacing_density = density;
+            let travel = switch_travel(&theme);
+            let padding = DynamicSpacing::Base02.px(&theme);
+            assert!(
+                travel > px(0.),
+                "the knob would fall off the track at {density}% density"
+            );
+            // Track = padding + knob + travel + padding.
+            assert_eq!(
+                padding + px(14.) + travel + padding,
+                px(36.),
+                "the knob must land flush with the far edge at {density}%"
+            );
+        }
+        // The default density is the geometry the design system states.
+        assert_eq!(switch_travel(&Theme::dark()), px(18.));
+    }
 
     /// `header_chip` dresses the surface (hairline, glass, hover lift) but
     /// must leave the caller's rounding alone: a circular control may use
