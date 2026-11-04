@@ -18,6 +18,19 @@ impl OrbitApp {
     /// Heartbeat (~90ms): drain protocol events into the UI. Returns whether a
     /// run is in flight so the caller can repaint faster while tokens stream.
     pub(crate) fn tick(&mut self, cx: &mut Context<Self>) -> bool {
+        let active = self.tick_once(cx);
+        // A quit asked for while pi was forking waits for the reply that moves
+        // this process onto the branch. Checked after the drain (not inside
+        // it) so the reply from this tick is applied first, and on ticks with
+        // no client at all, where a teardown may have invalidated the fork.
+        if self.take_deferred_quit() {
+            cx.quit();
+            return false;
+        }
+        active
+    }
+
+    fn tick_once(&mut self, cx: &mut Context<Self>) -> bool {
         // Let a lapsed status message disappear from the status bar.
         if self
             .status_at

@@ -268,6 +268,26 @@ pub(crate) enum ReviewMark {
     Failed,
 }
 
+/// Who asked the app to quit. The wait a pending fork imposes is the same for
+/// both; only what the person is told differs, because the updater's quit ends
+/// in an install and relaunch rather than an exit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum QuitRequest {
+    /// Cmd-Q, the menu item, or the palette's Quit command.
+    User,
+    /// The updater's helper, waiting to swap in a staged build.
+    Update,
+}
+
+/// What a quit request does when a fork is in flight.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum QuitPlan {
+    /// Quit now.
+    Now,
+    /// Wait for the fork reply, then quit.
+    Wait,
+}
+
 pub struct OrbitApp {
     client: Option<PiClient>,
     /// Live state of the active pi process, surfaced in Settings → Runtime.
@@ -614,6 +634,10 @@ pub struct OrbitApp {
     /// read. The read drives the honest "blocked" / "unbundled" rows — a
     /// switch the OS is blocking must not look like it is working.
     notification_prefs: notifications::Prefs,
+    /// Settings → General: whether Markdown/PDF exports carry reasoning and
+    /// tool output (persisted to `~/.orbit-pi/exports.json`). Off by default —
+    /// the visible projection is what the conversation reads as.
+    export_prefs: crate::export_prefs::Prefs,
     notification_auth: notifications::DesktopAuth,
     notification_auth_pending: bool,
     /// Whether this window is frontmost. Notifications are held while it is:
@@ -876,6 +900,13 @@ pub struct OrbitApp {
     /// The prompt's own images, captured before the fork so a regenerate can
     /// resend the whole prompt instead of just its text.
     rewind_prompt_images: Vec<Attachment>,
+    /// The user asked to quit while a fork was in flight. The fork reply moves
+    /// the process onto the branch pi wrote, so quitting before it lands would
+    /// leave a branch on disk that this run never adopted; the heartbeat quits
+    /// once that reply (and a regenerate's resend) has settled. A second quit
+    /// request clears the patience — a fork that never answers must not trap
+    /// the app.
+    quit_when_fork_settles: bool,
     /// A fork reply was lost to a process teardown and pi may already have
     /// written the branch file. The next tick reloads the session list.
     sessions_refresh_pending: bool,
@@ -1135,16 +1166,22 @@ pub struct OrbitApp {
     /// Re-render the skill list as the filter is typed.
     _skills_filter_sub: Subscription,
     /// Background updater status mirrored from the global: `Idle` (nothing to
-    /// show), `Available` (the footer and settings offer the update),
-    /// `Updating` (spinning until the app quits to install). The payload
-    /// details stay on the worker; only the release version rides along.
+    /// show), `Available` (a newer release is on offer, nothing downloaded),
+    /// `Downloading` (verified bytes arriving), `Ready` (staged, waiting for
+    /// the restart), `Updating` (spinning until the app quits to install). The
+    /// payload details stay on the worker; only the release version rides
+    /// along.
     updater_status: crate::updater::UpdateStatus,
-    /// The staged release's version (e.g. `0.0.3`), mirrored beside
-    /// `updater_status` so the settings buttons can name the download.
+    /// The release's version (e.g. `0.0.3`), mirrored beside `updater_status`
+    /// so the modal and the settings buttons can name the target either before
+    /// or after it is downloaded.
     updater_version: Option<String>,
-    /// The staged release's notes from the feed, mirrored for the update
-    /// modal's changelog.
+    /// The release's notes from the feed, mirrored for the update modal's
+    /// changelog. Available before the download, since the check carries them.
     updater_notes: Option<String>,
+    /// The download in flight, as (downloaded, total) bytes. `None` when
+    /// nothing is downloading; the modal's bar reads it.
+    updater_progress: Option<(u64, u64)>,
     /// The feed's releases, newest first, mirrored for the modal's Version
     /// History. Empty until the first check answers.
     updater_history: Vec<crate::updater::Release>,
@@ -2146,6 +2183,7 @@ impl OrbitApp {
             bug_report_busy: false,
             bug_report_error: None,
             notification_prefs: notifications::Prefs::load(),
+            export_prefs: crate::export_prefs::Prefs::load(),
             notification_auth: notifications::DesktopAuth::Unknown,
             notification_auth_pending: false,
             window_active: true,
@@ -2259,6 +2297,7 @@ impl OrbitApp {
             rewind_preselect: None,
             rewind_intent: ForkIntent::Edit,
             pending_regenerate: None,
+            quit_when_fork_settles: false,
             rewind_prompt_images: Vec::new(),
             sessions_refresh_pending: false,
             pdf_previews: Vec::new(),
@@ -2387,6 +2426,7 @@ impl OrbitApp {
                 .try_global::<crate::updater::UpdaterState>()
                 .and_then(|state| state.0.as_ref())
                 .and_then(|updater| updater.available_version()),
+            updater_progress: None,
             updater_notes: cx
                 .try_global::<crate::updater::UpdaterState>()
                 .and_then(|state| state.0.as_ref())
@@ -3523,14 +3563,19 @@ pub(crate) struct WorktreeMenu {
 pub(crate) enum UpdateDialog {
     /// A check is in flight; the modal shows "Searching for a new version…".
     Checking,
-    /// A signed release is staged and ready. `from_check` picks the secondary
-    /// button's label: a check offers Cancel, the download control offers
-    /// Later.
+    /// A release is on offer or staged. The version and notes came from the
+    /// feed, so this is the same surface before and after the download —
+    /// `updater_status` decides whether the primary button downloads or
+    /// restarts. `from_check` picks the secondary button's label: a check
+    /// offers Cancel, the download control offers Later.
     Available {
         version: String,
         notes: Option<String>,
         from_check: bool,
     },
+    /// The verified artifact is downloading. The bar reads
+    /// `OrbitApp::updater_progress`; the version is the target being fetched.
+    Downloading { version: String },
     /// The check completed and this build is current.
     UpToDate,
     /// The check or install failed, with the message to show inline.

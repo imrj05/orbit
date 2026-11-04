@@ -1023,6 +1023,82 @@ fn an_in_flight_fork_blocks_session_replacement_and_prompt_submission(
     });
 }
 
+/// A quit requested while pi is forking waits for the reply that moves the
+/// process onto the branch; a second request goes now, so a fork that never
+/// answers cannot trap the app or leave the updater's helper waiting.
+#[gpui::test]
+fn quitting_waits_for_a_pending_fork_and_a_second_request_goes_now(cx: &mut gpui::TestAppContext) {
+    let app = test_app(cx);
+    let cx = cx.add_empty_window();
+    cx.update(|_, cx| {
+        app.update(cx, |app, _| {
+            assert_eq!(app.quit_plan(), crate::app::QuitPlan::Now);
+            app.rewind_fork_id = Some("fork-id".into());
+            assert_eq!(app.quit_plan(), crate::app::QuitPlan::Wait);
+            assert!(app.quit_when_fork_settles);
+            assert_eq!(
+                app.quit_plan(),
+                crate::app::QuitPlan::Now,
+                "the second request skips the wait"
+            );
+        });
+    });
+}
+
+/// The heartbeat releases the deferred quit only once the branch has been
+/// adopted, and a lost fork releases it instead of waiting forever.
+#[gpui::test]
+fn a_deferred_quit_waits_for_the_fork_and_the_resend_it_queues(cx: &mut gpui::TestAppContext) {
+    let app = test_app(cx);
+    let cx = cx.add_empty_window();
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.rewind_fork_id = Some("fork-id".into());
+            assert_eq!(app.quit_plan(), crate::app::QuitPlan::Wait);
+            assert!(!app.take_deferred_quit());
+
+            // A regenerate's resend is queued after the fork reply; quitting
+            // between the two would leave a branch it never resent.
+            app.rewind_fork_id = None;
+            app.pending_regenerate = Some(PendingRegenerate {
+                state_id: "state-1".into(),
+                text: "prompt".into(),
+                images: Vec::new(),
+            });
+            assert!(!app.take_deferred_quit());
+
+            app.pending_regenerate = None;
+            assert!(app.take_deferred_quit());
+            assert!(!app.quit_when_fork_settles);
+            assert!(
+                !app.take_deferred_quit(),
+                "a deferred quit is released once"
+            );
+            app.tick(cx);
+            assert!(
+                !app.quit_when_fork_settles,
+                "the heartbeat has nothing left to quit for"
+            );
+        });
+    });
+}
+
+/// A fork whose reply is lost to a teardown must not hold the deferred quit:
+/// pi may have written the branch, but there is no reply left to apply.
+#[gpui::test]
+fn a_lost_fork_releases_a_deferred_quit(cx: &mut gpui::TestAppContext) {
+    let app = test_app(cx);
+    let cx = cx.add_empty_window();
+    cx.update(|_, cx| {
+        app.update(cx, |app, _| {
+            app.rewind_fork_id = Some("fork-id".into());
+            assert_eq!(app.quit_plan(), crate::app::QuitPlan::Wait);
+            assert!(app.take_pending_fork(), "the lost reply is reported");
+            assert!(app.take_deferred_quit());
+        });
+    });
+}
+
 /// A cancelled fork leaves the session exactly as it was: pi never wrote a
 /// branch, so nothing is reloaded and no session file moves.
 #[gpui::test]

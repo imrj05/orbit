@@ -51,6 +51,61 @@ impl OrbitApp {
         }
     }
 
+    /// Quit now, or — while pi is forking — once that fork has settled.
+    ///
+    /// The fork reply is what moves this process onto the branch pi wrote.
+    /// Quitting in the middle leaves the branch file on disk (pi may write it
+    /// before answering) but never applies the reply: the sidebar shows the new
+    /// session only on the next launch, and a regenerate's resend is never sent.
+    /// The reply normally lands within a second, so the first request waits and
+    /// the heartbeat quits when the branch — and the prompt a regenerate queued
+    /// — has settled.
+    ///
+    /// A second request quits immediately. A fork that never answers must not
+    /// trap the app, and the updater's helper must not be left waiting on one.
+    pub(crate) fn request_quit(&mut self, why: QuitRequest, cx: &mut Context<Self>) {
+        if self.quit_plan() == QuitPlan::Now {
+            cx.quit();
+            return;
+        }
+        self.toast_info(match why {
+            QuitRequest::User => tr!("quit.waiting_for_fork"),
+            QuitRequest::Update => tr!("quit.waiting_for_fork_update"),
+        });
+        cx.notify();
+    }
+
+    /// Decide what a quit request does. Split from the quit itself so the
+    /// policy is testable without tearing the app down.
+    ///
+    /// The state this reads and writes is the whole decision: a fork in flight
+    /// defers the first quit, and a quit already deferred means the person
+    /// asked twice, which goes now.
+    pub(crate) fn quit_plan(&mut self) -> QuitPlan {
+        if self.rewind_fork_id.is_none() || self.quit_when_fork_settles {
+            return QuitPlan::Now;
+        }
+        self.quit_when_fork_settles = true;
+        QuitPlan::Wait
+    }
+
+    /// Take a quit deferred while a fork was in flight, once that work is done.
+    ///
+    /// Both halves matter: a regenerate queues its resend after the fork reply,
+    /// and quitting between the two would leave a branch it never resent. Both
+    /// are cleared by the same invalidation paths (process exit, teardown,
+    /// session change), so a lost fork still releases the quit.
+    pub(crate) fn take_deferred_quit(&mut self) -> bool {
+        if !self.quit_when_fork_settles
+            || self.rewind_fork_id.is_some()
+            || self.pending_regenerate.is_some()
+        {
+            return false;
+        }
+        self.quit_when_fork_settles = false;
+        true
+    }
+
     /// Palette path: open the list at the newest user message.
     pub(super) fn open_rewind_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open_rewind_picker_at(None, ForkIntent::Edit, window, cx);

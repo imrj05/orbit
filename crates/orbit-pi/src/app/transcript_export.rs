@@ -330,6 +330,22 @@ fn write_new_markdown(path: &Path, body: &str) -> std::io::Result<()> {
 }
 
 impl OrbitApp {
+    /// What the current export preference adds beyond the visible answer text.
+    fn export_options(&self) -> crate::transcript::ExportOptions {
+        crate::transcript::ExportOptions {
+            include_thinking_and_tools: self.export_prefs.include_thinking_and_tools,
+        }
+    }
+
+    /// The sentence disclosing an omission, or nothing when the user opted in.
+    fn omitted_work_sentence(&self) -> String {
+        if self.export_prefs.include_thinking_and_tools {
+            String::new()
+        } else {
+            tr!("transcript_export.work_omitted").to_string()
+        }
+    }
+
     /// Hand the transcript a callback that saves the clicked response.
     pub(super) fn response_exporter(
         &self,
@@ -338,15 +354,16 @@ impl OrbitApp {
         let this = cx.weak_entity();
         Rc::new(move |body, pdf, row, _, cx| {
             this.update(cx, |app, cx| {
+                let options = app.export_options();
                 if pdf {
-                    if let Some(section) = app.transcript.export_response_pdf(row, &body) {
+                    if let Some(section) = app.transcript.export_response_pdf(row, &body, options) {
                         app.export_pdf(vec![section], true, cx);
                     } else {
                         app.toast_info(tr!("transcript_export.empty"));
                         cx.notify();
                     }
                 } else {
-                    app.export_response_markdown(body, cx);
+                    app.export_response_markdown(row, body, cx);
                 }
             })
             .ok();
@@ -356,10 +373,11 @@ impl OrbitApp {
     /// Snapshot the visible transcript before opening the asynchronous save
     /// panel. A later session switch must not change what gets written.
     pub(super) fn export_markdown(&mut self, last_response: bool, cx: &mut Context<Self>) {
+        let options = self.export_options();
         let body = if last_response {
-            self.transcript.export_last_response_markdown()
+            self.transcript.export_last_response_markdown(options)
         } else {
-            self.transcript.export_visible_markdown()
+            self.transcript.export_visible_markdown(options)
         };
         let Some(body) = body else {
             self.toast_info(tr!("transcript_export.empty"));
@@ -370,17 +388,31 @@ impl OrbitApp {
     }
 
     /// Save the text captured from the exact response whose footer was clicked.
-    pub(super) fn export_response_markdown(&mut self, body: String, cx: &mut Context<Self>) {
+    /// The row is the identity check: a response that moved or changed since the
+    /// click is not silently replaced with a different one, and the clicked body
+    /// is still what gets written when the snapshot no longer matches.
+    pub(super) fn export_response_markdown(
+        &mut self,
+        row: usize,
+        body: String,
+        cx: &mut Context<Self>,
+    ) {
         if body.is_empty() {
             self.toast_info(tr!("transcript_export.empty"));
             cx.notify();
             return;
         }
+        let options = self.export_options();
+        let body = self
+            .transcript
+            .export_response_markdown(row, &body, options)
+            .unwrap_or(body);
         self.save_markdown(body, true, cx);
     }
 
     pub(super) fn export_visible_pdf(&mut self, cx: &mut Context<Self>) {
-        let Some(sections) = self.transcript.export_visible_pdf() else {
+        let options = self.export_options();
+        let Some(sections) = self.transcript.export_visible_pdf(options) else {
             self.toast_info(tr!("transcript_export.empty"));
             cx.notify();
             return;
@@ -389,7 +421,8 @@ impl OrbitApp {
     }
 
     pub(super) fn export_last_response_pdf(&mut self, cx: &mut Context<Self>) {
-        let Some(section) = self.transcript.export_last_response_pdf() else {
+        let options = self.export_options();
+        let Some(section) = self.transcript.export_last_response_pdf(options) else {
             self.toast_info(tr!("transcript_export.empty"));
             cx.notify();
             return;
@@ -416,7 +449,13 @@ impl OrbitApp {
         let description = if response {
             tr!("transcript_export.pdf_response_disclosure").to_string()
         } else {
-            tr!("transcript_export.pdf_transcript_disclosure").to_string()
+            format!(
+                "{} {}",
+                tr!("transcript_export.pdf_transcript_disclosure"),
+                self.omitted_work_sentence()
+            )
+            .trim_end()
+            .to_string()
         };
         let question = tr!("transcript_export.pdf_preview_question").to_string();
         let preview_done = tr!("transcript_export.pdf_preview_done").to_string();
@@ -481,9 +520,22 @@ impl OrbitApp {
         let disclosure = (!last_response).then(|| {
             (
                 tr!("transcript_export.disclosure_title").to_string(),
-                tr!("transcript_export.disclosure").to_string(),
+                format!(
+                    "{} {}",
+                    tr!("transcript_export.disclosure"),
+                    self.omitted_work_sentence()
+                )
+                .trim_end()
+                .to_string(),
             )
         });
+        let saved_note = format!(
+            "{} {}",
+            tr!("transcript_export.saved_note"),
+            self.omitted_work_sentence()
+        )
+        .trim_end()
+        .to_string();
         cx.spawn(async move |this, cx| {
             if let Some((title, description)) = disclosure {
                 let result = rfd::AsyncMessageDialog::new()
@@ -522,7 +574,8 @@ impl OrbitApp {
                 match result {
                     Ok(()) => app.toast_success(tr!(
                         "transcript_export.saved",
-                        path = path.display().to_string()
+                        path = path.display().to_string(),
+                        omitted = saved_note
                     )),
                     Err(error) => {
                         app.toast_error(tr!("transcript_export.failed", error = error.to_string()))
@@ -767,6 +820,16 @@ mod tests {
             .count()
     }
 
+    fn plain() -> crate::transcript::ExportOptions {
+        crate::transcript::ExportOptions::default()
+    }
+
+    fn with_work() -> crate::transcript::ExportOptions {
+        crate::transcript::ExportOptions {
+            include_thinking_and_tools: true,
+        }
+    }
+
     #[test]
     fn pdf_export_snapshots_and_renders_attached_png_and_jpeg() {
         let mut transcript = crate::transcript::Transcript::new();
@@ -775,11 +838,63 @@ mod tests {
             test_image(image::ImageFormat::Jpeg, 3),
         ];
         transcript.append_user_message("See attachments", images);
-        let snapshot = transcript.export_visible_pdf().unwrap();
+        let snapshot = transcript.export_visible_pdf(plain()).unwrap();
         transcript.clear();
         let doc = lopdf::Document::load_mem(&render_pdf(snapshot).unwrap()).unwrap();
         assert_eq!(image_count(&doc), 2);
         assert!(doc.extract_text(&[1]).unwrap().contains("See attachments"));
+    }
+
+    /// The opt-in appendix must reach the PDF too, not only the Markdown file.
+    #[test]
+    fn pdf_export_renders_the_reasoning_appendix_when_opted_in() {
+        let mut transcript = crate::transcript::Transcript::new();
+        transcript.load_from(&serde_json::json!({"messages": [
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "weighed the options"},
+                {"type": "text", "text": "Answer"}
+            ]}
+        ]}));
+        let section = transcript.export_last_response_pdf(with_work()).unwrap();
+        transcript.clear();
+        let doc = lopdf::Document::load_mem(&render_pdf(vec![section]).unwrap()).unwrap();
+        let text = doc.extract_text(&[1]).unwrap();
+        assert!(text.contains("Answer"), "{text:?}");
+        assert!(text.contains("Reasoning"), "{text:?}");
+        assert!(text.contains("weighed the options"), "{text:?}");
+    }
+
+    /// A long conversation must render past the first page — the large-session
+    /// case the plan left open.
+    #[test]
+    fn pdf_export_renders_a_large_session_across_pages() {
+        let mut messages = Vec::new();
+        for turn in 0..120 {
+            messages.push(serde_json::json!({
+                "role": "user",
+                "content": format!("question {turn}")
+            }));
+            messages.push(serde_json::json!({
+                "role": "assistant",
+                "content": [{
+                    "type": "text",
+                    "text": format!("answer {turn}\n\n{}", "detail ".repeat(24))
+                }]
+            }));
+        }
+        let mut transcript = crate::transcript::Transcript::new();
+        transcript.load_from(&serde_json::json!({ "messages": messages }));
+        let sections = transcript.export_visible_pdf(plain()).unwrap();
+        assert_eq!(sections.len(), 240);
+        let doc = lopdf::Document::load_mem(&render_pdf(sections).unwrap()).unwrap();
+        assert!(doc.get_pages().len() > 1, "a long session must paginate");
+        let pages: Vec<String> = doc
+            .get_pages()
+            .keys()
+            .map(|page| doc.extract_text(&[*page]).unwrap_or_default())
+            .collect();
+        assert!(pages.iter().any(|page| page.contains("question 0")));
+        assert!(pages.iter().any(|page| page.contains("question 119")));
     }
 
     #[test]
@@ -793,11 +908,13 @@ mod tests {
             {"role": "user", "content": "next"},
             {"role": "assistant", "content": "second"}
         ]}));
-        let selected = transcript.export_response_pdf(0, "first").unwrap();
-        assert!(transcript.export_response_pdf(0, "second").is_none());
-        assert!(transcript.export_response_pdf(1, "next").is_none());
+        let selected = transcript.export_response_pdf(0, "first", plain()).unwrap();
         assert!(transcript
-            .export_last_response_pdf()
+            .export_response_pdf(0, "second", plain())
+            .is_none());
+        assert!(transcript.export_response_pdf(1, "next", plain()).is_none());
+        assert!(transcript
+            .export_last_response_pdf(plain())
             .unwrap()
             .images
             .is_empty());

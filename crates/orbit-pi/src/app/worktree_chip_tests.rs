@@ -12,6 +12,7 @@ use crate::app::worktrees::WorkInRow;
 use crate::theme::tokens::picker;
 use crate::theme::{Theme, ThemeId};
 use crate::worktree::Worktree;
+use std::collections::HashSet;
 use std::fs;
 
 fn test_app(cx: &mut gpui::TestAppContext) -> Entity<OrbitApp> {
@@ -589,6 +590,102 @@ fn clone_dialog_keyboard_clones_a_local_repository(cx: &mut gpui::TestAppContext
             .read(cx)
             .focus_handle(cx)
             .is_focused(window));
+    });
+    assert!(destination.join(".git").is_dir());
+}
+
+/// A finished clone is the only thing that may add a project to the sidebar.
+/// Asserted at both ends of `add_workspace`: the project list, and the grouped
+/// sidebar rows the render path derives from it. An empty project still gets a
+/// header, so the clone is reachable before any session exists in it — which is
+/// exactly the state a fresh clone is in.
+#[gpui::test]
+fn a_cloned_repository_registers_and_appears_in_the_sidebar(cx: &mut gpui::TestAppContext) {
+    let fixture = Fixture::new("clone-sidebar");
+    // `/var` and `/tmp` are symlinks on macOS and `add_workspace` stores a
+    // canonical path, so resolve the fixture root up front: the destination
+    // does not exist yet, and a path that cannot be canonicalized is kept
+    // verbatim — the two sides would disagree before and after the clone.
+    let root = fs::canonicalize(fixture.repo()).expect("fixture root");
+    let source = root.join("source.git");
+    assert!(std::process::Command::new("git")
+        .args(["init", "--bare"])
+        .arg(&source)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let destination = root.join("copy");
+    let canonical = sessions::canonical_workspace_path(&destination);
+    let app = test_app(cx);
+    cx.update(crate::bind_keys);
+    let window_cx = cx.add_empty_window();
+    let viewport = window_cx.update(|window, _| window.viewport_size());
+    window_cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            // A group header per project is the mode that shows a clone as a
+            // sidebar entry; the other modes flatten or filter the list.
+            app.sidebar_group_by = SidebarGroupBy::Workspace;
+            app.open_clone_dialog(window, cx);
+            app.clone_test_parent = Some(root.clone());
+            app.clone_url_input.update(cx, |input, cx| {
+                input.set_text(source.to_string_lossy().into_owned(), cx)
+            });
+            app.clone_name_input
+                .update(cx, |input, cx| input.set_text("copy", cx));
+        })
+    });
+    let draw = |cx: &mut gpui::VisualTestContext| {
+        let _ = cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
+    };
+    // Tab to Browse and activate it: choosing the destination is the step the
+    // clone cannot proceed without.
+    draw(window_cx);
+    window_cx.simulate_keystrokes("tab");
+    draw(window_cx);
+    window_cx.simulate_keystrokes("tab");
+    draw(window_cx);
+    window_cx.simulate_keystrokes("space");
+    draw(window_cx);
+    window_cx.update(|_, cx| {
+        assert_eq!(app.read(cx).clone_parent.as_deref(), Some(root.as_path()));
+        assert!(
+            !app.read(cx).workspaces.contains(&canonical),
+            "a destination chosen in the dialog is not a project yet"
+        );
+    });
+    window_cx.simulate_keystrokes("tab");
+    draw(window_cx);
+    window_cx.simulate_keystrokes("enter");
+    for _ in 0..100 {
+        window_cx.run_until_parked();
+        if window_cx.update(|_, cx| app.read(cx).clone_operation.is_none()) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    window_cx.update(|_, cx| {
+        let app = app.read(cx);
+        assert!(app.clone_operation.is_none(), "the clone finished");
+        assert!(
+            app.worktree_dialog.is_none(),
+            "the dialog closes only on success"
+        );
+        assert_eq!(app.current_workspace.as_deref(), Some(canonical.as_path()));
+        assert!(
+            app.workspaces.contains(&canonical),
+            "the clone joins the project list: {:?}",
+            app.workspaces
+        );
+        let rows = app.sidebar_rows(&app.sidebar_sessions_filtered(), &HashSet::new());
+        assert!(
+            rows.iter().any(|row| matches!(
+                row,
+                SideRow::Workspace { cwd, .. } if *cwd == canonical
+            )),
+            "the clone has a sidebar group among {} rows",
+            rows.len()
+        );
     });
     assert!(destination.join(".git").is_dir());
 }

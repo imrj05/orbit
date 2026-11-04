@@ -7,6 +7,12 @@
 //! staged. Checks run on their own threads and report back through a channel,
 //! so the UI only ever sees [`UpdateStatus`] and [`UpdaterEvent`].
 //!
+//! A check only reads the feed: it names the release, its notes, and the
+//! artifact URL, and no bytes move until
+//! [`Updater::download_available_update`] is asked for them. That keeps a
+//! silent launch check to one small request, and means the version and
+//! changelog the modal shows always precede the download.
+//!
 //! Platform install seams:
 //! - **macOS** — the feed points at a `.tar.gz` whose single top-level entry
 //!   is `Orbit Pi.app`. The helper waits for the app to quit, swaps the
@@ -45,13 +51,26 @@ impl Global for UpdaterState {}
 pub enum UpdateStatus {
     #[default]
     Idle,
+    /// The feed names a release newer than this build. Nothing has been
+    /// downloaded; everything shown comes from the feed alone.
     Available,
+    /// The offered artifact is being downloaded and staged.
+    Downloading,
+    /// A verified artifact is staged and waiting for the install handoff.
+    Ready,
+    /// The install helper owns the swap.
     Updating,
 }
 
 #[derive(Clone, Debug)]
 pub enum UpdaterEvent {
     StatusChanged(UpdateStatus),
+    /// Bytes moved so far and the total the feed declared. Throttled to about
+    /// one event per percent, so a large artifact cannot flood the frame loop.
+    Progress {
+        downloaded: u64,
+        total: u64,
+    },
     UpToDate,
     Failed(String),
     /// The helper has validated its inputs and waits for the app's normal
@@ -133,18 +152,6 @@ impl StagedUpdate {
         }
     }
 
-    /// The feed's release when this build can report but not install it (a
-    /// check-only build with no managed install). It carries the version and
-    /// notes the modal names; there is no payload to swap.
-    fn offered(item: &feed::AppcastItem) -> Self {
-        Self {
-            path: PathBuf::new(),
-            cleanup: None,
-            version: Some(item.version.clone()),
-            notes: item.notes.clone(),
-        }
-    }
-
     fn path(&self) -> &Path {
         &self.path
     }
@@ -175,6 +182,14 @@ pub struct Release {
 pub struct Updater {
     status: Arc<Mutex<UpdateStatus>>,
     staged: Arc<Mutex<Option<StagedUpdate>>>,
+    /// The newest release the last check's feed named, when it is newer than
+    /// this build. It carries what a download needs, and the version and notes
+    /// the modal shows before anything is fetched.
+    offer: Arc<Mutex<Option<ReleaseOffer>>>,
+    /// A download is running. Doubles as the "only one at a time" guard.
+    downloading: Arc<AtomicBool>,
+    /// The running download's cancel request.
+    cancel_download: Arc<AtomicBool>,
     /// The feed's releases, newest first: everything Version History shows.
     /// Rewritten by each successful check, so a failed one keeps the last list.
     history: Arc<Mutex<Vec<Release>>>,
@@ -229,6 +244,9 @@ impl Updater {
         let updater = Self {
             status: Arc::new(Mutex::new(UpdateStatus::Idle)),
             staged: Arc::new(Mutex::new(None)),
+            offer: Arc::new(Mutex::new(None)),
+            downloading: Arc::new(AtomicBool::new(false)),
+            cancel_download: Arc::new(AtomicBool::new(false)),
             history: Arc::new(Mutex::new(Vec::new())),
             checking: Arc::new(AtomicBool::new(false)),
             explicit_check: Arc::new(AtomicBool::new(false)),
@@ -262,7 +280,12 @@ impl Updater {
     }
 
     fn start_check(&self, user_initiated: bool) {
-        if self.status() == UpdateStatus::Updating {
+        // A check cannot replace a download's status, and the helper owns the
+        // app once an install starts.
+        if matches!(
+            self.status(),
+            UpdateStatus::Downloading | UpdateStatus::Updating
+        ) {
             return;
         }
         if self
@@ -281,16 +304,12 @@ impl Updater {
 
         let status = self.status.clone();
         let staged = self.staged.clone();
+        let offer = self.offer.clone();
         let history = self.history.clone();
         let checking = self.checking.clone();
         let explicit_check = self.explicit_check.clone();
         let events = self.events.clone();
         let publish_events = events.clone();
-        // The staged payload must sit on the same filesystem as the install
-        // for the helper's swap to be a rename, so the check thread stages
-        // beside the install rather than in the temp directory.
-        #[cfg(unix)]
-        let layout = self.layout.clone();
         let publish = move |next: UpdateStatus| {
             let mut status = status
                 .lock()
@@ -306,26 +325,44 @@ impl Updater {
         let spawned = std::thread::Builder::new()
             .name("orbit-updater-check".into())
             .spawn(move || {
-                #[cfg(unix)]
-                let outcome = fetch_and_stage(layout.as_ref());
-                #[cfg(not(unix))]
-                let outcome = fetch_and_stage();
+                let outcome = fetch_feed();
                 let report = explicit_check.load(Ordering::Relaxed);
                 match outcome {
                     Ok(Fetched {
-                        staged: update,
+                        offer: newest,
                         history: releases,
                     }) => {
                         *history
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner()) = releases;
-                        match update {
-                            Some(update) => {
-                                *staged
+                        match newest {
+                            Some(newest) => {
+                                // A payload staged for another release is
+                                // stale: drop it (and its directory) before
+                                // offering the newer one.
+                                let mut staged = staged
+                                    .lock()
+                                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                                if staged
+                                    .as_ref()
+                                    .and_then(|update| update.version.as_deref())
+                                    .is_some_and(|version| version != newest.version)
+                                {
+                                    *staged = None;
+                                }
+                                let ready = staged.is_some();
+                                drop(staged);
+                                *offer
                                     .lock()
                                     .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                                    Some(update);
-                                publish(UpdateStatus::Available);
+                                    Some(newest);
+                                // `Available` promises a download; `Ready`
+                                // means the payload is already on disk.
+                                publish(if ready {
+                                    UpdateStatus::Ready
+                                } else {
+                                    UpdateStatus::Available
+                                });
                             }
                             None => {
                                 publish(UpdateStatus::Idle);
@@ -490,6 +527,97 @@ impl Updater {
         false
     }
 
+    /// Download and stage the release the last check offered. The bytes only
+    /// move when this is called, so the modal has already shown the version
+    /// and changelog by the time anything is fetched.
+    pub fn download_available_update(&self) -> bool {
+        // A check-only build reports a release it has nowhere to install.
+        if !self.can_install() {
+            return false;
+        }
+        if self.status() != UpdateStatus::Available {
+            return false;
+        }
+        if self
+            .downloading
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return false;
+        }
+        let offered = self
+            .offer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let Some(offer) = offered else {
+            self.downloading.store(false, Ordering::Release);
+            return false;
+        };
+
+        self.cancel_download.store(false, Ordering::Release);
+        self.set_status(UpdateStatus::Downloading);
+
+        let status = self.status.clone();
+        let staged = self.staged.clone();
+        let events = self.events.clone();
+        let cancel = self.cancel_download.clone();
+        let downloading = self.downloading.clone();
+        #[cfg(unix)]
+        let layout = self.layout.clone();
+
+        let spawned = std::thread::Builder::new()
+            .name("orbit-updater-download".into())
+            .spawn(move || {
+                let mut throttle = ProgressThrottle::default();
+                let progress_events = events.clone();
+                let mut progress = move |downloaded: u64, total: u64| {
+                    if throttle.should_emit(downloaded, total) {
+                        let _ = progress_events.send(UpdaterEvent::Progress { downloaded, total });
+                    }
+                };
+                #[cfg(unix)]
+                let outcome = download_and_stage(&offer, &mut progress, &cancel, layout.as_ref());
+                #[cfg(not(unix))]
+                let outcome = download_and_stage(&offer, &mut progress, &cancel);
+                // The offer survives a failure (and a cancel), so Download can
+                // be pressed again without another feed request.
+                let next = match outcome {
+                    Ok(update) => {
+                        *staged
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(update);
+                        UpdateStatus::Ready
+                    }
+                    Err(error) => {
+                        if !cancel.load(Ordering::Relaxed) {
+                            let _ = events.send(UpdaterEvent::Failed(format!("{error:#}")));
+                        }
+                        UpdateStatus::Available
+                    }
+                };
+                *status
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = next;
+                let _ = events.send(UpdaterEvent::StatusChanged(next));
+                downloading.store(false, Ordering::Release);
+            });
+        if spawned.is_err() {
+            self.downloading.store(false, Ordering::Release);
+            self.fail_install("could not start the update download");
+            return false;
+        }
+        true
+    }
+
+    /// Ask the running download to stop. The offer stays, so Download can be
+    /// pressed again.
+    pub fn cancel_download(&self) {
+        if self.status() == UpdateStatus::Downloading {
+            self.cancel_download.store(true, Ordering::Release);
+        }
+    }
+
     /// Whether this build can install a release it reports. Forced dev builds
     /// run without a managed install: they check and show the modal, but the
     /// update itself is not offered.
@@ -510,25 +638,43 @@ impl Updater {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// The version of the verified release waiting in [`Self::status`]'s
-    /// `Available`, for the settings buttons that name the download. `None`
-    /// when nothing is staged.
+    /// The release the modal names: the staged payload's version once it is
+    /// on disk, otherwise the offered release's. `None` when there is neither.
     pub fn available_version(&self) -> Option<String> {
-        self.staged
+        if let Some(version) = self
+            .staged
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .as_ref()
             .and_then(|update| update.version.clone())
+        {
+            return Some(version);
+        }
+        self.offer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .map(|offer| offer.version.clone())
     }
 
-    /// The staged release's notes from the feed, for the update modal. `None`
-    /// when nothing is staged or the feed carried no `<description>`.
+    /// The release's notes from the feed, for the update modal — readable
+    /// before the download, since the check already fetched them. `None` when
+    /// no release is on offer or the feed carried no `<description>`.
     pub fn available_notes(&self) -> Option<String> {
-        self.staged
+        if let Some(notes) = self
+            .staged
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .as_ref()
             .and_then(|update| update.notes.clone())
+        {
+            return Some(notes);
+        }
+        self.offer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .and_then(|offer| offer.notes.clone())
     }
 
     /// Every release the last successful check's feed carried, newest first,
@@ -1069,40 +1215,28 @@ fn install_dir_for(executable: &Path) -> Option<PathBuf> {
 
 // ── staging ─────────────────────────────────────────────────────────────
 
-#[cfg(unix)]
-fn fetch_and_stage(layout: Option<&InstallLayout>) -> anyhow::Result<Fetched> {
-    fetch_and_stage_impl(
-        layout.is_some(),
-        |archive, directory, version| match layout {
-            Some(layout) => stage_artifact(archive, directory, version, layout),
-            // Unreachable: a check-only build returns before it downloads.
-            None => Ok(None),
-        },
-    )
-}
-
-#[cfg(not(unix))]
-fn fetch_and_stage() -> anyhow::Result<Fetched> {
-    fetch_and_stage_impl(true, |archive, directory, _version| {
-        stage_artifact(archive, directory)
-    })
-}
-
-/// What one check fetched: the release to offer (when the feed names a newer
-/// one) and the feed's full release list for Version History.
+/// What one check found: the release to offer, when the feed names a newer
+/// one, and the feed's full release list for Version History.
 struct Fetched {
-    staged: Option<StagedUpdate>,
+    offer: Option<ReleaseOffer>,
     history: Vec<Release>,
 }
 
-/// Fetch the feed, and when it names a newer release, download and verify the
-/// artifact on a worker thread. `stage` turns the verified artifact into the
-/// platform's staged update. The whole feed is returned either way, so the
-/// Version History survives an up-to-date answer.
-fn fetch_and_stage_impl<F>(installable: bool, stage: F) -> anyhow::Result<Fetched>
-where
-    F: FnOnce(PathBuf, PathBuf, &str) -> anyhow::Result<Option<StagedUpdate>>,
-{
+/// The newest release the feed names, complete enough to download later. A
+/// check keeps this and nothing else, so version and changelog can be shown
+/// before a single byte of the artifact is fetched.
+#[derive(Clone, Debug)]
+struct ReleaseOffer {
+    version: String,
+    notes: Option<String>,
+    url: String,
+    signature: String,
+    length: Option<u64>,
+}
+
+/// Read the feed. This is the whole cost of a check — one small request — so
+/// a silent launch check never downloads a release the user has not seen.
+fn fetch_feed() -> anyhow::Result<Fetched> {
     let document = http_get(FEED_URL)?;
     let items = feed::items(&document);
     let history = items
@@ -1117,21 +1251,69 @@ where
     };
     if !feed::is_newer(&item.version, env!("CARGO_PKG_VERSION")) {
         return Ok(Fetched {
-            staged: None,
+            offer: None,
             history,
         });
     }
-    if !installable {
-        // Check-only build: report the release for the modal without
-        // downloading or staging an artifact there is nowhere to install.
-        return Ok(Fetched {
-            staged: Some(StagedUpdate::offered(&item)),
-            history,
-        });
-    }
-    validate_release_version(&item.version)?;
-    validate_download_url(&item.url)?;
-    let declared_length = item
+    Ok(Fetched {
+        offer: Some(ReleaseOffer {
+            version: item.version,
+            notes: item.notes,
+            url: item.url,
+            signature: item.signature,
+            length: item.length,
+        }),
+        history,
+    })
+}
+
+/// Download the offered artifact, verify it against the release signature,
+/// and stage it for the platform's install seam. `progress` receives
+/// (downloaded, total) bytes as they arrive; `cancel` stops between chunks.
+#[cfg(unix)]
+fn download_and_stage(
+    offer: &ReleaseOffer,
+    progress: &mut dyn FnMut(u64, u64),
+    cancel: &AtomicBool,
+    layout: Option<&InstallLayout>,
+) -> anyhow::Result<StagedUpdate> {
+    // A check-only build has nowhere to put a payload, so it never offers one.
+    let Some(layout) = layout else {
+        anyhow::bail!("this build cannot install an update");
+    };
+    let (archive, temporary) = fetch_artifact(offer, progress, cancel)?;
+    let mut staged = stage_artifact(archive, temporary, &offer.version, layout)?
+        .ok_or_else(|| anyhow::anyhow!("the update could not be staged"))?;
+    staged.notes = offer.notes.clone();
+    staged.version = Some(offer.version.clone());
+    Ok(staged)
+}
+
+#[cfg(not(unix))]
+fn download_and_stage(
+    offer: &ReleaseOffer,
+    progress: &mut dyn FnMut(u64, u64),
+    cancel: &AtomicBool,
+) -> anyhow::Result<StagedUpdate> {
+    let (archive, temporary) = fetch_artifact(offer, progress, cancel)?;
+    let mut staged = stage_artifact(archive, temporary)?
+        .ok_or_else(|| anyhow::anyhow!("the update could not be staged"))?;
+    staged.notes = offer.notes.clone();
+    staged.version = Some(offer.version.clone());
+    Ok(staged)
+}
+
+/// Validate the offer, download the artifact into a temporary directory, and
+/// check both its declared length and its release signature. Returns the
+/// archive and the directory that owns it.
+fn fetch_artifact(
+    offer: &ReleaseOffer,
+    progress: &mut dyn FnMut(u64, u64),
+    cancel: &AtomicBool,
+) -> anyhow::Result<(PathBuf, PathBuf)> {
+    validate_release_version(&offer.version)?;
+    validate_download_url(&offer.url)?;
+    let declared_length = offer
         .length
         .filter(|length| *length > 0 && *length <= MAX_ARTIFACT_BYTES)
         .ok_or_else(|| {
@@ -1140,19 +1322,28 @@ where
 
     let directory = unique_temp_directory("update")?;
     let archive = directory.join(artifact_name());
-    download_to(&item.url, &archive, 600, MAX_ARTIFACT_BYTES)?;
-    let actual_length = std::fs::metadata(&archive)?.len();
-    anyhow::ensure!(
-        actual_length == declared_length,
-        "the update artifact does not match the length the feed declared"
-    );
-    verify_artifact(&archive, &item)?;
-    let mut staged = stage(archive, directory, &item.version)?;
-    if let Some(update) = staged.as_mut() {
-        update.notes = item.notes.clone();
-        update.version = Some(item.version);
+    let verified = download_to(
+        &offer.url,
+        &archive,
+        600,
+        MAX_ARTIFACT_BYTES,
+        declared_length,
+        progress,
+        cancel,
+    )
+    .and_then(|()| {
+        let actual_length = std::fs::metadata(&archive)?.len();
+        anyhow::ensure!(
+            actual_length == declared_length,
+            "the update artifact does not match the length the feed declared"
+        );
+        verify_artifact(&archive, &offer.signature)
+    });
+    if let Err(error) = verified {
+        let _ = std::fs::remove_dir_all(&directory);
+        return Err(error);
     }
-    Ok(Fetched { staged, history })
+    Ok((archive, directory))
 }
 
 #[cfg(unix)]
@@ -1357,10 +1548,10 @@ fn extract_release_archive(
     Ok(())
 }
 
-fn verify_artifact(path: &Path, item: &feed::AppcastItem) -> anyhow::Result<()> {
+fn verify_artifact(path: &Path, signature: &str) -> anyhow::Result<()> {
     let key = verifying_key().ok_or_else(|| anyhow::anyhow!("the public key is unusable"))?;
     let signature = base64::engine::general_purpose::STANDARD
-        .decode(item.signature.trim())
+        .decode(signature.trim())
         .ok()
         .and_then(|bytes| <[u8; 64]>::try_from(bytes).ok())
         .map(|bytes| ed25519_dalek::Signature::from_bytes(&bytes))
@@ -1434,8 +1625,14 @@ fn download_to(
     destination: &Path,
     timeout_seconds: u64,
     limit: u64,
+    // The feed's declared artifact length, used when the host answers without
+    // a `Content-Length` (a chunked CDN response does exactly that).
+    expected_total: u64,
+    progress: &mut dyn FnMut(u64, u64),
+    cancel: &AtomicBool,
 ) -> anyhow::Result<()> {
     use std::io::Read as _;
+    use std::io::Write as _;
 
     let mut response = http_client(timeout_seconds)?
         .get(url)
@@ -1443,14 +1640,90 @@ fn download_to(
         .map_err(http_failure)?
         .error_for_status()
         .map_err(http_failure)?;
+    let total = response
+        .content_length()
+        .filter(|length| *length > 0)
+        .unwrap_or(expected_total);
     let mut file = std::fs::File::create(destination)?;
-    let copied = std::io::copy(&mut response.by_ref().take(limit + 1), &mut file)?;
-    anyhow::ensure!(
-        copied <= limit,
-        "the downloaded update exceeds its safety limit"
-    );
+    let mut buffer = vec![0_u8; 64 * 1024];
+    let mut copied = 0_u64;
+    progress(0, total);
+    loop {
+        // A cancel is only honored between chunks, so it can never leave a
+        // half-written file behind for the verifier to read.
+        anyhow::ensure!(
+            !cancel.load(Ordering::Relaxed),
+            "the update download was cancelled"
+        );
+        let read = response.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        copied += read as u64;
+        anyhow::ensure!(
+            copied <= limit,
+            "the downloaded update exceeds its safety limit"
+        );
+        file.write_all(&buffer[..read])?;
+        progress(copied, total);
+    }
     file.sync_all()?;
+    progress(copied, total);
     Ok(())
+}
+
+/// Rate-limit the progress events a download emits: one per whole percent (or
+/// per 250 KB on a very large artifact), plus one final tick. A 40 MB download
+/// would otherwise send hundreds of events and repaint the window for each.
+#[derive(Default)]
+struct ProgressThrottle {
+    last_percent: Option<u64>,
+    last_bytes: u64,
+}
+
+impl ProgressThrottle {
+    const BYTE_STEP: u64 = 250 * 1024;
+
+    fn should_emit(&mut self, downloaded: u64, total: u64) -> bool {
+        let complete = total != 0 && downloaded >= total;
+        let percent = (total != 0).then(|| downloaded.saturating_mul(100) / total);
+        let emit = complete
+            || match percent {
+                Some(percent) => self.last_percent != Some(percent),
+                // Without a declared total there is no percentage to compare,
+                // so fall back to a byte step and let the bar creep forward.
+                None => downloaded.saturating_sub(self.last_bytes) >= Self::BYTE_STEP,
+            };
+        if emit {
+            self.last_percent = percent.or(self.last_percent);
+            self.last_bytes = downloaded;
+        }
+        emit
+    }
+}
+
+/// The release page carrying a release's changelog — the same notes the feed
+/// embeds as each item's `<description>`. Derived from the feed's own
+/// repository, so a build pointed at a fork links there, and falling back to
+/// the crate repository when the feed is not a GitHub release feed.
+pub fn changelog_url(version: &str) -> Option<String> {
+    if validate_release_version(version).is_err() {
+        return None;
+    }
+    let base = release_repository().unwrap_or_else(|| {
+        env!("CARGO_PKG_REPOSITORY")
+            .trim_end_matches('/')
+            .to_owned()
+    });
+    Some(format!("{base}/releases/tag/v{version}"))
+}
+
+/// `https://github.com/owner/repo` for the feed this build reads, when that
+/// feed is one of GitHub's release feeds.
+fn release_repository() -> Option<String> {
+    let (base, _) = FEED_URL.split_once("/releases/latest/download/")?;
+    let url = url::Url::parse(base).ok()?;
+    (url.host_str() == Some("github.com")).then(|| base.trim_end_matches('/').to_owned())
 }
 
 /// Prefer the rustls/IO cause over reqwest's "error sending request for url"
@@ -1979,10 +2252,7 @@ mod tests {
     #[test]
     #[ignore = "hits the real update feed"]
     fn live_feed_reports_history_without_an_install() {
-        #[cfg(unix)]
-        let fetched = fetch_and_stage(None).expect("the update feed must answer");
-        #[cfg(not(unix))]
-        let fetched = fetch_and_stage().expect("the update feed must answer");
+        let fetched = fetch_feed().expect("the update feed must answer");
         let newest = fetched
             .history
             .first()
@@ -1990,12 +2260,98 @@ mod tests {
             .version
             .clone();
         if feed::is_newer(&newest, env!("CARGO_PKG_VERSION")) {
-            let update = fetched.staged.expect("a newer feed must offer a release");
-            assert_eq!(update.version.as_deref(), Some(newest.as_str()));
+            let offer = fetched.offer.expect("a newer feed must offer a release");
+            assert_eq!(offer.version, newest);
             assert!(
-                update.notes.is_some(),
+                offer.notes.is_some(),
                 "the offered release carries its notes"
             );
         }
+    }
+
+    /// Manual: `cargo test -p orbit-pi live_artifact -- --ignored`. Downloads a
+    /// real release artifact end to end and proves the streaming read, the
+    /// declared length, and the progress reporting work against GitHub's
+    /// release CDN. Signature verification needs a build with
+    /// `ORBIT_UPDATE_PUBLIC_KEY`, so a keyless local build checks everything
+    /// but that.
+    #[test]
+    #[ignore = "downloads a real release artifact"]
+    fn live_artifact_streams_with_progress() {
+        let document = http_get(FEED_URL).expect("the update feed must answer");
+        let item = feed::items(&document)
+            .into_iter()
+            .next()
+            .expect("the feed carries a signed release");
+        let declared = item
+            .length
+            .filter(|length| *length > 0)
+            .expect("the feed declares an artifact length");
+
+        let directory = unique_temp_directory("live-artifact").expect("a temp directory");
+        let archive = directory.join(artifact_name());
+        let mut ticks: Vec<(u64, u64)> = Vec::new();
+        let downloaded = download_to(
+            &item.url,
+            &archive,
+            600,
+            MAX_ARTIFACT_BYTES,
+            declared,
+            &mut |done, total| ticks.push((done, total)),
+            &AtomicBool::new(false),
+        );
+        let cleanup = std::fs::remove_dir_all(&directory);
+        downloaded.expect("the artifact must download");
+        cleanup.expect("the temp directory is ours to remove");
+
+        assert!(ticks.len() > 1, "progress is reported while bytes arrive");
+        assert_eq!(ticks.first(), Some(&(0, declared)), "the start is reported");
+        assert_eq!(
+            ticks.last().map(|tick| tick.0),
+            Some(declared),
+            "the download lands on the declared length"
+        );
+        assert!(
+            ticks.windows(2).all(|pair| pair[1].0 >= pair[0].0),
+            "progress never goes backwards: {ticks:?}"
+        );
+    }
+
+    /// The changelog link is the release page of the repository the feed
+    /// points at, and a version that could become a path never produces one.
+    #[test]
+    fn the_changelog_link_is_the_release_page_of_the_feed() {
+        let url = changelog_url("1.2.3").expect("a GitHub feed names its release page");
+        assert!(url.starts_with("https://github.com/"), "{url}");
+        assert!(url.ends_with("/releases/tag/v1.2.3"), "{url}");
+        assert_eq!(changelog_url("../../etc/passwd"), None);
+        assert_eq!(changelog_url(""), None);
+    }
+
+    /// Progress is throttled to about one event per percent, with the final
+    /// byte always reported so the bar can land on full.
+    #[test]
+    fn progress_events_throttle_to_one_per_percent() {
+        let total = 40 * 1024 * 1024;
+        let mut throttle = ProgressThrottle::default();
+        let mut emitted = 0;
+        for byte in (0..=total).step_by(64 * 1024) {
+            if throttle.should_emit(byte, total) {
+                emitted += 1;
+            }
+        }
+        assert!(
+            (1..=101).contains(&emitted),
+            "one event per percent, not one per chunk: {emitted}"
+        );
+        let mut throttle = ProgressThrottle::default();
+        assert!(
+            throttle.should_emit(0, total),
+            "the start is always reported"
+        );
+        assert!(
+            throttle.should_emit(total, total),
+            "the final byte is always reported"
+        );
     }
 }

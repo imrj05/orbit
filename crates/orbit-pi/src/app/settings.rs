@@ -261,6 +261,11 @@ const SETTINGS_SEARCH_INDEX: &[(SettingsSection, &str, &str)] = &[
         "settings.notification_sound",
         "notifications sound alert audio",
     ),
+    (
+        SettingsSection::General,
+        "settings.include_reasoning_and_tools",
+        "export exports markdown pdf transcript save reasoning thinking tool calls output",
+    ),
     // Runtime
     (
         SettingsSection::Runtime,
@@ -1087,6 +1092,7 @@ impl OrbitApp {
                     rows.push(updates);
                 }
                 rows.push(self.notification_rows(theme, this.clone()));
+                rows.push(self.export_rows(theme, this.clone()));
                 // The last group is the escape hatch: a clean relaunch kills
                 // every live run, so it sits below the preferences rather than
                 // beside the everyday controls.
@@ -4984,6 +4990,45 @@ impl OrbitApp {
             .ok();
         })
         .detach();
+    }
+
+    // ── Settings → General: exports ─────────────────────────────────────
+
+    /// The export board: what a Markdown/PDF export carries beyond the answer.
+    /// Off by default — the reasoning and tool trail is the agent's working
+    /// noise, not the conversation.
+    pub(super) fn export_rows(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
+        let rows = vec![self.setting_row(
+            theme,
+            &tr!("settings.include_reasoning_and_tools"),
+            Some(&tr!("settings.include_reasoning_and_tools_description")),
+            None,
+            Some(self.settings_toggle(
+                "export-work-toggle",
+                self.export_prefs.include_thinking_and_tools,
+                theme,
+                this,
+                Self::toggle_export_work,
+            )),
+        )];
+        self.settings_section_desc(
+            theme,
+            &tr!("settings.transcript_export"),
+            Some(&tr!("settings.transcript_export_description")),
+            rows,
+        )
+    }
+
+    /// Flip whether exports append reasoning and tool calls, and persist it so
+    /// the next export in any session honours the choice.
+    pub(super) fn toggle_export_work(&mut self, cx: &mut Context<Self>) {
+        self.export_prefs.include_thinking_and_tools =
+            !self.export_prefs.include_thinking_and_tools;
+        self.export_prefs.persist();
+        if self.export_prefs.include_thinking_and_tools {
+            self.toast_info(tr!("settings.exports_include_reasoning_and_tools"));
+        }
+        cx.notify();
     }
 
     // ── Settings → Runtime ─────────────────────────────────────────────

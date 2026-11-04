@@ -62,6 +62,7 @@ mod custom_ui;
 mod dialog;
 mod diff_view;
 mod explorer;
+mod export_prefs;
 mod favorites;
 mod gh;
 mod gh_templates;
@@ -726,6 +727,21 @@ fn main() {
         // new window is up so it can commit the swap instead of rolling back.
         updater::signal_relaunch_ready();
 
-        cx.on_action(|_: &Quit, cx| cx.quit());
+        // `Quit` is an app-level action, but a fork in flight belongs to the
+        // app entity: route the request through it so the quit can wait for
+        // pi's reply instead of leaving a branch this run never adopted.
+        cx.on_action(|_: &Quit, cx| {
+            let parked = cx
+                .try_global::<main_window::Shell>()
+                .and_then(|shell| shell.0.borrow().clone());
+            match parked {
+                Some(app) => {
+                    app.update(cx, |app, cx| {
+                        app.request_quit(crate::app::QuitRequest::User, cx)
+                    });
+                }
+                None => cx.quit(),
+            }
+        });
     });
 }

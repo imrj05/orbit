@@ -101,7 +101,18 @@ impl OrbitApp {
             match event {
                 UpdaterEvent::StatusChanged(status) => {
                     self.updater_status = status;
+                    // A bar only belongs to a download in flight.
+                    if status != UpdateStatus::Downloading {
+                        self.updater_progress = None;
+                    }
                     self.reset_updater_pill_animation();
+                }
+                UpdaterEvent::Progress { downloaded, total } => {
+                    let next = Some((downloaded, total));
+                    if self.updater_progress != next {
+                        self.updater_progress = next;
+                        cx.notify();
+                    }
                 }
                 UpdaterEvent::UpToDate => {
                     self.updater_status = UpdateStatus::Idle;
@@ -122,32 +133,62 @@ impl OrbitApp {
                 #[cfg(unix)]
                 UpdaterEvent::QuitAndInstall => {
                     // The helper has the staged build and is waiting for this
-                    // process to finish its normal quit handlers.
-                    cx.quit();
+                    // process to finish its normal quit handlers. A fork still
+                    // in flight is waited for exactly like Cmd-Q: the reply
+                    // moves the process onto the branch, and quitting first
+                    // would leave that branch unadopted until the next launch.
+                    self.request_quit(crate::app::QuitRequest::Update, cx);
                     return;
                 }
             }
         }
-        // A finished check reports its status before its event, and a staged
-        // release names its version; re-read both so the controls stay in
-        // step, then carry a check that found a release into the modal.
+        // A finished check reports its status before its event, and an offered
+        // or downloaded release names its version; re-read both so the
+        // controls stay in step, then carry the modal forward.
         self.sync_staged_release(cx);
-        if self.updater_status == UpdateStatus::Available
-            && matches!(self.updater_dialog, Some(UpdateDialog::Checking))
-        {
-            self.updater_dialog = Some(UpdateDialog::Available {
-                version: self.updater_version.clone().unwrap_or_default(),
-                notes: self.updater_notes.clone(),
-                from_check: true,
-            });
+        match self.updater_status {
+            // The download finished: the same card, now offering a restart.
+            UpdateStatus::Ready
+                if matches!(
+                    self.updater_dialog,
+                    Some(UpdateDialog::Checking) | Some(UpdateDialog::Downloading { .. })
+                ) =>
+            {
+                self.updater_dialog = Some(UpdateDialog::Available {
+                    version: self.updater_version.clone().unwrap_or_default(),
+                    notes: self.updater_notes.clone(),
+                    from_check: false,
+                });
+            }
+            // A check that found a release lands on its details, and a
+            // download that failed (or was cancelled) returns to them so it
+            // can be tried again.
+            UpdateStatus::Available
+                if matches!(
+                    self.updater_dialog,
+                    Some(UpdateDialog::Checking) | Some(UpdateDialog::Downloading { .. })
+                ) =>
+            {
+                let from_check = matches!(self.updater_dialog, Some(UpdateDialog::Checking));
+                self.updater_dialog = Some(UpdateDialog::Available {
+                    version: self.updater_version.clone().unwrap_or_default(),
+                    notes: self.updater_notes.clone(),
+                    from_check,
+                });
+            }
+            _ => {}
         }
         cx.notify();
     }
 
-    /// Open the modal on the staged release. The download control calls this
-    /// instead of installing immediately.
-    pub(super) fn open_staged_update_dialog(&mut self, cx: &mut Context<Self>) {
-        if self.updater_status != UpdateStatus::Available {
+    /// Open the modal on the release the last check found: its version and
+    /// changelog, whether or not it has been downloaded yet. The download and
+    /// settings controls call this instead of installing immediately.
+    pub(super) fn open_update_details(&mut self, cx: &mut Context<Self>) {
+        if !matches!(
+            self.updater_status,
+            UpdateStatus::Available | UpdateStatus::Ready
+        ) {
             return;
         }
         self.sync_staged_release(cx);
@@ -193,10 +234,49 @@ impl OrbitApp {
         }
     }
 
-    /// Stage the available update; the shell quits when the helper
+    /// Fetch and stage the offered release, with the modal showing real
+    /// progress. Nothing has been downloaded before this point.
+    pub(super) fn download_available_update(&mut self, cx: &mut Context<Self>) {
+        if self.updater_status != UpdateStatus::Available {
+            return;
+        }
+        let started = cx
+            .try_global::<UpdaterState>()
+            .and_then(|state| state.0.as_ref())
+            .is_some_and(|updater| updater.download_available_update());
+        if started {
+            self.updater_progress = None;
+            self.updater_dialog = Some(UpdateDialog::Downloading {
+                version: self.updater_version.clone().unwrap_or_default(),
+            });
+            self.updater_dialog_focus_pending = true;
+            self.reset_updater_pill_animation();
+            cx.notify();
+        }
+    }
+
+    /// Stop the download and go back to the release's details. The offer
+    /// survives, so Download can be pressed again.
+    pub(super) fn cancel_update_download(&mut self, cx: &mut Context<Self>) {
+        if let Some(updater) = cx
+            .try_global::<UpdaterState>()
+            .and_then(|state| state.0.as_ref())
+        {
+            updater.cancel_download();
+        }
+        self.updater_progress = None;
+        self.updater_dialog = Some(UpdateDialog::Available {
+            version: self.updater_version.clone().unwrap_or_default(),
+            notes: self.updater_notes.clone(),
+            from_check: false,
+        });
+        cx.notify();
+    }
+
+    /// Install the staged release; the shell quits when the helper
     /// acknowledges the handoff.
     pub(super) fn install_available_update(&mut self, cx: &mut Context<Self>) {
-        if self.updater_status != UpdateStatus::Available {
+        if self.updater_status != UpdateStatus::Ready {
             return;
         }
         let started = cx
@@ -216,9 +296,25 @@ impl OrbitApp {
     /// the Settings button both land here. The modal reports the search and
     /// its outcome; an already-staged release opens straight away.
     pub(super) fn begin_update_check(&mut self, cx: &mut Context<Self>) {
-        if self.updater_status == UpdateStatus::Available {
-            self.open_staged_update_dialog(cx);
-            return;
+        match self.updater_status {
+            UpdateStatus::Available | UpdateStatus::Ready => {
+                self.open_update_details(cx);
+                return;
+            }
+            // A download is already the answer a check would give; show it
+            // rather than starting a second request.
+            UpdateStatus::Downloading => {
+                self.updater_dialog = Some(UpdateDialog::Downloading {
+                    version: self.updater_version.clone().unwrap_or_default(),
+                });
+                self.updater_dialog_focus_pending = true;
+                self.reset_updater_pill_animation();
+                cx.notify();
+                return;
+            }
+            // The helper owns the app now; there is nothing to check for.
+            UpdateStatus::Updating => return,
+            UpdateStatus::Idle => {}
         }
         if let Some(updater) = cx
             .try_global::<UpdaterState>()
@@ -321,10 +417,14 @@ impl OrbitApp {
         if status == UpdateStatus::Idle {
             return None;
         }
-        if status != UpdateStatus::Available {
-            // The install is in flight: a spinner in the pill's footprint,
-            // with the label in its tooltip.
-            let label = tr!("updater_ui.updating");
+        if status != UpdateStatus::Available && status != UpdateStatus::Ready {
+            // A download or an install is in flight: a spinner in the pill's
+            // footprint, with the label in its tooltip.
+            let label = if status == UpdateStatus::Downloading {
+                tr!("updater_ui.downloading")
+            } else {
+                tr!("updater_ui.updating")
+            };
             let button = icon_button_frame(div().id("sidebar-update"), &theme, ButtonSize::Compact)
                 .rounded_full()
                 .raised(theme.action, &theme)
@@ -339,7 +439,13 @@ impl OrbitApp {
             return Some(button.into_any_element());
         }
 
-        let label = tr!("updater_ui.update");
+        // The glyph says what the click will do: a download arrow while the
+        // release is only offered, a restart arrow once it is on disk.
+        let (label, glyph) = if status == UpdateStatus::Ready {
+            (tr!("updater_ui.restart"), "icons/rotate-ccw.svg")
+        } else {
+            (tr!("updater_ui.update"), "icons/arrow-down.svg")
+        };
         let button = icon_button_frame(div().id("sidebar-update"), &theme, ButtonSize::Compact)
             .overflow_hidden()
             .rounded_full()
@@ -360,7 +466,7 @@ impl OrbitApp {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseUpEvent, _window, cx| {
-                    this.open_staged_update_dialog(cx);
+                    this.open_update_details(cx);
                 }),
             );
 
@@ -368,7 +474,7 @@ impl OrbitApp {
         let button = if generation == 0 {
             button
                 .w(theme.ui_px(UPDATER_PILL_COLLAPSED_W))
-                .child(updater_pill_content(theme, label, 0.0))
+                .child(updater_pill_content(theme, label, glyph, 0.0))
                 .into_any_element()
         } else {
             let from_width = self.updater_button_animation_from_width;
@@ -389,6 +495,7 @@ impl OrbitApp {
                         button.w(theme.ui_px(width)).child(updater_pill_content(
                             theme,
                             label.clone(),
+                            glyph,
                             reveal,
                         ))
                     },
@@ -450,9 +557,14 @@ impl OrbitApp {
         }
         let desc = match (self.updater_status, self.updater_version.as_deref()) {
             (UpdateStatus::Available, Some(version)) => {
+                tr!("updater_ui.available_with_version", version = version)
+            }
+            (UpdateStatus::Available, None) => tr!("updater_ui.available"),
+            (UpdateStatus::Downloading, _) => tr!("updater_ui.downloading"),
+            (UpdateStatus::Ready, Some(version)) => {
                 tr!("updater_ui.ready_with_version", version = version)
             }
-            (UpdateStatus::Available, None) => tr!("updater_ui.ready"),
+            (UpdateStatus::Ready, None) => tr!("updater_ui.ready"),
             (UpdateStatus::Updating, _) => tr!("updater_ui.installing"),
             (UpdateStatus::Idle, _) => tr!("updater_ui.check_hint"),
         };
@@ -498,14 +610,19 @@ impl OrbitApp {
             .into_any_element()
     }
 
-    /// The settings update control shared by General and About: a check
-    /// button at rest, an icon-only download button once a release is ready
-    /// (it opens the update modal), and a quiet label while the install helper
-    /// owns the swap.
+    /// The settings update control shared by General and About: a check button
+    /// at rest, a download button while a release is on offer, a restart button
+    /// once it is staged (both open the update modal), a quiet label while the
+    /// download runs, and a quiet label while the install helper owns the swap.
     pub(super) fn update_action_button(&self, theme: Theme, this: Entity<OrbitApp>) -> AnyElement {
         match self.updater_status {
-            UpdateStatus::Available => {
-                let label = tr!("updater_ui.update");
+            UpdateStatus::Available | UpdateStatus::Ready => {
+                let ready = self.updater_status == UpdateStatus::Ready;
+                let (label, glyph) = if ready {
+                    (tr!("updater_ui.restart"), "icons/rotate-ccw.svg")
+                } else {
+                    (tr!("updater_ui.update"), "icons/arrow-down.svg")
+                };
                 icon_button_frame(
                     div().id("settings-update-action"),
                     &theme,
@@ -518,15 +635,28 @@ impl OrbitApp {
                 .pressed_state(&theme, PressedRamp::Action)
                 .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into())
                 .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                    this.update(cx, |app, cx| app.open_staged_update_dialog(cx));
+                    this.update(cx, |app, cx| app.open_update_details(cx));
                 })
                 .child(icon(
-                    "icons/arrow-down.svg",
+                    glyph,
                     ButtonSize::Medium.icon_size().px(&theme),
                     theme.action_fg,
                 ))
                 .into_any_element()
             }
+            UpdateStatus::Downloading => button_frame(
+                div().id("settings-update-action"),
+                &theme,
+                ButtonSize::Medium,
+            )
+            .font_weight(FontWeight::MEDIUM)
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.surface_elevated)
+            .text_color(theme.text_muted)
+            .cursor_default()
+            .child(tr!("updater_ui.downloading"))
+            .into_any_element(),
             UpdateStatus::Updating => button_frame(
                 div().id("settings-update-action"),
                 &theme,
@@ -560,6 +690,58 @@ impl OrbitApp {
         }
     }
 
+    /// The modal's version row: the target version, the build it replaces,
+    /// and the link to the release page whose body is the changelog below.
+    /// `fallback` is the sentence shown when the feed carried no version.
+    fn update_version_row(
+        &self,
+        version: &str,
+        fallback: &str,
+        theme: Theme,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let link = self.changelog_link(version, theme, cx);
+        version_row(theme, version, fallback, link)
+    }
+
+    /// "Changelog ↗": opens the release page for `version` in the browser.
+    /// The notes are already rendered in the modal, so this is the full page
+    /// rather than a substitute for them.
+    fn changelog_link(
+        &self,
+        version: &str,
+        theme: Theme,
+        cx: &Context<Self>,
+    ) -> Option<AnyElement> {
+        let url = crate::updater::changelog_url(version)?;
+        Some(
+            div()
+                .id("update-changelog-link")
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(DynamicSpacing::Base04.px(&theme))
+                .cursor_pointer()
+                .text_size(TextSize::Small.px(&theme))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.accent_text)
+                .hover(move |style| style.text_color(theme.accent))
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(move |_, _: &MouseUpEvent, _, cx| {
+                        cx.open_url(&url);
+                    }),
+                )
+                .child(tr!("updater_ui.view_changelog"))
+                .child(icon(
+                    "icons/arrow-up-right.svg",
+                    IconSize::XSmall.px(&theme),
+                    theme.accent_text,
+                ))
+                .into_any_element(),
+        )
+    }
+
     /// The update modal: a scrim and a centered card shared by every update
     /// path. `None` when closed.
     pub(super) fn updater_dialog_layer(
@@ -575,6 +757,7 @@ impl OrbitApp {
         let mut title = match dialog {
             UpdateDialog::Checking => tr!("updater_ui.checking_for_updates"),
             UpdateDialog::Available { .. } => tr!("updater_ui.update_available"),
+            UpdateDialog::Downloading { .. } => tr!("updater_ui.update_available"),
             UpdateDialog::UpToDate => tr!("updater_ui.up_to_date_title"),
             UpdateDialog::Failed(_) => tr!("updater_ui.failed_title"),
             UpdateDialog::Unavailable => tr!("updater_ui.update_unavailable"),
@@ -615,7 +798,7 @@ impl OrbitApp {
                             .text_color(theme.text_secondary)
                             .child(tr!("updater_ui.searching_for_new_version")),
                     )
-                    .child(update_progress_bar(theme))
+                    .child(update_progress_bar(theme, None))
                     .into_any_element(),
             ),
             UpdateDialog::Available { version, notes, .. } => {
@@ -638,13 +821,7 @@ impl OrbitApp {
                     .flex()
                     .flex_col()
                     .gap(px(10.))
-                    .child(
-                        div()
-                            .whitespace_normal()
-                            .text_size(TextSize::Default.px(&theme))
-                            .text_color(theme.text_secondary)
-                            .child(intro),
-                    );
+                    .child(self.update_version_row(version, &intro, theme, cx));
                 if !can_install {
                     column = column.child(
                         div()
@@ -670,6 +847,48 @@ impl OrbitApp {
                                 .max_h(px(280.))
                                 .overflow_y_scroll()
                                 .child(notes),
+                        )
+                        .into_any_element(),
+                )
+            }
+            UpdateDialog::Downloading { version } => {
+                let (done, total) = self.updater_progress.unwrap_or((0, 0));
+                let fraction = (total > 0).then(|| done as f32 / total as f32);
+                let detail = if version.is_empty() {
+                    tr!("updater_ui.downloading")
+                } else {
+                    tr!("updater_ui.downloading_version", version = version.clone())
+                };
+                let size = if total == 0 {
+                    crate::attachments::human_bytes(done as usize)
+                } else {
+                    tr!(
+                        "updater_ui.download_progress",
+                        done = crate::attachments::human_bytes(done as usize),
+                        total = crate::attachments::human_bytes(total as usize)
+                    )
+                };
+                update_dialog_body(
+                    theme,
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.))
+                        .child(
+                            div()
+                                .whitespace_normal()
+                                .text_size(TextSize::Default.px(&theme))
+                                .text_color(theme.text_secondary)
+                                .child(detail),
+                        )
+                        .child(update_progress_bar(theme, fraction))
+                        .child(
+                            div()
+                                .text_size(TextSize::Small.px(&theme))
+                                .text_color(theme.text_muted)
+                                .child(size),
                         )
                         .into_any_element(),
                 )
@@ -716,17 +935,19 @@ impl OrbitApp {
         }
         card = card.child(body);
 
+        // A staged release turns the primary button from a download into the
+        // restart that installs it.
+        let ready = self.updater_status == UpdateStatus::Ready;
         let secondary_label = if self.updater_history_open {
             tr!("view.back")
         } else {
             match dialog {
                 UpdateDialog::Checking => tr!("view.cancel"),
+                UpdateDialog::Downloading { .. } => tr!("view.cancel"),
                 UpdateDialog::Available {
                     from_check: true, ..
-                } if can_install => tr!("view.cancel"),
-                UpdateDialog::Available {
-                    from_check: false, ..
-                } if can_install => tr!("updater_ui.later"),
+                } if can_install && !ready => tr!("view.cancel"),
+                UpdateDialog::Available { .. } if can_install => tr!("updater_ui.later"),
                 _ => tr!("settings.close"),
             }
         };
@@ -760,6 +981,8 @@ impl OrbitApp {
             cx.listener(|this, _: &MouseUpEvent, window, cx| {
                 if this.updater_history_open {
                     this.close_update_history(cx);
+                } else if matches!(this.updater_dialog, Some(UpdateDialog::Downloading { .. })) {
+                    this.cancel_update_download(cx);
                 } else {
                     this.dismiss_update_dialog(window, cx);
                 }
@@ -769,12 +992,23 @@ impl OrbitApp {
             && can_install
             && matches!(dialog, UpdateDialog::Available { .. })
         {
+            let (label, install) = if ready {
+                (tr!("updater_ui.restart_and_update"), true)
+            } else {
+                (tr!("updater_ui.download"), false)
+            };
             footer = footer.child(dialog_button(
                 "update-dialog-primary",
                 theme,
                 true,
-                tr!("updater_ui.update_now"),
-                cx.listener(|this, _: &MouseUpEvent, _, cx| this.install_available_update(cx)),
+                label,
+                cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                    if install {
+                        this.install_available_update(cx);
+                    } else {
+                        this.download_available_update(cx);
+                    }
+                }),
             ));
         }
         card = card.child(footer);
@@ -996,6 +1230,48 @@ fn version_history_view(
         .into_any_element()
 }
 
+/// The update modal's version row: `v0.2.15 → v0.2.16` with the changelog
+/// link pushed to the card's right edge. A release with no version falls back
+/// to a sentence, and then there is nothing to link to.
+fn version_row(
+    theme: Theme,
+    version: &str,
+    fallback: &str,
+    link: Option<AnyElement>,
+) -> AnyElement {
+    let row = div()
+        .id("update-version-row")
+        .debug_selector(|| "update-version-row".to_string())
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base08.px(&theme));
+    if version.is_empty() {
+        return row
+            .whitespace_normal()
+            .text_size(TextSize::Default.px(&theme))
+            .text_color(theme.text_secondary)
+            .child(fallback.to_owned())
+            .into_any_element();
+    }
+    let row = row.child(
+        div()
+            .flex_none()
+            .whitespace_nowrap()
+            .text_size(TextSize::Default.px(&theme))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme.text_primary)
+            .child(tr!(
+                "updater_ui.version_change",
+                current = env!("CARGO_PKG_VERSION"),
+                version = version.to_owned()
+            )),
+    );
+    match link {
+        Some(link) => row.child(div().flex_1()).child(link).into_any_element(),
+        None => row.into_any_element(),
+    }
+}
+
 /// The modal's one button shape, tinted primary (Update now) or quiet
 /// (Later / Cancel / Close).
 fn dialog_button(
@@ -1027,9 +1303,14 @@ fn dialog_button(
     press(button).child(label).into_any_element()
 }
 
-/// The sidebar pill's two layers: the download icon and the "Update" label,
+/// The sidebar pill's two layers: the action's glyph and its label,
 /// cross-faded by `reveal` while the pill expands.
-fn updater_pill_content(theme: Theme, label: String, reveal: f32) -> impl IntoElement {
+fn updater_pill_content(
+    theme: Theme,
+    label: String,
+    glyph: &'static str,
+    reveal: f32,
+) -> impl IntoElement {
     div()
         .relative()
         .size_full()
@@ -1041,11 +1322,7 @@ fn updater_pill_content(theme: Theme, label: String, reveal: f32) -> impl IntoEl
                 .items_center()
                 .justify_center()
                 .opacity(1.0 - reveal)
-                .child(icon(
-                    "icons/arrow-down.svg",
-                    IconSize::XSmall.px(&theme),
-                    theme.background,
-                )),
+                .child(icon(glyph, IconSize::XSmall.px(&theme), theme.background)),
         )
         .child(
             div()
@@ -1098,7 +1375,26 @@ fn update_dialog_body(theme: Theme, content: AnyElement) -> AnyElement {
 
 /// A thin indeterminate bar, for the modal's search state. The moving segment
 /// is a fraction of the track, so the sweep scales with the card.
-fn update_progress_bar(theme: Theme) -> AnyElement {
+fn update_progress_bar(theme: Theme, fraction: Option<f32>) -> AnyElement {
+    // A download knows its bytes, so the bar fills instead of sweeping.
+    if let Some(fraction) = fraction {
+        let fraction = fraction.clamp(0., 1.);
+        return div()
+            .relative()
+            .w_full()
+            .h(px(3.))
+            .rounded_full()
+            .bg(theme.surface_hover)
+            .overflow_hidden()
+            .child(
+                div()
+                    .h_full()
+                    .w(gpui::relative(fraction))
+                    .rounded_full()
+                    .bg(theme.accent),
+            )
+            .into_any_element();
+    }
     const SEGMENT: f32 = 0.28;
     let segment = div()
         .absolute()
@@ -1172,6 +1468,97 @@ mod tests {
         );
         // An unmatched bracket is left alone rather than eaten.
         assert_eq!(inline_notes_text("an [open bracket"), "an [open bracket");
+    }
+
+    #[test]
+    fn the_version_row_names_both_the_target_and_the_running_build() {
+        let text = tr!(
+            "updater_ui.version_change",
+            current = "0.2.15",
+            version = "0.2.16"
+        );
+        assert!(text.contains("0.2.15"), "{text}");
+        assert!(text.contains("0.2.16"), "{text}");
+    }
+
+    /// The version row and its changelog link share one line inside the card,
+    /// so a long link label can never spill past the card's right edge.
+    #[gpui::test]
+    fn the_version_row_keeps_its_changelog_link_inside_the_card(cx: &mut gpui::TestAppContext) {
+        struct Probe;
+        impl Render for Probe {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let theme = Theme::dark();
+                div()
+                    .id("probe-version-card")
+                    .debug_selector(|| "probe-version-card".to_string())
+                    .w(px(520.))
+                    .p(px(18.))
+                    .child(version_row(
+                        theme,
+                        "9.9.9",
+                        "A signed release is ready.",
+                        Some(
+                            div()
+                                .id("update-changelog-link")
+                                .debug_selector(|| "update-changelog-link".to_string())
+                                .flex_none()
+                                .child(tr!("updater_ui.view_changelog"))
+                                .into_any_element(),
+                        ),
+                    ))
+            }
+        }
+
+        let cx = cx.add_empty_window();
+        let _ = cx.draw(
+            gpui::point(px(0.), px(0.)),
+            gpui::size(px(800.), px(400.)),
+            |_, cx| cx.new(|_| Probe),
+        );
+        let card = cx
+            .debug_bounds("probe-version-card")
+            .expect("card laid out");
+        let link = cx
+            .debug_bounds("update-changelog-link")
+            .expect("the link is on the row");
+        assert!(
+            link.right() <= card.right(),
+            "the link must stay inside the card: link {link:?}, card {card:?}"
+        );
+    }
+
+    /// A release the feed named without a version renders the fallback
+    /// sentence, and there is no release page to link to.
+    #[gpui::test]
+    fn a_release_without_a_version_has_no_changelog_link(cx: &mut gpui::TestAppContext) {
+        struct Probe;
+        impl Render for Probe {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(520.)).child(version_row(
+                    Theme::dark(),
+                    "",
+                    &tr!("updater_ui.a_signed_release_is_ready"),
+                    None,
+                ))
+            }
+        }
+
+        let cx = cx.add_empty_window();
+        let _ = cx.draw(
+            gpui::point(px(0.), px(0.)),
+            gpui::size(px(800.), px(400.)),
+            |_, cx| cx.new(|_| Probe),
+        );
+        assert!(
+            cx.debug_bounds("update-version-row").is_some(),
+            "the fallback still renders a version row"
+        );
+        assert!(
+            cx.debug_bounds("update-changelog-link").is_none(),
+            "there is no release page to open"
+        );
+        assert!(crate::updater::changelog_url("").is_none());
     }
 
     #[test]

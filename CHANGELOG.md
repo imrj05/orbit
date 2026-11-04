@@ -64,6 +64,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A check reads the feed; downloading is your decision.** The updater used to
+  fetch and stage the whole artifact during the background check, so the footer
+  pill appeared only after 20–40 MB had already moved and clicking it went
+  straight to the swap. A check now stops after the feed and names the target
+  version beside the running one, with a **Changelog** link to the release page
+  and the notes already rendered, before any bytes are requested. **Download**
+  fetches, verifies, and stages with a real progress bar and a Cancel; when it
+  finishes the same card offers **Restart & Update**, which is what hands the
+  swap to the installer helper. The pill's glyph follows suit: a download arrow
+  while the release is only offered, a restart arrow once it is on disk. Two
+  consequences worth knowing: the modal's copy no longer promises that
+  downloading installs, and a silent launch check costs one small request
+  instead of a download.
+
 - **The `+N −N` chip opens the Git page's Changes tab.** The dirty-tree
   counts now reveal the files they count instead of opening the Review dock;
   the plain side-panel glyph still toggles Review.

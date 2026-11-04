@@ -80,7 +80,7 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/mcp/secrets.rs    MCP `${NAME}` secret store (~/.orbit-pi/mcp-secrets.json, 0600)
   src/mcp/manager.rs    McpManager: one source of truth + `pi mcp list --json` probe + fingerprints
   docs/mcp.md           MCP architecture, configuration, secrets, lifecycle, troubleshooting
-  src/app/updater_ui.rs signed-updater modal (search/Version History/Update now), rows, pill, event drain
+  src/app/updater_ui.rs signed-updater modal (check/version+changelog/Download with progress/Restart, Version History), rows, pill, event drain
   src/app/search.rs     in-transcript find (⌘F): matches, counts, prev/next, row wash
   src/app/toast_ui.rs   in-app toast stack: push/dismiss helpers + the bottom-right layer
   src/app/view.rs       top-level chrome: sidebar, transcript, composer, status bar, onboarding, image lightbox
