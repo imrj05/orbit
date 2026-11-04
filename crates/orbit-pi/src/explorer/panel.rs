@@ -141,6 +141,7 @@ pub struct ProjectPanel {
     filter: Entity<ComposerInput>,
     _filter_sub: Subscription,
     focus: FocusHandle,
+    focus_subscriptions: Option<(gpui::AnyWindowHandle, Subscription, Subscription)>,
     /// Workspace-relative path of the file the app is showing.
     active: Option<String>,
     /// Right-click context menu, if open.
@@ -197,6 +198,7 @@ impl ProjectPanel {
             filter,
             _filter_sub: filter_sub,
             focus: cx.focus_handle().tab_stop(true),
+            focus_subscriptions: None,
             active: None,
             menu: None,
             menu_dismissed_at: None,
@@ -905,10 +907,10 @@ impl ProjectPanel {
 
     fn tree(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
         let entity = cx.entity().downgrade();
-        let list = gpui::list(self.list.clone(), move |index, _window, cx| {
+        let list = gpui::list(self.list.clone(), move |index, window, cx| {
             entity
                 .upgrade()
-                .map(|entity| entity.update(cx, |this, cx| this.render_row(index, cx)))
+                .map(|entity| entity.update(cx, |this, cx| this.render_row(index, window, cx)))
                 .unwrap_or_else(|| div().into_any_element())
         })
         .size_full()
@@ -1042,7 +1044,7 @@ impl ProjectPanel {
             .into_any_element()
     }
 
-    fn render_row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
+    fn render_row(&self, index: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(row) = self.rows.get(index).cloned() else {
             return div().h(px(ROW_H)).into_any_element();
         };
@@ -1199,6 +1201,20 @@ impl ProjectPanel {
                     );
                 }
             }
+        }
+
+        if active && cursor && !renaming && self.focus.is_focused(window) {
+            // Paint the ring over the selected row without changing its layout
+            // or replacing the open-file selection fill.
+            content = content.relative().child(
+                div()
+                    .debug_selector(|| "explorer-selected-focus-ring".to_string())
+                    .absolute()
+                    .inset_0()
+                    .rounded(Radius::Medium.px(&theme))
+                    .border_1()
+                    .border_color(theme.focus_ring),
+            );
         }
 
         // The list measures each row with a definite width, but a bare flex
@@ -1609,9 +1625,20 @@ fn loading_state(theme: &Theme) -> AnyElement {
 }
 
 impl Render for ProjectPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.open {
             return div().into_any_element();
+        }
+        if self
+            .focus_subscriptions
+            .as_ref()
+            .is_none_or(|(handle, _, _)| *handle != window.window_handle())
+        {
+            self.focus_subscriptions = Some((
+                window.window_handle(),
+                cx.on_focus(&self.focus, window, |_, _, cx| cx.notify()),
+                cx.on_blur(&self.focus, window, |_, _, cx| cx.notify()),
+            ));
         }
         self.ensure_loaded(cx);
         // The filter is read here; the observer marks rows dirty on change.
@@ -1737,6 +1764,67 @@ mod tests {
             },
         );
         assert_prompt_has_width(cx, "new file");
+    }
+
+    #[gpui::test]
+    fn open_file_focus_ring_tracks_tree_focus_and_cursor(cx: &mut gpui::TestAppContext) {
+        let root = std::env::temp_dir().join("orbit-explorer-focus-ring");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(root.join("other.rs"), "").unwrap();
+
+        // `draw` accumulates debug bounds, so use a fresh window for each
+        // state rather than treating old bounds as the current frame.
+        for (focused, cursor_path, expected_ring) in [
+            (true, "main.rs", true),
+            (false, "main.rs", false),
+            (true, "other.rs", false),
+        ] {
+            let visual = cx.add_empty_window();
+            visual.update(|_, app| app.set_global(Theme::for_id(theme::ThemeId::Orbit)));
+            let panel = visual.update(|_, app| {
+                app.new(|cx| {
+                    ProjectPanel::new(
+                        Rc::new(|_, _, _| {}),
+                        Rc::new(|_, _| {}),
+                        Rc::new(|_| {}),
+                        cx,
+                    )
+                })
+            });
+            let snapshot = walk::snapshot(&root, false);
+            visual.update(|window, app| {
+                panel.update(app, |panel, cx| {
+                    panel.open = true;
+                    panel.width = px(280.);
+                    panel.workspace = Some(root.clone());
+                    panel.index = TreeIndex::build(snapshot, HashMap::new());
+                    panel.stale = false;
+                    panel.refresh_rows(cx);
+                    panel.active = Some("main.rs".into());
+                    panel.cursor = panel.rows.iter().position(|row| row.path == cursor_path);
+                    assert!(panel.cursor.is_some());
+                    if focused {
+                        window.focus(&panel.focus);
+                    }
+                    cx.notify();
+                });
+            });
+            let drawn = panel.clone();
+            visual.draw(
+                gpui::point(px(0.), px(0.)),
+                gpui::size(px(280.), px(600.)),
+                move |_, _| drawn.clone(),
+            );
+            assert_eq!(
+                visual
+                    .debug_bounds("explorer-selected-focus-ring")
+                    .is_some(),
+                expected_ring
+            );
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn assert_prompt_has_width(cx: &mut gpui::VisualTestContext, label: &str) {

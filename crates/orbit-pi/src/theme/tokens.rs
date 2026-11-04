@@ -56,24 +56,24 @@ impl Theme {
 
 // ── Corner radius + borders (`gpui_macros/src/styles.rs`) ───────────────
 
-/// GPUI's `rounded_*` scale. Every step but `None` and `Full` is in rems.
+/// Orbit's corner scale, in pixels before the corner-rounding preference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Radius {
     /// 0px.
     None,
-    /// 2px (0.125rem).
+    /// 2px.
     XSmall,
-    /// 4px (0.25rem) — buttons, list items, menu entries.
+    /// 4px.
     Small,
-    /// 6px (0.375rem) — input fields.
+    /// 5px — compact buttons and list items.
     Medium,
-    /// 8px (0.5rem) — every elevated surface.
+    /// 6px — standard buttons and input fields.
     Large,
-    /// 12px (0.75rem).
+    /// 8px — panels and elevated surfaces.
     XLarge,
-    /// 16px (1rem).
+    /// 10px.
     XXLarge,
-    /// 24px (1.5rem).
+    /// 12px.
     XXXLarge,
     /// 9999px — pills and discs.
     Full,
@@ -557,8 +557,8 @@ pub mod list_item {
 pub mod panel {
     use super::*;
 
-    /// Standard panel/card corner. Operational resolves this to 8px;
-    /// Classic keeps the existing 12px card corner.
+    /// Standard panel/card corner: 8px before the rounding preference,
+    /// shared by all palettes.
     pub const RADIUS: Radius = Radius::XLarge;
 }
 

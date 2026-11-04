@@ -34,8 +34,8 @@ need a running build.
 | P3 | The interaction layer, adopted control by control | P3a complete (hover, `control`, `state`); P3b is a per-site rollout — 208 `hover_state` sites | `hover_fades_*`, `a_control_tracks_hover_and_selection_separately` pass |
 | P4a | One `disclosure_chevron`, adopted by every swap site | Complete — 0 glyph swaps left | No `chevron-down`/`chevron-right` ternary remains outside the helper |
 | P4b | Popover entrance through `anchored_popover*` | Complete — all 19 sites enter through the chokepoint | Every anchored surface fades; the 16 with an anchor edge also travel |
-| P4c | Dialog entrance through `modal_card` | Complete: all 8 modals fade on `Layout` | All 8 modals fade; the scrim is unchanged, and no scale is possible |
-| P4d | Switch knob, segment selection | Complete | The knob travels 18px at every density; a segment fades both states |
+| P4c | Dialog entrance composed around `modal_card` | Complete: all 8 modals fade on `Layout` | Callers apply the entrance; `modal_card` supplies the frame. The scrim is unchanged, and no scale is possible |
+| P4d | Switch knob, segment selection | Complete | Knob travel is 18px at default settings and follows resolved padding; a segment fades both states |
 | P4e | Panel slides (explorer, terminal, Git, side pane) | Not started | Every panel eases its own width |
 | P4f | Composer send morph | Complete | Idle with a payload the button names Send; running it folds to a square |
 | P5 | Guards, CI job, DESIGN/audit status flip, perf re-capture | Guards and the CI job done; perf capture pending a running build | `design-guards` job runs on every push and gates `build` |

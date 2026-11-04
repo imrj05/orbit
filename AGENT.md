@@ -19,6 +19,13 @@ pi as a child process, no web, no webview, no Node daemon.
 
 ## Hard rules
 
+**Native app design system:** Before creating or changing any Orbit GPUI UI,
+component, visual styling, interaction, motion or accessibility behavior, read
+and apply `.agents/skills/orbit-design/SKILL.md`. Reuse existing theme roles and
+components; preserve the current design system unless the user explicitly asks
+to change it. This requirement applies to native app UI work, not unrelated
+backend or marketing changes.
+
 1. **No web anywhere in the UI.** Do not reintroduce React, Vite, Tauri, webviews, DOM, Tailwind, or Node tooling. New UI is GPUI only. The legacy `src-tauri/` tree has been deleted; never rebuild it.
 2. **The pi CLI is the only agent runtime.** Spawn `pi --mode rpc` as a child process per open session and speak newline-delimited JSON over stdio (`crates/orbit-rpc`). There is no Node daemon.
 3. **GPUI is pre-1.0 and pinned.** `crates/orbit-pi` uses `gpui = { version = "0.2.2", features = ["runtime_shaders"] }`. Upgrade deliberately on a schedule, never track `main`.
@@ -439,7 +446,8 @@ stack is gone; do not resurrect it.
 
 ### Known gaps
 
-- Rewind/fork UI is not shipped; clone is available.
+- Rewind/fork paths are implemented for user-message rewind, the response-footer
+  fork chooser and a palette action; GUI verification remains outstanding.
 - Full screen-reader/focus accessibility work remains incomplete.
 - GPUI API changes must be handled deliberately because the pinned version is
   pre-1.0.

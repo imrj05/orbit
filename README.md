@@ -128,7 +128,7 @@ Settings → **Git Accounts** inspects local Git author settings, generic and ho
 **Native**
 
 - A command palette (⌘P / ⌘K) and a registry-driven shortcut layer: the keymap, palette chips, and the Settings → Shortcuts reference all read from one command table, with Tab focus traversal, context-aware keys (review tree, pickers, dialogs), custom macOS window chrome, native dialogs, and reduce-motion
-- Zed's design tokens (spacing and density, type, icon and button sizes, elevation, motion) in `theme/tokens.rs`, scaling with the UI font size and Spacing Density settings — settings, usage, the sidebar, transcript chrome, the palette, pickers, modals, the Explorer, the Git panel, and the terminal use them today, with the composer the last major surface
+- Zed-derived, Orbit-adapted design tokens in `theme/tokens.rs` for spacing, type, controls, elevation and motion. Dynamic spacing follows UI font size and Spacing Density; other tokens use their own resolvers and preferences. Settings, usage, the sidebar, transcript chrome, pickers, modals, the Explorer, Git and terminal use the shared vocabulary.
 - **Open in** — open the workspace in a detected editor or terminal right from the header, with each app's real icon
 - macOS window handling — closing the window keeps the session, its pi process, and any running stream alive; clicking the Dock icon reopens that same session, and a run that settles with no window open still posts its notification
 - A first-run dependency check for `pi`, `node`, and `git` that reports anything missing with its install command

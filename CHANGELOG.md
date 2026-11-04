@@ -149,6 +149,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Settings dropdowns paint their options again.** Every select in Settings —
+  theme, font, model, retention, language — opened an empty panel: the option
+  list is `w_full` inside a popup that carried only a `min_w`, and a
+  percentage width inside an auto-width parent resolves to 0, so each row laid
+  out 8px *narrower than nothing*. The popup now sets an explicit width, and a
+  layout test checks the list and its rows keep a real width.
+
 - **Tests no longer add temporary projects to the real sidebar.** Workspace
   preferences and the last-workspace file use isolated, self-cleaning test
   directories instead of the user's Orbit files.

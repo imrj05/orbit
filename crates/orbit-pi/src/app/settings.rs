@@ -7785,9 +7785,12 @@ impl OrbitApp {
                 .w_full()
                 .py(list_pad_y)
                 .child(
-                    picker_entry(div(), &theme)
-                        .text_color(theme.text_muted)
-                        .child(tr!("settings.no_matches")),
+                    picker_entry(
+                        div().debug_selector(|| "settings-select-empty".to_string()),
+                        &theme,
+                    )
+                    .text_color(theme.text_muted)
+                    .child(tr!("settings.no_matches")),
                 )
                 .into_any_element()
         } else {
@@ -7836,7 +7839,14 @@ impl OrbitApp {
                             ElementId::NamedInteger("settings-select-row".into(), orig_ix as u64);
                         children.push(
                             div().h(row_h).w_full().child(
-                                picker_entry(div().id(row_id), &theme)
+                                picker_entry(
+                                    div()
+                                        .id(row_id)
+                                        .debug_selector(move || {
+                                            format!("settings-select-row-{orig_ix}")
+                                        }),
+                                    &theme,
+                                )
                                     .h(row_h)
                                     .justify_between()
                                     .cursor_pointer()
@@ -7906,13 +7916,20 @@ impl OrbitApp {
                 },
             )
             .w_full()
+            .debug_selector(|| "settings-select-list".to_string())
             .h(list_h)
             .track_scroll(self.settings_select_scroll.clone())
             .py(list_pad_y)
             .into_any_element()
         };
-        let popup = picker_surface(div(), &theme)
-            .min_w(px(360.))
+        // An explicit width, not `min_w`: the list below is `w_full`, and a
+        // percentage width inside an auto-width parent resolves to 0, which
+        // laid every option row out at a negative width — an empty panel.
+        let popup = picker_surface(
+            div().debug_selector(|| "settings-select-popup".to_string()),
+            &theme,
+        )
+        .w(px(360.))
             .flex()
             .flex_col()
             .overflow_hidden()

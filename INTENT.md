@@ -162,21 +162,20 @@ a report is cached 60 s, and a provider without a verified adapter reports `unsu
 than an invented number.
 
 ### D11 — Design tokens: Zed's sizing vocabulary, resolved through Orbit's theme
-**Choice:** `crates/orbit-pi/src/theme/tokens.rs` is a one-to-one port of Zed's `ui` crate sizing
-tokens: `DynamicSpacing` (Base00–Base48 × three densities), `TextSize` / `HeadlineSize` /
-`BufferLineHeight`, `IconSize`, `ButtonSize`, `ListItemSpacing`, the rounded scale, `ElevationIndex`
-(Zed's exact shadow stacks) with the `elevation_1/2/3` `StyledExt` helpers, `AnimationDuration`,
-and the per-component metrics (list item, list, popover, context menu, modal, tooltip, input
-field, scrollbar). Names and numbers follow Zed's source so any value is checkable against it.
-Zed's rem (its UI font size, 16px by default) maps onto Orbit's 14px-authored UI font like
-`Theme::ui_px`, so every token equals Zed's default pixel value at Orbit's defaults and scales
-with the UI font size setting. Zed's Compact / Default / Comfortable densities are anchored at
-Spacing Density 80 / 100 / 120 % (exact at the anchors, interpolated between). Colors stay
-Orbit's semantic palette — Zed's token set is sizing, elevation, and motion only.
+**Choice:** `crates/orbit-pi/src/theme/tokens.rs` uses a Zed-derived vocabulary adapted
+to Orbit: `DynamicSpacing` (Base00–Base48 × three densities), `TextSize` / `HeadlineSize` /
+`BufferLineHeight`, `IconSize`, `ButtonSize`, `ListItemSpacing`, `Radius`, `ElevationIndex`,
+`Motion`, and per-component metrics. Orbit's radius ramp and restrained elevation differ
+from Zed's original values. Dynamic spacing resolves the Compact / Default / Comfortable
+anchors at 80 / 100 / 120% density, interpolates between them, then follows UI font scaling.
+Other tokens have their own resolvers: radii use fixed pixel steps plus the user's corner
+rounding, while motion durations do not scale with font size or density. UI transitions use
+`Motion` roles; charts and looping affordances have separate cadences. Colors remain Orbit's
+semantic palette. The Orbit design skill specifies the shared non-color grammar.
 **Rationale:** the UI audit found no shared sizing layer: ~1,200 per-call-site px literals, 17
 distinct text sizes, 12 radii, and chrome heights that did not follow the UI font size. Zed is
-the canonical GPUI design system, and porting its tokens (rather than inventing a scale) gives
-every surface one vocabulary with a proven precedent. **Consequence:** new chrome sizes through
+a useful GPUI precedent, and adapting its token vocabulary gives every surface a shared
+scale while allowing Orbit's design to evolve. **Consequence:** new chrome sizes through
 `tokens` instead of literals; surfaces migrate one at a time. Context menus (sidebar session /
 workspace, Explorer, Git sync / branch / file), the tooltip, and the extension dialog are on
 the tokens, as are the floating modals (provider usage / API-key / provider editor, the update
@@ -190,9 +189,9 @@ site now resolves through `DynamicSpacing`, so chrome tracks the UI font size as
 density. UI type is on the `TextSize` scale across every surface (471 of 517 `.text_size` sites);
 what remains is sub-10px badge glyphs, 17px+ display headings, and editor / code text. Corner
 radii are on the `Radius` scale: gpui's fixed `rounded_sm/md/lg/xl` helpers and every on-scale
-`rounded(px(N))` are gone (only 23 off-scale bespoke radii remain). One-shot transitions use
-`AnimationDuration`; the looping affordances (spinner, shimmer, streaming pulses) and feedback
-timers keep their own cadences, which the three-value scale does not cover. The settings page is
+`rounded(px(N))` are gone (only 23 off-scale bespoke radii remained at that sweep). One-shot
+UI transitions use `Motion` roles, layered on `AnimationDuration`; charts, looping affordances
+(spinner, shimmer, streaming pulses) and feedback timers keep their own cadences. The settings page is
 on the token scales throughout — its side nav, headers, sections, rows, toolbars, selects, cards,
 and modals read `DynamicSpacing` / `TextSize` / `Radius` / `ButtonSize`, and it has no `ui_px` or
 gpui spacing utility left; only bespoke geometry remains (avatar / dot / toggle sizes, fixed
@@ -301,14 +300,13 @@ main repository.
 **Choice:** `DesignSystem` (`Classic` / `Operational`) is persisted beside the existing
 Light/Dark/System preference and the remembered Classic palettes. `AppearancePrefs::resolve`
 selects a `ThemeId` from the chosen system; every component continues to read the same
-`Theme` semantic roles and token resolvers. Operational supplies its own palette, a
-separate `surface_selected` row wash, a fixed tighter radius ramp, 11px captions, and flatter
-elevation. Classic keeps the existing palettes, geometry, and shadow stack.
+`Theme` semantic roles and token resolvers. Operational supplies its own palette and
+`surface_selected` row wash. Both families now share the same radius, typography and
+elevation grammar; the earlier family-specific geometry was superseded by the shared ramp.
 **Rationale:** a second widget tree or parallel CSS-like layer would duplicate every surface
-and drift. A design-system-aware layer behind the existing semantic tokens gives the new
-visual language app-wide reach while leaving the current design pixel-identical.
-**Consequence:** new visual rules go through `Theme` / `theme/tokens.rs` and must branch on
-`DesignSystem` only when Classic's values must remain unchanged. New palettes join
+and drift. Palette families change appearance without forking component geometry.
+**Consequence:** new visual rules use semantic `Theme` roles and shared `theme/tokens.rs`
+resolvers; do not branch geometry on `DesignSystem`. New palettes join
 `ThemeId::ALL` and the palette-invariant tests; the Appearance Theme dropdown filters the
 catalog with `themes_for_system`, and the Design-system control is the normal way to switch.
 
@@ -410,7 +408,7 @@ Appearance's interface-font picker includes bundled Onest in Regular, Medium,
 SemiBold, and Bold weights; it works offline without an OS font installation.
 The default interface face and saved font preferences remain unchanged.
 
-Done: streaming transcript + virtualization; markdown + highlighting; composer with steering, follow-ups, cancel, autocomplete, attachments; extension dialogs; diff/Review + Git page + GitHub issues/PRs (where `gh` is available); sessions (list/switch/new/delete/clone/cross-workspace, plus **rewind** — pi's `fork` at an earlier user message, which branches the conversation into a new session file, keeps the old one in the sidebar, and hands the forked-from prompt back to the composer) over an Orbit-owned project list (only folders the user added; removing one never touches pi) whose groups sort by activity, added date, name, or session count, with a **warm process pool** so re-opening a recent session is a resume, not a Node spawn; Git worktrees as first-class workspaces (`worktree.rs` + the Worktrees page: discovery, create from a new/existing branch, open/rename/move/lock/remove/prune/repair, configurable `.wt` root, optional async setup script with `ORBIT_ROOT_PATH`/`ORBIT_WORKTREE_PATH`, sessions rooted in and restored to the worktree — D14) plus **Work in** on the status bar in a repository and on the new-task page, choosing `Local`, a linked worktree, a new worktree, an existing worktree folder re-registered with `git worktree repair` (`working_folder.rs` classifies it, and a folder whose `.git/worktrees/<id>` is gone is reported instead of opened), a remote branch checked out as a local branch that tracks it (`create_tracking_branch`, because `git worktree add <path> origin/feat` leaves a detached HEAD), a clone, or any folder; the new-task picker offers cloning outside a repository too (the Windows job-object cancellation path is covered on the Windows CI leg; manual GUI verification remains); Explorer project panel + editable Files surface; integrated terminal (⌘J); usage, skills, plugins, models, providers, settings pages; transcript find; image lightbox; theming (dark/light/system, ten Classic palettes plus an opt-in Operational pair) + reduce-motion; localization (ten locales + System, D9); in-app signed updater + Version History (D17); notifications; open-in-editor; signed/notarizable macOS packaging + best-effort Windows/Linux bundles (D5); CI; access modes (a guard, not a sandbox), workflow modes (Plan/Build/Ask per D8), and the auto-title / quota extension bridges (D10); Zed design tokens (D11) with context menus, the tooltip, the extension dialog, the floating modal cards (provider usage / API-key / editor, update dialog, custom UI), the sidebar session / workspace rows, the transcript's message / card chrome, the settings section / group / row chrome, UI type on `TextSize` across every surface, corner radii on `Radius`, and one-shot motion on `AnimationDuration` migrated onto them.
+Done: streaming transcript + virtualization; markdown + highlighting; composer with steering, follow-ups, cancel, autocomplete, attachments; extension dialogs; diff/Review + Git page + GitHub issues/PRs (where `gh` is available); sessions (list/switch/new/delete/clone/cross-workspace, plus **rewind** — pi's `fork` at an earlier user message, which branches the conversation into a new session file, keeps the old one in the sidebar, and hands the forked-from prompt back to the composer) over an Orbit-owned project list (only folders the user added; removing one never touches pi) whose groups sort by activity, added date, name, or session count, with a **warm process pool** so re-opening a recent session is a resume, not a Node spawn; Git worktrees as first-class workspaces (`worktree.rs` + the Worktrees page: discovery, create from a new/existing branch, open/rename/move/lock/remove/prune/repair, configurable `.wt` root, optional async setup script with `ORBIT_ROOT_PATH`/`ORBIT_WORKTREE_PATH`, sessions rooted in and restored to the worktree — D14) plus **Work in** on the status bar in a repository and on the new-task page, choosing `Local`, a linked worktree, a new worktree, an existing worktree folder re-registered with `git worktree repair` (`working_folder.rs` classifies it, and a folder whose `.git/worktrees/<id>` is gone is reported instead of opened), a remote branch checked out as a local branch that tracks it (`create_tracking_branch`, because `git worktree add <path> origin/feat` leaves a detached HEAD), a clone, or any folder; the new-task picker offers cloning outside a repository too (the Windows job-object cancellation path is covered on the Windows CI leg; manual GUI verification remains); Explorer project panel + editable Files surface; integrated terminal (⌘J); usage, skills, plugins, models, providers, settings pages; transcript find; image lightbox; theming (dark/light/system, ten Classic palettes plus an opt-in Operational pair) + reduce-motion; localization (ten locales + System, D9); in-app signed updater + Version History (D17); notifications; open-in-editor; signed/notarizable macOS packaging + best-effort Windows/Linux bundles (D5); CI; access modes (a guard, not a sandbox), workflow modes (Plan/Build/Ask per D8), and the auto-title / quota extension bridges (D10); Zed design tokens (D11) with context menus, the tooltip, the extension dialog, the floating modal cards (provider usage / API-key / editor, update dialog, custom UI), the sidebar session / workspace rows, the transcript's message / card chrome, the settings section / group / row chrome, UI type on `TextSize` across every surface, corner radii on `Radius`, and one-shot UI motion on `Motion` roles migrated onto them.
 
 Finder file URLs and Windows CF_HDROP lists take precedence over clipboard preview images: pasted image files enter the image queue, and other files enter the existing file-reference queue. On Linux, file URI lists exposed as clipboard text use the same queue; GPUI cannot currently read file-only clipboard offers. Plain path text stays text.
 

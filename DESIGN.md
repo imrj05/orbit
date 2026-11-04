@@ -96,13 +96,16 @@ typography:
     fontFamily: ".ZedMono, Lilex, ui-monospace, monospace"
     fontSize: "13px"
     lineHeight: "20px"
+# Radius values are before the user's corner-rounding preference.
 rounded:
+  none: "0px"
   xs: "2px"
   sm: "4px"
-  md: "6px"
-  lg: "8px"
-  xl: "12px"
-  xxl: "16px"
+  md: "5px"
+  lg: "6px"
+  xl: "8px"
+  xxl: "10px"
+  xxxl: "12px"
   full: "9999px"
 spacing:
   hair: "1px"
@@ -165,11 +168,21 @@ components:
   composer:
     backgroundColor: "{colors.sidebar}"
     textColor: "{colors.ink}"
-    rounded: "{rounded.xxl}"
+    rounded: "{rounded.lg}"
     padding: "8px 12px"
 ---
 
 # Design System: Orbit Pi
+
+## Source of truth
+
+The Orbit design skill (`.agents/skills/orbit-design/SKILL.md`) defines the
+shared non-color component grammar and scales for new app work. This document
+records the theme families, palette and background behavior, and their application
+in the workbench. The Rust theme implementation and tests determine what ships;
+when a design rule changes, update the skill, this document, and the applicable
+implementation together. The frontmatter colors above are an Orbit Azure reference,
+not universal colors for every theme.
 
 ## Overview
 
@@ -185,8 +198,8 @@ at four weights of emphasis.
 
 The system is monochrome-by-default with semantic color reserved for state, so a
 screenshot in any of the twelve palettes still reads as Orbit. Depth is delivered by
-hairlines and tonal steps rather than shadows; shadows exist only for surfaces that
-genuinely float above the page (composer, popovers, modals).
+hairlines and tonal steps rather than shadows; floating surfaces use restrained
+shadows, with the existing composer contact-shadow treatment as an exception.
 
 **Key Characteristics:**
 - One accent per palette, rationed: ember (Orbit), blue (Orbit Azure), lime
@@ -215,13 +228,13 @@ does today, so this section never describes a surface that has not shipped.
 | -- | -- | -- |
 | Surfaces are neutral, not tinted | `background` → `surface` → `surface_elevated` differ by a few lightness points only | Shipped |
 | Separation is a hairline, not a shadow | 1px `border` between regions; `border_subtle` inside one | Shipped |
-| Shadows belong to floating overlays only | `elevation_2` / `elevation_3` (`ElevationIndex`) for menus, popovers, modals | Shipped |
+| Shadows are restrained and primarily for floating overlays | `elevation_2` / `elevation_3` for floating surfaces; existing contact-shadow exceptions are documented below | Shipped |
 | Controls are 6px, panels 8px | `Radius::Large` 6px, `panel::RADIUS` 8px, for every palette | Shipped |
 | Density over air: 28px rows, 13–14px body | `ButtonSize::Medium` 28px, `list_item` rows, `TextSize::Default` | Shipped |
-| Accent is identity, never a button fill | `accent` marks selection, focus, tints; primary fills read `action` | Shipped |
-| One type family, 400–600, no tracking | `TextSize` 10–16, weights 400/500/600 | Shipped |
+| Accent and action are separate roles | `accent` marks identity; primary fills read `action`, which a palette may key to the accent | Shipped |
+| Restrained UI type, 400–600 | `TextSize` 11–16 at default settings; a separate monospace family serves code | Shipped |
 | Motion is fast and decelerating | `Motion` roles (`Instant` / `Interaction` / `Layout` / `Travel`) plus `motion::hover` · `control` · `state` · `enter` · `disclosure_chevron` · `switch` | Shipped in §Motion System; hover is adopted on four controls, and the per-site rollout is the remaining work |
-| Every interactive surface answers the same states | `interaction::InteractionState` resolves the colours; `motion::hover` fades them | Shipped; a surface still on `.hover_state()` swaps instead of fading |
+| Interactive surfaces share state treatments | `interaction::InteractionState` resolves colours; `motion::hover` fades them | Primitives shipped; adoption is in progress and some surfaces swap instantly |
 | Keyboard is a first-class path | Command registry + palette; every chip has a `command()` route | Shipped |
 
 Four things Orbit deliberately does **not** take from Linear:
@@ -400,7 +413,7 @@ names a palette family, not a shape language.
 `button::RADIUS` / `button::radius(size)` for buttons, segmented controls, tabs, and
 header chips; `input::RADIUS` for text fields; `panel::RADIUS` for cards, panels,
 popovers, menus, and dialogs; `list_item::RADIUS` for navigation/list rows; and
-`Radius::Small` for badges, chips, and checkboxes. A large multi-line composer is still
+`Radius::Small` for badges and checkboxes. A large multi-line composer is still
 a field: it takes `input::composer_radius`, which is the field's own corner. Fully round
 `Radius::Full` is reserved for genuinely circular or pill-shaped controls (send/stop
 actions, toggles, avatars, status dots, meters) and is not mixed into the rectangular
@@ -431,13 +444,15 @@ always paired with a count or meta on the right of the same row.
 - **Mono** (`theme.code_px`, 400): tokens, hashes, durations, exact figures.
 
 ### Named Rules
-**The Size-Not-Weight Rule.** Sizes step 10/11 → 12 → 14 → 16, with 15 for page titles and
-20 for metric numbers; weights use only 400, 500, 600. No 700+, no letter-spacing tricks,
-no tracking below -0.01em.
+**The Size-Not-Weight Rule.** `TextSize` steps 11 → 12 → 14 → 16 at default
+settings; 10px uses are separate, not an `XSmall` token step. Weights generally use
+400, 500 and 600. Define each role by family, size, weight, line height and truncation;
+avoid a global tracking adjustment.
 
-**The Tabular Figure Rule.** Any column of numbers uses fixed-width rendering and is
-right-aligned; compact forms in the main UI (`18.4M`), exact forms in tooltips and
-detail tables (`18,421,842`).
+**The Numeric Alignment Rule.** Keep numeric columns stably aligned, preferably
+right-aligned with tabular figures where the selected font and renderer support them.
+Verify support rather than assuming it. Use compact forms in the main UI (`18.4M`),
+exact forms in tooltips and detail tables (`18,421,842`).
 
 ## Layout
 
@@ -451,13 +466,15 @@ virtualized (`uniform_list`) and scroll inside the plane — the page itself nev
 as a whole when a table is present.
 
 Responsive behavior is structural, never fluid type: grids drop columns (4 → 2), paired
-columns stack into one, and the sidebar hides before the content squashes.
+columns stack into one, and the sidebar hides before the content squashes. Test at the
+960×640 minimum window with maximum UI size and applicable density settings; scroll or
+collapse content instead of clipping essential controls.
 
 ## Elevation & Depth
 
 Flat by default. Depth comes from tonal steps (canvas → raised) and 1px hairlines.
-Shadows belong to surfaces that float above the page, and each reads one authored
-layer stack from `ElevationIndex`:
+Floating surfaces read a restrained shadow stack from `ElevationIndex`; the
+existing contact-shadow exception is listed separately below:
 
 ### Elevation Vocabulary
 - **`ElevationIndex::ElevatedSurface`** (`elevation_2`, one tight layer): anchored
@@ -466,14 +483,15 @@ layer stack from `ElevationIndex`:
   dialogs, the command palette.
 - **`ElevationIndex::Background` / `Surface` / `EditorSurface`** cast nothing. A panel
   is a tonal step and a hairline, not a shadow.
-- **`Theme::composer_shadow`** (one tight contact layer): the composer box and the usage
-  metric board — objects that sit on the page rather than in it. This is the single
-  non-floating shadow.
+- **`Theme::composer_shadow`** is an existing tight contact-shadow treatment used by
+  the composer, usage board and some terminal/Git surfaces. It is an exception to the
+  flat structural default, not permission to add shadows to ordinary cards.
 
 ### Named Rules
-**The Border-Or-Shadow Rule.** A surface declares one: either a 1px `border`
-hairline or an elevation shadow. Never both, or it reads as a ghost card.
-(`border_strong` is a focus/hover/selection edge, not a resting card edge.)
+**The Separation Rule.** Structural surfaces use hairlines and spacing, not
+shadows. Floating surfaces may combine a 1px hairline with a restrained elevation
+shadow; the shared elevation helper does both. Existing contact shadows are the
+exception above, not a general card treatment.
 
 **The Rectangle-Clip Rule.** gpui 0.2.2 clips `overflow_hidden` to a rectangle,
 not the border radius (`Style::overflow_mask` builds a `ContentMask` from
@@ -486,16 +504,16 @@ list-board rows (`settings_group`, the MCP server rows).
 
 ## Shapes
 
-Corners are soft but restrained: 6px for navigation and session rows and
-compact controls (≤24px icon buttons), 8px for chips, action buttons,
-inline inputs, and data-list rows, 12px for grouped surfaces and boards, 16px for
-the composer, `full` only for status dots, avatar monograms, the send button,
-and the toggle-switch track. Nothing else is a pill.
+Corners are soft but restrained. Before the corner-rounding preference, list
+items and compact button frames use 5px, standard buttons and inputs (including
+the composer) use 6px, and panels and elevated surfaces use 8px. `full` is
+reserved for circular or pill-shaped elements such as status dots, avatar
+monograms, the send button, and the toggle-switch track.
 
 Borders are 1px at `theme.border`; `border_strong` (ink at ~14% alpha) is reserved for
 focus and hover emphasis. Charts and graphs draw with 1.5px strokes; grid lines are 1px
-at low-opacity hairline. No drop-shadowed text, no gradients except the raised-button
-fill (see Buttons).
+at low-opacity hairline. No drop-shadowed text or decorative gradients; raised-button
+fills are flat (see Buttons).
 
 ### New-task backdrop
 
@@ -527,7 +545,7 @@ the chat page has neither.
 ## Components
 
 ### Buttons
-- **Shape:** `button::radius(size)` — 6px on compact frames, 8px on the standard scale;
+- **Shape:** `button::radius(size)` — 5px on compact frames, 6px on the standard scale;
   32px (`Large`), 28px (`Medium`), 22px (`Default`), 18px (`Compact`), 16px (`None`).
 - **Primary:** `surface_elevated` + 1px `border`, hover steps to `surface_hover` with a
   `border_strong` edge. One per screen region. A palette may instead key its primary
@@ -541,27 +559,27 @@ the chat page has neither.
 - **Disabled:** `overlay` fill with `text_disabled` content; never opacity-faded color.
 
 ### Chips
-- **Style:** 28px tall, 8px radius, `surface_elevated` + hairline, 12px ink, optional leading
+- **Style:** 28px tall, 6px radius, `surface_elevated` + hairline, 12px ink, optional leading
   Small (14px) icon and XSmall (12px) trailing chevron — `ButtonSize::icon_size`
   for the leading glyph, the chip-caret size for the chevron.
 - **State:** open/selected = `surface_active` fill + `text_primary`; hover = `surface_hover`.
 
 ### Metric cells
-- **Style:** a single bordered board (`surface_elevated` + hairline + 12px radius) whose cells
+- **Style:** a single bordered board (`surface_elevated` + hairline + 8px radius) whose cells
   are divided by 1px hairlines — never a grid of separate floating cards.
 - **Content order:** 11px uppercase label → 20px number → 11.5px secondary line
   (comparison or average). Missing data reads "Unavailable", never a fabricated `0`.
 
 ### Cards / Containers
-- **Corner Style:** 12px.
+- **Corner Style:** 8px (`panel::RADIUS`).
 - **Background:** `surface`/`surface_elevated`; nested cards are forbidden.
 - **Border:** 1px `border`.
 - **Internal Padding:** 12–14px; lists use full-bleed rows with 8px inner padding and a
   hover fill instead.
 
 ### Inputs / Fields
-- **Style:** composer-style box — `surface`, 1px hairline, 16px radius on the main
-  composer (`input::composer_radius`), 8px on inline fields.
+- **Style:** composer-style box — `surface`, 1px hairline, 6px radius on the main
+  composer (`input::composer_radius`) and inline fields (`input::RADIUS`).
 - **Focus:** the border steps to `focus_ring` (1px); a fill is never the focus signal.
 - **Placeholder:** `text_muted` — always a real prompt ("Search sessions…"), never a label.
 - **Tokens:** a leading `/command` and any `@file` mention paint inline in their token
@@ -577,24 +595,27 @@ A modal is the only live layer while it is open, and every one of them is built 
 the same two pieces (`modal_card`, `modal_scrim` in `app/helpers.rs`):
 
 - **Scrim:** `scrim_modal` over the whole window, `Base24` padding, card centred. A
-  click on the scrim dismisses; a click on the card never reaches it. There is one
-  scrim value for every modal — a dialog that wants a darker backdrop changes
-  `scrim_modal`, not itself.
+  click on the scrim cancels a dismissible dialog; a click on the card never reaches
+  it. Mandatory or in-progress dialogs may prevent dismissal when interruption would
+  be unsafe; explain the state and any available action. There is one scrim value for
+  every modal — a dialog that wants a darker backdrop changes `scrim_modal`, not itself.
 - **Card:** `elevation_3` (elevated surface, `border_strong`, one restrained shadow),
   the panel corner, a clipped column, and the UI font. Width and height bounds belong
   to the caller; everything else belongs to the shell.
 - **Anatomy:** header (`modal::header_padding_*`, Small headline) → body → footer, with
   hairlines between. The footer holds the actions; a destructive action is separated
   from the primary one.
-- **Keyboard:** Escape cancels, the primary action takes Return, and focus is trapped
-  inside the card until it closes, then returned to the control that opened it.
+- **Keyboard:** Escape cancels dismissible dialogs; the same mandatory or unsafe
+  interruption exception applies as for the scrim. The primary action takes Return
+  where appropriate, and focus is trapped inside the card until it closes, then
+  returned to the control that opened it.
 
 A dialog that paints its own surface, corner, or backdrop is wrong even if it looks
 plausible — that is how the worktree dialogs drifted to `surface_secondary` while every
 other modal floated on `surface_elevated`.
 
 ### Navigation
-- Sidebar rows: 28px tall, 6px radius, 14px icon (Small) in a fixed 20px slot, label in
+- Sidebar rows: 28px tall, 5px radius, 14px icon (Small) in a fixed 20px slot, label in
   `text_secondary`/`text_muted`; hover fills `surface_hover`; the active destination is
   marked by `surface_selected` fill with `selection_fg`, never by accent color alone.
 - A running session row leads with a small accent arc turning in place and its title
@@ -607,7 +628,8 @@ other modal floated on `surface_elevated`.
 - Header row: 11px uppercase `text_muted` labels, hairline underneath, sticky.
 - Rows: 26px, hairline separators, hover fills `surface_hover`, selected fills
   `surface_selected`,
-  numeric columns right-aligned in tabular figures, first column left-aligned.
+  numeric columns stably aligned, preferably right-aligned with tabular figures where
+  the selected font and renderer support them; first column left-aligned.
 - Clipped cell text always ends in `…`: the character budget is computed from the
   column's width rather than left to the renderer, so no cell is ever cut mid-glyph.
 - Row-level actions are revealed on row hover, never as a permanent icon rail.
@@ -674,8 +696,9 @@ receiving keyboard input." They must remain visually distinct.
 
 ### The State Contract
 
-Every interactive surface answers the same six states, and the answers come from
-`theme::tokens::interaction::InteractionState` — not from the call site:
+Interactive surfaces should answer the same six states using
+`theme::tokens::interaction::InteractionState` rather than re-deciding them at
+the call site. Existing adoption is still in progress:
 
 | State | Fill | Frame | Row ink | Control ink |
 | -- | -- | -- | -- | -- |
@@ -736,8 +759,9 @@ The command palette is a first-class navigation surface.
 - Destructive commands require explicit confirmation.
 - Commands must operate on the same underlying action handlers as buttons and menus;
   keyboard and pointer interactions must not create separate behavior paths.
-- A chordless command is registered with `command(…)`, which puts it in the palette and
-  in no keymap. That is the intended shape for a chip's keyboard path, not a gap.
+- A chordless `command(…)` provides a palette route without a keymap row. That
+  route does not by itself prove that the visible control or its workflow is
+  keyboard accessible; verify the complete path.
 - Every command draws an icon, and GPUI resolves it through the embedded asset source, so
   a path the source cannot find fails when the row is drawn. `every_command_icon_is_embedded`
   holds the whole registry against the assets that ship — add the missing icon rather than
@@ -938,12 +962,12 @@ Minimum expectations:
 - Menu dismissal with Escape.
 - Standard text editing shortcuts.
 
-Every control on the composer row is a `div` with a mouse handler, not a tab stop, so its
-only routes are its chord and the command palette. A chip whose command has neither is a
-setting a keyboard-only user cannot change at all — `composer_controls_are_reachable_without_a_pointer`
-enforces this for the agent controls (model, thinking, workflow mode, access mode).
-When a chord is not available, a palette-only command is the whole fix: `command()`
-registers no keymap row, so nothing has to be invented to give a chip a keyboard path.
+Composer controls currently have command or shortcut routes; the
+`composer_controls_are_reachable_without_a_pointer` test covers agent controls
+(model, thinking, workflow mode, access mode). A palette-only command can expose
+an action, but it does not prove the visible control or complete flow is usable
+without a pointer. Verify traversal, focus and operation separately and record
+remaining gaps.
 
 Do not invent custom shortcuts where standard macOS or Windows behavior already exists.
 
@@ -986,15 +1010,15 @@ render the instant swap.
 
 ### Roles
 
-The roles are the only durations a one-shot transition may use, and they live in
-`theme::tokens::Motion`:
+These are the durations for one-shot UI transitions, in `theme::tokens::Motion`.
+Chart reveals and morphs use the separate data-visualisation cadence below:
 
 | Role | Duration | Band | Used for | Status |
 | -- | --: | -- | -- | -- |
 | `Instant` | 50ms | 0–80ms | Press acknowledgement, focus, simple visual feedback | Shipped |
 | `Interaction` | 150ms | 120–160ms | Hover, selection, menu appearance | Shipped |
-| `Layout` | 200ms | 160–220ms | Panel open/close, disclosure, contextual transitions | Shipped |
-| `Travel` | 260ms | 220–320ms | A card moving as a whole: popover travel, dialog entrance, composer dock, send morph | Shipped |
+| `Layout` | 200ms | 160–220ms | Panel open/close, disclosure, dialog entrance, contextual transitions | Shipped |
+| `Travel` | 260ms | 220–320ms | A surface moving as a whole, composer dock, send morph | Shipped |
 
 `Instant` and `Interaction` are Zed's own values (`AnimationDuration::Instant` /
 `Fast`), so a surface ported from Zed keeps its cadence. `Layout` is Orbit's: Zed's
@@ -1013,9 +1037,10 @@ travel.
 
 ### The interaction layer
 
-Every interactive surface answers the same states through `app/helpers.rs`, and each
-answer is a transition rather than a frame swap. A component inherits them the way it
-inherits hover fills from `InteractionState`: it does not decide them again.
+The target contract is for interactive surfaces to share state treatments and
+transitions through `app/helpers.rs`, rather than deciding them per component.
+The primitives ship, but adoption is still in progress; some surfaces still
+swap states instantly rather than transitioning.
 
 | Interaction | Where it applies | Role | What moves | Reduce Motion |
 | -- | -- | -- | -- | -- |
@@ -1034,8 +1059,8 @@ inherits hover fills from `InteractionState`: it does not decide them again.
 
 Four rules hold across the table:
 
-- **One answer per interaction.** A hover is not instant in one surface and faded in
-  another. If a treatment exists, it is the treatment everywhere.
+- **One answer per interaction.** New work uses the shared treatment; existing
+  surfaces still using an instant swap are migration work, not a separate standard.
 - **Interruptible.** A reversal restarts from the last painted value, never from the
   role's start. That is why a retargetable primitive carries a generation key: a fresh
   element id snaps the value back to `from`.
@@ -1045,9 +1070,10 @@ Four rules hold across the table:
   that moves across the window, or a control that changes size and meaning, may use
   `Travel`.
 
-Popovers and dialogs are the layer's chokepoints: every anchored surface is built
-through `anchored_popover` and every modal through `modal_card`, so a popup added later
-inherits its entrance instead of opting in.
+`anchored_popover` supplies its entrance motion. `modal_card` supplies the
+modal frame, not an animation: callers compose it with entrance motion, as in
+`dialog.rs`. Neither helper alone establishes the complete focus and dismissal
+contract.
 
 Two cells above are shaped by the toolkit rather than by taste, and both are recorded
 because a future upgrade can reopen them:
@@ -1126,7 +1152,8 @@ resolved state is never a guess. A legacy `reduce_motion: bool` in `ui.json` mig
 
 ### Loops
 
-A loop is sanctioned only when it reports live state. Everything else is decoration.
+Loops report live state, with one documented decorative exception for the
+new-task backdrop below.
 
 - **State loops (allowed):** the running-session shimmer (a session is running), the
   spinner and refresh glyph (work is in flight), the streaming pulse (output is
@@ -1143,8 +1170,8 @@ A loop is sanctioned only when it reports live state. Everything else is decorat
 
 ### Motion Rules
 
-- **A surface picks a role, never a number.** A one-shot transition is written as
-  `Animation::new(Motion::<role>.duration(&theme))` and nothing else.
+- **A surface picks a role, never a number.** A one-shot UI transition uses
+  `Motion::<role>.duration(&theme)`; charts use their separate cadence.
 - **Never call `.nominal()` outside `theme/tokens.rs`.** It skips the Reduce Motion
   guard, and the guard belongs to the role rather than to the call site.
 - **Never hand-roll a state transition at a call site.** A hover, press, focus, or
@@ -1262,7 +1289,7 @@ Long transcripts must remain scanable.
 
 The composer is a primary work surface.
 
-- Use the existing 16px radius and composer surface.
+- Use `input::composer_radius` (6px before the rounding preference) and the composer surface.
 - Keep the input visually distinct from the transcript without making it look like a
   floating SaaS widget.
 - Commands and file mentions remain content tokens.
@@ -1282,8 +1309,8 @@ The composer is a primary work surface.
     state of the run.
   - **Steer** appears only while a run is in flight with something to send.
 - Advanced controls belong behind contextual disclosure when they are not needed. A
-  control that disappears keeps a keyboard or palette path — add that path before hiding
-  the control, not after.
+  control that disappears keeps a usable keyboard path; a palette route alone
+  does not establish that the complete workflow is accessible.
 - Attachments sit in one tray above the input, one chip per item (image, file, or
   collapsed paste) with its own always-visible remove button — a chip large enough to
   read a file name is large enough to delete by accident. The tray names its count and
@@ -1309,7 +1336,11 @@ The composer is a primary work surface.
 The file tree is a navigation instrument.
 
 - Prefer indentation and whitespace over nested cards.
-- Selected files use `active`.
+- A file open in the viewer uses `surface_selected`; during inline rename the
+  row uses `surface_active` for editing. An unselected keyboard-cursor row uses
+  `overlay`, and an unselected, non-cursor row gets hover treatment. When the tree
+  has focus and its cursor is on the open file, a focus ring overlays the selected
+  fill without changing row layout; it is omitted during inline rename.
 - Git status uses semantic indicators plus text/icon where necessary.
 - Hidden files remain controlled by an explicit setting.
 - Directory expansion should be keyboard accessible.
@@ -1379,8 +1410,8 @@ Loading states represent actual asynchronous work.
 
 ### Error
 
-Errors must be actionable, and every one of them renders through
-`helpers::error_state` — one card that answers three questions in order:
+Errors must be actionable. Use `helpers::error_state` when no resolving control
+is adjacent; its card answers three questions in order:
 
 | Slot | Carries |
 | -- | -- |
@@ -1406,7 +1437,11 @@ Errors must be actionable, and every one of them renders through
 
 Accessibility is part of the component contract.
 
-- Every interactive element must have an accessible name.
+- Every interactive element must have an accessible name, role and relevant state.
+  GPUI 0.2.2 does not provide a ready-made native accessibility tree API; native
+  screen-reader semantics remain an implementation gap until a platform bridge is
+  implemented and verified. The shared switch also lacks keyboard activation and
+  native naming today. These limitations are not exemptions from the requirement.
 - Focus must remain visible.
 - Do not encode meaning with color alone.
 - Maintain sufficient contrast for text and controls.
@@ -1419,7 +1454,8 @@ Accessibility is part of the component contract.
 
 ## Component Contracts
 
-Every reusable GPUI component should define:
+Every reusable GPUI component must define its applicable contract; the presence
+of a contract does not mean the current implementation has already satisfied it:
 
 ```text
 Component
@@ -1430,7 +1466,9 @@ Component
 ├── pointer behavior
 ├── focus behavior
 ├── accessibility semantics
-├── motion
+├── motion and reduced motion
+├── loading, error and empty states where applicable
+├── bounds, clipping and long-content behavior
 └── data contract
 ```
 
@@ -1581,21 +1619,33 @@ choosing from — the shapes do not change with it.
 `AppearanceMode::System` follows the OS appearance live; an explicit Light or Dark
 choice ignores it. The choice and the remembered palette per system both persist.
 
+These families share the non-color component grammar in the Orbit design skill.
+Components must resolve semantic roles from the active `Theme`, not reuse the Azure
+reference colors in this document. Appearance also provides a Default accent plus
+Blue, Coral, Orange, Lime, Shu, Kaki, Sakura, Matcha, Asagi, Ruri, Fuji, Kogane,
+Ume and Gin. Accent overrides change interaction roles independently of the selected
+palette; the named custom accents also derive selection and inline-code treatments.
+Wallpaper and its optional extracted accent are separate appearance choices. Validate
+actual text, state and focus contrast against the resolved theme, including overrides;
+selection of a family does not guarantee every possible combination is verified.
+
 ### Geometry reference
 
-Every value below scales with the UI font size and the Spacing Density setting unless it
-is pinned in px (hairlines, the 200px menu minimum width, scrollbar metrics).
+Spacing scales with UI font size and the Spacing Density setting; other values
+follow their own tokens. Radii are fixed pixel values plus the corner-rounding
+preference, except `None` and `Full`, which do not change. The radius values
+below are before that preference.
 
 | Role | Value | Token |
 | -- | -- | -- |
-| Control radius | 6px compact / 8px standard | `button::radius(size)` |
+| Control radius | 5px compact / 6px standard | `button::radius(size)` |
 | Input radius | 6px; composer shares it | `input::RADIUS`, `input::composer_radius` |
 | Panel radius | 8px | `panel::RADIUS` |
-| Row / menu-entry radius | 6px | `list_item::RADIUS` |
+| Row / menu-entry radius | 5px | `list_item::RADIUS` |
 | Badge radius | 4px | `Radius::Small` |
 | Control heights | 16 / 18 / 22 / 28 / 32px | `ButtonSize` |
 | Icons | 10 / 12 / 14 / 16px | `IconSize`, or `ButtonSize::icon_size` inside a button |
-| Type | 10–11 / 12 / 14 / 16px | `TextSize` |
+| Type | 11 / 12 / 14 / 16px | `TextSize` |
 | Spacing | 0, 1, 2, 3, 4, 6, 8, 12, 16, 20, 24, 32, 40, 48px | `DynamicSpacing` |
 | Separators | 1px | `BORDER_WIDTH` |
 | Focus ring | 1px border | `FOCUS_RING_WIDTH` |
@@ -1686,9 +1736,9 @@ performance, and visual restraint make long agent sessions feel natural.
   hairline-separated section reads better.
 - **Don't** use display fonts, decorative gradients, glass, glow, or emoji in the
   chrome.
-- **Don't** animate decoration; a one-shot transition uses a `Motion` role
-  (`Instant` / `Interaction` / `Layout` / `Travel`) and only confirms a state change
-  (hover, press, focus, expand, selection, chart re-scale).
+- **Don't** animate decoration except for the documented new-task backdrop loop.
+  One-shot UI transitions use a `Motion` role and confirm state changes; chart
+  reveals and re-scales use the separate chart cadence.
 - **Don't** write a transition inline at a call site, and don't leave an interactive
   state with no transition: an instant swap next to a faded one is two answers to the
   same question.

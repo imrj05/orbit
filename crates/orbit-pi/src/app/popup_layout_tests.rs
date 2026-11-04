@@ -1297,3 +1297,100 @@ fn the_gesture_guard_does_not_swallow_the_keyboard_shortcut(cx: &mut gpui::TestA
         });
     });
 }
+
+// ── settings select option rows ───────────────────────────────────────
+
+/// Draw the real app on Settings → Privacy with the retention-mode select
+/// open: the chip reads "Delete", and its list holds "Archive" / "Delete".
+fn privacy_select_open(cx: &mut gpui::VisualTestContext) -> Entity<OrbitApp> {
+    use crate::theme::{Theme, ThemeId};
+
+    cx.update(|_, cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+    let viewport = gpui::size(px(1200.), px(820.));
+    let _ = cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.settings_open = true;
+            app.settings_section = SettingsSection::Privacy;
+            app.settings_select = Some(SettingsSelect::RetentionMode);
+            app.settings_select_highlight = Some(1);
+            cx.notify();
+        });
+    });
+    let _ = cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
+    app
+}
+
+/// The popup's rows are `w_full` inside a list that is `w_full` inside the
+/// popup. While the popup's width came only from `min_w`, that percentage
+/// resolved against an auto width and collapsed to 0 — every row laid out at
+/// -8px (its own horizontal margins) and the dropdown painted an empty panel.
+/// Regression test for the blank option lists on every Settings dropdown.
+#[gpui::test]
+fn settings_select_rows_fill_the_popup(cx: &mut gpui::TestAppContext) {
+    let mut cx = cx.add_empty_window();
+    let _app = privacy_select_open(&mut cx);
+
+    let popup = cx
+        .debug_bounds("settings-select-popup")
+        .expect("the select popup laid out");
+    let list = cx
+        .debug_bounds("settings-select-list")
+        .expect("the option list laid out");
+    assert_eq!(popup.size.width, px(360.), "the popup keeps its width");
+    assert!(
+        list.size.width > popup.size.width - px(4.),
+        "the list {list:?} fills the popup {popup:?} instead of collapsing"
+    );
+
+    for ix in 0..2 {
+        let selector: &'static str = match ix {
+            0 => "settings-select-row-0",
+            _ => "settings-select-row-1",
+        };
+        let row = cx.debug_bounds(selector).expect("the option row laid out");
+        assert!(
+            row.size.width > popup.size.width / 2.,
+            "row {ix} collapsed to {:?} and cannot paint its label",
+            row.size
+        );
+        assert!(
+            row.left() >= popup.left() && row.right() <= popup.right(),
+            "row {ix} {row:?} must sit inside the popup {popup:?}"
+        );
+    }
+}
+
+/// A query that matches no option still says so inside the popup, rather
+/// than leaving an empty panel.
+#[gpui::test]
+fn settings_select_shows_no_matches_inside_the_popup(cx: &mut gpui::TestAppContext) {
+    let mut cx = cx.add_empty_window();
+    let app = privacy_select_open(&mut cx);
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.settings_filter
+                .update(cx, |filter, cx| filter.set_text("er", cx));
+            cx.notify();
+        });
+    });
+    let viewport = gpui::size(px(1200.), px(820.));
+    let _ = cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
+
+    let popup = cx
+        .debug_bounds("settings-select-popup")
+        .expect("the select popup laid out");
+    let empty = cx
+        .debug_bounds("settings-select-empty")
+        .expect("the no-matches row laid out");
+    assert!(
+        empty.size.width > px(0.),
+        "the no-matches row collapsed to {:?}",
+        empty.size
+    );
+    assert!(
+        empty.left() >= popup.left() && empty.right() <= popup.right(),
+        "the no-matches row {empty:?} must sit inside the popup {popup:?}"
+    );
+}
