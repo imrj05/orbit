@@ -151,6 +151,29 @@ test("nested agent directories are discovered", () => {
   assert.deepEqual(agents.map((agent) => agent.name), ["reviewer"]);
 });
 
+test("a missing agents directory is empty, not a skip", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "orbit-subagents-absent-"));
+  const { agents, skipped } = discoverAgents({
+    builtins: [],
+    userDir: path.join(home, "never-created"),
+  });
+  assert.deepEqual(agents, []);
+  assert.deepEqual(skipped, []);
+});
+
+test("an agents directory that cannot be read is reported", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "orbit-subagents-unreadable-"));
+  // A regular file where the directory should be: `readdirSync` fails with
+  // ENOTDIR on every platform, unlike a permission test that root ignores.
+  const notADirectory = path.join(home, "agents");
+  fs.writeFileSync(notADirectory, "");
+  const { agents, skipped } = discoverAgents({ builtins: [], userDir: notADirectory });
+  assert.deepEqual(agents, []);
+  assert.equal(skipped.length, 1);
+  assert.equal(skipped[0].filePath, notADirectory);
+  assert.ok(skipped[0].error.length > 0);
+});
+
 test("the shipped builtins parse and carry real pi tool names", () => {
   const builtins = loadBuiltins();
   assert.deepEqual(builtins.map((agent) => agent.name), ["scout", "worker", "reviewer"]);

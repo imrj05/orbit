@@ -155,9 +155,15 @@ impl OrbitApp {
     }
 
     /// Re-fetch the current context-window estimate. Cheap; call after
-    /// settle, session switch, compaction, and model changes — never per tick.
+    /// settle, session switch, compaction, and model changes.
     pub(super) fn refresh_context_stats(&mut self) {
-        self.send(CommandBody::GetSessionStats, "get_session_stats");
+        if self.context_stats_in_flight.is_some() {
+            self.context_stats_pending = true;
+            return;
+        }
+        self.context_stats_pending = false;
+        self.context_stats_in_flight =
+            self.send_tracked(CommandBody::GetSessionStats, "get_session_stats");
     }
 
     /// Make `client` the active pi process, resetting uptime / exit state.
@@ -174,7 +180,9 @@ impl OrbitApp {
         };
         self.client = Some(client);
         // A new process starts a new session stream: entry ids from the old
-        // process mean nothing here.
+        // process mean nothing here, and its unanswered stats request is gone.
+        self.context_stats_in_flight = None;
+        self.context_stats_pending = false;
         self.reset_quota_entries();
     }
 
@@ -196,6 +204,9 @@ impl OrbitApp {
             self.error_source = None;
         }
         self.client = None;
+        // The departing process owed us a stats reply that will never come.
+        self.context_stats_in_flight = None;
+        self.context_stats_pending = false;
         if self.take_pending_fork() {
             // The fork reply died with the client, but pi can write the branch
             // file first: keep the warning and make the sidebar pick it up.

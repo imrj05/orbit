@@ -723,13 +723,13 @@ fn bounded_details(value: &Value) -> Option<Value> {
     }
 }
 
+type ToolResultParts = (String, Option<Value>, bool, ToolFacts, Option<Value>);
+
 /// Extract a tool result message: `(toolCallId, output, isError, facts, details)`.
 /// pi sends `role: "toolResult"` messages — not chat rows; their output and
 /// structured `details` belong on the matching tool call (rendered on the
 /// activity card and inside its detail).
-fn tool_result_parts(
-    value: &Value,
-) -> Option<(String, Option<Value>, bool, ToolFacts, Option<Value>)> {
+fn tool_result_parts(value: &Value) -> Option<ToolResultParts> {
     let value = value.get("message").unwrap_or(value);
     if value.get("role").and_then(Value::as_str) != Some("toolResult") {
         return None;

@@ -1329,8 +1329,8 @@ fn privacy_select_open(cx: &mut gpui::VisualTestContext) -> Entity<OrbitApp> {
 /// Regression test for the blank option lists on every Settings dropdown.
 #[gpui::test]
 fn settings_select_rows_fill_the_popup(cx: &mut gpui::TestAppContext) {
-    let mut cx = cx.add_empty_window();
-    let _app = privacy_select_open(&mut cx);
+    let cx = cx.add_empty_window();
+    let _app = privacy_select_open(cx);
 
     let popup = cx
         .debug_bounds("settings-select-popup")
@@ -1366,8 +1366,8 @@ fn settings_select_rows_fill_the_popup(cx: &mut gpui::TestAppContext) {
 /// than leaving an empty panel.
 #[gpui::test]
 fn settings_select_shows_no_matches_inside_the_popup(cx: &mut gpui::TestAppContext) {
-    let mut cx = cx.add_empty_window();
-    let app = privacy_select_open(&mut cx);
+    let cx = cx.add_empty_window();
+    let app = privacy_select_open(cx);
     cx.update(|_, cx| {
         app.update(cx, |app, cx| {
             app.settings_filter

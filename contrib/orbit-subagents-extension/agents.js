@@ -198,18 +198,26 @@ export function loadBuiltins(builtinsPath = new URL("./builtins.json", import.me
     .filter((agent) => agent.name !== "" && agent.description !== "");
 }
 
-/** Recursively list `*.md` files under `dir`, sorted for determinism. */
-function listMarkdown(dir) {
+/**
+ * Recursively list `*.md` files under `dir`, sorted for determinism. A
+ * directory that cannot be read is reported in `skipped`, so an unreadable
+ * agents folder does not silently remove every agent under it. A directory
+ * that does not exist yet (the usual case) is simply empty.
+ */
+function listMarkdown(dir, skipped) {
   let entries;
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      skipped.push({ filePath: dir, error: String(error?.message ?? error) });
+    }
     return [];
   }
   const found = [];
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) found.push(...listMarkdown(full));
+    if (entry.isDirectory()) found.push(...listMarkdown(full, skipped));
     else if (entry.isFile() && entry.name.endsWith(".md")) found.push(full);
   }
   return found;
@@ -227,7 +235,7 @@ export function discoverAgents({ builtins = [], userDir = userAgentDir() } = {})
   for (const agent of builtins) byName.set(agent.name, agent);
 
   const skipped = [];
-  for (const filePath of listMarkdown(userDir)) {
+  for (const filePath of listMarkdown(userDir, skipped)) {
     let text;
     try {
       text = fs.readFileSync(filePath, "utf8");

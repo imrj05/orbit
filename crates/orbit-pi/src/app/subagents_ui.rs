@@ -2430,6 +2430,13 @@ impl OrbitApp {
             Ok(hash) => {
                 let old_path = editor.path.clone();
                 let mut config = self.subagent_config.clone();
+                if renamed {
+                    // Settings follow the agent to its new name; the old entry
+                    // would otherwise linger with no file to match it.
+                    if let Some(old_name) = self.selected_subagent.as_ref() {
+                        config.rename_agent(old_name, &name);
+                    }
+                }
                 config.set_mode(&name, editor.mode);
                 if let Err(error) = subagents::save(&config) {
                     self.subagent_error = Some(error);
@@ -2472,7 +2479,15 @@ impl OrbitApp {
             .selected_subagent
             .clone()
             .unwrap_or_else(|| tr!("subagents_ui.no_agent"));
-        let bytes = std::fs::read(&path).unwrap_or_default();
+        // Undo restores these bytes, so a read failure must abort the delete:
+        // deleting first would leave Undo writing an empty file over the agent.
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.subagent_error = Some(error.to_string());
+                return;
+            }
+        };
         if let Err(error) = std::fs::remove_file(&path) {
             self.subagent_error = Some(error.to_string());
             return;
@@ -2482,6 +2497,10 @@ impl OrbitApp {
             bytes,
             name: name.clone(),
         });
+        // The file is gone, so its settings entry is dead weight: a disabled
+        // flag left behind would silently apply to a new agent of that name.
+        self.subagent_config.forget_agent(&name);
+        self.persist_subagents();
         self.selected_subagent = None;
         self.refresh_subagents(cx);
         self.toast_info(tr!("subagents_ui.deleted_agent", name = name));
@@ -2500,7 +2519,9 @@ impl OrbitApp {
         }
     }
 
-    /// The exact block the model will see, built the way `agents.js` builds it.
+    /// The tool description the model reads, mirroring `buildDescription` in
+    /// `agents.js`: the same heading, agent lines, capability caveat, mode
+    /// syntax, and closing advice.
     fn subagent_preview(&self) -> String {
         let mut lines = vec![
             tr!("subagents_ui.preview_heading"),
@@ -2519,7 +2540,11 @@ impl OrbitApp {
             ));
         }
         lines.push(String::new());
+        lines.push(tr!("subagents_ui.preview_capability_note"));
+        lines.push(tr!("subagents_ui.preview_modes"));
         lines.push(tr!("subagents_ui.preview_tail"));
+        lines.push(String::new());
+        lines.push(tr!("subagents_ui.preview_skip"));
         lines.join("\n")
     }
 }
@@ -2591,12 +2616,15 @@ fn tier_short_label(tier: Tier) -> String {
     }
 }
 
+/// The capability sentence the model reads. `agents.js` prints `runs commands`
+/// for every ceiling above `edit`, including `all` (a tool the agent's file
+/// declares but Orbit does not know, such as an MCP tool), so the page says the
+/// same thing the delegation prompt says.
 fn capability_label(ceiling: &str) -> String {
     match ceiling {
         "read" => tr!("subagents_ui.capability_read"),
         "edit" => tr!("subagents_ui.capability_edit"),
-        "exec" => tr!("subagents_ui.capability_exec"),
-        _ => tr!("subagents_ui.capability_all"),
+        _ => tr!("subagents_ui.capability_exec"),
     }
 }
 
@@ -2685,6 +2713,38 @@ mod tests {
         let mut config = config;
         config.set_enabled("worker", false);
         assert!(!config.agent_enabled("worker"));
+    }
+
+    /// The panel promises the description the model reads, so it must carry the
+    /// caveats `agents.js` wraps around the agent list, not just the list.
+    #[gpui::test]
+    fn the_preview_carries_every_paragraph_the_model_reads(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let app = cx.update(|_, cx| cx.new(OrbitApp::new));
+        let preview = cx.update(|_, cx| {
+            app.update(cx, |app, _| {
+                app.subagents = crate::subagent_file::builtin_agents();
+                app.subagent_config = crate::subagents::Config::default();
+                app.subagent_preview()
+            })
+        });
+        assert!(
+            preview.starts_with(&tr!("subagents_ui.preview_heading")),
+            "{preview}"
+        );
+        assert!(preview.contains("scout"), "{preview}");
+        for key in [
+            "subagents_ui.preview_capability_note",
+            "subagents_ui.preview_modes",
+            "subagents_ui.preview_tail",
+            "subagents_ui.preview_skip",
+        ] {
+            assert!(
+                preview.contains(&tr!(key)),
+                "the preview is missing {key}:\n{preview}"
+            );
+        }
     }
 
     /// A preset owns the tools the page knows; an MCP tool the file declares

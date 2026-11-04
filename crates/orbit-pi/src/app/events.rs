@@ -473,6 +473,11 @@ impl OrbitApp {
                     let (a, r) = transcript::diff_from_message(value);
                     self.added += a;
                     self.removed += r;
+                    // Every finalized message — the prompt, an assistant step,
+                    // or a tool result — grows the context. Re-read the meter
+                    // now so the ring follows the run instead of waiting for
+                    // the settle.
+                    self.refresh_context_stats();
                 }
                 Event::Response {
                     command,
@@ -900,6 +905,16 @@ impl OrbitApp {
                 return;
             }
             self.rewind_fork_id = None;
+        }
+        // Only the matching reply releases the coalescing gate. If messages
+        // arrived meanwhile, request one fresh snapshot after this response.
+        if command == "get_session_stats" && self.context_stats_in_flight.as_deref() == Some(id) {
+            self.context_stats_in_flight = None;
+            if success && self.context_stats_pending {
+                self.refresh_context_stats();
+            } else {
+                self.context_stats_pending = false;
+            }
         }
         // Error handling (docs #error-handling): a failed command carries an
         // `error` string. Surface it, unwind command-specific optimistic

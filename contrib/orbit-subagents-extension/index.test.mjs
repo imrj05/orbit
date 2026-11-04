@@ -226,7 +226,11 @@ test("the prompt file holds the body and both fixed blocks, then is removed", as
   assert.match(promptText, /permission scope was fixed/);
   assert.match(promptText, /does not receive your transcript/);
   assert.ok(!promptText.includes("Task: find auth"));
+  // The prompt lives in a directory of its own, so a predictable file name in
+  // the shared temp dir cannot be pre-created or shared with another child.
+  assert.match(path.basename(path.dirname(promptPath)), /^orbit-subagent-/);
   assert.equal(fs.existsSync(promptPath), false);
+  assert.equal(fs.existsSync(path.dirname(promptPath)), false);
 });
 
 test("an unknown agent is refused with the available names", async () => {

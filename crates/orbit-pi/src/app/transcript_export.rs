@@ -1024,8 +1024,8 @@ mod tests {
                 .operations
                 .iter()
                 .filter(|op| op.operator == "Tj")
-                .flat_map(|op| op.operands[0].as_str().unwrap().chunks_exact(2))
-                .map(|cid| u16::from_be_bytes([cid[0], cid[1]]))
+                .flat_map(|op| op.operands[0].as_str().unwrap().as_chunks::<2>().0.iter())
+                .map(|cid| u16::from_be_bytes(*cid))
                 .collect();
             assert!(
                 glyphs.iter().all(|&glyph| glyph != 0),

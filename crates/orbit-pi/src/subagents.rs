@@ -107,6 +107,27 @@ impl Config {
         }
     }
 
+    /// Move everything recorded for `from` to `to`, so a renamed agent keeps its
+    /// mode and the old name leaves nothing behind.
+    pub(crate) fn rename_agent(&mut self, from: &str, to: &str) {
+        if from == to {
+            return;
+        }
+        if let Some(entry) = self.agents.remove(from) {
+            self.agents.insert(to.to_string(), entry);
+        }
+        for name in self.disabled.iter_mut().filter(|name| *name == from) {
+            *name = to.to_string();
+        }
+    }
+
+    /// Forget `name` entirely. A deleted agent's file is gone, so a leftover
+    /// `disabled` entry would silently apply to a new agent of the same name.
+    pub(crate) fn forget_agent(&mut self, name: &str) {
+        self.agents.remove(name);
+        self.disabled.retain(|disabled| disabled != name);
+    }
+
     /// The JSON document written to disk. Unknown entry fields survive because
     /// `agents` is kept as raw values.
     pub(crate) fn to_value(&self) -> Value {
@@ -322,6 +343,31 @@ mod tests {
         let mut config = Config::default();
         config.set_mode("scout", "sideways");
         assert_eq!(config.agent_mode("scout"), "inherit");
+    }
+
+    #[test]
+    fn renaming_and_forgetting_agents_leave_no_stale_entries() {
+        let file = scratch("rename");
+        let mut config = Config::default();
+        config.set_mode("scout", "plan");
+        config.set_enabled("scout", false);
+
+        config.rename_agent("scout", "scout-2");
+        assert!(!config.agents.contains_key("scout"));
+        assert_eq!(config.agent_mode("scout-2"), "plan");
+        assert!(!config.agent_enabled("scout-2"));
+
+        save_to(&file, &config).unwrap();
+        config.forget_agent("scout-2");
+        assert!(!config.agents.contains_key("scout-2"));
+        assert!(
+            config.agent_enabled("scout-2"),
+            "a re-created agent is enabled"
+        );
+        save_to(&file, &config).unwrap();
+        let saved: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(saved["disabled"], json!([]));
+        assert_eq!(saved["agents"], json!({}));
     }
 
     #[test]

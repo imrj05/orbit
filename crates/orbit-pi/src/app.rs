@@ -820,6 +820,9 @@ pub struct OrbitApp {
     /// Live context-window usage from `get_session_stats`. `None` when pi
     /// hasn't advertised a window (no model) or the command isn't supported.
     context: Option<ContextUsage>,
+    /// Coalesce stats refreshes while a request is in flight.
+    context_stats_in_flight: Option<String>,
+    context_stats_pending: bool,
     /// Cumulative session token/cost totals from the same `get_session_stats`
     /// response. Unlike `context`, this spans the whole session (all turns,
     /// tools, and compaction summaries), so the popup can show cost + cache.
@@ -2297,6 +2300,8 @@ impl OrbitApp {
             current_session_path: None,
             menu_dismissed_at: None,
             context: None,
+            context_stats_in_flight: None,
+            context_stats_pending: false,
             session_usage: None,
             context_popup: ContextPopup::None,
             autocomplete,
@@ -3940,6 +3945,8 @@ mod cancel_tests;
 mod composer_draft_tests;
 #[cfg(test)]
 mod composer_layout_tests;
+#[cfg(test)]
+mod context_meter_tests;
 #[cfg(test)]
 mod devicons_tests;
 #[cfg(test)]

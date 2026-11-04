@@ -488,6 +488,15 @@ export function emitProgress(onUpdate, mode, children, force = false, now = Date
   return now;
 }
 
+/** Remove a child's private prompt directory; the OS reclaims it if this fails. */
+function removePromptDir(dir) {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch {
+    // Best effort; the temp dir is cleaned by the OS.
+  }
+}
+
 /**
  * Spawn and observe one child. Resolves with the settled state; never rejects
  * for a child-side failure (only an internal fault throws).
@@ -504,8 +513,24 @@ export async function runChild(state, {
   onProgress,
 }) {
   const now = deps.now;
-  const promptPath = path.join(deps.tempDir, `orbit-subagent-${process.pid}-${state.id}.md`);
   const systemPrompt = assemblePrompt({ body: agent?.body ?? "" });
+  // A private directory per child: the prompt holds the agent's instructions,
+  // and `mkdtempSync` refuses a path another user could have prepared.
+  let promptDir;
+  let promptPath;
+  try {
+    promptDir = fs.mkdtempSync(path.join(deps.tempDir, "orbit-subagent-"));
+    promptPath = path.join(promptDir, `${state.id}.md`);
+    fs.writeFileSync(promptPath, systemPrompt, { mode: 0o600 });
+  } catch (error) {
+    if (promptDir) removePromptDir(promptDir);
+    state.status = "failed";
+    state.phase = "spawning";
+    state.error = truncate(`could not write the child prompt: ${error?.message ?? error}`, 500);
+    state.endedAt = now();
+    return state;
+  }
+
   const argv = buildArgv({
     promptPath,
     prompt: `Task: ${state.task}`,
@@ -523,17 +548,6 @@ export async function runChild(state, {
     workflowMode: state.workflowMode,
   }) };
 
-  try {
-    fs.mkdirSync(path.dirname(promptPath), { recursive: true });
-    fs.writeFileSync(promptPath, systemPrompt, { mode: 0o600 });
-  } catch (error) {
-    state.status = "failed";
-    state.phase = "spawning";
-    state.error = truncate(`could not write the child prompt: ${error?.message ?? error}`, 500);
-    state.endedAt = now();
-    return state;
-  }
-
   let child;
   try {
     child = deps.spawn(deps.piBinary, argv, {
@@ -548,11 +562,7 @@ export async function runChild(state, {
     state.phase = "spawning";
     state.error = truncate(`could not start pi: ${error?.message ?? error}`, 500);
     state.endedAt = now();
-    try {
-      fs.rmSync(promptPath, { force: true });
-    } catch {
-      // Best effort.
-    }
+    removePromptDir(promptDir);
     return state;
   }
 
@@ -615,11 +625,7 @@ export async function runChild(state, {
   for (const line of decoder.end()) consume(line);
   if (timer) clearTimeout(timer);
   if (onAbort) signal?.removeEventListener?.("abort", onAbort);
-  try {
-    fs.rmSync(promptPath, { force: true });
-  } catch {
-    // Best effort; the temp dir is cleaned by the OS.
-  }
+  removePromptDir(promptDir);
 
   finalizeChild(state, { exitCode, timedOut, timeoutMinutes, now: now() });
   onProgress?.(true);

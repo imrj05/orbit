@@ -47,6 +47,9 @@ pub enum WorktreeError {
     NotARepository,
     /// The name is not a single, safe path component.
     InvalidName(String),
+    /// A repository's `.orbit/worktree.json` points the worktree root outside
+    /// the repository that shipped it.
+    InvalidDirectory(PathBuf),
     /// The branch name is not a valid Git ref.
     InvalidBranch(String),
     /// Something already exists at the target path.
@@ -95,6 +98,14 @@ impl fmt::Display for WorktreeError {
             Self::InvalidName(name) => {
                 write!(f, "{}", tr!("worktree.error.invalid_name", name = name))
             }
+            Self::InvalidDirectory(path) => write!(
+                f,
+                "{}",
+                tr!(
+                    "worktree.error.invalid_directory",
+                    path = Self::format_path(path)
+                )
+            ),
             Self::InvalidBranch(branch) => {
                 write!(
                     f,
@@ -249,7 +260,9 @@ impl WorktreeConfig {
         serde_json::from_str(&raw).unwrap_or_default()
     }
 
-    /// Persist the settings, creating `~/.orbit-pi/` when needed.
+    /// Persist the settings, creating `~/.orbit-pi/` when needed. Written to a
+    /// temporary file and renamed, so an interrupted write cannot leave a
+    /// half-document that `load` would read as the defaults.
     pub fn persist(&self) -> std::io::Result<()> {
         let path = Self::store_path();
         if let Some(parent) = path.parent() {
@@ -257,15 +270,32 @@ impl WorktreeConfig {
         }
         let payload = serde_json::to_string_pretty(self)
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
-        std::fs::write(path, payload)
+        let temporary = path.with_file_name(format!(".worktrees.{}.tmp", std::process::id()));
+        std::fs::write(&temporary, payload)?;
+        std::fs::rename(&temporary, &path).inspect_err(|_| {
+            let _ = std::fs::remove_file(&temporary);
+        })
     }
 
     /// The effective worktree directory for `repo_root`: the repository's
     /// `.orbit/worktree.json` wins over the global default.
-    pub fn effective_directory(&self, repo_root: &Path) -> PathBuf {
+    ///
+    /// The repository override arrives with the clone, so it is untrusted: a
+    /// value that resolves outside the repository is refused instead of
+    /// becoming the root `git worktree add` writes a full checkout into. The
+    /// global setting is the user's own and may be absolute.
+    pub fn effective_directory(&self, repo_root: &Path) -> Result<PathBuf, WorktreeError> {
         let repo = WorktreeRepoConfig::load(repo_root);
-        let raw = repo.directory.as_deref().unwrap_or(&self.directory);
-        expand_path(repo_root, raw)
+        let Some(raw) = repo.directory.as_deref() else {
+            return Ok(expand_path(repo_root, &self.directory));
+        };
+        let root = normalize_lexically(&expand_path(repo_root, raw));
+        // Canonical, not lexical: a cloned repository can commit a `wt`
+        // symlink, and `create_dir_all` follows it.
+        if !canonical_or(&root).starts_with(canonical_or(repo_root)) {
+            return Err(WorktreeError::InvalidDirectory(root));
+        }
+        Ok(root)
     }
 
     /// The effective setup script for `repo_root`, when one exists on disk.
@@ -728,7 +758,9 @@ impl WorktreeManager {
     /// (`.wt` by default). Relative values resolve against the main root.
     pub fn worktree_root(&self) -> Result<PathBuf, WorktreeError> {
         let root = self.repository_root()?;
-        Ok(normalize_lexically(&self.config.effective_directory(&root)))
+        Ok(normalize_lexically(
+            &self.config.effective_directory(&root)?,
+        ))
     }
 
     /// Like [`Self::worktree_root`], but creates the directory when it is
@@ -757,7 +789,7 @@ impl WorktreeManager {
     /// outside Orbit — discovery is Git's own list.
     pub fn list(&self) -> Result<Vec<Worktree>, WorktreeError> {
         let root = self.repository_root()?;
-        let worktree_root = normalize_lexically(&self.config.effective_directory(&root));
+        let worktree_root = normalize_lexically(&self.config.effective_directory(&root)?);
         match run(&self.repo, &["worktree", "list", "--porcelain", "-z"]) {
             Ok(bytes) => Ok(parse_worktree_list(
                 &String::from_utf8_lossy(&bytes),
@@ -1381,7 +1413,7 @@ mod tests {
         repo.init();
         let config = WorktreeConfig::default();
         assert_eq!(
-            config.effective_directory(&repo.path),
+            config.effective_directory(&repo.path).expect("default"),
             repo.path.join(".wt")
         );
         std::fs::create_dir_all(repo.path.join(".orbit")).expect("make .orbit");
@@ -1391,8 +1423,64 @@ mod tests {
         )
         .expect("write repo config");
         assert_eq!(
-            config.effective_directory(&repo.path),
+            config.effective_directory(&repo.path).expect("repo config"),
             repo.path.join("worktrees")
+        );
+    }
+
+    /// A cloned repository ships `.orbit/worktree.json`, so its directory must
+    /// never make Orbit create a checkout elsewhere on the machine.
+    #[test]
+    fn a_repository_directory_outside_the_repository_is_refused() {
+        let repo = TempRepo::new();
+        std::fs::create_dir_all(repo.path.join(".orbit")).expect("make .orbit");
+        let outside = repo.path.parent().expect("parent").join("outside-wt");
+        let config = WorktreeConfig::default();
+        for directory in [
+            "../outside-wt".to_string(),
+            "~/outside-wt".to_string(),
+            outside.to_string_lossy().into_owned(),
+        ] {
+            std::fs::write(
+                WorktreeRepoConfig::path(&repo.path),
+                serde_json::json!({ "directory": directory }).to_string(),
+            )
+            .expect("write repo config");
+            assert!(
+                matches!(
+                    config.effective_directory(&repo.path),
+                    Err(WorktreeError::InvalidDirectory(_))
+                ),
+                "{directory} must not become the worktree root"
+            );
+        }
+    }
+
+    /// A committed `wt` symlink passes a lexical check; the canonical target
+    /// is what `create_dir_all` and `git worktree add` actually write to.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_directory_cannot_escape_the_repository() {
+        let repo = TempRepo::new();
+        let outside = repo
+            .path
+            .parent()
+            .expect("parent")
+            .join(format!("orbit-worktree-outside-{}", std::process::id()));
+        std::fs::create_dir_all(&outside).expect("create outside dir");
+        std::os::unix::fs::symlink(&outside, repo.path.join("wt")).expect("symlink");
+        std::fs::create_dir_all(repo.path.join(".orbit")).expect("make .orbit");
+        std::fs::write(
+            WorktreeRepoConfig::path(&repo.path),
+            r#"{ "directory": "wt" }"#,
+        )
+        .expect("write repo config");
+        assert!(
+            matches!(
+                WorktreeConfig::default().effective_directory(&repo.path),
+                Err(WorktreeError::InvalidDirectory(_))
+            ),
+            "a symlink must not become the worktree root"
         );
     }
 
@@ -1404,7 +1492,10 @@ mod tests {
             directory: absolute.to_string_lossy().into_owned(),
             ..WorktreeConfig::default()
         };
-        assert_eq!(config.effective_directory(&repo.path), absolute);
+        assert_eq!(
+            config.effective_directory(&repo.path).expect("global"),
+            absolute
+        );
     }
 
     #[test]

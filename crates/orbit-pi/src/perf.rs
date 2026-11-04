@@ -90,8 +90,6 @@ impl Summary {
 
 static CAPTURE: Mutex<Option<Capture>> = Mutex::new(None);
 
-/// Begin a capture. False when one is already running — a second press stops it
-/// instead of starting a nested one.
 /// Whether a capture is running. The view paints a recording chip from this,
 /// so the user can see the sampler is armed — a tool that only reports after
 /// the fact is hard to trust while wiring it up.
@@ -111,6 +109,8 @@ pub fn sample_count() -> usize {
         .unwrap_or(0)
 }
 
+/// Begin a capture. False when one is already running — a second press stops it
+/// instead of starting a nested one.
 pub fn start(label: &str) -> bool {
     let mut slot = CAPTURE
         .lock()
