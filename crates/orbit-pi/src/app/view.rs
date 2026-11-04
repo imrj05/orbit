@@ -5387,7 +5387,7 @@ impl OrbitApp {
     ) {
         #[cfg(not(debug_assertions))]
         {
-            let _ = (window, cx);
+            let _ = (&*window, &*cx);
         }
         // Proves the chord reached the handler at all, which is otherwise
         // indistinguishable from "the key never matched".
