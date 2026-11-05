@@ -379,6 +379,19 @@ pub struct OrbitApp {
     /// The field's current phase, in seconds — read by the backdrop and frozen
     /// by Reduce Motion.
     backdrop_phase: f32,
+    /// When the new-task page's composer began settling into its session
+    /// position — armed by the first prompt sent from an empty page, cleared by
+    /// nothing (it is read against [`Motion::Travel`]'s window, not latched), so
+    /// a resumed session never replays the transition.
+    new_task_settle_at: Option<Instant>,
+    /// Keys the settle animation. A second send from a fresh page gets a new
+    /// generation, so the animation element is new and restarts from the page's
+    /// centered frame instead of holding the last one's end state.
+    new_task_settle_gen: u64,
+    /// Focus for the new-task folder chip. Enter/Space opens its picker and
+    /// dismissing that picker returns here, so the keyboard flow resumes at
+    /// the control that started it rather than jumping into the composer.
+    new_task_folder_focus: FocusHandle,
     /// Keyboard cursor for the sessions sidebar: an index into the current
     /// sidebar rows. `None` until the sidebar takes keyboard focus (⌘⇧B);
     /// the row it names paints the focused surface in `render_side_row`.
@@ -2110,6 +2123,9 @@ impl OrbitApp {
             backdrop_live: false,
             backdrop_clock: None,
             backdrop_phase: 0.,
+            new_task_settle_at: None,
+            new_task_settle_gen: 0,
+            new_task_folder_focus: cx.focus_handle().tab_stop(true),
             pane_full_last: false,
             sidebar_cursor: None,
             sidebar_focus: cx.focus_handle().tab_stop(true),
@@ -3912,6 +3928,7 @@ mod events;
 mod git_accounts_ui;
 pub(crate) mod helpers;
 mod mcp_ui;
+mod new_task;
 mod open_in;
 mod pi_update_ui;
 mod pickers;
@@ -3953,6 +3970,8 @@ mod devicons_tests;
 mod error_label_tests;
 #[cfg(test)]
 mod git_chip_tests;
+#[cfg(test)]
+mod new_task_layout_tests;
 #[cfg(test)]
 mod new_task_panels_tests;
 #[cfg(test)]

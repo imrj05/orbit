@@ -500,17 +500,19 @@ impl Render for OrbitApp {
         } else {
             px(0.)
         };
-        let main_width = viewport.width
-            - if sidebar_shown {
-                self.sidebar_width
-            } else {
-                px(0.)
-            }
-            - explorer_width
-            - pane_width;
+        let main_width = self.main_area_width(window, cx);
+        // The new-task page: no transcript yet. That one fact decides where the
+        // composer sits, how wide it is, and whether the folder row above it
+        // asks where the task runs (see `new_task`).
+        let empty = self.transcript.is_empty();
         // Composer toolbar compaction: below this column width the access
         // pill drops out and the model label clamps (Send stays reachable).
-        let composer_compact = (main_width - px(32.)).min(px(CONTENT_MAX_W)) < px(600.);
+        // Measured against the column the composer actually gets — the
+        // new-task page's narrower one included, so both pages drop chips at
+        // the same real width.
+        let page_column = f32::from(new_task::column_width(main_width));
+        let session_column = f32::from(main_width - px(32.)).min(CONTENT_MAX_W);
+        let composer_compact = (if empty { page_column } else { session_column }) < 600.;
         // The Usage page lays itself out against the real main-area width, so
         // its tables and grids never overflow the column it is given.
         if self.usage_open {
@@ -998,7 +1000,6 @@ impl Render for OrbitApp {
                 // The shared top bar is always the column's first row. A
                 // feature page (Files / Git / Usage) opens as a card below it;
                 // the chat fills the column itself.
-                let empty = self.transcript.is_empty();
                 // `new_task_backdrop` sets `backdrop_live` when it actually
                 // paints the field; nothing above needs to guess.
                 // top bar — the window's left controls float over it in the
@@ -1089,7 +1090,121 @@ impl Render for OrbitApp {
                 } else if self.worktrees_open {
                     self.render_worktrees_page(cx).into_any_element()
                 } else {
-                    // chat body — transcript/empty, composer, terminal
+                    // ── the chat column ──
+                    // One column for both pages. The new-task page is not a
+                    // second layout: it is this column with the transcript
+                    // empty, so the composer takes the middle of the page by
+                    // growing the slot above it and keeping a spacer below.
+                    // The first send eases both weights to the session's (see
+                    // `new_task::settle`), and that is the composer docking.
+                    let settling = !empty && new_task::settling(self.new_task_settle_at, &theme);
+                    let settle_gen = self.new_task_settle_gen;
+                    let page_w = new_task::column_width(main_width);
+                    let session_w = px(session_column);
+                    let page_frame = new_task::settle_page(page_w);
+                    let session_frame = new_task::settle_session(session_w);
+                    // The column's width for this frame: the page's narrow one,
+                    // the session's, or the one between them mid-dock (the
+                    // animation below owns that last case).
+                    let column_w = if empty { page_w } else { session_w };
+
+                    // The transcript's slot. Empty on the new-task page — the
+                    // composer owns the page and the slot is the room above it —
+                    // and the conversation otherwise. Its element id is stable
+                    // across that boundary, so the slot is the same box before
+                    // and after the first send.
+                    let mut slot = div()
+                        .id("transcript-slot")
+                        .debug_selector(|| "transcript-slot".to_string())
+                        .min_h_0()
+                        .w_full()
+                        .relative();
+                    if !empty {
+                        slot = slot
+                            .child(self.transcript.render(
+                                review_workspace.as_deref(),
+                                window.viewport_size().height,
+                                main_width,
+                                self.agent_calls,
+                                Some(self.review_opener(cx)),
+                                Some(self.image_opener(cx)),
+                                Some(self.rewind_opener(cx)),
+                                Some(self.regenerate_opener(cx)),
+                                Some(self.response_exporter(cx)),
+                                self.search_hits(),
+                                self.search_active(),
+                                cx,
+                            ))
+                            // In-transcript find bar (⌘F), floating over the
+                            // top-right of the transcript.
+                            .children(self.transcript_search_bar(cx));
+                    }
+                    // The slot always owns whatever the composer does not: on
+                    // the page that is the space above it, in a session the whole
+                    // column (`settle_page`/`settle_session` carry the weights).
+                    let slot = new_task::weight(
+                        slot,
+                        if empty {
+                            page_frame.slot
+                        } else {
+                            session_frame.slot
+                        },
+                    );
+                    // Ink arrives with the dock rather than before it, so the
+                    // first message is read in the session layout, not through a
+                    // half-moved page.
+                    let slot = if settling {
+                        slot.with_animation(
+                            ElementId::NamedInteger("new-task-settle-ink".into(), settle_gen),
+                            Animation::new(Motion::Travel.duration(&theme))
+                                .with_easing(Motion::Travel.easing()),
+                            move |el, progress| el.opacity(new_task::transcript_ink(progress)),
+                        )
+                        .into_any_element()
+                    } else {
+                        slot.into_any_element()
+                    };
+
+                    // The room under the composer. A session has none — the
+                    // composer is docked — so this exists only while the page is
+                    // centered, and eases away as the composer docks.
+                    let gap = if empty {
+                        Some(
+                            new_task::weight(
+                                div()
+                                    .id("new-task-gap")
+                                    .debug_selector(|| "new-task-gap".to_string())
+                                    .w_full(),
+                                page_frame.gap,
+                            )
+                            .into_any_element(),
+                        )
+                    } else if settling {
+                        Some(
+                            div()
+                                .id("new-task-gap")
+                                .debug_selector(|| "new-task-gap".to_string())
+                                .w_full()
+                                .with_animation(
+                                    ElementId::NamedInteger(
+                                        "new-task-settle-gap".into(),
+                                        settle_gen,
+                                    ),
+                                    Animation::new(Motion::Travel.duration(&theme))
+                                        .with_easing(Motion::Travel.easing()),
+                                    move |el, progress| {
+                                        new_task::weight(
+                                            el,
+                                            new_task::settle(progress, page_w, session_w).gap,
+                                        )
+                                    },
+                                )
+                                .into_any_element(),
+                        )
+                    } else {
+                        None
+                    };
+
                     div()
                         .flex_1()
                         .min_w_0()
@@ -1098,45 +1213,28 @@ impl Render for OrbitApp {
                         .flex()
                         .flex_col()
                         .relative()
-                        // transcript (centered column) or empty state
-                        .child(if empty {
-                            self.render_empty_state(main_width, cx).into_any_element()
-                        } else {
-                            div()
-                                .flex_1()
-                                .min_h_0()
-                                .w_full()
-                                .relative()
-                                .child(self.transcript.render(
-                                    review_workspace.as_deref(),
-                                    window.viewport_size().height,
-                                    main_width,
-                                    self.agent_calls,
-                                    Some(self.review_opener(cx)),
-                                    Some(self.image_opener(cx)),
-                                    Some(self.rewind_opener(cx)),
-                                    Some(self.regenerate_opener(cx)),
-                                    Some(self.response_exporter(cx)),
-                                    self.search_hits(),
-                                    self.search_active(),
-                                    cx,
-                                ))
-                                // In-transcript find bar (⌘F), floating over the
-                                // top-right of the transcript.
-                                .children(self.transcript_search_bar(cx))
-                                .into_any_element()
-                        })
+                        .child(slot)
                         // floating composer + status bar — one centered column
-                        .child(
-                            div()
-                                .w_full()
+                        .child({
+                            // The column's own width, not its child's: the
+                            // padding that used to centre it (`px_4`) is now
+                            // inside the number, so the same element can carry
+                            // the page's narrow width, the session's, and the
+                            // dock between them.
+                            let wrap = div()
                                 .flex()
                                 .flex_col()
                                 .items_center()
+                                .mx_auto()
+                                // The page padding stays on this box, so the
+                                // column inside it is exactly `column_w`: the
+                                // same 16px the column's width is computed
+                                // against, wherever the composer sits.
+                                .w(px(f32::from(column_w) + 2. * new_task::PAGE_PAD_X))
                                 .px_4()
                                 .pb_4()
                                 // One centered column: composer + status bar share
-                                // the same max width so the folder/meta row always
+                                // the same width so the folder/meta row always
                                 // aligns to the composer's edges.
                                 .child(
                                     div()
@@ -1170,20 +1268,36 @@ impl Render for OrbitApp {
                                         // Extension `setWidget` blocks placed
                                         // above the editor.
                                         .children(self.extension_widgets_above(cx))
+                                        // Where the task runs, named once: the
+                                        // folder row sits directly over the
+                                        // composer it applies to and opens the
+                                        // same picker the status bar's Work-in
+                                        // chip does. Only the new-task page shows
+                                        // it — in a session the status bar owns
+                                        // the question.
+                                        .children((empty || settling).then(|| {
+                                            self.new_task_folder_row(
+                                                theme, settling, settle_gen, cx,
+                                            )
+                                        }))
                                         // composer box — the picker popups are
                                         // anchored above their own chips
                                         .child(
                                             div()
                                                 .id("composer-box")
+                                                .debug_selector(|| "composer-box".to_string())
                                                 .w_full()
                                                 .relative()
                                                 .bg(theme.card_fill(theme.surface_secondary))
                                                 .border_1()
-                                                .border_color(if self.file_drag_hovered {
-                                                    theme.accent
-                                                } else {
-                                                    theme.border
-                                                })
+                                                .border_color(Self::composer_border_color(
+                                                    &theme,
+                                                    self.file_drag_hovered,
+                                                    self.input
+                                                        .read(cx)
+                                                        .focus_handle(cx)
+                                                        .is_focused(window),
+                                                ))
                                                 .rounded(input::composer_radius(&theme))
                                                 .shadow(theme.composer_shadow())
                                                 .px(DynamicSpacing::Base16.px(&theme))
@@ -1246,9 +1360,40 @@ impl Render for OrbitApp {
                                         // Extension `setWidget` blocks placed
                                         // below the editor.
                                         .children(self.extension_widgets_below(cx))
-                                        .child(self.status_bar(&workspace_label, cx)),
-                                ),
-                        )
+                                        .child(self.status_bar(
+                                            &workspace_label,
+                                            empty || settling,
+                                            cx,
+                                        )),
+                                );
+
+                            // The width rides the dock: the composer widens
+                            // from the page's column to the session's as it
+                            // descends, on the same role and clock as the gap
+                            // above, so the two read as one move.
+                            if settling {
+                                wrap.with_animation(
+                                    ElementId::NamedInteger(
+                                        "new-task-settle-column".into(),
+                                        settle_gen,
+                                    ),
+                                    Animation::new(Motion::Travel.duration(&theme))
+                                        .with_easing(Motion::Travel.easing()),
+                                    move |el, progress| {
+                                        let width =
+                                            new_task::settle(progress, page_w, session_w).width;
+                                        el.w(px(f32::from(width) + 2. * new_task::PAGE_PAD_X))
+                                    },
+                                )
+                                .into_any_element()
+                            } else {
+                                wrap.into_any_element()
+                            }
+                        })
+                        // Room under the composer while the page is centered;
+                        // it eases to nothing as the composer docks, and is not
+                        // mounted at all in a session.
+                        .children(gap)
                         // bottom terminal panel — the last row of the page, under
                         // the composer, so it hugs the window's bottom edge
                         .children(
@@ -2452,7 +2597,6 @@ impl OrbitApp {
                             )
                     })
                     .when(disabled, |chip| chip.disabled_state(&theme))
-                    .tip(commands::tooltip(CommandId::ChooseModel, false))
                     .child(icon_dyn(
                         provider_icon(&self.model_provider),
                         ButtonSize::Default.icon_size().px(&theme),
@@ -2523,7 +2667,6 @@ impl OrbitApp {
                                 )
                         })
                         .when(disabled, |chip| chip.disabled_state(&theme))
-                        .tip(commands::tooltip(CommandId::ChooseThinking, false))
                         .child({
                             let (path, _) = thinking_icon(&self.thinking_label, &theme);
                             icon(
@@ -2689,23 +2832,79 @@ impl OrbitApp {
         crate::backdrop::layer(theme, 0.)
     }
 
-    /// New-task empty state — minimal onboarding over the backdrop the caller
-    /// paints (the configured wallpaper, or the dot grid): one headline, a
-    /// ghost workspace row, and the composer below for input.
+    /// The composer border answers the current interaction without changing
+    /// geometry: drag-and-drop takes the accent, keyboard focus takes the
+    /// focus ring, and the resting field keeps its quiet hairline.
+    pub(super) fn composer_border_color(
+        theme: &Theme,
+        file_drag_hovered: bool,
+        input_focused: bool,
+    ) -> Hsla {
+        if file_drag_hovered {
+            theme.accent
+        } else if input_focused {
+            theme.focus_ring
+        } else {
+            theme.border
+        }
+    }
+
+    /// Width of the chat column after every visible dock has taken its share.
+    /// The workspace picker uses this same measurement instead of treating the
+    /// window minus the sidebar as the available area, so Explorer and Review
+    /// cannot push its fixed-width card away from the folder chip.
+    pub(super) fn main_area_width(&self, window: &Window, cx: &App) -> Pixels {
+        let viewport = window.viewport_size();
+        let pane_open = self.sidepane.read(cx).is_open();
+        let pane_visible =
+            pane_open && !self.settings_open && !self.usage_open && self.dependencies_ready();
+        let sidebar_shown = sidebar_shows(self.sidebar_visible, self.settings_open, viewport.width);
+        let explorer_visible =
+            self.project_panel.read(cx).is_open() && !self.settings_open && !pane_open;
+        let explorer_width = if explorer_visible {
+            self.project_panel.read(cx).width()
+        } else {
+            px(0.)
+        };
+        let pane_width = if pane_visible {
+            self.sidepane.read(cx).width()
+        } else {
+            px(0.)
+        };
+        (viewport.width
+            - if sidebar_shown {
+                self.sidebar_width
+            } else {
+                px(0.)
+            }
+            - explorer_width
+            - pane_width)
+            .max(px(0.))
+    }
+
+    /// The folder row: *where does this task run?* asked directly above the
+    /// composer it applies to.
     ///
-    /// `main_width` comes from the caller (window minus sidebar/pane) because
-    /// the field below gets a definite width: `w_full().max_w(_)` chains
-    /// nested under the centered column resolve their percentages against the
-    /// unclamped page width in this gpui/taffy stack, which painted the card
-    /// to the window's right edge. `width_for_window` keeps the field and the
-    /// picker popover the same width from one source of truth.
-    pub(super) fn render_empty_state(
+    /// It is one control, not a card: the folder's name, the mark that says
+    /// what kind of place it is (the project's logo when one was found, a folder
+    /// glyph otherwise), and a caret. Pressing it opens the workspace picker —
+    /// recent folders, the repository's worktrees, a new worktree, a clone, and
+    /// the native dialog — anchored under the row, flush with its left edge. The
+    /// path is one hover away rather than a second line: the name is what
+    /// identifies the folder here, and the picker lists full paths when the
+    /// choice is actually being made.
+    ///
+    /// `settling` collapses the row on send while the composer docks; at rest it
+    /// is simply absent from the session page, where the status bar's Work-in
+    /// chip asks the same question in the chrome that survives.
+    pub(super) fn new_task_folder_row(
         &self,
-        main_width: Pixels,
+        theme: Theme,
+        settling: bool,
+        settle_gen: u64,
         cx: &Context<Self>,
-    ) -> impl IntoElement + use<> {
-        let theme = *theme::get(cx);
-        let field_w = px(crate::workspace_picker::width_for_window(main_width.into()));
+    ) -> AnyElement {
+        let picker_open = self.workspace_picker.is_some();
         let cwd = self
             .current_workspace
             .clone()
@@ -2713,209 +2912,132 @@ impl OrbitApp {
             .unwrap_or_default();
         let folder_name = sessions::workspace_label(&cwd);
         let path_label = cwd.to_string_lossy().into_owned();
-        let picker_open = self.workspace_picker.is_some();
-        // A conventional project logo takes the folder glyph's seat; no logo
-        // found → folder, as before.
-        let workspace_icon: AnyElement = match &self.workspace_logo {
-            Some(logo) => img(ImageSource::Image(logo.clone()))
-                .size(IconSize::Custom(18. / 16.).px(&theme))
-                .flex_none()
-                .rounded(Radius::Small.px(&theme))
-                .object_fit(ObjectFit::Contain)
-                .into_any_element(),
-            None => icon(
-                "icons/folder.svg",
-                IconSize::Small.px(&theme),
-                theme.text_secondary,
-            )
-            .into_any_element(),
-        };
+        let row_h = ButtonSize::Medium.height(&theme);
+        let gap = DynamicSpacing::Base08.px(&theme);
 
-        // The backdrop belongs to the caller (`new_task_backdrop`, painted by
-        // the chat column in `render`): one layer spans this state, the
-        // floating composer, and the status bar. The active chat gets the
-        // quiet `chat_backdrop` wash instead.
-        div()
-            .flex_1()
-            .min_h_0()
-            .w_full()
-            .relative()
+        let row = div()
+            .id("pick-folder")
+            .debug_selector(|| "new-task-folder".to_string())
+            .flex_none()
+            .max_w_full()
+            .min_w_0()
             .overflow_hidden()
+            .h(row_h)
+            .px(ButtonSize::Medium.padding_x(&theme))
+            .flex()
+            .items_center()
+            .gap(DynamicSpacing::Base06.px(&theme))
+            .rounded(input::RADIUS.px(&theme))
+            .border_1()
+            // The open picker takes the accent edge, the same answer the field
+            // it replaced gave; at rest it is one hairline on the page's grain.
+            .border_color(if picker_open {
+                theme.accent.opacity(0.55)
+            } else {
+                theme.border
+            })
+            .bg(if picker_open {
+                theme.surface_active
+            } else {
+                theme.card_fill(theme.surface_elevated)
+            })
+            .cursor_pointer()
+            // The row floats over the page's grain rather than sitting on a
+            // solid panel, so its hover is the translucent wash with the edge
+            // lifting — not an opaque fill that would read as a new card.
+            .hover_overlay_bordered(&theme)
+            .pressed_state(
+                &theme,
+                if picker_open {
+                    PressedRamp::Selected
+                } else {
+                    PressedRamp::Wash
+                },
+            )
+            .track_focus(&self.new_task_folder_focus)
+            .focus_state(&theme)
+            .tip(path_label)
+            .key_context("NewTaskFolder")
+            .on_action(
+                cx.listener(|app, _: &crate::OpenWorkspacePicker, window, cx| {
+                    app.toggle_workspace_picker(window, cx);
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|app, _, window, cx| app.toggle_workspace_picker(window, cx)),
+            )
+            .child(self.workspace_mark(&theme))
             .child(
                 div()
-                    .relative()
-                    .size_full()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .px(px(crate::workspace_picker::PAGE_PAD))
-                    .pb(px(88.))
-                    .child(
-                        div()
-                            .w_full()
-                            .max_w(px(crate::workspace_picker::FIELD_MAX_W))
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .gap(DynamicSpacing::Base20.px(&theme))
-                            // Mark over the dot grid: a quiet raised disc,
-                            // not an accent wash. The accent is reserved for the
-                            // open picker and the caret, not decoration.
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .size(px(56.))
-                                    .rounded_full()
-                                    .bg(theme.surface_elevated)
-                                    .border_1()
-                                    .border_color(theme.border)
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(icon(
-                                        "icons/start-up.svg",
-                                        IconSize::Custom(24. / 16.).px(&theme),
-                                        theme.text_secondary,
-                                    )),
-                            )
-                            // Title block — one idea, one line of guidance.
-                            // 20px is the scale's display step (DESIGN.md).
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .items_center()
-                                    .gap(DynamicSpacing::Base06.px(&theme))
-                                    .child(
-                                        div()
-                                            .text_size(theme.ui_px(20.))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(theme.text_primary)
-                                            .child(tr!("view.start_a_task")),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(TextSize::Default.px(&theme))
-                                            .text_color(theme.text_muted)
-                                            .text_align(TextAlign::Center)
-                                            .child(tr!("workspace.pick_workspace_hint")),
-                                    ),
-                            )
-                            // Workspace — a labeled select field, not a ghost
-                            // row. Click opens the workspace picker (recent
-                            // folders, filter, browse) anchored below; the
-                            // border takes the accent while it's open.
-                            //
-                            // Definite `w` (not `w_full().max_w()`): percent
-                            // widths nested under the centered `max_w` column
-                            // resolve against the unclamped page width here,
-                            // and the card painted to the window's edge.
-                            .child(
-                                div()
-                                    .w(field_w)
-                                    .flex()
-                                    .flex_col()
-                                    .gap(DynamicSpacing::Base06.px(&theme))
-                                    .child(
-                                        div()
-                                            .px(px(2.))
-                                            .text_size(TextSize::XSmall.px(&theme))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(theme.text_muted)
-                                            // One vocabulary for one question:
-                                            // the field, the picker's header,
-                                            // and the status bar chip all say
-                                            // "Work in".
-                                            .child(tr!("working_folder.title")),
-                                    )
-                                    .child(
-                                        div()
-                                            .relative()
-                                            .w_full()
-                                            .child(
-                                                div()
-                                                    .id("pick-folder")
-                                                    .w_full()
-                                                    .pl(DynamicSpacing::Base08.px(&theme))
-                                                    .pr(px(10.))
-                                                    .py(px(7.))
-                                                    .rounded(input::RADIUS.px(&theme))
-                                                    .border_1()
-                                                    .border_color(if picker_open {
-                                                        theme.accent.opacity(0.55)
-                                                    } else {
-                                                        theme.border
-                                                    })
-                                                    .bg(theme.card_fill(theme.surface_elevated))
-                                                    .flex()
-                                                    .items_center()
-                                                    .gap(px(10.))
-                                                    .cursor_pointer()
-                                                    .hover_overlay_bordered(&theme)
-                                                    .on_mouse_up(
-                                                        MouseButton::Left,
-                                                        cx.listener(|app, _, window, cx| {
-                                                            app.toggle_workspace_picker(window, cx);
-                                                        }),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .size(px(28.))
-                                                            .flex_none()
-                                                            .rounded(button::RADIUS.px(&theme))
-                                                            .bg(theme.overlay)
-                                                            .flex()
-                                                            .items_center()
-                                                            .justify_center()
-                                                            .child(workspace_icon),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .flex_1()
-                                                            .min_w_0()
-                                                            .flex()
-                                                            .flex_col()
-                                                            .gap(px(1.))
-                                                            .child(
-                                                                div()
-                                                                    .text_size(
-                                                                        TextSize::Default
-                                                                            .px(&theme),
-                                                                    )
-                                                                    .font_weight(FontWeight::MEDIUM)
-                                                                    .text_color(theme.text_primary)
-                                                                    .truncate()
-                                                                    .child(folder_name),
-                                                            )
-                                                            .child(
-                                                                div()
-                                                                    .text_size(
-                                                                        TextSize::Small.px(&theme),
-                                                                    )
-                                                                    .text_color(theme.text_muted)
-                                                                    .truncate()
-                                                                    .child(path_label),
-                                                            ),
-                                                    )
-                                                    // Open state: the affordance
-                                                    // answers in accent, matching
-                                                    // the border.
-                                                    .child(icon(
-                                                        "icons/chevron-down.svg",
-                                                        IconSize::XSmall.px(&theme),
-                                                        if picker_open {
-                                                            theme.accent_text
-                                                        } else {
-                                                            theme.text_muted
-                                                        },
-                                                    )),
-                                            )
-                                            .children(self.workspace_picker_popup(&theme)),
-                                    ),
-                            ),
-                    ),
+                    .debug_selector(|| "new-task-work-in-label".to_string())
+                    .flex_none()
+                    .whitespace_nowrap()
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_secondary)
+                    .child(tr!("working_folder.title")),
             )
+            .child(
+                div()
+                    .debug_selector(|| "new-task-folder-name".to_string())
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.text_primary)
+                    .child(folder_name),
+            )
+            .child(Self::chip_caret(
+                picker_open,
+                theme.text_primary,
+                "workspace-caret-turn",
+                cx,
+            ));
+
+        let container = div()
+            .relative()
+            .flex_none()
+            .w_full()
+            .flex()
+            .flex_col()
+            .items_start()
+            // The gap under the row lives inside the collapsing box, so the
+            // dock takes it away with the row instead of leaving a hole.
+            .pb(gap)
+            .child(row)
+            .children(self.workspace_picker_popup(&theme));
+
+        if !settling {
+            return container.into_any_element();
+        }
+        container
+            .overflow_hidden()
+            .with_animation(
+                ElementId::NamedInteger("new-task-folder-row".into(), settle_gen),
+                Animation::new(Motion::Travel.duration(&theme))
+                    .with_easing(Motion::Travel.easing()),
+                move |el, progress| {
+                    let (height, ink) = new_task::folder_row(progress);
+                    el.h(px(f32::from(row_h + gap) * height)).opacity(ink)
+                },
+            )
+            .into_any_element()
+    }
+
+    /// The folder row's leading mark: the project's own logo when one was
+    /// found, the folder glyph otherwise. One size for both, so the name's
+    /// leading edge never shifts between projects.
+    pub(super) fn workspace_mark(&self, theme: &Theme) -> AnyElement {
+        let size = IconSize::Small.px(theme);
+        match &self.workspace_logo {
+            Some(logo) => img(ImageSource::Image(logo.clone()))
+                .size(size)
+                .flex_none()
+                .rounded(Radius::Small.px(theme))
+                .object_fit(ObjectFit::Contain)
+                .into_any_element(),
+            None => icon("icons/folder.svg", size, theme.text_secondary).into_any_element(),
+        }
     }
 
     /// Whether every required runtime dependency is installed.
@@ -3403,6 +3525,7 @@ impl OrbitApp {
     pub(super) fn status_bar(
         &self,
         workspace_label: &str,
+        folder_row_owns_location: bool,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = *theme::get(cx);
@@ -3411,9 +3534,18 @@ impl OrbitApp {
         // place, including switching to any other folder. Outside a repository
         // there is nothing to choose, so the plain folder chip stays: it names
         // the workspace and the native dialog changes it.
-        let work_in = self.work_in_chip(cx);
-        let folder_chip = work_in.is_none().then(|| {
+        //
+        // The new-task page is the one exception: the folder is named directly
+        // above the composer there, and a second control for the same question
+        // two rows below it would read as two different settings. That ownership
+        // lasts through the dock transition; this row takes over only after the
+        // folder row has gone, so the two never appear together mid-settle.
+        let work_in = (!folder_row_owns_location)
+            .then(|| self.work_in_chip(cx))
+            .flatten();
+        let folder_chip = (work_in.is_none() && !folder_row_owns_location).then(|| {
             button_frame(div().id("status-workspace"), &theme, ButtonSize::Default)
+                .debug_selector(|| "status-workspace".to_string())
                 .cursor_pointer()
                 .hover_quiet(&theme)
                 .pressed_state(&theme, PressedRamp::Wash)
@@ -3515,11 +3647,17 @@ impl OrbitApp {
             // button a few pixels above, so they stay out of the chrome until
             // there is something to teach.
             .children(self.is_running().then(|| self.composer_send_hints(cx)))
-            .child(
-                div()
-                    .debug_selector(|| "composer-context-indicator".to_string())
-                    .flex_none()
-                    .child(self.context_button(cx)),
+            // A fresh task has no context to measure. Leave that space quiet
+            // until pi supplies real data instead of filling the footer with a
+            // decorative zero; an active session still gets the neutral waiting
+            // state while its first snapshot is pending.
+            .children(
+                (!folder_row_owns_location || self.context.is_some()).then(|| {
+                    div()
+                        .debug_selector(|| "composer-context-indicator".to_string())
+                        .flex_none()
+                        .child(self.context_button(cx))
+                }),
             )
     }
 

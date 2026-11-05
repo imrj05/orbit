@@ -294,6 +294,15 @@ impl OrbitApp {
         // Same for the transcript: the live "Working for…" row goes up now,
         // with its clock running from the send.
         self.transcript.expect_reply();
+        // The empty page becomes a session on this frame: arm the composer's
+        // settle so it docks into the session layout instead of jumping. Only a
+        // page that was empty animates — a follow-up in an open session has
+        // nowhere to travel, and a session resumed from the sidebar was never on
+        // the new-task page at all.
+        if self.transcript.is_empty() {
+            self.new_task_settle_gen = self.new_task_settle_gen.wrapping_add(1);
+            self.new_task_settle_at = Some(Instant::now());
+        }
         // Show the prompt immediately — pi does not echo it back in RPC mode.
         // The decoded previews ride along so the chat window shows what was
         // attached (pi echoes/snapshots carry image blocks for reloads).
@@ -1981,7 +1990,9 @@ impl OrbitApp {
                 .child(anchored_popover(
                     Corner::TopRight,
                     point(px(0.), popover::MENU_OFFSET),
-                    popup, "anchored_popover-in-2", &theme,
+                    popup,
+                    "anchored_popover-in-2",
+                    &theme,
                 ))
                 .into_any_element(),
         )
@@ -2367,7 +2378,9 @@ impl OrbitApp {
                 .child(anchored_popover(
                     Corner::TopRight,
                     point(px(0.), popover::MENU_OFFSET),
-                    popup, "anchored_popover-in-3", &theme,
+                    popup,
+                    "anchored_popover-in-3",
+                    &theme,
                 ))
                 .into_any_element(),
         )

@@ -81,9 +81,15 @@ const EDGE_FLOOR: f32 = 0.65;
 const MARK_W: f32 = 0.36;
 const MARK_MAX_W: f32 = 560.;
 const MARK_MIN_W: f32 = 200.;
-/// Where the mark's centre sits, as a fraction of the layer's height: the gap
-/// between the empty-state column and the floating composer.
-const MARK_CY: f32 = 0.57;
+/// Where the mark's centre sits, as a fraction of the layer's height: the band
+/// of open grain under the composer.
+///
+/// The new-task page centers its composer, so the watermark's seat moved down
+/// with it — the space below the composer column (and above the status row and
+/// terminal) is the page's one quiet field now. Sitting any higher put the
+/// wordmark behind the composer box, where an opaque field would hide it
+/// entirely.
+const MARK_CY: f32 = 0.74;
 /// Density inside the glyphs when the light is elsewhere — faint enough to be
 /// a watermark, present enough that the wordmark is always legible.
 const MARK_REST: f32 = 0.18;
@@ -213,8 +219,8 @@ impl Frame {
         let mark_w = (width * MARK_W).clamp(0., MARK_MAX_W);
         let mark_h = mark_w / aspect;
         let mark_w = mark_w.clamp(0., width * 0.8);
-        // The mark needs room for itself plus the empty-state column above and
-        // the composer below; past this it would grow into both.
+        // The mark needs room for itself inside the band under the composer;
+        // past this it would grow up into the composer column.
         let fits = mark_w >= MARK_MIN_W && mark_h < height * 0.45;
         if !fits {
             return Self { mark: None };

@@ -3786,6 +3786,7 @@ impl OrbitApp {
                 .children(self.work_in_popup(cx))
                 .child(
                     button_frame(div().id("status-work-in"), &theme, ButtonSize::Default)
+                        .debug_selector(|| "status-work-in".to_string())
                         .cursor_pointer()
                         .when(!open, |chip| chip.hover_quiet(&theme))
                         .when(open, |chip| {

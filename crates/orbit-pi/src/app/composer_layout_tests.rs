@@ -8,7 +8,9 @@ struct ComposerStatusProbe {
 impl Render for ComposerStatusProbe {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.app.update(cx, |app, cx| {
-            div().w(self.width).child(app.status_bar("orbit", cx))
+            div()
+                .w(self.width)
+                .child(app.status_bar("orbit", false, cx))
         })
     }
 }

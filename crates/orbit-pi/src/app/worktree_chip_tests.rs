@@ -4,8 +4,11 @@
 //! It replaced a pair of controls that each knew half the answer — a folder
 //! chip that restarted the session, and a location chip that only appeared
 //! inside a linked worktree. The chip is therefore present in a repository in
-//! *every* state (at the main checkout it reads `Local`, and it is how a
-//! worktree is reached from the composer), and absent outside one.
+//! every *session* state (at the main checkout it reads `Local`, and it is how a
+//! worktree is reached from the composer), and absent outside one. The new-task
+//! page is the exception: the folder is named directly above the composer there,
+//! so the status row would be a second control for one question
+//! (`new_task_layout_tests` pins that).
 
 use super::*;
 use crate::app::worktrees::WorkInRow;
@@ -15,10 +18,20 @@ use crate::worktree::Worktree;
 use std::collections::HashSet;
 use std::fs;
 
+/// These tests are about the status row, which owns the location control once
+/// there is a session. An app starts on the new-task page, where the chip is
+/// hidden (the folder row above the composer asks instead), so the helper puts
+/// one message in the transcript first.
 fn test_app(cx: &mut gpui::TestAppContext) -> Entity<OrbitApp> {
     cx.update(|cx| {
         cx.set_global(Theme::for_id(ThemeId::Orbit));
-        cx.new(OrbitApp::new)
+        let app = cx.new(OrbitApp::new);
+        app.update(cx, |app, cx| {
+            app.transcript
+                .append_user_message("where does this run?", Vec::new());
+            cx.notify();
+        });
+        app
     })
 }
 

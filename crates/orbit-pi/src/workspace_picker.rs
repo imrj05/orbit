@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use gpui::{
     div, point, prelude::*, px, App, Context, ElementId, Entity, FocusHandle, Focusable,
-    FontWeight, IntoElement, MouseDownEvent, ParentElement, Render, ScrollHandle, Styled,
+    FontWeight, IntoElement, MouseDownEvent, ParentElement, Pixels, Render, ScrollHandle, Styled,
     Subscription, Window,
 };
 
@@ -25,19 +25,17 @@ use crate::composer::ComposerInput;
 use crate::theme::tokens::{context_menu, input, list, picker};
 use crate::theme::{self, Theme};
 
-/// The field caps at this width; the popover matches it exactly. Feeds
-/// [`width_for_window`], the single source of truth both the new-task field
-/// (`render_empty_state`) and this popover use, so the two can never drift
-/// apart.
+/// The popover caps at this width — wide enough for a two-line row (name over
+/// path, or a branch over its ref) and no wider, because a folder list is a
+/// menu under a chip, not a page. Feeds [`width_for_window`].
 pub const FIELD_MAX_W: f32 = 400.;
-/// Page side padding around the field column (`render_empty_state`).
+/// Side padding the popover keeps from the window's edges.
 pub const PAGE_PAD: f32 = 24.;
-/// Smallest the popover ever gets (very narrow windows).
-const POPOVER_MIN_W: f32 = 240.;
-/// Rows visible before the list scrolls. Deliberately fractional: the list
-/// ends on a cut row, which is how the popover says there is more without a
-/// scrollbar. Two-line rows are taller than the single-line rows this used to
-/// count, so the count came down to keep the whole popover inside the window.
+/// Nominal rows visible before the list scrolls; short viewports lower the
+/// cap in [`list_max_height`]. Deliberately fractional: the list ends on a cut
+/// row, which is how the popover says there is more without a scrollbar.
+/// Two-line rows are taller than the single-line rows this used to count, so
+/// the count came down to keep the whole popover inside the window.
 const VISIBLE_ROWS: f32 = 3.5;
 
 /// Every row is a two-line picker entry — a title over a detail line (a path,
@@ -50,11 +48,20 @@ fn row_h(theme: &Theme) -> f32 {
     picker_row_height(theme).into()
 }
 
-/// Tallest the list grows before scrolling (≈ 4 rows). Sized so the whole
-/// popover still fits below the centered field at the 960×640 minimum window,
-/// instead of `snap_to_window` shoving it up over the card.
-fn list_max_h(theme: &Theme) -> f32 {
-    VISIBLE_ROWS * row_h(theme)
+/// Share of the window height the scrolling list may occupy. The centered
+/// folder chip leaves roughly the lower half of the page below it; reserving
+/// the rest for the search head, browse row and keyboard footer keeps the
+/// popover below its trigger even at maximum UI scale and comfortable density.
+const LIST_VIEWPORT_HEIGHT_SHARE: f32 = 0.25;
+
+/// Tallest the list grows before scrolling. Large type still gets a useful
+/// partial-row disclosure, but cannot turn the fixed footer into a card that
+/// snaps back over the folder chip at the 960×640 minimum window.
+pub fn list_max_height(theme: &Theme, viewport_height: Pixels) -> f32 {
+    let row_h = row_h(theme);
+    let viewport_budget =
+        (f32::from(viewport_height) * LIST_VIEWPORT_HEIGHT_SHARE).max(1.5 * row_h);
+    (VISIBLE_ROWS * row_h).min(viewport_budget)
 }
 /// Recents the app hands us at most.
 pub const MAX_RECENTS: usize = 8;
@@ -68,14 +75,12 @@ type WorkspaceAction = Box<dyn Fn(usize, &mut Window, &mut App)>;
 /// Dismiss callback; `bool` is true when an outside mouse-down closed it.
 type WorkspacePickerDismiss = Box<dyn Fn(bool, &mut Window, &mut App)>;
 
-/// Field/popover width for a given main-area width. The new-task field takes
-/// this as a definite `w()` (not `w_full().max_w(FIELD_MAX_W)`): percent
-/// widths nested under the centered max-width column resolve against the
-/// unclamped page width in this gpui/taffy stack, which let the card paint
-/// past the column to the window's right edge. Definite width here means the
-/// card is clamped up front and this popover always lands flush under it.
+/// Popover width for a given main-area width: the full width on a narrow
+/// window, [`FIELD_MAX_W`] above that. Definite, not `w_full().max_w(_)`:
+/// percent widths nested under a centered column resolve against the
+/// unclamped page width in this gpui/taffy stack.
 pub fn width_for_window(viewport_w: f32) -> f32 {
-    (viewport_w - 2. * PAGE_PAD).clamp(POPOVER_MIN_W, FIELD_MAX_W)
+    (viewport_w - 2. * PAGE_PAD).clamp(0., FIELD_MAX_W)
 }
 
 /// What a row's leading glyph says about the place.
@@ -133,9 +138,12 @@ pub struct WorkspacePicker {
     /// repository.
     actions: Vec<PickerAction>,
     current: Option<PathBuf>,
-    /// Matches the field's rendered width — the app measures the window at
-    /// open time so the popover never overflows or juts past the card.
+    /// Matches the available chat-column width, measured with every dock
+    /// excluded so the popover never overflows or juts past the folder chip.
     width: f32,
+    /// Current viewport-bound list cap. Render refreshes it on resize and the
+    /// keyboard reveal math reads the same value as the scroll viewport.
+    list_max_h: f32,
     filter: Entity<ComposerInput>,
     scroll: ScrollHandle,
     /// `0..rows.len()` — one past the last folder row is "Choose folder…".
@@ -156,6 +164,7 @@ impl WorkspacePicker {
         actions: Vec<PickerAction>,
         current: Option<PathBuf>,
         width: f32,
+        list_max_h: f32,
         on_pick: WorkspacePick,
         on_browse: WorkspaceBrowse,
         on_action: WorkspaceAction,
@@ -183,6 +192,7 @@ impl WorkspacePicker {
             actions,
             current,
             width,
+            list_max_h,
             filter,
             scroll: ScrollHandle::new(),
             highlighted: 0,
@@ -282,7 +292,7 @@ impl WorkspacePicker {
             self.highlighted as f32 * row_h
         };
         let content_h = folder_rows as f32 * row_h;
-        let viewport_h = content_h.min(list_max_h(theme));
+        let viewport_h = content_h.min(self.list_max_h);
         // `ScrollHandle`'s offset is negative once scrolled down.
         let current = -f32::from(self.scroll.offset().y);
         let mut offset = current;
@@ -328,18 +338,22 @@ impl Focusable for WorkspacePicker {
 }
 
 impl Render for WorkspacePicker {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = *theme::get(cx);
+        self.list_max_h = list_max_height(&theme, window.viewport_size().height);
         let this = cx.entity();
 
         let rows = self.filtered(&self.last_filter);
+        // A resize can shorten the viewport while the picker is open. Re-clamp
+        // the existing offset against the same cap the list is about to paint.
+        self.ensure_visible(rows.len() + self.actions.len(), &theme);
 
         // ── folder rows ──
         let mut list = div()
             .id("workspace-picker-list")
             .debug_selector(|| "workspace-picker-list".to_string())
             .w_full()
-            .max_h(px(list_max_h(&theme)))
+            .max_h(px(self.list_max_h))
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
             .py(picker::list_padding_y(&theme))

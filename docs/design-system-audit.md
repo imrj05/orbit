@@ -395,6 +395,7 @@ millisecond duration, so a new surface cannot reintroduce one.
 | Loading and progress | spinner, refresh glyph, updater bar (1100ms loop) | all three static; the bar parks its segment |
 | Drag-and-drop | drop overlay fade on `Interaction` | overlay appears at once |
 | Panel resizing | sidebar slide `Layout`; drags follow the pointer, never animate | slide snaps |
+| Composer dock (new task → session) | the composer's column and the space under it travel on `Travel`, with the folder row's collapse and the transcript's fade on the same clock (`new_task::settle`) | the session frame is painted on the frame of the send |
 
 Two durations stay outside the roles, by verdict rather than omission:
 

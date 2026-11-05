@@ -22,6 +22,14 @@ use crate::theme::Theme;
 const RING: f32 = 16.;
 const RING_BOX: f32 = 22.;
 const STROKE: f32 = 2.;
+/// Opacity of the ring's unfilled track.
+///
+/// The track used to be `surface_elevated`, which is ~1.1:1 against the
+/// status bar and vanishes on a dim display — the circle read as a lone arc
+/// with no denominator. Tinting the current accent and stepping it down here
+/// keeps the empty capacity legible at low brightness while staying well
+/// under the fill, so the used fraction is still the thing that reads first.
+const RING_TRACK_ALPHA: f32 = 0.3;
 /// Gap between the ring and the bottom edge of the hover/details card.
 const POPUP_GAP: f32 = 8.;
 /// Hover card width. The overlay lives in the 22px ring box; without an
@@ -52,12 +60,34 @@ pub struct ContextSlice {
 /// Fill color for the ring, keyed off the used fraction
 /// (0..=1) so the color always matches the drawn ring even when pi reports
 /// `tokens` without an explicit `percent`.
+///
+/// Below the warning threshold the fill is the current accent — the same hue
+/// the details card's slices use — so fill, track and percent label all read
+/// as one meter. Warning and error still escalate, which is what makes "you
+/// are running out of context" visible without opening the card.
 pub fn fill_color(fraction: Option<f32>, theme: &Theme) -> Hsla {
     match fraction {
         Some(f) if f >= 0.90 => theme.error,
         Some(f) if f >= 0.70 => theme.warning,
-        _ => theme.text_secondary,
+        Some(_) => theme.accent,
+        None => theme.text_muted,
     }
+}
+
+/// The ring's unfilled track: a low-opacity accent tint once real usage
+/// exists, and neutral while the agent has not supplied a measurement. An
+/// unknown value is not zero percent, so a fresh session must not paint an
+/// active accent meter before its first snapshot arrives.
+///
+/// Kept as a function rather than inlined so the ring, and any other meter
+/// that borrows [`context_ring`], agree on one track treatment.
+pub fn ring_track(fraction: Option<f32>, theme: &Theme) -> Hsla {
+    if fraction.is_some() {
+        theme.accent
+    } else {
+        theme.text_muted
+    }
+    .opacity(RING_TRACK_ALPHA)
 }
 
 pub fn format_percent(usage: &ContextUsage) -> Option<String> {
@@ -654,8 +684,9 @@ pub fn context_control<V: 'static>(
 ) -> impl IntoElement {
     let usage = data.usage;
     let session = data.session;
-    let fraction = usage.and_then(ContextUsage::fraction).unwrap_or(0.0);
-    let fill = fill_color(Some(fraction), &theme);
+    let measured_fraction = usage.and_then(ContextUsage::fraction);
+    let fraction = measured_fraction.unwrap_or(0.0);
+    let fill = fill_color(measured_fraction, &theme);
     let slices = usage
         .map(|u| usage_slices(u, data.conversation_est, &theme))
         .unwrap_or_default();
@@ -740,7 +771,11 @@ pub fn context_control<V: 'static>(
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(context_ring(fraction, fill, theme.surface_elevated))
+                .child(context_ring(
+                    fraction,
+                    fill,
+                    ring_track(measured_fraction, &theme),
+                ))
                 .children(popup_el),
         )
 }
@@ -780,10 +815,30 @@ mod tests {
     #[test]
     fn fill_color_tracks_fraction() {
         let theme = Theme::dark();
-        assert_eq!(fill_color(Some(0.5), &theme), theme.text_secondary);
+        assert_eq!(fill_color(Some(0.5), &theme), theme.accent);
         assert_eq!(fill_color(Some(0.75), &theme), theme.warning);
         assert_eq!(fill_color(Some(0.95), &theme), theme.error);
-        assert_eq!(fill_color(None, &theme), theme.text_secondary);
+        assert_eq!(fill_color(None, &theme), theme.text_muted);
+    }
+
+    #[test]
+    fn ring_track_is_accent_only_for_a_real_measurement() {
+        let theme = Theme::dark();
+        let track = ring_track(Some(0.5), &theme);
+        assert_eq!(track.h, theme.accent.h);
+        assert_eq!(track.s, theme.accent.s);
+        assert_eq!(track.l, theme.accent.l);
+        assert!(track.a > 0.2, "track must stay visible on a dim display");
+        assert!(
+            track.a < theme.accent.a,
+            "track must stay under the fill so the used fraction reads first"
+        );
+
+        let unknown = ring_track(None, &theme);
+        assert_eq!(unknown.h, theme.text_muted.h);
+        assert_eq!(unknown.s, theme.text_muted.s);
+        assert_eq!(unknown.l, theme.text_muted.l);
+        assert_eq!(unknown.a, track.a);
     }
 
     #[test]

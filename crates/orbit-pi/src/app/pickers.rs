@@ -119,7 +119,7 @@ impl OrbitApp {
             }
         }
         if self.workspace_picker.take().is_some() {
-            self.input.read(cx).focus(window);
+            window.focus(&self.new_task_folder_focus);
             cx.notify();
             return;
         }
@@ -135,15 +135,15 @@ impl OrbitApp {
             .current_workspace
             .clone()
             .or_else(|| std::env::current_dir().ok());
-        // Match the field's width basis exactly (main area = window minus the
-        // sidebar) so the popover lands flush under the card at any size.
-        let main_width = f32::from(window.viewport_size().width)
-            - if self.sidebar_visible && !self.settings_open {
-                self.sidebar_width.into()
-            } else {
-                0.
-            };
-        let width = crate::workspace_picker::width_for_window(main_width);
+        // Use the chat column's real width, after every visible dock, so the
+        // popover stays attached to the chip instead of overflowing from a
+        // window-minus-sidebar approximation.
+        let main_width = self.main_area_width(window, cx);
+        let width = crate::workspace_picker::width_for_window(main_width.into());
+        let list_max_h = crate::workspace_picker::list_max_height(
+            crate::theme::get(cx),
+            window.viewport_size().height,
+        );
 
         let this = cx.weak_entity();
         let on_pick = Box::new(move |folder: PathBuf, window: &mut Window, cx: &mut App| {
@@ -192,7 +192,16 @@ impl OrbitApp {
                     app.menu_dismissed_at = Some(Instant::now());
                 }
                 app.workspace_picker = None;
-                app.input.read(cx).focus(window);
+                if by_mouse {
+                    // Pointer dismissal may be the first half of a click on
+                    // another control; preserve the existing composer route
+                    // and let that control's own handler take focus next.
+                    app.input.read(cx).focus(window);
+                } else {
+                    // Escape and reactivating the current row are keyboard
+                    // dismissals: return to the trigger that opened the flow.
+                    window.focus(&app.new_task_folder_focus);
+                }
                 cx.notify();
             })
             .ok();
@@ -200,7 +209,8 @@ impl OrbitApp {
 
         let picker = cx.new(|cx| {
             WorkspacePicker::new(
-                entries, actions, current, width, on_pick, on_browse, on_action, on_dismiss, cx,
+                entries, actions, current, width, list_max_h, on_pick, on_browse, on_action,
+                on_dismiss, cx,
             )
         });
         window.focus(&picker.read(cx).focus_handle(cx));
@@ -871,7 +881,14 @@ impl OrbitApp {
         .detach();
     }
 
-    /// Popover anchored below the new-task page's workspace field.
+    /// Popover anchored below the new-task page's folder row.
+    ///
+    /// Below, because that is where the row's own edge points: a folder list is
+    /// the select under its button, and `snap_to_window` keeps it on screen when
+    /// the row sits low. It covers the composer while it is open — the field is
+    /// inert while a folder is being chosen, and the card returns the space on
+    /// dismissal — rather than opening upward into the titlebar, where it would
+    /// have to be shrunk to fit at the window's minimum height.
     pub(super) fn workspace_picker_popup(&self, theme: &crate::theme::Theme) -> Option<AnyElement> {
         self.workspace_picker.clone().map(|picker| {
             div()

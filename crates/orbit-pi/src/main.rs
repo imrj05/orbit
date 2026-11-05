@@ -231,6 +231,9 @@ actions!(
         PickerSelectPrev
     ]
 );
+// New-task folder chip: native button activation while its focus handle owns
+// the keyboard. Scoped so Enter cannot fall through to the composer's Submit.
+actions!(new_task_keys, [OpenWorkspacePicker]);
 // Terminal-panel actions (bound to the `Terminal` context on the grid).
 // `TerminalTab` exists so Tab reaches the shell's completion instead of the
 // global focus-traversal binding. The rest are the panel's tab commands: they
@@ -495,6 +498,10 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("enter", PickerConfirm, Some("Picker")),
         KeyBinding::new("up", PickerSelectPrev, Some("Picker")),
         KeyBinding::new("down", PickerSelectNext, Some("Picker")),
+        // New-task folder trigger — Enter and Space open its picker while the
+        // chip, rather than the composer, owns focus.
+        KeyBinding::new("enter", OpenWorkspacePicker, Some("NewTaskFolder")),
+        KeyBinding::new("space", OpenWorkspacePicker, Some("NewTaskFolder")),
         // Add-menu keys — the `AddMenu` context rides on the menu's own
         // focus handle (deeper than the global escape/enter bindings, so
         // these win while the menu is open).

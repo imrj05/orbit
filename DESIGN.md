@@ -527,8 +527,9 @@ under one grammar — ordered dither, the same screen the wallpaper's `Dither` e
   drawn in
   `text_muted` at 55% (dark) / 62% (light), so it is paper texture, never a second content
   layer, and it works in all twelve palettes without a per-palette asset.
-- **The monogram is screened into that field.** Where the app mark sits — between the
-  empty-state column and the composer — the same screen takes over its shape: a coverage
+- **The monogram is screened into that field.** Where the app mark sits — in the band of
+  open grain under the centered composer column, at `MARK_CY` — the same screen takes over its
+  shape: a coverage
   mask sampled from the shipped `app-icon.png` (never redrawn by hand, so the backdrop
   cannot drift from the icon), glyphs holding a quiet density at rest while a soft band
   of light crosses them every twenty seconds, filling each letter with the largest dot in
@@ -871,7 +872,7 @@ The status row under the composer is a readout, not a toolbar.
 - **The MCP chip appears only when a server needs attention.** A fully connected fleet is
   the steady state, and the steady state earns no pixels. Its label names the counts, so
   colour is never the only signal.
-- **The "Work in" chip is always present in a repository.** It is not a readout of the default:
+- **The "Work in" chip is always present in a session inside a repository.** It is not a readout of the default:
   it is the control that decides where the next task runs, and its rows include the places — a
   linked worktree, a new one, an existing folder, a remote branch, or a clone — that have no other
   affordance in the composer. At the main checkout it reads `Local`; inside a worktree it names that
@@ -881,6 +882,11 @@ The status row under the composer is a readout, not a toolbar.
   there; a running session is parked, and an idle session's transcript remains on disk. Creating a worktree opens a dialog. See
   `the_work_in_chip_is_absent_outside_a_repository` and
   `the_chip_is_present_at_the_main_checkout_and_reads_local`.
+- **On the new-task page both folder controls stand down.** The folder row directly above the
+  composer already names where the task will run and opens the same picker, so a second control for
+  it two rows below would read as a second setting. The row returns with the session, which is what
+  this row is for: state that outlives the page you started on. See
+  `the_folder_row_is_the_only_folder_control_on_the_page`.
 - Workspace and branch chips yield before the row can crowd; the context indicator holds
   the right edge.
 
@@ -1056,6 +1062,7 @@ swap states instantly rather than transitioning.
 | Dialog open | modal card | `Layout` | the card fades in over the scrim; it cannot scale for the reason below | the card appears at once |
 | Panel open / close | sidebar, side pane, explorer, terminal, Git | `Layout` / `Spring` | the panel's own width; chips on its edge ride the same curve | panels snap |
 | Send morph | composer submit | `Travel` (state) + `Interaction` (hover) | the square grows into a labelled button that names the action, and folds back to a square while a turn runs; width and label ride one transition | the end state is drawn immediately |
+| Composer dock | first send from the new-task page | `Travel` | the composer leaves the page's centered column for the session's: the space below it closes, the column widens 640 → 960, the folder row collapses, and the transcript's ink fades in, all on one clock (`new_task::settle`) | the session frame is painted on the frame of the send |
 
 Four rules hold across the table:
 
@@ -1292,6 +1299,31 @@ The composer is a primary work surface.
 - Use `input::composer_radius` (6px before the rounding preference) and the composer surface.
 - Keep the input visually distinct from the transcript without making it look like a
   floating SaaS widget.
+- **The new-task page is the same composer in the middle of the page.** There is no second
+  composer and no second page template: the chat column with an empty transcript centers the
+  column it already owns, at `new_task::COMPOSER_MAX_W` (640px, still narrowing with the
+  window) instead of the session's 960. It is centered by *weight*, not measurement — the
+  transcript's slot above takes 44 % of the free space and a spacer below takes the rest —
+  because the composer's height moves with its content and the UI scale. Nothing is drawn
+  above it but its own folder row: no headline, no mark, no card. The page explains itself
+  with the field you type in and the folder it will run in.
+- **The folder row is one chip, directly over the composer it applies to.** A quiet **Work in**
+  label, the folder's name, the mark that says what kind of place it is (the project's logo, else
+  the folder glyph), and a caret; the path is one hover away, and the picker lists it in full when
+  a choice is being made. The chip is a keyboard button: Tab reaches it, Enter/Space opens the
+  picker, and Escape returns focus to the chip. It opens the same workspace picker as the status
+  row's Work-in chip and is the only folder control on the page; the status row waits for the dock
+  to finish before taking that role, so the two never appear together mid-transition. The composer
+  border steps to `focus_ring` while its input is focused, without changing geometry. The empty
+  footer leaves out the context meter until real usage exists rather than decorating a task with
+  a zero-valued ring.
+- **The first send docks it.** One `Motion::Travel` (260ms) carries the composer from the page's
+  centered column into the session's: the gap below it eases to nothing, the column widens from
+  640 to 960, the folder row collapses, and the transcript's ink fades in. All four read the same
+  role and the same clock, from `new_task::settle`, so the page cannot arrive in pieces. Reduce
+  Motion paints the session frame on the frame of the send. A session resumed from the sidebar
+  never animates: it was never on this page. See `the_send_transition_is_continuous_at_both_ends`
+  and `reduce_motion_docks_the_composer_on_the_frame_it_sends`.
 - Commands and file mentions remain content tokens.
 - Primary submit/stop controls remain discoverable.
 - Model, thinking effort, access mode, and workflow mode should be available without
