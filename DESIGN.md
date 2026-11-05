@@ -582,6 +582,9 @@ the chat page has neither.
 - **Style:** composer-style box — `surface`, 1px hairline, 6px radius on the main
   composer (`input::composer_radius`) and inline fields (`input::RADIUS`).
 - **Focus:** the border steps to `focus_ring` (1px); a fill is never the focus signal.
+  The composer is a page-wide box, so its focused edge carries the ring at
+  `input::composer_focus_ring`'s softened alpha — same hue and geometry, without a hard
+  outline around the whole field. Other fields keep the ring at full strength.
 - **Placeholder:** `text_muted` — always a real prompt ("Search sessions…"), never a label.
 - **Tokens:** a leading `/command` and any `@file` mention paint inline in their token
   colors while typing; the caret, selection, and wrapping are unaffected (paint only).
@@ -882,11 +885,12 @@ The status row under the composer is a readout, not a toolbar.
   there; a running session is parked, and an idle session's transcript remains on disk. Creating a worktree opens a dialog. See
   `the_work_in_chip_is_absent_outside_a_repository` and
   `the_chip_is_present_at_the_main_checkout_and_reads_local`.
-- **On the new-task page both folder controls stand down.** The folder row directly above the
-  composer already names where the task will run and opens the same picker, so a second control for
-  it two rows below would read as a second setting. The row returns with the session, which is what
-  this row is for: state that outlives the page you started on. See
-  `the_folder_row_is_the_only_folder_control_on_the_page`.
+- **On the new-task page both status controls stand down.** The context row directly above the
+  composer already names where the task will run and which branch it will start on, and opens the
+  same pickers, so a second control for either two rows below would read as a second setting. Both
+  return with the session, which is what this row is for: state that outlives the page you started
+  on. See `the_folder_row_is_the_only_folder_control_on_the_page` and
+  `the_branch_sits_at_the_right_edge_of_the_new_task_context_row`.
 - Workspace and branch chips yield before the row can crowd; the context indicator holds
   the right edge.
 
@@ -1057,6 +1061,7 @@ swap states instantly rather than transitioning.
 | Focus | field, row, card, dialog | `Instant` | the focus ring fades in; the control reserves that 1px border at rest so no layout moves | ring appears at once |
 | Selection | row, tab, segment | `Interaction` | selected wash and ink crossfade, on top of the hover's own fade (`motion::control` owns both) | swap |
 | Disclosure | chevron, expandable section | `Interaction` | the chevron turns a quarter turn (`helpers::disclosure_chevron`); the section's height is measured at the current width, then eased | rotation completes instantly, height snaps |
+| Picker caret | chip, dropdown trigger | `Interaction` | the trailing caret points down at rest and turns a half turn to point up while the menu is open (`helpers::dropdown_chevron`); the menu opens below the trigger | rotation completes instantly |
 | Switch | settings toggle (`helpers::switch`) | `Interaction` | the knob travels 18px (the track's inner span) and the track crossfades `surface_elevated` → `accent` | the knob jumps |
 | Menu / popover open | anchored card, context menu | `Interaction` + travel | fade plus an 8px travel out of the anchor edge, as one card; `anchored_popover_at` (a context menu at the pointer) fades only, because it has no edge | the card appears at once |
 | Dialog open | modal card | `Layout` | the card fades in over the scrim; it cannot scale for the reason below | the card appears at once |
@@ -1305,18 +1310,22 @@ The composer is a primary work surface.
   window) instead of the session's 960. It is centered by *weight*, not measurement — the
   transcript's slot above takes 44 % of the free space and a spacer below takes the rest —
   because the composer's height moves with its content and the UI scale. Nothing is drawn
-  above it but its own folder row: no headline, no mark, no card. The page explains itself
-  with the field you type in and the folder it will run in.
-- **The folder row is one chip, directly over the composer it applies to.** A quiet **Work in**
-  label, the folder's name, the mark that says what kind of place it is (the project's logo, else
-  the folder glyph), and a caret; the path is one hover away, and the picker lists it in full when
-  a choice is being made. The chip is a keyboard button: Tab reaches it, Enter/Space opens the
-  picker, and Escape returns focus to the chip. It opens the same workspace picker as the status
-  row's Work-in chip and is the only folder control on the page; the status row waits for the dock
-  to finish before taking that role, so the two never appear together mid-transition. The composer
-  border steps to `focus_ring` while its input is focused, without changing geometry. The empty
-  footer leaves out the context meter until real usage exists rather than decorating a task with
-  a zero-valued ring.
+  above it but its own context row — the folder on the left, the branch on the right: no
+  headline, no mark, no card. The page explains itself with the field you type in, the folder
+  it will run in, and the branch it will start on.
+- **The context row is one line, directly over the composer it applies to.** On the left, one
+  folder chip: a quiet **Work in** label, the folder's name, the mark that says what kind of place
+  it is (the project's logo, else the folder glyph), and a caret; the path is one hover away, and
+  the picker lists it in full when a choice is being made. The chip is a keyboard button: Tab
+  reaches it, Enter/Space opens the picker, and Escape returns focus to the chip. It opens the
+  same workspace picker as the status row's Work-in chip and is the only folder control on the
+  page. On the right, the branch chip — branch mark, name, ahead/behind counts and the same
+  picker caret — opens the branch picker below itself, right-aligned to the composer's edge. It
+  is the same `branch_chip` the session's status row renders, so the two cannot drift; the status
+  row waits for the dock to finish before taking both roles back, so a control never appears in
+  both rows mid-transition. The composer border steps to `focus_ring` at the softened composer
+  alpha while its input is focused, without changing geometry. The empty footer leaves out the
+  context meter until real usage exists rather than decorating a task with a zero-valued ring.
 - **The first send docks it.** One `Motion::Travel` (260ms) carries the composer from the page's
   centered column into the session's: the gap below it eases to nothing, the column widens from
   640 to 960, the folder row collapses, and the transcript's ink fades in. All four read the same
@@ -1340,6 +1349,17 @@ The composer is a primary work surface.
   - **Workflow mode** and **model** stay on the row in every state; both are the live
     state of the run.
   - **Steer** appears only while a run is in flight with something to send.
+- **The model picker is one searchable list, not a dashboard.** Search, then a quiet
+  horizontally scrolling scope rail (All, Recents/Favorites, then provider chips); the
+  selected provider scrolls to the rail's centre, and the rail's left/right edge shadows
+  grow over the first 28px of travel instead of switching on. Every chip carries its mark —
+  the provider's brand icon, or the shared grid/clock/star glyph for All/Recents/Favorites.
+  Provider-grouped one-line
+  rows carry the model name and its context window, with the provider mark and name stated
+  once in the group header. The current model keeps the row fill and an accent check;
+  favorites keep their star, which only appears on hover for the rest. The footer is a
+  single quiet count, not a repeated key legend. Arrow keys, Enter, and Escape still work
+  without the legend. Long names truncate; the full provider/id is the row's tooltip.
 - Advanced controls belong behind contextual disclosure when they are not needed. A
   control that disappears keeps a usable keyboard path; a palette route alone
   does not establish that the complete workflow is accessible.

@@ -926,6 +926,32 @@ impl OrbitApp {
         })
     }
 
+    /// Popover anchored below the new-task context row's branch chip, right
+    /// edges aligned. The branch sits at the column's right edge there, so a
+    /// left-aligned menu would hang past the composer; aligning the menu's top
+    /// right to the chip keeps it over the column and opens in the direction of
+    /// the rest of that row's controls.
+    pub(super) fn branch_picker_popup_below(
+        &self,
+        theme: &crate::theme::Theme,
+    ) -> Option<AnyElement> {
+        self.branch_picker.clone().map(|picker| {
+            div()
+                .absolute()
+                .bottom_0()
+                .right_0()
+                .size(px(0.))
+                .child(anchored_popover(
+                    Corner::TopRight,
+                    point(px(0.), popover::MENU_OFFSET),
+                    picker,
+                    "anchored_popover-in-8",
+                    theme,
+                ))
+                .into_any_element()
+        })
+    }
+
     /// Push the latest catalog/current-selection snapshot into the open
     /// popup (no-op while it is closed).
     pub(super) fn sync_model_selector(&mut self, cx: &mut Context<Self>) {

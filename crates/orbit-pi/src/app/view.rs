@@ -2033,10 +2033,11 @@ impl OrbitApp {
             )
     }
 
-    /// The shared chip caret. It turns a half-turn when the picker opens —
-    /// animated on open (reduce-motion aware) so the turn reads as a
-    /// transition, and resting flat when closed so there is no reverse
-    /// flicker. `fg` is the caret color while open.
+    /// The shared picker caret. `chevron-down` at rest, so the chip reads as a
+    /// menu that opens below it; a half-turn while the menu is open (animated,
+    /// reduce-motion aware) so the turn reads as a transition. Resting flat when
+    /// closed keeps there from being a reverse flicker. `fg` is the caret color
+    /// while open.
     pub(super) fn chip_caret(
         open: bool,
         fg: gpui::Hsla,
@@ -2044,10 +2045,11 @@ impl OrbitApp {
         cx: &Context<Self>,
     ) -> AnyElement {
         let theme = *theme::get(cx);
-        // One implementation for every caret in the app: a quarter turn on the
-        // Interaction role, instant under Reduce Motion, and the ink quietens
-        // while the menu is closed.
-        disclosure_chevron(
+        // One implementation for every picker caret in the app: a half turn on
+        // the Interaction role, instant under Reduce Motion, and the ink
+        // quietens while the menu is closed. A tree disclosure keeps the
+        // right/down pair in `disclosure_chevron`; these chips open a menu.
+        dropdown_chevron(
             animation_id,
             open,
             IconSize::XSmall.px(&theme),
@@ -2834,7 +2836,9 @@ impl OrbitApp {
 
     /// The composer border answers the current interaction without changing
     /// geometry: drag-and-drop takes the accent, keyboard focus takes the
-    /// focus ring, and the resting field keeps its quiet hairline.
+    /// focus ring at [`input::composer_focus_ring`]'s softened alpha (a
+    /// page-wide box does not need a hard outline to read as focused), and the
+    /// resting field keeps its quiet hairline.
     pub(super) fn composer_border_color(
         theme: &Theme,
         file_drag_hovered: bool,
@@ -2843,7 +2847,7 @@ impl OrbitApp {
         if file_drag_hovered {
             theme.accent
         } else if input_focused {
-            theme.focus_ring
+            input::composer_focus_ring(theme)
         } else {
             theme.border
         }
@@ -2994,6 +2998,23 @@ impl OrbitApp {
                 cx,
             ));
 
+        // One context row over the composer: where the task runs on the left,
+        // which branch it will start on at the right. The branch used to sit
+        // alone under the composer on this page, splitting two answers that
+        // belong to the same decision; it now shares the row the folder owns
+        // and returns to the status row only after the dock.
+        let context_row = div()
+            .w_full()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(gap)
+            // The folder chip names its own 12px label and 14px name; the
+            // branch inherits this quieter ink without resetting the name.
+            .text_color(theme.text_secondary)
+            .child(row)
+            .children(self.branch_chip(theme, true, cx));
+
         let container = div()
             .relative()
             .flex_none()
@@ -3004,7 +3025,7 @@ impl OrbitApp {
             // The gap under the row lives inside the collapsing box, so the
             // dock takes it away with the row instead of leaving a hole.
             .pb(gap)
-            .child(row)
+            .child(context_row)
             .children(self.workspace_picker_popup(&theme));
 
         if !settling {
@@ -3568,61 +3589,15 @@ impl OrbitApp {
             .text_color(theme.text_muted)
             .children(folder_chip)
             .children(work_in)
-            .children(self.branch.as_ref().map(|branch| {
-                let open = self.branch_picker.is_some();
-                let pending = self.branch_operation_pending;
-                let branch_button = div().id("status-branch");
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_4()
-                    .child(
-                        div()
-                            .relative()
-                            .child(
-                                button_frame(branch_button, &theme, ButtonSize::Default)
-                                    .when(!pending, |chip| chip.cursor_pointer())
-                                    .when(open, |chip| {
-                                        chip.bg(theme.surface_active).text_color(theme.text_primary)
-                                    })
-                                    .when(!open && !pending, |chip| chip.hover_quiet(&theme))
-                                    .when(pending, |chip| chip.opacity(0.6))
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(|app, _, window, cx| {
-                                            if !app.branch_operation_pending {
-                                                app.toggle_branch_picker(window, cx);
-                                            }
-                                        }),
-                                    )
-                                    .child(icon(
-                                        "icons/branch.svg",
-                                        ButtonSize::Default.icon_size().px(&theme),
-                                        theme.text_muted,
-                                    ))
-                                    .child(branch.name.clone())
-                                    .children(
-                                        branch
-                                            .ahead_behind
-                                            // `↑0 ↓0` is a row of arrows that
-                                            // says nothing; the counts appear
-                                            // when there is something to push
-                                            // or pull.
-                                            .filter(|(ahead, behind)| *ahead > 0 || *behind > 0)
-                                            .map(|(ahead, behind)| {
-                                                div()
-                                                    .flex()
-                                                    .items_center()
-                                                    .gap(DynamicSpacing::Base06.px(&theme))
-                                                    .child(format!("↑{ahead}"))
-                                                    .child(format!("↓{behind}"))
-                                            }),
-                                    ),
-                            )
-                            .children(self.branch_picker_popup(&theme)),
-                    )
-                    .into_any_element()
-            }))
+            // On the new-task page the branch lives on the right of the context
+            // row above the composer (`new_task_folder_row`), with the folder it
+            // applies to. This row takes it back only after the dock, alongside
+            // the Work-in chip, so the two rows never show the same control.
+            .children(
+                (!folder_row_owns_location)
+                    .then(|| self.branch_chip(theme, false, cx))
+                    .flatten(),
+            )
             // A quiet MCP indicator: only when servers are configured, and
             // only a dot + count — clicking opens Settings → MCP. Color is
             // never the only signal (the label names the state).
@@ -3648,17 +3623,119 @@ impl OrbitApp {
             // there is something to teach.
             .children(self.is_running().then(|| self.composer_send_hints(cx)))
             // A fresh task has no context to measure. Leave that space quiet
-            // until pi supplies real data instead of filling the footer with a
+            // until pi supplies real usage instead of filling the footer with a
             // decorative zero; an active session still gets the neutral waiting
-            // state while its first snapshot is pending.
+            // state while its first snapshot is pending. pi reports the window
+            // with zero tokens on a new session, so `Some` alone is not enough.
             .children(
-                (!folder_row_owns_location || self.context.is_some()).then(|| {
+                (!folder_row_owns_location
+                    || crate::context_meter::has_usage(self.context.as_ref()))
+                .then(|| {
                     div()
                         .debug_selector(|| "composer-context-indicator".to_string())
                         .flex_none()
                         .child(self.context_button(cx))
                 }),
             )
+    }
+
+    /// The branch control: the branch mark, name, ahead/behind counts and the
+    /// shared picker caret, opening the branch picker. One implementation serves
+    /// the status row in a session and the context row above the new-task
+    /// composer, so the two cannot drift.
+    ///
+    /// `opens_below` places the menu under the chip for the context row (where
+    /// the chip is above the composer and the folder chip beside it also opens
+    /// down); the status row sits on the last line of the window and keeps its
+    /// menu above.
+    pub(super) fn branch_chip(
+        &self,
+        theme: Theme,
+        opens_below: bool,
+        cx: &Context<Self>,
+    ) -> Option<AnyElement> {
+        let branch = self.branch.as_ref()?;
+        let open = self.branch_picker.is_some();
+        let pending = self.branch_operation_pending;
+        let name = branch.name.clone();
+        Some(
+            div()
+                // It yields before the row can crowd: a long ref truncates in
+                // the name instead of pushing the folder chip or the status
+                // readout off the line.
+                .min_w_0()
+                .max_w_full()
+                .child(
+                    div()
+                        .relative()
+                        .child(
+                            button_frame(div().id("branch-chip"), &theme, ButtonSize::Default)
+                                .debug_selector(|| "branch-chip".to_string())
+                                // The status row sets 12px on its line; the context
+                                // row above the composer inherits the page's UI
+                                // size, so the chip names its own step.
+                                .text_size(TextSize::Small.px(&theme))
+                                .when(!pending, |chip| chip.cursor_pointer())
+                                .when(open, |chip| {
+                                    chip.bg(theme.surface_active).text_color(theme.text_primary)
+                                })
+                                .when(!open && !pending, |chip| chip.hover_quiet(&theme))
+                                .when(pending, |chip| chip.opacity(0.6))
+                                .on_mouse_up(
+                                    MouseButton::Left,
+                                    cx.listener(|app, _, window, cx| {
+                                        if !app.branch_operation_pending {
+                                            app.toggle_branch_picker(window, cx);
+                                        }
+                                    }),
+                                )
+                                .child(icon(
+                                    "icons/branch.svg",
+                                    ButtonSize::Default.icon_size().px(&theme),
+                                    theme.text_muted,
+                                ))
+                                .child(
+                                    div()
+                                        // A long branch truncates inside the
+                                        // chip; the tooltip keeps the whole ref
+                                        // inspectable without widening the row.
+                                        .min_w_0()
+                                        .max_w(px(220.))
+                                        .truncate()
+                                        .tip(name.clone())
+                                        .child(name),
+                                )
+                                .children(
+                                    branch
+                                        .ahead_behind
+                                        // `↑0 ↓0` is a row of arrows that says
+                                        // nothing; the counts appear when there
+                                        // is something to push or pull.
+                                        .filter(|(ahead, behind)| *ahead > 0 || *behind > 0)
+                                        .map(|(ahead, behind)| {
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap(DynamicSpacing::Base06.px(&theme))
+                                                .child(format!("↑{ahead}"))
+                                                .child(format!("↓{behind}"))
+                                        }),
+                                )
+                                .child(Self::chip_caret(
+                                    open,
+                                    theme.text_primary,
+                                    "branch-caret-turn",
+                                    cx,
+                                )),
+                        )
+                        .children(if opens_below {
+                            self.branch_picker_popup_below(&theme)
+                        } else {
+                            self.branch_picker_popup(&theme)
+                        }),
+                )
+                .into_any_element(),
+        )
     }
 
     pub(super) fn context_button(&self, cx: &Context<Self>) -> impl IntoElement + use<> {

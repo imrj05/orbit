@@ -1077,6 +1077,47 @@ fn chevron_angle(value: f32) -> f32 {
     std::f32::consts::FRAC_PI_2 * value.clamp(0.0, 1.0)
 }
 
+/// The caret on a picker trigger: `chevron-down` at rest, turning a half turn
+/// to point up while its menu is open.
+///
+/// This is deliberately not [`disclosure_chevron`]: a tree row's right/down pair
+/// means collapsed/expanded, while a menu button that opens *below* its trigger
+/// points down at rest. Using the disclosure glyph for both made every composer
+/// chip read as a breadcrumb (`Full access ›`, `Build ›`, `Work in … ›`) even
+/// though each one opens a picker in place.
+///
+/// One glyph rotates instead of two glyphs swapping, on the same
+/// [`Motion::Interaction`] role and with the same Reduce Motion result.
+pub(crate) fn dropdown_chevron(
+    id: impl Into<SharedString>,
+    open: bool,
+    size: impl Into<Pixels>,
+    color: Hsla,
+    theme: &Theme,
+) -> AnyElement {
+    let svg = gpui::svg()
+        .path("icons/chevron-down.svg")
+        .flex_none()
+        .size(size.into())
+        .text_color(color);
+    crate::motion::state(
+        svg,
+        id,
+        theme,
+        Motion::Interaction,
+        if open { 1.0 } else { 0.0 },
+        |svg, value| {
+            svg.with_transformation(Transformation::rotate(radians(dropdown_angle(value))))
+        },
+    )
+}
+
+/// The angle for a point on a dropdown caret's turn: 0 while closed (pointing
+/// down), a half turn (180°) while open (pointing up).
+fn dropdown_angle(value: f32) -> f32 {
+    std::f32::consts::PI * value.clamp(0.0, 1.0)
+}
+
 /// The app's one switch: a 36×20 track and a 14px knob that travels between the
 /// ends on [`Motion::Interaction`], with the track cross-fading from
 /// `surface_elevated` to `accent`.
@@ -2042,6 +2083,24 @@ mod tests {
         // Clamped, so a delayed frame cannot over-rotate the glyph.
         assert!((chevron_angle(2.0) - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
         assert_eq!(chevron_angle(-1.0), 0.0);
+    }
+
+    /// A picker's caret starts pointing down and turns a half turn to point up;
+    /// a quarter turn would leave it pointing right or down, which is the
+    /// disclosure language, not the dropdown one.
+    #[test]
+    fn a_dropdown_caret_turns_exactly_a_half_turn() {
+        assert_eq!(dropdown_angle(0.0), 0.0, "closed points down");
+        assert!(
+            (dropdown_angle(1.0) - std::f32::consts::PI).abs() < 1e-6,
+            "open points up"
+        );
+        assert!(
+            (dropdown_angle(0.5) - std::f32::consts::FRAC_PI_2).abs() < 1e-6,
+            "halfway is halfway"
+        );
+        assert!((dropdown_angle(2.0) - std::f32::consts::PI).abs() < 1e-6);
+        assert_eq!(dropdown_angle(-1.0), 0.0);
     }
 
     /// A switch's knob travels the track's inner span, and the span has to stay

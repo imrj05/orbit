@@ -100,6 +100,19 @@ pub fn format_percent(usage: &ContextUsage) -> Option<String> {
     }
 }
 
+/// Whether a snapshot carries a real measurement.
+///
+/// pi can report the context window with zero tokens on a brand-new session:
+/// that is a valid snapshot but not usage. The new-task footer waits for ink
+/// rather than painting `0%` and an empty ring under a composer nobody has used
+/// yet; a session that has measured something always keeps its meter.
+pub fn has_usage(usage: Option<&ContextUsage>) -> bool {
+    usage.is_some_and(|usage| {
+        usage.tokens.is_some_and(|tokens| tokens > 0)
+            || usage.percent.is_some_and(|percent| percent > 0.0)
+    })
+}
+
 /// One-decimal label for a cache hit rate (`99.9`, `68.4`, `100`). A rate
 /// that merely *rounds* up to 100 (e.g. 99.96%) is withheld at `99.9`, since
 /// claiming a perfect hit rate would be false — the model still processed
@@ -819,6 +832,18 @@ mod tests {
         assert_eq!(fill_color(Some(0.75), &theme), theme.warning);
         assert_eq!(fill_color(Some(0.95), &theme), theme.error);
         assert_eq!(fill_color(None, &theme), theme.text_muted);
+    }
+
+    /// A window-only snapshot is not usage: the new-task footer must wait for
+    /// tokens (or a non-zero percentage) before painting a meter.
+    #[test]
+    fn zero_usage_is_not_a_measurement() {
+        assert!(!has_usage(None));
+        assert!(!has_usage(Some(&usage(Some(0), 128_000, Some(0.0)))));
+        assert!(!has_usage(Some(&usage(None, 128_000, Some(0.0)))));
+        assert!(has_usage(Some(&usage(Some(1), 128_000, Some(0.0)))));
+        assert!(has_usage(Some(&usage(Some(64_000), 128_000, None))));
+        assert!(has_usage(Some(&usage(None, 128_000, Some(0.5)))));
     }
 
     #[test]

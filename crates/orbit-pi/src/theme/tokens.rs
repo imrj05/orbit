@@ -993,6 +993,21 @@ pub mod input {
     pub fn composer_radius(theme: &Theme) -> Pixels {
         RADIUS.px(theme)
     }
+
+    /// How much of the focus-ring token the composer's edge carries.
+    ///
+    /// A 640px box outlined at the ring's full strength reads as a hard frame
+    /// around the page rather than a focus cue. The softened edge keeps the
+    /// ring's hue and 1px geometry — so focus is still distinct from the
+    /// resting hairline and from selection — while the caret and the field's
+    /// own ink carry the rest of the signal. This is deliberately quiet: the
+    /// composer is a large, always-visible surface, not a small control.
+    pub const COMPOSER_FOCUS_ALPHA: f32 = 0.35;
+
+    /// The composer's focused edge: the focus ring at a softened alpha.
+    pub fn composer_focus_ring(theme: &Theme) -> Hsla {
+        theme.focus_ring.opacity(COMPOSER_FOCUS_ALPHA)
+    }
 }
 
 // ── Elevation (`ui/src/styles/elevation.rs`, `ui/src/traits/styled_ext.rs`)
@@ -1587,6 +1602,20 @@ mod tests {
             "the composer shares the field radius"
         );
         assert_eq!(list_item::RADIUS, Radius::Medium);
+    }
+
+    /// The composer's focus edge is the ring role, softened — the same hue and
+    /// 1px geometry, so it cannot drift into a second focus colour, but not the
+    /// hard full-strength frame around a page-wide box.
+    #[test]
+    fn the_composer_focus_ring_softens_the_ring_token() {
+        let theme = default_theme();
+        let ring = input::composer_focus_ring(&theme);
+        assert_eq!(ring.h, theme.focus_ring.h);
+        assert_eq!(ring.s, theme.focus_ring.s);
+        assert_eq!(ring.l, theme.focus_ring.l);
+        assert!((ring.a - input::COMPOSER_FOCUS_ALPHA).abs() < 1e-6);
+        assert!(ring.a > 0.0 && ring.a < 1.0, "softened, not removed");
     }
 
     /// Phase 9 baseline, not a gate: prints the cost of the two pure paths a

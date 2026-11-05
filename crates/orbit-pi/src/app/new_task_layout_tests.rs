@@ -121,6 +121,64 @@ fn the_new_task_composer_is_narrow_centered_and_under_its_folder_row(
     );
 }
 
+/// The branch belongs to the same decision as the folder. On the new-task page
+/// it sits at the right edge of the context row directly above the composer, so
+/// "where" and "on what" are one line; after the dock it returns to the status
+/// row rather than appearing in both places.
+#[gpui::test]
+fn the_branch_sits_at_the_right_edge_of_the_new_task_context_row(cx: &mut gpui::TestAppContext) {
+    let app = new_task_app(cx);
+    cx.update(|cx| {
+        app.update(cx, |app, cx| {
+            app.branch = Some(crate::app::BranchStatus {
+                name: "refector/new-session-composer".into(),
+                ahead_behind: Some((1, 2)),
+            });
+            cx.notify();
+        });
+    });
+    let cx = cx.add_empty_window();
+    draw(cx, &app, 1100., 720.);
+
+    let composer = cx
+        .debug_bounds("composer-box")
+        .expect("the composer laid out");
+    let branch = cx
+        .debug_bounds("branch-chip")
+        .expect("the branch chip laid out");
+    assert!(
+        (branch.right() - composer.right()).abs() <= px(1.),
+        "the branch shares the composer's right edge: {} vs {}",
+        branch.right(),
+        composer.right()
+    );
+    assert!(
+        branch.bottom() < composer.top(),
+        "the branch is in the context row above the composer"
+    );
+
+    // After the first send, the context row is gone and the status row takes
+    // the branch back — never both at once.
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.transcript.append_user_message("hello", Vec::new());
+            app.new_task_settle_at = Some(Instant::now() - Duration::from_secs(2));
+            cx.notify();
+        });
+    });
+    draw(cx, &app, 1100., 720.);
+    let composer = cx
+        .debug_bounds("composer-box")
+        .expect("the composer laid out");
+    let branch = cx
+        .debug_bounds("branch-chip")
+        .expect("the status row's branch chip laid out");
+    assert!(
+        branch.top() > composer.bottom(),
+        "the branch moved below the composer with the session"
+    );
+}
+
 /// The folder question is asked once. The status bar's Work-in chip would be a
 /// second control for the same setting two rows below the first, so it stays out
 /// of the new-task page and comes back with the session.
@@ -431,8 +489,10 @@ fn the_folder_picker_width_excludes_visible_docks(cx: &mut gpui::TestAppContext)
     );
 }
 
-/// Focus is a visible border change, never a layout-changing outline. A file
-/// drag keeps its stronger accent signal whether or not the input is focused.
+/// Focus is a visible border change, never a layout-changing outline. The
+/// composer is a page-wide box, so its focused edge takes the ring token at a
+/// softened alpha instead of a hard full-strength frame. A file drag keeps its
+/// stronger accent signal whether or not the input is focused.
 #[test]
 fn the_composer_border_distinguishes_rest_focus_and_file_drag() {
     let theme = Theme::for_id(ThemeId::Orbit);
@@ -440,9 +500,18 @@ fn the_composer_border_distinguishes_rest_focus_and_file_drag() {
         OrbitApp::composer_border_color(&theme, false, false),
         theme.border
     );
+    let focused = OrbitApp::composer_border_color(&theme, false, true);
     assert_eq!(
-        OrbitApp::composer_border_color(&theme, false, true),
-        theme.focus_ring
+        focused,
+        crate::theme::tokens::input::composer_focus_ring(&theme)
+    );
+    assert!(
+        focused.a < theme.focus_ring.a,
+        "the composer's ring is the focus role, softened"
+    );
+    assert!(
+        focused.a > 0.0 && focused.a < 1.0,
+        "the composer's ring is the focus role, softened rather than removed"
     );
     assert_eq!(
         OrbitApp::composer_border_color(&theme, true, false),
@@ -465,6 +534,25 @@ fn the_new_task_context_meter_waits_for_real_data(cx: &mut gpui::TestAppContext)
     assert!(
         cx.debug_bounds("composer-context-indicator").is_none(),
         "an empty task has no context to measure"
+    );
+
+    // pi answers `get_session_stats` for a brand-new session with the window
+    // and zero tokens. That snapshot is real but carries no usage, so the
+    // footer must stay quiet rather than painting a 0% ring.
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.context = Some(orbit_rpc::ContextUsage {
+                tokens: Some(0),
+                context_window: 128_000,
+                percent: Some(0.0),
+            });
+            cx.notify();
+        });
+    });
+    draw(cx, &app, 1100., 720.);
+    assert!(
+        cx.debug_bounds("composer-context-indicator").is_none(),
+        "a zero-token snapshot is not usage"
     );
 
     cx.update(|_, cx| {
