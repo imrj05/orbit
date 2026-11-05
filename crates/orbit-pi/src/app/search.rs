@@ -30,7 +30,7 @@ impl OrbitApp {
         cx: &mut Context<Self>,
     ) {
         if self.transcript_search.is_some() {
-            self.close_search(cx);
+            self.close_search(window, cx);
         } else {
             self.open_search(window, cx);
         }
@@ -60,8 +60,9 @@ impl OrbitApp {
         cx.notify();
     }
 
-    pub(super) fn close_search(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn close_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.transcript_search.take().is_some() {
+            self.input.read(cx).focus(window);
             cx.notify();
         }
     }
@@ -132,10 +133,7 @@ impl OrbitApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.close_search(cx);
-        // Hand focus back to the composer so typing resumes immediately.
-        let handle = self.input.read(cx).focus_handle(cx);
-        window.focus(&handle);
+        self.close_search(window, cx);
     }
 
     /// Matching message indices for the current query, for the transcript's
