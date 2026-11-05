@@ -210,7 +210,8 @@ figure and share, and a share track; the table under it leads each name with the
 composer, the file editor, and the inline tree rename are the deliberate exceptions, and each is
 its own component rather than an `InputField`. Every search box in the app shares one look — the
 picker search row (`picker_search_frame`): the command palette, all pickers, the Explorer /
-Sidepane filters, the settings / Git / Usage searches, and the transcript find bar. The Git
+Sidepane filters, the settings / Git / Usage searches, and the transcript find bar. Every Find dismissal path (toggle, Escape, or close button)
+returns keyboard focus to the composer without changing its draft. The Git
 panel's tab strip and branch row are on the tokens too (one shared `tab_bar` for Changes /
 History / Graph / Issues / Pulls). The 2026-10 spacing sweep finished the holdout chrome: the
 top-level view (sidebar / onboarding / popovers), the transcript's row chrome, the session
