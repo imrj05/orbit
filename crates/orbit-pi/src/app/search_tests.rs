@@ -64,3 +64,33 @@ fn enter_during_an_ime_composition_does_not_step_the_search(cx: &mut gpui::TestA
         });
     });
 }
+
+#[gpui::test]
+fn every_find_dismissal_restores_composer_focus(cx: &mut gpui::TestAppContext) {
+    let app = app(cx);
+    let cx = cx.add_empty_window();
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.input
+                .update(cx, |input, cx| input.set_text("draft", cx));
+            for dismissal in ["toggle", "escape", "close"] {
+                app.on_toggle_search(&crate::ToggleSearch, window, cx);
+                let find = app.transcript_search.as_ref().expect("find is open");
+                assert!(find.input.read(cx).focus_handle(cx).is_focused(window));
+
+                match dismissal {
+                    "toggle" => app.on_toggle_search(&crate::ToggleSearch, window, cx),
+                    "escape" => app.on_abort(&crate::AbortRun, window, cx),
+                    _ => app.on_search_close(&crate::SearchClose, window, cx),
+                }
+
+                assert!(app.transcript_search.is_none(), "{dismissal}");
+                assert!(
+                    app.input.read(cx).focus_handle(cx).is_focused(window),
+                    "{dismissal} must return focus to the composer"
+                );
+                assert_eq!(app.input.read(cx).text(), "draft");
+            }
+        });
+    });
+}

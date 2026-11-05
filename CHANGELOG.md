@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Closing transcript Find with its toggle or Escape returns focus to the composer,
+  matching the close button and preserving the current draft.
+
 ## [0.2.16] - 2026-11-05
 
 ### Added

@@ -746,7 +746,7 @@ impl OrbitApp {
             return;
         }
         if self.transcript_search.is_some() {
-            self.close_search(cx);
+            self.close_search(window, cx);
             return;
         }
         if self.command_palette.take().is_some() {
