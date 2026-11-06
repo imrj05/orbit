@@ -103,6 +103,8 @@ pub enum ThemeId {
     /// Restrained Operational Minimalism, light: warm off-white canvas, white
     /// panels, olive interaction accent.
     OperationalLight,
+    /// Near-black neutral palette with a lavender accent.
+    OrbitOnyx,
 }
 
 impl ThemeId {
@@ -110,12 +112,13 @@ impl ThemeId {
     /// dropdown paints them. The settings dropdown filters this list to the
     /// active [`DesignSystem`]; this catalog stays complete so palette
     /// invariants cover every shipped color set.
-    pub const ALL: [ThemeId; 12] = [
+    pub const ALL: [ThemeId; 13] = [
         Self::Orbit,
         Self::OrbitDarker,
         Self::OrbitCobalt,
         Self::OrbitAzure,
         Self::Flexoki,
+        Self::OrbitOnyx,
         Self::Operational,
         Self::OrbitLight,
         Self::OrbitAzureLight,
@@ -140,6 +143,7 @@ impl ThemeId {
             Self::OrbitAzureLight => "orbit-azure-light",
             Self::Operational => "operational",
             Self::OperationalLight => "operational-light",
+            Self::OrbitOnyx => "orbit-onyx",
         }
     }
 
@@ -235,6 +239,7 @@ impl ThemeId {
             | "tokyo-night-light" | "tokyonight-light" | "tokyo-night-day" | "ayu-light" => {
                 Some(Self::OrbitLight)
             }
+            "orbit-onyx" | "linear" => Some(Self::OrbitOnyx),
             "flexoki" | "flexoki-dark" => Some(Self::Flexoki),
             "flexoki-light" => Some(Self::FlexokiLight),
             "operational" | "operational-dark" | "operational-minimalism" => {
@@ -260,6 +265,7 @@ impl ThemeId {
             Self::OrbitAzureLight => "Orbit Azure Light",
             Self::Operational => "Operational",
             Self::OperationalLight => "Operational Light",
+            Self::OrbitOnyx => "Orbit Onyx",
         }
     }
 
@@ -276,6 +282,7 @@ impl ThemeId {
             | Self::OrbitDarker
             | Self::OrbitCobalt
             | Self::Flexoki
+            | Self::OrbitOnyx
             | Self::Operational => ThemeMode::Dark,
         }
     }
@@ -972,16 +979,18 @@ const ORBIT: Palette = Palette {
     surface: 0x181818,
     surface_secondary: 0x1E1E1E,
     elevated: 0x232323,
-    hover: 0x262626,
-    active: 0x2A2A2A,
+    // Hover and pressed are a full step apart from the raised plane and from
+    // each other: one level of charcoal is not a state a pointer can see.
+    hover: 0x272727,
+    active: 0x2D2D2D,
     selection: 0x282828,
-    selected_surface: 0x282828,
+    selected_surface: 0x2A2A2A,
     selection_fg: 0xE2E2E2,
     border: 0x2A2A2A,
     border_subtle: 0x232323,
     text: 0xE2E2E2,
     text_secondary: 0xA3A3A3,
-    text_muted: 0x919191,
+    text_muted: 0x959595,
     text_disabled: 0x606060,
     success: 0x62C987,
     error: 0xE2726A,
@@ -1209,8 +1218,8 @@ const ORBIT_LIGHT: Palette = Palette {
     surface: 0xF3F3F3,
     surface_secondary: 0xEFEFEF,
     elevated: 0xECECEC,
-    hover: 0xE8E8E8,
-    active: 0xE2E2E2,
+    hover: 0xE7E7E7,
+    active: 0xE1E1E1,
     selection: 0xE5E5E5,
     selected_surface: 0xE5E5E5,
     selection_fg: 0x242424,
@@ -1450,7 +1459,7 @@ const OPERATIONAL: Palette = Palette {
     surface: 0x101112,
     surface_secondary: 0x141618,
     elevated: 0x181A1D,
-    hover: 0x1B1D20,
+    hover: 0x1D1F22,
     active: 0x232629,
     selection: 0x303A4B,
     selected_surface: 0x202225,
@@ -1539,6 +1548,55 @@ const OPERATIONAL_LIGHT: Palette = Palette {
     syn_operator: 0x50544D,
 };
 
+/// Orbit Onyx: a near-black palette with a lavender accent. Readable ink and
+/// interaction steps are tuned to satisfy Orbit's contrast contracts.
+const ORBIT_ONYX: Palette = Palette {
+    background: 0x010102,
+    surface: 0x111216,
+    surface_secondary: 0x17181C,
+    elevated: 0x1B1C20,
+    hover: 0x202126,
+    active: 0x282A2E,
+    selection: 0x202126,
+    selected_surface: 0x24262A,
+    selection_fg: 0xF7F8F8,
+    border: 0x23252A,
+    border_subtle: 0x202126,
+    text: 0xF7F8F8,
+    text_secondary: 0xD0D6E0,
+    // The reference subtle ink is too dim on active rows.
+    text_muted: 0x969BA4,
+    text_disabled: 0x62666D,
+    success: 0x27A644,
+    error: 0xF87171,
+    error_hover: 0xFF8B8B,
+    error_fg: 0x0F0F1A,
+    accent: 0x828FFF,
+    accent_hover: 0x9AA3FF,
+    accent_pressed: 0x737FE8,
+    accent_fg: 0x010102,
+    accent_text: 0x828FFF,
+    focus_ring: 0x5E69D1,
+    action: 0x5E6AD2,
+    // White labels fail AA on the lighter reference hover (#828FFF).
+    action_hover: 0x5662C6,
+    action_pressed: 0x4C58B8,
+    action_fg: 0xFFFFFF,
+    warning: 0xFBBF24,
+    info: 0x828FFF,
+    assistant_text: 0xF7F8F8,
+    code_bg: 0x17181C,
+    code_text: 0xF7F8F8,
+    syn_string: 0x27A644,
+    syn_number: 0xFBBF24,
+    syn_function: 0x828FFF,
+    syn_type: 0x9AA3FF,
+    syn_comment: 0x8A8F98,
+    syn_literal: 0x828FFF,
+    syn_meta: 0xF87171,
+    syn_operator: 0xD0D6E0,
+};
+
 fn palette(id: ThemeId) -> Palette {
     match id {
         ThemeId::Orbit => ORBIT,
@@ -1553,6 +1611,7 @@ fn palette(id: ThemeId) -> Palette {
         ThemeId::OrbitAzureLight => ORBIT_AZURE_LIGHT,
         ThemeId::Operational => OPERATIONAL,
         ThemeId::OperationalLight => OPERATIONAL_LIGHT,
+        ThemeId::OrbitOnyx => ORBIT_ONYX,
     }
 }
 
@@ -1967,6 +2026,27 @@ mod tests {
     }
 
     #[test]
+    fn orbit_onyx_accepts_the_previous_theme_key() {
+        assert_eq!(ThemeId::parse("linear"), Some(ThemeId::OrbitOnyx));
+        assert_eq!(ThemeId::parse("orbit-onyx"), Some(ThemeId::OrbitOnyx));
+        assert_eq!(ThemeId::OrbitOnyx.as_str(), "orbit-onyx");
+    }
+
+    #[test]
+    fn orbit_onyx_keeps_its_reference_colors() {
+        let p = palette(ThemeId::OrbitOnyx);
+        assert_eq!(p.background, 0x010102);
+        assert_eq!(p.border, 0x23252A);
+        assert_eq!(p.text, 0xF7F8F8);
+        assert_eq!(p.text_secondary, 0xD0D6E0);
+        assert_eq!(p.text_disabled, 0x62666D);
+        assert_eq!(p.action, 0x5E6AD2);
+        assert_eq!(p.accent, 0x828FFF);
+        assert_eq!(p.focus_ring, 0x5E69D1);
+        assert_eq!(p.success, 0x27A644);
+    }
+
+    #[test]
     fn design_system_keys_round_trip() {
         for system in DesignSystem::ALL {
             assert_eq!(DesignSystem::parse(system.as_str()), Some(system));
@@ -2079,6 +2159,7 @@ mod tests {
                 "Orbit Cobalt",
                 "Orbit Azure",
                 "Flexoki",
+                "Orbit Onyx",
                 "Operational",
                 "Orbit Light",
                 "Orbit Azure Light",
@@ -2220,21 +2301,21 @@ mod tests {
             // Status and diff colors are painted on the dark work surfaces as
             // badge dots and +/− counts. AA-large is the floor there; labels
             // ride ink, so the hue is reinforcement, never the only signal.
-            if id.appearance() == ThemeMode::Dark {
-                for (label, token) in [
-                    ("success", p.success),
-                    ("danger", p.error),
-                    ("caution", p.warning),
-                ] {
-                    assert!(
-                        c(token, p.background) >= 3.0,
-                        "{id:?}: status {label} on canvas"
-                    );
-                    assert!(
-                        c(token, p.elevated) >= 2.5,
-                        "{id:?}: status {label} on raised"
-                    );
-                }
+            // Both modes paint these on the canvas and on cards, so both are
+            // held to the same floor rather than only the dark work surfaces.
+            for (label, token) in [
+                ("success", p.success),
+                ("danger", p.error),
+                ("caution", p.warning),
+            ] {
+                assert!(
+                    c(token, p.background) >= 3.0,
+                    "{id:?}: status {label} on canvas"
+                );
+                assert!(
+                    c(token, p.elevated) >= 2.5,
+                    "{id:?}: status {label} on raised"
+                );
             }
             // A run's failed/cancelled badge and a deleted diff line both use
             // red; the badge's dot + label is what separates them, never the
@@ -2486,6 +2567,39 @@ mod tests {
             assert!(
                 c(p.text_muted, p.background) >= 4.5,
                 "{id:?}: muted ink on the canvas"
+            );
+        }
+    }
+
+    /// A state change the eye cannot see is not feedback.
+    ///
+    /// Every palette's interaction steps must clear a floor against the surface
+    /// they replace: a hover one charcoal level above the card, or a press one
+    /// level above the hover, reads as no feedback at all on a real display.
+    /// The floor is the smallest step that still registers on an 8-bit ramp
+    /// without turning quiet chrome into a two-tone surface.
+    #[test]
+    fn every_interaction_step_is_visible_on_its_surface() {
+        const FLOOR: f64 = 1.045;
+        for id in ThemeId::ALL {
+            let p = palette(id);
+            let c = |a, b| contrast(a, b);
+            assert!(
+                c(p.hover, p.elevated) >= FLOOR,
+                "{id:?}: hover on a raised surface is only {:.3}:1",
+                c(p.hover, p.elevated)
+            );
+            assert!(
+                c(p.active, p.hover) >= FLOOR,
+                "{id:?}: pressed against hover is only {:.3}:1",
+                c(p.active, p.hover)
+            );
+            // A hovered row and an open row are different states; a palette
+            // that gives both the same fill erases the difference between
+            // "under the pointer" and "this is the thing".
+            assert_ne!(
+                p.hover, p.selected_surface,
+                "{id:?}: hover and selected row share a fill"
             );
         }
     }

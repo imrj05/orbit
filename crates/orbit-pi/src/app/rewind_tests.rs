@@ -885,6 +885,7 @@ fn successful_fork_parks_original_draft_and_attachments(cx: &mut gpui::TestAppCo
     cx.update(|_, cx| {
         app.update(cx, |app, cx| {
             app.current_session_path = Some(original.clone());
+            app.composer_is_new_task = false;
             app.input
                 .update(cx, |input, cx| input.set_text("unfinished draft", cx));
             app.files.push(AttachedFile {

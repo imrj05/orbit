@@ -1078,6 +1078,8 @@ pub(crate) fn changed_files(message: &ChatMessage) -> Vec<(String, u64, u64)> {
 
 type ExpandedActivities = Rc<RefCell<HashMap<(usize, usize), bool>>>;
 type ExpandedTools = Rc<RefCell<HashSet<(usize, usize)>>>;
+/// Which child's log is open on a delegation card, keyed `(message_ix, tool_ix)`.
+type OpenChildLogs = Rc<RefCell<HashMap<(usize, usize), usize>>>;
 type CopiedSections = Rc<RefCell<HashMap<(usize, usize, u8), Instant>>>;
 /// Tool detail sections expanded past their collapsed preview, keyed
 /// `(message_ix, flat_tool_ix, section)`.
@@ -1188,6 +1190,8 @@ pub struct Transcript {
     copied: Rc<RefCell<HashMap<usize, Instant>>>,
     /// Per-tool detail-card open state, keyed `(message_ix, tool_ix)`.
     expanded_tools: ExpandedTools,
+    /// Which child's log a delegation card shows, keyed `(message_ix, tool_ix)`.
+    open_child_logs: OpenChildLogs,
     /// Per detail-section copy feedback, keyed `(message_ix, tool_ix, section)`.
     copied_sections: CopiedSections,
     /// Per detail-section hover transition, keyed `(message_ix, tool_ix, section)`.
@@ -1269,6 +1273,7 @@ impl Transcript {
             expanded_files: Rc::new(RefCell::new(HashSet::new())),
             expanded_activities: Rc::new(RefCell::new(HashMap::new())),
             expanded_tools: Rc::new(RefCell::new(HashSet::new())),
+            open_child_logs: Rc::new(RefCell::new(HashMap::new())),
             copied: Rc::new(RefCell::new(HashMap::new())),
             copied_sections: Rc::new(RefCell::new(HashMap::new())),
             hovered_sections: Rc::new(RefCell::new(HashMap::new())),
@@ -1555,6 +1560,7 @@ impl Transcript {
         self.expanded_files.borrow_mut().clear();
         self.expanded_activities.borrow_mut().clear();
         self.expanded_tools.borrow_mut().clear();
+        self.open_child_logs.borrow_mut().clear();
         self.copied.borrow_mut().clear();
         self.copied_sections.borrow_mut().clear();
         self.hovered_sections.borrow_mut().clear();
@@ -1594,6 +1600,7 @@ impl Transcript {
         self.expanded_files.borrow_mut().clear();
         self.expanded_activities.borrow_mut().clear();
         self.expanded_tools.borrow_mut().clear();
+        self.open_child_logs.borrow_mut().clear();
         self.copied.borrow_mut().clear();
         self.copied_sections.borrow_mut().clear();
         self.hovered_sections.borrow_mut().clear();
@@ -2703,12 +2710,14 @@ impl Transcript {
 
     /// The settled run's last assistant message usage, for the debug-build
     /// per-turn diagnostic log.
+    #[cfg(debug_assertions)]
     pub fn last_message_usage(&self) -> Option<MessageUsage> {
         self.messages.borrow().last().and_then(ChatMessage::usage)
     }
 
     /// The settled run's last message generation clock — pi's `durationMs`
     /// (prefill plus decode), or the client-measured fallback.
+    #[cfg(debug_assertions)]
     pub fn last_message_duration(&self) -> Option<Duration> {
         self.messages
             .borrow()
@@ -3008,6 +3017,7 @@ impl Transcript {
                 agent_calls,
                 expanded_activities: self.expanded_activities.clone(),
                 expanded_tools: self.expanded_tools.clone(),
+                open_child_logs: self.open_child_logs.clone(),
                 copied: self.copied.clone(),
                 copied_sections: self.copied_sections.clone(),
                 hovered_sections: self.hovered_sections.clone(),

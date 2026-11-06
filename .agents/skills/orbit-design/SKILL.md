@@ -16,12 +16,15 @@ web app or a marketing site. Optimize for long coding sessions, information
 density, stable spatial memory, responsiveness, and honest agent state. Apply
 this skill to `crates/orbit-pi`; do not transfer web CSS or ARIA APIs literally.
 
-This skill is the normative, self-contained **non-color design specification**
-for new and revised Orbit components: geometry, typography, interaction, icons,
-motion, accessibility and quality. No other design document or external skill
-is required to understand those rules. Palette and background values are outside
-its scope: resolve them through Orbit's current semantic theme roles, never from
-this file. `DESIGN.md` documents the theme families and their visual appearance.
+This skill is the normative, self-contained **design specification** for new
+and revised Orbit components: geometry, typography, interaction, icons, motion,
+accessibility, quality, and the semantic colour-role vocabulary with the
+theme-compatibility contract those roles have to satisfy. No other design
+document or external skill is required to understand those rules. Palette
+*values* stay out of scope: they live in `crates/orbit-pi/src/theme.rs` and are
+described in `DESIGN.md` §Colors. Resolve every colour through a semantic role;
+a hex value printed in a document describes a palette's identity, it is never an
+instruction for a component.
 
 When implementing, reuse the existing GPUI primitives and inspect the target
 code. Executable behavior and tests establish what currently ships; if it differs
@@ -58,7 +61,7 @@ Resolve tokens through the current theme and verify scaling at the call site.
 
 | Dimension | Current implementation / intent |
 | --- | --- |
-| Color | Semantic `Theme` roles for canvas, surfaces, text, border, focus, action, selection, status, code and syntax; dark and light palettes. Accent and action are separate roles. |
+| Color | Semantic `Theme` roles for canvas, surfaces, text, border, focus, action, selection, status, code and syntax across thirteen dark and light palettes. Accent and action are separate roles. See §Colour roles and theme compatibility. |
 | Text | `TextSize`: 11, 12, 14, 16px default reference, plus UI/editor preferences. `HeadlineSize` and `BufferLineHeight` provide additional scales. UI and monospace families serve different roles. |
 | Spacing | `DynamicSpacing`: 0, 1, 2, 3, 4, 6, 8, 12, 16, 20, 24, 32, 40, 48 at default settings; density and UI scaling apply. |
 | Radius | `Radius::px`: 0, 2, 4, 5, 6, 8, 10, 12px, and full, before the corner-rounding preference. Use component role tokens rather than assuming a radius from an enum name. |
@@ -87,6 +90,66 @@ All pixel values here are base values before user preferences, unless noted.
 | Controls | Button heights are `None` 16, `Compact` 18, `Default` 22, `Medium` 28 and `Large` 32px before UI scaling. Match the icon to the button's `icon_size`; the icon scale is 10, 12, 14, 16 and 48px, plus custom. Visual size is not proof of usable hit area. |
 | Edges and depth | Borders and focus rings are 1px. Keep structural regions flat; floating surfaces may combine a hairline with a restrained shadow. Existing composer contact shadows are a documented exception, not a general card treatment. Focus remains distinct from selection. |
 | Motion | Instant 50ms, interaction 150ms, layout 200ms and travel 260ms; instant is linear and the others decelerate. Hover, press, focus and selection do not use travel; a control changing size and meaning may. No bounce by default. Reduced motion resolves to the end state. |
+
+### Colour roles and theme compatibility
+
+A palette decides *what* a role resolves to; this section decides *which* role a
+component may use. The roles exist on `Theme`; the thirteen palettes, their families
+and their reference values are `DESIGN.md` §Colors.
+
+| Need | Role | Contract |
+| --- | --- | --- |
+| Window canvas | `background` | The plane the work sits on; panels stand on `surface`, not on this. |
+| Panel and chrome | `surface` | Sidebars, panes, title bar, composer. This is Orbit's secondary background. |
+| Nested container | `surface_secondary` | A well inside a panel, not a substitute for one. |
+| Card, chip, menu, popover, dialog | `surface_elevated` | The one raised plane. Reach it through `ElevationIndex` / `StyledExt`, which also supply the hairline and the layer's shadow. |
+| Row and control states | `surface_hover`, `surface_active`, `surface_selected` | Pointer, pressed/open, open row. Choose a treatment, not a role: see §The State Contract in `DESIGN.md`. |
+| Edges | `border`, `border_subtle`, `border_strong` | Region seam, quiet internal rule, floating-surface edge. |
+| Ink | `text_primary`, `text_secondary`, `text_muted`, `text_disabled` | Emphasis comes from ink weight and size, never from hue. |
+| Accent | `accent`, `accent_hover`, `accent_pressed`, `accent_fg`, `accent_text` | `accent_text` is the readable role for links, icons, keywords and mentions; `accent` is a fill, and never an automatic primary-button fill. |
+| Primary action | `action`, `action_hover`, `action_pressed`, `action_fg` | A palette may key this to its accent or to a neutral step; the separation is what lets an identity keep its buttons. |
+| Status | `success`, `warning`, `error`, `error_hover`, `error_fg`, `info` | `error` is the danger role. Status reinforces a label that already reads; it is never the only signal. |
+| Focus | `focus_ring` | Distinct from selection and from the resting hairline; 1px, no layout cost. |
+| Text selection | `selection`, `selection_fg` | A text wash (transcript, editor, terminal), not a surface. |
+| Translucency | `overlay`, `overlay_strong` | Ink at low alpha for controls floating over the wallpaper; never a slab over a panel. |
+
+Names from other design systems are not new tokens: `background_secondary` is
+`surface`, `border_focused` is `focus_ring`, `danger` is `error`, and
+`accent_muted` is `accent_text` or a named accent wash strength. Adding a second
+field for an existing meaning splits the palette and is not done.
+
+**The Palette Rule.** A component names a role or picks a shared treatment; it
+never paints a literal colour and never re-derives one with an ad-hoc opacity.
+`scripts/check_states.py` fails the build when a call site names a state colour.
+
+**The Identity Rule.** Every role must hold in all thirteen palettes, dark and
+light, with each palette's own accent and its own surface ramp. Do not introduce
+a universal dark palette and do not normalise a palette toward the reference one.
+Content that owns its colours is the exception: terminal ANSI, syntax roles,
+file-type brand marks and diff washes.
+
+**The Instant-Switch Rule.** A palette change replaces the `Theme` global and
+every surface repaints from it; no widget caches a colour at construction, and a
+child entity must be notified rather than rebuilt. `app/theme_switch_tests.rs`
+is the guard.
+
+**The Contrast Rule.** The floors are asserted per palette in `theme.rs`, not
+assumed from the reference one: body ink ≥7:1 on the canvas, secondary ink ≥4:1,
+muted ink ≥4.5:1 on the canvas and on every row wash it lands on, accent-as-text
+≥4.5:1, every primary and error fill ≥4.5:1 against its foreground, focus ring
+≥3:1 on canvas and raised surfaces, hairlines ≥1.15:1, status ≥3:1 as
+reinforcement, and each palette's surface ramp monotonic. A new role, a new
+palette or an adjusted hue extends these tests; it does not ship past them.
+
+**The Visible Step Rule.** A step the eye cannot see is not a state. Each
+consecutive ramp step — `surface_elevated` → `surface_hover` →
+`surface_active` — holds 1.045:1 against the one below in every palette, and
+`surface_hover` never equals `surface_selected`. When you deepen a step, re-check
+the muted ink that is read on top of it.
+
+**The Geometry Rule.** A palette never changes geometry. A role change may not
+move a border, a radius, a size or a line height; only the user's font size,
+spacing density and corner-rounding preferences do.
 
 ## Component and interaction contract
 
@@ -137,8 +200,8 @@ existing components before creating a new primitive.
 | Chips and badges | Distinguish actionable chips from informational badges; use button sizing/states for controls and badge roles for status. Make selected/open states clear, handle long labels, and provide a keyboard path. |
 | Sidebar and side panels | Preserve stable navigation, selected versus focused states, resizable bounds and focus on open/close. Support direct manipulation and a keyboard route for important pane actions; do not assume a pane steals focus. |
 | Dropdowns, pickers and context menus | Anchor dropdowns and pickers to their trigger; pointer-invoked context menus may anchor to the pointer and need a keyboard equivalent. Stay within the viewport, support keyboard navigation and dismissal, and restore focus. Positioning and row helpers do not provide the full interaction contract: callers must implement and test bounds, keyboard behavior, dismissal and focus restoration. Window-space popovers do not snap automatically. Test long labels and large UI scaling. |
-| Inputs and composer | Use `input::RADIUS` / `input::composer_radius` and existing input behavior. Preserve native text editing, paste, selection, accessible labels, visible focus and nearby validation. Keep the composer distinct from the transcript without making it a decorative card. |
-| New-task page | The same composer in the middle of the page, not a second template: the chat column with an empty transcript, centered by flex weights (`new_task::settle`) at `new_task::COMPOSER_MAX_W` and narrowing with the window. Its folder row — one chip with a quiet **Work in** label, the folder's name, its kind's mark, and a caret — sits directly over the composer, owns the only folder control on the page, and opens the workspace picker under itself. No headline, mark or card above it. The composer border uses the focus-ring role while its input is focused, and the empty footer leaves out the context meter until real usage exists. The first send docks the composer into the session layout on one `Travel` clock; Reduce Motion paints the session frame at once. |
+| Inputs and composer | Use `input::RADIUS` / `input::composer_radius` and existing input behavior. Preserve native text editing, paste, selection, accessible labels, visible focus and nearby validation. Keep access and workflow controls visible; wrap the toolbar when space is tight. Keep the composer distinct from the transcript without making it a decorative card. |
+| New-task page | The same composer in the middle of the page, not a second template: the chat column with an empty transcript, centered by flex weights (`new_task::settle`) at `new_task::COMPOSER_MAX_W` and narrowing with the window. Its context header shares the composer surface: folder and branch controls on the left, and the working-directory control on the right when in a repository. The location control names the project at its main checkout and the worktree inside a linked worktree; its picker retains the Local row. The folder control opens the workspace picker beneath itself; the status row does not duplicate these controls. No headline, mark or card above it. The composer border remains a quiet hairline while its input is focused; the caret indicates text focus. The empty footer leaves out the context meter until real usage exists. The first send docks the composer into the session layout on one `Travel` clock; Reduce Motion paints the session frame at once. |
 | Dialogs | Identify the task and affected object; keep actions in a predictable footer. Trap focus while modal and restore it on close. Escape and scrim clicks cancel dismissible dialogs; a mandatory or in-progress dialog may prevent dismissal when interruption would be unsafe, while explaining the state and any available action. Make destructive consequences explicit. Verify the actual focus and keyboard implementation. |
 | Rows, tables and lists | Use shared list metrics and interaction states; keep hover, selection and focus distinct, metadata readable, and dense content inspectable. Use stable alignment and keyboard-accessible disclosure for truncated values. |
 | Toggles, tooltips and feedback | Inspect `switch`, `empty_state` and `error_state` in `app/helpers.rs`, and `usage/tooltip.rs`. `switch` provides the visual and mouse-up behavior, not keyboard activation or an accessible name; verify or supply those separately. Give switches clear state, avoid hover-only essential information, and place actionable errors near their cause. Use loading feedback without unnecessary layout shifts. |
@@ -175,10 +238,10 @@ has adopted each treatment.
 
 | Interaction | Starting point |
 | --- | --- |
-| Hover, selection, press and focus | Shared interaction helpers and `Motion::Interaction` / `Instant`; retarget from the painted value and never delay the action. |
+| Hover, selection, press and focus | Shared interaction helpers and `Motion::Interaction` / `Instant`; retarget from the painted value and never delay the action. `.hover_state(...)` and its siblings swap on one frame — wrap the finished element in `motion::hover` (with a stable, unique name) when the surface should fade. Press is `pressed_state`/`press`, never a hand-picked fill. |
 | Disclosure and switch | Existing disclosure and switch helpers; keep layout and indicator state consistent. |
 | Menu, popover and dialog | `anchored_popover` applies entrance motion; `modal_card` supplies the frame, not animation. See `dialog.rs` for composing the card with `motion::enter`. Preserve the spatial relationship to the trigger. |
-| New-task composer dock | One `Motion::Travel`: the gap under the composer closes, the column widens to the session's, the folder row collapses and the transcript's ink fades in, all from `new_task::settle`. A resumed session never replays it. |
+| New-task composer dock | One `Motion::Travel`: the gap under the composer closes, the column widens to the session's, the folder row collapses and the transcript's ink fades in, all from `new_task::settle`. Its cubic ease-out softens the long slide; the clock starts on the first visible chat frame. A resumed session never replays it. |
 | Side-panel resize/open/close | Existing layout motion or retargetable spring where appropriate; track direct manipulation promptly and avoid overshoot. |
 | Spinner and live progress | Existing loop helpers and cadence; retain a static state indicator under reduced motion. |
 | Charts | Use the separate `theme::tokens::chart` cadence, not chart durations for control feedback. |
@@ -257,6 +320,14 @@ when rendering cost may change. GPUI 0.2.2 has no `gpui::bench` harness and
 headless test-window draws do not measure rendering; use in-app frame sampling or
 a same-machine release A/B for rendering, and compare against recorded baselines.
 The `gpui-bench` skill is optional further guidance.
+
+Colour and theme work has its own commands: `cargo test -p orbit-pi --bin
+orbit-pi theme` covers the palette, contrast, surface-ramp and interaction-state
+contracts; `scripts/check_states.py`, `check_motion.py` and `check_keyboard.py`
+enforce the call-site rules that a palette cannot express. Re-run them after any
+role, palette or component-treatment change. A palette is not "tested" by
+opening it once: check a light palette, a dark palette, one with a non-blue
+accent, and Operational against the same screen.
 
 In reviews and handoffs distinguish **shipped**, **verified**, **unverified** and
 **proposed**. Cite the relevant files, describe user impact and recommend the

@@ -22,11 +22,9 @@ use gpui::{px, relative, Pixels, Styled};
 use crate::theme::tokens::Motion;
 use crate::theme::Theme;
 
-/// Widest the new-task composer column ever gets. Narrower than a session's
-/// [`super::view::CONTENT_MAX_W`]: an empty page holds one short prompt, and a
-/// full-width composer under a headline reads as a document, not a place to
-/// start. The column still narrows with the window; this is only its ceiling.
-pub(super) const COMPOSER_MAX_W: f32 = 640.;
+/// Widest the centered new-task composer gets. It remains narrower than a
+/// session's [`super::view::CONTENT_MAX_W`] and shrinks with the window.
+pub(super) const COMPOSER_MAX_W: f32 = 800.;
 
 /// Side padding the page keeps around the column, matching the composer
 /// wrapper's own `px_4` in `view.rs`.
@@ -128,6 +126,13 @@ fn gap_for(share: f32) -> f32 {
     (1. - share) / share
 }
 
+/// A gentle deceleration for the composer's longer vertical journey. The
+/// shared Travel duration stays unchanged, but the slide does not race through
+/// most of its distance in the first few frames.
+pub(super) fn slide_easing(progress: f32) -> f32 {
+    1. - (1. - progress.clamp(0., 1.)).powi(3)
+}
+
 /// The folder row's collapse on send: its natural height and its ink, both
 /// `1 - progress`. It disappears at the end of the transition, when the status
 /// bar's Work-in chip has taken over the same question.
@@ -161,7 +166,7 @@ mod tests {
 
     #[test]
     fn the_page_rests_centered_and_the_session_rests_docked() {
-        let page = settle_page(px(640.));
+        let page = settle_page(px(COMPOSER_MAX_W));
         let session = settle_session(px(960.));
 
         // The composer's top edge as a fraction of the free space: what the
@@ -178,13 +183,13 @@ mod tests {
             1.,
             "the transcript owns the whole column"
         );
-        assert_eq!(page.width, px(640.));
+        assert_eq!(page.width, px(COMPOSER_MAX_W));
         assert_eq!(session.width, px(960.));
     }
 
     #[test]
     fn the_send_transition_is_continuous_at_both_ends() {
-        let page = px(640.);
+        let page = px(COMPOSER_MAX_W);
         let session = px(960.);
 
         let start = settle(0., page, session);
@@ -212,6 +217,15 @@ mod tests {
             );
             prev = next;
         }
+    }
+
+    #[test]
+    fn the_slide_decelerates_without_a_first_frame_jump() {
+        assert_eq!(slide_easing(0.), 0.);
+        assert_eq!(slide_easing(1.), 1.);
+        assert!(slide_easing(0.25) > 0.25);
+        assert!(slide_easing(0.25) < 0.7);
+        assert!(slide_easing(0.5) < slide_easing(0.75));
     }
 
     #[test]

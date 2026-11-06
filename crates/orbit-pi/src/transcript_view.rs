@@ -46,12 +46,13 @@ use orbit_rpc::MessageUsage;
 use crate::agent_call_display::AgentCallDisplay;
 use crate::app::{
     anchored_popover_at, button_frame, disclosure_chevron, file_badge, file_glyph, file_icon_tile,
-    icon_button_frame, nerd_font_family, picker_entry, picker_surface, ControlExt, OrbitApp,
+    icon_button_frame, nerd_font_family, picker_entry, picker_surface, press, ControlExt, OrbitApp,
     TipExt, BUTTON_GROUP,
 };
 use crate::context_meter::{format_tokens, hit_percent_label};
 use crate::highlight::{self, Token};
 use crate::message_scroller::{self, MessageScrollerState};
+use crate::motion::Hover;
 use crate::shimmer::ShimmerText;
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
@@ -157,6 +158,10 @@ const EDIT_DIFF_PAINT_LINES: usize = 400;
 
 type ExpandedActivities = Rc<RefCell<HashMap<(usize, usize), bool>>>;
 type ExpandedTools = Rc<RefCell<HashSet<(usize, usize)>>>;
+/// Which child's log is open on a delegation card, keyed `(message_ix, tool_ix)`.
+/// One child at a time, so a parallel run's card keeps a predictable height
+/// (§9.3). A closed card has no entry.
+type OpenChildLogs = Rc<RefCell<HashMap<(usize, usize), usize>>>;
 type CopiedSections = Rc<RefCell<HashMap<(usize, usize, u8), Instant>>>;
 /// Tool detail sections expanded past their collapsed preview, keyed
 /// `(message_ix, flat_tool_ix, section)`.
@@ -266,6 +271,8 @@ pub(crate) struct TranscriptView {
     pub agent_calls: AgentCallDisplay,
     /// Per-tool detail-card open state, keyed `(message_ix, tool_ix)`.
     pub expanded_tools: ExpandedTools,
+    /// Which child's log a delegation card shows, keyed `(message_ix, tool_ix)`.
+    pub open_child_logs: OpenChildLogs,
     pub copied: Rc<RefCell<HashMap<usize, Instant>>>,
     /// Per detail-section copy feedback, keyed `(message_ix, tool_ix, section)`.
     pub copied_sections: CopiedSections,
@@ -1108,7 +1115,9 @@ fn text_selection_menu(menu: &TextMenu, state: TextSelectionState, theme: Theme)
                 window.refresh();
             })
             .child(copy_selection_item)
-            .child(copy_message_item), "anchored_popover_at-in-1", &theme,
+            .child(copy_message_item),
+        "anchored_popover_at-in-1",
+        &theme,
     )
 }
 
@@ -1173,6 +1182,7 @@ struct RowPaint {
     copied_at: Rc<RefCell<HashMap<usize, Instant>>>,
     scroller: MessageScrollerState,
     expanded_tools: ExpandedTools,
+    open_child_logs: OpenChildLogs,
     copied_sections: CopiedSections,
     hovered_sections: HoveredSections,
     expanded_sections: ExpandedSections,
@@ -1228,6 +1238,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
     // instead of sharing a cell.
     let agent_calls = view.agent_calls;
     let expanded_tools = view.expanded_tools.clone();
+    let open_child_logs = view.open_child_logs.clone();
     let copied = view.copied.clone();
     let copied_sections = view.copied_sections.clone();
     let hovered_sections = view.hovered_sections.clone();
@@ -1490,6 +1501,7 @@ pub(crate) fn render_transcript(view: TranscriptView, cx: &gpui::App) -> impl In
                 copied_at: copied.clone(),
                 scroller: scroller.clone(),
                 expanded_tools: expanded_tools.clone(),
+                open_child_logs: open_child_logs.clone(),
                 copied_sections: copied_sections.clone(),
                 hovered_sections: hovered_sections.clone(),
                 expanded_sections: expanded_sections.clone(),
@@ -2168,18 +2180,22 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint, cx: &gpui::App) -
             )
         })
         .when(!body.trim().is_empty(), |column| {
-            column.child(user_message_bubble(body, theme).child(render_prose(
-                body,
-                ix,
-                0,
-                theme,
-                paint.copied_sections.clone(),
-                paint.expanded_blocks.clone(),
-                true,
-                true,
-                paint.scroller.clone(),
-                None,
-            )))
+            column.child(
+                user_message_bubble(body, theme, Some(paint.table_breakout.column_width)).child(
+                    render_prose(
+                        body,
+                        ix,
+                        0,
+                        theme,
+                        paint.copied_sections.clone(),
+                        paint.expanded_blocks.clone(),
+                        true,
+                        true,
+                        paint.scroller.clone(),
+                        None,
+                    ),
+                ),
+            )
         })
         // The files the prompt referenced, in the order they were folded.
         .when(!attached.is_empty(), |column| {
@@ -2218,15 +2234,18 @@ fn render_user_bubble(message: &ChatMessage, paint: &RowPaint, cx: &gpui::App) -
         ))
 }
 
-fn user_message_bubble(body: &str, theme: Theme) -> gpui::Div {
+fn user_message_bubble(body: &str, theme: Theme, column_width: Option<Pixels>) -> gpui::Div {
     div()
-        // Full-width Markdown blocks need a definite containing width;
-        // otherwise they can extend past a shrink-to-fit bubble.
+        // A definite width ensures wrapped text is measured at the bubble's
+        // actual width, rather than the wider transcript column.
         .when(
             parse_blocks_cached(body)
                 .iter()
                 .any(|block| matches!(block, Block::Code(..) | Block::Table { .. })),
-            |bubble| bubble.w_full(),
+            |bubble| match column_width {
+                Some(width) => bubble.w(width.min(px(USER_BUBBLE_MAX_WIDTH))),
+                None => bubble.w_full(),
+            },
         )
         .max_w(px(USER_BUBBLE_MAX_WIDTH))
         .rounded(panel::RADIUS.px(&theme))
@@ -2421,6 +2440,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
                         paint.agent_calls,
                         paint.expanded_activities.clone(),
                         paint.expanded_tools.clone(),
+                        paint.open_child_logs.clone(),
                         paint.copied_sections.clone(),
                         paint.hovered_sections.clone(),
                         paint.expanded_sections.clone(),
@@ -2502,6 +2522,7 @@ fn render_assistant(message: &ChatMessage, paint: &RowPaint) -> impl IntoElement
                 paint.agent_calls,
                 paint.expanded_activities.clone(),
                 paint.expanded_tools.clone(),
+                paint.open_child_logs.clone(),
                 paint.copied_sections.clone(),
                 paint.hovered_sections.clone(),
                 paint.expanded_sections.clone(),
@@ -2786,6 +2807,7 @@ fn render_activity_group(
     agent_calls: AgentCallDisplay,
     expanded_activities: ExpandedActivities,
     expanded_tools: ExpandedTools,
+    open_child_logs: OpenChildLogs,
     copied_sections: CopiedSections,
     hovered_sections: HoveredSections,
     expanded_sections: ExpandedSections,
@@ -2959,6 +2981,7 @@ fn render_activity_group(
                     (ix, flat),
                     tool_open,
                     expanded_tools.clone(),
+                    open_child_logs.clone(),
                     copied_sections.clone(),
                     hovered_sections.clone(),
                     expanded_sections.clone(),
@@ -3558,6 +3581,7 @@ fn subagent_status_label(child: &crate::subagent::SubagentChild) -> String {
 ///
 /// Nothing here is computed from the child's prose: the phase, counts and cost
 /// are the extension's `details` and pi's own usage (§9.4, D-V).
+#[allow(clippy::too_many_arguments)]
 fn render_subagent_card(
     run: &crate::subagent::SubagentRun,
     pulse: bool,
@@ -3565,9 +3589,21 @@ fn render_subagent_card(
     key: (usize, usize),
     tool_open: bool,
     expanded_tools: ExpandedTools,
+    open_child_logs: OpenChildLogs,
     scroller: MessageScrollerState,
 ) -> AnyElement {
     use crate::subagent::Status;
+
+    // A closed card is a set of rows; an open one adds the log of exactly one
+    // child (§9.3). The click that opens the card picks the child, so `open`
+    // stays the card's own state and the selection only decides whose log it
+    // is. A single-child run has nothing to choose between: its log is the
+    // body the moment the card opens.
+    let open_child = subagent_open_child(
+        open_child_logs.borrow().get(&key).copied(),
+        run.children.len(),
+    );
+    let open = tool_open;
 
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -3598,6 +3634,7 @@ fn render_subagent_card(
                 "subagent-row".into(),
                 id << 8 | ix as u64,
             ))
+            .debug_selector(move || format!("subagent-row-{}-{}-{}", key.0, key.1, ix))
             .when(ix == 0, |row| row.rounded_t(panel::RADIUS.px(&theme)))
             .h(DynamicSpacing::Base32.px(&theme))
             .px(DynamicSpacing::Base08.px(&theme))
@@ -3607,16 +3644,29 @@ fn render_subagent_card(
             .text_size(TextSize::Default.px(&theme))
             .line_height(BufferLineHeight::Standard.relative())
             .cursor_pointer()
+            // The open child's row is the index to the log below it, so it
+            // carries the selected fill (DESIGN.md §The State Contract).
+            .when(open_child == Some(ix), |row| row.bg(theme.surface_selected))
             .hover_on_glass(&theme)
             .on_click({
                 let expanded = expanded_tools.clone();
+                let open_children = open_child_logs.clone();
                 let scroller = scroller.clone();
                 move |_, _, cx| {
+                    // One click, two consequences: open that child's log, and open
+                    // the card that holds it. Clicking the open child closes both.
+                    let selected = open_children.borrow().get(&key).copied();
+                    let mut children = open_children.borrow_mut();
                     let mut open = expanded.borrow_mut();
-                    if !open.remove(&key) {
+                    if selected == Some(ix) {
+                        children.remove(&key);
+                        open.remove(&key);
+                    } else {
+                        children.insert(key, ix);
                         open.insert(key);
                     }
                     drop(open);
+                    drop(children);
                     scroller.remeasure_toggle(key.0);
                     cx.refresh_windows();
                 }
@@ -3755,9 +3805,7 @@ fn render_subagent_card(
         .w_full()
         .border_t_1()
         .border_color(theme.border)
-        .when(!tool_open, |footer| {
-            footer.rounded_b(panel::RADIUS.px(&theme))
-        })
+        .when(!open, |footer| footer.rounded_b(panel::RADIUS.px(&theme)))
         .h(DynamicSpacing::Base32.px(&theme))
         .px(DynamicSpacing::Base08.px(&theme))
         .flex()
@@ -3823,8 +3871,10 @@ fn render_subagent_card(
     }
     card = card.child(footer);
 
-    if tool_open {
-        card = card.child(render_subagent_detail(run, theme));
+    if open {
+        if let Some(ix) = open_child {
+            card = card.child(render_subagent_detail(run, ix, theme));
+        }
     }
 
     card.into_any_element()
@@ -3861,8 +3911,27 @@ fn render_subagent_strip(message: &str, theme: Theme) -> impl IntoElement {
         )
 }
 
-/// The expanded body: each child's real steps, then the report it returned.
-fn render_subagent_detail(run: &crate::subagent::SubagentRun, theme: Theme) -> impl IntoElement {
+/// Which child's log a card shows. An explicit selection wins; a run with a
+/// single child has no choice to make; several children and no selection is an
+/// empty body, so the rows stay the whole claim (§9.3).
+fn subagent_open_child(selected: Option<usize>, children: usize) -> Option<usize> {
+    if children == 0 {
+        return None;
+    }
+    match selected {
+        Some(ix) if ix < children => Some(ix),
+        Some(_) => None,
+        None if children == 1 => Some(0),
+        None => None,
+    }
+}
+
+/// The expanded body: the open child's real steps, then the report it returned.
+fn render_subagent_detail(
+    run: &crate::subagent::SubagentRun,
+    child_ix: usize,
+    theme: Theme,
+) -> impl IntoElement {
     let mut body = div()
         .w_full()
         .min_w_0()
@@ -3874,7 +3943,7 @@ fn render_subagent_detail(run: &crate::subagent::SubagentRun, theme: Theme) -> i
         .flex()
         .flex_col()
         .gap(DynamicSpacing::Base06.px(&theme));
-    for child in &run.children {
+    for child in run.children.get(child_ix).into_iter() {
         if !child.steps.is_empty() {
             body = body.child(
                 div()
@@ -3949,6 +4018,7 @@ fn render_activity_card(
     key: (usize, usize),
     tool_open: bool,
     expanded_tools: ExpandedTools,
+    open_child_logs: OpenChildLogs,
     copied_sections: CopiedSections,
     hovered_sections: HoveredSections,
     expanded_sections: ExpandedSections,
@@ -3972,6 +4042,7 @@ fn render_activity_card(
             key,
             tool_open,
             expanded_tools.clone(),
+            open_child_logs.clone(),
             scroller.clone(),
         );
     }
@@ -4732,6 +4803,7 @@ fn render_detail_section(
     } else {
         copy_label.opacity(label_to).into_any_element()
     };
+    let copied_wash = theme.success.opacity(0.10);
     let copy_button = icon_button_frame(
         div().id(ElementId::NamedInteger(
             "copy-activity-section".into(),
@@ -4746,21 +4818,7 @@ fn render_detail_section(
         tr!("transcript.copy_section")
     })
     .cursor_pointer()
-    .when(copied, |button| button.bg(theme.success.opacity(0.10)))
-    .hover(move |style| {
-        style.bg(if copied {
-            theme.success.opacity(0.10)
-        } else {
-            theme.overlay_strong
-        })
-    })
-    .active(move |style| {
-        style.bg(if copied {
-            theme.success.opacity(0.16)
-        } else {
-            theme.surface_active
-        })
-    })
+    .when(copied, |button| button.bg(copied_wash))
     .child(copy_icon)
     .on_click(move |_, _, cx| {
         cx.write_to_clipboard(ClipboardItem::new_string(copy_content.clone()));
@@ -4769,6 +4827,20 @@ fn render_detail_section(
             .insert((key.0, key.1, section), Instant::now());
         cx.refresh_windows();
     });
+    // The acknowledgement wash is the button's own state, so the hover fades
+    // the glass in at rest and holds the tint once copied; the press is the
+    // shared dim rather than a second fill that would fight the fade.
+    let hover = if copied {
+        Hover::fill(copied_wash, copied_wash)
+    } else {
+        Hover::wash_in(theme.overlay_strong)
+    };
+    let copy_button = crate::motion::hover(
+        press(copy_button),
+        format!("copy-section-{}-{}-{section}", key.0, key.1),
+        &theme,
+        hover,
+    );
     let copy_control = div().relative().flex_none().child(copy_button).child(
         div()
             .absolute()
@@ -10114,7 +10186,7 @@ mod tests {
                 let theme = theme::Theme::for_id(theme::ThemeId::Orbit);
                 let text = "can you remove the\n\n### macOS — Gatekeeper warning\n\nIf macOS blocks the app, run once in Terminal after installing:\n\n```bash\nxattr -cr /Applications/Vox.app\n```\n\nfrom changelog now its signed app";
                 div().w_full().flex().flex_col().items_end().child(
-                    user_message_bubble(text, theme)
+                    user_message_bubble(text, theme, None)
                         .debug_selector(|| "test-bubble".into())
                         .child(render_prose(
                             text,
@@ -10994,6 +11066,7 @@ mod tests {
             agent_calls: crate::agent_call_display::AgentCallDisplay::FollowRun,
             expanded_activities: Rc::new(RefCell::new(HashMap::new())),
             expanded_tools: Rc::new(RefCell::new(HashSet::new())),
+            open_child_logs: Rc::new(RefCell::new(HashMap::new())),
             copied: Rc::new(RefCell::new(HashMap::new())),
             copied_sections: Rc::new(RefCell::new(HashMap::new())),
             hovered_sections: Rc::new(RefCell::new(HashMap::new())),
@@ -11062,6 +11135,7 @@ mod tests {
                 self.open.clone(),
                 Rc::new(RefCell::new(HashMap::new())),
                 Rc::new(RefCell::new(HashMap::new())),
+                Rc::new(RefCell::new(HashMap::new())),
                 self.sections.clone(),
                 self.scroller.clone(),
                 self.image_opener.clone(),
@@ -11071,6 +11145,7 @@ mod tests {
 
     struct SubagentCardTestView {
         open: ExpandedTools,
+        open_children: OpenChildLogs,
         scroller: MessageScrollerState,
         status: &'static str,
         phase: &'static str,
@@ -11134,9 +11209,73 @@ mod tests {
                 (0, 0),
                 self.open.borrow().contains(&(0, 0)),
                 self.open.clone(),
+                self.open_children.clone(),
                 self.scroller.clone(),
             )
         }
+    }
+
+    /// §9.3: one child's log at a time. A single-child run has nothing to
+    /// choose between, so its log is the card's body the moment it opens; a
+    /// parallel run stays at the rows until the reader picks a child.
+    #[test]
+    fn only_one_child_log_is_open_at_a_time() {
+        assert_eq!(subagent_open_child(None, 0), None);
+        assert_eq!(subagent_open_child(None, 1), Some(0));
+        assert_eq!(subagent_open_child(None, 3), None);
+        assert_eq!(subagent_open_child(Some(2), 3), Some(2));
+        // A selection left over from a shorter run cannot paint a stranger's
+        // log, and it does not panic on the missing index.
+        assert_eq!(subagent_open_child(Some(1), 1), None);
+    }
+
+    /// Clicking a child row is the whole third zoom level (§9.3): it opens that
+    /// child's log and the card that holds it, a second click closes both, and
+    /// picking the other child swaps the body instead of adding a second one.
+    #[gpui::test]
+    fn clicking_a_child_row_opens_that_childs_log(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let open = Rc::new(RefCell::new(HashSet::new()));
+        let open_children = Rc::new(RefCell::new(HashMap::new()));
+        let (view, cx) = cx.add_window_view(|_, _| SubagentCardTestView {
+            open: open.clone(),
+            open_children: open_children.clone(),
+            scroller: MessageScrollerState::new(1),
+            status: "done",
+            phase: "settled",
+        });
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            let _ = cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(900.), px(600.)),
+                |_, _| view.clone(),
+            );
+        };
+        draw(cx);
+        let click = |cx: &mut gpui::VisualTestContext, selector: &'static str| {
+            let at = cx.debug_bounds(selector).expect(selector).center();
+            cx.simulate_mouse_move(at, None, gpui::Modifiers::none());
+            draw(cx);
+            cx.simulate_click(at, gpui::Modifiers::none());
+            draw(cx);
+        };
+
+        click(cx, "subagent-row-0-0-1");
+        assert_eq!(open_children.borrow().get(&(0, 0)), Some(&1));
+        assert!(
+            open.borrow().contains(&(0, 0)),
+            "the card opens with the log"
+        );
+
+        // The other child replaces it; one log at a time.
+        click(cx, "subagent-row-0-0-0");
+        assert_eq!(open_children.borrow().get(&(0, 0)), Some(&0));
+        assert!(open.borrow().contains(&(0, 0)));
+
+        // Clicking the open row closes the card.
+        click(cx, "subagent-row-0-0-0");
+        assert_eq!(open_children.borrow().get(&(0, 0)), None);
+        assert!(!open.borrow().contains(&(0, 0)));
     }
 
     /// The delegation card paints in every state and at both zoom levels: the
@@ -11158,6 +11297,13 @@ mod tests {
                             HashSet::from([(0, 0)])
                         } else {
                             HashSet::new()
+                        })),
+                        // A parallel run shows one child's log at a time; the
+                        // drawing test opens the first child with the card.
+                        open_children: Rc::new(RefCell::new(if open {
+                            HashMap::from([((0, 0), 0)])
+                        } else {
+                            HashMap::new()
                         })),
                         scroller: MessageScrollerState::new(1),
                         status,
@@ -11826,6 +11972,136 @@ mod tests {
                 view.streaming.set(Some(0));
             }
             render_transcript(view, cx)
+        }
+    }
+
+    #[gpui::test]
+    fn long_user_markdown_does_not_overlap_the_reply(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let state: TextSelectionState = Rc::new(RefCell::new(TextSelection::new()));
+        let messages = test_messages();
+        {
+            let mut messages = messages.borrow_mut();
+            messages.swap(0, 1);
+            messages[1].steps[0].text = "Assistant response begins here.".into();
+        }
+        let scroller = MessageScrollerState::new(2);
+        let view = cx.update(|_, cx| {
+            cx.new(|_| SelectTestView {
+                messages: messages.clone(),
+                state: state.clone(),
+                scroller: scroller.clone(),
+                main_width: px(700.),
+                open_work: false,
+                live: false,
+            })
+        });
+        for code in [false, true] {
+            let fence = if code {
+                format!(
+                    "```css\n{}\n```\n\n",
+                    "--text-primary: #f1f1f4;\n".repeat(15)
+                )
+            } else {
+                String::new()
+            };
+            messages.borrow_mut()[0].steps[0].text = format!(
+                "# Palette\n\n{}\n\n{fence}## Rules\n\n1. First rule.\n2. Second rule.\n\nLast user paragraph.",
+                "Long description with enough text to wrap onto several lines. ".repeat(20),
+            );
+            for width in [700., 450.] {
+                scroller.reset(2);
+                cx.update(|_, cx| {
+                    view.update(cx, |view, cx| {
+                        view.main_width = px(width);
+                        cx.notify();
+                    })
+                });
+                cx.draw(
+                    point(px(0.), px(0.)),
+                    gpui::size(px(width), px(900.)),
+                    |_, _| view.clone(),
+                );
+                let selection = state.borrow();
+                let last_user = selection
+                    .blocks
+                    .iter()
+                    .find(|block| block.text.as_ref() == "Last user paragraph.")
+                    .expect("last user paragraph");
+                let reply = selection
+                    .blocks
+                    .iter()
+                    .find(|block| block.text.as_ref() == "Assistant response begins here.")
+                    .expect("reply paragraph");
+                assert!(
+                    last_user.bounds.bottom() <= reply.bounds.top(),
+                    "code={code}, width={width}: user {:?} overlaps reply {:?}",
+                    last_user.bounds,
+                    reply.bounds
+                );
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn first_message_remains_above_reply_after_resizing(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        cx.update(|_, cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        let state: TextSelectionState = Rc::new(RefCell::new(TextSelection::new()));
+        let messages = test_messages();
+        {
+            let mut messages = messages.borrow_mut();
+            messages.swap(0, 1);
+            messages[0].steps[0].text = format!(
+                "# Color System\n\nUse these colors consistently across all UI elements:\n\n{}\n\n## CSS Variables\n\n```css\n:root {{\n{}\n}}\n```\n\n## Rules\n\n1. Never mix colors outside this system.\n2. Maintain WCAG AA contrast for all text on backgrounds.\n3. Use semantic colors only for their intended purpose.\n4. Primary is for main actions.\n5. Use surface for elevated containers, background for the page.",
+                "- **primary**: #5E6AD2 — Main brand color — CTAs, active states, key UI elements\n".repeat(13),
+                "  --text-primary: #F1F1F4;\n".repeat(14),
+            );
+            messages[1].steps[0].text = "Assistant response begins here.".into();
+        }
+        let scroller = MessageScrollerState::new(2);
+        let view = cx.update(|_, cx| {
+            cx.new(|_| SelectTestView {
+                messages,
+                state: state.clone(),
+                scroller,
+                main_width: px(1000.),
+                open_work: false,
+                live: false,
+            })
+        });
+        for width in [1000., 700., 1000.] {
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.main_width = px(width);
+                    cx.notify();
+                })
+            });
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(width), px(1000.)),
+                |_, _| view.clone(),
+            );
+            let selection = state.borrow();
+            let last_user = selection
+                .blocks
+                .iter()
+                .filter(|block| block.message_ix == 0)
+                .map(|block| block.bounds.bottom())
+                .max()
+                .expect("user text");
+            let first_reply = selection
+                .blocks
+                .iter()
+                .filter(|block| block.message_ix == 1)
+                .map(|block| block.bounds.top())
+                .min()
+                .expect("reply text");
+            assert!(
+                last_user <= first_reply,
+                "width={width}: user ends at {last_user:?}, reply starts at {first_reply:?}"
+            );
         }
     }
 

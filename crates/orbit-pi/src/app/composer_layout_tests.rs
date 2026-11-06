@@ -1,5 +1,142 @@
 use super::*;
 
+/// A long model name must not push Send outside the actual composer card.
+#[gpui::test]
+fn send_stays_inside_the_composer_with_long_model_names(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+
+    for (font_size, density, width, session) in [
+        (14., 100, 1200., false),
+        (14., 120, 1200., false),
+        (20., 120, 960., false),
+        (14., 100, 520., false),
+        (14., 100, 320., false),
+        (20., 120, 520., false),
+        (20., 120, 400., false),
+        (20., 120, 960., true),
+    ] {
+        let mut theme = Theme::for_id(ThemeId::Orbit);
+        theme.ui.ui_font_size = font_size;
+        theme.ui.spacing_density = density;
+        cx.update(|cx| cx.set_global(theme));
+        let cx = cx.add_empty_window();
+        cx.simulate_resize(gpui::size(px(width), px(720.)));
+        let app = cx.update(|_, cx| {
+            cx.new(|cx| {
+                let mut app = OrbitApp::new(cx);
+                for dependency in &mut app.deps {
+                    dependency.installed = true;
+                }
+                app.setup_open = false;
+                app.layout_restored = true;
+                app.sidebar_visible = false;
+                app.current_workspace = Some(std::env::temp_dir());
+                app.model_label = "deepseek-v4.1-flash:1017".into();
+                app.access_mode = AccessMode::FullAccess;
+                app.workflow_mode = WorkflowMode::Plan;
+                app.available_thinking_levels = vec!["off".into(), "high".into()];
+                app.thinking_label = "high".into();
+                if session {
+                    app.transcript.append_user_message("earlier", Vec::new());
+                }
+                app.input
+                    .update(cx, |input, cx| input.set_text("hello", cx));
+                app
+            })
+        });
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(width), px(720.)),
+            |_, _| app.clone(),
+        );
+        let card = cx.debug_bounds("composer-box").expect("composer");
+        let send = cx.debug_bounds("send-btn").expect("send");
+        let model = cx.debug_bounds("model-chip").expect("model");
+        let thinking = cx.debug_bounds("thinking-chip").expect("thinking");
+        let access = cx.debug_bounds("access-chip").expect("access control");
+        let workflow = cx.debug_bounds("workflow-chip").expect("workflow control");
+        let inset = crate::theme::tokens::DynamicSpacing::Base16.px(&theme);
+        assert!(send.left() >= card.left() && send.right() <= card.right() - inset + px(1.),
+            "send escapes composer at font {font_size}, density {density}, width {width}, session {session}: {send:?} vs {card:?}");
+        assert!(
+            model.right() <= thinking.left() && thinking.right() <= send.left(),
+            "controls overlap: model {model:?}, thinking {thinking:?}, send {send:?}"
+        );
+        assert!(
+            model.size.width > px(24.),
+            "the model control remains visible"
+        );
+        for (name, control) in [("access", access), ("workflow", workflow)] {
+            assert!(
+                control.left() >= card.left()
+                    && control.right() <= card.right()
+                    && control.top() >= card.top()
+                    && control.bottom() <= card.bottom(),
+                "{name} escapes composer at font {font_size}, width {width}: {control:?} vs {card:?}"
+            );
+        }
+        assert!(access.right() <= workflow.left() || access.bottom() <= workflow.top());
+        assert!(workflow.right() <= model.left() || workflow.bottom() <= model.top());
+        if !session && width == 1200. && font_size == 14. {
+            assert!((workflow.center().y - model.center().y).abs() <= px(1.));
+        }
+        if !session && width == 520. && font_size == 14. {
+            assert!(
+                workflow.bottom() <= model.top(),
+                "compact controls wrap to two rows"
+            );
+        }
+    }
+}
+
+/// Both mode controls remain clickable after the toolbar wraps.
+#[gpui::test]
+fn narrow_composer_mode_controls_open_their_menus(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+
+    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    let (app, cx) = cx.add_window_view(|_, cx| OrbitApp::new(cx));
+    cx.simulate_resize(gpui::size(px(520.), px(720.)));
+    cx.update(|_, cx| {
+        app.update(cx, |app, _| {
+            for dependency in &mut app.deps {
+                dependency.installed = true;
+            }
+            app.setup_open = false;
+            app.layout_restored = true;
+            app.sidebar_visible = false;
+            app.current_workspace = Some(std::env::temp_dir());
+            app.access_mode = AccessMode::FullAccess;
+        });
+    });
+    let draw = |cx: &mut gpui::VisualTestContext| {
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(520.), px(720.)),
+            |_, _| app.clone(),
+        );
+    };
+    draw(cx);
+    let access = cx.debug_bounds("access-chip").expect("access").center();
+    cx.simulate_mouse_move(access, None, gpui::Modifiers::none());
+    draw(cx);
+    cx.simulate_click(access, gpui::Modifiers::none());
+    assert!(cx.update(|window, cx| {
+        let app = app.read(cx);
+        app.access_menu_open && app.access_menu_focus.is_focused(window)
+    }));
+    cx.update(|window, cx| app.update(cx, |app, cx| app.close_access_menu(window, cx)));
+    draw(cx);
+    let workflow = cx.debug_bounds("workflow-chip").expect("workflow").center();
+    cx.simulate_mouse_move(workflow, None, gpui::Modifiers::none());
+    draw(cx);
+    cx.simulate_click(workflow, gpui::Modifiers::none());
+    assert!(cx.update(|window, cx| {
+        let app = app.read(cx);
+        app.workflow_menu_open && app.workflow_menu_focus.is_focused(window)
+    }));
+}
+
 struct ComposerStatusProbe {
     app: Entity<OrbitApp>,
     width: Pixels,

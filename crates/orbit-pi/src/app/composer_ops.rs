@@ -118,6 +118,9 @@ impl OrbitApp {
     /// drops the draft instead of parking a blank one. Call before leaving a
     /// session for another.
     pub(super) fn save_composer_draft(&mut self, cx: &mut Context<Self>) {
+        self.drain_pasted_files(cx);
+        self.drain_pasted_images(cx);
+        self.drain_pasted_texts(cx);
         let draft = ComposerDraft {
             text: self.input.read(cx).text(),
             attachments: std::mem::take(&mut self.attachments),
@@ -125,7 +128,11 @@ impl OrbitApp {
             pasted_texts: std::mem::take(&mut self.pasted_texts),
         };
         let draft = (!draft.is_empty()).then_some(draft);
-        match self.current_session_path.clone() {
+        match self
+            .current_session_path
+            .clone()
+            .filter(|_| !self.composer_is_new_task)
+        {
             Some(path) => match draft {
                 Some(draft) => {
                     self.drafts.insert(path, draft);
@@ -142,6 +149,7 @@ impl OrbitApp {
     /// the composer when there is none. Call after a session (or a fresh
     /// task) becomes active.
     pub(super) fn restore_composer_draft(&mut self, path: Option<&Path>, cx: &mut Context<Self>) {
+        self.composer_is_new_task = path.is_none();
         let draft = match path {
             Some(path) => self.drafts.remove(path),
             None => self.new_task_draft.take(),
@@ -162,6 +170,17 @@ impl OrbitApp {
             }
         }
         cx.notify();
+    }
+
+    /// Hand the composer to the New Task page: park the active target's
+    /// unsent state and load the page's own. Every entry point that starts a
+    /// fresh session in place (a reused idle process, or a folder pick that
+    /// respawns) must go through this, or the page keeps the text of the
+    /// session being left — and that text then lands in the New Task slot on
+    /// the way out, taking the parked draft with it.
+    pub(super) fn swap_to_new_task_draft(&mut self, cx: &mut Context<Self>) {
+        self.save_composer_draft(cx);
+        self.restore_composer_draft(None, cx);
     }
 
     /// (Re)build the workspace file cache when the workspace changed.
@@ -455,7 +474,9 @@ impl OrbitApp {
             anchored_popover(
                 Corner::BottomLeft,
                 point(px(0.), -popover::MENU_OFFSET),
-                popup, "anchored_popover-in-4", &theme,
+                popup,
+                "anchored_popover-in-4",
+                &theme,
             )
             .into_any_element(),
         )

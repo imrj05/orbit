@@ -1602,6 +1602,7 @@ impl GitPanel {
         list = list.child(
             picker_entry(div().id("git-template-blank"), &theme)
                 .cursor_pointer()
+                .pressed_state(&theme, PressedRamp::Wash)
                 .text_color(theme.text_secondary)
                 .hover_state(&theme)
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -2988,7 +2989,9 @@ impl GitPanel {
                 .child(anchored_popover(
                     Corner::BottomLeft,
                     point(px(0.), px(-6.)),
-                    menu, "anchored_popover-in-18", &theme,
+                    menu,
+                    "anchored_popover-in-18",
+                    &theme,
                 ))
                 .into_any_element(),
         )
@@ -3986,7 +3989,9 @@ impl GitPanel {
                 .child(anchored_popover(
                     Corner::TopRight,
                     point(px(0.), px(6.)),
-                    menu, "anchored_popover-in-19", &theme,
+                    menu,
+                    "anchored_popover-in-19",
+                    &theme,
                 ))
                 .into_any_element(),
         )
@@ -4083,7 +4088,9 @@ impl GitPanel {
                 .child(anchored_popover(
                     Corner::TopRight,
                     point(px(0.), px(6.)),
-                    menu, "anchored_popover-in-20", &theme,
+                    menu,
+                    "anchored_popover-in-20",
+                    &theme,
                 ))
                 .into_any_element(),
         )

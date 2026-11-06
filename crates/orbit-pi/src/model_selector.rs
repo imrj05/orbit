@@ -14,10 +14,9 @@
 //!   under a `Favorites` section above the provider groups (a model that is both
 //!   appears once, under `Recents`); selecting a model records it as recent; a
 //!   thinking list is flat, one icon-chip row per reasoning level
-//! - model rows are one line: name, then the context window as quiet right-hand
-//!   metadata, then the hover star and the chosen check. The provider mark
-//!   appears once in the group header; the id is in the row's tooltip. Thinking
-//!   rows keep their two-line label/hint pair
+//! - model rows pair a provider tile with the model name and context window,
+//!   followed by the hover star and chosen check. The id is in the tooltip.
+//!   Thinking rows use the same two-line label/hint rhythm
 //! - option rows share one tight `Base01` rhythm, the same gap the composer's
 //!   access/workflow menus use (the command palette stacks rows with none);
 //!   grouping is carried by the uppercase section headers alone, never by a
@@ -27,8 +26,7 @@
 //! - keyboard highlight uses `overlay_strong`; the current choice keeps the
 //!   `active` fill plus an accent check, so "highlighted" and "chosen" never
 //!   read as the same state
-//! - one quiet count caption closes the list; the key legend the pickers used
-//!   to repeat belongs to the command palette, not every popover
+//! - a quiet footer shows the result count and keyboard navigation hints
 //! - keyboard navigation: `up`/`down`/`enter`/`escape` are bound to the
 //!   `Picker` key context on the filter input
 
@@ -41,7 +39,8 @@ use std::time::{Duration, Instant};
 
 use crate::app::{
     button_frame, icon, icon_button_frame, icon_dyn, picker_entry, picker_search_frame,
-    picker_surface, provider_mark_color, ControlExt, ModelEntry, TipExt,
+    picker_surface, provider_mark_color, ControlExt, ModelEntry, PressedRamp, StatefulControlExt,
+    TipExt,
 };
 use crate::composer::ComposerInput;
 use crate::context_meter::format_tokens;
@@ -57,7 +56,7 @@ use crate::theme::{self, Theme};
 
 /// Model popover width — room for the search field, mode tabs, a provider
 /// header, and one-line rows with their metadata.
-const MODEL_POPOVER_W: f32 = 360.;
+const MODEL_POPOVER_W: f32 = 400.;
 /// Thinking popover width — a small flat set of levels, so it hugs tighter
 /// than the model catalog while still fitting each level's hint.
 const THINKING_POPOVER_W: f32 = 300.;
@@ -70,8 +69,7 @@ const RAIL_SHADOW_FADE: f32 = 28.;
 /// scroll math measures exactly what the rows paint.
 #[derive(Debug, Clone, Copy)]
 struct ListMetrics {
-    /// An option row, held at a fixed height so every row measures the same:
-    /// a one-line model entry, or the two-line thinking label/hint pair.
+    /// An option row, held at a fixed height for its two-line label and detail.
     row_h: f32,
     /// A group header: a list sub-header row plus its bottom padding.
     header_h: f32,
@@ -84,13 +82,12 @@ struct ListMetrics {
 impl ListMetrics {
     fn new(kind: PickerKind, theme: &Theme) -> Self {
         Self {
-            // A model is one line: its name, with the context window as the
-            // right-aligned metadata. A thinking level keeps the two-line
-            // label/hint pair. One row height per picker keeps the scroll math
-            // honest without forcing the model list to carry empty second
-            // lines.
+            // Keep the measured row height in sync with the two line boxes
+            // and the extra breathing room painted by each model row.
             row_h: match kind {
-                PickerKind::Model => picker::entry_height(theme).into(),
+                PickerKind::Model => {
+                    (picker::two_line_entry_height(theme) + DynamicSpacing::Base04.px(theme)).into()
+                }
                 PickerKind::Thinking => picker::two_line_entry_height(theme).into(),
             },
             header_h: (list::sub_header_height(theme) + list::sub_header_padding_bottom(theme))
@@ -138,11 +135,9 @@ enum Scope {
 /// One child of the picker list.
 #[derive(Clone)]
 enum Row {
-    /// A group header (`count` option rows follow it). `favorites` marks the
-    /// pinned Favorites section at the top of the model list.
+    /// A group header. `favorites` marks the pinned Favorites section.
     Header {
         provider: String,
-        count: usize,
         favorites: bool,
         /// The pinned Recents section at the top of the list.
         recents: bool,
@@ -187,9 +182,6 @@ pub struct ModelSelector {
     /// Horizontal scroll position of the scope rail, so selecting a provider
     /// can bring it to the centre.
     scope_scroll: ScrollHandle,
-    /// A scope chip whose centring waits for the rail's first layout (for
-    /// example, a selection made on the frame the popup opens).
-    scope_center_pending: Option<usize>,
     /// One follow-up repaint after the rail first lays out, so the edge shadows
     /// can read the real overflow (`max_offset` is only known in prepaint).
     scope_rail_measured: bool,
@@ -279,7 +271,6 @@ impl ModelSelector {
             filter,
             scope: Scope::All,
             scope_scroll: ScrollHandle::new(),
-            scope_center_pending: None,
             scope_rail_measured: false,
             list_scroll,
             highlighted,
@@ -434,7 +425,6 @@ impl ModelSelector {
             if !section.is_empty() {
                 rows.push(Row::Header {
                     provider: String::new(),
-                    count: section.len(),
                     favorites: false,
                     recents: true,
                 });
@@ -462,7 +452,6 @@ impl ModelSelector {
             if !section.is_empty() {
                 rows.push(Row::Header {
                     provider: String::new(),
-                    count: section.len(),
                     favorites: true,
                     recents: false,
                 });
@@ -491,14 +480,11 @@ impl ModelSelector {
             }
         }
         for (provider, group) in providers.iter().zip(groups) {
-            // All keeps its provider sections. A provider scope keeps a single
-            // header too: the rail chip is not part of the list, and the header
-            // is where the provider's mark and name live now that rows do not
-            // repeat them. Favorites stays a flat list.
-            if matches!(scope, Scope::All | Scope::Provider(_)) {
+            // The selected provider is already named by its tab; only the
+            // All scope needs provider headings to distinguish the groups.
+            if *scope == Scope::All {
                 rows.push(Row::Header {
                     provider: provider.clone(),
-                    count: group.len(),
                     favorites: false,
                     recents: false,
                 });
@@ -538,6 +524,36 @@ impl ModelSelector {
         providers
     }
 
+    /// Catalog counts remain stable while searching, and match each scope's
+    /// available models rather than the visible subset of a pinned section.
+    fn scope_count(
+        scope: &Scope,
+        models: &[ModelEntry],
+        favorites: &Favorites,
+        recents: &Recents,
+    ) -> usize {
+        match scope {
+            Scope::All => models.len(),
+            Scope::Favorites => models
+                .iter()
+                .filter(|model| favorites.contains(&model.provider, &model.id))
+                .count(),
+            Scope::Recents => recents
+                .entries()
+                .iter()
+                .filter(|(provider, id)| {
+                    models
+                        .iter()
+                        .any(|model| &model.provider == provider && &model.id == id)
+                })
+                .count(),
+            Scope::Provider(provider) => models
+                .iter()
+                .filter(|model| &model.provider == provider)
+                .count(),
+        }
+    }
+
     /// Apply one of the rail's scopes. Keeps the text filter, resets the
     /// scroll, and re-pins the highlight to the chosen model when it falls in
     /// scope.
@@ -571,11 +587,13 @@ impl ModelSelector {
     /// reads as continuous rather than cut off.
     fn scope_row(&self, theme: Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let this = cx.weak_entity();
+        let favorites = crate::favorites::all();
+        let recents = crate::recent_models::all();
         let mut entries: Vec<(String, Scope)> = vec![(tr!("model_selector.all"), Scope::All)];
-        if !crate::recent_models::all().is_empty() {
+        if !recents.is_empty() {
             entries.push((tr!("model_selector.recents"), Scope::Recents));
         }
-        if !crate::favorites::all().is_empty() {
+        if !favorites.is_empty() {
             entries.push((tr!("model_selector.favorites"), Scope::Favorites));
         }
         entries.extend(
@@ -594,14 +612,14 @@ impl ModelSelector {
             .w_full()
             .flex_none()
             .px(picker::search_padding_x(&theme))
-            .pt(DynamicSpacing::Base04.px(&theme))
-            .pb(DynamicSpacing::Base02.px(&theme))
+            .py(DynamicSpacing::Base04.px(&theme))
             .flex()
             .items_center()
-            .gap(DynamicSpacing::Base02.px(&theme))
+            .gap(DynamicSpacing::Base06.px(&theme))
             .overflow_x_scroll()
             .track_scroll(&self.scope_scroll);
         for (ix, (label, scope)) in entries.into_iter().enumerate() {
+            let count = Self::scope_count(&scope, &self.models, &favorites, &recents);
             let active = self.scope == scope;
             let ink = if active {
                 theme.text_primary
@@ -663,10 +681,12 @@ impl ModelSelector {
                 button_frame(
                     div().id(ElementId::NamedInteger("scope-chip".into(), ix as u64)),
                     &theme,
-                    ButtonSize::Compact,
+                    ButtonSize::Medium,
                 )
-                .px(DynamicSpacing::Base06.px(&theme))
-                .rounded(Radius::Medium.px(&theme))
+                .px(DynamicSpacing::Base08.px(&theme))
+                .rounded(Radius::Large.px(&theme))
+                .border_1()
+                .border_color(theme.border)
                 .text_size(TextSize::Small.px(&theme))
                 .text_color(ink)
                 .when(active, |tab| tab.bg(theme.surface_selected))
@@ -680,7 +700,8 @@ impl ModelSelector {
                     .ok();
                 })
                 .child(lead)
-                .child(label),
+                .child(label)
+                .child(div().text_color(theme.text_muted).child(count.to_string())),
             );
         }
 
@@ -1325,19 +1346,14 @@ fn favorite_button(
         .into_any_element()
 }
 
-/// Group header: an optional leading glyph, an uppercase label, and the
-/// group count pushed right. Used for both provider groups and the pinned
+/// Group header: an optional leading glyph and an uppercase label.
+/// Used for both provider groups and the pinned
 /// Favorites section, so the two read as the same register.
 ///
 /// Laid out on Zed's inset `ListSubHeader` metrics like
 /// [`crate::app::menu_header`], which has no glyph or trailing-count slot;
 /// its height is [`ListMetrics::header_h`].
-fn group_header(
-    label: &str,
-    lead: Option<AnyElement>,
-    count: usize,
-    theme: Theme,
-) -> impl IntoElement + use<> {
+fn group_header(label: &str, lead: Option<AnyElement>, theme: Theme) -> impl IntoElement + use<> {
     div()
         .w_full()
         .flex_none()
@@ -1357,9 +1373,7 @@ fn group_header(
                     div()
                         .font_weight(FontWeight::MEDIUM)
                         .child(label.to_string()),
-                )
-                .child(div().flex_1())
-                .child(count.to_string()),
+                ),
         )
 }
 
@@ -1417,19 +1431,24 @@ fn rail_shadow_opacities(offset_x: f32, max_x: f32) -> (f32, f32) {
     (left, right)
 }
 
-/// A quiet caption under the list: the current result count only. The key
-/// legend the pickers used to repeat was instruction, not state; the keyboard
-/// still works, and the command palette remains the place that names chords.
+/// A quiet footer keeps the result count and keyboard controls discoverable.
 fn footer(count_label: String, theme: Theme) -> gpui::Div {
     div()
         .debug_selector(|| "picker-footer".to_string())
         .flex_none()
         .px(picker::search_padding_x(&theme))
-        .pt(DynamicSpacing::Base02.px(&theme))
-        .pb(DynamicSpacing::Base08.px(&theme))
+        .py(DynamicSpacing::Base08.px(&theme))
+        .border_t_1()
+        .border_color(theme.border)
         .text_size(TextSize::XSmall.px(&theme))
         .text_color(theme.text_muted)
-        .child(count_label)
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base08.px(&theme))
+        .child(div().flex_1().child(count_label))
+        .child(tr!("model_selector.navigate"))
+        .child(tr!("model_selector.select"))
+        .child(tr!("model_selector.esc_close"))
 }
 
 fn label_column<P: IntoElement, S: IntoElement>(
@@ -1498,15 +1517,13 @@ fn render_row(
 
     if let Row::Header {
         provider,
-        count,
         favorites,
         recents,
     } = row
     {
         // The pinned Recents/Favorites sections lead the model list; render
         // each with its glyph and the same uppercase/metrics register as a
-        // provider header. The provider mark appears once, here, instead of on
-        // every row in the group.
+        // provider header.
         return if *recents {
             let label = tr!("model_selector.recents").to_uppercase();
             group_header(
@@ -1519,7 +1536,6 @@ fn render_row(
                     )
                     .into_any_element(),
                 ),
-                *count,
                 theme,
             )
             .into_any_element()
@@ -1535,7 +1551,6 @@ fn render_row(
                     )
                     .into_any_element(),
                 ),
-                *count,
                 theme,
             )
             .into_any_element()
@@ -1543,7 +1558,6 @@ fn render_row(
             group_header(
                 &provider_display_name(provider).to_uppercase(),
                 Some(provider_mark(provider, theme)),
-                *count,
                 theme,
             )
             .into_any_element()
@@ -1575,6 +1589,7 @@ fn render_row(
         .h(px(metrics.row_h))
         .flex_none()
         .cursor_pointer()
+        .pressed_state(&theme, PressedRamp::Wash)
         // Moving the pointer over a row moves the keyboard highlight; a click
         // activates it. `on_mouse_move` (not `on_hover`) so a scroll that
         // slides rows under a stationary pointer can't hijack ↑/↓ navigation.
@@ -1625,10 +1640,8 @@ fn render_row(
             .into_any_element(),
         Row::Model { model_ix, .. } => {
             let model = &models[*model_ix];
-            // One line per model: the name is the choice, the context window is
-            // the decision-relevant metadata. The provider id/label moves to the
-            // row's tooltip, where it stays inspectable without a second line of
-            // repeated provider copy under every name.
+            // The provider id remains inspectable in the tooltip; the context
+            // window is displayed under the name, where it is easy to scan.
             let name = model.name.clone();
             let details = {
                 let provider = provider_display_name(&model.provider);
@@ -1639,56 +1652,35 @@ fn render_row(
                     format!("{provider} · {id}")
                 }
             };
-            let context = model.context_window.map(|tokens| {
-                let short = format_tokens(tokens);
-                let full = tr!("model_selector.context_window", count = short.clone());
-                (short, full)
-            });
-            // Pinned Recents/Favorites mix providers, so their rows keep a small
-            // mark. Rows under a provider header do not need to repeat it.
-            let pinned_section = rows[..ix]
-                .iter()
-                .rev()
-                .find_map(|row| match row {
-                    Row::Header {
-                        recents, favorites, ..
-                    } => Some(*recents || *favorites),
-                    _ => None,
+            let context = model
+                .context_window
+                .map(|tokens| {
+                    tr!(
+                        "model_selector.context_window",
+                        count = format_tokens(tokens)
+                    )
                 })
-                .unwrap_or(false);
+                .unwrap_or_default();
             let model_ix = *model_ix;
             let this_fav = this.clone();
             row_shell(div())
-                .when(pinned_section, |row| {
-                    row.child(provider_mark(model.provider.as_str(), theme))
-                })
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .font_weight(if selected {
-                            FontWeight::MEDIUM
-                        } else {
-                            FontWeight::NORMAL
-                        })
-                        .text_color(if selected {
-                            theme.text_primary
-                        } else {
-                            theme.text_secondary
-                        })
-                        .tip(details)
-                        .child(name),
-                )
-                .children(context.map(|(short, full)| {
-                    div()
-                        .flex_none()
-                        .whitespace_nowrap()
-                        .text_size(picker::SECONDARY_TEXT.px(&theme))
-                        .text_color(theme.text_muted)
-                        .tip(full)
-                        .child(short)
-                }))
+                .child(leading_tile(
+                    theme,
+                    icon_dyn(
+                        provider_icon(&model.provider),
+                        context_menu::ICON.px(&theme),
+                        provider_mark_color(&model.provider, &theme, theme.text_muted),
+                    )
+                    .into_any_element(),
+                ))
+                .child(div().flex_1().min_w_0().tip(details).child(label_column(
+                    name,
+                    context,
+                    selected,
+                    highlighted,
+                    false,
+                    theme,
+                )))
                 .child(favorite_button(is_favorite, theme, move |_, cx| {
                     this_fav.update(cx, |selector, cx| {
                         selector.toggle_favorite(model_ix, cx);
@@ -1729,7 +1721,10 @@ mod tests {
     fn metrics_follow_the_picker_tokens() {
         let theme = Theme::dark();
         let m = metrics();
-        assert_eq!(m.row_h, f32::from(picker::entry_height(&theme)));
+        assert_eq!(
+            m.row_h,
+            f32::from(picker::two_line_entry_height(&theme) + DynamicSpacing::Base04.px(&theme))
+        );
         assert_eq!(
             ListMetrics::new(PickerKind::Thinking, &theme).row_h,
             f32::from(picker::two_line_entry_height(&theme)),
@@ -1770,7 +1765,6 @@ mod tests {
     fn headers_shift_scroll_math() {
         let mut rows = vec![Row::Header {
             provider: "openai".into(),
-            count: 2,
             favorites: false,
             recents: false,
         }];
@@ -1853,7 +1847,23 @@ mod tests {
     }
 
     #[test]
-    fn scoped_provider_keeps_its_header_and_models() {
+    fn scope_counts_only_models_in_the_catalog() {
+        let models = vec![
+            entry("a", "A", "openai", None),
+            entry("b", "B", "openai", None),
+            entry("c", "C", "anthropic", None),
+        ];
+        let favorites = Favorites::from_pairs(&[("openai", "a"), ("missing", "x")]);
+        let recents = Recents::from_pairs(&[("anthropic", "c"), ("missing", "x")]);
+        let count = |scope| ModelSelector::scope_count(&scope, &models, &favorites, &recents);
+        assert_eq!(count(Scope::All), 3);
+        assert_eq!(count(Scope::Provider("openai".into())), 2);
+        assert_eq!(count(Scope::Favorites), 1);
+        assert_eq!(count(Scope::Recents), 1);
+    }
+
+    #[test]
+    fn scoped_provider_shows_models_without_repeating_its_header() {
         let models = vec![
             entry("a", "A", "openai", None),
             entry("b", "B", "openai", None),
@@ -1871,11 +1881,9 @@ mod tests {
             &no_recents(),
             "",
         );
-        // The provider header heads the filtered list and carries its mark;
-        // only that provider's models remain.
-        assert_eq!(providers(&rows), vec!["openai"]);
-        assert_eq!(rows.len(), 3);
-        assert_eq!(ModelSelector::first_selectable(&rows), Some(1));
+        assert!(providers(&rows).is_empty());
+        assert_eq!(rows.len(), 2);
+        assert_eq!(ModelSelector::first_selectable(&rows), Some(0));
     }
 
     #[test]
@@ -1900,14 +1908,7 @@ mod tests {
         );
         // The provider's own recent (b) pins at the top; the other provider's
         // recent (c) is out of scope and never appears.
-        assert!(matches!(
-            rows[0],
-            Row::Header {
-                recents: true,
-                count: 1,
-                ..
-            }
-        ));
+        assert!(matches!(rows[0], Row::Header { recents: true, .. }));
         let model_ixs: Vec<usize> = rows
             .iter()
             .filter_map(|row| match row {
@@ -2252,7 +2253,7 @@ mod tests {
         );
 
         let theme = Theme::for_id(ThemeId::Orbit);
-        let expected = picker::entry_height(&theme);
+        let expected = px(ListMetrics::new(PickerKind::Model, &theme).row_h);
         // Row 0 is the provider header; the first model row is row 1.
         for (ix, selector) in ["picker-row-1", "picker-row-6", "picker-row-12"]
             .into_iter()
@@ -2635,9 +2636,8 @@ mod tests {
     }
 
     /// The popover's authored size and rhythm: each picker keeps its fixed
-    /// width; model rows use the one-line token and thinking rows the two-line
-    /// token; consecutive rows sit one `Base01` gap apart, with no hairline
-    /// between them. The footer is a one-line count, not a key cheatsheet.
+    /// width; both pickers use two-line rows, with extra room for models.
+    /// Consecutive rows sit one `Base01` gap apart, and the footer stays compact.
     #[gpui::test]
     fn popover_width_and_row_rhythm_are_stable(cx: &mut gpui::TestAppContext) {
         use crate::theme::ThemeId;
@@ -2656,7 +2656,7 @@ mod tests {
         assert_eq!(model_surface.size.width, px(MODEL_POPOVER_W));
         let model_footer = cx.debug_bounds("picker-footer").expect("model footer");
         assert!(
-            f32::from(model_footer.size.height) < 32.,
+            f32::from(model_footer.size.height) < 40.,
             "the footer is a single quiet count: {:?}",
             model_footer.size.height
         );
@@ -2677,7 +2677,7 @@ mod tests {
         let thinking_surface = cx.debug_bounds("picker-surface").expect("thinking surface");
         assert_eq!(thinking_surface.size.width, px(THINKING_POPOVER_W));
         let thinking_footer = cx.debug_bounds("picker-footer").expect("thinking footer");
-        assert!(f32::from(thinking_footer.size.height) < 32.);
+        assert!(f32::from(thinking_footer.size.height) < 40.);
         let thinking_metrics = ListMetrics::new(PickerKind::Thinking, &theme);
         let level_0 = cx.debug_bounds("picker-row-0").expect("first level row");
         let level_1 = cx.debug_bounds("picker-row-1").expect("second level row");

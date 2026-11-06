@@ -1,6 +1,6 @@
 use super::*;
 use crate::commands::CommandId;
-use crate::theme::tokens::popover;
+use crate::theme::tokens::{popover, DynamicSpacing};
 
 impl OrbitApp {
     /// Rows for the new-task page's folder selector, in priority order:
@@ -128,6 +128,7 @@ impl OrbitApp {
         }
         self.branch_picker = None;
         self.session_menu = None;
+        self.dismiss_work_in_menu();
 
         let entries = self.recent_workspaces();
         let actions = self.folder_actions();
@@ -245,6 +246,11 @@ impl OrbitApp {
         if self.rewind_transition_pending(cx) {
             return;
         }
+        self.cancel_new_task_settle();
+        // The folder pick starts a fresh task, which is the New Task page's
+        // slot — not the session being left's. Parked before anything clears
+        // `current_session_path`, so the draft keeps its own session's key.
+        self.swap_to_new_task_draft(cx);
         if self.is_running() {
             // Blocking native requests stay pending with the parked session.
             self.cancel_custom_surfaces(cx);
@@ -898,7 +904,10 @@ impl OrbitApp {
                 .size(px(0.))
                 .child(anchored_popover(
                     Corner::TopLeft,
-                    point(px(0.), popover::MENU_OFFSET),
+                    point(
+                        px(0.),
+                        popover::MENU_OFFSET + DynamicSpacing::Base08.px(theme),
+                    ),
                     picker,
                     "anchored_popover-in-7",
                     theme,
@@ -926,11 +935,8 @@ impl OrbitApp {
         })
     }
 
-    /// Popover anchored below the new-task context row's branch chip, right
-    /// edges aligned. The branch sits at the column's right edge there, so a
-    /// left-aligned menu would hang past the composer; aligning the menu's top
-    /// right to the chip keeps it over the column and opens in the direction of
-    /// the rest of that row's controls.
+    /// Popover anchored below the new-task header's branch chip, with its
+    /// right edge aligned to the chip and snapped inside the window.
     pub(super) fn branch_picker_popup_below(
         &self,
         theme: &crate::theme::Theme,

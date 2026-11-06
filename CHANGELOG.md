@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A delegation card opens one child's log, not all of them.** Clicking a
+  child row shows that child's steps and report and leaves the row selected;
+  clicking it again closes the card, and picking another child swaps the body.
+  A parallel run with three finished children used to expand into three
+  unlabelled logs in a row — the steps were there, but not whose they were.
+  A one-child delegation is unchanged: opening the card is opening its log.
+
 ## [0.2.16] - 2026-11-05
 
 ### Added

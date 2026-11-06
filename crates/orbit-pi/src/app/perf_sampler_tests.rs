@@ -11,9 +11,12 @@
 //! test written against it asserts nothing about the app.
 
 use super::*;
+#[cfg(debug_assertions)]
 use crate::theme::ThemeId;
+#[cfg(debug_assertions)]
 use gpui::size;
 
+#[cfg(debug_assertions)]
 fn test_app(cx: &mut gpui::TestAppContext) -> Entity<OrbitApp> {
     cx.update(|cx| {
         cx.set_global(Theme::for_id(ThemeId::OrbitAzure));
@@ -22,6 +25,7 @@ fn test_app(cx: &mut gpui::TestAppContext) -> Entity<OrbitApp> {
     })
 }
 
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn calling_the_handler_directly_starts_a_capture(cx: &mut gpui::TestAppContext) {
     let _ = crate::perf::finish();

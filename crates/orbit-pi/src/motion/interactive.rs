@@ -78,6 +78,38 @@ impl Hover {
         }
     }
 
+    /// A wash the caller names, for a control whose hover is not
+    /// `surface_hover`: a menu entry over glass takes `overlay`, and a copy
+    /// button acknowledging its click keeps its own tint.
+    pub(crate) fn wash_in(hover: Hsla) -> Self {
+        Self {
+            rest_fill: None,
+            hover_fill: Some(hover),
+            ink: None,
+        }
+    }
+
+    /// A control whose rest fill is conditional — a chosen swatch, a row that
+    /// is already open. `None` means the control paints nothing at rest and the
+    /// wash fades in on `surface`; `Some(rest)` cross-fades from the fill it
+    /// already shows.
+    pub(crate) fn over(rest: Option<Hsla>, hover: Hsla) -> Self {
+        Self {
+            rest_fill: rest,
+            hover_fill: Some(hover),
+            ink: None,
+        }
+    }
+
+    /// Ink-only hover: a link or an icon that brightens without a wash.
+    pub(crate) fn ink(rest: Hsla, hover: Hsla) -> Self {
+        Self {
+            rest_fill: None,
+            hover_fill: None,
+            ink: Some((rest, hover)),
+        }
+    }
+
     /// A control with a rest fill of its own — a raised card, a filled action
     /// button, a segmented half: the two fills cross-fade.
     pub(crate) fn fill(rest: Hsla, hover: Hsla) -> Self {

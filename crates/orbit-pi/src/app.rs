@@ -379,10 +379,10 @@ pub struct OrbitApp {
     /// The field's current phase, in seconds — read by the backdrop and frozen
     /// by Reduce Motion.
     backdrop_phase: f32,
-    /// When the new-task page's composer began settling into its session
-    /// position — armed by the first prompt sent from an empty page, cleared by
-    /// nothing (it is read against [`Motion::Travel`]'s window, not latched), so
-    /// a resumed session never replays the transition.
+    /// A first prompt is waiting for the chat's first frame. The clock starts
+    /// when that frame is rendered, not while it is still waiting to draw.
+    new_task_settle_pending: bool,
+    /// When the new-task composer began settling into its session position.
     new_task_settle_at: Option<Instant>,
     /// Keys the settle animation. A second send from a fresh page gets a new
     /// generation, so the animation element is new and restarts from the page's
@@ -874,8 +874,10 @@ pub struct OrbitApp {
     /// parked, restored when it is re-opened — switching sessions never
     /// carries one task's half-written prompt into another.
     drafts: HashMap<PathBuf, ComposerDraft>,
-    /// The draft for the New Task page, which has no session file yet.
+    /// The draft for the New Task page, even if pi has already named its file.
     new_task_draft: Option<ComposerDraft>,
+    /// The composer belongs to the unsent New Task page, not a saved session.
+    composer_is_new_task: bool,
     /// Files are being dragged over the composer (external OS drag).
     file_drag_hovered: bool,
     /// Installed folder-capable apps for the header's "open in" control.
@@ -2123,6 +2125,7 @@ impl OrbitApp {
             backdrop_live: false,
             backdrop_clock: None,
             backdrop_phase: 0.,
+            new_task_settle_pending: false,
             new_task_settle_at: None,
             new_task_settle_gen: 0,
             new_task_folder_focus: cx.focus_handle().tab_stop(true),
@@ -2335,6 +2338,7 @@ impl OrbitApp {
             pasted_texts: Vec::new(),
             drafts: HashMap::new(),
             new_task_draft: None,
+            composer_is_new_task: true,
             file_drag_hovered: false,
             open_in_apps: Rc::new(Vec::new()),
             open_in_menu_open: false,

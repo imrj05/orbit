@@ -3236,10 +3236,13 @@ impl OrbitApp {
         ))
     }
 
-    /// The chip label: `Local` at the main checkout, the worktree's name inside
-    /// one, the directory name anywhere else.
+    /// The chip names the project at its main checkout, or the active
+    /// worktree or folder elsewhere. The picker still calls the main row Local.
     pub(super) fn work_in_label(&self) -> Option<String> {
-        self.working_folder().map(|folder| folder.label)
+        self.working_folder().map(|folder| match folder.location {
+            crate::working_folder::Location::Local => sessions::workspace_label(&folder.path),
+            _ => folder.label,
+        })
     }
 
     /// Index of the row the working folder is on, for the initial highlight.
@@ -3763,8 +3766,8 @@ impl OrbitApp {
 
     /// The status bar's "Work in" chip: the working folder's label, as a
     /// control. Present in a repository in every state — at the main checkout
-    /// it reads `Local` and is how a worktree is reached from the composer;
-    /// inside a worktree it names that worktree. Absent outside a repository.
+    /// it names the project, and inside a worktree it names that worktree.
+    /// Absent outside a repository.
     pub(super) fn work_in_chip(&self, cx: &Context<Self>) -> Option<AnyElement> {
         let label = self.work_in_label()?;
         let theme = *theme::get(cx);
@@ -3804,6 +3807,10 @@ impl OrbitApp {
                         ))
                         .child(
                             div()
+                                .min_w_0()
+                                .max_w(px(120.))
+                                .truncate()
+                                .tip(label.clone())
                                 .text_color(if open {
                                     theme.text_primary
                                 } else {
@@ -4047,7 +4054,9 @@ impl OrbitApp {
             anchored_popover(
                 Corner::BottomLeft,
                 point(px(0.), -popover::MENU_OFFSET),
-                popup, "anchored_popover-in-9", &theme,
+                popup,
+                "anchored_popover-in-9",
+                &theme,
             )
             .into_any_element(),
         )

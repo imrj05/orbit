@@ -4,11 +4,9 @@
 //! It replaced a pair of controls that each knew half the answer — a folder
 //! chip that restarted the session, and a location chip that only appeared
 //! inside a linked worktree. The chip is therefore present in a repository in
-//! every *session* state (at the main checkout it reads `Local`, and it is how a
-//! worktree is reached from the composer), and absent outside one. The new-task
-//! page is the exception: the folder is named directly above the composer there,
-//! so the status row would be a second control for one question
-//! (`new_task_layout_tests` pins that).
+//! every *session* state (at the main checkout it names the project), and is
+//! absent outside a repository. On the new-task page it sits in the composer
+//! header instead of the status row (`new_task_layout_tests` pins that).
 
 use super::*;
 use crate::app::worktrees::WorkInRow;
@@ -120,8 +118,9 @@ fn the_work_in_chip_is_absent_outside_a_repository(cx: &mut gpui::TestAppContext
 }
 
 #[gpui::test]
-fn the_chip_is_present_at_the_main_checkout_and_reads_local(cx: &mut gpui::TestAppContext) {
+fn the_chip_names_the_project_at_the_main_checkout(cx: &mut gpui::TestAppContext) {
     let fixture = Fixture::new("local");
+    let other = Fixture::new("other-project");
     let app = test_app(cx);
     let cx = cx.add_empty_window();
     cx.update(|_window, cx| {
@@ -130,13 +129,20 @@ fn the_chip_is_present_at_the_main_checkout_and_reads_local(cx: &mut gpui::TestA
             app.worktree_repo_root = Some(fixture.repo());
             app.current_workspace = Some(fixture.repo());
             assert_eq!(
-                app.work_in_label().as_deref(),
-                Some(tr!("working_folder.local").as_str()),
-                "the main checkout is Local"
+                app.work_in_label(),
+                Some(sessions::workspace_label(&fixture.repo())),
+                "the main checkout identifies the active project"
             );
             assert!(
                 app.work_in_chip(cx).is_some(),
                 "the chip is how a worktree is reached from the composer"
+            );
+            app.worktree_repo_root = Some(other.repo());
+            app.current_workspace = Some(other.repo());
+            assert_eq!(
+                app.work_in_label(),
+                Some(sessions::workspace_label(&other.repo())),
+                "the chip follows the active project when it changes"
             );
         });
     });

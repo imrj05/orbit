@@ -3,6 +3,7 @@ use super::*;
 
 use gpui::{point, Hsla, Pixels};
 
+use crate::motion::Hover;
 use crate::sessions::cap_chars;
 use crate::shimmer::ShimmerText;
 use crate::theme::tokens::{
@@ -427,7 +428,7 @@ pub(crate) fn empty_search_state(
                 .text_align(TextAlign::Center)
                 .child(tr!("sidebar.no_sessions_match", query = query)),
         )
-        .child(
+        .child(crate::motion::hover(
             button_frame(
                 div().id("sidebar-search-empty-clear"),
                 theme,
@@ -437,12 +438,14 @@ pub(crate) fn empty_search_state(
             .border_color(theme.border)
             .text_color(theme.text_secondary)
             .cursor_pointer()
-            .hover_state(theme)
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                 input.update(cx, |input, cx| input.clear(cx));
             })
             .child(tr!("common.clear")),
-        )
+            "sidebar-search-empty-clear",
+            theme,
+            Hover::row(theme),
+        ))
         .into_any_element()
 }
 
@@ -971,8 +974,9 @@ pub(crate) fn render_side_row(
                 .pt(DynamicSpacing::Base12.px(&theme))
                 .pb(DynamicSpacing::Base02.px(&theme))
                 .group("workspace-row")
-                .child(
+                .child(crate::motion::hover(
                     div()
+                        .id(ElementId::Name(format!("workspace-header-{label}").into()))
                         .w_full()
                         .min_h(ButtonSize::Default.height(&theme))
                         .pl(DynamicSpacing::Base06.px(&theme))
@@ -984,10 +988,7 @@ pub(crate) fn render_side_row(
                         .cursor_pointer()
                         .border_1()
                         .border_color(theme.border.opacity(0.))
-                        .when(cursor, |s| {
-                            s.bg(theme.surface_hover).border_color(theme.focus_ring)
-                        })
-                        .hover_state(&theme)
+                        .when(cursor, |s| s.border_color(theme.focus_ring))
                         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                             let label = label_for_click.clone();
                             this_toggle.update(cx, |app, cx| {
@@ -1059,7 +1060,7 @@ pub(crate) fn render_side_row(
                             this_menu.clone(),
                             theme,
                         ))
-                        .child(
+                        .child(crate::motion::hover(
                             icon_button_frame(
                                 div().id(ElementId::Name(format!("workspace-new-{label}").into())),
                                 &theme,
@@ -1074,7 +1075,6 @@ pub(crate) fn render_side_row(
                             // keeps group headers to just label + count.
                             .opacity(0.)
                             .group_hover("workspace-row", |s| s.opacity(1.))
-                            .hover_state(&theme)
                             .on_mouse_up(MouseButton::Left, {
                                 let this = this_new.clone();
                                 move |_, window, cx| {
@@ -1090,7 +1090,10 @@ pub(crate) fn render_side_row(
                                 ButtonSize::Compact.icon_size().px(&theme),
                                 theme.text_muted,
                             )),
-                        )
+                            format!("workspace-new-{label}"),
+                            &theme,
+                            Hover::wash(&theme),
+                        ))
                         // Session count, pinned to the header's right edge.
                         // A small tonal counter, subordinate to the name. A project with
                         // nothing in it says so by having no rows under it;
@@ -1111,7 +1114,10 @@ pub(crate) fn render_side_row(
                                     .child(format!("{count}")),
                             )
                         }),
-                )
+                    format!("workspace-header-{label}"),
+                    &theme,
+                    Hover::over(cursor.then_some(theme.surface_hover), theme.surface_hover),
+                ))
                 .into_any_element()
         }
         SideRow::ShowMore {
@@ -1159,6 +1165,7 @@ pub(crate) fn render_side_row(
                         .child(tr!("sidebar.show_count_more", count = count)),
                 );
             let mut row = div()
+                .id(ElementId::Name(format!("sidebar-show-more-{label}").into()))
                 .w_full()
                 .h(px(26.))
                 .pl(px(22.))
@@ -1166,15 +1173,14 @@ pub(crate) fn render_side_row(
                 .flex()
                 .items_center()
                 .rounded(list_item::RADIUS.px(&theme))
-                .when(cursor, |s| s.bg(theme.surface_hover))
-                .hover_state(&theme)
+                .when(cursor, |s| s.border_color(theme.focus_ring))
                 .child(more);
             if can_collapse {
-                row = row.child(
+                row = row.child(crate::motion::hover(
                     icon_button_frame(div(), &theme, ButtonSize::Compact)
+                        .id(ElementId::Name(format!("sidebar-collapse-{label}").into()))
                         .tip(tr!("sidebar.show_less"))
                         .cursor_pointer()
-                        .hover_state(&theme)
                         .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                             cx.stop_propagation();
                             let label = label_for_collapse.clone();
@@ -1188,44 +1194,56 @@ pub(crate) fn render_side_row(
                             IconSize::XSmall.px(&theme),
                             theme.text_muted,
                         )),
-                );
+                    format!("sidebar-collapse-{label}"),
+                    &theme,
+                    Hover::wash(&theme),
+                ));
             }
-            row.into_any_element()
+            crate::motion::hover(
+                row,
+                format!("sidebar-show-more-{label}"),
+                &theme,
+                Hover::over(cursor.then_some(theme.surface_hover), theme.surface_hover),
+            )
         }
         SideRow::ShowLess { label } => {
             let this = this.clone();
             let label_for_click = label.clone();
-            div()
-                .w_full()
-                .h(px(26.))
-                .pl(px(22.))
-                .pr(DynamicSpacing::Base08.px(&theme))
-                .flex()
-                .items_center()
-                .gap(DynamicSpacing::Base06.px(&theme))
-                .rounded(list_item::RADIUS.px(&theme))
-                .cursor_pointer()
-                .when(cursor, |s| s.bg(theme.surface_hover))
-                .hover_state(&theme)
-                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                    let label = label_for_click.clone();
-                    this.update(cx, |app, cx| {
-                        app.expanded_session_groups.remove(&label);
-                        cx.notify();
-                    });
-                })
-                .child(icon(
-                    "icons/chevron-up.svg",
-                    IconSize::XSmall.px(&theme),
-                    theme.text_muted,
-                ))
-                .child(
-                    div()
-                        .text_size(TextSize::Small.px(&theme))
-                        .text_color(theme.text_muted)
-                        .child(tr!("sidebar.show_less")),
-                )
-                .into_any_element()
+            crate::motion::hover(
+                div()
+                    .id(ElementId::Name(format!("sidebar-show-less-{label}").into()))
+                    .w_full()
+                    .h(px(26.))
+                    .pl(px(22.))
+                    .pr(DynamicSpacing::Base08.px(&theme))
+                    .flex()
+                    .items_center()
+                    .gap(DynamicSpacing::Base06.px(&theme))
+                    .rounded(list_item::RADIUS.px(&theme))
+                    .cursor_pointer()
+                    .when(cursor, |s| s.border_color(theme.focus_ring))
+                    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                        let label = label_for_click.clone();
+                        this.update(cx, |app, cx| {
+                            app.expanded_session_groups.remove(&label);
+                            cx.notify();
+                        });
+                    })
+                    .child(icon(
+                        "icons/chevron-up.svg",
+                        IconSize::XSmall.px(&theme),
+                        theme.text_muted,
+                    ))
+                    .child(
+                        div()
+                            .text_size(TextSize::Small.px(&theme))
+                            .text_color(theme.text_muted)
+                            .child(tr!("sidebar.show_less")),
+                    ),
+                format!("sidebar-show-less-{label}"),
+                &theme,
+                Hover::over(cursor.then_some(theme.surface_hover), theme.surface_hover),
+            )
         }
         SideRow::Session(ix) => {
             let session = sessions_data[*ix].clone();
@@ -1311,7 +1329,9 @@ pub(crate) fn render_side_row(
                     });
                 });
             // Status sits beside the task; workspace and branch sit below it.
+            let row_name = format!("session-row-{}", session.id);
             let mut card = div()
+                .id(ElementId::Name(row_name.clone().into()))
                 .group("srow")
                 .relative()
                 .w_full()
@@ -1324,17 +1344,12 @@ pub(crate) fn render_side_row(
                 .items_center()
                 .gap(DynamicSpacing::Base06.px(&theme))
                 .when(active, |card| {
-                    card.bg(theme.surface_hover)
-                        .border_color(theme.border)
+                    card.border_color(theme.border)
                         .text_color(theme.text_primary)
                 })
                 // Focus remains visible even on the selected session. Reserve
                 // the border in every state so hover/focus never shifts text.
-                .when(cursor, |card| {
-                    card.border_color(theme.focus_ring)
-                        .when(!active, |card| card.bg(theme.surface_hover))
-                })
-                .when(!active && !cursor, |card| card.hover_state(&theme));
+                .when(cursor, |card| card.border_color(theme.focus_ring));
             let age = sessions::relative_time(session.modified);
             // When enabled, line 2 is the prompt itself: the title is capped
             // and the row is narrower still, so a title that happens to be the
@@ -1636,7 +1651,18 @@ pub(crate) fn render_side_row(
                     .size(px(0.))
                     .child(session_menu_popup(menu, this_for_menu.clone(), theme))
             }));
-            row = row.child(card);
+            // The open row and the keyboard cursor already sit on the hover
+            // wash, so their rest fill is that wash; every other row fades it
+            // in under the pointer instead of swapping on one frame.
+            row = row.child(crate::motion::hover(
+                card,
+                row_name,
+                &theme,
+                Hover::over(
+                    (active || cursor).then_some(theme.surface_hover),
+                    theme.surface_hover,
+                ),
+            ));
             row.into_any_element()
         }
     }
@@ -1753,11 +1779,10 @@ pub(crate) fn session_menu_popup(
                     .flex()
                     .justify_end()
                     .gap(DynamicSpacing::Base06.px(&theme))
-                    .child(
+                    .child(crate::motion::hover(
                         button_frame(div().id("menu-cancel"), &theme, ButtonSize::Default)
                             .raised(theme.surface_elevated, &theme)
                             .cursor_pointer()
-                            .hover_state(&theme)
                             .text_color(theme.text_secondary)
                             .on_mouse_down(MouseButton::Left, {
                                 let this = this.clone();
@@ -1767,7 +1792,10 @@ pub(crate) fn session_menu_popup(
                                 }
                             })
                             .child(tr!("sidebar.cancel")),
-                    )
+                        "menu-cancel",
+                        &theme,
+                        Hover::fill(theme.surface_elevated, theme.surface_hover),
+                    ))
                     .child(
                         button_frame(div().id("menu-confirm-delete"), &theme, ButtonSize::Default)
                             .raised(theme.error, &theme)
@@ -1792,12 +1820,11 @@ pub(crate) fn session_menu_popup(
             .flex_col()
             .py(picker::list_padding_y(&theme))
             .gap(DynamicSpacing::Base01.px(&theme))
-            .child(
+            .child(crate::motion::hover(
                 picker_entry(div().id("menu-rename"), &theme)
                     .h(picker::entry_height(&theme))
                     .flex_none()
                     .cursor_pointer()
-                    .hover_overlay(&theme)
                     .text_color(theme.text_secondary)
                     .on_mouse_down(MouseButton::Left, {
                         let this = this.clone();
@@ -1818,7 +1845,10 @@ pub(crate) fn session_menu_popup(
                             .truncate()
                             .child(tr!("explorer.rename")),
                     ),
-            )
+                "menu-rename",
+                &theme,
+                Hover::wash_in(theme.overlay),
+            ))
             .child(menu_item(
                 "menu-pin",
                 "icons/pin.svg",
@@ -2010,28 +2040,32 @@ where
     L: Into<SharedString>,
 {
     let label: SharedString = label.into();
-    picker_entry(div().id(id), &theme)
-        .h(picker::entry_height(&theme))
-        .flex_none()
-        .cursor_pointer()
-        .hover_state(&theme)
-        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-            cx.stop_propagation();
-            this.update(cx, |app, cx| (on_click)(app, cx));
-        })
-        .child(icon(
-            icon_path,
-            context_menu::ICON.px(&theme),
-            theme.text_muted,
-        ))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .text_color(theme.text_secondary)
-                .child(label),
-        )
+    crate::motion::hover(
+        picker_entry(div().id(id), &theme)
+            .h(picker::entry_height(&theme))
+            .flex_none()
+            .cursor_pointer()
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                cx.stop_propagation();
+                this.update(cx, |app, cx| (on_click)(app, cx));
+            })
+            .child(icon(
+                icon_path,
+                context_menu::ICON.px(&theme),
+                theme.text_muted,
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(theme.text_secondary)
+                    .child(label),
+            ),
+        id,
+        &theme,
+        Hover::row(&theme),
+    )
 }
 
 /// The actions popup anchored to a workspace header: Copy path / Icon & color /
@@ -2221,7 +2255,7 @@ fn workspace_appearance_picker(
             let cwd = menu.cwd.clone();
             let mark = mark.clone();
             let this = this.clone();
-            cells = cells.child(
+            cells = cells.child(crate::motion::hover(
                 div()
                     .id(ElementId::Name(format!("wm-icon-{stem}").into()))
                     .size(cell)
@@ -2231,8 +2265,6 @@ fn workspace_appearance_picker(
                     .items_center()
                     .justify_center()
                     .cursor_pointer()
-                    .when(selected, |s| s.bg(theme.surface_selected))
-                    .hover_state(&theme)
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         cx.stop_propagation();
                         let next = WorkspaceMark {
@@ -2249,7 +2281,13 @@ fn workspace_appearance_picker(
                         IconSize::Medium.px(&theme),
                         ink,
                     )),
-            );
+                format!("wm-icon-{stem}"),
+                &theme,
+                Hover::over(
+                    selected.then_some(theme.surface_selected),
+                    theme.surface_hover,
+                ),
+            ));
         }
         grid = grid.child(cells);
     }
@@ -2268,7 +2306,7 @@ fn workspace_appearance_picker(
                 .text_color(theme.text_primary)
                 .child(tr!("sidebar.icon_and_color")),
         )
-        .child(
+        .child(crate::motion::hover(
             div()
                 .id("wm-mark-reset")
                 .flex_none()
@@ -2278,7 +2316,6 @@ fn workspace_appearance_picker(
                 .rounded(list_item::RADIUS.px(&theme))
                 .text_size(TextSize::Small.px(&theme))
                 .text_color(theme.text_muted)
-                .hover_state(&theme)
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     cx.stop_propagation();
                     this_reset.update(cx, |app, cx| {
@@ -2287,7 +2324,10 @@ fn workspace_appearance_picker(
                     });
                 })
                 .child(tr!("sidebar.reset")),
-        );
+            "wm-mark-reset",
+            &theme,
+            Hover::wash(&theme),
+        ));
 
     div()
         .w_full()
@@ -2318,40 +2358,49 @@ pub(crate) fn sidebar_options_button(
     theme: Theme,
 ) -> impl IntoElement + use<> {
     let this_for_popup = this.clone();
-    icon_button_frame(div().id("sidebar-options"), &theme, ButtonSize::Compact)
-        .relative()
-        .tip(tr!("sidebar.options"))
-        .cursor_pointer()
-        // Always visible: the sidebar's one view control, not a hover reveal.
-        .when(open, |button| button.bg(theme.surface_active))
-        .hover_state(&theme)
-        .pressed_state(&theme, PressedRamp::Wash)
-        .on_mouse_up(MouseButton::Left, move |_, window, cx| {
-            cx.stop_propagation();
-            this.update(cx, |app, cx| app.toggle_sidebar_sort_menu(window, cx));
-        })
-        .child(icon(
-            "icons/sort.svg",
-            ButtonSize::Compact.icon_size().px(&theme),
-            theme.text_muted,
-        ))
-        .children(open.then(|| {
-            div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .size(px(0.))
-                .child(sidebar_options_popup(
-                    group_by,
-                    sort,
-                    archived_filter,
-                    show_first_message,
-                    naming_layout,
-                    layout_name,
-                    this_for_popup,
-                    theme,
-                ))
-        }))
+    crate::motion::hover(
+        icon_button_frame(div().id("sidebar-options"), &theme, ButtonSize::Compact)
+            .relative()
+            .tip(tr!("sidebar.options"))
+            .cursor_pointer()
+            .pressed_state(&theme, PressedRamp::Wash)
+            .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+                cx.stop_propagation();
+                this.update(cx, |app, cx| app.toggle_sidebar_sort_menu(window, cx));
+            })
+            .child(icon(
+                "icons/sort.svg",
+                ButtonSize::Compact.icon_size().px(&theme),
+                theme.text_muted,
+            ))
+            .children(open.then(|| {
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size(px(0.))
+                    .child(sidebar_options_popup(
+                        group_by,
+                        sort,
+                        archived_filter,
+                        show_first_message,
+                        naming_layout,
+                        layout_name,
+                        this_for_popup,
+                        theme,
+                    ))
+            })),
+        "sidebar-options",
+        &theme,
+        Hover::over(
+            open.then_some(theme.surface_active),
+            if open {
+                theme.surface_active
+            } else {
+                theme.surface_hover
+            },
+        ),
+    )
 }
 
 /// One row of the sidebar-options menu, on the picker metrics the branch
@@ -2369,47 +2418,55 @@ fn sidebar_choice_item<C>(
 where
     C: Fn(&mut OrbitApp, &mut Context<OrbitApp>) + 'static,
 {
-    picker_entry(div().id(id), &theme)
-        .h(picker::entry_height(&theme))
-        .flex_none()
-        .cursor_pointer()
-        .when(active, |row| {
-            row.bg(theme.surface_selected)
-                .text_color(theme.selection_fg)
-        })
-        .when(!active, |row| row.hover_state(&theme))
-        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-            cx.stop_propagation();
-            this.update(cx, |app, cx| on_click(app, cx));
-        })
-        .child(icon(
-            icon_path,
-            context_menu::ICON.px(&theme),
-            if active {
-                theme.text_primary
-            } else {
-                theme.text_muted
-            },
-        ))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .text_color(if active {
+    crate::motion::hover(
+        picker_entry(div().id(id), &theme)
+            .h(picker::entry_height(&theme))
+            .flex_none()
+            .cursor_pointer()
+            .when(active, |row| row.text_color(theme.selection_fg))
+            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                cx.stop_propagation();
+                this.update(cx, |app, cx| on_click(app, cx));
+            })
+            .child(icon(
+                icon_path,
+                context_menu::ICON.px(&theme),
+                if active {
                     theme.text_primary
                 } else {
-                    theme.text_secondary
-                })
-                .child(label),
-        )
-        .when(active, |row| {
-            row.child(icon(
-                "icons/check.svg",
-                context_menu::ICON.px(&theme),
-                theme.accent_text,
+                    theme.text_muted
+                },
             ))
-        })
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(if active {
+                        theme.text_primary
+                    } else {
+                        theme.text_secondary
+                    })
+                    .child(label),
+            )
+            .when(active, |row| {
+                row.child(icon(
+                    "icons/check.svg",
+                    context_menu::ICON.px(&theme),
+                    theme.accent_text,
+                ))
+            }),
+        id,
+        &theme,
+        Hover::over(
+            active.then_some(theme.surface_selected),
+            if active {
+                theme.surface_selected
+            } else {
+                theme.surface_hover
+            },
+        ),
+    )
 }
 
 /// Width of the sidebar-options popover. Wider than the branch picker's
@@ -2524,7 +2581,9 @@ pub(crate) fn sidebar_options_popup(
             px(0.),
             ButtonSize::Compact.height(&theme) + popover::MENU_OFFSET,
         ),
-        popup, "anchored_popover-in-5", &theme,
+        popup,
+        "anchored_popover-in-5",
+        &theme,
     )
     .into_any_element()
 }
@@ -2536,28 +2595,31 @@ fn layout_preset_item(
     this: Entity<OrbitApp>,
     theme: Theme,
 ) -> AnyElement {
-    picker_entry(div().id(preset.as_str()), &theme)
-        .h(picker::entry_height(&theme))
-        .flex_none()
-        .cursor_pointer()
-        .hover_state(&theme)
-        .on_mouse_up(MouseButton::Left, move |_, window, cx| {
-            cx.stop_propagation();
-            this.update(cx, |app, cx| app.apply_layout_preset(preset, window, cx));
-        })
-        .child(icon(
-            preset.icon_path(),
-            context_menu::ICON.px(&theme),
-            theme.text_muted,
-        ))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .child(tr!(preset.label_key())),
-        )
-        .into_any_element()
+    crate::motion::hover(
+        picker_entry(div().id(preset.as_str()), &theme)
+            .h(picker::entry_height(&theme))
+            .flex_none()
+            .cursor_pointer()
+            .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+                cx.stop_propagation();
+                this.update(cx, |app, cx| app.apply_layout_preset(preset, window, cx));
+            })
+            .child(icon(
+                preset.icon_path(),
+                context_menu::ICON.px(&theme),
+                theme.text_muted,
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(tr!(preset.label_key())),
+            ),
+        preset.as_str(),
+        &theme,
+        Hover::wash(&theme),
+    )
 }
 
 /// "Save current layout…" — or the name field it opens. One row either way, so
@@ -2571,28 +2633,31 @@ fn save_layout_row(
     if !naming {
         let this = this.clone();
         let theme = *theme;
-        return picker_entry(div().id("sidebar-save-layout"), &theme)
-            .h(picker::entry_height(&theme))
-            .flex_none()
-            .cursor_pointer()
-            .hover_state(&theme)
-            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                cx.stop_propagation();
-                this.update(cx, |app, cx| app.begin_naming_layout(cx));
-            })
-            .child(icon(
-                "icons/plus.svg",
-                context_menu::ICON.px(&theme),
-                theme.text_muted,
-            ))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .child(tr!("sidebar.layout_save")),
-            )
-            .into_any_element();
+        return crate::motion::hover(
+            picker_entry(div().id("sidebar-save-layout"), &theme)
+                .h(picker::entry_height(&theme))
+                .flex_none()
+                .cursor_pointer()
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    cx.stop_propagation();
+                    this.update(cx, |app, cx| app.begin_naming_layout(cx));
+                })
+                .child(icon(
+                    "icons/plus.svg",
+                    context_menu::ICON.px(&theme),
+                    theme.text_muted,
+                ))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(tr!("sidebar.layout_save")),
+                ),
+            "sidebar-save-layout",
+            &theme,
+            Hover::wash(&theme),
+        );
     }
 
     let input = layout_name.clone();
@@ -2605,10 +2670,9 @@ fn save_layout_row(
         .gap_1()
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(div().flex_1().min_w_0().child(input))
-        .child(
+        .child(crate::motion::hover(
             icon_button_frame(div().id("layout-name-cancel"), theme, ButtonSize::Compact)
                 .cursor_pointer()
-                .hover_state(theme)
                 .on_mouse_up(MouseButton::Left, move |_, window, cx| {
                     cx.stop_propagation();
                     for_cancel.update(cx, |app, cx| app.cancel_naming_layout(window, cx));
@@ -2618,11 +2682,13 @@ fn save_layout_row(
                     ButtonSize::Compact.icon_size().px(theme),
                     theme.text_muted,
                 )),
-        )
-        .child(
+            "layout-name-cancel",
+            theme,
+            Hover::wash(theme),
+        ))
+        .child(crate::motion::hover(
             icon_button_frame(div().id("layout-name-save"), theme, ButtonSize::Compact)
                 .cursor_pointer()
-                .hover_state(theme)
                 .on_mouse_up(MouseButton::Left, move |_, window, cx| {
                     cx.stop_propagation();
                     for_save.update(cx, |app, cx| app.save_named_layout(window, cx));
@@ -2632,7 +2698,10 @@ fn save_layout_row(
                     ButtonSize::Compact.icon_size().px(&save_theme),
                     save_theme.accent_text,
                 )),
-        )
+            "layout-name-save",
+            theme,
+            Hover::wash(theme),
+        ))
         .into_any_element()
 }
 
@@ -2646,51 +2715,57 @@ fn saved_layout_rows(this: &Entity<OrbitApp>, theme: &Theme) -> Vec<AnyElement> 
             let for_delete = this.clone();
             let delete_name = named.name.clone();
             let row_id = format!("sidebar-layout-saved-{}", named.name);
-            picker_entry(div().id(ElementId::Name(row_id.into())), theme)
-                .h(picker::entry_height(theme))
-                .flex_none()
-                .cursor_pointer()
-                .hover_state(theme)
-                .on_mouse_up(MouseButton::Left, move |_, window, cx| {
-                    cx.stop_propagation();
-                    let name = name.clone();
-                    for_apply.update(cx, |app, cx| app.apply_named_layout(name, window, cx));
-                })
-                .child(icon(
-                    "icons/layout-left.svg",
-                    context_menu::ICON.px(theme),
-                    theme.text_muted,
-                ))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .child(named.name.clone()),
-                )
-                .child(
-                    icon_button_frame(
-                        div().id(ElementId::Name(
-                            format!("layout-delete-{}", named.name).into(),
-                        )),
-                        theme,
-                        ButtonSize::Compact,
-                    )
-                    .tip(tr!("sidebar.layout_delete"))
+            crate::motion::hover(
+                picker_entry(div().id(ElementId::Name(row_id.clone().into())), theme)
+                    .h(picker::entry_height(theme))
+                    .flex_none()
                     .cursor_pointer()
-                    .hover_state(theme)
-                    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    .on_mouse_up(MouseButton::Left, move |_, window, cx| {
                         cx.stop_propagation();
-                        let name = delete_name.clone();
-                        for_delete.update(cx, |app, cx| app.delete_named_layout(name, cx));
+                        let name = name.clone();
+                        for_apply.update(cx, |app, cx| app.apply_named_layout(name, window, cx));
                     })
                     .child(icon(
-                        "icons/x.svg",
-                        ButtonSize::Compact.icon_size().px(theme),
+                        "icons/layout-left.svg",
+                        context_menu::ICON.px(theme),
                         theme.text_muted,
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(named.name.clone()),
+                    )
+                    .child(crate::motion::hover(
+                        icon_button_frame(
+                            div().id(ElementId::Name(
+                                format!("layout-delete-{}", named.name).into(),
+                            )),
+                            theme,
+                            ButtonSize::Compact,
+                        )
+                        .tip(tr!("sidebar.layout_delete"))
+                        .cursor_pointer()
+                        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                            cx.stop_propagation();
+                            let name = delete_name.clone();
+                            for_delete.update(cx, |app, cx| app.delete_named_layout(name, cx));
+                        })
+                        .child(icon(
+                            "icons/x.svg",
+                            ButtonSize::Compact.icon_size().px(theme),
+                            theme.text_muted,
+                        )),
+                        format!("layout-delete-{}", named.name),
+                        theme,
+                        Hover::wash(theme),
                     )),
-                )
-                .into_any_element()
+                row_id,
+                theme,
+                Hover::wash(theme),
+            )
+            .into_any_element()
         })
         .collect()
 }
@@ -2698,28 +2773,31 @@ fn saved_layout_rows(this: &Entity<OrbitApp>, theme: &Theme) -> Vec<AnyElement> 
 /// "Back to custom": shown only while a preset is active, and only when the
 /// arrangement it replaced is still saved.
 fn restore_custom_item(this: Entity<OrbitApp>, theme: Theme) -> AnyElement {
-    picker_entry(div().id("sidebar-layout-custom"), &theme)
-        .h(picker::entry_height(&theme))
-        .flex_none()
-        .cursor_pointer()
-        .hover_state(&theme)
-        .on_mouse_up(MouseButton::Left, move |_, window, cx| {
-            cx.stop_propagation();
-            this.update(cx, |app, cx| app.restore_custom_layout(window, cx));
-        })
-        .child(icon(
-            "icons/rotate-ccw.svg",
-            context_menu::ICON.px(&theme),
-            theme.text_muted,
-        ))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .child(tr!("sidebar.layout_custom")),
-        )
-        .into_any_element()
+    crate::motion::hover(
+        picker_entry(div().id("sidebar-layout-custom"), &theme)
+            .h(picker::entry_height(&theme))
+            .flex_none()
+            .cursor_pointer()
+            .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+                cx.stop_propagation();
+                this.update(cx, |app, cx| app.restore_custom_layout(window, cx));
+            })
+            .child(icon(
+                "icons/rotate-ccw.svg",
+                context_menu::ICON.px(&theme),
+                theme.text_muted,
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(tr!("sidebar.layout_custom")),
+            ),
+        "sidebar-layout-custom",
+        &theme,
+        Hover::wash(&theme),
+    )
 }
 
 /// One entry of the sidebar's session / workspace menus, on Zed's context
@@ -2744,19 +2822,27 @@ where
     } else {
         (theme.overlay, theme.text_secondary, theme.text_muted)
     };
-    picker_entry(div().id(id), &theme)
+    let entry = picker_entry(div().id(id), &theme)
         .h(picker::entry_height(&theme))
         .flex_none()
         .cursor_pointer()
         .when(danger, |s| s.bg(theme.error))
-        .hover(move |s| s.bg(hover_bg))
         .text_color(text_color)
         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
             cx.stop_propagation();
             this.update(cx, |app, cx| (on_click)(app, cx));
         })
         .child(icon(icon_path, context_menu::ICON.px(&theme), icon_color))
-        .child(div().flex_1().min_w_0().truncate().child(label.to_string()))
+        .child(div().flex_1().min_w_0().truncate().child(label.to_string()));
+    // The entry floats over a menu surface, so its hover is the glass wash
+    // rather than `surface_hover`; a destructive entry steps its own error ramp
+    // instead of washing a red row in grey.
+    let hover = if danger {
+        Hover::fill(theme.error, hover_bg)
+    } else {
+        Hover::wash_in(hover_bg)
+    };
+    crate::motion::hover(press(entry), id, &theme, hover)
 }
 
 /// Reveal a session file in the OS file manager (macOS first, matching the
@@ -2822,7 +2908,7 @@ pub(crate) fn empty_sessions_state(
         )
         // The empty state offers the action that resolves it. A pane that says
         // "pick a folder" without a way to do it is a dead end.
-        .child(
+        .child(crate::motion::hover(
             button_frame(div().id("empty-sessions-new"), &theme, ButtonSize::Medium)
                 .mt(DynamicSpacing::Base06.px(&theme))
                 .border_1()
@@ -2830,14 +2916,16 @@ pub(crate) fn empty_sessions_state(
                 .raised(theme.action, &theme)
                 .text_color(theme.action_fg)
                 .cursor_pointer()
-                .hover_state(&theme)
                 .on_mouse_up(MouseButton::Left, move |_, window, cx| {
                     this.update(cx, |app, cx| {
                         app.on_new_session(&crate::NewSession, window, cx)
                     });
                 })
                 .child(tr!("sidebar.new_session")),
-        )
+            "empty-sessions-new",
+            &theme,
+            Hover::fill(theme.action, theme.action_hover),
+        ))
 }
 
 // ── controller ────────────────────────────────────────────────────
@@ -3434,22 +3522,26 @@ impl OrbitApp {
             });
         let clear = (!self.sidebar_query.is_empty()).then(|| {
             let input = self.sidebar_search.clone();
-            button_frame(
-                div().id("sidebar-search-clear"),
+            crate::motion::hover(
+                button_frame(
+                    div().id("sidebar-search-clear"),
+                    &theme,
+                    ButtonSize::Compact,
+                )
+                .tip(tr!("common.clear"))
+                .cursor_pointer()
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    input.update(cx, |input, cx| input.clear(cx));
+                })
+                .child(icon(
+                    "icons/x.svg",
+                    ButtonSize::Compact.icon_size().px(&theme),
+                    theme.text_muted,
+                )),
+                "sidebar-search-clear",
                 &theme,
-                ButtonSize::Compact,
+                Hover::wash(&theme),
             )
-            .tip(tr!("common.clear"))
-            .cursor_pointer()
-            .hover_state(&theme)
-            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                input.update(cx, |input, cx| input.clear(cx));
-            })
-            .child(icon(
-                "icons/x.svg",
-                ButtonSize::Compact.icon_size().px(&theme),
-                theme.text_muted,
-            ))
         });
         div()
             .w_full()

@@ -132,10 +132,13 @@ command-running agent; this session is Build · Supervised…`), when the mode
 blocked a call (`blocked by Plan · edit src/auth.rs`), or when a child failed.
 That line is the whole "why did it stop?" answer; nothing is inferred.
 
-**Expanded** (click the card, or ⌘O), each child's real steps — `grep`, `read`,
+**Expanded** (click a child, or ⌘O), that child's real steps — `grep`, `read`,
 `edit`, `bash`, with the argument preview — then the report it returned,
-rendered as Markdown. A child that settled with nothing to say reads
-`no closing message for the parent`; it is not shown as a failure.
+rendered as Markdown. One child at a time: the row you clicked keeps the
+selected fill, and clicking it again closes the card. A one-child delegation
+needs no choice, so opening the card is opening its log. A child that settled
+with nothing to say reads `no closing message for the parent`; it is not shown
+as a failure.
 
 While a child runs, the parent's own working line names it — `scout ·
 grep /auth/ in src/`, or `2 agents working` — and the turn header reads

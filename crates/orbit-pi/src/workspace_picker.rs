@@ -19,7 +19,7 @@ use gpui::{
 
 use crate::app::{
     icon, menu_header, picker_entry, picker_row_height, picker_search_frame, picker_surface,
-    working_folder_keyboard_hints, ControlExt, PickerRow,
+    working_folder_keyboard_hints, ControlExt, PickerRow, PressedRamp, StatefulControlExt,
 };
 use crate::composer::ComposerInput;
 use crate::theme::tokens::{context_menu, input, list, picker};
@@ -52,7 +52,7 @@ fn row_h(theme: &Theme) -> f32 {
 /// folder chip leaves roughly the lower half of the page below it; reserving
 /// the rest for the search head, browse row and keyboard footer keeps the
 /// popover below its trigger even at maximum UI scale and comfortable density.
-const LIST_VIEWPORT_HEIGHT_SHARE: f32 = 0.25;
+const LIST_VIEWPORT_HEIGHT_SHARE: f32 = 0.21;
 
 /// Tallest the list grows before scrolling. Large type still gets a useful
 /// partial-row disclosure, but cannot turn the fixed footer into a card that
@@ -399,6 +399,7 @@ impl Render for WorkspacePicker {
                 .h(px(row_h(&theme)))
                 .flex_none()
                 .cursor_pointer()
+                .pressed_state(&theme, PressedRamp::Wash)
                 .when(highlighted, |row| row.bg(theme.surface_selected))
                 // The current folder keeps the `active` fill at rest (the
                 // same "chosen" register the model picker uses); the accent
@@ -511,6 +512,7 @@ impl Render for WorkspacePicker {
                         .h(px(row_h(&theme)))
                         .flex_none()
                         .cursor_pointer()
+                        .pressed_state(&theme, PressedRamp::Wash)
                         .when(highlighted, |row| row.bg(theme.surface_selected))
                         .when(!highlighted, |row| row.hover_state(&theme))
                         .on_mouse_move({
@@ -620,6 +622,7 @@ impl Render for WorkspacePicker {
                         picker_entry(div().id("workspace-browse-row"), &theme)
                             .h(px(row_h(&theme)))
                             .cursor_pointer()
+                            .pressed_state(&theme, PressedRamp::Wash)
                             .when(browse_highlighted, |row| row.bg(theme.surface_selected))
                             .when(!browse_highlighted, |row| row.hover_state(&theme))
                             .on_mouse_move({

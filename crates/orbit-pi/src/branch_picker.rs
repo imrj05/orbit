@@ -13,7 +13,7 @@ use gpui::{
 
 use crate::app::{
     button_frame, icon, input_field_frame, menu_header, picker_entry, picker_search_frame,
-    picker_surface, ControlExt,
+    picker_surface, ControlExt, PressedRamp, StatefulControlExt,
 };
 use crate::composer::ComposerInput;
 use crate::git::BranchEntry;
@@ -364,6 +364,7 @@ impl Render for BranchPicker {
                 .h(px(row_h(&theme)))
                 .flex_none()
                 .cursor_pointer()
+                .pressed_state(&theme, PressedRamp::Wash)
                 .when(selected || highlighted, |row| {
                     row.bg(theme.surface_selected)
                 })

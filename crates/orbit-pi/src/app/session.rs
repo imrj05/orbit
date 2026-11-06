@@ -254,6 +254,8 @@ impl OrbitApp {
             cx.notify();
             return;
         };
+        // A sent task is now a session, even if pi has yet to report its file.
+        self.composer_is_new_task = false;
         // Sent, so the prompt joins the ↑/↓ recall log.
         self.prompt_history.borrow_mut().record(&text);
         if running {
@@ -301,7 +303,8 @@ impl OrbitApp {
         // the new-task page at all.
         if self.transcript.is_empty() {
             self.new_task_settle_gen = self.new_task_settle_gen.wrapping_add(1);
-            self.new_task_settle_at = Some(Instant::now());
+            self.new_task_settle_at = None;
+            self.new_task_settle_pending = true;
         }
         // Show the prompt immediately — pi does not echo it back in RPC mode.
         // The decoded previews ride along so the chat window shows what was
@@ -901,11 +904,19 @@ impl OrbitApp {
         self.on_abort(&crate::AbortRun, window, cx);
     }
 
+    /// A navigation away from the starting task must not replay its dock on
+    /// the next session, even if the first animation frame never arrived.
+    pub(super) fn cancel_new_task_settle(&mut self) {
+        self.new_task_settle_pending = false;
+        self.new_task_settle_at = None;
+    }
+
     /// Close every main-area surface and dock so the new-task page owns the
     /// window. New Task is reachable while Review, Git, Files, Usage, the
     /// Explorer, the terminal, or Settings is up; without this the fresh task
     /// opens behind a panel that still covers the chat column.
     pub(super) fn close_surfaces_for_new_task(&mut self, cx: &mut Context<Self>) {
+        self.cancel_new_task_settle();
         self.pending_session_rename = None;
         self.session_rename_ready = false;
         self.settings_open = false;
@@ -953,6 +964,8 @@ impl OrbitApp {
             return;
         }
         self.close_surfaces_for_new_task(cx);
+        self.swap_to_new_task_draft(cx);
+        self.current_session_path = None;
         self.send(CommandBody::NewSession, "new_session");
         self.input.read(cx).focus(window);
         cx.notify();
@@ -984,6 +997,8 @@ impl OrbitApp {
         // dead process (or a different workspace) always needs its own.
         if self.current_workspace.as_ref() == Some(&cwd) && self.can_reuse_session() {
             self.close_surfaces_for_new_task(cx);
+            self.swap_to_new_task_draft(cx);
+            self.current_session_path = None;
             self.send(CommandBody::NewSession, "new_session");
             self.input.read(cx).focus(window);
             cx.notify();
@@ -1145,6 +1160,7 @@ impl OrbitApp {
         if self.current_session_path.as_ref() == Some(&session.path) {
             return;
         }
+        self.cancel_new_task_settle();
         // Native dialogs and approvals stay pending with their own session.
         self.cancel_custom_surfaces(cx);
         // ── park the outgoing session (running or idle) ──

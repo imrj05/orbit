@@ -1,4 +1,5 @@
 use super::*;
+use crate::motion::Hover;
 use crate::platform::WindowCommand;
 use crate::theme::tokens::{
     self, button, context_menu, input, list, list_item, looping, panel, picker, popover,
@@ -268,14 +269,6 @@ pub(crate) trait ControlExt: InteractiveElement + Styled + Sized {
     fn hover_divider(self, theme: &Theme) -> Self {
         let edge = theme.border_strong;
         self.hover(move |style| style.bg(edge))
-    }
-
-    /// The translucent wash with the strong hairline: a chip over a
-    /// translucent tray that still needs its edge to read.
-    fn hover_overlay_bordered(self, theme: &Theme) -> Self {
-        let wash = theme.overlay;
-        let edge = theme.border_strong;
-        self.hover(move |style| style.bg(wash).border_color(edge))
     }
 
     /// A row wash whose ink steps to the accent's readable role — a link row.
@@ -1581,7 +1574,7 @@ fn caption_button(
         // lift already brightens it.
         glyph_el = glyph_el.text_color(theme.text_secondary);
     }
-    press(
+    let button = press(
         div()
             .id(id)
             .group(BUTTON_GROUP)
@@ -1591,13 +1584,13 @@ fn caption_button(
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .hover(move |style| style.bg(fill)),
-    )
-    .on_mouse_up(MouseButton::Left, move |_, window, _| {
-        crate::platform::window_command(window, command)
-    })
-    .tip(label)
-    .child(glyph_el)
+            .on_mouse_up(MouseButton::Left, move |_, window, _| {
+                crate::platform::window_command(window, command)
+            })
+            .tip(label)
+            .child(glyph_el),
+    );
+    crate::motion::hover(button, id, &theme, Hover::wash_in(fill))
 }
 
 /// Turn a header strip into a window drag region.

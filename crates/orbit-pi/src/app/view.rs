@@ -505,14 +505,18 @@ impl Render for OrbitApp {
         // composer sits, how wide it is, and whether the folder row above it
         // asks where the task runs (see `new_task`).
         let empty = self.transcript.is_empty();
-        // Composer toolbar compaction: below this column width the access
-        // pill drops out and the model label clamps (Send stays reachable).
-        // Measured against the column the composer actually gets — the
-        // new-task page's narrower one included, so both pages drop chips at
-        // the same real width.
+        // Scale the wrapping threshold with the controls' UI size, so large
+        // text cannot crowd Send or hide the mode controls.
         let page_column = f32::from(new_task::column_width(main_width));
         let session_column = f32::from(main_width - px(32.)).min(CONTENT_MAX_W);
-        let composer_compact = (if empty { page_column } else { session_column }) < 600.;
+        let composer_compact = (if empty
+            || self.new_task_settle_pending
+            || new_task::settling(self.new_task_settle_at, &theme)
+        {
+            page_column
+        } else {
+            session_column
+        }) < f32::from(theme.ui_px(600.));
         // The Usage page lays itself out against the real main-area width, so
         // its tables and grids never overflow the column it is given.
         if self.usage_open {
@@ -1097,6 +1101,9 @@ impl Render for OrbitApp {
                     // growing the slot above it and keeping a spacer below.
                     // The first send eases both weights to the session's (see
                     // `new_task::settle`), and that is the composer docking.
+                    if !empty && std::mem::take(&mut self.new_task_settle_pending) {
+                        self.new_task_settle_at = Some(Instant::now());
+                    }
                     let settling = !empty && new_task::settling(self.new_task_settle_at, &theme);
                     let settle_gen = self.new_task_settle_gen;
                     let page_w = new_task::column_width(main_width);
@@ -1157,7 +1164,7 @@ impl Render for OrbitApp {
                         slot.with_animation(
                             ElementId::NamedInteger("new-task-settle-ink".into(), settle_gen),
                             Animation::new(Motion::Travel.duration(&theme))
-                                .with_easing(Motion::Travel.easing()),
+                                .with_easing(new_task::slide_easing),
                             move |el, progress| el.opacity(new_task::transcript_ink(progress)),
                         )
                         .into_any_element()
@@ -1191,7 +1198,7 @@ impl Render for OrbitApp {
                                         settle_gen,
                                     ),
                                     Animation::new(Motion::Travel.duration(&theme))
-                                        .with_easing(Motion::Travel.easing()),
+                                        .with_easing(new_task::slide_easing),
                                     move |el, progress| {
                                         new_task::weight(
                                             el,
@@ -1268,20 +1275,8 @@ impl Render for OrbitApp {
                                         // Extension `setWidget` blocks placed
                                         // above the editor.
                                         .children(self.extension_widgets_above(cx))
-                                        // Where the task runs, named once: the
-                                        // folder row sits directly over the
-                                        // composer it applies to and opens the
-                                        // same picker the status bar's Work-in
-                                        // chip does. Only the new-task page shows
-                                        // it — in a session the status bar owns
-                                        // the question.
-                                        .children((empty || settling).then(|| {
-                                            self.new_task_folder_row(
-                                                theme, settling, settle_gen, cx,
-                                            )
-                                        }))
-                                        // composer box — the picker popups are
-                                        // anchored above their own chips
+                                        // Composer and its context share one surface.
+                                        // Picker popups remain anchored to their chips.
                                         .child(
                                             div()
                                                 .id("composer-box")
@@ -1293,35 +1288,38 @@ impl Render for OrbitApp {
                                                 .border_color(Self::composer_border_color(
                                                     &theme,
                                                     self.file_drag_hovered,
-                                                    self.input
-                                                        .read(cx)
-                                                        .focus_handle(cx)
-                                                        .is_focused(window),
                                                 ))
                                                 .rounded(input::composer_radius(&theme))
                                                 .shadow(theme.composer_shadow())
-                                                .px(DynamicSpacing::Base16.px(&theme))
-                                                .pt(DynamicSpacing::Base12.px(&theme))
-                                                .pb(DynamicSpacing::Base12.px(&theme))
-                                                // Base interface font for the input
-                                                // (scales with the UI font-size
-                                                // setting); the editor inherits it.
                                                 .text_size(TextSize::Default.px(&theme))
                                                 .flex()
                                                 .flex_col()
-                                                .gap(DynamicSpacing::Base16.px(&theme))
-                                                .on_mouse_up(
-                                                    MouseButton::Left,
-                                                    cx.listener(Self::on_composer_click),
-                                                )
                                                 .on_drag_move(cx.listener(Self::on_file_drag_move))
-                                                .children(self.attachments_row(cx))
-                                                .child(self.input.clone())
-                                                .child(self.composer_row(
-                                                    composer_compact,
-                                                    window,
-                                                    cx,
-                                                ))
+                                                .children((empty || settling).then(|| {
+                                                    self.new_task_folder_row(
+                                                        theme, settling, settle_gen, cx,
+                                                    )
+                                                }))
+                                                .child(
+                                                    div()
+                                                        .min_w_0()
+                                                        .flex()
+                                                        .flex_col()
+                                                        .gap(DynamicSpacing::Base16.px(&theme))
+                                                        .px(DynamicSpacing::Base16.px(&theme))
+                                                        .py(DynamicSpacing::Base12.px(&theme))
+                                                        .on_mouse_up(
+                                                            MouseButton::Left,
+                                                            cx.listener(Self::on_composer_click),
+                                                        )
+                                                        .children(self.attachments_row(cx))
+                                                        .child(self.input.clone())
+                                                        .child(self.composer_row(
+                                                            composer_compact,
+                                                            window,
+                                                            cx,
+                                                        )),
+                                                )
                                                 // Drop-target overlay: fades
                                                 // in over the box while files are
                                                 // dragged across it. Absolute, so
@@ -1378,7 +1376,7 @@ impl Render for OrbitApp {
                                         settle_gen,
                                     ),
                                     Animation::new(Motion::Travel.duration(&theme))
-                                        .with_easing(Motion::Travel.easing()),
+                                        .with_easing(new_task::slide_easing),
                                     move |el, progress| {
                                         let width =
                                             new_task::settle(progress, page_w, session_w).width;
@@ -1939,36 +1937,42 @@ impl OrbitApp {
         }
     }
 
-    /// Bottom row inside the composer: the "+" add menu and the access-mode
-    /// chip on the left; model / thinking chips and the round send button on
-    /// the right. `compact` (narrow window) drops the access chip and clamps
-    /// the model label so Send always stays reachable.
+    /// Composer controls: access and workflow stay visible at every width.
+    /// On a narrow column, they wrap above the model, thinking and send row.
     pub(super) fn composer_row(
         &self,
         compact: bool,
         window: &Window,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
-        div()
-            .id("composer-row")
+        let modes = div()
             .flex()
+            .flex_wrap()
             .items_center()
             .gap_2()
             .child(self.add_menu_button(cx))
-            // Access mode: a real control now — it selects the guard policy
-            // the bundled extension enforces. First thing to yield when the
-            // row gets narrow.
-            .when(!compact, |row| row.child(self.access_chip(cx)))
-            // Workflow mode: the session's scope (Plan / Build / Ask), enforced
-            // by the workflow extension. Sits beside the access chip on every
-            // composer, including the new-task page — the scope belongs with
-            // the other agent controls, not as a control block in the page's
-            // empty state.
-            .when(!compact, |row| row.child(self.workflow_chip(cx)))
-            .child(div().flex_1())
+            .child(self.access_chip(cx))
+            .child(self.workflow_chip(cx));
+        let send = div()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap_2()
+            .when(compact, |row| row.w_full())
+            .when(!compact, |row| row.flex_1())
+            .child(div().flex_1().min_w_0())
             .child(self.model_chip(compact, cx))
             .children(self.thinking_chip(cx))
-            .child(self.send_controls(window, cx))
+            .child(self.send_controls(window, cx));
+        div()
+            .id("composer-row")
+            .min_w_0()
+            .flex()
+            .when(compact, |row| row.flex_col().items_start())
+            .when(!compact, |row| row.items_center())
+            .gap_2()
+            .child(modes)
+            .child(send)
     }
 
     /// The access-mode chip: a lock glyph, the active mode's label, and a
@@ -2206,6 +2210,7 @@ impl OrbitApp {
             .children(self.workflow_popup(cx))
             .child(
                 button_frame(div().id("workflow-chip"), &theme, ButtonSize::Default)
+                    .debug_selector(|| "workflow-chip".to_string())
                     .cursor_pointer()
                     .hover_state(&theme)
                     .when(self.workflow_menu_open, |chip| {
@@ -2583,12 +2588,17 @@ impl OrbitApp {
         let disabled = self.is_running();
         let open = !disabled && self.picker_is_open(PickerKind::Model);
         div()
+            .min_w_0()
             .flex()
             .flex_col()
             .items_start()
             .children(self.chip_popup(PickerKind::Model, &theme))
             .child(
-                button_frame(div().id("model-chip"), &theme, ButtonSize::Default)
+                button_frame(div().id("model-chip"), &theme, ButtonSize::Medium)
+                    .debug_selector(|| "model-chip".to_string())
+                    .min_w_0()
+                    .max_w_full()
+                    .tip(self.model_label.clone())
                     .when(!disabled, |chip| {
                         chip.cursor_pointer()
                             .hover_state(&theme)
@@ -2601,7 +2611,7 @@ impl OrbitApp {
                     .when(disabled, |chip| chip.disabled_state(&theme))
                     .child(icon_dyn(
                         provider_icon(&self.model_provider),
-                        ButtonSize::Default.icon_size().px(&theme),
+                        ButtonSize::Medium.icon_size().px(&theme),
                         provider_mark_color(
                             &self.model_provider,
                             &theme,
@@ -2614,6 +2624,7 @@ impl OrbitApp {
                     ))
                     .child(
                         div()
+                            .min_w_0()
                             .max_w(px(if compact { 120. } else { 220. }))
                             .truncate()
                             .text_color(if disabled {
@@ -2657,7 +2668,7 @@ impl OrbitApp {
                 .items_start()
                 .children(self.chip_popup(PickerKind::Thinking, &theme))
                 .child(
-                    button_frame(div().id("thinking-chip"), &theme, ButtonSize::Default)
+                    button_frame(div().id("thinking-chip"), &theme, ButtonSize::Medium)
                         .debug_selector(|| "thinking-chip".to_string())
                         .when(!disabled, |chip| {
                             chip.cursor_pointer()
@@ -2673,7 +2684,7 @@ impl OrbitApp {
                             let (path, _) = thinking_icon(&self.thinking_label, &theme);
                             icon(
                                 path,
-                                ButtonSize::Default.icon_size().px(&theme),
+                                ButtonSize::Medium.icon_size().px(&theme),
                                 if disabled {
                                     theme.text_disabled
                                 } else {
@@ -2834,20 +2845,10 @@ impl OrbitApp {
         crate::backdrop::layer(theme, 0.)
     }
 
-    /// The composer border answers the current interaction without changing
-    /// geometry: drag-and-drop takes the accent, keyboard focus takes the
-    /// focus ring at [`input::composer_focus_ring`]'s softened alpha (a
-    /// page-wide box does not need a hard outline to read as focused), and the
-    /// resting field keeps its quiet hairline.
-    pub(super) fn composer_border_color(
-        theme: &Theme,
-        file_drag_hovered: bool,
-        input_focused: bool,
-    ) -> Hsla {
+    /// Keep the composer's hairline steady on focus; file drags use the accent.
+    pub(super) fn composer_border_color(theme: &Theme, file_drag_hovered: bool) -> Hsla {
         if file_drag_hovered {
             theme.accent
-        } else if input_focused {
-            input::composer_focus_ring(theme)
         } else {
             theme.border
         }
@@ -2886,21 +2887,9 @@ impl OrbitApp {
             .max(px(0.))
     }
 
-    /// The folder row: *where does this task run?* asked directly above the
-    /// composer it applies to.
-    ///
-    /// It is one control, not a card: the folder's name, the mark that says
-    /// what kind of place it is (the project's logo when one was found, a folder
-    /// glyph otherwise), and a caret. Pressing it opens the workspace picker —
-    /// recent folders, the repository's worktrees, a new worktree, a clone, and
-    /// the native dialog — anchored under the row, flush with its left edge. The
-    /// path is one hover away rather than a second line: the name is what
-    /// identifies the folder here, and the picker lists full paths when the
-    /// choice is actually being made.
-    ///
-    /// `settling` collapses the row on send while the composer docks; at rest it
-    /// is simply absent from the session page, where the status bar's Work-in
-    /// chip asks the same question in the chrome that survives.
+    /// The new-task composer's context header: folder and branch on the left,
+    /// working directory on the right. Each control opens its existing picker.
+    /// `settling` collapses the header as the session status bar takes over.
     pub(super) fn new_task_folder_row(
         &self,
         theme: Theme,
@@ -2932,24 +2921,9 @@ impl OrbitApp {
             .items_center()
             .gap(DynamicSpacing::Base06.px(&theme))
             .rounded(input::RADIUS.px(&theme))
-            .border_1()
-            // The open picker takes the accent edge, the same answer the field
-            // it replaced gave; at rest it is one hairline on the page's grain.
-            .border_color(if picker_open {
-                theme.accent.opacity(0.55)
-            } else {
-                theme.border
-            })
-            .bg(if picker_open {
-                theme.surface_active
-            } else {
-                theme.card_fill(theme.surface_elevated)
-            })
+            .when(picker_open, |row| row.bg(theme.surface_active))
             .cursor_pointer()
-            // The row floats over the page's grain rather than sitting on a
-            // solid panel, so its hover is the translucent wash with the edge
-            // lifting — not an opaque fill that would read as a new card.
-            .hover_overlay_bordered(&theme)
+            .hover_quiet(&theme)
             .pressed_state(
                 &theme,
                 if picker_open {
@@ -2974,15 +2948,6 @@ impl OrbitApp {
             .child(self.workspace_mark(&theme))
             .child(
                 div()
-                    .debug_selector(|| "new-task-work-in-label".to_string())
-                    .flex_none()
-                    .whitespace_nowrap()
-                    .text_size(TextSize::Small.px(&theme))
-                    .text_color(theme.text_secondary)
-                    .child(tr!("working_folder.title")),
-            )
-            .child(
-                div()
                     .debug_selector(|| "new-task-folder-name".to_string())
                     .flex_1()
                     .min_w_0()
@@ -2998,35 +2963,31 @@ impl OrbitApp {
                 cx,
             ));
 
-        // One context row over the composer: where the task runs on the left,
-        // which branch it will start on at the right. The branch used to sit
-        // alone under the composer on this page, splitting two answers that
-        // belong to the same decision; it now shares the row the folder owns
-        // and returns to the status row only after the dock.
-        let context_row = div()
-            .w_full()
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap(gap)
-            // The folder chip names its own 12px label and 14px name; the
-            // branch inherits this quieter ink without resetting the name.
-            .text_color(theme.text_secondary)
-            .child(row)
-            .children(self.branch_chip(theme, true, cx));
-
+        // Folder and branch are adjacent; the working directory stays at the
+        // trailing edge. All three sit inside the composer's own surface.
         let container = div()
-            .relative()
+            .debug_selector(|| "new-task-context-header".to_string())
             .flex_none()
             .w_full()
             .flex()
-            .flex_col()
-            .items_start()
-            // The gap under the row lives inside the collapsing box, so the
-            // dock takes it away with the row instead of leaving a hole.
-            .pb(gap)
-            .child(context_row)
-            .children(self.workspace_picker_popup(&theme));
+            .items_center()
+            .gap(gap)
+            .px(DynamicSpacing::Base08.px(&theme))
+            .py(DynamicSpacing::Base06.px(&theme))
+            .border_b_1()
+            .border_color(theme.border)
+            .text_color(theme.text_secondary)
+            .child(
+                div()
+                    .relative()
+                    .min_w_0()
+                    .max_w(px(220.))
+                    .child(row)
+                    .children(self.workspace_picker_popup(&theme)),
+            )
+            .children(self.branch_chip(theme, true, cx))
+            .child(div().flex_1().min_w_0())
+            .children(self.work_in_chip(cx));
 
         if !settling {
             return container.into_any_element();
@@ -3035,11 +2996,11 @@ impl OrbitApp {
             .overflow_hidden()
             .with_animation(
                 ElementId::NamedInteger("new-task-folder-row".into(), settle_gen),
-                Animation::new(Motion::Travel.duration(&theme))
-                    .with_easing(Motion::Travel.easing()),
+                Animation::new(Motion::Travel.duration(&theme)).with_easing(new_task::slide_easing),
                 move |el, progress| {
                     let (height, ink) = new_task::folder_row(progress);
-                    el.h(px(f32::from(row_h + gap) * height)).opacity(ink)
+                    let header_h = row_h + DynamicSpacing::Base06.px(&theme) * 2. + px(1.);
+                    el.h(px(f32::from(header_h) * height)).opacity(ink)
                 },
             )
             .into_any_element()
@@ -3556,9 +3517,9 @@ impl OrbitApp {
         // there is nothing to choose, so the plain folder chip stays: it names
         // the workspace and the native dialog changes it.
         //
-        // The new-task page is the one exception: the folder is named directly
-        // above the composer there, and a second control for the same question
-        // two rows below it would read as two different settings. That ownership
+        // The new-task page is the one exception: the composer header names
+        // the folder, and a second control below it would read as a different
+        // setting. That ownership
         // lasts through the dock transition; this row takes over only after the
         // folder row has gone, so the two never appear together mid-settle.
         let work_in = (!folder_row_owns_location)
@@ -3589,10 +3550,8 @@ impl OrbitApp {
             .text_color(theme.text_muted)
             .children(folder_chip)
             .children(work_in)
-            // On the new-task page the branch lives on the right of the context
-            // row above the composer (`new_task_folder_row`), with the folder it
-            // applies to. This row takes it back only after the dock, alongside
-            // the Work-in chip, so the two rows never show the same control.
+            // The new-task header owns the branch until the dock completes;
+            // the status row then takes it back alongside the Work-in chip.
             .children(
                 (!folder_row_owns_location)
                     .then(|| self.branch_chip(theme, false, cx))
@@ -3641,13 +3600,11 @@ impl OrbitApp {
 
     /// The branch control: the branch mark, name, ahead/behind counts and the
     /// shared picker caret, opening the branch picker. One implementation serves
-    /// the status row in a session and the context row above the new-task
-    /// composer, so the two cannot drift.
+    /// the status row in a session and the new-task composer header, so the
+    /// two cannot drift.
     ///
-    /// `opens_below` places the menu under the chip for the context row (where
-    /// the chip is above the composer and the folder chip beside it also opens
-    /// down); the status row sits on the last line of the window and keeps its
-    /// menu above.
+    /// `opens_below` places the menu under the new-task header's chip; the
+    /// status row sits near the bottom of the window and keeps its menu above.
     pub(super) fn branch_chip(
         &self,
         theme: Theme,
@@ -3664,16 +3621,19 @@ impl OrbitApp {
                 // the name instead of pushing the folder chip or the status
                 // readout off the line.
                 .min_w_0()
-                .max_w_full()
+                .max_w(px(220.))
                 .child(
                     div()
                         .relative()
+                        .min_w_0()
+                        .max_w_full()
                         .child(
                             button_frame(div().id("branch-chip"), &theme, ButtonSize::Default)
+                                .min_w_0()
+                                .max_w_full()
                                 .debug_selector(|| "branch-chip".to_string())
-                                // The status row sets 12px on its line; the context
-                                // row above the composer inherits the page's UI
-                                // size, so the chip names its own step.
+                                // The status row and composer header share the
+                                // same compact type size.
                                 .text_size(TextSize::Small.px(&theme))
                                 .when(!pending, |chip| chip.cursor_pointer())
                                 .when(open, |chip| {
