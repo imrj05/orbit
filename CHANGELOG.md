@@ -27,6 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   version-control and OS metadata (`.git`, `.svn`, `.hg`, `.jj`, `.DS_Store`,
   `Thumbs.db`) is never indexed, and a `.gitignore` in a *parent* directory is
   no longer consulted — matching `fd`, and the same walk the Explorer uses.
+- **A `/` command opens after any whitespace, not only at the start of the
+  message.** Typing `run /rev` opens the command menu with the caret still in
+  that word, so a skill or extension command can be reached mid-sentence the
+  same way it can at column 0. A slash glued to the previous word (`http://`,
+  `please/review`) stays plain text, and so does a path like `/usr/local`: the
+  menu opens on it but no command matches, and the word is never coloured as
+  one.
 
 ## [0.2.16] - 2026-11-05
 
