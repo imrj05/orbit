@@ -101,8 +101,10 @@ in the task: paths, what was decided, and what to return.
 
 One line per child (agent, status, usage) plus each report, capped at 4 KiB per
 child so a delegation cannot replace one context problem with another. The full
-report (up to 64 KiB) is in `details`. The child's transcript, tool arguments and
-file contents are never returned.
+report (up to 64 KiB) is in `details`. A failed child's line carries its reason
+*and* the stderr pi wrote (`child exited 1: Error: …`), so the parent can act on
+the real cause instead of an exit code. The child's transcript, tool arguments
+and file contents are never returned.
 
 The child's token and cost usage rides the tool result, so it lands in the
 session's usage meter. A delegation that fails or is aborted still reports what
@@ -130,7 +132,11 @@ Under the rows, the run footer says the state and the cost — `2 of 3 running`,
 **A reason line** appears when a run was refused before it started (`worker is a
 command-running agent; this session is Build · Supervised…`), when the mode
 blocked a call (`blocked by Plan · edit src/auth.rs`), or when a child failed.
-That line is the whole "why did it stop?" answer; nothing is inferred.
+That line is the whole "why did it stop?" answer; nothing is inferred. A
+failed child that wrote to stderr before it stopped has that output printed
+under the sentence in the mono face — the child's own words, capped by the
+extension at 2 KiB, never a paraphrase. A process that never started has
+nothing to say there.
 
 **Expanded** (click a child, or ⌘O), that child's real steps — `grep`, `read`,
 `edit`, `bash`, with the argument preview — then the report it returned,

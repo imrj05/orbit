@@ -3769,6 +3769,7 @@ fn render_subagent_card(
     {
         card = card.child(render_subagent_strip(
             child.error.as_deref().unwrap_or(""),
+            None,
             theme,
         ));
     } else if let Some(child) = run.children.iter().find(|child| !child.blocked.is_empty()) {
@@ -3788,6 +3789,7 @@ fn render_subagent_card(
                 mode = mode,
                 call = call
             ),
+            None,
             theme,
         ));
     } else if let Some(child) = run
@@ -3796,7 +3798,11 @@ fn render_subagent_card(
         .find(|child| matches!(child.status, Status::Failed))
     {
         if let Some(error) = child.error.as_deref() {
-            card = card.child(render_subagent_strip(error, theme));
+            card = card.child(render_subagent_strip(
+                error,
+                child.stderr_tail.as_deref(),
+                theme,
+            ));
         }
     }
 
@@ -3881,19 +3887,15 @@ fn render_subagent_card(
 }
 
 /// A red-washed reason line: refused before spawn, blocked by the mode, or a
-/// failed child. One sentence, never a stack trace.
-fn render_subagent_strip(message: &str, theme: Theme) -> impl IntoElement {
-    div()
+/// failed child. One sentence — then, when the child wrote one, its own stderr
+/// tail in the mono face. The sentence is the claim; the tail is the evidence
+/// the extension already capped at 2 KiB, shown verbatim rather than restated.
+fn render_subagent_strip(message: &str, stderr: Option<&str>, theme: Theme) -> impl IntoElement {
+    let sentence = div()
         .w_full()
-        .border_t_1()
-        .border_color(theme.border)
-        .bg(theme.error.opacity(0.07))
-        .px(DynamicSpacing::Base08.px(&theme))
-        .py(DynamicSpacing::Base04.px(&theme))
         .flex()
         .items_center()
         .gap(DynamicSpacing::Base06.px(&theme))
-        .flex_none()
         .child(glyph(
             "icons/alert-circle.svg",
             IconSize::XSmall.px(&theme),
@@ -3908,7 +3910,34 @@ fn render_subagent_strip(message: &str, theme: Theme) -> impl IntoElement {
                 .line_height(theme.ui_px(16.))
                 .text_color(theme.error)
                 .child(SharedString::from(message.to_string())),
-        )
+        );
+    let mut strip = div()
+        .w_full()
+        .border_t_1()
+        .border_color(theme.border)
+        .bg(theme.error.opacity(0.07))
+        .px(DynamicSpacing::Base08.px(&theme))
+        .py(DynamicSpacing::Base04.px(&theme))
+        .flex()
+        .flex_col()
+        .gap(DynamicSpacing::Base04.px(&theme))
+        .flex_none()
+        .child(sentence);
+    if let Some(stderr) = stderr.map(str::trim).filter(|tail| !tail.is_empty()) {
+        strip = strip.child(
+            div()
+                .w_full()
+                .min_w_0()
+                .whitespace_normal()
+                .font_family(theme::code_font_family())
+                .debug_selector(|| "subagent-strip-stderr".to_string())
+                .text_size(TextSize::XSmall.px(&theme))
+                .line_height(theme.ui_px(15.))
+                .text_color(theme.text_secondary)
+                .child(SharedString::from(stderr.to_string())),
+        );
+    }
+    strip
 }
 
 /// Which child's log a card shows. An explicit selection wins; a run with a
@@ -11316,6 +11345,74 @@ mod tests {
                     |_, _| view.clone(),
                 );
             }
+        }
+    }
+
+    /// A failed child's reason line carries the child's own stderr beneath the
+    /// sentence, and paints no second block when there is no tail to show.
+    #[gpui::test]
+    fn a_failed_child_shows_its_stderr_under_the_reason(cx: &mut gpui::TestAppContext) {
+        struct StderrCardTestView {
+            stderr: &'static str,
+        }
+
+        impl gpui::Render for StderrCardTestView {
+            fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+                let details = serde_json::json!({
+                    "orbit": "subagent/1",
+                    "mode": "single",
+                    "children": [{
+                        "agent": "scout",
+                        "status": "failed",
+                        "phase": "settled",
+                        "error": "child exited 1",
+                        "stderrTail": self.stderr,
+                        "usage": {"input": 0, "output": 0}
+                    }]
+                });
+                let tool = ToolCall {
+                    name: "subagent".into(),
+                    summary: String::new(),
+                    path: None,
+                    added: 0,
+                    removed: 0,
+                    id: None,
+                    args: None,
+                    output: None,
+                    failed: true,
+                    facts: ToolFacts::default(),
+                    details: Some(details),
+                };
+                let run = crate::subagent::SubagentRun::from_tool(&tool).expect("details parse");
+                render_subagent_card(
+                    &run,
+                    false,
+                    theme::Theme::for_id(theme::ThemeId::Orbit),
+                    (0, 0),
+                    false,
+                    Rc::new(RefCell::new(HashSet::new())),
+                    Rc::new(RefCell::new(HashMap::new())),
+                    MessageScrollerState::new(1),
+                )
+            }
+        }
+
+        cx.update(|cx| cx.set_global(theme::Theme::for_id(theme::ThemeId::Orbit)));
+        for (stderr, painted) in [
+            ("Error: Failed to load extension \"/x\"", true),
+            ("", false),
+        ] {
+            let (view, cx) = cx.add_window_view(|_, _| StderrCardTestView { stderr });
+            let _ = cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(900.), px(600.)),
+                |_, _| view.clone(),
+            );
+            assert_eq!(
+                cx.debug_bounds("subagent-strip-stderr").is_some(),
+                painted,
+                "stderr tail {stderr:?}"
+            );
         }
     }
 

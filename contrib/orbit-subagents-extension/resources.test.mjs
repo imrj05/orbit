@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { extensionArgs, parseBundledExtensions } from "./resources.js";
+import { parseBundledExtensions } from "./resources.js";
 
 test("an absent or malformed value yields no extensions", () => {
   assert.deepEqual(parseBundledExtensions(undefined), []);
@@ -20,13 +20,4 @@ test("an absent or malformed value yields no extensions", () => {
 test("a string array is deduped and keeps order", () => {
   assert.deepEqual(parseBundledExtensions('["/a.js","/b.js","/a.js"]'), ["/a.js", "/b.js"]);
   assert.deepEqual(parseBundledExtensions('["/a.js", 3, null]'), ["/a.js"]);
-});
-
-test("the args are --extension pairs", () => {
-  assert.deepEqual(extensionArgs('["/a.js","/b.js"]'), [
-    "--extension",
-    "/a.js",
-    "--extension",
-    "/b.js",
-  ]);
 });

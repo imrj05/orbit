@@ -34,7 +34,7 @@ import {
   readWorkflowStore,
   resolveWorkflowMode,
 } from "./mode.js";
-import { extensionArgs } from "./resources.js";
+import { parseBundledExtensions } from "./resources.js";
 import {
   BOUNDS,
   LIMITS,
@@ -327,7 +327,7 @@ export async function executeTool({ params, signal, onUpdate, ctx, pi, deps, cou
   }
   counts.set(sessionId, already + resolved.length);
 
-  const extensions = extensionArgs(deps.env?.ORBIT_BUNDLED_EXTENSIONS);
+  const extensions = parseBundledExtensions(deps.env?.ORBIT_BUNDLED_EXTENSIONS);
   const agentMode = (agent) => {
     const pinned = agentEntry(config, agent.name).mode;
     if (pinned === "inherit") return workflowMode;
