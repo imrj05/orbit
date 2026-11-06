@@ -723,8 +723,7 @@ fn main() {
         // dormant. The launch check runs on its own thread.
         let updater = updater::Updater::init();
         cx.set_global(updater::UpdaterState(updater));
-        // Bundle Zed's UI/mono faces plus the curated font catalog so every
-        // picker choice resolves to a real face without OS dependencies.
+        // Register bundled faces before the font pickers enumerate GPUI families.
         assets::register_zed_fonts(cx).expect("failed to register Zed fonts");
         assets::register_symbol_fonts(cx).expect("failed to register the symbols font");
         assets::register_bundled_fonts(cx).expect("failed to register bundled fonts");

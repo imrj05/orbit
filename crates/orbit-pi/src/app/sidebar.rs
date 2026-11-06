@@ -190,8 +190,10 @@ pub(crate) fn build_sidebar_rows(
 }
 
 /// Pinned sessions lead, followed by the open session, background runs, and
-/// other sessions. Within each rank the stable sort preserves activity order.
-/// Opening a session must not displace a deliberate pin.
+/// other sessions. Within each rank the stable sort preserves the store's
+/// newest-user-message order, so opening a session, or a run that is only
+/// writing assistant and tool output, must not move the row — only a new user
+/// message changes [`SessionInfo::modified`].
 fn session_lead_rank(
     path: &Path,
     pinned: &HashSet<PathBuf>,
@@ -242,10 +244,11 @@ fn sidebar_groups(
     // a group's own session order is independent (pinned-first, then recency).
     sort_workspace_groups(&mut groups, sessions, sort, added_at);
     // Leading sessions rise to the top of their project group by rank — pins,
-    // then the open session, then live runs; recency order is preserved
-    // within each rank (the sort is stable). Doing this here rather than in
-    // `load_sessions` keeps an Orbit-owned preference out of the pi-store
-    // scan — and means a leading session can never be hidden by the
+    // then the open session, then live runs; within each rank the stable sort
+    // preserves the store's newest-user-message order, so the open session and
+    // a live run stay where their last user message put them. Doing this here
+    // rather than in `load_sessions` keeps an Orbit-owned preference out of the
+    // pi-store scan — and means a leading session can never be hidden by the
     // per-group truncation below.
     for (_, _, ixs) in groups.iter_mut() {
         ixs.sort_by_key(|&ix| {
@@ -347,8 +350,10 @@ fn emit_workspace_group(
 /// Build the flat sidebar list: every listed project's sessions in one
 /// ungrouped list, with no workspace headers, show-more, or collapse rows.
 /// Rows lead by rank — pins, then the open session, then live background
-/// runs — and the rest keep the store's newest-first order (the sort is
-/// stable). Used when the user turns workspace grouping off; the same
+/// runs — and within each rank the stable sort preserves the store's
+/// newest-user-message order, so opening a session, or a run that is only
+/// writing assistant and tool output, does not reorder. Used when the user
+/// turns workspace grouping off; the same
 /// `SideRow::Session` rows mean the render and keyboard paths are unchanged.
 pub(crate) fn build_flat_sidebar_rows(
     sessions: &[SessionInfo],

@@ -9,6 +9,26 @@ use crate::theme::tokens::{
 use crate::theme::MotionPreference;
 use gpui::{canvas, Bounds, DispatchPhase, Hitbox, HitboxBehavior, MouseMoveEvent};
 
+// Font registration completes at startup, before settings can render. Cache the
+// snapshot for this process rather than enumerating platform fonts each frame.
+fn font_family_options(cx: &App, current: &str) -> Vec<String> {
+    static AVAILABLE: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    font_options_with_current(
+        AVAILABLE.get_or_init(|| cx.text_system().all_font_names()),
+        current,
+    )
+}
+
+fn font_options_with_current(available: &[String], current: &str) -> Vec<String> {
+    let mut options = available.to_vec();
+    if !current.is_empty() && !options.iter().any(|family| family == current) {
+        options.push(current.to_owned());
+    }
+    options.sort();
+    options.dedup();
+    options
+}
+
 /// A Plugins-page button action, dispatched through one entry point.
 #[derive(Clone)]
 pub(super) enum PluginAction {
@@ -7588,7 +7608,7 @@ impl OrbitApp {
         )
     }
 
-    /// The Interface / Code font-family dropdowns — Orbit's curated catalog.
+    /// The Interface / Code font-family dropdowns share GPUI's available families.
     pub(super) fn font_family_select(
         &self,
         kind: SettingsSelect,
@@ -7596,30 +7616,22 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
     ) -> AnyElement {
-        use crate::theme::{FontChoice, CODE_FONTS, UI_FONTS};
         let prefs = theme::font_prefs();
-        let (id, current, choices): (&'static str, SharedString, &[FontChoice]) = match kind {
-            SettingsSelect::UiFontFamily => (
-                "ui-font-family-select",
-                prefs.ui_font_family.clone(),
-                &UI_FONTS,
-            ),
-            SettingsSelect::CodeFontFamily => (
-                "code-font-family-select",
-                prefs.code_font_family.clone(),
-                &CODE_FONTS,
-            ),
+        let (id, current) = match kind {
+            SettingsSelect::UiFontFamily => ("ui-font-family-select", prefs.ui_font_family),
+            SettingsSelect::CodeFontFamily => ("code-font-family-select", prefs.code_font_family),
             _ => unreachable!(),
         };
+        let choices = font_family_options(cx, current.as_ref());
         let selected = choices
             .iter()
-            .position(|f| f.family == current.as_ref())
+            .position(|f| f == current.as_ref())
             .unwrap_or(0);
         self.select_control(
             id,
             kind,
-            theme::font_choice_label(current.as_ref()),
-            choices.iter().map(|f| f.label.to_string()).collect(),
+            current.to_string(),
+            choices,
             selected,
             theme,
             this,
@@ -7736,6 +7748,7 @@ impl OrbitApp {
                                 app.settings_select_highlight = Some(selected);
                                 app.settings_select_scroll
                                     .scroll_to_item(selected, ScrollStrategy::Center);
+                                app.settings_select_query.clear();
                                 app.settings_filter
                                     .update(cx, |filter, cx| filter.clear(cx));
                                 let handle = app.settings_filter.read(cx).focus_handle(cx);
@@ -7801,7 +7814,10 @@ impl OrbitApp {
         });
         let active_provider = self.model_provider.clone();
         let active_model = self.model_label.clone();
-        let highlight = self.settings_select_highlight;
+        let highlight = self
+            .settings_select_highlight
+            .filter(|ix| rows.iter().any(|(row_ix, _)| row_ix == ix))
+            .or_else(|| rows.first().map(|(ix, _)| *ix));
         // Virtualized list — only the visible rows are laid out and painted.
         // The font-family dropdowns can have a thousand+ entries, and the
         // whole app re-renders on every scroll tick, so rendering every row
@@ -8127,19 +8143,21 @@ impl OrbitApp {
                 return true;
             }
             SettingsSelect::UiFontFamily | SettingsSelect::CodeFontFamily => {
-                use crate::theme::{CODE_FONTS, UI_FONTS};
-                let choices = match kind {
-                    SettingsSelect::UiFontFamily => &UI_FONTS[..],
-                    SettingsSelect::CodeFontFamily => &CODE_FONTS[..],
+                let mut prefs = theme::font_prefs();
+                let current = match kind {
+                    SettingsSelect::UiFontFamily => &prefs.ui_font_family,
+                    SettingsSelect::CodeFontFamily => &prefs.code_font_family,
                     _ => unreachable!(),
                 };
+                let choices = font_family_options(cx, current.as_ref());
                 let Some(choice) = choices.get(ix) else {
                     return true;
                 };
-                let mut prefs = theme::font_prefs();
                 match kind {
-                    SettingsSelect::UiFontFamily => prefs.ui_font_family = choice.family.into(),
-                    SettingsSelect::CodeFontFamily => prefs.code_font_family = choice.family.into(),
+                    SettingsSelect::UiFontFamily => prefs.ui_font_family = choice.clone().into(),
+                    SettingsSelect::CodeFontFamily => {
+                        prefs.code_font_family = choice.clone().into()
+                    }
                     _ => unreachable!(),
                 }
                 theme::set_font_prefs(prefs);
@@ -9292,7 +9310,37 @@ fn stepped_visible_position(
 
 #[cfg(test)]
 mod settings_select_tests {
-    use super::stepped_visible_position;
+    use super::{font_options_with_current, stepped_visible_position};
+
+    #[test]
+    fn font_options_include_all_families_and_missing_current_without_duplicates() {
+        let available = ["Onest", ".ZedSans", "Onest", "Lilex"].map(str::to_owned);
+        let options = font_options_with_current(&available, "Legacy Font");
+        assert_eq!(options, [".ZedSans", "Legacy Font", "Lilex", "Onest"]);
+        assert_eq!(
+            font_options_with_current(&available, "Onest"),
+            [".ZedSans", "Lilex", "Onest"]
+        );
+    }
+
+    #[test]
+    fn font_option_indices_match_filtered_keyboard_navigation() {
+        let available = ["Beta", "Alpha", "Gamma"].map(str::to_owned);
+        let options = font_options_with_current(&available, "Missing");
+        let visible: Vec<_> = options
+            .iter()
+            .enumerate()
+            .filter(|(_, family)| family.contains('a'))
+            .map(|(index, _)| index)
+            .collect();
+        let position = stepped_visible_position(&visible, Some(0), 1).unwrap();
+        let index = visible[position];
+        assert_eq!(options[index], "Beta");
+        assert_eq!(
+            font_options_with_current(&available, "Missing")[index],
+            "Beta"
+        );
+    }
 
     /// The cursor is an original option index; `visible` holds the indices
     /// the current query left in the list, in display order.
