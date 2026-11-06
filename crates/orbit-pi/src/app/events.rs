@@ -140,6 +140,9 @@ impl OrbitApp {
             self.git_panel.update(cx, |panel, cx| panel.refresh(cx));
             self.project_panel
                 .update(cx, |panel, cx| panel.mark_stale(cx));
+            // `@` ranks the same tree: a file that appeared or vanished must
+            // not stay in the menu. Throttled, so a save burst walks once.
+            self.invalidate_index(false, cx);
             if let Some(path) = self.file_viewer.read(cx).active_path() {
                 self.file_viewer
                     .update(cx, |viewer, cx| viewer.reload(&path, cx));

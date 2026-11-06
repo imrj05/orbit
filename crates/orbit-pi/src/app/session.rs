@@ -965,7 +965,8 @@ impl OrbitApp {
                 // the queued text first, because it was written first.
                 format!("{queued}\n\n{typed}")
             };
-            self.input.update(cx, |input, cx| input.set_text(restored, cx));
+            self.input
+                .update(cx, |input, cx| input.set_text(restored, cx));
         }
         self.restore_queue_on_clear = false;
         self.busy = false;
@@ -3065,6 +3066,7 @@ impl OrbitApp {
                                 app.clear_explorer_notice(cx);
                                 app.project_panel
                                     .update(cx, |panel, cx| panel.mark_stale(cx));
+                                app.invalidate_index(true, cx);
                                 let display = relative_display(&display_root, &path);
                                 app.open_file_in_viewer(path, display, cx);
                                 app.toast_success(tr!("explorer.created_file", name = name));
@@ -3090,6 +3092,7 @@ impl OrbitApp {
                                 app.clear_explorer_notice(cx);
                                 app.project_panel
                                     .update(cx, |panel, cx| panel.mark_stale(cx));
+                                app.invalidate_index(true, cx);
                                 app.toast_success(tr!("explorer.created_folder", name = name));
                             }
                             Err(error) => app.explorer_op_error(&error, cx),
@@ -3131,6 +3134,7 @@ impl OrbitApp {
                                 app.clear_explorer_notice(cx);
                                 app.project_panel
                                     .update(cx, |panel, cx| panel.mark_stale(cx));
+                                app.invalidate_index(true, cx);
                                 app.toast_success(tr!("explorer.renamed", name = name));
                             }
                             Err(error) => app.explorer_op_error(&error, cx),
@@ -3162,6 +3166,7 @@ impl OrbitApp {
                                 app.clear_explorer_notice(cx);
                                 app.project_panel
                                     .update(cx, |panel, cx| panel.mark_stale(cx));
+                                app.invalidate_index(true, cx);
                                 app.toast_success(tr!("explorer.deleted", name = name));
                             }
                             Err(error) => {
@@ -3301,6 +3306,8 @@ impl OrbitApp {
         // The Explorer tree (a cheap no-op when it was never loaded).
         self.project_panel
             .update(cx, |panel, cx| panel.mark_stale(cx));
+        // `@` ranks this tree too; a workspace switch invalidates at once.
+        self.invalidate_index(true, cx);
         // The Review pane's diff, only while it is showing.
         if self.sidepane.read(cx).is_open() {
             self.sidepane

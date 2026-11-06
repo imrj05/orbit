@@ -108,6 +108,12 @@ const CONTENT_MAX_W: f32 = 960.;
 
 /// Rows shown in the `/`-command and `@`-file autocomplete menu.
 const AUTOCOMPLETE_LIMIT: usize = 8;
+
+/// How long a watcher-driven `@` index rebuild waits before it starts. A save
+/// burst lands as several watcher fires; this collapses them. Our own file
+/// operations skip it, so a created file is in the menu that reveals it.
+const MENTION_REBUILD_INTERVAL: Duration = Duration::from_secs(2);
+
 /// Attachments — images, pasted-text pills, and files, together — that may
 /// ride along with one prompt.
 const MAX_ATTACHMENTS: usize = 8;
@@ -877,15 +883,27 @@ pub struct OrbitApp {
     last_ac_trigger: Option<(TriggerKind, String)>,
     /// Slash commands reported by pi (`get_commands` — extensions + skills).
     slash_commands: Vec<SlashCommand>,
-    /// Workspace files for `@`-mentions when `fd` is not available.
-    mention_files: Vec<String>,
-    mention_files_workspace: Option<PathBuf>,
-    /// Last `@` query searched with `fd`. Redraws reuse this instead of
-    /// spawning `fd` on every frame.
-    mention_fd_key: Option<(PathBuf, String)>,
-    mention_fd_hits: Vec<String>,
-    /// `fd` could not be started; `@` stays on the bounded directory walk.
-    mention_fd_missing: bool,
+    /// The open workspace as `@` ranks it, built off the UI thread. `None`
+    /// until the first walk lands, and while a workspace change is rebuilding
+    /// it — the previous one keeps answering until then.
+    mention_index: Option<Arc<crate::mentions::MentionIndex>>,
+    /// The workspace `mention_index` describes; `None` before the first build.
+    mention_index_workspace: Option<PathBuf>,
+    /// The workspace changed since the last build.
+    mention_index_stale: bool,
+    /// Bumped per build. A walk that lands after a newer one started is
+    /// dropped instead of overwriting fresher results.
+    mention_index_generation: u64,
+    /// Throttle: no rebuild before this instant. A change that arrives inside
+    /// the window still lands, on the trailing edge.
+    mention_index_due: Option<Instant>,
+    /// A trailing-edge rebuild is already queued.
+    mention_rebuild_scheduled: bool,
+    /// The last `@` query's ranked hits, keyed by the index generation that
+    /// produced them. `sync_autocomplete` runs every frame and the popup asks
+    /// again while rendering, so the same query is scored several times per
+    /// keystroke.
+    mention_query_memo: Option<(u64, String, Vec<String>)>,
     /// Images queued to ride along with the next prompt (pasted or picked).
     attachments: Vec<Attachment>,
     /// Non-image files queued for the next prompt. They travel to pi as
@@ -2367,11 +2385,13 @@ impl OrbitApp {
             autocomplete_dismissed: false,
             last_ac_trigger: None,
             slash_commands: Vec::new(),
-            mention_files: Vec::new(),
-            mention_files_workspace: None,
-            mention_fd_key: None,
-            mention_fd_hits: Vec::new(),
-            mention_fd_missing: false,
+            mention_index: None,
+            mention_index_workspace: None,
+            mention_index_stale: false,
+            mention_index_generation: 0,
+            mention_index_due: None,
+            mention_rebuild_scheduled: false,
+            mention_query_memo: None,
             attachments: Vec::new(),
             files: Vec::new(),
             pasted_texts: Vec::new(),
@@ -2777,6 +2797,9 @@ impl OrbitApp {
             self.refresh_git_accounts_for_workspace(cx);
         }
         self.sync_review_context(cx);
+        // `@` ranks the new tree; start the walk now rather than on the first
+        // keystroke, so the menu is not briefly empty after a folder switch.
+        self.invalidate_index(true, cx);
     }
 
     /// Push the workspace / session / turn context the Review pane and the
@@ -4013,6 +4036,8 @@ mod devicons_tests;
 mod error_label_tests;
 #[cfg(test)]
 mod git_chip_tests;
+#[cfg(test)]
+mod mention_index_tests;
 #[cfg(test)]
 mod new_task_layout_tests;
 #[cfg(test)]

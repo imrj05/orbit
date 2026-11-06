@@ -15,6 +15,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A parallel run with three finished children used to expand into three
   unlabelled logs in a row — the steps were there, but not whose they were.
   A one-child delegation is unchanged: opening the card is opening its log.
+- **`@` mentions no longer freeze the window while you type.** Each keystroke
+  used to spawn `fd` on the UI thread and wait for it — 300–700 ms per
+  character on a large project, and worst of all when nothing matched, because
+  `--max-results` could only short-circuit when hits existed. The composer now
+  ranks an in-memory index of the workspace instead: the same queries cost
+  milliseconds and spawn nothing. The index is built off the UI thread, rebuilt
+  at most once every 2 s after a change, and immediately after your own file
+  operations, so a created, renamed, or deleted file is in the next `@`.
+  Dotfiles stay searchable as they were (`.env`, `.github/**`) while
+  version-control and OS metadata (`.git`, `.svn`, `.hg`, `.jj`, `.DS_Store`,
+  `Thumbs.db`) is never indexed, and a `.gitignore` in a *parent* directory is
+  no longer consulted — matching `fd`, and the same walk the Explorer uses.
 
 ## [0.2.16] - 2026-11-05
 
