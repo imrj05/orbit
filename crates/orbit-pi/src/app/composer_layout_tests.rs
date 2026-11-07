@@ -634,6 +634,41 @@ impl Render for SuggestionsProbe {
     }
 }
 
+#[gpui::test]
+fn extension_text_widget_height_is_bounded(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+    use crate::widgets::{ExtensionWidget, WidgetPlacement};
+
+    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| {
+        cx.new(|cx| {
+            let mut app = OrbitApp::new(cx);
+            app.extension_widgets = vec![ExtensionWidget {
+                key: "long-text".into(),
+                placement: WidgetPlacement::AboveEditor,
+                lines: vec!["A line of text".into(); 40],
+            }];
+            app
+        })
+    });
+    let probe = cx.update(|_, cx| {
+        cx.new(|_| SuggestionsProbe {
+            app,
+            width: px(360.),
+        })
+    });
+    cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(px(360.), px(500.)),
+        |_, _| probe.clone(),
+    );
+    let card = cx
+        .debug_bounds("ext-widget-long-text")
+        .expect("widget laid out");
+    assert_eq!(card.size.height, px(160.));
+}
+
 /// Long suggestions stay compact and inside the composer column, and the
 /// dismiss button removes only the suggestions without changing the input.
 #[gpui::test]

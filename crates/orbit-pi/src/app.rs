@@ -745,8 +745,19 @@ pub struct OrbitApp {
     sidebar_archived_filter: SidebarArchivedFilter,
     /// Show the first-message preview beneath session titles. UI-only and persisted.
     sidebar_show_first_message: bool,
+    /// Show relative update times in session rows.
+    sidebar_show_updated: bool,
+    /// The Show flyout within the sidebar view menu is open.
+    sidebar_show_menu: bool,
     /// The sidebar's Projects-header view menu is open.
     sidebar_sort_menu: bool,
+    /// Session whose hover card is visible. The card is pinned to that row,
+    /// not to the pointer.
+    session_card: Option<PathBuf>,
+    /// Session the pointer is on, while the hover delay has not elapsed.
+    session_card_wait: Option<PathBuf>,
+    /// Cancels a pending hover card when the pointer leaves the row.
+    session_card_task: gpui::Task<()>,
     /// Open row-actions menu on a workspace group header (which workspace's
     /// label + cwd). Mutually exclusive with `session_menu`.
     workspace_menu: Option<WorkspaceMenu>,
@@ -2317,7 +2328,12 @@ impl OrbitApp {
             sidebar_group_by: workspace_store.group_by,
             sidebar_archived_filter: workspace_store.archived_filter,
             sidebar_show_first_message: workspace_store.show_first_message,
+            sidebar_show_updated: workspace_store.show_updated,
+            sidebar_show_menu: false,
             sidebar_sort_menu: false,
+            session_card: None,
+            session_card_wait: None,
+            session_card_task: gpui::Task::ready(()),
             workspace_menu: None,
             worktree_config,
             worktree_dir_input: worktree_dir_input.clone(),
@@ -2894,6 +2910,7 @@ impl OrbitApp {
             group_by: self.sidebar_group_by,
             archived_filter: self.sidebar_archived_filter,
             show_first_message: self.sidebar_show_first_message,
+            show_updated: self.sidebar_show_updated,
         });
     }
 
@@ -3323,6 +3340,7 @@ struct WorkspaceStore {
     archived_filter: SidebarArchivedFilter,
     /// Whether session rows include their first-message preview (on by default).
     show_first_message: bool,
+    show_updated: bool,
 }
 
 impl Default for WorkspaceStore {
@@ -3335,6 +3353,7 @@ impl Default for WorkspaceStore {
             group_by: SidebarGroupBy::default(),
             archived_filter: SidebarArchivedFilter::default(),
             show_first_message: true,
+            show_updated: true,
         }
     }
 }
@@ -3386,6 +3405,10 @@ fn parse_workspace_store(value: &Value) -> WorkspaceStore {
             .unwrap_or_default(),
         show_first_message: value
             .get("show_first_message")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+        show_updated: value
+            .get("show_updated")
             .and_then(Value::as_bool)
             .unwrap_or(true),
         ..WorkspaceStore::default()
@@ -3486,6 +3509,7 @@ fn workspace_store_json(store: &WorkspaceStore) -> Value {
         "group_by": store.group_by.as_str(),
         "archived_filter": store.archived_filter.as_str(),
         "show_first_message": store.show_first_message,
+        "show_updated": store.show_updated,
     })
 }
 

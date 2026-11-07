@@ -267,6 +267,7 @@ impl Render for OrbitApp {
         let show_workspace =
             self.sidebar_group_by == SidebarGroupBy::OneList || !self.sidebar_query.is_empty();
         let show_first_message = self.sidebar_show_first_message;
+        let show_updated = self.sidebar_show_updated;
         let show_shortcuts = self.sidebar_shortcut_hints;
         // Parked (background) sessions mid-run — they keep their row under a
         // collapsed workspace header, like the open session, so a live task
@@ -339,6 +340,7 @@ impl Render for OrbitApp {
         let session_menu = Rc::new(self.session_menu.clone());
         let workspace_menu = Rc::new(self.workspace_menu.clone());
         let sidebar_cursor = self.sidebar_cursor;
+        let keyboard_card = !self.sidebar_sort_menu && !self.sidebar_show_menu;
         let this = cx.entity();
         // The open session's agent activity drives the sidebar's running
         // loader (parked runs come in via `running_paths` above).
@@ -386,6 +388,7 @@ impl Render for OrbitApp {
                     &archived_paths,
                     show_workspace,
                     show_first_message,
+                    show_updated,
                     show_shortcuts,
                     &live_paths,
                     &marks,
@@ -397,6 +400,8 @@ impl Render for OrbitApp {
                     session_menu.as_ref().as_ref(),
                     workspace_menu.as_ref().as_ref(),
                     sidebar_cursor == Some(sticky.ix),
+                    self.session_card.as_deref(),
+                    keyboard_card,
                     theme,
                 ))
                 .into_any_element()
@@ -774,6 +779,8 @@ impl Render for OrbitApp {
                                                 self.workspace_sort,
                                                 self.sidebar_archived_filter,
                                                 show_first_message,
+                                                show_updated,
+                                                self.sidebar_show_menu,
                                                 self.naming_layout,
                                                 self.layout_name.clone(),
                                                 self.sidebar_sort_menu,
@@ -796,6 +803,9 @@ impl Render for OrbitApp {
                                     } else {
                                         div()
                                             .id("sidebar-sessions")
+                                            .on_scroll_wheel(cx.listener(|app, _, _, cx| {
+                                                app.clear_session_card(cx);
+                                            }))
                                             .flex_1()
                                             .min_h_0()
                                             .px_2()
@@ -834,6 +844,7 @@ impl Render for OrbitApp {
                                                                     &archived_paths,
                                                                     show_workspace,
                                                                     show_first_message,
+                                                                    show_updated,
                                                                     show_shortcuts,
                                                                     &live_paths,
                                                                     &marks,
@@ -845,6 +856,10 @@ impl Render for OrbitApp {
                                                                     session_menu.as_ref().as_ref(),
                                                                     row_workspace_menu,
                                                                     sidebar_cursor == Some(ix),
+                                                                    this.read(cx)
+                                                                        .session_card
+                                                                        .as_deref(),
+                                                                    keyboard_card,
                                                                     *theme::get(cx),
                                                                 )
                                                                 .into_any_element()
@@ -1881,8 +1896,10 @@ impl OrbitApp {
                 }
                 continue;
             }
+            let selector = format!("ext-widget-{}", widget.key);
             let mut card = div()
-                .id(ElementId::Name(format!("ext-widget-{}", widget.key).into()))
+                .id(ElementId::Name(selector.clone().into()))
+                .debug_selector(move || selector.clone())
                 .w_full()
                 .px(DynamicSpacing::Base12.px(&theme))
                 .py(DynamicSpacing::Base08.px(&theme))
@@ -1896,7 +1913,9 @@ impl OrbitApp {
                 .text_color(theme.code_text)
                 .flex()
                 .flex_col()
-                .gap(DynamicSpacing::Base02.px(&theme));
+                .gap(DynamicSpacing::Base02.px(&theme))
+                .max_h(px(160.))
+                .overflow_y_scroll();
             for line in &widget.lines {
                 let (text, runs) = ext_widgets::styled_line(line, &theme, &font);
                 card = card.child(StyledText::new(text).with_runs(runs));
