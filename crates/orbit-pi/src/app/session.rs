@@ -381,11 +381,40 @@ impl OrbitApp {
             .clone()
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_default();
-        cx.spawn(async move |_this, cx| {
-            let _ = cx
+        // Paths the turn's calls named, normalized the way Review shows them.
+        // Anything the worktree changed outside this list is added to Last
+        // Turn once the checkpoint range for the turn exists.
+        let recorded = self
+            .turn_records()
+            .calls_for(turn)
+            .iter()
+            .filter_map(|call| {
+                crate::turn_review::normalize_review_path(
+                    &call.path,
+                    self.current_workspace.as_deref(),
+                )
+            })
+            .collect::<Vec<_>>();
+        cx.spawn(async move |this, cx| {
+            let key = session.clone();
+            let extra = cx
                 .background_executor()
-                .spawn(async move { checkpoint::capture_turn(&cwd, &session, turn) })
+                .spawn(async move {
+                    checkpoint::capture_turn(&cwd, &key, turn).ok()?;
+                    git_ops::changed_outside_calls(&cwd, &key, turn, &recorded)
+                        .ok()
+                        .flatten()
+                })
                 .await;
+            let Some((paths, diff)) = extra else { return };
+            let _ = this.update(cx, |app, cx| {
+                if app.session_id.as_deref() != Some(session.as_str()) {
+                    return;
+                }
+                app.sidepane.update(cx, |pane, cx| {
+                    pane.set_turn_extras(turn, paths, diff.numstat, diff.patch, cx);
+                });
+            });
         })
         .detach();
     }
@@ -418,9 +447,11 @@ impl OrbitApp {
         let records = self.turn_records();
         let session = self.session_id.clone();
         let latest = self.turns.latest;
+        let running = self.turns.open;
         self.sidepane.update(cx, |pane, cx| {
             pane.set_turn_context(session.clone(), latest, cx);
             pane.set_turn_records(records, cx);
+            pane.set_turn_running(running, cx);
         });
         self.git_panel.update(cx, |panel, cx| {
             panel.set_review_turn_context(session, latest, cx);

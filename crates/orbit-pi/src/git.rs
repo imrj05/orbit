@@ -363,6 +363,59 @@ fn collect_review_diff_inner(
     })
 }
 
+/// Files the turn changed in the worktree that no `edit` / `write` call named.
+///
+/// `recorded` holds that turn's recorded call paths; a repository path counts
+/// as recorded when it equals one or sits beneath it, so a session opened in a
+/// subdirectory still lines up with Git's repository-relative paths. Returns
+/// `None` when the turn changed nothing outside its tool calls, or when the
+/// turn's checkpoints are unavailable.
+pub fn changed_outside_calls(
+    cwd: &Path,
+    session: &str,
+    turn: usize,
+    recorded: &[String],
+) -> anyhow::Result<Option<(Vec<String>, ReviewDiff)>> {
+    if turn == 0 {
+        return Ok(None);
+    }
+    ensure_repository(cwd)?;
+    let (from, to) = resolve_range(cwd, Source::LastTurn { turn_count: turn }, Some(session))?;
+    let names = diff_output_paths(cwd, &from, &to, &["--name-only"], &["."])?;
+    let extras: Vec<String> = names
+        .lines()
+        .filter(|path| !path.is_empty())
+        .filter(|path| {
+            !recorded
+                .iter()
+                .any(|recorded| path == recorded || path.ends_with(&format!("/{recorded}")))
+        })
+        .map(str::to_owned)
+        .collect();
+    if extras.is_empty() {
+        return Ok(None);
+    }
+    let paths: Vec<&str> = extras.iter().map(String::as_str).collect();
+    let numstat = diff_output_paths(cwd, &from, &to, &["--numstat"], &paths)?;
+    let hydrated = diff_output_paths(cwd, &from, &to, &["--unified=2147483647"], &paths)?;
+    let (patch, complete_context) = if hydrated.len() <= MAX_HYDRATED_PATCH_BYTES {
+        (hydrated, true)
+    } else {
+        (
+            diff_output_paths(cwd, &from, &to, &["--unified=3"], &paths)?,
+            false,
+        )
+    };
+    Ok(Some((
+        extras,
+        ReviewDiff {
+            numstat,
+            patch,
+            complete_context,
+        },
+    )))
+}
+
 fn resolve_range(
     cwd: &Path,
     source: Source,
@@ -479,6 +532,16 @@ fn head_or_empty(cwd: &Path) -> String {
 }
 
 fn diff_output(cwd: &Path, from: &str, to: &str, modes: &[&str]) -> anyhow::Result<String> {
+    diff_output_paths(cwd, from, to, modes, &["."])
+}
+
+fn diff_output_paths(
+    cwd: &Path,
+    from: &str,
+    to: &str,
+    modes: &[&str],
+    paths: &[&str],
+) -> anyhow::Result<String> {
     let output = command(cwd)
         .args([
             "-c",
@@ -491,7 +554,8 @@ fn diff_output(cwd: &Path, from: &str, to: &str, modes: &[&str]) -> anyhow::Resu
         .arg("--no-renames")
         .arg(from)
         .arg(to)
-        .args(["--", "."])
+        .arg("--")
+        .args(paths)
         .output()
         .map_err(|err| anyhow!("failed to generate Git diff: {err}"))?;
     if output.status.success() {
@@ -1808,6 +1872,62 @@ mod tests {
         assert_eq!(summary(&data), (1, 1, 0));
         assert!(data.patch.contains("from_turn"));
         assert!(!data.patch.contains("after_turn"));
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn a_bash_edit_is_reported_as_changed_outside_the_calls() {
+        let root = repository();
+        let session = "extras-session";
+        checkpoint::capture_turn(&root, session, 0).unwrap();
+        checkpoint::capture_turn_start(&root, session, 1).unwrap();
+        // One file through a recorded `edit`, one through a shell command the
+        // turn never named in a tool call.
+        fs::write(root.join("src/lib.rs"), "fn baseline() {}\nfn named() {}\n").unwrap();
+        fs::write(root.join("src/formatted.rs"), "fn formatted() {}\n").unwrap();
+        checkpoint::capture_turn(&root, session, 1).unwrap();
+
+        let recorded = vec!["src/lib.rs".to_string()];
+        let (paths, diff) = changed_outside_calls(&root, session, 1, &recorded)
+            .unwrap()
+            .expect("the unrecorded file is a worktree change");
+        assert_eq!(paths, vec!["src/formatted.rs".to_string()]);
+        assert!(diff.patch.contains("formatted"));
+        assert!(!diff.patch.contains("named"));
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn a_turn_whose_worktree_changes_are_all_recorded_has_no_extras() {
+        let root = repository();
+        let session = "extras-covered-session";
+        checkpoint::capture_turn(&root, session, 0).unwrap();
+        checkpoint::capture_turn_start(&root, session, 1).unwrap();
+        fs::write(root.join("src/lib.rs"), "fn baseline() {}\nfn named() {}\n").unwrap();
+        checkpoint::capture_turn(&root, session, 1).unwrap();
+
+        let recorded = vec!["src/lib.rs".to_string()];
+        assert!(changed_outside_calls(&root, session, 1, &recorded)
+            .unwrap()
+            .is_none());
+        fs::remove_dir_all(root).ok();
+    }
+
+    /// A session opened in a subdirectory records shorter paths than Git
+    /// reports; the longer one still counts as the same file.
+    #[test]
+    fn a_subdirectory_session_path_still_covers_its_repository_path() {
+        let root = repository();
+        let session = "extras-subdir-session";
+        checkpoint::capture_turn(&root, session, 0).unwrap();
+        checkpoint::capture_turn_start(&root, session, 1).unwrap();
+        fs::write(root.join("src/lib.rs"), "fn baseline() {}\nfn named() {}\n").unwrap();
+        checkpoint::capture_turn(&root, session, 1).unwrap();
+
+        let recorded = vec!["lib.rs".to_string()];
+        assert!(changed_outside_calls(&root, session, 1, &recorded)
+            .unwrap()
+            .is_none());
         fs::remove_dir_all(root).ok();
     }
 

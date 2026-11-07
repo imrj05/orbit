@@ -8,7 +8,9 @@
 //! Sources mirror the reference model: the working tree is compared via
 //! an isolated snapshot commit so untracked files and stage/unstage state are
 //! represented exactly. `LastTurn` is not a Git range — the docked pane
-//! builds it from that turn's `edit` / `write` calls.
+//! builds it from that turn's `edit` / `write` calls, then appends the files
+//! the turn's checkpoint range changed with no call naming them, so a `bash`
+//! fix or a formatter is never silently missing.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;

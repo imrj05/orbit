@@ -8,7 +8,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use crate::review::{self, LineKind, Snapshot, Source};
+use crate::review::{self, Snapshot, Source};
 
 /// One `oldText` / `newText` pair inside a single `edit` tool call.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -291,13 +291,14 @@ pub(crate) fn file_counts(
         .collect()
 }
 
-/// Render Last Turn for `source` from the turn's tool calls.
-pub(crate) fn snapshot_from_calls(
-    source: Source,
+/// The `numstat` and patch text for a folded call list, so a caller can append
+/// worktree-found changes to the same diff before parsing it once.
+pub(crate) fn patch_from_calls(
     calls: &[RecordedCall],
     workspace: Option<&Path>,
-) -> Snapshot {
-    snapshot_capped(source, calls, workspace, review::MAX_RENDERED_DIFF_LINES)
+    remaining: usize,
+) -> (String, String, bool) {
+    patch_capped(calls, workspace, remaining)
 }
 
 fn snapshot_capped(
@@ -306,6 +307,19 @@ fn snapshot_capped(
     workspace: Option<&Path>,
     remaining: usize,
 ) -> Snapshot {
+    let (numstat, patch, clipped) = patch_capped(calls, workspace, remaining);
+    let mut snapshot = review::parse_collected(source, &numstat, &patch, true);
+    if clipped {
+        snapshot.truncated = true;
+    }
+    snapshot
+}
+
+fn patch_capped(
+    calls: &[RecordedCall],
+    workspace: Option<&Path>,
+    remaining: usize,
+) -> (String, String, bool) {
     let mut order = Vec::new();
     let mut grouped: HashMap<String, Vec<FileCall>> = HashMap::new();
     for call in calls {
@@ -330,11 +344,7 @@ fn snapshot_capped(
         numstat.push_str(&format!("{}\t{}\t{}\n", body.added, body.deleted, path));
         patch.push_str(&body.patch);
     }
-    let mut snapshot = review::parse_collected(source, &numstat, &patch, true);
-    if limit.clipped {
-        snapshot.truncated = true;
-    }
-    snapshot
+    (numstat, patch, limit.clipped)
 }
 
 struct RenderedFile {
@@ -667,7 +677,16 @@ fn strip_workspace_prefix(path: &str, prefix: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::review::LineKind;
     use serde_json::json;
+
+    fn snapshot_from_calls(
+        source: Source,
+        calls: &[RecordedCall],
+        workspace: Option<&Path>,
+    ) -> Snapshot {
+        snapshot_capped(source, calls, workspace, review::MAX_RENDERED_DIFF_LINES)
+    }
 
     fn edit_call(path: &str, pairs: &[(&str, &str)]) -> RecordedCall {
         RecordedCall {

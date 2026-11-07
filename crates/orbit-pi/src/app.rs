@@ -60,6 +60,7 @@ use crate::composer_send::{self, SendMode};
 use crate::context_meter::{self, ContextMeterData, ContextPopup};
 use crate::custom_ui::{CustomCancel, CustomFrame, CustomInput, CustomUi, CustomUiSurfaces};
 use crate::dialog::{ApprovalRequest, Dialog, DialogRequest, DialogResponse};
+use crate::git as git_ops;
 use crate::git_panel::GitPanel;
 use crate::mentions::{self, AcEntry, SharedAutocomplete, SlashCommand, Trigger, TriggerKind};
 use crate::model_selector::{

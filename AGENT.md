@@ -569,7 +569,7 @@ current implementation; do not use this section as a changelog.
 - ✅ Markdown: GFM tables/lists/alerts, one `StyledText` per block, highlight-as-paint, copyable code blocks.
 - ✅ Multi-line composer, file attach → base64 images, `/`-command + `@`-file autocomplete, **steer**.
 - ✅ Extension dialogs (`select`/`confirm`/`input`/`editor`) as a native modal. ⬜ richer per-tool renderers (bash/thinking dedicated; edit/todo/plan/search/mcp are generic). ✅ tool approval via the access guard's confirm dialog.
-- ✅ Diff viewer + per-turn `Last Turn` checkpoints; ✅ image lightbox. Changed files render in the tail summary card **by design** (not per message). ✅ ⌘F transcript find.
+- ✅ Diff viewer + per-turn `Last Turn` (that turn's `edit` / `write` calls; the app appends worktree changes the turn made with no call behind them); ✅ image lightbox. Changed files render in the tail summary card **by design** (not per message). ✅ ⌘F transcript find.
 
 ### P4 — Workbench (substantially done)
 - ✅ Git page (Changes / History / Graph + commit bar, commit-message generation). ✅ Providers: built-in catalog, API-key + OAuth, models.json CRUD, refresh. ✅ Skills, ✅ Plugins (+ search), ✅ **Models** page, ✅ Usage charts + filters + export. ✅ Theme/UI persistence (Orbit store). ✅ Explorer: left project panel (gitignore-aware tree, git badges, filter, hidden toggle) + full-page Files editor (editable, syntax-highlighted code/text with debounced autosave; markdown/image; binary/size guards) + file operations (New File/Folder, Rename, Delete-to-Trash).
