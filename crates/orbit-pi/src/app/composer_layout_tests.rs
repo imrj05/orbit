@@ -280,6 +280,72 @@ fn queue_bar_is_one_compact_grouped_surface(cx: &mut gpui::TestAppContext) {
     );
     assert!(cx.debug_bounds("queue-row-1-send-now").is_some());
 }
+
+/// Issue #110: a queued message can be a whole skill file, hundreds of lines
+/// long. The row keeps its two-line clamp, so the strip stays a compact card
+/// above the composer instead of growing over the session behind it.
+#[gpui::test]
+fn a_queued_skill_file_stays_clamped_inside_its_row(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+    use orbit_rpc::PendingQueue;
+
+    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    let cx = cx.add_empty_window();
+    let app = cx.update(|_, cx| {
+        cx.new(|cx| {
+            let mut app = OrbitApp::new(cx);
+            app.branch = None;
+            app.status_at = None;
+            app
+        })
+    });
+
+    let wide = "When this skill is first invoked without a specific question, respond only with a short introduction and wait for the user to ask for something.";
+    let skill = "<skill name=\"apple-design\" location=\"/Users/rajeshwar/.agents/skills/apple-design/SKILL.md\">\nReferences are relative to /Users/rajeshwar/.agents/skills/apple-design.\n\n".to_string()
+        + &format!("## Section\n{wide}\n{wide}\n").repeat(40)
+        + "</skill>";
+
+    let width = px(600.);
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(width, px(720.)),
+        |_, cx| {
+            cx.new(|_| QueueBarProbe {
+                app: app.clone(),
+                width,
+            })
+        },
+    );
+    let empty = cx.debug_bounds("queue-bar");
+    assert!(empty.is_none(), "the fixture starts with an empty queue");
+
+    app.update(cx, |app, _| {
+        app.queue = PendingQueue {
+            steering: vec![],
+            follow_up: vec![skill],
+        }
+    });
+    let _ = cx.draw(
+        point(px(0.), px(0.)),
+        gpui::size(width, px(720.)),
+        |_, cx| {
+            cx.new(|_| QueueBarProbe {
+                app: app.clone(),
+                width,
+            })
+        },
+    );
+    let bar = cx.debug_bounds("queue-bar").expect("queue strip drawn");
+    // Header plus one row whose two clamped lines measure 32px: ~77px. The
+    // file's explicit newlines no longer count as rows, so the strip cannot
+    // grow over the session behind it.
+    assert!(
+        bar.size.height <= px(84.),
+        "a queued skill file must stay inside its two-line row, was {}",
+        bar.size.height
+    );
+}
+
 #[gpui::test]
 fn sending_hints_match_footer_metrics_and_share_the_context_row(cx: &mut gpui::TestAppContext) {
     use crate::theme::{

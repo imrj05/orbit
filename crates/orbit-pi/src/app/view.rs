@@ -5453,7 +5453,7 @@ impl OrbitApp {
                         .text_size(TextSize::Small.px(&theme))
                         .line_height(theme.ui_px(16.))
                         .text_color(theme.text_primary)
-                        .child(text.to_string()),
+                        .child(queue_preview(text)),
                 )
                 .when(!actions_inert, |row| {
                     row.child(
