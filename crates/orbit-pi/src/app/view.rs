@@ -656,6 +656,12 @@ impl Render for OrbitApp {
                     .h_full()
                     .overflow_hidden()
                     .bg(theme.panel_fill(theme.surface))
+                    // The rail is the one structural pane that frosts: the
+                    // wallpaper stays sharp beside it, so the image reads as
+                    // something the rail is laid over rather than painted on.
+                    .when_some(theme.glass_sigma(), |panel, sigma| {
+                        panel.border_color(gpui::backdrop_blur_marker(sigma))
+                    })
                     .child(
                         div()
                             .id("sidebar")
@@ -1299,12 +1305,32 @@ impl Render for OrbitApp {
                                                 .w_full()
                                                 .relative()
                                                 .bg(theme.card_fill(theme.surface_secondary))
-                                                .border_1()
-                                                .border_color(Self::composer_border_color(
-                                                    &theme,
-                                                    self.file_drag_hovered,
-                                                ))
                                                 .rounded(input::composer_radius(&theme))
+                                                // The composer floats on the
+                                                // wallpaper, so it frosts: what
+                                                // it sits over is soft, what is
+                                                // typed into it stays crisp.
+                                                .when_some(theme.glass_sigma(), |card, sigma| {
+                                                    let marker = gpui::backdrop_blur_marker(sigma);
+                                                    card.border_color(marker)
+                                                })
+                                                .when(theme.glass_sigma().is_none(), |card| {
+                                                    card.border_1().border_color(
+                                                        Self::composer_border_color(
+                                                            &theme,
+                                                            self.file_drag_hovered,
+                                                        ),
+                                                    )
+                                                })
+                                                .children(theme.glass_sigma().map(|_| {
+                                                    crate::theme::tokens::frosted_edge(
+                                                        Self::composer_border_color(
+                                                            &theme,
+                                                            self.file_drag_hovered,
+                                                        ),
+                                                        input::composer_radius(&theme),
+                                                    )
+                                                }))
                                                 .shadow(theme.composer_shadow())
                                                 .text_size(TextSize::Default.px(&theme))
                                                 .flex()

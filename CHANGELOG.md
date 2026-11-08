@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Glass panes over the wallpaper.** Panes that sit over a wallpaper now
+  frost what is behind them instead of showing the picture sharp through a
+  tint: the sidebar, the composer, and every floating layer (menus, pickers,
+  popovers, modals, notifications). The image stays sharp in the content area
+  beside them, which is what separates glass from a uniformly blurred
+  backdrop. Text contrast is unchanged — the fill keeps the alpha the contrast
+  pass computed, and only the pixels *under* it are blurred. Settings →
+  Appearance → Glass panes turns it off. macOS only: the frost is a Metal pass
+  over the frame (`backdrop-filter: blur()` has no GPUI equivalent, so gpui
+  0.2.2 is vendored under `vendor/gpui` with the marker, the shader and the
+  blur pass added — see `vendor/gpui/README.orbit.md`); elsewhere the panes
+  keep the plain translucent fill they had before.
+
 ## [0.2.17] - 2026-11-08
 
 ### Changed

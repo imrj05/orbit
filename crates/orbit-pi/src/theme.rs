@@ -295,6 +295,11 @@ impl ThemeId {
 /// The values live on [`Theme`] so paint sites that only receive a theme (the
 /// elevation helpers, transcript cards, settings boards) can make the same
 /// decision as the window renderer without threading an `App` through.
+/// How far a frosted pane spreads the image behind it, in logical points.
+/// Twelve points is the strength a menu or a popover needs to read as glass at
+/// arm's length without turning the wallpaper into a flat wash.
+pub const GLASS_BLUR: f32 = 12.;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SurfaceTreatment {
     /// A processed wallpaper is behind the UI.
@@ -309,6 +314,10 @@ pub struct SurfaceTreatment {
     pub card_alpha: f32,
     /// Effective alpha for the sidebar/main-column surfaces.
     pub panel_alpha: f32,
+    /// Panes frost the image behind them instead of showing it sharp through
+    /// their fill. False wherever the renderer has no backdrop pass, so a
+    /// surface never asks for a blur that cannot be painted.
+    pub glass: bool,
 }
 
 impl SurfaceTreatment {
@@ -321,6 +330,7 @@ impl SurfaceTreatment {
         dim: 0.0,
         card_alpha: 1.0,
         panel_alpha: 1.0,
+        glass: false,
     };
 }
 
@@ -1511,6 +1521,14 @@ impl Theme {
         } else {
             base
         }
+    }
+
+    /// The blur radius, in logical points, a pane over the wallpaper frosts its
+    /// backdrop with. `None` when there is no wallpaper, the Glass panes setting
+    /// is off, or this renderer has no backdrop pass — the pane then keeps its
+    /// plain translucent fill, which is the whole difference between the two.
+    pub fn glass_sigma(self) -> Option<f32> {
+        (self.wallpaper.active && self.wallpaper.glass).then_some(GLASS_BLUR)
     }
 
     /// The fill of the sidebar and the main column. Hero-only wallpaper leaves
@@ -2794,6 +2812,32 @@ mod tests {
         let light = Theme::for_id(ThemeId::OrbitLight).with_ui(theme.ui);
         assert_eq!(light.theme_id, ThemeId::OrbitLight);
         assert_eq!(light.ui, theme.ui);
+    }
+
+    #[test]
+    fn glass_needs_a_wallpaper_and_the_setting() {
+        let theme = Theme::dark();
+        assert_eq!(
+            theme.glass_sigma(),
+            None,
+            "no wallpaper means nothing to frost"
+        );
+
+        let treatment = SurfaceTreatment {
+            active: true,
+            glass: true,
+            ..SurfaceTreatment::OPAQUE
+        };
+        assert_eq!(
+            theme.with_wallpaper(treatment).glass_sigma(),
+            Some(GLASS_BLUR)
+        );
+
+        let off = SurfaceTreatment {
+            glass: false,
+            ..treatment
+        };
+        assert_eq!(theme.with_wallpaper(off).glass_sigma(), None);
     }
 
     #[test]

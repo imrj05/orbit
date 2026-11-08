@@ -737,7 +737,7 @@ pub(crate) fn modal_scrim(theme: &Theme) -> gpui::Div {
 /// and the Comfortable line height a menu forces so its entries measure the
 /// same wherever it is deferred from. Callers keep positioning, occlusion,
 /// dismissal, and a fixed width when the menu needs one.
-pub(crate) fn context_menu_surface<E: Styled>(el: E, theme: &Theme) -> E {
+pub(crate) fn context_menu_surface<E: Styled + ParentElement>(el: E, theme: &Theme) -> E {
     el.elevation_2(theme)
         .min_w(context_menu::MIN_WIDTH)
         .py(list::padding_y(theme))
@@ -799,7 +799,7 @@ pub(crate) fn menu_header(label: impl Into<SharedString>, theme: &Theme) -> gpui
 /// The shell of a picker (search + list), built to Zed's `Picker`: the modal
 /// elevation it draws even as a popover, and the UI face at Default size.
 /// Callers keep their width, positioning, occlusion, and dismissal.
-pub(crate) fn picker_surface<E: Styled>(el: E, theme: &Theme) -> E {
+pub(crate) fn picker_surface<E: Styled + ParentElement>(el: E, theme: &Theme) -> E {
     el.elevation_3(theme)
         .font_family(theme::ui_font_family())
         .text_size(picker::TEXT.px(theme))

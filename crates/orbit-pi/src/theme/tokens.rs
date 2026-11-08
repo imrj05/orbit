@@ -37,7 +37,10 @@
 
 use std::time::Duration;
 
-use gpui::{hsla, point, px, relative, BoxShadow, DefiniteLength, Hsla, Pixels, Styled};
+use gpui::{
+    div, hsla, point, px, relative, BoxShadow, DefiniteLength, Hsla, IntoElement, ParentElement,
+    Pixels, Styled,
+};
 
 use super::Theme;
 
@@ -763,7 +766,7 @@ pub mod toast {
     pub const ACTION_BUTTON: ButtonSize = ButtonSize::Medium;
     pub const ICON_RADIUS: Radius = Radius::Large;
 
-    pub fn surface<E: Styled>(element: E, theme: &Theme) -> E {
+    pub fn surface<E: Styled + ParentElement>(element: E, theme: &Theme) -> E {
         element.elevation_2(theme)
     }
 
@@ -1050,7 +1053,13 @@ fn drop_shadow(offset_y: f32, blur: f32, alpha: f32) -> BoxShadow {
 /// [`panel::RADIUS`] corner, a 1px hairline, and the layer's shadow. The hairline is Orbit's
 /// floating-surface stroke (`border_strong`), the role Zed's `border_variant`
 /// plays.
-pub trait StyledExt: Styled + Sized {
+///
+/// A floating layer over the wallpaper (a menu, a popover, a modal) also
+/// frosts it: its own fill is painted over a blurred backdrop, and the
+/// hairline moves to an overlay ring because the quad's border channel carries
+/// the blur request. [`Theme::glass_sigma`] decides; below it is `None` and
+/// nothing changes.
+pub trait StyledExt: Styled + ParentElement + Sized {
     /// Title bar, panels, tab bar.
     fn elevation_1(self, theme: &Theme) -> Self {
         elevated(self, theme, ElevationIndex::Surface, true)
@@ -1080,7 +1089,7 @@ pub trait StyledExt: Styled + Sized {
     }
 }
 
-impl<E: Styled> StyledExt for E {}
+impl<E: Styled + ParentElement> StyledExt for E {}
 
 // ── Raised buttons ──────────────────────────────────────────────────────
 
@@ -1218,16 +1227,51 @@ impl InteractionState {
 /// layout and reads the same inside a clipped row.
 pub const FOCUS_RING_WIDTH: Pixels = BORDER_WIDTH;
 
-fn elevated<E: Styled>(el: E, theme: &Theme, index: ElevationIndex, bordered: bool) -> E {
+fn elevated<E: Styled + ParentElement>(
+    el: E,
+    theme: &Theme,
+    index: ElevationIndex,
+    bordered: bool,
+) -> E {
+    let radius = panel::RADIUS.px(theme);
     let el = el
         .bg(theme.card_fill(ElevationIndex::ElevatedSurface.bg(theme)))
-        .rounded(panel::RADIUS.px(theme))
+        .rounded(radius)
         .shadow(index.shadow(theme));
+    // Only floating layers frost. Title bars, panels and tab bars are
+    // structural chrome and keep their opaque fill: the workbench has to stay
+    // readable over any picture.
+    let frost = match index {
+        ElevationIndex::ElevatedSurface | ElevationIndex::ModalSurface => theme.glass_sigma(),
+        ElevationIndex::Background | ElevationIndex::Surface | ElevationIndex::EditorSurface => {
+            None
+        }
+    };
+    if let Some(sigma) = frost {
+        let el = el.border_color(gpui::backdrop_blur_marker(sigma));
+        return if bordered {
+            el.child(frosted_edge(theme.border_strong, radius))
+        } else {
+            el
+        };
+    }
     if bordered {
         el.border_1().border_color(theme.border_strong)
     } else {
         el
     }
+}
+
+/// The hairline a frosted layer would otherwise draw on its own quad, painted
+/// as a ring on top of that fill: the quad's border channel is carrying the
+/// blur request, so its border colour is spoken for.
+pub(crate) fn frosted_edge(color: Hsla, radius: Pixels) -> impl IntoElement {
+    div()
+        .absolute()
+        .inset_0()
+        .rounded(radius)
+        .border_1()
+        .border_color(color)
 }
 
 // ── Motion (`ui/src/styles/animation.rs`) ───────────────────────────────

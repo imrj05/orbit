@@ -429,6 +429,11 @@ const SETTINGS_SEARCH_INDEX: &[(SettingsSection, &str, &str)] = &[
     ),
     (
         SettingsSection::Appearance,
+        "wallpaper.glass",
+        "wallpaper glass frost blur frosted backdrop pane panel translucent",
+    ),
+    (
+        SettingsSection::Appearance,
         "wallpaper.derive_accent",
         "wallpaper accent tint color extract",
     ),
@@ -6702,6 +6707,21 @@ impl OrbitApp {
                         &settings,
                     )),
                 ));
+                if gpui::backdrop_blur_supported() {
+                    rows.push(self.setting_row(
+                        theme,
+                        &tr!("wallpaper.glass"),
+                        Some(&tr!("wallpaper.glass_description")),
+                        None,
+                        Some(self.settings_toggle(
+                            "wallpaper-glass",
+                            settings.glass,
+                            theme,
+                            this.clone(),
+                            Self::toggle_wallpaper_glass,
+                        )),
+                    ));
+                }
                 rows.push(self.setting_row(
                     theme,
                     &tr!("wallpaper.derive_accent"),
@@ -6938,6 +6958,13 @@ impl OrbitApp {
                     .child(display),
             )
             .into_any_element()
+    }
+
+    /// Frost the panes over the wallpaper, or show it sharp through them.
+    pub(super) fn toggle_wallpaper_glass(&mut self, cx: &mut Context<Self>) {
+        let mut settings = crate::wallpaper::settings();
+        settings.glass = !settings.glass;
+        self.set_wallpaper(settings, cx);
     }
 
     pub(super) fn toggle_wallpaper_accent(&mut self, cx: &mut Context<Self>) {

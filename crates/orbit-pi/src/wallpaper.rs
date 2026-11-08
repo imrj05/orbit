@@ -149,6 +149,10 @@ pub struct WallpaperSettings {
     pub card_opacity: f32,
     /// Derive the theme accent from the wallpaper.
     pub derive_accent: bool,
+    /// Frost the wallpaper behind panes instead of showing it sharp through a
+    /// tint. Only the macOS renderer can run the backdrop pass; elsewhere the
+    /// panes keep their plain translucent fill.
+    pub glass: bool,
 }
 
 impl Default for WallpaperSettings {
@@ -165,6 +169,7 @@ impl Default for WallpaperSettings {
             dim: 0.35,
             card_opacity: 0.82,
             derive_accent: true,
+            glass: true,
         }
     }
 }
@@ -233,6 +238,9 @@ impl WallpaperSettings {
         if let Some(derive) = value.get("derive_accent").and_then(Value::as_bool) {
             settings.derive_accent = derive;
         }
+        if let Some(glass) = value.get("glass").and_then(Value::as_bool) {
+            settings.glass = glass;
+        }
         settings
     }
 
@@ -254,6 +262,7 @@ impl WallpaperSettings {
                 "dim": self.dim,
                 "card_opacity": self.card_opacity,
                 "derive_accent": self.derive_accent,
+                "glass": self.glass,
             })
             .to_string(),
         )
@@ -1058,6 +1067,7 @@ pub fn surfaces(
         dim: clamp(settings.dim, DIM_RANGE),
         card_alpha: clamp(settings.card_opacity, CARD_OPACITY_RANGE),
         panel_alpha: 1.0,
+        glass: settings.glass && gpui::backdrop_blur_supported(),
     };
     if !full_window {
         // Hero-only: headings and folder metadata sit on the image itself.
@@ -1235,6 +1245,7 @@ mod tests {
             dim: 0.2,
             card_opacity: 0.7,
             derive_accent: false,
+            glass: false,
         };
         settings.persist_to(&path).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
@@ -1369,6 +1380,46 @@ mod tests {
             theme.surface_elevated
         );
         assert_eq!(theme.panel_fill(theme.background), theme.background);
+    }
+
+    #[test]
+    fn glass_panes_follow_the_setting_and_the_renderer() {
+        let theme = Theme::for_id(ThemeId::OrbitAzure);
+        let brightness = Brightness {
+            samples: vec![[0.2, 0.2, 0.2]],
+        };
+        let settings = WallpaperSettings {
+            mode: WallpaperMode::FullWindow,
+            path: Some(PathBuf::from("/tmp/any")),
+            ..WallpaperSettings::default()
+        };
+        let on = surfaces(theme, &settings, Some(&brightness));
+        assert_eq!(on.glass, gpui::backdrop_blur_supported());
+
+        let off = surfaces(
+            theme,
+            &WallpaperSettings {
+                glass: false,
+                ..settings.clone()
+            },
+            Some(&brightness),
+        );
+        assert!(!off.glass);
+
+        // No wallpaper means nothing to frost, whatever the setting says.
+        assert!(!surfaces(theme, &WallpaperSettings::default(), None).glass);
+    }
+
+    #[test]
+    fn glass_defaults_on_and_survives_a_settings_file_without_it() {
+        assert!(WallpaperSettings::default().glass);
+        let parsed = WallpaperSettings::parse(r#"{"mode":"full","path":"/tmp/a.png"}"#);
+        assert!(
+            parsed.glass,
+            "an existing wallpaper.json predates the setting, so it must not turn glass off"
+        );
+        let parsed = WallpaperSettings::parse(r#"{"mode":"full","glass":false}"#);
+        assert!(!parsed.glass);
     }
 
     #[test]
