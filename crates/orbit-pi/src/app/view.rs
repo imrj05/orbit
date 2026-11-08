@@ -7,7 +7,7 @@ use gpui::StyledText;
 
 use crate::theme::tokens::{
     button, context_menu, input, looping, panel, picker, popover, ButtonSize, DynamicSpacing,
-    IconSize, Radius, TextSize,
+    IconSize, Radius, StyledExt, TextSize,
 };
 use crate::usage::tooltip::Tooltip;
 use crate::widgets as ext_widgets;
@@ -1312,7 +1312,7 @@ impl Render for OrbitApp {
                                                 // typed into it stays crisp.
                                                 .when_some(theme.glass_sigma(), |card, sigma| {
                                                     let marker = gpui::backdrop_blur_marker(sigma);
-                                                    card.border_color(marker)
+                                                    card.border_1().border_color(marker)
                                                 })
                                                 .when(theme.glass_sigma().is_none(), |card| {
                                                     card.border_1().border_color(
@@ -3153,7 +3153,9 @@ impl OrbitApp {
             .w_full()
             .relative()
             .overflow_hidden()
-            .child(Self::dot_backdrop(theme))
+            // Setup contains text throughout the page; the binary new-task
+            // screen cannot provide a reliable contrast behind that text.
+            .bg(theme.background)
             .child(
                 div()
                     .relative()
@@ -4613,8 +4615,10 @@ impl OrbitApp {
                     .px(px(10.))
                     .py(px(7.))
                     .rounded(panel::RADIUS.px(&theme))
-                    .border_1()
-                    .border_color(theme.border)
+                    // A floating strip over the wallpaper, like the approval
+                    // bar below it: translucent, and frosted wherever the
+                    // renderer can blur.
+                    .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
                     .bg(theme.card_fill(theme.surface_elevated))
                     .flex()
                     .items_center()
@@ -4663,8 +4667,7 @@ impl OrbitApp {
                     .px(px(10.))
                     .py(px(7.))
                     .rounded(panel::RADIUS.px(&theme))
-                    .border_1()
-                    .border_color(theme.border)
+                    .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
                     .bg(theme.card_fill(theme.surface_elevated))
                     .flex()
                     .items_center()
@@ -4714,9 +4717,11 @@ impl OrbitApp {
             .w_full()
             .mb(DynamicSpacing::Base08.px(&theme))
             .rounded(panel::RADIUS.px(&theme))
-            .border_1()
-            .border_color(theme.accent.opacity(0.3))
-            .bg(theme.surface_elevated)
+            // Sits in the composer column beside the approval bar and the run
+            // strip, so it takes the same glass: a pane over the wallpaper,
+            // not an opaque slab dropped on it.
+            .frosted_card(&theme, theme.accent.opacity(0.3), panel::RADIUS.px(&theme))
+            .bg(theme.card_fill(theme.surface_elevated))
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -5164,8 +5169,7 @@ impl OrbitApp {
             .mb(px(GAP))
             .px(DynamicSpacing::Base12.px(&theme))
             .rounded(panel::RADIUS.px(&theme))
-            .border_1()
-            .border_color(theme.accent.opacity(0.3))
+            .frosted_card(&theme, theme.accent.opacity(0.3), panel::RADIUS.px(&theme))
             .bg(theme.card_fill(theme.surface_elevated))
             .flex()
             .items_center()
@@ -5284,9 +5288,8 @@ impl OrbitApp {
                 .w_full()
                 .mb(DynamicSpacing::Base08.px(&theme))
                 .rounded(panel::RADIUS.px(&theme))
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.surface_elevated)
+                .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
+                .bg(theme.card_fill(theme.surface_elevated))
                 .flex()
                 .flex_col()
                 // Clip the rows' hairline separators to the rounded corners.

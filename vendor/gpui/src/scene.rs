@@ -25,6 +25,8 @@ pub(crate) struct Scene {
     pub(crate) paint_operations: Vec<PaintOperation>,
     primitive_bounds: BoundsTree<ScaledPixels>,
     layer_stack: Vec<DrawOrder>,
+    max_order: DrawOrder,
+    order_floor: DrawOrder,
     pub(crate) shadows: Vec<Shadow>,
     pub(crate) quads: Vec<Quad>,
     pub(crate) paths: Vec<Path<ScaledPixels>>,
@@ -39,6 +41,8 @@ impl Scene {
         self.paint_operations.clear();
         self.primitive_bounds.clear();
         self.layer_stack.clear();
+        self.max_order = 0;
+        self.order_floor = 0;
         self.paths.clear();
         self.shadows.clear();
         self.quads.clear();
@@ -53,7 +57,16 @@ impl Scene {
     }
 
     pub fn push_layer(&mut self, bounds: Bounds<ScaledPixels>) {
-        let order = self.primitive_bounds.insert(bounds);
+        let order = if self.order_floor == 0 {
+            self.primitive_bounds.insert(bounds)
+        } else {
+            // Post-backdrop draws in an active layer aren't in the bounds
+            // tree and may even lie outside its reservation. A new layer must
+            // therefore start after all of them, not merely at the floor.
+            self.primitive_bounds
+                .insert_with_min_order(bounds, self.max_order + 1)
+        };
+        self.max_order = self.max_order.max(order);
         self.layer_stack.push(order);
         self.paint_operations
             .push(PaintOperation::StartLayer(bounds));
@@ -61,6 +74,12 @@ impl Scene {
 
     pub fn pop_layer(&mut self) {
         self.layer_stack.pop();
+        if self.order_floor != 0 {
+            // A layer active across a backdrop may have a reservation older
+            // than its subsequent draws. Do not let later draws pass those
+            // draws after leaving it, including when returning to a parent.
+            self.order_floor = self.max_order + 1;
+        }
         self.paint_operations.push(PaintOperation::EndLayer);
     }
 
@@ -74,11 +93,27 @@ impl Scene {
             return;
         }
 
-        let order = self
-            .layer_stack
-            .last()
-            .copied()
-            .unwrap_or_else(|| self.primitive_bounds.insert(clipped_bounds));
+        let blur_sigma = match &primitive {
+            Primitive::Quad(quad) => backdrop_blur_sigma(quad),
+            _ => None,
+        };
+        let order = if let Some(sigma) = blur_sigma {
+            // Layer reservations do not necessarily cover their primitives or a
+            // backdrop's sample region. A global barrier also accounts for layers
+            // already closed and avoids retroactively inserting all their glyphs.
+            let order = self.primitive_bounds.insert_with_min_order(
+                backdrop_blur_sample_bounds(clipped_bounds, sigma),
+                self.max_order + 1,
+            );
+            self.order_floor = order + 1;
+            order
+        } else if let Some(layer_order) = self.layer_stack.last() {
+            (*layer_order).max(self.order_floor)
+        } else {
+            self.primitive_bounds
+                .insert_with_min_order(clipped_bounds, self.order_floor.max(1))
+        };
+        self.max_order = self.max_order.max(order);
         match &mut primitive {
             Primitive::Shadow(shadow) => {
                 shadow.order = order;
@@ -510,6 +545,26 @@ pub(crate) fn backdrop_blur_sigma(quad: &Quad) -> Option<f32> {
     backdrop_blur_sigma_device(&quad.border_color)
 }
 
+/// The Gaussian snapshot includes its approximately three-sigma reach and a
+/// two-pixel safety margin, rounded out to whole device pixels.
+pub(crate) fn backdrop_blur_sample_bounds(
+    bounds: Bounds<ScaledPixels>,
+    sigma: f32,
+) -> Bounds<ScaledPixels> {
+    let bleed = (sigma * 3.).ceil() + 2.;
+    let left = (bounds.origin.x.0 - bleed).floor();
+    let top = (bounds.origin.y.0 - bleed).floor();
+    let right = (bounds.origin.x.0 + bounds.size.width.0 + bleed).ceil();
+    let bottom = (bounds.origin.y.0 + bounds.size.height.0 + bleed).ceil();
+    Bounds {
+        origin: point(ScaledPixels(left), ScaledPixels(top)),
+        size: Size {
+            width: ScaledPixels(right - left),
+            height: ScaledPixels(bottom - top),
+        },
+    }
+}
+
 /// Whether `color` is a [`backdrop_blur_marker`]. A style carries the frost
 /// request in its border colour, and `Style::paint` copies it onto the quad's
 /// border field, which is where the renderer reads it back.
@@ -885,6 +940,272 @@ impl PathVertex<Pixels> {
             xy_position: self.xy_position.scale(factor),
             st_position: self.st_position,
             content_mask: self.content_mask.scale(factor),
+        }
+    }
+}
+
+#[cfg(test)]
+mod backdrop_order_tests {
+    use super::*;
+    use crate::platform::{AtlasTextureKind, TileId};
+
+    fn rect(x: f32, y: f32, w: f32, h: f32) -> Bounds<ScaledPixels> {
+        Bounds {
+            origin: point(ScaledPixels(x), ScaledPixels(y)),
+            size: Size {
+                width: ScaledPixels(w),
+                height: ScaledPixels(h),
+            },
+        }
+    }
+
+    fn mask(bounds: Bounds<ScaledPixels>) -> ContentMask<ScaledPixels> {
+        ContentMask { bounds }
+    }
+
+    fn sprite(bounds: Bounds<ScaledPixels>, clip: Bounds<ScaledPixels>) -> MonochromeSprite {
+        MonochromeSprite {
+            order: 0,
+            pad: 0,
+            bounds,
+            content_mask: mask(clip),
+            color: Hsla::default(),
+            tile: AtlasTile {
+                texture_id: AtlasTextureId {
+                    index: 0,
+                    kind: AtlasTextureKind::Monochrome,
+                },
+                tile_id: TileId(0),
+                padding: 0,
+                bounds: Bounds::default(),
+            },
+            transformation: TransformationMatrix::default(),
+        }
+    }
+
+    fn path(bounds: Bounds<ScaledPixels>, clip: Bounds<ScaledPixels>) -> Path<ScaledPixels> {
+        let mut path = Path::new(point(Pixels(0.), Pixels(0.))).scale(1.);
+        path.bounds = bounds;
+        path.content_mask = mask(clip);
+        path
+    }
+
+    fn glass(bounds: Bounds<ScaledPixels>, clip: Bounds<ScaledPixels>) -> Quad {
+        Quad {
+            bounds,
+            content_mask: mask(clip),
+            border_color: backdrop_blur_marker(1.),
+            ..Default::default()
+        }
+    }
+
+    fn kinds(scene: &Scene) -> Vec<&'static str> {
+        scene
+            .batches()
+            .map(|batch| match batch {
+                PrimitiveBatch::MonochromeSprites { .. } => "sprite",
+                PrimitiveBatch::Paths(_) => "path",
+                PrimitiveBatch::Quads(_) => "quad",
+                _ => panic!("unexpected batch"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn backdrop_orders_surrounding_sprites_and_paths() {
+        let clip = rect(-100., -100., 300., 300.);
+        for use_path in [false, true] {
+            let mut scene = Scene::default();
+            let outside_glass = rect(14., 2., 1., 1.);
+            if use_path {
+                scene.insert_primitive(path(outside_glass, clip));
+            } else {
+                scene.insert_primitive(sprite(outside_glass, clip));
+            }
+            scene.insert_primitive(glass(rect(0., 0., 10., 10.), clip));
+            scene.insert_primitive(path(rect(12., 2., 1., 1.), clip));
+            scene.finish();
+            assert_eq!(
+                kinds(&scene),
+                [if use_path { "path" } else { "sprite" }, "quad", "path"]
+            );
+        }
+    }
+
+    #[test]
+    fn backdrop_uses_clipped_output_but_samples_outside_mask() {
+        let clip = rect(5., 0., 5., 10.);
+        let full = rect(-100., -100., 300., 300.);
+        let mut scene = Scene::default();
+        scene.insert_primitive(sprite(rect(1., 2., 1., 1.), full));
+        scene.insert_primitive(glass(rect(0., 0., 10., 10.), clip));
+        scene.finish();
+        assert_eq!(kinds(&scene), ["sprite", "quad"]);
+
+        // A fully clipped backdrop cannot impose a dependency.
+        let mut scene = Scene::default();
+        scene.insert_primitive(glass(rect(0., 0., 2., 2.), clip));
+        assert_eq!(scene.len(), 0);
+        // Fractional output bounds must include the renderer's rounded snapshot.
+        assert_eq!(
+            backdrop_blur_sample_bounds(rect(5.2, 1.2, 2., 2.), 1.),
+            rect(0., -4., 13., 13.)
+        );
+    }
+
+    #[test]
+    fn layer_without_backdrop_preserves_batching() {
+        let full = rect(-100., -100., 300., 300.);
+        let mut scene = Scene::default();
+        scene.push_layer(rect(0., 0., 20., 20.));
+        for _ in 0..100 {
+            scene.insert_primitive(sprite(rect(1., 1., 5., 5.), full));
+        }
+        scene.pop_layer();
+        scene.finish();
+        assert_eq!(kinds(&scene), ["sprite"]);
+        assert!(
+            scene
+                .monochrome_sprites
+                .iter()
+                .all(|sprite| sprite.order == 1)
+        );
+        // Inserting another primitive over the layer should see only its reservation.
+        scene.insert_primitive(path(rect(1., 1., 1., 1.), full));
+        assert_eq!(scene.paths[0].order, 2);
+    }
+
+    #[test]
+    fn backdrop_respects_draws_inside_same_layer() {
+        let full = rect(-100., -100., 300., 300.);
+        let mut scene = Scene::default();
+        scene.push_layer(rect(0., 0., 20., 20.));
+        scene.insert_primitive(sprite(rect(14., 2., 1., 1.), full));
+        scene.insert_primitive(glass(rect(0., 0., 10., 10.), full));
+        scene.insert_primitive(path(rect(12., 2., 1., 1.), full));
+        scene.pop_layer();
+        scene.finish();
+        assert_eq!(kinds(&scene), ["sprite", "quad", "path"]);
+    }
+
+    #[test]
+    fn backdrop_barrier_crosses_nested_and_closed_layers_and_replay() {
+        let full = rect(-100., -100., 300., 300.);
+        let mut source = Scene::default();
+        // The earlier primitive is outside both layer reservations, but inside
+        // the later backdrop's expanded sample region.
+        source.push_layer(rect(50., 50., 2., 2.));
+        source.insert_primitive(sprite(rect(14., 2., 1., 1.), full));
+        source.pop_layer();
+        source.push_layer(rect(0., 0., 10., 10.));
+        source.push_layer(rect(0., 0., 10., 10.));
+        source.insert_primitive(glass(rect(0., 0., 10., 10.), full));
+        source.pop_layer();
+        source.insert_primitive(path(rect(12., 2., 1., 1.), full));
+        source.pop_layer();
+        source.push_layer(rect(60., 60., 2., 2.));
+        source.insert_primitive(sprite(rect(13., 2., 1., 1.), full));
+        source.pop_layer();
+        let mut replayed = Scene::default();
+        replayed.replay(0..source.len(), &source);
+        for scene in [&mut source, &mut replayed] {
+            scene.finish();
+            assert_eq!(kinds(scene), ["sprite", "quad", "path", "sprite"]);
+        }
+    }
+
+    #[test]
+    fn nested_layers_follow_post_backdrop_parent_draws_and_replay() {
+        let full = rect(-100., -100., 300., 300.);
+        let overlap = rect(40., 40., 2., 2.);
+        let mut source = Scene::default();
+        source.push_layer(rect(0., 0., 10., 10.));
+        source.insert_primitive(glass(rect(0., 0., 2., 2.), full));
+        // Both draws extend beyond their layers' reservations.
+        source.insert_primitive(sprite(overlap, full));
+        source.push_layer(rect(20., 20., 2., 2.));
+        source.insert_primitive(path(overlap, full));
+        source.pop_layer();
+        source.insert_primitive(sprite(overlap, full));
+        source.push_layer(rect(30., 30., 2., 2.));
+        source.insert_primitive(path(overlap, full));
+        source.pop_layer();
+        source.pop_layer();
+        let mut replayed = Scene::default();
+        replayed.replay(0..source.len(), &source);
+        for scene in [&mut source, &mut replayed] {
+            scene.finish();
+            assert_eq!(kinds(scene), ["quad", "sprite", "path", "sprite", "path"]);
+        }
+    }
+
+    #[test]
+    fn post_backdrop_top_level_draw_precedes_disjoint_layer_reservation() {
+        let full = rect(-100., -100., 300., 300.);
+        let overlap = rect(40., 40., 2., 2.);
+        let mut source = Scene::default();
+        source.insert_primitive(glass(rect(0., 0., 2., 2.), full));
+        source.insert_primitive(sprite(overlap, full));
+        source.push_layer(rect(20., 20., 2., 2.));
+        source.insert_primitive(path(overlap, full));
+        source.pop_layer();
+        let mut replayed = Scene::default();
+        replayed.replay(0..source.len(), &source);
+        for scene in [&mut source, &mut replayed] {
+            scene.finish();
+            assert_eq!(kinds(scene), ["quad", "sprite", "path"]);
+        }
+    }
+
+    #[test]
+    fn clear_restores_no_backdrop_layer_batching() {
+        let full = rect(-100., -100., 300., 300.);
+        let mut scene = Scene::default();
+        scene.insert_primitive(glass(rect(0., 0., 2., 2.), full));
+        scene.clear();
+        scene.push_layer(rect(0., 0., 10., 10.));
+        scene.insert_primitive(sprite(rect(1., 1., 1., 1.), full));
+        scene.push_layer(rect(20., 20., 2., 2.));
+        scene.insert_primitive(sprite(rect(20., 20., 1., 1.), full));
+        scene.pop_layer();
+        scene.pop_layer();
+        scene.finish();
+        assert_eq!(kinds(&scene), ["sprite"]);
+        assert!(
+            scene
+                .monochrome_sprites
+                .iter()
+                .all(|sprite| sprite.order == 1)
+        );
+    }
+
+    #[test]
+    fn post_backdrop_draws_do_not_escape_an_old_layer_reservation() {
+        let full = rect(-100., -100., 300., 300.);
+        let mut scene = Scene::default();
+        scene.push_layer(rect(0., 0., 20., 20.));
+        scene.insert_primitive(glass(rect(0., 0., 2., 2.), full));
+        scene.insert_primitive(sprite(rect(15., 15., 1., 1.), full));
+        scene.pop_layer();
+        scene.insert_primitive(path(rect(15., 15., 1., 1.), full));
+        scene.finish();
+        assert_eq!(kinds(&scene), ["quad", "sprite", "path"]);
+    }
+
+    #[test]
+    fn backdrop_dependencies_survive_layers_and_replay() {
+        let full = rect(-100., -100., 300., 300.);
+        let mut source = Scene::default();
+        source.insert_primitive(sprite(rect(14., 2., 1., 1.), full));
+        source.push_layer(rect(0., 0., 10., 10.));
+        source.insert_primitive(glass(rect(0., 0., 10., 10.), full));
+        source.insert_primitive(path(rect(12., 2., 1., 1.), full));
+        source.pop_layer();
+        let mut replayed = Scene::default();
+        replayed.replay(0..source.len(), &source);
+        for scene in [&mut source, &mut replayed] {
+            scene.finish();
+            assert_eq!(kinds(scene), ["sprite", "quad", "path"]);
         }
     }
 }

@@ -8321,9 +8321,11 @@ fn issue_comment_card(comment: &gh::GhComment, theme: Theme) -> AnyElement {
     let has_body = !comment.body.trim().is_empty();
     div()
         .rounded(panel::RADIUS.px(&theme))
-        .border_1()
-        .border_color(theme.border)
-        .bg(theme.surface_elevated)
+        .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
+        // The fill is the card's whether or not the frost pass runs: a
+        // renderer without it keeps the plain translucent pane, never an
+        // opaque slab on a wallpaper the rest of the window shows through.
+        .bg(theme.card_fill(theme.surface_elevated))
         .flex()
         .flex_col()
         .child(
@@ -8579,9 +8581,10 @@ fn review_card(review: &gh::GhReview, theme: Theme) -> AnyElement {
     let has_body = !review.body.trim().is_empty();
     div()
         .rounded(panel::RADIUS.px(&theme))
-        .border_1()
-        .border_color(theme.border)
-        .bg(theme.surface_elevated)
+        .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
+        // Translucent whenever a wallpaper is behind the panel, frosted
+        // wherever the renderer can blur — the same rule as every other card.
+        .bg(theme.card_fill(theme.surface_elevated))
         .flex()
         .flex_col()
         .child(

@@ -62,6 +62,14 @@ use crate::theme::tokens::{
 use crate::theme::{self, Theme, ThemeMode};
 use crate::transcript::{ChatMessage, Step, SummaryRow, ToolCall, ToolFacts};
 
+fn frosted_transcript_fill(theme: Theme) -> Hsla {
+    if theme.glass_sigma().is_some() {
+        theme.card_fill(theme.surface_secondary)
+    } else {
+        theme.overlay
+    }
+}
+
 /// Opens the changed-files Review in the side pane (see `sidepane.rs`) —
 /// handed down from the app so the transcript's Review buttons can point
 /// at it without knowing the pane exists.
@@ -2091,9 +2099,8 @@ fn render_summary_card(row: &SummaryRow, paint: &RowPaint) -> AnyElement {
         .min_w_0()
         .overflow_hidden()
         .rounded(panel::RADIUS.px(&theme))
-        .border_1()
-        .border_color(theme.border)
-        .bg(theme.overlay)
+        .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
+        .bg(frosted_transcript_fill(theme))
         .child(header);
     if expanded {
         card = card.child(
@@ -2255,6 +2262,9 @@ fn user_message_bubble(body: &str, theme: Theme, column_width: Option<Pixels>) -
         .max_w(px(USER_BUBBLE_MAX_WIDTH))
         .rounded(panel::RADIUS.px(&theme))
         .bg(theme.card_fill(theme.surface_elevated))
+        .when_some(theme.glass_sigma(), |bubble, sigma| {
+            bubble.border_color(gpui::backdrop_blur_marker(sigma))
+        })
         .text_color(theme.text_primary)
         .px(DynamicSpacing::Base12.px(&theme))
         .py(DynamicSpacing::Base08.px(&theme))
@@ -3362,9 +3372,8 @@ fn render_ask_card(tool: &ToolCall, theme: Theme, key: (usize, usize)) -> AnyEle
         .min_w_0()
         .overflow_hidden()
         .rounded(panel::RADIUS.px(&theme))
-        .border_1()
-        .border_color(theme.border)
-        .bg(theme.overlay)
+        .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
+        .bg(frosted_transcript_fill(theme))
         .flex()
         .flex_col();
 
@@ -3627,9 +3636,12 @@ fn render_subagent_card(
         .min_w_0()
         .overflow_hidden()
         .rounded(panel::RADIUS.px(&theme))
-        .border_1()
-        .border_color(if failed { theme.error } else { theme.border })
-        .bg(theme.overlay)
+        .frosted_card(
+            &theme,
+            if failed { theme.error } else { theme.border },
+            panel::RADIUS.px(&theme),
+        )
+        .bg(frosted_transcript_fill(theme))
         .flex()
         .flex_col();
 
@@ -4134,9 +4146,8 @@ fn render_activity_card(
         .min_w_0()
         .overflow_hidden()
         .rounded(panel::RADIUS.px(&theme))
-        .border_1()
-        .border_color(theme.border)
-        .bg(theme.overlay)
+        .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
+        .bg(frosted_transcript_fill(theme))
         .child(
             div()
                 .id(ElementId::NamedInteger(
@@ -8846,8 +8857,7 @@ pub(crate) fn render_changed_files(
         .w_full()
         .min_w_0()
         .rounded(panel::RADIUS.px(&theme))
-        .border_1()
-        .border_color(theme.border)
+        .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
         .bg(theme.card_fill(theme.background))
         .overflow_hidden()
         .child(header)
@@ -9106,6 +9116,26 @@ fn starts_followup_turn(messages: &[ChatMessage], ix: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frosted_transcript_fill_uses_guarded_surface_only_for_active_glass() {
+        for base in [Theme::dark(), Theme::light()] {
+            for (active, glass) in [(false, false), (false, true), (true, false), (true, true)] {
+                let theme = base.with_wallpaper(theme::SurfaceTreatment {
+                    active,
+                    glass,
+                    card_alpha: 0.8,
+                    ..theme::SurfaceTreatment::OPAQUE
+                });
+                let expected = if active && glass {
+                    theme.card_fill(theme.surface_secondary)
+                } else {
+                    theme.overlay
+                };
+                assert_eq!(frosted_transcript_fill(theme), expected);
+            }
+        }
+    }
 
     #[test]
     fn streaming_fade_only_affects_new_text_and_finishes() {

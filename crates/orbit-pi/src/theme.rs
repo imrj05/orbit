@@ -1523,6 +1523,35 @@ impl Theme {
         }
     }
 
+    /// The hover wash for a control.
+    ///
+    /// On an opaque surface this is the palette's own `surface_hover` step.
+    /// Once that surface shows the wallpaper through it the step has to be ink
+    /// at alpha instead: an opaque wash on a frosted card or pane reads as a
+    /// slab cut into the glass rather than a state of it. With no wallpaper
+    /// this resolves to exactly the same colour as before.
+    pub fn hover_wash(self) -> Hsla {
+        if self.wallpaper.active {
+            self.overlay_strong
+        } else {
+            self.surface_hover
+        }
+    }
+
+    /// The pressed wash: [`Self::hover_wash`]'s rule, one step deeper.
+    ///
+    /// Deepened from `overlay_strong`'s own alpha rather than from a new
+    /// palette value, so each palette still decides how strong its ink states
+    /// are. The clamp keeps a heavy wash from burying the surface it sits on.
+    pub fn pressed_wash(self) -> Hsla {
+        if self.wallpaper.active {
+            self.text_primary
+                .opacity((self.overlay_strong.a * 1.5).min(0.30))
+        } else {
+            self.surface_active
+        }
+    }
+
     /// The blur radius, in logical points, a pane over the wallpaper frosts its
     /// backdrop with. `None` when there is no wallpaper, the Glass panes setting
     /// is off, or this renderer has no backdrop pass — the pane then keeps its
@@ -2838,6 +2867,56 @@ mod tests {
             ..treatment
         };
         assert_eq!(theme.with_wallpaper(off).glass_sigma(), None);
+    }
+
+    /// A control's wash follows the surface under it: the palette's own step
+    /// while that surface is opaque, ink at alpha once the wallpaper shows
+    /// through it — and always one visible step from rest to pressed.
+    #[test]
+    fn a_control_wash_follows_the_surface_under_it() {
+        for base in [Theme::dark(), Theme::light()] {
+            assert_eq!(
+                base.hover_wash(),
+                base.surface_hover,
+                "an opaque surface keeps the palette's hover step"
+            );
+            assert_eq!(base.pressed_wash(), base.surface_active);
+
+            let glass = base.with_wallpaper(SurfaceTreatment {
+                active: true,
+                ..SurfaceTreatment::OPAQUE
+            });
+            assert_eq!(
+                glass.hover_wash(),
+                glass.overlay_strong,
+                "over the wallpaper the hover is the palette's ink wash"
+            );
+            assert_eq!(
+                glass.hover_wash().h,
+                glass.text_primary.h,
+                "a wash is the ink role, never a surface step"
+            );
+            // A state is never a slab: pressing deepens the wash and stays
+            // translucent, so the image still reads through the control.
+            assert!(
+                glass.pressed_wash().a > glass.hover_wash().a,
+                "pressed must be visible against hover"
+            );
+            assert!(
+                glass.pressed_wash().a < 0.31,
+                "pressed must stay a wash, got {}",
+                glass.pressed_wash().a
+            );
+            // The setting alone decides the frost; the fill rule does not
+            // change when the renderer cannot blur.
+            let unfrosted = base.with_wallpaper(SurfaceTreatment {
+                active: true,
+                glass: false,
+                ..SurfaceTreatment::OPAQUE
+            });
+            assert_eq!(unfrosted.glass_sigma(), None);
+            assert_eq!(unfrosted.hover_wash(), glass.hover_wash());
+        }
     }
 
     #[test]

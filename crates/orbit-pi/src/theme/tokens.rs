@@ -1060,6 +1060,18 @@ fn drop_shadow(offset_y: f32, blur: f32, alpha: f32) -> BoxShadow {
 /// the blur request. [`Theme::glass_sigma`] decides; below it is `None` and
 /// nothing changes.
 pub trait StyledExt: Styled + ParentElement + Sized {
+    /// Preserve a card's hairline and layout while its border channel requests frost.
+    /// The fill and radius are chosen by the caller, including the non-glass fallback.
+    fn frosted_card(self, theme: &Theme, border: Hsla, radius: Pixels) -> Self {
+        let el = self.border_1();
+        if let Some(sigma) = theme.glass_sigma() {
+            el.border_color(gpui::backdrop_blur_marker(sigma))
+                .child(frosted_edge(border, radius))
+        } else {
+            el.border_color(border)
+        }
+    }
+
     /// Title bar, panels, tab bar.
     fn elevation_1(self, theme: &Theme) -> Self {
         elevated(self, theme, ElevationIndex::Surface, true)
@@ -1168,11 +1180,17 @@ impl InteractionState {
     /// `None` means paint nothing: the control keeps the surface beneath it.
     /// That covers `Rest` and `Focused` (focus is a frame, never a fill —
     /// `DESIGN.md` §Focus) and the two role exceptions above.
+    ///
+    /// Hover and pressed resolve through [`Theme::hover_wash`] /
+    /// [`Theme::pressed_wash`], so a control inside a frosted card or pane
+    /// takes an ink wash and one on an opaque surface keeps the palette step.
+    /// `Selected` stays a fill: a chosen row is a solid object, which is why a
+    /// menu highlights it rather than tinting it.
     pub fn fill(self, theme: &Theme) -> Option<Hsla> {
         match self {
             Self::Rest | Self::Focused => None,
-            Self::Hover => Some(theme.surface_hover),
-            Self::Pressed => Some(theme.surface_active),
+            Self::Hover => Some(theme.hover_wash()),
+            Self::Pressed => Some(theme.pressed_wash()),
             Self::Selected => Some(theme.surface_selected),
             Self::Disabled | Self::Glass => Some(theme.overlay),
         }
@@ -1250,7 +1268,8 @@ fn elevated<E: Styled + ParentElement>(
     if let Some(sigma) = frost {
         let el = el.border_color(gpui::backdrop_blur_marker(sigma));
         return if bordered {
-            el.child(frosted_edge(theme.border_strong, radius))
+            el.border_1()
+                .child(frosted_edge(theme.border_strong, radius))
         } else {
             el
         };
@@ -1868,20 +1887,30 @@ mod tests {
         // to prevent — so the check runs over every shipped palette, not just
         // the default one.
         for id in crate::theme::ThemeId::ALL {
-            let theme = Theme::for_id(id);
-            let hover = InteractionState::Hover.fill(&theme).expect("hover fills");
-            let pressed = InteractionState::Pressed
-                .fill(&theme)
-                .expect("pressed fills");
-            let selected = InteractionState::Selected
-                .fill(&theme)
-                .expect("selected fills");
-            assert_ne!(hover, pressed, "{id:?}: hover and pressed are one colour");
-            assert_ne!(selected, hover, "{id:?}: selected and hover are one colour");
-            assert_ne!(
-                selected, pressed,
-                "{id:?}: selected and pressed are one colour"
-            );
+            let base = Theme::for_id(id);
+            // Over the wallpaper the fills are ink washes instead of palette
+            // steps; they still have to be three different answers.
+            for theme in [
+                base,
+                base.with_wallpaper(crate::theme::SurfaceTreatment {
+                    active: true,
+                    ..crate::theme::SurfaceTreatment::OPAQUE
+                }),
+            ] {
+                let hover = InteractionState::Hover.fill(&theme).expect("hover fills");
+                let pressed = InteractionState::Pressed
+                    .fill(&theme)
+                    .expect("pressed fills");
+                let selected = InteractionState::Selected
+                    .fill(&theme)
+                    .expect("selected fills");
+                assert_ne!(hover, pressed, "{id:?}: hover and pressed are one colour");
+                assert_ne!(selected, hover, "{id:?}: selected and hover are one colour");
+                assert_ne!(
+                    selected, pressed,
+                    "{id:?}: selected and pressed are one colour"
+                );
+            }
         }
     }
 

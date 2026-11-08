@@ -1,118 +1,19 @@
-//! The new-task page's backdrop: a living ordered-dither field.
+//! Binary ordered-dither backdrop for the new-task page. A configured
+//! wallpaper takes precedence; the caller owns visibility and motion clocks.
 //!
-//! The page is a landing moment — an empty column, a headline, a folder row,
-//! and the composer — so its background has one job: give the whole page the
-//! texture of printed paper, densest where the eye lands and thinning into the
-//! window's edges, without ever competing with the text on it.
-//!
-//! It is the same ordered-dither language the wallpaper's `Dither` effect
-//! speaks, reduced to its simplest form: no image, just a soft density field
-//! quantized through an 8×8 Bayer matrix into four dot sizes. Eight-by-eight
-//! rather than four-by-four because the coarser matrix reads as a crosshatch
-//! on a field this large; 64 thresholds give a ramp smooth enough to look
-//! printed rather than patterned.
-//!
-//! The field covers the page edge to edge — a slow two-axis wave over a gentle
-//! downward bias, so the densest band sits behind the composer rather than
-//! across the headline. An elliptical vignette calms the window's edges and
-//! corners without ever emptying them: the screen is the page's surface, so it
-//! runs to the frame, and the drift is visible everywhere the reader looks.
-//!
-//! **The mark is screened into it.** Where the app monogram sits, the same
-//! screen takes over the shape: the glyphs hold a quiet density at rest, and a
-//! soft band of light travels across them, so each letter fills with the
-//! largest dots in turn and settles back. The mask is sampled from
-//! [`crate::app_icon::MARK_PNG`], not redrawn by hand — the backdrop cannot
-//! drift from the mark it claims to show, and a `cargo run` build never grows
-//! the Alpha pill.
-//!
-//! **The motion is the dither.** The wave drifts, so dots cross their
-//! thresholds a few at a time — roughly 2% of the screen a second, a handful of
-//! cells per frame — and the page appears to breathe instead of strobing.
-//! Nothing moves; only the screen fills in and out, and the light crosses the
-//! mark about every twenty seconds. Reduce Motion freezes it on the frame it
-//! was showing, which is a perfectly good poster of itself.
-//!
-//! A configured wallpaper (Settings → Appearance) replaces this entirely.
+//! The two independently seeded 3D value-noise fields are sampled on a coarse
+//! grid and interpolated before applying an 8×8 Bayer screen at raster resolution.
+//! This is an independent implementation, not the preview's shader.
+
+use std::sync::Arc;
 
 use gpui::{
-    canvas, div, fill, point, px, size, Background, Bounds, Corners, Hsla, IntoElement,
-    ParentElement, Pixels, Styled, Window,
+    canvas, div, AppContext, Corners, IntoElement, ParentElement, RenderImage, Rgba, Styled,
 };
+use image::{Frame, RgbaImage};
 
-use crate::theme::{Theme, ThemeMode};
+use crate::theme::Theme;
 
-/// Dither cell pitch, in logical pixels: the screen's ruling. Fine enough to
-/// read as texture at arm's length and to keep the monogram's counters open;
-/// coarse enough that the four dot sizes stay distinct. A full 1280×820 layer
-/// is ~142 × 91 cells, so the field issues roughly thirteen thousand quads per
-/// frame at the default UI scale.
-const CELL: f32 = 9.;
-/// Dot levels the field quantizes into. Level 0 is bare canvas.
-const LEVELS: usize = 4;
-/// Dot radius per level, as a fraction of [`CELL`]. Small on purpose: the dot
-/// grid this replaced read as texture, and a halftone carrying much more ink
-/// than that stops being texture and becomes a pattern. The steps are uneven
-/// because a halftone's area grows with the square of the radius.
-const RADII: [f32; LEVELS] = [0., 0.10, 0.15, 0.20];
-/// Ink strength per level, as a fraction of the layer's ink colour. Even steps
-/// keep the gradient smooth once the radii are uneven.
-const INK: [f32; LEVELS] = [0., 0.45, 0.70, 1.];
-/// The field's resting density: how much of the page carries ink before the
-/// wave moves it. Low enough that the screen stays a texture at every point of
-/// its drift — the wave supplies the variation, the base supplies the floor.
-const DENSITY: f32 = 0.30;
-/// The slow wave's amplitude. With [`DENSITY`] it spans roughly 0.08–0.52, so
-/// the screen ranges from sparse stipple to small dense dots and never reaches
-/// a solid field.
-const WAVE: f32 = 0.22;
-/// Downward bias: the densest band sits below the middle, behind the composer,
-/// keeping the headline's band the calmest part of the page.
-const BIAS: f32 = 0.10;
-/// How much of the field survives at the vignette's darkest point. The screen is
-/// a surface: it runs to the window's edges and into its corners, quieter there
-/// but never absent — a feathered edge read as the backdrop stopping short.
-const EDGE_FLOOR: f32 = 0.65;
-
-/// The mark's width as a fraction of the layer, capped in pixels — the
-/// monogram has to be wide enough for its counters to survive a 9px screen
-/// (below roughly 200px it stops being a wordmark), and small enough to stay a
-/// watermark on a wide display.
-const MARK_W: f32 = 0.36;
-const MARK_MAX_W: f32 = 560.;
-const MARK_MIN_W: f32 = 200.;
-/// Where the mark's centre sits, as a fraction of the layer's height: the band
-/// of open grain under the composer.
-///
-/// The new-task page centers its composer, so the watermark's seat moved down
-/// with it — the space below the composer column (and above the status row and
-/// terminal) is the page's one quiet field now. Sitting any higher put the
-/// wordmark behind the composer box, where an opaque field would hide it
-/// entirely.
-const MARK_CY: f32 = 0.74;
-/// Density inside the glyphs when the light is elsewhere — faint enough to be
-/// a watermark, present enough that the wordmark is always legible.
-const MARK_REST: f32 = 0.18;
-/// Density inside a glyph the light is crossing: the largest dot the screen
-/// has.
-const MARK_LIT: f32 = 0.85;
-/// The mark's ink as a fraction of the page's. The watermark is screened in the
-/// same colour, one step quieter than the grain around it.
-const MARK_INK: f32 = 0.85;
-/// Seconds for the light to cross the mark and come round again.
-const SWEEP_PERIOD: f32 = 20.;
-/// The light band's half-width in mark coordinates, and where it fades to
-/// nothing. Wide and soft: a spotlight, not a scanline.
-const LIT_IN: f32 = 0.30;
-const LIT_OUT: f32 = 0.55;
-/// The mask's resolution, in glyph-local columns. Enough to keep the O and P
-/// counters open at any layer size; one bilinear sample per cell is the whole
-/// cost.
-const MASK_COLS: usize = 64;
-
-/// Standard 8×8 Bayer matrix, 0..63. Thresholds are sampled at
-/// `(value + 0.5) / 64` so a perfectly even field dithers to exactly its own
-/// coverage instead of biasing toward one level.
 const BAYER: [[u8; 8]; 8] = [
     [0, 32, 8, 40, 2, 34, 10, 42],
     [48, 16, 56, 24, 50, 18, 58, 26],
@@ -124,19 +25,37 @@ const BAYER: [[u8; 8]; 8] = [
     [63, 31, 55, 23, 61, 29, 53, 21],
 ];
 
-/// The backdrop layer, absolutely filling its parent, for the given elapsed
-/// `phase` in seconds. `phase` freezes at any value for Reduce Motion.
+// A logical-pixel screen caps CPU work and atlas size on high-DPI displays.
+// Update at 5 Hz, independent of the caller's faster UI heartbeat.
+const FPS: f32 = 5.;
+const GRID: usize = 8;
+const MAX_SIDE: u32 = 2048;
+const MARK_W: f32 = 0.36;
+const MARK_MAX_W: f32 = 560.;
+const MARK_MIN_W: f32 = 200.;
+const MARK_CY: f32 = 0.74;
+const MASK_COLS: u32 = 64;
+
+type Key = (u32, u32, i64, [u8; 4], [u8; 4]);
+#[derive(Default)]
+struct Cache {
+    image: Option<(Key, Arc<RenderImage>)>,
+    pending: bool,
+}
+
+fn color(value: gpui::Hsla) -> [u8; 4] {
+    let c: Rgba = value.into();
+    [
+        (c.b * 255.).round() as u8,
+        (c.g * 255.).round() as u8,
+        (c.r * 255.).round() as u8,
+        255,
+    ]
+}
+
 pub fn layer(theme: Theme, phase: f32) -> impl IntoElement + use<> {
-    // The ink is the tertiary text weight, as the dot grid always was: paper
-    // texture, not a second content layer. Light mode needs more of it to
-    // carry the same weight on a bright canvas.
-    let ink = match theme.mode {
-        ThemeMode::Light => theme.text_muted.opacity(0.62),
-        ThemeMode::Dark => theme.text_muted.opacity(0.55),
-    };
-    // The cell pitch rides the UI scale so the screen's ruling keeps its
-    // proportion on a dense or a roomy interface.
-    let pitch = f32::from(theme.ui_px(CELL));
+    let background = color(theme.background);
+    let ink = color(theme.accent);
     div()
         .absolute()
         .top_0()
@@ -145,599 +64,396 @@ pub fn layer(theme: Theme, phase: f32) -> impl IntoElement + use<> {
         .bottom_0()
         .child(
             canvas(
-                |_, _, _| (),
-                move |bounds, _, window, _| paint(bounds, phase, pitch, ink, window),
+                move |bounds, window, cx| {
+                    let width = (f32::from(bounds.size.width).ceil() as u32).clamp(1, MAX_SIDE);
+                    let height = (f32::from(bounds.size.height).ceil() as u32).clamp(1, MAX_SIDE);
+                    let tick = (phase.max(0.) * FPS).floor() as i64;
+                    let key = (width, height, tick, background, ink);
+                    // State belongs to this element in this window, not to the UI thread.
+                    let cache = window.use_keyed_state("dither-cache", cx, |window, cx| {
+                        cx.on_release_in(window, |cache: &mut Cache, window, _| {
+                            if let Some((_, image)) = cache.image.take() {
+                                let _ = window.drop_image(image);
+                            }
+                        })
+                        .detach();
+                        Cache::default()
+                    });
+                    cache.update(cx, |cache, cx| {
+                        if !cache.pending && cache.image.as_ref().is_none_or(|(old, _)| *old != key)
+                        {
+                            cache.pending = true;
+                            let task = cx.background_spawn(async move {
+                                raster(width, height, tick as f32 / FPS, background, ink)
+                            });
+                            cx.spawn_in(window, async move |weak, cx| {
+                                let pixels = task.await;
+                                let _ = weak.update_in(cx, |cache, window, cx| {
+                                    let image =
+                                        Arc::new(RenderImage::new(vec![Frame::new(pixels)]));
+                                    if let Some((_, old)) = cache.image.replace((key, image)) {
+                                        let _ = window.drop_image(old);
+                                    }
+                                    cache.pending = false;
+                                    cx.notify();
+                                });
+                            })
+                            .detach();
+                        }
+                        // Never show a stale theme or stretch an old size while a job runs.
+                        cache
+                            .image
+                            .as_ref()
+                            .filter(|(old, _)| {
+                                old.0 == key.0 && old.1 == key.1 && old.3 == key.3 && old.4 == key.4
+                            })
+                            .map(|(_, image)| image.clone())
+                    })
+                },
+                move |bounds, image, window, _| {
+                    if let Some(image) = image {
+                        if let Err(error) =
+                            window.paint_image(bounds, Corners::default(), image, 0, false)
+                        {
+                            eprintln!("could not paint new-task backdrop: {error}");
+                        }
+                    }
+                },
             )
             .size_full(),
         )
 }
 
-/// One cell's worth of the layer: the density the screen quantizes, and how
-/// much of the mark covers it (for the mark's quieter ink).
-struct Sample {
-    value: f32,
-    mark: f32,
+fn hash(x: i32, y: i32, z: i32, seed: u32) -> f32 {
+    let mut h = seed
+        ^ (x as u32).wrapping_mul(0x8da6_b343)
+        ^ (y as u32).wrapping_mul(0xd816_3841)
+        ^ (z as u32).wrapping_mul(0xcb1a_b31f);
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x7feb_352d);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x846c_a68b);
+    h ^= h >> 16;
+    h as f32 / u32::MAX as f32
 }
 
-/// Paint the field: one quad per cell that carries ink.
-fn paint(bounds: Bounds<Pixels>, phase: f32, pitch: f32, ink: Hsla, window: &mut Window) {
-    let width = f32::from(bounds.size.width);
-    let height = f32::from(bounds.size.height);
-    if width < pitch || height < pitch {
-        return;
-    }
-    let frame = Frame::new(width, height);
-    let columns = (width / pitch).ceil() as usize;
-    let rows = (height / pitch).ceil() as usize;
-
-    for row in 0..rows {
-        for column in 0..columns {
-            let u = (column as f32 + 0.5) * pitch / width;
-            let v = (row as f32 + 0.5) * pitch / height;
-            let cell = sample(u, v, phase, &frame);
-            if cell.value <= 0. {
-                continue;
-            }
-            let level = dither(cell.value, BAYER[row % 8][column % 8]);
-            let radius = pitch * RADII[level];
-            if radius <= 0. {
-                continue;
-            }
-            // The mark paints in the same colour, one step quieter than the
-            // grain it sits in: a watermark, never a second layer of ink.
-            let alpha = ink.opacity(INK[level] * (1. + (MARK_INK - 1.) * cell.mark));
-            let center = point(
-                bounds.origin.x + px((column as f32 + 0.5) * pitch),
-                bounds.origin.y + px((row as f32 + 0.5) * pitch),
-            );
-            window.paint_quad(
-                fill(
-                    Bounds::new(
-                        point(center.x - px(radius), center.y - px(radius)),
-                        size(px(radius * 2.), px(radius * 2.)),
-                    ),
-                    Background::from(alpha),
-                )
-                .corner_radii(Corners::all(px(radius))),
-            );
-        }
-    }
-}
-
-/// Where one layer puts things, in normalized layer coordinates.
-struct Frame {
-    /// The mark's rect as `(min_u, min_v, max_u, max_v)`, or `None` when the
-    /// layer is too small to hold the monogram without turning it to mush.
-    mark: Option<(f32, f32, f32, f32)>,
-}
-
-impl Frame {
-    fn new(width: f32, height: f32) -> Self {
-        // Aspect-preserving: the mask is a wide block, and a stretched
-        // wordmark is worse than no wordmark.
-        let aspect = Mark::get().aspect();
-        let mark_w = (width * MARK_W).clamp(0., MARK_MAX_W);
-        let mark_h = mark_w / aspect;
-        let mark_w = mark_w.clamp(0., width * 0.8);
-        // The mark needs room for itself inside the band under the composer;
-        // past this it would grow up into the composer column.
-        let fits = mark_w >= MARK_MIN_W && mark_h < height * 0.45;
-        if !fits {
-            return Self { mark: None };
-        }
-        let half_u = mark_w / width / 2.;
-        let half_v = mark_h / height / 2.;
-        Self {
-            mark: Some((
-                0.5 - half_u,
-                MARK_CY - half_v,
-                0.5 + half_u,
-                MARK_CY + half_v,
-            )),
-        }
-    }
-}
-
-/// The layer's density field plus the mark at normalized layer coordinates
-/// `(u, v)` and elapsed `phase` seconds.
-///
-/// Two slow waves (a broad one across the page, a slower one running against it
-/// so the pattern never repeats on an obvious axis) ride a base density and a
-/// downward bias. The ellipse vignette and the four edge fades keep the screen
-/// from ending on a hard line where the layer meets the window's hairlines.
-/// Inside the mark the page's density gives way to the glyph's own, lit by the
-/// travelling band.
-fn sample(u: f32, v: f32, phase: f32, frame: &Frame) -> Sample {
-    let tau = std::f32::consts::TAU;
-    let broad = (tau * (u * 0.75 + phase * 0.016)).sin() * (tau * (v * 0.55 - phase * 0.011)).cos();
-    let cross = (tau * ((u * 0.45 - v * 0.32) + phase * 0.007)).sin()
-        * (tau * ((v * 0.38 + u * 0.21) - phase * 0.005)).cos();
-    let wave = 0.68 * broad + 0.32 * cross;
-    // Elliptical vignette, centred just under the page's middle so the densest
-    // band reads as light falling on the composer. Floored, not feathered: the
-    // corners stay screened at EDGE_FLOOR of the centre's density.
-    let vignette = smoothstep(1.15, 0.05, ((u - 0.5) / 0.80).hypot((v - 0.52) / 0.86));
-    let vignette = EDGE_FLOOR + (1. - EDGE_FLOOR) * vignette;
-    let page = ((DENSITY + WAVE * wave + BIAS * (v - 0.5)) * vignette).clamp(0., 1.);
-
-    let Some((min_u, min_v, max_u, max_v)) = frame.mark else {
-        return Sample {
-            value: page,
-            mark: 0.,
-        };
+fn noise(x: f32, y: f32, z: f32, seed: u32) -> f32 {
+    let (ix, iy, iz) = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
+    let fade = |t: f32| t * t * (3. - 2. * t);
+    let (fx, fy, fz) = (fade(x.fract()), fade(y.fract()), fade(z.fract()));
+    let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+    let plane = |dz| {
+        let a = lerp(
+            hash(ix, iy, iz + dz, seed),
+            hash(ix + 1, iy, iz + dz, seed),
+            fx,
+        );
+        let b = lerp(
+            hash(ix, iy + 1, iz + dz, seed),
+            hash(ix + 1, iy + 1, iz + dz, seed),
+            fx,
+        );
+        lerp(a, b, fy)
     };
-    let mark_u = (u - min_u) / (max_u - min_u);
-    let mark_v = (v - min_v) / (max_v - min_v);
-    if !(0. ..=1.).contains(&mark_u) || !(0. ..=1.).contains(&mark_v) {
-        return Sample {
-            value: page,
-            mark: 0.,
-        };
-    }
-    let coverage = Mark::get().sample(mark_u, mark_v);
-    if coverage <= 0. {
-        return Sample {
-            value: page,
-            mark: 0.,
-        };
-    }
-    // The light travels from left of the mark to right of it and starts again,
-    // pausing off both ends so the mark is fully dark and fully lit each pass.
-    let sweep = -0.4 + (phase / SWEEP_PERIOD).fract() * 1.8;
-    let lit = smoothstep(LIT_OUT, LIT_IN, (mark_u - sweep).abs());
-    let glyph = MARK_REST + (MARK_LIT - MARK_REST) * lit;
-    Sample {
-        value: (page * (1. - coverage) + glyph * coverage).clamp(0., 1.),
-        mark: coverage,
-    }
+    lerp(plane(0), plane(1), fz)
 }
 
-/// The app monogram as a dense coverage mask, derived once from the embedded
-/// production mark — never redrawn by hand, so it cannot drift from the icon.
+fn field(x: f32, y: f32, phase: f32) -> f32 {
+    let a = noise(x * 2.3 + 4., y * 2.3 + 7., phase * 0.035 + 3., 41);
+    let b = noise(x * 3.5 + 12., y * 3.5 + 5., phase * 0.024 + 9., 971);
+    (0.5 + (a - 0.5) * 1.35 + (b - 0.5) * 0.85).clamp(0., 1.)
+}
+
+/// The production monogram, stripped of the icon plate and cached across frames.
 struct Mark {
-    columns: usize,
-    rows: usize,
-    /// Row-major coverage, 0..=1.
-    cells: Vec<f32>,
+    mask: image::GrayImage,
 }
 
 impl Mark {
     fn get() -> &'static Self {
         static MARK: std::sync::OnceLock<Mark> = std::sync::OnceLock::new();
-        MARK.get_or_init(Mark::derive)
-    }
-
-    fn aspect(&self) -> f32 {
-        self.columns as f32 / self.rows as f32
-    }
-
-    /// Bilinear coverage at glyph-local `(u, v)`, sharpened so a glyph's
-    /// counter stays open instead of greying out at the mask's resolution.
-    fn sample(&self, u: f32, v: f32) -> f32 {
-        let x = u * self.columns as f32 - 0.5;
-        let y = v * self.rows as f32 - 0.5;
-        let x0 = x.floor();
-        let y0 = y.floor();
-        let fx = x - x0;
-        let fy = y - y0;
-        let at = |column: f32, row: f32| {
-            if column < 0. || row < 0. || column >= self.columns as f32 || row >= self.rows as f32 {
-                return 0.;
-            }
-            self.cells[row as usize * self.columns + column as usize]
-        };
-        let raw = at(x0, y0) * (1. - fx) * (1. - fy)
-            + at(x0 + 1., y0) * fx * (1. - fy)
-            + at(x0, y0 + 1.) * (1. - fx) * fy
-            + at(x0 + 1., y0 + 1.) * fx * fy;
-        smoothstep(0.35, 0.65, raw)
-    }
-
-    /// Threshold the mark, drop the plate's thin highlight ring, crop to the
-    /// glyphs, and box-average down to [`MASK_COLS`] columns.
-    fn derive() -> Self {
-        // The mark is compile-time embedded: a decode failure is a broken
-        // build, not a runtime condition to degrade around.
-        let image = image::load_from_memory(crate::app_icon::MARK_PNG)
-            .expect("the embedded mark PNG must decode");
-        let luma = image.to_luma8();
-        let (width, height) = luma.dimensions();
-        let on: Vec<bool> = luma.pixels().map(|pixel| pixel.0[0] > 128).collect();
-        let index = |x: u32, y: u32| (y * width + x) as usize;
-        // Two separable passes of a 7-wide "all neighbours on" test: the plate's
-        // bevel ring is a couple of pixels thick and vanishes, while the chunky
-        // glyphs survive.
-        let radius = 3;
-        let mut horizontal = vec![false; on.len()];
-        for y in 0..height {
-            for x in 0..width {
-                let mut keep = on[index(x, y)];
-                let mut step = 0;
-                while keep && step <= radius {
-                    if x < step || x + step >= width {
-                        keep = false;
-                        break;
+        MARK.get_or_init(|| {
+            let source = image::load_from_memory(crate::app_icon::MARK_PNG)
+                .expect("the embedded mark PNG must decode")
+                .to_luma8();
+            let (width, height) = source.dimensions();
+            // Erode the thin plate highlight, preserving the thick glyphs.
+            let mut horizontal = image::GrayImage::new(width, height);
+            for y in 0..height {
+                for x in 3..width.saturating_sub(3) {
+                    if (x - 3..=x + 3).all(|xx| source.get_pixel(xx, y).0[0] > 128) {
+                        horizontal.put_pixel(x, y, image::Luma([255]));
                     }
-                    keep = on[index(x - step, y)] && on[index(x + step, y)];
-                    step += 1;
                 }
-                horizontal[index(x, y)] = keep;
             }
-        }
-        let mut eroded = vec![false; on.len()];
-        for y in 0..height {
-            for x in 0..width {
-                let mut keep = horizontal[index(x, y)];
-                let mut step = 0;
-                while keep && step <= radius {
-                    if y < step || y + step >= height {
-                        keep = false;
-                        break;
+            let mut mask = image::GrayImage::new(width, height);
+            let (mut min_x, mut min_y, mut max_x, mut max_y) = (width, height, 0, 0);
+            for y in 3..height.saturating_sub(3) {
+                for x in 0..width {
+                    if (y - 3..=y + 3).all(|yy| horizontal.get_pixel(x, yy).0[0] > 0) {
+                        mask.put_pixel(x, y, image::Luma([255]));
+                        min_x = min_x.min(x);
+                        min_y = min_y.min(y);
+                        max_x = max_x.max(x);
+                        max_y = max_y.max(y);
                     }
-                    keep = horizontal[index(x, y - step)] && horizontal[index(x, y + step)];
-                    step += 1;
-                }
-                eroded[index(x, y)] = keep;
-            }
-        }
-        // The glyphs' bounding box.
-        let (mut min_x, mut min_y, mut max_x, mut max_y) = (width, height, 0, 0);
-        for y in 0..height {
-            for x in 0..width {
-                if eroded[index(x, y)] {
-                    min_x = min_x.min(x);
-                    min_y = min_y.min(y);
-                    max_x = max_x.max(x);
-                    max_y = max_y.max(y);
                 }
             }
+            assert!(
+                min_x < max_x && min_y < max_y,
+                "the embedded mark must contain glyphs"
+            );
+            let cropped = image::imageops::crop_imm(
+                &mask,
+                min_x,
+                min_y,
+                max_x - min_x + 1,
+                max_y - min_y + 1,
+            )
+            .to_image();
+            let rows = ((MASK_COLS as f32 * cropped.height() as f32 / cropped.width() as f32)
+                .round() as u32)
+                .max(1);
+            Self {
+                mask: image::imageops::resize(
+                    &cropped,
+                    MASK_COLS,
+                    rows,
+                    image::imageops::FilterType::Triangle,
+                ),
+            }
+        })
+    }
+
+    fn rect(&self, width: u32, height: u32) -> Option<(u32, u32, u32, u32)> {
+        let (width, height) = (width as f32, height as f32);
+        let mark_w = (width * MARK_W).min(MARK_MAX_W);
+        let mark_h = mark_w * self.mask.height() as f32 / self.mask.width() as f32;
+        if mark_w < MARK_MIN_W || mark_h >= height * 0.45 {
+            return None;
         }
-        assert!(
-            min_x < max_x && min_y < max_y,
-            "the embedded mark must erode to a non-empty glyph box"
+        Some((
+            (width * 0.5 - mark_w * 0.5).round() as u32,
+            (height * MARK_CY - mark_h * 0.5).round() as u32,
+            mark_w.round() as u32,
+            mark_h.round() as u32,
+        ))
+    }
+}
+
+fn raster(width: u32, height: u32, phase: f32, bg: [u8; 4], ink: [u8; 4]) -> RgbaImage {
+    let (w, h) = (width as usize, height as usize);
+    let cols = w.div_ceil(GRID) + 1;
+    let rows = h.div_ceil(GRID) + 1;
+    let scale = width.min(height).max(1) as f32;
+    let mut grid = vec![0.; cols * rows];
+    for y in 0..rows {
+        for x in 0..cols {
+            grid[y * cols + x] = field((x * GRID) as f32 / scale, (y * GRID) as f32 / scale, phase);
+        }
+    }
+    let mark = Mark::get().rect(width, height).map(|(left, top, w, h)| {
+        let mask = image::imageops::resize(
+            &Mark::get().mask,
+            w,
+            h,
+            image::imageops::FilterType::Triangle,
         );
-        let box_w = max_x - min_x + 1;
-        let box_h = max_y - min_y + 1;
-        let columns = MASK_COLS;
-        let rows = ((columns as f32 * box_h as f32 / box_w as f32).round() as usize).max(1);
-        let mut cells = vec![0.; columns * rows];
-        for row in 0..rows {
-            for column in 0..columns {
-                // The source rect this mask cell covers, averaged by area.
-                let x0 = min_x + (column as f32 * box_w as f32 / columns as f32) as u32;
-                let x1 = min_x
-                    + (((column + 1) as f32 * box_w as f32 / columns as f32).ceil() as u32)
-                        .min(box_w);
-                let y0 = min_y + (row as f32 * box_h as f32 / rows as f32) as u32;
-                let y1 = min_y
-                    + (((row + 1) as f32 * box_h as f32 / rows as f32).ceil() as u32).min(box_h);
-                let (mut on_cells, mut count) = (0., 0.);
-                for y in y0..y1.max(y0 + 1) {
-                    for x in x0..x1.max(x0 + 1) {
-                        if x <= max_x && y <= max_y && eroded[index(x, y)] {
-                            on_cells += 1.;
-                        }
-                        count += 1.;
-                    }
-                }
-                cells[row * columns + column] = if count > 0. { on_cells / count } else { 0. };
+        (left as usize, top as usize, mask)
+    });
+    let mut pixels = vec![0; w * h * 4];
+    for y in 0..h {
+        let gy = y / GRID;
+        let fy = (y % GRID) as f32 / GRID as f32;
+        for x in 0..w {
+            let gx = x / GRID;
+            let fx = (x % GRID) as f32 / GRID as f32;
+            let top = grid[gy * cols + gx] * (1. - fx) + grid[gy * cols + gx + 1] * fx;
+            let bottom =
+                grid[(gy + 1) * cols + gx] * (1. - fx) + grid[(gy + 1) * cols + gx + 1] * fx;
+            let mut value = top * (1. - fy) + bottom * fy;
+            if let Some((left, top, mask)) = &mark {
+                let coverage = x
+                    .checked_sub(*left)
+                    .zip(y.checked_sub(*top))
+                    .filter(|(mx, my)| *mx < mask.width() as usize && *my < mask.height() as usize)
+                    .map_or(0., |(mx, my)| {
+                        mask.get_pixel(mx as u32, my as u32).0[0] as f32 / 255.
+                    });
+                // Compress the field across the whole screen, not just the mark's
+                // bounding box. Glyphs lift its density while retaining the same
+                // moving field and Bayer screen; counters remain background.
+                value = 0.12 + 0.38 * value + coverage * (0.46 - 0.06 * value);
             }
-        }
-        Self {
-            columns,
-            rows,
-            cells,
+            let threshold = (BAYER[y % 8][x % 8] as f32 + 0.5) / 64.;
+            let pixel = if value > threshold { ink } else { bg };
+            pixels[(y * w + x) * 4..][..4].copy_from_slice(&pixel);
         }
     }
-}
-
-/// Quantize one cell's field value through the ordered matrix: the whole part
-/// picks the level, the fractional part decides whether this cell rounds up.
-fn dither(value: f32, threshold: u8) -> usize {
-    let scaled = value * LEVELS as f32;
-    let base = scaled.floor();
-    let threshold = (threshold as f32 + 0.5) / 64.;
-    let level = if scaled - base > threshold {
-        base + 1.
-    } else {
-        base
-    };
-    (level.max(0.) as usize).min(LEVELS - 1)
-}
-
-fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
-    let t = ((x - edge0) / (edge1 - edge0)).clamp(0., 1.);
-    t * t * (3. - 2. * t)
+    RgbaImage::from_raw(width, height, pixels).expect("raster dimensions match buffer")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::prelude::*;
-
-    /// A layer shape the tests exercise the field on: wide enough to carry the
-    /// mark, which is what a running window looks like.
-    fn frame() -> Frame {
-        Frame::new(1280., 820.)
-    }
-
-    /// The page's own density, with no mark in the way.
-    fn page(u: f32, v: f32, phase: f32) -> f32 {
-        sample(u, v, phase, &Frame { mark: None }).value
-    }
-
-    /// The mask comes from the shipped mark, so it must look like the mark: a
-    /// wide block, mostly ink, with the O's counter open.
     #[test]
-    fn the_mark_mask_is_the_production_monogram() {
-        let mark = Mark::get();
-        assert!(mark.columns >= 48, "{} columns", mark.columns);
-        assert_eq!(mark.columns, MASK_COLS);
-        assert!(
-            (2.0..2.4).contains(&mark.aspect()),
-            "the monogram is a wide block: aspect {}",
-            mark.aspect()
-        );
-        let coverage: f32 = mark.cells.iter().sum::<f32>() / mark.cells.len() as f32;
-        assert!(
-            (0.55..0.85).contains(&coverage),
-            "the glyphs cover most of their box: {coverage}"
-        );
-        // The O's counter is a hole in the ink; the P's stem is solid.
-        assert!(
-            mark.sample(0.21, 0.45) < 0.5,
-            "the O's counter stays open: {}",
-            mark.sample(0.21, 0.45)
-        );
-        assert!(
-            mark.sample(0.56, 0.90) > 0.5,
-            "the P's stem is solid: {}",
-            mark.sample(0.56, 0.90)
-        );
+    fn bayer_has_all_thresholds() {
+        let mut thresholds = BAYER.into_iter().flatten().collect::<Vec<_>>();
+        thresholds.sort();
+        assert_eq!(thresholds, (0..64).collect::<Vec<_>>());
     }
-
-    /// The screen covers the page edge to edge. Two regressions live here: a
-    /// field that only rises off the bottom edge (bare canvas above it), and a
-    /// field feathered away from the window's borders (a backdrop that stops
-    /// short of the frame). Every point of the layer — corners included — must
-    /// carry ink at every phase.
     #[test]
-    fn the_field_covers_the_whole_page_edge_to_edge() {
-        let frame = frame();
-        // The outermost dotted cell sits half a pitch in from the border, so
-        // these are the layer's first and last cells.
-        for u in [0.004, 0.05, 0.25, 0.5, 0.75, 0.95, 0.996] {
-            for v in [0.004, 0.05, 0.25, 0.5, 0.75, 0.95, 0.996] {
-                for phase in [0., 7., 31.5, 300.] {
-                    let value = sample(u, v, phase, &frame).value;
-                    assert!(
-                        value > 0.02,
-                        "no ink at ({u}, {v}) on phase {phase}: {value}"
-                    );
-                }
-            }
+    fn raster_is_binary_and_evolves() {
+        let bg = [0, 0, 0, 255];
+        let ink = [255, 255, 255, 255];
+        let a = raster(256, 192, 0., bg, ink);
+        let b = raster(256, 192, 30., bg, ink);
+        let mut count = 0;
+        let mut changed = 0;
+        for (a, b) in a.pixels().zip(b.pixels()) {
+            assert!(a.0 == bg || a.0 == ink);
+            count += usize::from(a.0 == ink);
+            changed += usize::from(a != b);
         }
+        assert!((5000..44000).contains(&count));
+        assert!(changed > 1000);
     }
-
-    /// ...and the drift is visible at the frame too, not just in the middle: a
-    /// corner's cell changes with the phase like any other.
-    #[test]
-    fn the_field_drifts_at_the_edges() {
-        let frame = frame();
-        let screen = |u: f32, v: f32, phase: f32| {
-            let value = sample(u, v, phase, &frame).value;
-            (0..64)
-                .map(|threshold| dither(value, threshold))
-                .collect::<Vec<_>>()
-        };
-        for (u, v) in [
-            (0.004, 0.004),
-            (0.996, 0.004),
-            (0.004, 0.996),
-            (0.996, 0.996),
-            (0.004, 0.5),
-            (0.996, 0.5),
-            (0.5, 0.004),
-            (0.5, 0.996),
-        ] {
-            // The two waves beat against each other on a minute's timescale, so
-            // an edge cell is checked across five minutes rather than one — the
-            // point is that it moves at all, not that it moves fast.
-            let seen: std::collections::BTreeSet<Vec<usize>> =
-                (0..60).map(|step| screen(u, v, step as f32 * 5.)).collect();
-            assert!(
-                seen.len() > 1,
-                "the edge at ({u}, {v}) never changes: {seen:?}"
-            );
-        }
-    }
-
-    /// ...and it is a screen, not a wash: most cells carry a dot, so the page
-    /// reads as halftone rather than a few scattered specks.
-    #[test]
-    fn most_of_the_page_is_screened() {
-        let frame = frame();
-        let mut marked = 0;
-        let mut total = 0;
-        for row in 0..60 {
-            for column in 0..60 {
-                let u = 0.15 + (column as f32 + 0.5) * 0.70 / 60.;
-                let v = 0.12 + (row as f32 + 0.5) * 0.80 / 60.;
-                let value = sample(u, v, 0., &frame).value;
-                if dither(value, BAYER[row % 8][column % 8]) > 0 {
-                    marked += 1;
-                }
-                total += 1;
-            }
-        }
-        let ratio = marked as f32 / total as f32;
-        assert!(ratio > 0.6, "only {ratio} of the page is screened");
-    }
-
-    /// The page never saturates: the composer's band is dense but the page
-    /// never turns into a solid slab of ink wherever the wave peaks.
-    #[test]
-    fn the_field_never_saturates() {
-        for phase in [0., 7., 31.5, 300.] {
-            for row in 0..40 {
-                for column in 0..40 {
-                    let u = (column as f32 + 0.5) / 40.;
-                    let v = (row as f32 + 0.5) / 40.;
-                    let value = page(u, v, phase);
-                    assert!(
-                        value < 0.60,
-                        "solid ink at ({u}, {v}) on phase {phase}: {value}"
-                    );
-                }
-            }
-        }
-    }
-
-    /// The screen's weight tracks the field: a stronger field paints bigger
-    /// dots, never more of them (this is a halftone, so the cell is always
-    /// marked once it carries ink and the *area* is what ramps).
-    #[test]
-    fn the_screen_weight_tracks_the_field() {
-        let mean_ink = |value: f32| {
-            let total: f32 = BAYER
-                .iter()
-                .flatten()
-                .map(|&threshold| INK[dither(value, threshold)])
-                .sum();
-            total / 64.
-        };
-        assert_eq!(mean_ink(0.), 0., "a bare field paints nothing");
-        assert_eq!(
-            mean_ink(1.),
-            INK[LEVELS - 1],
-            "a full field is solid at the top level"
-        );
-        let mut previous = 0.;
-        let mut levels = std::collections::BTreeSet::new();
-        for step in 0..=40 {
-            let value = step as f32 / 40.;
-            let ink = mean_ink(value);
-            assert!(
-                ink >= previous - f32::EPSILON,
-                "ink dipped at {value}: {ink} after {previous}"
-            );
-            previous = ink;
-            for &threshold in BAYER.iter().flatten() {
-                levels.insert(dither(value, threshold));
-            }
-        }
-        assert_eq!(levels.len(), LEVELS, "every level is reachable: {levels:?}");
-    }
-
-    /// The point of the effect: two phases are not the same screen. If this
-    /// ever fails the backdrop is a still painting with a timer attached.
-    #[test]
-    fn a_later_phase_redraws_part_of_the_screen() {
-        let screen = |phase: f32| -> Vec<usize> {
-            let mut cells = Vec::new();
-            for row in 0..80 {
-                for column in 0..80 {
-                    let u = (column as f32 + 0.5) / 80.;
-                    let v = (row as f32 + 0.5) / 80.;
-                    cells.push(dither(page(u, v, phase), BAYER[row % 8][column % 8]));
-                }
-            }
-            cells
-        };
-        let first = screen(0.);
-        let second = screen(1.);
-        let changed = first
-            .iter()
-            .zip(second.iter())
-            .filter(|(a, b)| a != b)
-            .count();
-        // Measured on the real field: ~1% of cells per second. Assert a band,
-        // not a number — "some, and not all at once".
-        let ratio = changed as f32 / first.len() as f32;
-        assert!(
-            (0.002..0.04).contains(&ratio),
-            "{ratio} of the screen changed in one second"
-        );
-    }
-
-    /// The mark is screened in, and the light crosses it: the lit side carries
-    /// the largest dot while the far side rests, and half a sweep later it is
-    /// the other way round.
-    #[test]
-    fn the_light_crosses_the_mark() {
-        let frame = frame();
-        let (min_u, min_v, max_u, max_v) = frame.mark.expect("a window this size carries the mark");
-        let at = |mark_u: f32, phase: f32| {
-            let u = min_u + (max_u - min_u) * mark_u;
-            let v = min_v + (max_v - min_v) * 0.2;
-            sample(u, v, phase, &frame)
-        };
-        // The sweep starts left of the mark at phase 0 and reaches its middle
-        // after a quarter of the period; the glyphs' left and right ends take
-        // turns being lit.
-        let early_left = at(0.05, 5.);
-        let early_right = at(0.95, 5.);
-        assert!(
-            early_left.value > early_right.value,
-            "the left glyph lights first: {} vs {}",
-            early_left.value,
-            early_right.value
-        );
-        assert!(
-            early_left.mark > 0.5 && early_right.mark > 0.5,
-            "both samples sit on glyphs"
-        );
-        let late_left = at(0.05, 15.);
-        let late_right = at(0.95, 15.);
-        assert!(
-            late_right.value > late_left.value,
-            "and the right glyph lights later: {} vs {}",
-            late_right.value,
-            late_left.value
-        );
-        // Resting glyphs stay visible: a watermark, not an absence.
-        assert!(
-            early_right.value >= MARK_REST * 0.9,
-            "the unlit glyph keeps its rest density: {}",
-            early_right.value
-        );
-    }
-
-    /// A layer too small for the monogram drops it rather than stretching a
-    /// wordmark into mush — the screen alone is still a complete backdrop.
-    #[test]
-    fn a_small_layer_has_no_mark() {
-        assert!(Frame::new(360., 300.).mark.is_none(), "narrow");
-        assert!(Frame::new(1280., 360.).mark.is_none(), "short");
-        assert!(
-            Frame::new(1280., 820.).mark.is_some(),
-            "a window carries it"
-        );
-    }
-
-    /// The layer paints into a real window: a panic inside the quad path (a
-    /// bad bounds, a zero radius) would otherwise only show up on screen.
     #[gpui::test]
-    fn the_layer_draws(cx: &mut gpui::TestAppContext) {
+    fn layer_draws_in_a_window(cx: &mut gpui::TestAppContext) {
+        use gpui::{point, px, size, AppContext, Window};
         let cx = cx.add_empty_window();
-        cx.update(|_, cx| cx.set_global(Theme::for_id(crate::theme::ThemeId::Orbit)));
         let view = cx.update(|_, cx| {
             cx.new(|_| {
-                struct Layer(Theme);
+                struct Layer;
                 impl gpui::Render for Layer {
                     fn render(
                         &mut self,
                         _: &mut Window,
                         _: &mut gpui::Context<Self>,
                     ) -> impl IntoElement {
-                        div().size_full().child(super::layer(self.0, 12.5))
+                        div()
+                            .size_full()
+                            .child(layer(Theme::for_id(crate::theme::ThemeId::Orbit), 0.))
                     }
                 }
-                Layer(Theme::for_id(crate::theme::ThemeId::Orbit))
+                Layer
             })
         });
-        let _ = cx.draw(point(px(0.), px(0.)), size(px(900.), px(620.)), |_, _| {
+        let _ = cx.draw(point(px(0.), px(0.)), size(px(320.), px(240.)), |_, _| {
             view.clone()
         });
+        // Complete the background job and exercise painting its result too.
+        cx.run_until_parked();
+        let _ = cx.draw(point(px(0.), px(0.)), size(px(320.), px(240.)), |_, _| {
+            view.clone()
+        });
+    }
+
+    #[test]
+    fn mark_placement_and_small_fallback() {
+        let mark = Mark::get();
+        assert!(mark.rect(360, 300).is_none());
+        assert!(mark.rect(1280, 360).is_none());
+        let (x, y, w, h) = mark.rect(1280, 820).unwrap();
+        assert!((x as f32 + w as f32 / 2. - 640.).abs() < 1.);
+        assert!((y as f32 + h as f32 / 2. - 820. * MARK_CY).abs() < 1.);
+        assert!((2.0..2.4).contains(&(w as f32 / h as f32)));
+    }
+
+    #[test]
+    fn mark_and_counters_remain_visible_across_phases_and_palettes() {
+        let mark = Mark::get();
+        let (left, top, w, h) = mark.rect(800, 600).unwrap();
+        let mask = image::imageops::resize(&mark.mask, w, h, image::imageops::FilterType::Triangle);
+        for (bg, ink) in [
+            ([0, 0, 0, 255], [255, 255, 255, 255]),
+            ([255, 255, 255, 255], [0, 0, 0, 255]),
+        ] {
+            let images = [
+                raster(800, 600, 0., bg, ink),
+                raster(800, 600, 30., bg, ink),
+            ];
+            let mut changed_glyph = 0;
+            for (phase, image) in [0., 30.].into_iter().zip(&images) {
+                let (mut glyph_ink, mut glyph_total, mut outside_ink, mut outside_total) =
+                    (0, 0, 0, 0);
+                for y in 0..h {
+                    for x in 0..w {
+                        let pixel = image.get_pixel(left + x, top + y).0;
+                        assert!(pixel == bg || pixel == ink, "the mark must stay binary");
+                        let coverage = mask.get_pixel(x, y).0[0];
+                        if coverage == 255 {
+                            glyph_total += 1;
+                            glyph_ink += usize::from(pixel == ink);
+                            changed_glyph += usize::from(
+                                images[0].get_pixel(left + x, top + y)
+                                    != images[1].get_pixel(left + x, top + y),
+                            );
+                        } else if coverage == 0 {
+                            outside_total += 1;
+                            outside_ink += usize::from(pixel == ink);
+                            // Compare samples inside the mark box to the same
+                            // interpolated field used everywhere outside it.
+                            if x % 11 == 0 && y % 11 == 0 {
+                                let (sx, sy) = ((left + x) as usize, (top + y) as usize);
+                                let (gx, gy) = (sx / GRID, sy / GRID);
+                                let (fx, fy) = (
+                                    (sx % GRID) as f32 / GRID as f32,
+                                    (sy % GRID) as f32 / GRID as f32,
+                                );
+                                let sample = |x: usize, y: usize| {
+                                    field((x * GRID) as f32 / 600., (y * GRID) as f32 / 600., phase)
+                                };
+                                let a = sample(gx, gy) * (1. - fx) + sample(gx + 1, gy) * fx;
+                                let b =
+                                    sample(gx, gy + 1) * (1. - fx) + sample(gx + 1, gy + 1) * fx;
+                                let value = 0.12 + 0.38 * (a * (1. - fy) + b * fy);
+                                let threshold = (BAYER[sy % 8][sx % 8] as f32 + 0.5) / 64.;
+                                assert_eq!(
+                                    pixel,
+                                    if value > threshold { ink } else { bg },
+                                    "no plate behind glyphs"
+                                );
+                            }
+                        }
+                    }
+                }
+                assert!(
+                    glyph_ink > 0 && glyph_ink < glyph_total,
+                    "mixed glyph dither"
+                );
+                assert!(
+                    outside_ink > 0 && outside_ink < outside_total,
+                    "no solid plate"
+                );
+                assert!(
+                    (glyph_ink as f32 / glyph_total as f32)
+                        > (outside_ink as f32 / outside_total as f32) + 0.3,
+                    "glyph density stands out"
+                );
+                // The O counter must contain both screen colors, not a solid fill.
+                let (cx, cy) = ((0.21 * w as f32) as u32, (0.45 * h as f32) as u32);
+                let mut counter_ink = 0;
+                for y in cy - 4..cy + 4 {
+                    for x in cx - 4..cx + 4 {
+                        assert_eq!(mask.get_pixel(x, y).0[0], 0);
+                        counter_ink += usize::from(image.get_pixel(left + x, top + y).0 == ink);
+                    }
+                }
+                assert!(
+                    (1..64).contains(&counter_ink),
+                    "counter retains background dither"
+                );
+            }
+            assert!(changed_glyph > 0, "glyph dither responds to animation");
+        }
+    }
+
+    #[test]
+    fn fields_are_smooth_and_time_dependent() {
+        let a = noise(1.3, 2.2, 3.4, 41);
+        assert!((a - noise(1.301, 2.2, 3.4, 41)).abs() < 0.01);
+        assert_ne!(a, noise(1.3, 2.2, 4.4, 41));
+        assert_ne!(a, noise(1.3, 2.2, 3.4, 971));
     }
 }

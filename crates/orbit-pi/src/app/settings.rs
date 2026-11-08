@@ -4,7 +4,7 @@ use crate::motion::Hover;
 use crate::quota::note_should_render;
 use crate::theme::tokens::{
     button, context_menu, input, modal, panel, picker, popover, BufferLineHeight, ButtonSize,
-    DynamicSpacing, HeadlineSize, IconSize, Radius, TextSize, BORDER_WIDTH,
+    DynamicSpacing, HeadlineSize, IconSize, Radius, StyledExt, TextSize, BORDER_WIDTH,
 };
 use crate::theme::MotionPreference;
 use gpui::{canvas, Bounds, DispatchPhase, Hitbox, HitboxBehavior, MouseMoveEvent};
@@ -2494,8 +2494,10 @@ impl OrbitApp {
         div()
             .w_full()
             .bg(theme.surface_secondary)
-            .border_1()
-            .border_color(theme.border)
+            .when_some(theme.glass_sigma(), |card, _| {
+                card.bg(theme.card_fill(theme.surface_secondary))
+            })
+            .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
             .rounded(panel::RADIUS.px(&theme))
             .px(DynamicSpacing::Base12.px(&theme))
             .py(DynamicSpacing::Base40.px(&theme))
@@ -3794,8 +3796,10 @@ impl OrbitApp {
             .w_full()
             .min_w_0()
             .bg(theme.surface_secondary)
-            .border_1()
-            .border_color(theme.border)
+            .when_some(theme.glass_sigma(), |card, _| {
+                card.bg(theme.card_fill(theme.surface_secondary))
+            })
+            .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
             .rounded(panel::RADIUS.px(&theme))
             .p(DynamicSpacing::Base12.px(&theme))
             .flex()
@@ -4709,8 +4713,7 @@ impl OrbitApp {
         let mut board = div()
             .w_full()
             .bg(theme.card_fill(theme.surface_secondary))
-            .border_1()
-            .border_color(theme.border)
+            .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
             .rounded(panel::RADIUS.px(&theme))
             .flex()
             .flex_col();

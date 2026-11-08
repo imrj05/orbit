@@ -1227,6 +1227,8 @@ pub struct Transcript {
     /// Message index where the latest turn starts. `None` until the app's
     /// turn clock says which turn the card should describe.
     review_card_start: Option<usize>,
+    /// Whether the app's latest turn is still open, including agent boundaries.
+    review_turn_open: bool,
     /// Workspace used to normalize the card's paths the same way Review does.
     review_workspace: Option<PathBuf>,
     /// Latest-turn file list. Same paths and counts as that turn's Review.
@@ -1282,6 +1284,7 @@ impl Transcript {
             seed_thinking: Rc::new(Cell::new(false)),
             tail_summary: Rc::new(Cell::new(false)),
             review_card_start: None,
+            review_turn_open: false,
             review_workspace: None,
             review_card_files: Vec::new(),
             awaiting_reply: Rc::new(Cell::new(false)),
@@ -1604,6 +1607,7 @@ impl Transcript {
         // the latest turn. Until then the previous session's files must not
         // stay on screen.
         self.review_card_start = None;
+        self.review_turn_open = false;
         self.review_card_files.clear();
         self.awaiting_reply.set(false);
         self.set_tail_row(false);
@@ -1642,6 +1646,7 @@ impl Transcript {
         self.step_mark.set(None);
         self.toolcall_args.borrow_mut().clear();
         self.review_card_start = None;
+        self.review_turn_open = false;
         self.review_workspace = None;
         self.review_card_files.clear();
         self.tail_summary.set(false);
@@ -1653,8 +1658,6 @@ impl Transcript {
         match event {
             Event::MessageStart { value } => {
                 let changed = self.on_message_boundary(value);
-                // A steer user row hides the card on the way in. The latest
-                // turn's start did not move, so put that turn's files back.
                 self.refresh_review_card();
                 changed
             }
@@ -1690,11 +1693,13 @@ impl Transcript {
                 // left by an attempt it was in the middle of (a cancelled
                 // retry, a request that threw on the abort) retires with the
                 // stop (issue #96).
-                *aborted && self.mark_turn_aborted()
+                let changed = *aborted && self.mark_turn_aborted();
+                self.refresh_review_card();
+                changed
             }
             // `agent_end` fires between loop iterations while queued
             // steering/follow-ups keep the run going — clear the live
-            // stream state but leave the summary card until the settle.
+            // stream state but keep the turn open until the settle.
             Event::AgentEnd { will_retry } => {
                 if !*will_retry {
                     self.clear_live_state();
@@ -2691,13 +2696,24 @@ impl Transcript {
 
     /// Point the changed-files card at the latest turn. `start` is that
     /// turn's first message index; `None` hides the card.
-    pub(crate) fn set_review_card_scope(&mut self, start: Option<usize>, workspace: Option<&Path>) {
+    pub(crate) fn set_review_card_scope(
+        &mut self,
+        start: Option<usize>,
+        workspace: Option<&Path>,
+        turn_open: bool,
+    ) {
         self.review_card_start = start;
+        self.review_turn_open = turn_open;
         self.review_workspace = workspace.map(Path::to_path_buf);
         self.refresh_review_card();
     }
 
     /// Rebuild the card from calls that have already landed in the latest turn.
+    pub(crate) fn set_review_turn_open(&mut self, open: bool) {
+        self.review_turn_open = open;
+        self.refresh_review_card();
+    }
+
     fn refresh_review_card(&mut self) {
         let Some(start) = self.review_card_start else {
             self.review_card_files.clear();
@@ -2706,7 +2722,7 @@ impl Transcript {
         };
         let calls = self.recorded_calls(start, self.message_count());
         let files = crate::turn_review::file_counts(&calls, self.review_workspace.as_deref());
-        let show = !files.is_empty();
+        let show = !self.review_turn_open && !files.is_empty();
         self.review_card_files = files;
         self.set_tail_row(show);
     }
@@ -4669,7 +4685,7 @@ mod tests {
             "edits": [{ "oldText": "x", "newText": "y\nz" }]
         });
         let mut t = Transcript::new();
-        t.set_review_card_scope(Some(0), None);
+        t.set_review_card_scope(Some(0), None, true);
         t.apply_event(&Event::MessageStart {
             value: json!({"role": "user", "content": "build it"}),
         });
@@ -4697,16 +4713,17 @@ mod tests {
                 ]
             }),
         });
-        // The edit has landed, so the card is up before the run settles.
-        assert!(t.tail_summary.get());
-        assert_eq!(t.scroller.item_count(), 3);
+        // A landed edit is not a settled turn.
+        assert!(!t.tail_summary.get());
+        assert_eq!(t.scroller.item_count(), 2);
         assert_eq!(t.changed_files_summary(), vec![("a.rs".into(), 2, 1)]);
         t.apply_event(&Event::AgentSettled { aborted: false });
+        t.set_review_turn_open(false);
         assert!(t.tail_summary.get());
         assert_eq!(t.changed_files_summary(), vec![("a.rs".into(), 2, 1)]);
         // The next send opens a new turn before its user row is appended.
         // That turn has no edit yet, so the previous turn leaves the card.
-        t.set_review_card_scope(Some(t.message_count()), None);
+        t.set_review_card_scope(Some(t.message_count()), None, true);
         assert!(!t.tail_summary.get());
         t.apply_event(&Event::MessageStart {
             value: json!({"role": "user", "content": "more"}),
@@ -4718,16 +4735,15 @@ mod tests {
     }
 
     /// `agent_end` fires between loop iterations while steering is queued.
-    /// A file the turn already edited stays on the card; the loop boundary
-    /// does not clear it.
+    /// A file already edited stays hidden until the whole run settles.
     #[test]
-    fn agent_end_mid_run_keeps_a_landed_edit_on_the_card() {
+    fn agent_end_mid_run_keeps_a_landed_edit_hidden() {
         let edit_args = json!({
             "path": "a.rs",
             "edits": [{ "oldText": "x", "newText": "y\nz" }]
         });
         let mut t = Transcript::new();
-        t.set_review_card_scope(Some(0), None);
+        t.set_review_card_scope(Some(0), None, true);
         t.apply_event(&Event::MessageStart {
             value: json!({"role": "user", "content": "build it"}),
         });
@@ -4742,16 +4758,18 @@ mod tests {
                 ]
             }),
         });
-        assert!(t.tail_summary.get());
+        assert!(!t.tail_summary.get());
         t.apply_event(&Event::AgentEnd { will_retry: false });
-        assert!(t.tail_summary.get());
+        assert!(!t.tail_summary.get());
         assert_eq!(t.changed_files_summary(), vec![("a.rs".into(), 2, 1)]);
         t.apply_event(&Event::MessageStart {
             value: json!({"role": "assistant", "content": "continuing"}),
         });
         assert!(t.is_streaming());
-        assert!(t.tail_summary.get());
+        assert!(!t.tail_summary.get());
         t.apply_event(&Event::AgentSettled { aborted: false });
+        t.set_review_turn_open(false);
+        assert!(t.tail_summary.get());
         assert_eq!(t.changed_files_summary(), vec![("a.rs".into(), 2, 1)]);
     }
 
@@ -4805,10 +4823,31 @@ mod tests {
         let mut t = Transcript::new();
         t.load_from(&payload);
         assert!(!t.tail_summary.get());
-        t.set_review_card_scope(Some(0), None);
+        t.set_review_card_scope(Some(0), None, false);
         assert!(t.tail_summary.get());
         assert_eq!(t.scroller.item_count(), 3, "2 messages + summary row");
         assert_eq!(t.changed_files_summary(), vec![("n.rs".into(), 3, 0)]);
+    }
+
+    #[test]
+    fn loaded_open_turn_stays_hidden_until_settled() {
+        let payload = json!({
+            "messages": [
+                {"role": "user", "content": "do it"},
+                {"role": "assistant", "content": [
+                    {"type": "toolCall", "id": "c1", "name": "write",
+                     "arguments": {"path": "n.rs", "content": "a\nb"}}
+                ]}
+            ]
+        });
+        let mut t = Transcript::new();
+        t.load_from(&payload);
+        t.set_review_card_scope(Some(0), None, true);
+        t.apply_event(&Event::AgentEnd { will_retry: true });
+        assert!(!t.tail_summary.get());
+        t.set_review_turn_open(false);
+        assert!(t.tail_summary.get());
+        assert_eq!(t.changed_files_summary(), vec![("n.rs".into(), 2, 0)]);
     }
 
     #[test]
@@ -4829,21 +4868,19 @@ mod tests {
         });
         let mut t = Transcript::new();
         t.load_from(&payload);
-        t.set_review_card_scope(Some(2), None);
+        t.set_review_card_scope(Some(2), None, false);
         assert_eq!(t.changed_files_summary(), vec![("b.rs".into(), 1, 0)]);
     }
 
-    /// A steer user row sits inside the open turn, then the next assistant
-    /// row is inserted while the card already occupies the tail slot. The
-    /// card has to stay the last list item.
+    /// Steering stays inside the open turn and must not reveal its card.
     #[test]
-    fn a_steer_user_row_keeps_the_card_in_the_tail_slot() {
+    fn a_steer_user_row_keeps_the_card_hidden_until_settle() {
         let edit_args = json!({
             "path": "a.rs",
             "edits": [{ "oldText": "x", "newText": "y" }]
         });
         let mut t = Transcript::new();
-        t.set_review_card_scope(Some(0), None);
+        t.set_review_card_scope(Some(0), None, true);
         t.apply_event(&Event::MessageStart {
             value: json!({"role": "user", "content": "build it"}),
         });
@@ -4858,14 +4895,17 @@ mod tests {
                 ]
             }),
         });
-        assert!(t.tail_summary.get());
+        assert!(!t.tail_summary.get());
         t.apply_event(&Event::MessageStart {
             value: json!({"role": "user", "content": "steer"}),
         });
-        assert!(t.tail_summary.get());
+        assert!(!t.tail_summary.get());
         t.apply_event(&Event::MessageStart {
             value: json!({"role": "assistant", "content": "continuing"}),
         });
+        assert!(!t.tail_summary.get());
+        assert_eq!(t.scroller.item_count(), t.message_count());
+        t.set_review_turn_open(false);
         assert!(t.tail_summary.get());
         assert_eq!(t.scroller.item_count(), t.message_count() + 1);
     }

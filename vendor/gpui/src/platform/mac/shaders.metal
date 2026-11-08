@@ -1246,11 +1246,12 @@ float4 fill_color(Background background,
 struct BackdropCompositeParams {
   float2 origin;
   float2 size;
+  float2 clip_origin;
+  float2 clip_size;
   float2 region_origin;
   float2 region_size;
   float2 viewport_size;
-  float corner_radius;
-  float padding;
+  float corner_radii[4]; // top-left, top-right, bottom-left, bottom-right
 };
 
 struct BackdropCompositeOutput {
@@ -1262,7 +1263,7 @@ vertex BackdropCompositeOutput backdrop_composite_vertex(
     constant BackdropCompositeParams *params [[buffer(0)]]) {
   float2 unit = float2(float(vertex_id == 1 || vertex_id == 4 || vertex_id == 5),
                        float(vertex_id == 2 || vertex_id == 3 || vertex_id == 5));
-  float2 position = params->origin + unit * params->size;
+  float2 position = params->clip_origin + unit * params->clip_size;
   BackdropCompositeOutput output;
   output.position =
       float4(position / params->viewport_size * float2(2., -2.) + float2(-1., 1.),
@@ -1284,9 +1285,12 @@ fragment float4 backdrop_composite_fragment(
   float4 sharp = original.read(
       uint2(clamp(local, float2(0.), params->region_size - 1.)));
   float2 half_size = params->size * 0.5;
-  float2 corner =
-      abs(position - (params->origin + half_size)) - half_size + params->corner_radius;
+  float2 center_to_point = position - (params->origin + half_size);
+  uint corner_index = (center_to_point.y < 0. ? 0 : 2) +
+                      (center_to_point.x < 0. ? 0 : 1);
+  float radius = params->corner_radii[corner_index];
+  float2 corner = abs(center_to_point) - half_size + radius;
   float distance = length(max(corner, float2(0.))) +
-                   min(max(corner.x, corner.y), 0.) - params->corner_radius;
+                   min(max(corner.x, corner.y), 0.) - radius;
   return mix(sharp, soft, saturate(0.5 - distance));
 }

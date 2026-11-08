@@ -321,6 +321,8 @@ impl OrbitApp {
         // an extra number for a row that was never stored.
         if opened && !appended {
             self.turns.cancel_begin();
+            // The deduplicated prompt still starts a run on the existing turn.
+            self.turns.open = true;
             self.push_turn_records(cx);
         }
         self.input.update(cx, |input, cx| input.clear(cx));
@@ -442,8 +444,11 @@ impl OrbitApp {
     pub(super) fn push_turn_records(&mut self, cx: &mut Context<Self>) {
         let len = self.transcript.message_count();
         let start = self.turns.ranges(len).last().map(|&(_, start, _)| start);
-        self.transcript
-            .set_review_card_scope(start, self.current_workspace.as_deref());
+        self.transcript.set_review_card_scope(
+            start,
+            self.current_workspace.as_deref(),
+            self.turns.open,
+        );
         let records = self.turn_records();
         let session = self.session_id.clone();
         let latest = self.turns.latest;

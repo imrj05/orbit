@@ -16,40 +16,49 @@ fn new_task_backdrop_spans_the_composer_region(cx: &mut gpui::TestAppContext) {
         cx.set_global(Theme::for_id(ThemeId::Orbit));
         cx.new(OrbitApp::new)
     });
-    let _ = cx.draw(point(px(0.), px(0.)), size(px(1000.), px(700.)), |_, cx| {
-        let theme = Theme::for_id(ThemeId::Orbit);
-        let backdrop = app.update(cx, |app, _| app.new_task_backdrop(theme, 0., true, false));
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .relative()
-            .child(
-                div()
-                    .id("test-top-bar")
-                    .debug_selector(|| "test-top-bar".to_string())
-                    .flex_none()
-                    .h(px(super::view::TOP_BAR_H))
-                    .w_full(),
-            )
-            .children(backdrop)
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .w_full()
-                    .flex()
-                    .flex_col()
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .id("test-composer")
-                            .debug_selector(|| "test-composer".to_string())
-                            .flex_none()
-                            .h(px(125.))
-                            .w_full(),
-                    ),
-            )
+    struct Layout(gpui::Entity<OrbitApp>);
+    impl gpui::Render for Layout {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let theme = Theme::for_id(ThemeId::Orbit);
+            let backdrop = self
+                .0
+                .update(cx, |app, _| app.new_task_backdrop(theme, 0., true, false));
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .relative()
+                .child(
+                    div()
+                        .id("test-top-bar")
+                        .debug_selector(|| "test-top-bar".to_string())
+                        .flex_none()
+                        .h(px(super::view::TOP_BAR_H))
+                        .w_full(),
+                )
+                .children(backdrop)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .child(div().flex_1())
+                        .child(
+                            div()
+                                .id("test-composer")
+                                .debug_selector(|| "test-composer".to_string())
+                                .flex_none()
+                                .h(px(125.))
+                                .w_full(),
+                        ),
+                )
+        }
+    }
+    let view = cx.update(|_, cx| cx.new(|_| Layout(app)));
+    let _ = cx.draw(point(px(0.), px(0.)), size(px(1000.), px(700.)), |_, _| {
+        view.clone()
     });
 
     let backdrop = cx

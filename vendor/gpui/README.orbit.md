@@ -58,8 +58,10 @@ the result back through `backdrop_composite_fragment`, which keeps the sharp
 backdrop outside the rounded bounds. A downsampled or sparse-tap blur would be
 cheaper and would ghost any text under the glass.
 
-Scratch textures and the Gaussian kernel are reused while any glass is on
-screen and released after two idle seconds.
+Scratch textures are reused across glass frames and cleared on a glass-free
+frame or the first draw after a two-second gap. Gaussian kernels remain cached
+(up to four) until eviction or renderer destruction; an idle window does not
+run a timer to release either cache.
 
 ## Re-verifying a re-vendor
 

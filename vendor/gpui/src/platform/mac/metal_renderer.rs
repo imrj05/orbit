@@ -2,7 +2,7 @@ use super::metal_atlas::MetalAtlas;
 use crate::{
     AtlasTextureId, Background, Bounds, ContentMask, DevicePixels, MonochromeSprite, PaintSurface,
     Path, Point, PolychromeSprite, PrimitiveBatch, Quad, ScaledPixels, Scene, Shadow, Size,
-    Surface, Underline, backdrop_blur_sigma, point, size,
+    Surface, Underline, backdrop_blur_sample_bounds, backdrop_blur_sigma, point, size,
 };
 use anyhow::Result;
 use block::ConcreteBlock;
@@ -130,7 +130,7 @@ pub(crate) struct MetalRenderer {
     // Gaussian kernels it reuses between frames.
     backdrop_composite_pipeline_state: metal::RenderPipelineState,
     backdrop_kernels: Vec<(f32, GaussianKernel)>,
-    backdrop_scratch: Option<(metal::Texture, metal::Texture)>,
+    backdrop_scratch: Vec<(metal::Texture, metal::Texture)>,
     backdrop_used: Option<Instant>,
     unit_vertices: metal::Buffer,
     #[allow(clippy::arc_with_non_send_sync)]
@@ -165,6 +165,7 @@ impl MetalRenderer {
         let layer = metal::MetalLayer::new();
         layer.set_device(&device);
         layer.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
+        layer.set_framebuffer_only(false);
         layer.set_opaque(false);
         layer.set_maximum_drawable_count(3);
         unsafe {
@@ -300,7 +301,7 @@ impl MetalRenderer {
             surfaces_pipeline_state,
             backdrop_composite_pipeline_state,
             backdrop_kernels: Vec::new(),
-            backdrop_scratch: None,
+            backdrop_scratch: Vec::new(),
             backdrop_used: None,
             unit_vertices,
             instance_buffer_pool,
@@ -386,13 +387,19 @@ impl MetalRenderer {
     }
 
     pub fn draw(&mut self, scene: &Scene) {
-        // Orbit: give the glass scratch back when nothing has needed it for a
-        // while, so an idle window does not hold two window-sized textures.
+        // Release scratch on a glass-free frame, or after a long gap between draws.
         if self
             .backdrop_used
             .is_some_and(|used| used.elapsed() > Duration::from_secs(2))
+            || (!self.backdrop_scratch.is_empty()
+                && !scene.batches().any(|batch| match batch {
+                    PrimitiveBatch::Quads(quads) => {
+                        quads.iter().any(|quad| backdrop_blur_sigma(quad).is_some())
+                    }
+                    _ => false,
+                }))
         {
-            self.backdrop_scratch = None;
+            self.backdrop_scratch.clear();
             self.backdrop_used = None;
         }
         let layer = self.layer.clone();
@@ -803,31 +810,34 @@ impl MetalRenderer {
         if bounds.size.width.0 <= 0. || bounds.size.height.0 <= 0. || sigma <= 0. {
             return;
         }
-        // The Gaussian reaches about 3 sigma, so snapshot that much around the
-        // glass: the blur near its edges then averages the backdrop beyond them,
-        // instead of fading out.
-        let bleed = (sigma * 3.).ceil() + 2.;
-        let left = (bounds.origin.x.0 - bleed).floor().max(0.);
-        let top = (bounds.origin.y.0 - bleed).floor().max(0.);
-        let right = (bounds.origin.x.0 + bounds.size.width.0 + bleed)
-            .ceil()
-            .min(viewport[0]);
-        let bottom = (bounds.origin.y.0 + bounds.size.height.0 + bleed)
-            .ceil()
-            .min(viewport[1]);
+        let sample_bounds = backdrop_blur_sample_bounds(bounds, sigma);
+        let left = sample_bounds.origin.x.0.max(0.);
+        let top = sample_bounds.origin.y.0.max(0.);
+        let right = (sample_bounds.origin.x.0 + sample_bounds.size.width.0).min(viewport[0]);
+        let bottom = (sample_bounds.origin.y.0 + sample_bounds.size.height.0).min(viewport[1]);
         if right - left < 1. || bottom - top < 1. {
             return;
         }
         let region = ((right - left) as u64, (bottom - top) as u64);
         let format = target.pixel_format();
-        // One pair of window-sized scratch textures, reused while any glass is
-        // on screen. `draw()` gives them back once the frost is idle.
-        let reusable = self.backdrop_scratch.as_ref().is_some_and(|(original, _)| {
-            original.width() == region.0
+        let Some(kernel) = self.gaussian_kernel(sigma) else {
+            return;
+        };
+        // MPS processes the entire texture, so only reuse an exact match.
+        // Bound retained BGRA8 pairs by both count and pixel bytes; oversized
+        // regions are used once without displacing the cache.
+        const MAX_PAIRS: usize = 4;
+        const MAX_BYTES: u64 = 64 * 1024 * 1024;
+        let bytes = region.0.saturating_mul(region.1).saturating_mul(8);
+        let pair = if let Some(index) = self.backdrop_scratch.iter().position(|(original, _)| {
+            original.pixel_format() == format
+                && original.width() == region.0
                 && original.height() == region.1
-                && original.pixel_format() == format
-        });
-        if !reusable {
+        }) {
+            let pair = self.backdrop_scratch.remove(index);
+            self.backdrop_scratch.push(pair.clone());
+            pair
+        } else {
             let new_texture = || {
                 let descriptor = metal::TextureDescriptor::new();
                 descriptor.set_width(region.0);
@@ -839,25 +849,38 @@ impl MetalRenderer {
                 descriptor.set_storage_mode(metal::MTLStorageMode::Private);
                 self.device.new_texture(&descriptor)
             };
-            self.backdrop_scratch = Some((new_texture(), new_texture()));
-        }
-        self.backdrop_used = Some(Instant::now());
-        let Some(kernel) = self.gaussian_kernel(sigma) else {
-            return;
+            let pair = (new_texture(), new_texture());
+            if bytes <= MAX_BYTES {
+                let mut cached_bytes: u64 = self
+                    .backdrop_scratch
+                    .iter()
+                    .map(|(texture, _)| {
+                        texture
+                            .width()
+                            .saturating_mul(texture.height())
+                            .saturating_mul(8)
+                    })
+                    .sum();
+                while self.backdrop_scratch.len() >= MAX_PAIRS || cached_bytes > MAX_BYTES - bytes {
+                    let (evicted, _) = self.backdrop_scratch.remove(0);
+                    cached_bytes -= evicted.width() * evicted.height() * 8;
+                }
+                self.backdrop_scratch.push(pair.clone());
+            }
+            pair
         };
-        let (original, blurred) = self
-            .backdrop_scratch
-            .as_ref()
-            .expect("just ensured the backdrop scratch exists");
-
+        self.backdrop_used = Some(Instant::now());
+        let (original, blurred) = &pair;
+        let left = left as u64;
+        let top = top as u64;
         let blit = command_buffer.new_blit_command_encoder();
         blit.copy_from_texture(
             target,
             0,
             0,
             metal::MTLOrigin {
-                x: left as u64,
-                y: top as u64,
+                x: left,
+                y: top,
                 z: 0,
             },
             metal::MTLSize {
@@ -888,13 +911,19 @@ impl MetalRenderer {
         }
 
         let params = BackdropCompositeParams {
-            origin: [bounds.origin.x.0, bounds.origin.y.0],
-            size: [bounds.size.width.0, bounds.size.height.0],
-            region_origin: [left, top],
+            origin: [quad.bounds.origin.x.0, quad.bounds.origin.y.0],
+            size: [quad.bounds.size.width.0, quad.bounds.size.height.0],
+            clip_origin: [bounds.origin.x.0, bounds.origin.y.0],
+            clip_size: [bounds.size.width.0, bounds.size.height.0],
+            region_origin: [left as f32, top as f32],
             region_size: [region.0 as f32, region.1 as f32],
             viewport_size: viewport,
-            corner_radius: quad.corner_radii.top_left.0,
-            padding: 0.,
+            corner_radii: [
+                quad.corner_radii.top_left.0,
+                quad.corner_radii.top_right.0,
+                quad.corner_radii.bottom_left.0,
+                quad.corner_radii.bottom_right.0,
+            ],
         };
         let encoder = new_command_encoder_for_texture(command_buffer, target, viewport_size);
         encoder.set_render_pipeline_state(&self.backdrop_composite_pipeline_state);
@@ -1497,11 +1526,12 @@ fn build_pipeline_state(
 struct BackdropCompositeParams {
     origin: [f32; 2],
     size: [f32; 2],
+    clip_origin: [f32; 2],
+    clip_size: [f32; 2],
     region_origin: [f32; 2],
     region_size: [f32; 2],
     viewport_size: [f32; 2],
-    corner_radius: f32,
-    padding: f32,
+    corner_radii: [f32; 4],
 }
 
 /// Owns one `MPSImageGaussianBlur` reference for as long as it is cached.
