@@ -292,6 +292,7 @@ impl Render for BranchPicker {
             // The same picker surface as Browse, so switching modes never
             // swaps the popover's chrome.
             return picker_surface(div(), &theme)
+                .debug_selector(|| "branch-picker".to_string())
                 .w(px(POPOVER_W))
                 .py(DynamicSpacing::Base06.px(&theme))
                 .flex()
@@ -498,6 +499,7 @@ impl Render for BranchPicker {
         }
 
         picker_surface(div(), &theme)
+            .debug_selector(|| "branch-picker".to_string())
             .w(px(POPOVER_W))
             .flex()
             .flex_col()

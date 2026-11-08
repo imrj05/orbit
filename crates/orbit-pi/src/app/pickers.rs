@@ -916,12 +916,14 @@ impl OrbitApp {
         })
     }
 
-    /// Popover anchored above the status-bar branch chip.
+    /// Popover anchored above the status-bar branch chip: bottom-left of the
+    /// menu on the chip's top-left, so the menu clears the chip instead of
+    /// covering it. (The anchor point is the chip's top edge, not its bottom.)
     pub(super) fn branch_picker_popup(&self, theme: &crate::theme::Theme) -> Option<AnyElement> {
         self.branch_picker.clone().map(|picker| {
             div()
                 .absolute()
-                .bottom_0()
+                .top_0()
                 .left_0()
                 .size(px(0.))
                 .child(anchored_popover(

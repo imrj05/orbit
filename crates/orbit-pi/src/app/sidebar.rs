@@ -871,6 +871,7 @@ fn project_icon(
 #[derive(Clone)]
 struct SessionTooltip {
     title: SharedString,
+    summary: Option<SharedString>,
     shortcut: Option<SharedString>,
     workspace: SharedString,
     branch: Option<SharedString>,
@@ -884,6 +885,18 @@ fn session_provider_label(provider: &sessions::SessionProvider) -> String {
     match &provider.model {
         Some(model) => format!("{} · {model}", provider.provider),
         None => provider.provider.clone(),
+    }
+}
+
+fn session_card_summary(title: &str, first_message: &str) -> Option<SharedString> {
+    // GPUI's line clamp does not bound explicit newlines; fold whitespace first.
+    let summary = queue_preview(first_message);
+    // A truncated fallback title may only be a prefix of the message, but a
+    // named title can have the same prefix. Do not infer title provenance.
+    if summary.is_empty() || first_message == title {
+        None
+    } else {
+        Some(summary.into())
     }
 }
 
@@ -917,6 +930,17 @@ fn session_card(hover: &SessionTooltip, theme: &Theme) -> impl IntoElement {
                 .font_weight(FontWeight::MEDIUM)
                 .child(hover.title.clone()),
         )
+        .when_some(hover.summary.clone(), |card, summary| {
+            card.child(
+                div()
+                    .debug_selector(|| "session-card-summary".into())
+                    .w_full()
+                    .line_clamp(3)
+                    .text_size(meta)
+                    .text_color(theme.text_secondary)
+                    .child(summary),
+            )
+        })
         .child(
             div()
                 .w_full()
@@ -1751,6 +1775,7 @@ pub(crate) fn render_side_row(
             }));
             let hover = SessionTooltip {
                 title: session.title.clone().into(),
+                summary: session_card_summary(&session.title, &session.first_message),
                 shortcut: shortcut_hint.map(Into::into),
                 workspace: workspace_label.into(),
                 branch: branch.map(|branch| branch.name.into()),
@@ -4253,12 +4278,86 @@ mod tests {
         );
     }
 
+    #[test]
+    fn session_card_summary_omits_empty_and_duplicate_text() {
+        assert!(session_card_summary("Title", " \n\t").is_none());
+        assert!(session_card_summary("A title", "A title").is_none());
+        assert_eq!(
+            session_card_summary("A title", " A\n title ").map(|s| s.to_string()),
+            Some("A title".to_string())
+        );
+        assert_eq!(
+            session_card_summary("Title", "first\n\nmessage\tcontinued").map(|s| s.to_string()),
+            Some("first message continued".to_string())
+        );
+    }
+
+    #[test]
+    fn session_card_keeps_long_fallback_and_named_prefix_summaries() {
+        let message = "a".repeat(150);
+        let path = Path::new("/tmp/long-session.jsonl");
+        let rows = sessions_with_placeholder(&[], Some(path), None, Some(&message), None, true);
+        let session = &rows[0];
+        assert_eq!(session.title, cap_chars(&message, 80));
+        assert_eq!(session.first_message, cap_chars(&message, 110));
+        assert_eq!(
+            session_card_summary(&session.title, &session.first_message).map(|s| s.to_string()),
+            Some(session.first_message.clone())
+        );
+
+        // An explicitly named title can also match the truncated fallback.
+        let named = sessions_with_placeholder(
+            &[],
+            Some(path),
+            Some(&session.title),
+            Some(&message),
+            None,
+            true,
+        );
+        assert_eq!(
+            session_card_summary(&named[0].title, &named[0].first_message).map(|s| s.to_string()),
+            Some(named[0].first_message.clone())
+        );
+    }
+
+    #[gpui::test]
+    fn session_card_summary_is_bounded_for_multiline_text(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let theme = Theme::for_id(crate::theme::ThemeId::Orbit);
+        let mut hover = SessionTooltip {
+            title: "Session".into(),
+            summary: None,
+            shortcut: None,
+            workspace: "Workspace".into(),
+            branch: None,
+            ahead: None,
+            behind: None,
+            path: "/tmp".into(),
+            providers: vec![],
+        };
+        let draw = |cx: &mut gpui::VisualTestContext, hover: &SessionTooltip| {
+            cx.draw(
+                point(px(0.), px(0.)),
+                gpui::size(px(960.), px(640.)),
+                |_, _| session_card(hover, &theme).into_any_element(),
+            );
+            cx.debug_bounds("session-card-summary")
+        };
+        assert!(draw(cx, &hover).is_none());
+        hover.summary = session_card_summary("Session", &"long text ".repeat(500));
+        let long_height = draw(cx, &hover).unwrap().size.height;
+        assert!(long_height > px(0.) && long_height <= px(80.));
+        hover.summary = session_card_summary("Session", &"long text\n".repeat(500));
+        assert_eq!(draw(cx, &hover).unwrap().size.height, long_height);
+    }
+
     #[gpui::test]
     fn session_card_bounds_provider_rows_and_shows_overflow(cx: &mut gpui::TestAppContext) {
         let cx = cx.add_empty_window();
         let theme = Theme::for_id(crate::theme::ThemeId::Orbit);
         let mut hover = SessionTooltip {
             title: "Session".into(),
+            summary: None,
             shortcut: None,
             workspace: "Workspace".into(),
             branch: None,

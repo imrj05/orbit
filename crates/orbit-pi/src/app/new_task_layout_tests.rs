@@ -740,3 +740,86 @@ fn the_new_task_context_meter_waits_for_real_data(cx: &mut gpui::TestAppContext)
         "real context data is never hidden just because the page is new"
     );
 }
+
+/// The branch menu belongs beside its chip, never over it. The composer
+/// header's chip opens the menu below it, right-aligned; once the session is
+/// docked the chip moves to the status row near the bottom of the window, and
+/// the same menu must open above the chip's top edge rather than covering it.
+///
+/// Reduce Motion gives the settled frame: the entrance travels 8px out of the
+/// anchor while it fades in, and that is motion, not anchoring.
+#[gpui::test]
+fn the_branch_menu_opens_beside_its_chip_not_over_it(cx: &mut gpui::TestAppContext) {
+    use crate::branch_picker::BranchPicker;
+    use crate::git::BranchEntry;
+
+    let app = new_task_app(cx);
+    cx.update(|cx| {
+        let mut theme = Theme::for_id(ThemeId::Orbit);
+        theme.ui.motion = crate::theme::MotionPreference::Reduced;
+        cx.set_global(theme);
+    });
+    cx.update(|cx| {
+        app.update(cx, |app, cx| {
+            app.branch = Some(BranchStatus {
+                name: "main".into(),
+                ahead_behind: None,
+            });
+            app.worktree_repo_root = app.current_workspace.clone();
+            let picker = cx.new(|cx| {
+                BranchPicker::new(
+                    "orbit".into(),
+                    vec![BranchEntry {
+                        name: "main".into(),
+                        commit_date: None,
+                    }],
+                    "main".into(),
+                    Box::new(|_: String, _: &mut Window, _: &mut App| {}),
+                    Box::new(|_: String, _: &mut Window, _: &mut App| {}),
+                    Box::new(|_: bool, _: &mut Window, _: &mut App| {}),
+                    cx,
+                )
+            });
+            app.branch_picker = Some(picker);
+            cx.notify();
+        });
+    });
+    let cx = cx.add_empty_window();
+    draw(cx, &app, 1200., 760.);
+
+    let chip = cx
+        .debug_bounds("branch-chip")
+        .expect("the composer header's branch chip");
+    let menu = cx.debug_bounds("branch-picker").expect("the branch menu");
+    assert!(
+        menu.top() >= chip.bottom(),
+        "the header's menu opens below its chip: menu {menu:?}, chip {chip:?}"
+    );
+    assert!(
+        (menu.right() - chip.right()).abs() <= px(1.),
+        "and shares the chip's right edge: menu {menu:?}, chip {chip:?}"
+    );
+
+    // The first send docks the composer; the branch chip returns to the status
+    // row, and the menu opens upward from the chip's top edge.
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.transcript.append_user_message("hello", Vec::new());
+            app.new_task_settle_at = Some(Instant::now() - Duration::from_secs(2));
+            cx.notify();
+        });
+    });
+    draw(cx, &app, 1200., 760.);
+    let chip = cx
+        .debug_bounds("branch-chip")
+        .expect("the status row's branch chip");
+    let menu = cx.debug_bounds("branch-picker").expect("the branch menu");
+    assert!(
+        menu.bottom() <= chip.top(),
+        "the status row's menu opens above its chip: menu {menu:?}, chip {chip:?}"
+    );
+    assert!(
+        (menu.left() - chip.left()).abs() <= px(1.),
+        "and shares the chip's left edge: menu {menu:?}, chip {chip:?}"
+    );
+}
