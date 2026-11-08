@@ -60,6 +60,7 @@ use crate::composer_send::{self, SendMode};
 use crate::context_meter::{self, ContextMeterData, ContextPopup};
 use crate::custom_ui::{CustomCancel, CustomFrame, CustomInput, CustomUi, CustomUiSurfaces};
 use crate::dialog::{ApprovalRequest, Dialog, DialogRequest, DialogResponse};
+use crate::git as git_ops;
 use crate::git_panel::GitPanel;
 use crate::mentions::{self, AcEntry, SharedAutocomplete, SlashCommand, Trigger, TriggerKind};
 use crate::model_selector::{
@@ -108,6 +109,12 @@ const CONTENT_MAX_W: f32 = 960.;
 
 /// Rows shown in the `/`-command and `@`-file autocomplete menu.
 const AUTOCOMPLETE_LIMIT: usize = 8;
+
+/// How long a watcher-driven `@` index rebuild waits before it starts. A save
+/// burst lands as several watcher fires; this collapses them. Our own file
+/// operations skip it, so a created file is in the menu that reveals it.
+const MENTION_REBUILD_INTERVAL: Duration = Duration::from_secs(2);
+
 /// Attachments — images, pasted-text pills, and files, together — that may
 /// ride along with one prompt.
 const MAX_ATTACHMENTS: usize = 8;
@@ -139,6 +146,22 @@ const AUTO_RESTART_LIMIT: u8 = 3;
 /// Pause before an automatic respawn, so a crash loop backs off instead of
 /// spinning the CPU and the log.
 const AUTO_RESTART_DELAY: Duration = Duration::from_millis(400);
+
+/// How long an `abort` gets to be answered before Orbit stops waiting for pi
+/// and takes the process down itself.
+///
+/// `abort` only asks. A pi whose event loop is stuck — the shape a multi-GB
+/// bash result leaves behind — never reads the line, and its own `abort()` waits
+/// for the run to go idle, so the `agent_settled` Orbit waits for may never
+/// come. The grace is long enough that a healthy pi always wins the race (it
+/// answers in milliseconds) and short enough that Stop is never a dead button.
+const ABORT_GRACE: Duration = Duration::from_secs(10);
+
+/// How long a stop must have been outstanding before pressing Stop again counts
+/// as "do it now" rather than as the same gesture twice. Stop and Esc land in
+/// one function and a double-tapped Esc is normal, so the window is what keeps a
+/// healthy pi — busy writing the aborted turn into the session — alive.
+const ABORT_RETRY_GRACE: Duration = Duration::from_millis(1500);
 
 /// Session start races the bridge's first fetch (it runs on `session_start`
 /// too), so the first few polls use a short interval until a snapshot lands
@@ -185,6 +208,9 @@ struct ParkedSession {
     /// process is dropped when the session is next opened, so it reloads the
     /// current servers instead of running the old ones.
     mcp_stamp: u64,
+    /// Last Turn's clock, parked with the transcript so a warm resume does
+    /// not inherit the session that was active in between.
+    turns: crate::turn_review::TurnClock,
     /// Extension `setWidget` blocks live at park time, so switching back to a
     /// warm session restores them (a parked process never re-emits).
     widgets: Vec<ExtensionWidget>,
@@ -308,6 +334,12 @@ pub struct OrbitApp {
     /// same shape an exhausted retry uses — so the request itself, not the
     /// wording, decides whether that is a failure (issue #76).
     abort_requested: bool,
+    /// When the outstanding `abort` went out. Set with the request while a run
+    /// is in flight, cleared by every way a run can end, so
+    /// [`OrbitApp::check_stalled_stop`] only ever fires on a stop pi never
+    /// answered. The timestamp rather than a deadline, because pressing Stop
+    /// again reads it too.
+    abort_sent_at: Option<Instant>,
     /// pi's id for the composer's own `prompt`, while its answer is still
     /// outstanding. pi answers a prompt two ways: it starts a run, or an
     /// extension command takes it (`disposition: "handled"`) and nothing runs.
@@ -379,6 +411,19 @@ pub struct OrbitApp {
     /// The field's current phase, in seconds — read by the backdrop and frozen
     /// by Reduce Motion.
     backdrop_phase: f32,
+    /// A first prompt is waiting for the chat's first frame. The clock starts
+    /// when that frame is rendered, not while it is still waiting to draw.
+    new_task_settle_pending: bool,
+    /// When the new-task composer began settling into its session position.
+    new_task_settle_at: Option<Instant>,
+    /// Keys the settle animation. A second send from a fresh page gets a new
+    /// generation, so the animation element is new and restarts from the page's
+    /// centered frame instead of holding the last one's end state.
+    new_task_settle_gen: u64,
+    /// Focus for the new-task folder chip. Enter/Space opens its picker and
+    /// dismissing that picker returns here, so the keyboard flow resumes at
+    /// the control that started it rather than jumping into the composer.
+    new_task_folder_focus: FocusHandle,
     /// Keyboard cursor for the sessions sidebar: an index into the current
     /// sidebar rows. `None` until the sidebar takes keyboard focus (⌘⇧B);
     /// the row it names paints the focused surface in `render_side_row`.
@@ -584,9 +629,11 @@ pub struct OrbitApp {
     /// Filter text for the open settings dropdown.
     settings_filter: Entity<ComposerInput>,
     /// Keyboard cursor in the open settings dropdown: an original option
-    /// index, so it survives filtering. `<Enter>` picks it; the list keeps
-    /// it in view.
+    /// index. Filtering resets it to the first visible option; `<Enter>`
+    /// picks it and the list keeps it in view.
     settings_select_highlight: Option<usize>,
+    settings_select_query: String,
+    _settings_filter_sub: Subscription,
     /// Scroll handle for the settings dropdown's option list.
     settings_select_scroll: UniformListScrollHandle,
     /// Settings → Report a bug: the issue title.
@@ -698,8 +745,19 @@ pub struct OrbitApp {
     sidebar_archived_filter: SidebarArchivedFilter,
     /// Show the first-message preview beneath session titles. UI-only and persisted.
     sidebar_show_first_message: bool,
+    /// Show relative update times in session rows.
+    sidebar_show_updated: bool,
+    /// The Show flyout within the sidebar view menu is open.
+    sidebar_show_menu: bool,
     /// The sidebar's Projects-header view menu is open.
     sidebar_sort_menu: bool,
+    /// Session whose hover card is visible. The card is pinned to that row,
+    /// not to the pointer.
+    session_card: Option<PathBuf>,
+    /// Session the pointer is on, while the hover delay has not elapsed.
+    session_card_wait: Option<PathBuf>,
+    /// Cancels a pending hover card when the pointer leaves the row.
+    session_card_task: gpui::Task<()>,
     /// Open row-actions menu on a workspace group header (which workspace's
     /// label + cwd). Mutually exclusive with `session_menu`.
     workspace_menu: Option<WorkspaceMenu>,
@@ -840,15 +898,27 @@ pub struct OrbitApp {
     last_ac_trigger: Option<(TriggerKind, String)>,
     /// Slash commands reported by pi (`get_commands` — extensions + skills).
     slash_commands: Vec<SlashCommand>,
-    /// Workspace files for `@`-mentions when `fd` is not available.
-    mention_files: Vec<String>,
-    mention_files_workspace: Option<PathBuf>,
-    /// Last `@` query searched with `fd`. Redraws reuse this instead of
-    /// spawning `fd` on every frame.
-    mention_fd_key: Option<(PathBuf, String)>,
-    mention_fd_hits: Vec<String>,
-    /// `fd` could not be started; `@` stays on the bounded directory walk.
-    mention_fd_missing: bool,
+    /// The open workspace as `@` ranks it, built off the UI thread. `None`
+    /// until the first walk lands, and while a workspace change is rebuilding
+    /// it — the previous one keeps answering until then.
+    mention_index: Option<Arc<crate::mentions::MentionIndex>>,
+    /// The workspace `mention_index` describes; `None` before the first build.
+    mention_index_workspace: Option<PathBuf>,
+    /// The workspace changed since the last build.
+    mention_index_stale: bool,
+    /// Bumped per build. A walk that lands after a newer one started is
+    /// dropped instead of overwriting fresher results.
+    mention_index_generation: u64,
+    /// Throttle: no rebuild before this instant. A change that arrives inside
+    /// the window still lands, on the trailing edge.
+    mention_index_due: Option<Instant>,
+    /// A trailing-edge rebuild is already queued.
+    mention_rebuild_scheduled: bool,
+    /// The last `@` query's ranked hits, keyed by the index generation that
+    /// produced them. `sync_autocomplete` runs every frame and the popup asks
+    /// again while rendering, so the same query is scored several times per
+    /// keystroke.
+    mention_query_memo: Option<(u64, String, Vec<String>)>,
     /// Images queued to ride along with the next prompt (pasted or picked).
     attachments: Vec<Attachment>,
     /// Non-image files queued for the next prompt. They travel to pi as
@@ -861,8 +931,10 @@ pub struct OrbitApp {
     /// parked, restored when it is re-opened — switching sessions never
     /// carries one task's half-written prompt into another.
     drafts: HashMap<PathBuf, ComposerDraft>,
-    /// The draft for the New Task page, which has no session file yet.
+    /// The draft for the New Task page, even if pi has already named its file.
     new_task_draft: Option<ComposerDraft>,
+    /// The composer belongs to the unsent New Task page, not a saved session.
+    composer_is_new_task: bool,
     /// Files are being dragged over the composer (external OS drag).
     file_drag_hovered: bool,
     /// Installed folder-capable apps for the header's "open in" control.
@@ -990,12 +1062,10 @@ pub struct OrbitApp {
     hidden_quota_providers: crate::quota_hidden::HiddenProviders,
     /// The `sessionId` pi reports for the active session (its task id).
     session_id: Option<String>,
-    /// Current agent turn number for this session (0 = none yet).
-    turn_count: usize,
-    /// A turn's start checkpoint was captured and awaits its end.
-    turn_open: bool,
-    /// Latest turn with a captured end checkpoint (drives Review's Last Turn).
-    latest_turn: Option<usize>,
+    /// Which conversation turn Last Turn is showing. Independent of Git
+    /// checkpoint refs; those refs only keep the next capture from reusing a
+    /// number.
+    turns: crate::turn_review::TurnClock,
     /// Right side pane — Review (git diff).
     sidepane: Entity<SidePane>,
     /// Keeps the right pane's observer alive: the pane can change its own
@@ -1605,6 +1675,18 @@ impl OrbitApp {
                 .with_placeholder_key("app.filter")
                 .with_key_context("Composer Picker")
         });
+        let settings_filter_sub = cx.observe(&settings_filter, |app, filter, cx| {
+            let query = filter.read(cx).text().to_owned();
+            if app.settings_select_query != query {
+                app.settings_select_query = query;
+                if app.settings_select.is_some() {
+                    app.settings_select_highlight = None;
+                    app.settings_select_scroll
+                        .scroll_to_item(0, ScrollStrategy::Top);
+                }
+                cx.notify();
+            }
+        });
         // The settings surface's own search: one field over every section's
         // rows, not the select popup's filter above.
         let settings_search = cx.new(|cx| {
@@ -2110,6 +2192,10 @@ impl OrbitApp {
             backdrop_live: false,
             backdrop_clock: None,
             backdrop_phase: 0.,
+            new_task_settle_pending: false,
+            new_task_settle_at: None,
+            new_task_settle_gen: 0,
+            new_task_folder_focus: cx.focus_handle().tab_stop(true),
             pane_full_last: false,
             sidebar_cursor: None,
             sidebar_focus: cx.focus_handle().tab_stop(true),
@@ -2141,6 +2227,7 @@ impl OrbitApp {
             auto_restarts: 0,
             auto_restart_scheduled: false,
             abort_requested: false,
+            abort_sent_at: None,
             prompt_in_flight: None,
             toasts: toast::Toasts::new(),
             pending_follow_up: None,
@@ -2206,6 +2293,8 @@ impl OrbitApp {
             layout_name,
             naming_layout: false,
             settings_select_highlight: None,
+            settings_select_query: String::new(),
+            _settings_filter_sub: settings_filter_sub,
             settings_select_scroll: UniformListScrollHandle::new(),
             bug_report_title,
             bug_report_what,
@@ -2239,7 +2328,12 @@ impl OrbitApp {
             sidebar_group_by: workspace_store.group_by,
             sidebar_archived_filter: workspace_store.archived_filter,
             sidebar_show_first_message: workspace_store.show_first_message,
+            sidebar_show_updated: workspace_store.show_updated,
+            sidebar_show_menu: false,
             sidebar_sort_menu: false,
+            session_card: None,
+            session_card_wait: None,
+            session_card_task: gpui::Task::ready(()),
             workspace_menu: None,
             worktree_config,
             worktree_dir_input: worktree_dir_input.clone(),
@@ -2309,16 +2403,19 @@ impl OrbitApp {
             autocomplete_dismissed: false,
             last_ac_trigger: None,
             slash_commands: Vec::new(),
-            mention_files: Vec::new(),
-            mention_files_workspace: None,
-            mention_fd_key: None,
-            mention_fd_hits: Vec::new(),
-            mention_fd_missing: false,
+            mention_index: None,
+            mention_index_workspace: None,
+            mention_index_stale: false,
+            mention_index_generation: 0,
+            mention_index_due: None,
+            mention_rebuild_scheduled: false,
+            mention_query_memo: None,
             attachments: Vec::new(),
             files: Vec::new(),
             pasted_texts: Vec::new(),
             drafts: HashMap::new(),
             new_task_draft: None,
+            composer_is_new_task: true,
             file_drag_hovered: false,
             open_in_apps: Rc::new(Vec::new()),
             open_in_menu_open: false,
@@ -2365,9 +2462,7 @@ impl OrbitApp {
             quota_hidden_open: false,
             hidden_quota_providers: crate::quota_hidden::HiddenProviders::load(),
             session_id: None,
-            turn_count: 0,
-            turn_open: false,
-            latest_turn: None,
+            turns: crate::turn_review::TurnClock::default(),
             sidepane,
             _sidepane_sub: sidepane_sub,
             project_panel,
@@ -2718,6 +2813,9 @@ impl OrbitApp {
             self.refresh_git_accounts_for_workspace(cx);
         }
         self.sync_review_context(cx);
+        // `@` ranks the new tree; start the walk now rather than on the first
+        // keystroke, so the menu is not briefly empty after a folder switch.
+        self.invalidate_index(true, cx);
     }
 
     /// Push the workspace / session / turn context the Review pane and the
@@ -2758,7 +2856,7 @@ impl OrbitApp {
         self.project_panel
             .update(cx, |panel, cx| panel.set_workspace(workspace.clone(), cx));
         let session = self.session_id.clone();
-        let turn = self.latest_turn;
+        let turn = self.turns.latest;
         self.sidepane.update(cx, |pane, cx| {
             pane.set_turn_context(session.clone(), turn, cx)
         });
@@ -2812,6 +2910,7 @@ impl OrbitApp {
             group_by: self.sidebar_group_by,
             archived_filter: self.sidebar_archived_filter,
             show_first_message: self.sidebar_show_first_message,
+            show_updated: self.sidebar_show_updated,
         });
     }
 
@@ -3241,6 +3340,7 @@ struct WorkspaceStore {
     archived_filter: SidebarArchivedFilter,
     /// Whether session rows include their first-message preview (on by default).
     show_first_message: bool,
+    show_updated: bool,
 }
 
 impl Default for WorkspaceStore {
@@ -3253,6 +3353,7 @@ impl Default for WorkspaceStore {
             group_by: SidebarGroupBy::default(),
             archived_filter: SidebarArchivedFilter::default(),
             show_first_message: true,
+            show_updated: true,
         }
     }
 }
@@ -3304,6 +3405,10 @@ fn parse_workspace_store(value: &Value) -> WorkspaceStore {
             .unwrap_or_default(),
         show_first_message: value
             .get("show_first_message")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+        show_updated: value
+            .get("show_updated")
             .and_then(Value::as_bool)
             .unwrap_or(true),
         ..WorkspaceStore::default()
@@ -3404,6 +3509,7 @@ fn workspace_store_json(store: &WorkspaceStore) -> Value {
         "group_by": store.group_by.as_str(),
         "archived_filter": store.archived_filter.as_str(),
         "show_first_message": store.show_first_message,
+        "show_updated": store.show_updated,
     })
 }
 
@@ -3912,6 +4018,7 @@ mod events;
 mod git_accounts_ui;
 pub(crate) mod helpers;
 mod mcp_ui;
+mod new_task;
 mod open_in;
 mod pi_update_ui;
 mod pickers;
@@ -3953,6 +4060,10 @@ mod devicons_tests;
 mod error_label_tests;
 #[cfg(test)]
 mod git_chip_tests;
+#[cfg(test)]
+mod mention_index_tests;
+#[cfg(test)]
+mod new_task_layout_tests;
 #[cfg(test)]
 mod new_task_panels_tests;
 #[cfg(test)]
@@ -3999,6 +4110,8 @@ mod sidebar_sort_tests;
 mod sidepane_full_width_tests;
 #[cfg(test)]
 mod stale_error_tests;
+#[cfg(test)]
+mod stop_escalation_tests;
 #[cfg(test)]
 mod theme_switch_tests;
 #[cfg(test)]

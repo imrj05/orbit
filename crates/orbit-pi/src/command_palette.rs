@@ -37,7 +37,8 @@ use gpui::{
 };
 
 use crate::app::{
-    icon, menu_header, picker_entry, picker_search_frame, picker_surface, SettingsSection,
+    icon, menu_header, picker_entry, picker_search_frame, picker_surface, PressedRamp,
+    SettingsSection, StatefulControlExt,
 };
 use crate::commands::{self, CommandId, CommandSpec};
 use crate::composer::ComposerInput;
@@ -977,6 +978,7 @@ fn render_row(
         })
         .flex_none()
         .cursor_pointer()
+        .pressed_state(&theme, PressedRamp::Wash)
         // Moving the pointer over a row moves the keyboard highlight; click
         // activates it. `on_mouse_move` (not `on_hover`) so a scroll that
         // slides rows under a stationary pointer can't hijack ↑/↓ navigation.

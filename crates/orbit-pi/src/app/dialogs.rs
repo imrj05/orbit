@@ -40,12 +40,16 @@ impl OrbitApp {
                     self.open_dialog(request, cx);
                 }
             }
-            // `notify` is a user-facing toast — render it as one. `setStatus`
-            // stays on the quiet transient status line.
+            // `notify` is a user-facing toast — render it as one, and follow
+            // the In-app toasts switch the way the run-finished toast does:
+            // with the switch off, no card is pushed. `setStatus` stays on the
+            // quiet transient status line.
             "notify" => {
                 if let Some(message) = value.get("message").and_then(Value::as_str) {
-                    self.toast_info(message.to_owned());
-                    cx.notify();
+                    if self.notification_prefs.toasts {
+                        self.toast_info(message.to_owned());
+                        cx.notify();
+                    }
                 }
             }
             "setStatus" => {
@@ -416,5 +420,43 @@ impl OrbitApp {
             Some(option) => self.respond_to_approval(Some(option), window, cx),
             None => self.respond_to_approval(None, window, cx),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn extension_notify(app: &mut OrbitApp, message: &str, cx: &mut Context<OrbitApp>) {
+        app.handle_extension_ui_request(
+            "n1".into(),
+            "notify",
+            &serde_json::json!({ "message": message, "notifyType": "info" }),
+            cx,
+        );
+    }
+
+    #[gpui::test]
+    fn extension_notify_skips_the_corner_card_when_in_app_toasts_are_off(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let app = cx.update(|cx| cx.new(OrbitApp::new));
+        app.update(cx, |app, cx| {
+            app.notification_prefs.toasts = false;
+            extension_notify(app, "3 plans", cx);
+            assert!(app.toasts.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn extension_notify_raises_a_corner_card_when_in_app_toasts_are_on(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let app = cx.update(|cx| cx.new(OrbitApp::new));
+        app.update(cx, |app, cx| {
+            app.notification_prefs.toasts = true;
+            extension_notify(app, "3 plans", cx);
+            assert_eq!(app.toasts.items()[0].title, "3 plans");
+        });
     }
 }

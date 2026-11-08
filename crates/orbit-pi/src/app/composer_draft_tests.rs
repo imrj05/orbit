@@ -45,6 +45,7 @@ fn drafts_follow_their_session(cx: &mut gpui::TestAppContext) {
         app.update(cx, |app, cx| {
             // Writing in the first session.
             app.current_session_path = Some(first.clone());
+            app.composer_is_new_task = false;
             app.input
                 .update(cx, |input, cx| input.set_text("half a thought", cx));
             app.pasted_texts.push(PastedText::new("pasted".into()));
@@ -86,6 +87,7 @@ fn empty_composers_park_no_draft(cx: &mut gpui::TestAppContext) {
     cx.update(|_, cx| {
         app.update(cx, |app, cx| {
             app.current_session_path = Some(path.clone());
+            app.composer_is_new_task = false;
             app.input
                 .update(cx, |input, cx| input.set_text("   \n  ", cx));
             app.save_composer_draft(cx);
@@ -118,6 +120,134 @@ fn the_new_task_draft_has_its_own_slot(cx: &mut gpui::TestAppContext) {
 
             app.restore_composer_draft(None, cx);
             assert_eq!(app.input.read(cx).text(), "brand new task");
+        });
+    });
+}
+
+/// A pi stand-in that stays alive and idle without answering anything: the
+/// New Task draft swap happens before `new_session` is even written, so the
+/// reuse path only needs the process to look live.
+#[cfg(unix)]
+struct FakePi {
+    _dir: tempfile::TempDir,
+    bin: PathBuf,
+}
+
+#[cfg(unix)]
+impl FakePi {
+    fn start() -> Self {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().expect("create fake-pi dir");
+        let bin = dir.path().join("fake-pi");
+        std::fs::write(&bin, "#!/bin/sh\nexec cat > /dev/null\n").expect("write fake pi");
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake pi");
+        Self { _dir: dir, bin }
+    }
+}
+
+#[cfg(unix)]
+fn adopt_fake_pi(app: &mut OrbitApp, fake: &FakePi) {
+    let client = PiClient::spawn_with_bin(
+        fake.bin.to_str().expect("utf-8 path"),
+        fake._dir.path(),
+        None,
+    )
+    .expect("spawn fake pi");
+    app.adopt_client(client);
+}
+
+/// New Task (⌘N, the sidebar button, the menu) usually takes the *reuse* path:
+/// the idle process is kept and `new_session` is sent in place. That path used
+/// to skip the draft swap the parked-and-respawned path does, so a prompt and
+/// its attachment typed on the New Task page were never loaded back — and the
+/// session being left handed its own text to the new page.
+#[cfg(unix)]
+#[gpui::test]
+fn the_new_task_draft_comes_back_through_the_reused_process(cx: &mut gpui::TestAppContext) {
+    use crate::theme::{Theme, ThemeId};
+
+    cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+    let app = cx.update(|cx| cx.new(OrbitApp::new));
+    let fake = FakePi::start();
+    let session = PathBuf::from("/tmp/orbit-draft-return.jsonl");
+    let target = SessionInfo {
+        path: session.clone(),
+        id: "draft-return".into(),
+        cwd: fake._dir.path().join("missing-workspace"),
+        title: "Existing session".into(),
+        first_message: String::new(),
+        modified: SystemTime::UNIX_EPOCH,
+    };
+
+    cx.update(|cx| {
+        app.update(cx, |app, cx| {
+            adopt_fake_pi(app, &fake);
+            // The New Task page holds a prompt and a screenshot; opening a
+            // session from the sidebar parks that draft in its own slot.
+            app.current_session_path = None;
+            app.input
+                .update(cx, |input, cx| input.set_text("start a task", cx));
+            app.attachments.push(Attachment {
+                name: "start.png".into(),
+                mime: "image/png".into(),
+                data: String::new(),
+                preview: None,
+                original_len: 0,
+                stored_len: 0,
+                compressed: false,
+            });
+            // pi has already assigned a file even though nothing was sent.
+            app.adopt_session_file(PathBuf::from("/tmp/orbit-initial-task.jsonl"));
+            app.switch_to_session(target, false, cx);
+            assert!(app.new_task_draft.is_some());
+            assert_eq!(app.input.read(cx).text(), "");
+            app.input
+                .update(cx, |input, cx| input.set_text("on the session", cx));
+            // A missing workspace leaves the target without a process. Give it
+            // a live one to exercise New Task's reuse path.
+            adopt_fake_pi(app, &fake);
+        });
+    });
+
+    let cx = cx.add_empty_window();
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.on_new_session(&crate::NewSession, window, cx)
+        });
+    });
+
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            assert_eq!(
+                app.input.read(cx).text(),
+                "start a task",
+                "the New Task draft must come back, not the session's text"
+            );
+            assert_eq!(app.attachments.len(), 1, "the attachment rides with it");
+            assert_eq!(app.attachments[0].name, "start.png");
+            assert!(app.current_session_path.is_none());
+            assert_eq!(
+                app.drafts.get(&session).map(|draft| draft.text.as_str()),
+                Some("on the session"),
+                "the session being left keeps its own draft"
+            );
+
+            // pi can report a file before the first message is sent. It is
+            // still the New Task page, not a session draft keyed by that file.
+            let new_file = PathBuf::from("/tmp/orbit-unsent-task.jsonl");
+            app.adopt_session_file(new_file.clone());
+            app.save_composer_draft(cx);
+            assert!(app.new_task_draft.is_some());
+            assert!(!app.drafts.contains_key(&new_file));
+            app.current_session_path = Some(session.clone());
+            app.restore_composer_draft(Some(&session), cx);
+            assert_eq!(app.input.read(cx).text(), "on the session");
+            app.save_composer_draft(cx);
+            app.restore_composer_draft(None, cx);
+            assert_eq!(app.input.read(cx).text(), "start a task");
+            assert_eq!(app.attachments[0].name, "start.png");
         });
     });
 }

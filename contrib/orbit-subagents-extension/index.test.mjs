@@ -210,6 +210,34 @@ test("a single delegation returns the report, details and usage", async () => {
   assert.equal(result.usage.turns, 1);
 });
 
+test("inherited guardrails become one --extension per path, never doubled", async () => {
+  const spawn = fakeSpawn(successfulChild);
+  const guard = "/home/.orbit-pi/guard-extension/index.js";
+  const workflow = "/home/.orbit-pi/workflow-extension/index.js";
+  await executeTool({
+    params: { agent: "scout", task: "find auth" },
+    ctx: ctx(),
+    pi: fakePi(),
+    deps: deps(spawn, {
+      env: {
+        PATH: process.env.PATH ?? "",
+        ORBIT_BUNDLED_EXTENSIONS: JSON.stringify([guard, workflow]),
+      },
+    }),
+    counts: new Map(),
+  });
+
+  const [call] = spawn.calls;
+  const first = call.argv.indexOf("--extension");
+  assert.deepEqual(call.argv.slice(first, first + 4), [
+    "--extension",
+    guard,
+    "--extension",
+    workflow,
+  ]);
+  assert.equal(call.argv.filter((value) => value === "--extension").length, 2);
+});
+
 test("the prompt file holds the body and both fixed blocks, then is removed", async () => {
   let promptPath = null;
   let promptText = null;

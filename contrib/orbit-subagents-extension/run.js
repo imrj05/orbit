@@ -424,6 +424,18 @@ function shortTokens(value) {
 }
 
 /**
+ * The reason a failed child contributes to the parent's copy: the extension's
+ * sentence plus the child's own stderr, so the parent can act on what pi
+ * actually said rather than only on an exit code (§8). The card keeps the two
+ * apart — `error` is the claim, `stderrTail` is the evidence beside it.
+ */
+function failureReason(child) {
+  if (!child.error) return null;
+  const tail = String(child.stderrTail ?? "").trim();
+  return tail === "" ? child.error : `${child.error}: ${tail}`;
+}
+
+/**
  * What the parent model receives (D-G): one line per child plus a capped
  * report. The full report stays in `details`.
  */
@@ -436,8 +448,8 @@ export function runContent(children) {
       continue;
     }
     const usage = formatUsage(child.usage ?? emptyUsage());
-    const status =
-      child.status === "failed" && child.error ? `failed: ${child.error}` : child.status;
+    const reason = child.status === "failed" ? failureReason(child) : null;
+    const status = reason === null ? child.status : `failed: ${reason}`;
     const header = `${child.agent} — ${status}${usage ? ` · ${usage}` : ""}`;
     const report = child.report == null || child.report.trim() === ""
       ? "no closing message for the parent"

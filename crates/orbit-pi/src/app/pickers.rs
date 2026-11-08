@@ -1,6 +1,6 @@
 use super::*;
 use crate::commands::CommandId;
-use crate::theme::tokens::popover;
+use crate::theme::tokens::{popover, DynamicSpacing};
 
 impl OrbitApp {
     /// Rows for the new-task page's folder selector, in priority order:
@@ -119,7 +119,7 @@ impl OrbitApp {
             }
         }
         if self.workspace_picker.take().is_some() {
-            self.input.read(cx).focus(window);
+            window.focus(&self.new_task_folder_focus);
             cx.notify();
             return;
         }
@@ -128,6 +128,7 @@ impl OrbitApp {
         }
         self.branch_picker = None;
         self.session_menu = None;
+        self.dismiss_work_in_menu();
 
         let entries = self.recent_workspaces();
         let actions = self.folder_actions();
@@ -135,15 +136,15 @@ impl OrbitApp {
             .current_workspace
             .clone()
             .or_else(|| std::env::current_dir().ok());
-        // Match the field's width basis exactly (main area = window minus the
-        // sidebar) so the popover lands flush under the card at any size.
-        let main_width = f32::from(window.viewport_size().width)
-            - if self.sidebar_visible && !self.settings_open {
-                self.sidebar_width.into()
-            } else {
-                0.
-            };
-        let width = crate::workspace_picker::width_for_window(main_width);
+        // Use the chat column's real width, after every visible dock, so the
+        // popover stays attached to the chip instead of overflowing from a
+        // window-minus-sidebar approximation.
+        let main_width = self.main_area_width(window, cx);
+        let width = crate::workspace_picker::width_for_window(main_width.into());
+        let list_max_h = crate::workspace_picker::list_max_height(
+            crate::theme::get(cx),
+            window.viewport_size().height,
+        );
 
         let this = cx.weak_entity();
         let on_pick = Box::new(move |folder: PathBuf, window: &mut Window, cx: &mut App| {
@@ -192,7 +193,16 @@ impl OrbitApp {
                     app.menu_dismissed_at = Some(Instant::now());
                 }
                 app.workspace_picker = None;
-                app.input.read(cx).focus(window);
+                if by_mouse {
+                    // Pointer dismissal may be the first half of a click on
+                    // another control; preserve the existing composer route
+                    // and let that control's own handler take focus next.
+                    app.input.read(cx).focus(window);
+                } else {
+                    // Escape and reactivating the current row are keyboard
+                    // dismissals: return to the trigger that opened the flow.
+                    window.focus(&app.new_task_folder_focus);
+                }
                 cx.notify();
             })
             .ok();
@@ -200,7 +210,8 @@ impl OrbitApp {
 
         let picker = cx.new(|cx| {
             WorkspacePicker::new(
-                entries, actions, current, width, on_pick, on_browse, on_action, on_dismiss, cx,
+                entries, actions, current, width, list_max_h, on_pick, on_browse, on_action,
+                on_dismiss, cx,
             )
         });
         window.focus(&picker.read(cx).focus_handle(cx));
@@ -235,6 +246,11 @@ impl OrbitApp {
         if self.rewind_transition_pending(cx) {
             return;
         }
+        self.cancel_new_task_settle();
+        // The folder pick starts a fresh task, which is the New Task page's
+        // slot — not the session being left's. Parked before anything clears
+        // `current_session_path`, so the draft keeps its own session's key.
+        self.swap_to_new_task_draft(cx);
         if self.is_running() {
             // Blocking native requests stay pending with the parked session.
             self.cancel_custom_surfaces(cx);
@@ -257,7 +273,7 @@ impl OrbitApp {
         self.removed = 0;
         self.context = None;
         self.session_usage = None;
-        self.reset_turns();
+        self.reset_turns(cx);
         self.reset_queue();
         match self.extensions.spawn(&folder, true, &self.mcp.secret_env()) {
             Ok(client) => {
@@ -871,7 +887,14 @@ impl OrbitApp {
         .detach();
     }
 
-    /// Popover anchored below the new-task page's workspace field.
+    /// Popover anchored below the new-task page's folder row.
+    ///
+    /// Below, because that is where the row's own edge points: a folder list is
+    /// the select under its button, and `snap_to_window` keeps it on screen when
+    /// the row sits low. It covers the composer while it is open — the field is
+    /// inert while a folder is being chosen, and the card returns the space on
+    /// dismissal — rather than opening upward into the titlebar, where it would
+    /// have to be shrunk to fit at the window's minimum height.
     pub(super) fn workspace_picker_popup(&self, theme: &crate::theme::Theme) -> Option<AnyElement> {
         self.workspace_picker.clone().map(|picker| {
             div()
@@ -881,7 +904,10 @@ impl OrbitApp {
                 .size(px(0.))
                 .child(anchored_popover(
                     Corner::TopLeft,
-                    point(px(0.), popover::MENU_OFFSET),
+                    point(
+                        px(0.),
+                        popover::MENU_OFFSET + DynamicSpacing::Base08.px(theme),
+                    ),
                     picker,
                     "anchored_popover-in-7",
                     theme,
@@ -890,17 +916,42 @@ impl OrbitApp {
         })
     }
 
-    /// Popover anchored above the status-bar branch chip.
+    /// Popover anchored above the status-bar branch chip: bottom-left of the
+    /// menu on the chip's top-left, so the menu clears the chip instead of
+    /// covering it. (The anchor point is the chip's top edge, not its bottom.)
     pub(super) fn branch_picker_popup(&self, theme: &crate::theme::Theme) -> Option<AnyElement> {
         self.branch_picker.clone().map(|picker| {
             div()
                 .absolute()
-                .bottom_0()
+                .top_0()
                 .left_0()
                 .size(px(0.))
                 .child(anchored_popover(
                     Corner::BottomLeft,
                     point(px(0.), -popover::MENU_OFFSET),
+                    picker,
+                    "anchored_popover-in-8",
+                    theme,
+                ))
+                .into_any_element()
+        })
+    }
+
+    /// Popover anchored below the new-task header's branch chip, with its
+    /// right edge aligned to the chip and snapped inside the window.
+    pub(super) fn branch_picker_popup_below(
+        &self,
+        theme: &crate::theme::Theme,
+    ) -> Option<AnyElement> {
+        self.branch_picker.clone().map(|picker| {
+            div()
+                .absolute()
+                .bottom_0()
+                .right_0()
+                .size(px(0.))
+                .child(anchored_popover(
+                    Corner::TopRight,
+                    point(px(0.), popover::MENU_OFFSET),
                     picker,
                     "anchored_popover-in-8",
                     theme,

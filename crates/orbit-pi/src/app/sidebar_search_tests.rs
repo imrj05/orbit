@@ -285,7 +285,29 @@ fn aged(name: &str, cwd: &str, secs: u64) -> SessionInfo {
 }
 
 #[test]
-fn recent_lists_active_sessions_first_then_the_newest_others() {
+fn recent_pins_first_without_promoting_open_or_running() {
+    let sessions = vec![
+        aged("open", "/work/a", 10),
+        aged("running", "/work/a", 20),
+        aged("idle", "/work/a", 30),
+        aged("pin", "/work/a", 5),
+    ];
+    let pinned = HashSet::from([sessions[3].path.clone()]);
+    let active = Some(sessions[0].path.clone());
+    let running = HashSet::from([sessions[1].path.clone()]);
+    let rows = build_recent_sidebar_rows(&sessions, &pinned, &active, &running);
+    let order: Vec<usize> = rows
+        .into_iter()
+        .filter_map(|row| match row {
+            SideRow::Session(ix) => Some(ix),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(order, vec![3, 2, 1, 0]);
+}
+
+#[test]
+fn recent_lists_sessions_by_newest_activity() {
     let sessions = vec![
         aged("old", "/work/a", 10),
         aged("fresh", "/work/b", 90),

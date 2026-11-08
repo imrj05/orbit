@@ -197,7 +197,7 @@ primary action to the neutral `action` step instead. Everything else is ink on c
 at four weights of emphasis.
 
 The system is monochrome-by-default with semantic color reserved for state, so a
-screenshot in any of the twelve palettes still reads as Orbit. Depth is delivered by
+screenshot in any of the thirteen palettes still reads as Orbit. Depth is delivered by
 hairlines and tonal steps rather than shadows; floating surfaces use restrained
 shadows, with the existing composer contact-shadow treatment as an exception.
 
@@ -233,8 +233,8 @@ does today, so this section never describes a surface that has not shipped.
 | Density over air: 28px rows, 13–14px body | `ButtonSize::Medium` 28px, `list_item` rows, `TextSize::Default` | Shipped |
 | Accent and action are separate roles | `accent` marks identity; primary fills read `action`, which a palette may key to the accent | Shipped |
 | Restrained UI type, 400–600 | `TextSize` 11–16 at default settings; a separate monospace family serves code | Shipped |
-| Motion is fast and decelerating | `Motion` roles (`Instant` / `Interaction` / `Layout` / `Travel`) plus `motion::hover` · `control` · `state` · `enter` · `disclosure_chevron` · `switch` | Shipped in §Motion System; hover is adopted on four controls, and the per-site rollout is the remaining work |
-| Interactive surfaces share state treatments | `interaction::InteractionState` resolves colours; `motion::hover` fades them | Primitives shipped; adoption is in progress and some surfaces swap instantly |
+| Motion is fast and decelerating | `Motion` roles (`Instant` / `Interaction` / `Layout` / `Travel`) plus `motion::hover` · `control` · `state` · `enter` · `disclosure_chevron` · `switch` | Shipped in §Motion System; the hover fade covers the whole sidebar (rows, workspace headers, group rows, menu entries, every control), the Settings back/search/action controls, the transcript copy button, the changelog link and the caption buttons; every other pane still swaps on one frame |
+| Interactive surfaces share state treatments | `interaction::InteractionState` resolves colours; `motion::hover` fades them | Primitives shipped and press treatments adopted; the sidebar and part of Settings fade their hovers, the rest of the app still swaps on one frame (see §The interaction layer) |
 | Keyboard is a first-class path | Command registry + palette; every chip has a `command()` route | Shipped |
 
 Four things Orbit deliberately does **not** take from Linear:
@@ -307,6 +307,14 @@ Light palettes mirror the ramp downward. `surface_elevated` is where a menu sits
 popover floats, it never recesses. Every palette is asserted against this monotonicity,
 not just Orbit.
 
+**The Visible Step Rule.** Monotonic is not enough: an interaction step the eye cannot
+see is not feedback. Every palette holds each consecutive step of the ramp —
+`surface_elevated` → `surface_hover` → `surface_active` — at 1.045:1 or better
+against the step below, and never gives `surface_hover` and `surface_selected` the
+same fill. Deepening a step also moves the muted ink floor, because a pressed row is
+one of the washes metadata is read on.
+`every_interaction_step_is_visible_on_its_surface` is the guard.
+
 **The Accent-Is-Not-Status Rule.** The accent may never equal `success`, `warning`,
 `error`, or `info`. If the theme's signature hue is also its success or error color,
 the accent moves to the palette's second hue; a green selection over a green checkmark
@@ -320,7 +328,7 @@ The composer paints two inline token roles. They are read as content — sibling
 - **`@file`** takes the accent's complement (`mention_file`), so a reference never reads as
   a command.
 
-Both are derived in `Theme`, so all twelve palettes stay legible without per-palette tuning.
+Both are derived in `Theme`, so all thirteen palettes stay legible without per-palette tuning.
 
 ## Typography
 
@@ -344,9 +352,9 @@ is Latin + punctuation + box-drawing + powerline), so a picked face never
 depends on the OS. The bundled IBM Plex Sans and Lilex faces stay in the list
 under their own names (their gpui aliases are `.ZedSans` / `.ZedMono`).
 
-**The Palette Catalog.** `ThemeId::ALL` ships twelve palettes: Orbit's own family plus
-Flexoki plus the two Operational palettes. The Classic system keeps five dark (Orbit,
-Orbit Darker, Orbit Cobalt, Orbit Azure, Flexoki) and five light (Orbit Light, Orbit
+**The Palette Catalog.** `ThemeId::ALL` ships thirteen palettes: Orbit's own family plus
+Flexoki, Orbit Onyx, and the two Operational palettes. The Classic system keeps six dark (Orbit,
+Orbit Darker, Orbit Cobalt, Orbit Azure, Flexoki, Orbit Onyx) and five light (Orbit Light, Orbit
 Azure Light, Orbit Paper, Orbit Contrast, Flexoki Light) palettes. The blue design is
 **Orbit Azure** (dark) and **Orbit Azure Light**; the original ember palette is simply
 **Orbit** / **Orbit Light**. Settings → Appearance → **Theme** is a single control, not
@@ -355,6 +363,11 @@ only the palettes of that mode and design system. `themes_for_system(mode, syste
 the single ordering the dropdown paints and a click resolves, so a row index always maps
 to the palette it painted. Retired editor themes still load from a saved preference:
 dark keys fall back to Orbit, light keys to Orbit Light.
+
+Orbit Onyx uses a near-black `#010102` canvas, neutral charcoal surfaces, `#f7f8f8`
+primary ink and a `#5e6ad2` action fill. Its muted ink and button states are
+adjusted for Orbit's contrast requirements; error and warning retain distinct
+semantic colours. The surface steps are Orbit adaptations, not sourced Linear tokens.
 
 **The Design-System Switch.** Settings → Appearance → **Design system** chooses
 **Classic** (default) or **Operational**. It selects the *palette family* — which
@@ -374,7 +387,7 @@ changes.
 | `surface` | `#101112` | `#FFFFFF` |
 | `surface_secondary` | `#141618` | `#FAFAF8` |
 | `surface_elevated` | `#181A1D` | `#F7F7F2` |
-| `surface_hover` | `#1B1D20` | `#EEEEEA` |
+| `surface_hover` | `#1D1F22` | `#EEEEEA` |
 | `surface_active` | `#232629` | `#E4E5DF` |
 | `surface_selected` (rows) | `#1B2115` | `#EEF3DF` |
 | `selection` (text) | `#303A4B` | `#E1E9D1` |
@@ -526,9 +539,10 @@ under one grammar — ordered dither, the same screen the wallpaper's `Dither` e
   vignette, so the screen runs edge to edge and its drift is visible to the frame. It is
   drawn in
   `text_muted` at 55% (dark) / 62% (light), so it is paper texture, never a second content
-  layer, and it works in all twelve palettes without a per-palette asset.
-- **The monogram is screened into that field.** Where the app mark sits — between the
-  empty-state column and the composer — the same screen takes over its shape: a coverage
+  layer, and it works in all thirteen palettes without a per-palette asset.
+- **The monogram is screened into that field.** Where the app mark sits — in the band of
+  open grain under the centered composer column, at `MARK_CY` — the same screen takes over its
+  shape: a coverage
   mask sampled from the shipped `app-icon.png` (never redrawn by hand, so the backdrop
   cannot drift from the icon), glyphs holding a quiet density at rest while a soft band
   of light crosses them every twenty seconds, filling each letter with the largest dot in
@@ -580,7 +594,8 @@ the chat page has neither.
 ### Inputs / Fields
 - **Style:** composer-style box — `surface`, 1px hairline, 6px radius on the main
   composer (`input::composer_radius`) and inline fields (`input::RADIUS`).
-- **Focus:** the border steps to `focus_ring` (1px); a fill is never the focus signal.
+- **Focus:** other fields step their border to `focus_ring` (1px). The composer keeps
+  its resting hairline when focused; its caret indicates text focus.
 - **Placeholder:** `text_muted` — always a real prompt ("Search sessions…"), never a label.
 - **Tokens:** a leading `/command` and any `@file` mention paint inline in their token
   colors while typing; the caret, selection, and wrapping are unaffected (paint only).
@@ -691,7 +706,7 @@ receiving keyboard input." They must remain visually distinct.
   writes `selection_fg`.
 - Hover fills `surface_hover`; pressed fills `surface_active`. Neither may equal the
   selected fill in any palette — `interaction_states_never_collide` holds this over all
-  twelve.
+  thirteen.
 - A focused selected row adds the ring without changing its fill.
 
 ### The State Contract
@@ -871,16 +886,21 @@ The status row under the composer is a readout, not a toolbar.
 - **The MCP chip appears only when a server needs attention.** A fully connected fleet is
   the steady state, and the steady state earns no pixels. Its label names the counts, so
   colour is never the only signal.
-- **The "Work in" chip is always present in a repository.** It is not a readout of the default:
+- **The "Work in" chip is always present in a session inside a repository.** It is not a readout of the default:
   it is the control that decides where the next task runs, and its rows include the places — a
   linked worktree, a new one, an existing folder, a remote branch, or a clone — that have no other
-  affordance in the composer. At the main checkout it reads `Local`; inside a worktree it names that
-  worktree; on a broken worktree it says so instead of naming a branch. Outside a repository the
+  affordance in the composer. At the main checkout it names the project; inside a worktree it names
+  that worktree; on a broken worktree it says so instead of naming a branch. Outside a repository the
   chip is absent, and the plain folder chip takes its place; the new-task picker still offers
   cloning and folder selection outside a repository. Choosing a different location starts a task
   there; a running session is parked, and an idle session's transcript remains on disk. Creating a worktree opens a dialog. See
   `the_work_in_chip_is_absent_outside_a_repository` and
-  `the_chip_is_present_at_the_main_checkout_and_reads_local`.
+  `the_chip_names_the_project_at_the_main_checkout`.
+- **On the new-task page both status controls stand down.** The composer's context header already
+  provides folder, branch and working-directory controls, so the status row does not duplicate
+  them. The session status row takes those roles back after the dock. See
+  `the_folder_row_is_the_only_folder_control_on_the_page` and
+  `the_branch_and_working_directory_share_the_composer_header`.
 - Workspace and branch chips yield before the row can crowd; the context indicator holds
   the right edge.
 
@@ -1051,11 +1071,13 @@ swap states instantly rather than transitioning.
 | Focus | field, row, card, dialog | `Instant` | the focus ring fades in; the control reserves that 1px border at rest so no layout moves | ring appears at once |
 | Selection | row, tab, segment | `Interaction` | selected wash and ink crossfade, on top of the hover's own fade (`motion::control` owns both) | swap |
 | Disclosure | chevron, expandable section | `Interaction` | the chevron turns a quarter turn (`helpers::disclosure_chevron`); the section's height is measured at the current width, then eased | rotation completes instantly, height snaps |
+| Picker caret | chip, dropdown trigger | `Interaction` | the trailing caret points down at rest and turns a half turn to point up while the menu is open (`helpers::dropdown_chevron`); the menu opens below the trigger | rotation completes instantly |
 | Switch | settings toggle (`helpers::switch`) | `Interaction` | the knob travels 18px (the track's inner span) and the track crossfades `surface_elevated` → `accent` | the knob jumps |
 | Menu / popover open | anchored card, context menu | `Interaction` + travel | fade plus an 8px travel out of the anchor edge, as one card; `anchored_popover_at` (a context menu at the pointer) fades only, because it has no edge | the card appears at once |
 | Dialog open | modal card | `Layout` | the card fades in over the scrim; it cannot scale for the reason below | the card appears at once |
 | Panel open / close | sidebar, side pane, explorer, terminal, Git | `Layout` / `Spring` | the panel's own width; chips on its edge ride the same curve | panels snap |
 | Send morph | composer submit | `Travel` (state) + `Interaction` (hover) | the square grows into a labelled button that names the action, and folds back to a square while a turn runs; width and label ride one transition | the end state is drawn immediately |
+| Composer dock | first send from the new-task page | `Travel` | the composer leaves the page's centered column for the session's: the space below it closes, the column widens 800 → 960, the folder row collapses, and the transcript's ink fades in, all on one clock (`new_task::settle`) | the session frame is painted on the frame of the send |
 
 Four rules hold across the table:
 
@@ -1292,7 +1314,34 @@ The composer is a primary work surface.
 - Use `input::composer_radius` (6px before the rounding preference) and the composer surface.
 - Keep the input visually distinct from the transcript without making it look like a
   floating SaaS widget.
+- **The new-task page is the same composer in the middle of the page.** There is no second
+  composer and no second page template: the chat column with an empty transcript centers the
+  column it already owns, at `new_task::COMPOSER_MAX_W` (800px, still narrowing with the
+  window) instead of the session's 960. It is centered by *weight*, not measurement — the
+  transcript's slot above takes 44 % of the free space and a spacer below takes the rest —
+  because the composer's height moves with its content and the UI scale. Nothing is drawn
+  above it: no headline, mark, or card. The field and its context explain the task.
+- **The context header shares the composer surface.** A hairline separates it from the input.
+  The folder and branch controls sit together on the left; the working-directory control sits
+  at the right when a repository is available. The folder chip shows the folder name, project
+  mark or folder glyph, and caret; its tooltip and picker expose the full path. It remains a
+  keyboard button: Tab reaches it, Enter/Space opens the picker, and Escape returns focus. The
+  branch and working-directory controls reuse the session's existing pickers. The status row
+  waits for the dock to finish before taking the controls back, so they are not duplicated
+  mid-transition. The composer border remains a quiet hairline while its input is focused;
+  the caret indicates text focus. The empty footer leaves out the
+  context meter until real usage exists rather than decorating a task with a zero-valued ring.
+- **The first send docks it.** One `Motion::Travel` (260ms) carries the composer from the page's
+  centered column into the session's: the gap below it eases to nothing, the column widens from
+  800 to 960, the folder row collapses, and the transcript's ink fades in. All four read the same
+  role and easing, from `new_task::settle`, so the page cannot arrive in pieces. The slide uses a
+  gentle cubic ease-out and starts on the first visible frame, rather than expiring before paint.
+  Reduce Motion paints the session frame on the frame of the send. A session resumed from the sidebar
+  never animates: it was never on this page. See `the_send_transition_is_continuous_at_both_ends`
+  and `reduce_motion_docks_the_composer_on_the_frame_it_sends`.
 - Commands and file mentions remain content tokens.
+- Access and workflow stay visible at every composer width. When space is tight,
+  the mode controls wrap above the model, thinking and send controls rather than disappearing.
 - Primary submit/stop controls remain discoverable.
 - Model, thinking effort, access mode, and workflow mode should be available without
   turning the composer into a control dashboard. Four chips is the ceiling at rest, and
@@ -1308,6 +1357,17 @@ The composer is a primary work surface.
   - **Workflow mode** and **model** stay on the row in every state; both are the live
     state of the run.
   - **Steer** appears only while a run is in flight with something to send.
+- **The model picker is one searchable list, not a dashboard.** Search, then a quiet
+  horizontally scrolling scope rail (All, Recents/Favorites, then provider chips); the
+  selected provider scrolls to the rail's centre, and the rail's left/right edge shadows
+  grow over the first 28px of travel instead of switching on. Every chip carries its mark —
+  the provider's brand icon, or the shared grid/clock/star glyph for All/Recents/Favorites.
+  Provider-grouped one-line
+  rows carry the model name and its context window, with the provider mark and name stated
+  once in the group header. The current model keeps the row fill and an accent check;
+  favorites keep their star, which only appears on hover for the rest. The footer is a
+  single quiet count, not a repeated key legend. Arrow keys, Enter, and Escape still work
+  without the legend. Long names truncate; the full provider/id is the row's tooltip.
 - Advanced controls belong behind contextual disclosure when they are not needed. A
   control that disappears keeps a usable keyboard path; a palette route alone
   does not establish that the complete workflow is accessible.
@@ -1661,7 +1721,7 @@ these tests, which run over every shipped palette:
   `selection_rows_keep_their_metadata_readable`,
   `every_theme_holds_its_surface_grammar`.
 - Interaction states — `interaction_states_never_collide` (hover, pressed and selected are
-  three different colours in all twelve palettes).
+  three different colours in all thirteen palettes).
 - Motion — `motion_roles_fill_the_spec_bands`,
   `motion_collapses_to_nothing_under_reduce_motion`,
   `the_motion_preference_resolves_in_one_place`.
@@ -1720,7 +1780,7 @@ performance, and visual restraint make long agent sessions feel natural.
 
 ### Do:
 - **Do** read every color, size, and radius from `theme::get(cx)`; add a role to
-  `Palette` when a new semantic need appears so all twelve palettes stay legible.
+  `Palette` when a new semantic need appears so all thirteen palettes stay legible.
 - **Do** use hairlines and whitespace to separate sections; reserve rounded bordered
   surfaces for objects that are conceptually singular (composer, metric board, popover).
 - **Do** keep control heights on the `ButtonSize` scale (22 / 28 / 32px) so a

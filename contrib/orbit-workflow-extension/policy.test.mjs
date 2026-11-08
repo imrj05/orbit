@@ -16,6 +16,9 @@ import {
   guidance,
   isSafeCommand,
   normalizeMode,
+  policyTools,
+  wasScopedReadOnly,
+  WORKFLOW_ENTRY_TYPE,
 } from "./policy.js";
 
 test("normalizeMode falls back to build", () => {
@@ -59,6 +62,39 @@ test("applyToolScoping restores only what it removed", () => {
   const next = applyToolScoping("build", ["read", "codemode"], state.removed);
   assert.deepEqual(next.tools, ["read", "codemode", "edit"]);
   assert.deepEqual(next.removed, []);
+});
+
+test("a scoped-out tool set survives a resume, so Build restores the policy's own tools", () => {
+  // The resumed process starts with the restricted set pi left behind: no
+  // memory of the removal, and nothing to restore from (issue #109).
+  const resumed = applyToolScoping("build", ["read", "bash"], [], ["edit", "write"]);
+  assert.deepEqual(resumed.tools, ["read", "bash", "edit", "write"]);
+
+  // An already-active name is not duplicated, and a read-only mode still
+  // keeps the policy's tools off whatever it is offered.
+  assert.deepEqual(
+    applyToolScoping("build", ["read", "edit"], [], ["edit", "write"]).tools,
+    ["read", "edit", "write"],
+  );
+  assert.deepEqual(
+    applyToolScoping("plan", ["read", "bash"], [], ["edit", "write"]).tools,
+    ["read", "bash"],
+  );
+});
+
+test("only a session this extension scoped read-only may be restored", () => {
+  const entry = (mode, customType = WORKFLOW_ENTRY_TYPE) => ({
+    type: "custom",
+    customType,
+    data: { mode },
+  });
+  assert.equal(wasScopedReadOnly([entry("plan")]), true);
+  assert.equal(wasScopedReadOnly([entry("build"), entry("ask")]), true);
+  assert.equal(wasScopedReadOnly([entry("build")]), false);
+  assert.equal(wasScopedReadOnly([entry("plan", "someone-else")]), false);
+  assert.equal(wasScopedReadOnly([]), false);
+  assert.equal(wasScopedReadOnly(undefined), false);
+  assert.deepEqual(policyTools(), ["edit", "write"]);
 });
 
 test("build never blocks", () => {

@@ -193,7 +193,10 @@ export function markCompletedSteps(text, todos) { /* apply [DONE:n] tags */ }
 - `session_start`: reconstruct todos from the branch (`ctx.sessionManager
   .getBranch()`, scanning `message` tool results and the newest
   `orbit:workflow-todos` custom entry — branch-aware, so a rewind is correct);
-  apply `pi.setActiveTools(allowedTools(...))`.
+  apply `pi.setActiveTools(allowedTools(...))`. A resumed session arrives with
+  the tool set its previous process left behind, so the policy's own disabled
+  tools are restored by name when the session's `orbit:workflow` entries say this
+  extension scoped it and the resolved mode allows them.
 - `before_agent_start`: re-resolve; if the mode changed, re-apply tools; return
   `{ message: { customType: "orbit-workflow-context", display: false,
   content: guidance(mode, todos) } }` when non-empty. Use the hidden
@@ -421,6 +424,15 @@ fallbacks.)
   the Orbit store is authoritative for the app. On conflict (e.g. a mode changed
   from the pi CLI), load from the store and let the extension append a fresh
   entry — one source of truth per process, reconciled on switch.
+- **A restricted tool set outlives its process.** `setActiveTools` is how Plan
+  and Ask hide the write tools, and pi starts a resumed session with the set the
+  previous process left active. The per-process "what I removed" memory is then
+  empty while `edit`/`write` are already gone, so switching back to Build used to
+  leave a session that could not write (issue #109). The extension reads its own
+  `orbit:workflow` entries to know it scoped that session, and Build restores the
+  policy's own tools (`edit`, `write`) when pi still registers them — it never
+  resurrects a tool some other extension removed, and a session this extension
+  never scoped is left untouched.
 - **Out of scope:** automatic Plan → Execute handoff (manual chip switch stays),
   manual checkbox toggling, per-step timing/estimates, and any new RPC surface.
 

@@ -35,6 +35,7 @@ pub fn render_file_header(
     nerd: Option<&SharedString>,
     dark: bool,
     collapsed: bool,
+    note: Option<&str>,
 ) -> Div {
     let fallback = icon(
         "icons/file.svg",
@@ -76,6 +77,16 @@ pub fn render_file_header(
                 .text_color(theme.text_secondary)
                 .child(file.path.clone()),
         )
+        // Provenance a Git diff cannot show: this file changed with no tool
+        // call naming it. Muted, so it reads as a note on the row.
+        .children(note.filter(|note| !note.is_empty()).map(|note| {
+            div()
+                .flex_none()
+                .whitespace_nowrap()
+                .text_size(TextSize::XSmall.px(&theme))
+                .text_color(theme.text_muted)
+                .child(note.to_owned())
+        }))
         .child(
             div()
                 .text_size(TextSize::Small.px(&theme))

@@ -722,6 +722,7 @@ mod tests {
                 ThemeId::OrbitCobalt,
                 ThemeId::OrbitAzure,
                 ThemeId::Flexoki,
+                ThemeId::OrbitOnyx,
                 ThemeId::Operational,
             ]
         );
@@ -741,6 +742,7 @@ mod tests {
                 ThemeId::OrbitCobalt,
                 ThemeId::OrbitAzure,
                 ThemeId::Flexoki,
+                ThemeId::OrbitOnyx,
             ]
         );
         let operational_dark: Vec<_> =

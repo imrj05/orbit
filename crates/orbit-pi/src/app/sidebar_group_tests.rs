@@ -51,23 +51,21 @@ fn flat_rows_lead_with_pinned_sessions() {
 }
 
 #[test]
-fn flat_rows_keep_the_open_session_first_while_a_run_writes() {
-    // The open session is the older of the two and the other has a live
-    // background run with newer activity. If both merely "led", they would
-    // trade places on every watcher reload as each appends a message; the
-    // open session must outrank the run.
+fn flat_rows_do_not_promote_the_open_session() {
+    // The store hands sessions over newest-first. Opening the older one
+    // leaves that order alone. Pins still lead.
     let sessions = vec![
-        store_session("active", "/work/alpha", 10),
         store_session("background", "/work/alpha", 30),
+        store_session("active", "/work/alpha", 10),
     ];
-    let running: HashSet<PathBuf> = [sessions[1].path.clone()].into_iter().collect();
-    let active = Some(sessions[0].path.clone());
+    let running: HashSet<PathBuf> = [sessions[0].path.clone()].into_iter().collect();
+    let active = Some(sessions[1].path.clone());
     let rows = build_flat_sidebar_rows(&sessions, &HashSet::new(), &active, &running);
     assert_eq!(session_indices(&rows), vec![0, 1]);
 }
 
 #[test]
-fn flat_rows_keep_pins_ahead_of_open_and_running_sessions() {
+fn flat_rows_keep_pins_ahead_without_promoting_open_or_running() {
     let sessions = vec![
         store_session("running", "/work/alpha", 40),
         store_session("idle", "/work/alpha", 30),
@@ -78,13 +76,8 @@ fn flat_rows_keep_pins_ahead_of_open_and_running_sessions() {
     let running = HashSet::from([sessions[0].path.clone()]);
     let active = Some(sessions[2].path.clone());
     let rows = build_flat_sidebar_rows(&sessions, &pinned, &active, &running);
-    assert_eq!(session_indices(&rows), vec![3, 2, 0, 1]);
-    let rows = build_flat_sidebar_rows(
-        &sessions,
-        &pinned,
-        &Some(sessions[3].path.clone()),
-        &running,
-    );
+    // Pin first, then newest activity. The open row and the running row
+    // stay where their last message put them.
     assert_eq!(session_indices(&rows), vec![3, 0, 1, 2]);
 }
 
@@ -164,6 +157,37 @@ fn sidebar_first_message_hidden_choice_survives_a_round_trip() {
     assert!(!restored.show_first_message);
     assert_eq!(restored.group_by, SidebarGroupBy::OneList);
     assert_eq!(restored.archived_filter, SidebarArchivedFilter::Only);
+}
+
+#[test]
+fn sidebar_row_preferences_are_independent_and_backward_compatible() {
+    for summary in [false, true] {
+        for updated in [false, true] {
+            let store = WorkspaceStore {
+                show_first_message: summary,
+                show_updated: updated,
+                ..WorkspaceStore::default()
+            };
+            let saved = workspace_store_json(&store);
+            let restored = parse_workspace_store(&saved);
+            assert_eq!(
+                (restored.show_first_message, restored.show_updated),
+                (summary, updated)
+            );
+        }
+    }
+    for invalid in [
+        Value::Null,
+        serde_json::json!("false"),
+        serde_json::json!(0),
+    ] {
+        let store = parse_workspace_store(
+            &serde_json::json!({"show_first_message": false, "show_updated": invalid}),
+        );
+        assert!(!store.show_first_message);
+        assert!(store.show_updated);
+    }
+    assert!(parse_workspace_store(&serde_json::json!({"show_first_message": false})).show_updated);
 }
 
 #[test]

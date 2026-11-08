@@ -46,6 +46,15 @@ function fakePi() {
     getActiveTools() {
       return [...state.tools];
     },
+    getAllTools() {
+      return [
+        { name: "read" },
+        { name: "bash" },
+        { name: "edit" },
+        { name: "write" },
+        { name: "grep" },
+      ];
+    },
     setActiveTools(names) {
       state.tools = [...names];
     },
@@ -124,6 +133,38 @@ test("a tool activated after session start survives a mode change", async () => 
     "edit",
     "write",
   ]);
+});
+
+test("a resumed build session restores the write tools it was scoped out of", async () => {
+  // The previous process ran this session in Plan and left the tool set
+  // restricted; pi starts the resumed process with exactly that set, so the
+  // extension has no record of removing them (issue #109).
+  writeStore({ s1: "build" });
+  const pi = fakePi();
+  pi.state.tools = ["read", "bash"];
+  activate(pi);
+  const branch = [
+    { type: "custom", customType: "orbit:workflow", data: { mode: "plan" } },
+    { type: "custom", customType: "orbit:workflow", data: { mode: "build" } },
+  ];
+  await pi.fire("session_start", {}, fakeCtx("s1", branch));
+  assert.deepEqual(pi.state.tools, ["read", "bash", "edit", "write"]);
+
+  // A session this extension never scoped is left alone: nothing says the
+  // missing tools are ours to re-add.
+  const untouched = fakePi();
+  untouched.state.tools = ["read", "bash"];
+  activate(untouched);
+  await untouched.fire("session_start", {}, fakeCtx("s1", []));
+  assert.deepEqual(untouched.state.tools, ["read", "bash"]);
+
+  // And a scoped session that is still in Plan keeps them off.
+  writeStore({ s1: "plan" });
+  const planned = fakePi();
+  planned.state.tools = ["read", "bash"];
+  activate(planned);
+  await planned.fire("session_start", {}, fakeCtx("s1", branch));
+  assert.deepEqual(planned.state.tools, ["read", "bash"]);
 });
 
 test("tool_call blocks writes in read-only modes and passes in build", async () => {

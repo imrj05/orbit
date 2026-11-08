@@ -17,6 +17,11 @@
  * into the session as an `orbit:workflow` entry so it survives resume even if
  * the store is lost; the pure pieces live in `policy.js`.
  *
+ * A restricted tool set outlives the process that applied it: pi starts a
+ * resumed session with the tools the last one left active. That entry is also
+ * how Build knows the write tools missing from a resumed session were this
+ * extension's doing, so it can put them back (issue #109).
+ *
  * Fail-safe: any resolve/read failure degrades to Build, never to a silently
  * weaker read-only state.
  */
@@ -32,6 +37,8 @@ import {
   blockReason,
   guidance,
   normalizeMode,
+  policyTools,
+  wasScopedReadOnly,
 } from "./policy.js";
 
 /** `~/.orbit-pi/workflow.json`, resolved per call so a test `HOME` is honored. */
@@ -81,6 +88,18 @@ export function resolveMode(ctx, entries) {
   return DEFAULT_MODE;
 }
 
+/** The policy's own tools that this pi process actually registers. */
+function registeredPolicyTools(pi) {
+  let names = [];
+  try {
+    names = pi.getAllTools().map((tool) => tool?.name).filter(Boolean);
+  } catch {
+    names = [];
+  }
+  const owned = new Set(policyTools());
+  return names.filter((name) => owned.has(name));
+}
+
 export default function activate(pi) {
   let appliedMode = null;
   /**
@@ -96,15 +115,26 @@ export default function activate(pi) {
    * active set grows after session start (MCP activates `codemode` when a
    * server connects), so the base is always what is live now — never a
    * cached session-start snapshot.
+   *
+   * On a resumed session the live set can already be this policy's own
+   * restriction: pi starts the process with the tools the last one left
+   * active, so `edit`/`write` are gone with nothing in memory to restore. The
+   * session's own `orbit:workflow` entry says this extension took them away,
+   * which is what lets Build put them back (issue #109).
    */
-  function applyMode(mode) {
+  function applyMode(mode, entries) {
     let current;
     try {
       current = pi.getActiveTools();
     } catch {
       current = [];
     }
-    const next = applyToolScoping(mode, current, removedByUs);
+    const next = applyToolScoping(
+      mode,
+      current,
+      removedByUs,
+      wasScopedReadOnly(entries) ? registeredPolicyTools(pi) : [],
+    );
     removedByUs = next.removed;
     try {
       pi.setActiveTools(next.tools);
@@ -122,12 +152,12 @@ export default function activate(pi) {
   }
 
   pi.on("session_start", (_event, ctx) => {
-    applyMode(resolveMode(ctx, branchEntries(ctx)));
+    applyMode(resolveMode(ctx, branchEntries(ctx)), branchEntries(ctx));
   });
 
   pi.on("before_agent_start", (_event, ctx) => {
     const mode = resolveMode(ctx, branchEntries(ctx));
-    applyMode(mode);
+    applyMode(mode, branchEntries(ctx));
     const content = guidance(mode);
     if (!content) return undefined;
     return { message: { customType: CONTEXT_TYPE, content, display: false } };

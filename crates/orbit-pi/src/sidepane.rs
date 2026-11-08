@@ -2,8 +2,11 @@
 //! **Review** panel showing the workspace's git changes.
 //!
 //! The diff reads from a selectable [`review::Source`] — the last agent turn
-//! (from [`crate::checkpoint`] snapshots), uncommitted, unstaged, staged,
-//! committed, or the whole branch. The patch is parsed into a virtualized list
+//! (that turn's `edit` / `write` calls, plus any file the turn changed in the
+//! worktree with no call behind it), every turn in the session (All Changes),
+//! uncommitted, unstaged, staged, committed, or the whole branch. Git sources
+//! read the worktree; the conversation sources paint from records the app
+//! pushes. The patch is parsed into a virtualized list
 //! of rows with sticky file headers and expandable context gaps, colored from
 //! [`crate::highlight`] tokens. A filterable changed-files tree sits alongside
 //! it and hides on narrow panes.
@@ -92,6 +95,23 @@ pub type FileActions = std::rc::Rc<dyn Fn(&review::File, Theme) -> Option<AnyEle
 /// the row is the sticky copy, so the host can mint unique element ids.
 pub type SectionActions = std::rc::Rc<dyn Fn(&str, bool, Theme) -> Option<AnyElement>>;
 
+/// Worktree changes a turn made that no `edit` / `write` call named, already
+/// rendered as `numstat` + patch text against the turn's start checkpoint.
+#[derive(Clone, Default)]
+struct TurnExtras {
+    numstat: String,
+    patch: String,
+    /// Repository-relative paths, so a file header can say where it came from.
+    paths: HashSet<String>,
+}
+
+/// How many settled turns keep their extra-worktree changes. Last Turn can be
+/// pointed at an older turn; this bounds what that costs in memory.
+const MAX_TURN_EXTRAS: usize = 8;
+/// Total patch text kept for those turns. A hydrated worktree diff can reach
+/// the tens of megabytes, so the oldest turns go once this is exceeded.
+const MAX_TURN_EXTRAS_BYTES: usize = 8 * 1024 * 1024;
+
 pub struct SidePane {
     /// Whether the pane is shown at all (toggled from the top bar).
     open: bool,
@@ -105,10 +125,20 @@ pub struct SidePane {
 
     /// Workspace the pane operates on (kept in sync by the app).
     workspace: Option<PathBuf>,
-    /// pi session id — keys the turn checkpoints behind `Last Turn`.
+    /// pi session id. Git sources still key checkpoints with it; Last Turn
+    /// does not.
     session: Option<String>,
-    /// Latest completed turn for this session, if any.
+    /// Latest turn the menu labels as Last Turn.
     latest_turn: Option<usize>,
+    /// Recorded `edit` / `write` calls per turn. Last Turn renders these
+    /// instead of a Git checkpoint diff.
+    turn_records: crate::turn_review::TurnRecords,
+    /// Files a turn changed in the worktree that no `edit` / `write` named,
+    /// as the turn's checkpoint range. Appended to Last Turn so a `bash` fix
+    /// or a formatter is not silently missing from the review.
+    turn_extras: Vec<(usize, TurnExtras)>,
+    /// A run is open: Last Turn is the state as of send, not the live turn.
+    turn_running: bool,
 
     // ── Review ──
     review: Option<Arc<Snapshot>>,
@@ -205,6 +235,9 @@ impl SidePane {
             workspace: None,
             session: None,
             latest_turn: None,
+            turn_records: crate::turn_review::TurnRecords::default(),
+            turn_extras: Vec::new(),
+            turn_running: false,
             review: None,
             review_loading: false,
             review_stale: true,
@@ -495,6 +528,9 @@ impl SidePane {
     }
 
     /// Keep the session id + latest turn in sync so `Last Turn` can resolve.
+    ///
+    /// The embedded Git page stores the same pair but does not reload: it
+    /// never shows Last Turn, and a turn-number change is not a new diff.
     pub fn set_turn_context(
         &mut self,
         session: Option<String>,
@@ -503,18 +539,49 @@ impl SidePane {
     ) {
         let session_changed = session != self.session;
         let latest_changed = latest_turn != self.latest_turn;
-        if !session_changed && !latest_changed {
+        if self.embedded {
+            if !session_changed && !latest_changed {
+                return;
+            }
+            self.session = session;
+            self.latest_turn = latest_turn;
+            return;
+        }
+        let previous_latest = self.latest_turn;
+        let retarget = match self.source {
+            // Turn 0 is the "no turn yet" placeholder. A session swap must
+            // leave Last Turn, but the previous session's turn number is not
+            // this session's. A source that was following the previous latest
+            // follows the new one. An explicitly chosen older turn stays put.
+            Source::LastTurn { turn_count } => {
+                turn_count == 0 || session_changed || previous_latest == Some(turn_count)
+            }
+            _ => false,
+        };
+        let next_turn = latest_turn.unwrap_or(0);
+        let source_changes = retarget
+            && matches!(self.source, Source::LastTurn { turn_count } if turn_count != next_turn);
+        if !session_changed && !latest_changed && !source_changes {
             return;
         }
         self.session = session;
         self.latest_turn = latest_turn;
-        // A session swap can strand the pane on `Last Turn`; fall back to the
-        // always-available uncommitted view rather than showing an error.
-        if session_changed
-            && matches!(self.source, Source::LastTurn { .. })
-            && self.last_turn_source().is_none()
-        {
-            self.source = Source::Uncommitted;
+        if session_changed {
+            // Another session's turn number names another session's files.
+            self.turn_extras.clear();
+        }
+        if source_changes {
+            self.source = Source::LastTurn {
+                turn_count: next_turn,
+            };
+            self.clear_diff();
+        }
+        // Git sources do not read the turn number. Reloading them here would
+        // diff the worktree on every send. Last Turn does. All Changes
+        // reloads from the records push that follows this call.
+        if !matches!(self.source, Source::LastTurn { .. }) {
+            cx.notify();
+            return;
         }
         self.review_stale = true;
         if self.open && !self.review_loading {
@@ -529,6 +596,15 @@ impl SidePane {
         if self.open && !self.review_loading {
             self.load_review(cx);
         }
+    }
+
+    /// Reload a visible Git review after a turn settles. Conversation
+    /// sources were already painted from the records pushed with that settle.
+    pub fn mark_git_review_stale(&mut self, cx: &mut Context<Self>) {
+        if self.source.is_conversation() {
+            return;
+        }
+        self.mark_review_stale(cx);
     }
 
     /// Close the pane if it is open. Used when the Explorer opens — the two
@@ -574,8 +650,131 @@ impl SidePane {
 
     // ── Review ─────────────────────────────────────────────────────────
 
-    /// Load the workspace's git diff off-thread.
+    /// Replace the recorded turns the conversation sources render. A visible
+    /// Last Turn or All Changes reloads immediately; Git sources keep their
+    /// own diff.
+    pub(crate) fn set_turn_records(
+        &mut self,
+        records: crate::turn_review::TurnRecords,
+        cx: &mut Context<Self>,
+    ) {
+        if records == self.turn_records {
+            return;
+        }
+        if records.turns.is_empty() {
+            self.turn_extras.clear();
+        }
+        // A new send appends an empty turn. All Changes folds the same calls,
+        // so reloading would retokenize the diff and jump the scroll position.
+        let unchanged_calls =
+            self.source == Source::AllChanges && records.same_calls(&self.turn_records);
+        self.turn_records = records;
+        if !self.embedded && self.source.is_conversation() && !unchanged_calls {
+            self.review_stale = true;
+            if self.open {
+                self.load_review(cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Attach the worktree changes a settled turn made outside its tool
+    /// calls. A visible Last Turn for that turn reloads; other turns wait.
+    pub(crate) fn set_turn_extras(
+        &mut self,
+        turn: usize,
+        paths: Vec<String>,
+        numstat: String,
+        patch: String,
+        cx: &mut Context<Self>,
+    ) {
+        let extras = TurnExtras {
+            numstat,
+            patch,
+            paths: paths.into_iter().collect(),
+        };
+        match self
+            .turn_extras
+            .iter_mut()
+            .find(|(existing, _)| *existing == turn)
+        {
+            Some((_, slot)) => *slot = extras,
+            None => self.turn_extras.push((turn, extras)),
+        }
+        while self.turn_extras.len() > MAX_TURN_EXTRAS
+            || (self.turn_extras.len() > 1
+                && self
+                    .turn_extras
+                    .iter()
+                    .map(|(_, extras)| extras.numstat.len() + extras.patch.len())
+                    .sum::<usize>()
+                    > MAX_TURN_EXTRAS_BYTES)
+        {
+            self.turn_extras.remove(0);
+        }
+        if matches!(self.source, Source::LastTurn { turn_count } if turn_count == turn)
+            && self.open
+            && !self.review_loading
+        {
+            self.load_review(cx);
+        }
+        cx.notify();
+    }
+
+    /// Track whether a run is open. Last Turn paints the turn as of send, so
+    /// the header says so instead of showing a stale diff as current.
+    pub fn set_turn_running(&mut self, running: bool, cx: &mut Context<Self>) {
+        if self.turn_running == running {
+            return;
+        }
+        self.turn_running = running;
+        cx.notify();
+    }
+
+    /// True when the pane is showing the turn that is still running.
+    fn showing_running_turn(&self) -> bool {
+        self.turn_running
+            && matches!(self.source, Source::LastTurn { turn_count }
+                if Some(turn_count) == self.latest_turn)
+    }
+
+    /// The header names what is on screen, not the panel's name: the source is
+    /// otherwise only visible inside the menu.
+    fn header_title(&self) -> String {
+        let mut title = self.source_label(self.source);
+        if self.showing_running_turn() {
+            title.push_str(" · ");
+            title.push_str(&tr!("sidepane.turn_running"));
+        }
+        title
+    }
+
+    /// The note a file header carries: this file changed with no `edit` /
+    /// `write` behind it, so Review is showing the worktree, not the call.
+    fn outside_call_note(&self, path: &str) -> Option<String> {
+        let Source::LastTurn { turn_count } = self.source else {
+            return None;
+        };
+        let extras = self
+            .turn_extras
+            .iter()
+            .find(|(turn, _)| *turn == turn_count)
+            .map(|(_, extras)| extras)?;
+        extras
+            .paths
+            .contains(path)
+            .then(|| tr!("sidepane.no_tool_call"))
+    }
+
+    /// Load the workspace's git diff off-thread. Last Turn and All Changes
+    /// are the exception: they paint the conversation's `edit` / `write`
+    /// calls on this thread and never ask Git whether the folder is a
+    /// repository.
     fn load_review(&mut self, cx: &mut Context<Self>) {
+        if !self.embedded && self.source.is_conversation() {
+            self.load_conversation_review(cx);
+            return;
+        }
         let cwd = self
             .workspace
             .clone()
@@ -636,6 +835,45 @@ impl SidePane {
             });
         })
         .detach();
+    }
+
+    /// Paint Last Turn or All Changes from the records already on the pane.
+    /// Bumps the load generation so an in-flight Git read cannot overwrite
+    /// it, and clears any previous Git error.
+    fn load_conversation_review(&mut self, cx: &mut Context<Self>) {
+        self.load_generation = self.load_generation.wrapping_add(1);
+        self.review_loading = false;
+        self.review_stale = false;
+        self.review_error = None;
+        let calls = match self.source {
+            Source::LastTurn { turn_count } => self.turn_records.calls_for(turn_count).to_vec(),
+            Source::AllChanges => self.turn_records.all_calls(),
+            _ => return,
+        };
+        let (mut numstat, mut patch, clipped) = crate::turn_review::patch_from_calls(
+            &calls,
+            self.workspace.as_deref(),
+            review::MAX_RENDERED_DIFF_LINES,
+        );
+        // A turn can change the worktree without an `edit` / `write` behind
+        // it (a `bash` fix, a formatter, a subagent). Those files come from
+        // the turn's checkpoint range and land after the named ones.
+        if let Source::LastTurn { turn_count } = self.source {
+            if let Some((_, extras)) = self
+                .turn_extras
+                .iter()
+                .find(|(turn, _)| *turn == turn_count)
+            {
+                numstat.push_str(&extras.numstat);
+                patch.push_str(&extras.patch);
+            }
+        }
+        let mut snapshot = review::parse_collected(self.source, &numstat, &patch, true);
+        if clipped {
+            snapshot.truncated = true;
+        }
+        self.apply_snapshot(snapshot);
+        cx.notify();
     }
 
     fn finish_review_load(
@@ -818,34 +1056,28 @@ impl SidePane {
         self.diff_list.reset(0);
     }
 
-    /// Open Review on the **Last Turn** git diff — what the transcript's
-    /// changed-files cards' Review buttons call, so the panel shows only the
-    /// changes that turn made rather than the whole working tree.
+    /// Open Review on **Last Turn** — the `edit` / `write` calls from that
+    /// conversation turn, not a Git checkpoint. A missing turn stays on Last
+    /// Turn so a non-repo workspace does not fall through to Uncommitted.
     pub fn show_review_turn(&mut self, turn: Option<usize>, cx: &mut Context<Self>) {
         self.open = true;
-        let target = turn
-            .filter(|turn| *turn > 0)
-            .map(|turn_count| Source::LastTurn { turn_count });
-        match target {
-            Some(target) => {
+        match turn.filter(|turn| *turn > 0) {
+            Some(turn_count) => {
+                let target = Source::LastTurn { turn_count };
                 if self.source != target {
                     self.source = target;
                     self.clear_diff();
                 }
             }
             None => {
-                // No turn checkpoint yet — fall back to the working tree
-                // instead of stranding the panel on an unavailable source.
-                if matches!(self.source, Source::LastTurn { .. }) {
-                    self.source = Source::Uncommitted;
+                if !matches!(self.source, Source::LastTurn { .. }) {
+                    self.source = Source::LastTurn { turn_count: 0 };
                     self.clear_diff();
                 }
             }
         }
         self.review_stale = true;
-        if !self.review_loading {
-            self.load_review(cx);
-        }
+        self.load_review(cx);
         cx.notify();
     }
 
@@ -859,10 +1091,13 @@ impl SidePane {
 
     fn source_label(&self, source: Source) -> String {
         match source {
-            Source::LastTurn { turn_count } if self.latest_turn == Some(turn_count) => {
+            Source::LastTurn { turn_count }
+                if turn_count == 0 || self.latest_turn == Some(turn_count) =>
+            {
                 tr!("sidepane.last_turn")
             }
             Source::LastTurn { turn_count } => tr!("sidepane.turn_n", count = turn_count),
+            Source::AllChanges => tr!("sidepane.all_changes"),
             Source::Uncommitted => tr!("sidepane.uncommitted"),
             Source::Unstaged => tr!("git_panel.unstaged"),
             Source::Staged => tr!("git_panel.staged"),
@@ -1061,6 +1296,10 @@ impl SidePane {
         let tree_available = !self.embedded && self.pane_width() >= px(TREE_MIN_PANE_W);
         let tree_visible = tree_available && self.tree_open;
 
+        // The header names the source on screen and, while a run is open,
+        // that Last Turn is behind it rather than current.
+        let title = self.header_title();
+
         // Header row: title + tree toggle + refresh + the panel-window
         // controls (full width, close). Embedded drops the panel-window
         // controls — they belong to the dock, not the host surface.
@@ -1084,7 +1323,7 @@ impl SidePane {
                     .text_size(TextSize::Small.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.text_primary)
-                    .child(tr!("sidepane.review")),
+                    .child(title.clone()),
             )
             .children(tree_available.then(|| {
                 icon_button_frame(div().id("review-tree-toggle"), &theme, ButtonSize::Default)
@@ -1517,7 +1756,13 @@ impl SidePane {
             )
         } else if let Some(snapshot) = self.review.clone() {
             if snapshot.files.is_empty() {
-                let empty = self.source.empty_description();
+                // Nothing has landed yet, so do not claim the turn changed
+                // nothing: it has not finished.
+                let empty = if self.showing_running_turn() {
+                    tr!("sidepane.empty_turn_running")
+                } else {
+                    self.source.empty_description()
+                };
                 empty_state(
                     theme,
                     "icons/file-diff.svg",
@@ -1813,27 +2058,33 @@ impl SidePane {
         let collapsed = self.collapsed_files.contains(&file_index);
         let nerd = nerd_font_family(cx);
         let dark = theme.mode == ThemeMode::Dark;
-        let mut row = render_file_header(&file, theme, nerd.as_ref(), dark, collapsed)
-            .id(gpui::ElementId::Name(
-                format!(
-                    "review-file-{}-{file_index}",
-                    if sticky { "sticky" } else { "row" }
-                )
-                .into(),
-            ))
-            .debug_selector(move || {
-                if sticky {
-                    "review-file-header-sticky"
-                } else {
-                    "review-file-header"
-                }
-                .to_string()
-            })
-            .cursor_pointer()
-            .hover_state(&theme)
-            .on_click(
-                cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_file(file_index, cx)),
-            );
+        let note = self.outside_call_note(&file.path);
+        let mut row = render_file_header(
+            &file,
+            theme,
+            nerd.as_ref(),
+            dark,
+            collapsed,
+            note.as_deref(),
+        )
+        .id(gpui::ElementId::Name(
+            format!(
+                "review-file-{}-{file_index}",
+                if sticky { "sticky" } else { "row" }
+            )
+            .into(),
+        ))
+        .debug_selector(move || {
+            if sticky {
+                "review-file-header-sticky"
+            } else {
+                "review-file-header"
+            }
+            .to_string()
+        })
+        .cursor_pointer()
+        .hover_state(&theme)
+        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.toggle_file(file_index, cx)));
         // An embedded host (the Git page) can hang stage / unstage / discard
         // actions off the header; they reveal on hover so the row stays clean.
         if self.embedded {
@@ -2318,6 +2569,14 @@ impl SidePane {
             theme,
             cx,
         ));
+        menu = menu.child(source_row(
+            &tr!("sidepane.all_changes"),
+            true,
+            self.source == Source::AllChanges,
+            Some(Source::AllChanges),
+            theme,
+            cx,
+        ));
         menu = menu.child(separator(theme));
         for choice in [Source::Uncommitted, Source::Unstaged, Source::Staged] {
             menu = menu.child(source_row(
@@ -2442,10 +2701,17 @@ fn gap_icon(direction: ExpansionDirection) -> &'static str {
 // ── shared helpers ─────────────────────────────────────────────────────────
 
 impl Source {
+    /// Last Turn and All Changes are painted from the conversation. Git
+    /// sources still diff the worktree.
+    fn is_conversation(self) -> bool {
+        matches!(self, Self::LastTurn { .. } | Self::AllChanges)
+    }
+
     /// Reader-facing empty-state copy for each source.
     fn empty_description(self) -> String {
         match self {
             Source::LastTurn { .. } => tr!("sidepane.empty_last_turn"),
+            Source::AllChanges => tr!("sidepane.empty_all_changes"),
             Source::Uncommitted => tr!("sidepane.empty_uncommitted"),
             Source::Unstaged => tr!("sidepane.empty_unstaged"),
             Source::Staged => tr!("sidepane.empty_staged"),
@@ -3130,5 +3396,354 @@ mod tests {
             header.origin.x,
             after.origin.x
         );
+    }
+
+    #[gpui::test]
+    fn a_session_swap_keeps_last_turn_when_no_turn_is_known(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.show_review_turn(Some(1), cx);
+                pane.set_turn_context(Some("other-session".into()), None, cx);
+                assert!(
+                    matches!(pane.source, Source::LastTurn { turn_count: 0 }),
+                    "a missing clock stays on Last Turn and drops the other session's turn number"
+                );
+                assert!(pane.review_error.is_none());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn an_open_last_turn_follows_the_new_latest(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.show_review_turn(None, cx);
+                pane.set_turn_context(Some("session".into()), Some(1), cx);
+                assert!(matches!(pane.source, Source::LastTurn { turn_count: 1 }));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn an_older_turn_stays_selected_when_a_newer_one_finishes(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_turn_context(Some("session".into()), Some(3), cx);
+                pane.show_review_turn(Some(1), cx);
+                pane.set_turn_context(Some("session".into()), Some(4), cx);
+                assert!(matches!(pane.source, Source::LastTurn { turn_count: 1 }));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn review_without_a_turn_stays_on_last_turn(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.show_review_turn(None, cx);
+                assert!(matches!(pane.source, Source::LastTurn { turn_count: 0 }));
+                assert!(pane
+                    .review
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.files.is_empty()));
+                assert!(pane.review_error.is_none());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn last_turn_renders_recorded_edits_without_a_repository(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_turn_records(
+                    crate::turn_review::TurnRecords {
+                        turns: vec![(
+                            1,
+                            vec![crate::turn_review::RecordedCall {
+                                path: "src/lib.rs".into(),
+                                call: crate::turn_review::FileCall::Edits(vec![
+                                    crate::turn_review::TextEdit {
+                                        old: "old".into(),
+                                        new: "new".into(),
+                                    },
+                                ]),
+                            }],
+                        )],
+                    },
+                    cx,
+                );
+                pane.review_error = Some("not a repository".into());
+                let generation = pane.load_generation;
+                pane.show_review_turn(Some(1), cx);
+                let snapshot = pane.review.as_ref().expect("last turn snapshot");
+                assert_eq!(snapshot.files.len(), 1);
+                assert_eq!(snapshot.files[0].path, "src/lib.rs");
+                assert!(pane.review_error.is_none());
+                assert_eq!(pane.load_generation, generation.wrapping_add(1));
+                assert!(!pane.review_loading);
+                assert!(snapshot.lines.iter().any(|line| {
+                    matches!(line.kind, crate::review::LineKind::Addition) && line.content == "new"
+                }));
+            });
+        });
+    }
+
+    /// A push while Last Turn is open refreshes it. That push happens when
+    /// Review is opened or the turn settles, not as each tool call streams in.
+    #[gpui::test]
+    fn an_open_last_turn_shows_records_pushed_into_it(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.show_review_turn(Some(1), cx);
+                assert!(pane
+                    .review
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.files.is_empty()));
+                pane.set_turn_records(
+                    crate::turn_review::TurnRecords {
+                        turns: vec![(
+                            1,
+                            vec![crate::turn_review::RecordedCall {
+                                path: "src/lib.rs".into(),
+                                call: crate::turn_review::FileCall::Write("landed\n".into()),
+                            }],
+                        )],
+                    },
+                    cx,
+                );
+                let snapshot = pane.review.as_ref().expect("streaming snapshot");
+                assert_eq!(snapshot.files.len(), 1);
+                assert!(snapshot.lines.iter().any(|line| line.content == "landed"));
+                assert!(pane.review_error.is_none());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn all_changes_lists_every_turn_without_a_repository(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_turn_records(
+                    crate::turn_review::TurnRecords {
+                        turns: vec![
+                            (
+                                1,
+                                vec![crate::turn_review::RecordedCall {
+                                    path: "a.rs".into(),
+                                    call: crate::turn_review::FileCall::Write("old\n".into()),
+                                }],
+                            ),
+                            (
+                                2,
+                                vec![crate::turn_review::RecordedCall {
+                                    path: "b.rs".into(),
+                                    call: crate::turn_review::FileCall::Write("new\n".into()),
+                                }],
+                            ),
+                        ],
+                    },
+                    cx,
+                );
+                pane.review_error = Some("not a repository".into());
+                pane.set_source(Source::AllChanges, cx);
+                let snapshot = pane.review.as_ref().expect("all changes snapshot");
+                assert_eq!(
+                    snapshot
+                        .files
+                        .iter()
+                        .map(|file| file.path.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["a.rs", "b.rs"]
+                );
+                assert!(pane.review_error.is_none());
+                assert!(!pane.review_loading);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn an_empty_new_turn_does_not_reload_all_changes(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.open = true;
+                pane.set_turn_records(
+                    crate::turn_review::TurnRecords {
+                        turns: vec![(
+                            1,
+                            vec![crate::turn_review::RecordedCall {
+                                path: "a.rs".into(),
+                                call: crate::turn_review::FileCall::Write("old\n".into()),
+                            }],
+                        )],
+                    },
+                    cx,
+                );
+                pane.set_source(Source::AllChanges, cx);
+                let generation = pane.load_generation;
+                let mut records = pane.turn_records.clone();
+                records.turns.push((2, Vec::new()));
+                pane.set_turn_records(records, cx);
+                assert_eq!(pane.load_generation, generation);
+                assert_eq!(pane.review.as_ref().expect("snapshot").files.len(), 1);
+            });
+        });
+    }
+
+    /// A `bash` fix or a formatter changes the worktree with no `edit` /
+    /// `write` behind it. Those files must land in Last Turn after the ones
+    /// the turn named, and say where they came from.
+    #[gpui::test]
+    fn a_turn_adds_worktree_changes_no_call_named(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_turn_records(
+                    crate::turn_review::TurnRecords {
+                        turns: vec![(
+                            1,
+                            vec![crate::turn_review::RecordedCall {
+                                path: "src/named.rs".into(),
+                                call: crate::turn_review::FileCall::Write("named\n".into()),
+                            }],
+                        )],
+                    },
+                    cx,
+                );
+                pane.show_review_turn(Some(1), cx);
+                pane.set_turn_extras(
+                    1,
+                    vec!["src/formatted.rs".into()],
+                    "1\t0\tsrc/formatted.rs\n".into(),
+                    "diff --git a/src/formatted.rs b/src/formatted.rs\n\
+                     --- a/src/formatted.rs\n\
+                     +++ b/src/formatted.rs\n\
+                     @@ -0,0 +1 @@\n\
+                     +formatted\n"
+                        .into(),
+                    cx,
+                );
+
+                let snapshot = pane.review.as_ref().expect("last turn snapshot");
+                assert_eq!(
+                    snapshot
+                        .files
+                        .iter()
+                        .map(|file| file.path.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["src/named.rs", "src/formatted.rs"],
+                    "the unrecorded file lands after the named ones"
+                );
+                assert_eq!(
+                    pane.outside_call_note("src/formatted.rs").as_deref(),
+                    Some(tr!("sidepane.no_tool_call").as_str())
+                );
+                assert!(
+                    pane.outside_call_note("src/named.rs").is_none(),
+                    "a file the turn named is not flagged"
+                );
+            });
+        });
+    }
+
+    /// Extras belong to one turn; an older Last Turn does not inherit them.
+    #[gpui::test]
+    fn worktree_changes_do_not_leak_into_another_turn(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_turn_context(Some("session".into()), Some(2), cx);
+                pane.set_turn_extras(
+                    1,
+                    vec!["src/formatted.rs".into()],
+                    "1\t0\tsrc/formatted.rs\n".into(),
+                    "diff --git a/src/formatted.rs b/src/formatted.rs\n\
+                     --- a/src/formatted.rs\n\
+                     +++ b/src/formatted.rs\n\
+                     @@ -0,0 +1 @@\n\
+                     +formatted\n"
+                        .into(),
+                    cx,
+                );
+                pane.show_review_turn(Some(2), cx);
+                assert!(pane.review.as_ref().is_some_and(|s| s.files.is_empty()));
+                assert!(pane.outside_call_note("src/formatted.rs").is_none());
+
+                pane.show_review_turn(Some(1), cx);
+                assert_eq!(
+                    pane.review.as_ref().expect("turn 1").files.len(),
+                    1,
+                    "the turn that produced the extra still shows it"
+                );
+            });
+        });
+    }
+
+    /// Another session's turn numbers name another session's files.
+    #[gpui::test]
+    fn a_session_swap_drops_the_previous_turns_worktree_changes(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_turn_context(Some("session".into()), Some(1), cx);
+                pane.set_turn_extras(
+                    1,
+                    vec!["src/formatted.rs".into()],
+                    "1\t0\tsrc/formatted.rs\n".into(),
+                    "diff --git a/src/formatted.rs b/src/formatted.rs\n\
+                     --- a/src/formatted.rs\n\
+                     +++ b/src/formatted.rs\n\
+                     @@ -0,0 +1 @@\n\
+                     +formatted\n"
+                        .into(),
+                    cx,
+                );
+                pane.set_turn_context(Some("other".into()), Some(1), cx);
+                pane.show_review_turn(Some(1), cx);
+                assert!(pane.review.as_ref().is_some_and(|s| s.files.is_empty()));
+            });
+        });
+    }
+
+    /// The header names the source, and says when the shown turn is still
+    /// running rather than finished.
+    #[gpui::test]
+    fn the_header_names_the_source_and_a_running_turn(cx: &mut gpui::TestAppContext) {
+        let pane = pane(cx);
+        cx.update(|cx| {
+            pane.update(cx, |pane, cx| {
+                pane.set_turn_context(Some("session".into()), Some(2), cx);
+                pane.show_review_turn(Some(2), cx);
+                assert_eq!(pane.header_title(), tr!("sidepane.last_turn").to_string());
+
+                pane.set_turn_running(true, cx);
+                assert_eq!(
+                    pane.header_title(),
+                    format!(
+                        "{} · {}",
+                        tr!("sidepane.last_turn"),
+                        tr!("sidepane.turn_running")
+                    )
+                );
+
+                // Turning to an older turn is not the running one.
+                pane.show_review_turn(Some(1), cx);
+                assert_eq!(
+                    pane.header_title(),
+                    tr!("sidepane.turn_n", count = 1).to_string()
+                );
+
+                // Git sources are never "running".
+                pane.set_source(Source::Uncommitted, cx);
+                assert_eq!(pane.header_title(), tr!("sidepane.uncommitted").to_string());
+            });
+        });
     }
 }
