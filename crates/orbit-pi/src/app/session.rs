@@ -254,6 +254,8 @@ impl OrbitApp {
             cx.notify();
             return;
         };
+        // A sent task is now a session, even if pi has yet to report its file.
+        self.composer_is_new_task = false;
         // Sent, so the prompt joins the ↑/↓ recall log.
         self.prompt_history.borrow_mut().record(&text);
         if running {
@@ -279,7 +281,7 @@ impl OrbitApp {
         {
             self.add_workspace(cwd, cx);
         }
-        self.begin_turn(cx);
+        let opened = self.begin_turn(cx);
         // The composer's own prompt is the only one whose `handled` answer may
         // tear down the working row (see `prompt_in_flight`).
         self.prompt_in_flight = Some(id.clone());
@@ -294,32 +296,51 @@ impl OrbitApp {
         // Same for the transcript: the live "Working for…" row goes up now,
         // with its clock running from the send.
         self.transcript.expect_reply();
+        // The empty page becomes a session on this frame: arm the composer's
+        // settle so it docks into the session layout instead of jumping. Only a
+        // page that was empty animates — a follow-up in an open session has
+        // nowhere to travel, and a session resumed from the sidebar was never on
+        // the new-task page at all.
+        if self.transcript.is_empty() {
+            self.new_task_settle_gen = self.new_task_settle_gen.wrapping_add(1);
+            self.new_task_settle_at = None;
+            self.new_task_settle_pending = true;
+        }
         // Show the prompt immediately — pi does not echo it back in RPC mode.
         // The decoded previews ride along so the chat window shows what was
         // attached (pi echoes/snapshots carry image blocks for reloads).
-        self.transcript.append_user_message(
+        let appended = self.transcript.append_user_message(
             &text,
             attachments
                 .iter()
                 .filter_map(|a| a.preview.clone())
                 .collect(),
         );
+        // The same prompt after an aborted turn is deduped onto the existing
+        // user row. Drop the turn we just opened so a reload does not invent
+        // an extra number for a row that was never stored.
+        if opened && !appended {
+            self.turns.cancel_begin();
+            self.push_turn_records(cx);
+        }
         self.input.update(cx, |input, cx| input.clear(cx));
         cx.notify();
     }
 
-    /// Start a new user turn: snapshot the workspace so Review's **Last Turn**
-    /// can diff exactly what the agent changes, then let the prompt run.
-    pub(super) fn begin_turn(&mut self, cx: &mut Context<Self>) {
-        if self.turn_open {
-            return;
+    /// Start a new user turn. Last Turn numbers the turn here, before the
+    /// user message is appended, and does not wait on a session id or a Git
+    /// checkpoint. The checkpoint spawn is skipped when there is nothing to
+    /// write it against.
+    pub(super) fn begin_turn(&mut self, cx: &mut Context<Self>) -> bool {
+        let index = self.transcript.message_count();
+        if !self.turns.begin(index) {
+            return false;
         }
+        self.push_turn_records(cx);
         let Some(session) = self.session_id.clone() else {
-            return;
+            return true;
         };
-        self.turn_count += 1;
-        self.turn_open = true;
-        let turn = self.turn_count;
+        let turn = self.turns.count;
         let cwd = self
             .current_workspace
             .clone()
@@ -332,62 +353,75 @@ impl OrbitApp {
                 .await;
         })
         .detach();
+        true
     }
 
-    /// A run settled: snapshot the workspace's end state so Review's **Last
-    /// Turn** has a complete range, then mark Review stale. Without an open
-    /// turn (e.g. a settled retry) it still refreshes Review.
+    /// A run settled. Last Turn updates on this call, before the optional
+    /// checkpoint capture; a missing repo or a failed capture does not hide
+    /// the turn's `edit` / `write` calls.
     pub(super) fn finish_turn(&mut self, cx: &mut Context<Self>) {
+        let capture = self.turns.open;
+        self.turns.finish();
+        self.push_turn_records(cx);
+        // Last Turn already reloaded from the records just pushed. Git
+        // sources still need a worktree refresh.
+        self.sidepane
+            .update(cx, |pane, cx| pane.mark_git_review_stale(cx));
+        self.git_panel
+            .update(cx, |panel, cx| panel.mark_review_stale(cx));
         let Some(session) = self.session_id.clone() else {
-            self.turn_open = false;
-            self.sidepane
-                .update(cx, |pane, cx| pane.mark_review_stale(cx));
-            self.git_panel
-                .update(cx, |panel, cx| panel.mark_review_stale(cx));
             return;
         };
-        if !self.turn_open {
-            self.sidepane
-                .update(cx, |pane, cx| pane.mark_review_stale(cx));
-            self.git_panel
-                .update(cx, |panel, cx| panel.mark_review_stale(cx));
+        if !capture {
             return;
         }
-        // Close the turn synchronously so a second settle event can't start a
-        // duplicate capture while this one is still running.
-        self.turn_open = false;
-        let turn = self.turn_count;
+        let turn = self.turns.count;
         let cwd = self
             .current_workspace
             .clone()
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_default();
+        // Paths the turn's calls named, normalized the way Review shows them.
+        // Anything the worktree changed outside this list is added to Last
+        // Turn once the checkpoint range for the turn exists.
+        let recorded = self
+            .turn_records()
+            .calls_for(turn)
+            .iter()
+            .filter_map(|call| {
+                crate::turn_review::normalize_review_path(
+                    &call.path,
+                    self.current_workspace.as_deref(),
+                )
+            })
+            .collect::<Vec<_>>();
         cx.spawn(async move |this, cx| {
-            let result = cx
+            let key = session.clone();
+            let extra = cx
                 .background_executor()
-                .spawn(async move { checkpoint::capture_turn(&cwd, &session, turn) })
+                .spawn(async move {
+                    checkpoint::capture_turn(&cwd, &key, turn).ok()?;
+                    git_ops::changed_outside_calls(&cwd, &key, turn, &recorded)
+                        .ok()
+                        .flatten()
+                })
                 .await;
+            let Some((paths, diff)) = extra else { return };
             let _ = this.update(cx, |app, cx| {
-                app.turn_open = false;
-                if result.is_ok() {
-                    app.latest_turn = Some(turn);
+                if app.session_id.as_deref() != Some(session.as_str()) {
+                    return;
                 }
-                app.sync_review_context(cx);
-                app.sidepane
-                    .update(cx, |pane, cx| pane.mark_review_stale(cx));
-                app.git_panel
-                    .update(cx, |panel, cx| panel.mark_review_stale(cx));
-                cx.notify();
+                app.sidepane.update(cx, |pane, cx| {
+                    pane.set_turn_extras(turn, paths, diff.numstat, diff.patch, cx);
+                });
             });
         })
         .detach();
     }
 
-    /// Forget turn checkpoints when the session or workspace changes.
-    pub(super) fn reset_turns(&mut self) {
-        self.turn_count = 0;
-        self.turn_open = false;
-        self.latest_turn = None;
+    /// Forget the active session's turn clock and clear Last Turn's records.
+    pub(super) fn reset_turns(&mut self, cx: &mut Context<Self>) {
+        self.turns = crate::turn_review::TurnClock::default();
         // The find hits belong to the previous session's transcript.
         self.transcript_search = None;
         // Fork points belong to the previous session's entries, and a picker
@@ -399,6 +433,45 @@ impl OrbitApp {
         self.rewind_intent = ForkIntent::Edit;
         self.pending_regenerate = None;
         self.rewind_prompt_images.clear();
+        self.push_turn_records(cx);
+    }
+
+    /// Push each turn's `edit` / `write` calls, and the latest turn number,
+    /// to the docked Review pane. Records stay off the Git page; it only
+    /// receives the turn number so its stored context does not go stale.
+    pub(super) fn push_turn_records(&mut self, cx: &mut Context<Self>) {
+        let len = self.transcript.message_count();
+        let start = self.turns.ranges(len).last().map(|&(_, start, _)| start);
+        self.transcript
+            .set_review_card_scope(start, self.current_workspace.as_deref());
+        let records = self.turn_records();
+        let session = self.session_id.clone();
+        let latest = self.turns.latest;
+        let running = self.turns.open;
+        self.sidepane.update(cx, |pane, cx| {
+            pane.set_turn_context(session.clone(), latest, cx);
+            pane.set_turn_records(records, cx);
+            pane.set_turn_running(running, cx);
+        });
+        self.git_panel.update(cx, |panel, cx| {
+            panel.set_review_turn_context(session, latest, cx);
+        });
+    }
+
+    fn turn_records(&self) -> crate::turn_review::TurnRecords {
+        let len = self.transcript.message_count();
+        let turns = self
+            .turns
+            .ranges(len)
+            .into_iter()
+            .map(|(turn, start, end)| (turn, self.transcript.recorded_calls(start, end)))
+            .collect();
+        crate::turn_review::TurnRecords { turns }
+    }
+
+    pub(super) fn rebuild_turn_clock(&mut self) {
+        let indices = self.transcript.user_message_indices();
+        self.turns.rebuild(&indices);
     }
 
     /// Forget the queued-message mirror — the queue belongs to the previous
@@ -625,6 +698,7 @@ impl OrbitApp {
             widgets,
             queue: self.queue.clone(),
             parked_at: Instant::now(),
+            turns: std::mem::take(&mut self.turns),
         };
         match self.current_session_path.take() {
             Some(path) => self.park(path, parked),
@@ -632,10 +706,9 @@ impl OrbitApp {
         }
     }
 
-    /// Recover the newest completed turn from the persisted checkpoint refs,
-    /// so Review's **Last Turn** is available immediately after a restart or
-    /// session switch. Orbit keeps the fact in `refs/orbit/…` and reads it
-    /// back here.
+    /// Keep the next checkpoint ref numbered past any ref already stored.
+    /// Last Turn itself comes from the conversation, so this does not write
+    /// `turns.latest` and does not refresh the Review pane.
     pub(super) fn recover_latest_turn(&mut self, cx: &mut Context<Self>) {
         let Some(session) = self.session_id.clone() else {
             return;
@@ -651,18 +724,15 @@ impl OrbitApp {
                 .background_executor()
                 .spawn(async move { checkpoint::latest_turn(&cwd, &lookup_session) })
                 .await;
-            let _ = this.update(cx, |app, cx| {
+            let _ = this.update(cx, |app, _cx| {
                 if app.session_id.as_deref() != Some(session.as_str()) {
                     return;
                 }
-                app.latest_turn = latest;
-                app.sync_review_context(cx);
                 if let Some(latest) = latest {
                     // Continue numbering after the recovered turn so new refs
                     // never clobber the persisted ones.
-                    app.turn_count = app.turn_count.max(latest);
+                    app.turns.note_checkpoint(latest);
                 }
-                cx.notify();
             });
         })
         .detach();
@@ -859,15 +929,33 @@ impl OrbitApp {
         // Interactive Esc: drop the pending queue first so its text can be
         // restored to the composer when the `clear_queue` response lands
         // (docs), then abort the run.
-        self.request_abort();
+        self.request_abort(cx);
         cx.notify();
     }
 
-    /// Ask pi to stop the current run. The request is recorded, not just sent:
-    /// pi answers a cancelled automatic retry with `auto_retry_end { success:
-    /// false }`, and only this record tells that apart from a retry that
-    /// genuinely ran out (issue #76).
-    pub(super) fn request_abort(&mut self) {
+    /// Ask pi to stop the current run.
+    ///
+    /// The request is recorded, not just sent: pi answers a cancelled automatic
+    /// retry with `auto_retry_end { success: false }`, and only this record tells
+    /// that apart from a retry that genuinely ran out (issue #76).
+    ///
+    /// It is also timestamped, because asking is all this can do and asking is
+    /// not cancelling. A pi whose event loop is stuck never reads the line, so
+    /// waiting for `agent_settled` can mean waiting forever while Stop looks
+    /// like a dead button — [`Self::check_stalled_stop`] turns a stop pi never
+    /// answered into an action Orbit takes itself.
+    pub(super) fn request_abort(&mut self, cx: &mut Context<Self>) {
+        // A second press is the user saying "now" — once it reads as a second
+        // press. Stop and Esc share this path and a double-tapped Esc is common,
+        // so inside the retry window the first request stands: a healthy pi is
+        // busy writing the aborted turn into the session at that point, and
+        // killing it there would throw that away.
+        if let Some(sent_at) = self.abort_sent_at {
+            if sent_at.elapsed() >= ABORT_RETRY_GRACE {
+                self.force_stop_run(cx);
+            }
+            return;
+        }
         if !self.queue.is_empty() {
             self.restore_queue_on_clear = true;
             self.send(CommandBody::ClearQueue, "clear_queue");
@@ -879,8 +967,88 @@ impl OrbitApp {
         // before the Esc still starts its run after the abort is written.
         if self.is_running() {
             self.abort_requested = true;
+            self.abort_sent_at = Some(Instant::now());
         }
         self.send(CommandBody::Abort, "abort");
+    }
+
+    /// Whether a stop has gone out that pi has not answered yet. The composer
+    /// reads this to say it is waiting on pi, so a stop being waited on never
+    /// reads as a dead button.
+    pub(super) fn is_stopping(&self) -> bool {
+        self.abort_sent_at.is_some()
+    }
+
+    /// Turn a stop pi never answered into a local action.
+    ///
+    /// Runs on the heartbeat. Every way a run can end clears the timestamp, so a
+    /// turn that settles normally never reaches this.
+    pub(super) fn check_stalled_stop(&mut self, cx: &mut Context<Self>) {
+        let Some(sent_at) = self.abort_sent_at else {
+            return;
+        };
+        if sent_at.elapsed() < ABORT_GRACE {
+            return;
+        }
+        self.abort_sent_at = None;
+        if !self.is_running() {
+            return;
+        }
+        self.force_stop_run(cx);
+    }
+
+    /// End the run by taking down the process that owns it, then bring a fresh
+    /// pi back on the same session.
+    ///
+    /// This is the difference between asking and cancelling. pi cannot honour an
+    /// `abort` it never reads, so the only cancel that always lands is the one
+    /// Orbit performs itself — the shape Zed gives a language server: the request
+    /// is a courtesy, dropping the process is the cancel.
+    ///
+    /// The local side closes *first*, exactly as a dying process would close it.
+    /// Waiting for the next heartbeat to notice would leave the composer on Stop
+    /// over a process that is already going, and a respawn that failed would
+    /// never clear it at all.
+    pub(super) fn force_stop_run(&mut self, cx: &mut Context<Self>) {
+        self.abort_sent_at = None;
+        // Nothing pi never acknowledged can still be delivered, so hand the
+        // queued text back before the drop resets the queue: a stop must not eat
+        // what the user typed while they waited.
+        if let Some(queued) = self.queue.restore_text() {
+            let typed = self.input.read(cx).text();
+            let restored = if typed.trim().is_empty() {
+                queued
+            } else {
+                // Something was typed while the stop was waiting: keep both,
+                // the queued text first, because it was written first.
+                format!("{queued}\n\n{typed}")
+            };
+            self.input
+                .update(cx, |input, cx| input.set_text(restored, cx));
+        }
+        self.restore_queue_on_clear = false;
+        self.busy = false;
+        self.execution.stop();
+        // `abandon_reply` alone leaves a streaming row live; the process this
+        // turn belonged to is going, so close the turn the way its exit does.
+        self.transcript.apply_event(&Event::ProcessExited);
+        self.finish_turn(cx);
+        // The deferred MCP apply was waiting for a settle that will never come.
+        // The process about to start reads the current configuration itself.
+        self.mcp_apply_pending = false;
+        self.mcp_apply_forced = false;
+        self.drop_client();
+        self.toast_warning(tr!("runtime.pi_unresponsive_restart"));
+        // A session pi never claimed has nothing to re-attach, and a fresh
+        // process would open an empty one: the honest end is to stay stopped.
+        if self.current_session_path.is_none() {
+            self.transcript.abandon_reply();
+        } else {
+            // Quietly: the toast above says what happened, and pi's own
+            // "process started" line on top of it would be noise.
+            self.respawn_into_session(cx);
+        }
+        cx.notify();
     }
 
     pub(super) fn on_abort_mouse(
@@ -892,11 +1060,19 @@ impl OrbitApp {
         self.on_abort(&crate::AbortRun, window, cx);
     }
 
+    /// A navigation away from the starting task must not replay its dock on
+    /// the next session, even if the first animation frame never arrived.
+    pub(super) fn cancel_new_task_settle(&mut self) {
+        self.new_task_settle_pending = false;
+        self.new_task_settle_at = None;
+    }
+
     /// Close every main-area surface and dock so the new-task page owns the
     /// window. New Task is reachable while Review, Git, Files, Usage, the
     /// Explorer, the terminal, or Settings is up; without this the fresh task
     /// opens behind a panel that still covers the chat column.
     pub(super) fn close_surfaces_for_new_task(&mut self, cx: &mut Context<Self>) {
+        self.cancel_new_task_settle();
         self.pending_session_rename = None;
         self.session_rename_ready = false;
         self.settings_open = false;
@@ -944,6 +1120,8 @@ impl OrbitApp {
             return;
         }
         self.close_surfaces_for_new_task(cx);
+        self.swap_to_new_task_draft(cx);
+        self.current_session_path = None;
         self.send(CommandBody::NewSession, "new_session");
         self.input.read(cx).focus(window);
         cx.notify();
@@ -975,6 +1153,8 @@ impl OrbitApp {
         // dead process (or a different workspace) always needs its own.
         if self.current_workspace.as_ref() == Some(&cwd) && self.can_reuse_session() {
             self.close_surfaces_for_new_task(cx);
+            self.swap_to_new_task_draft(cx);
+            self.current_session_path = None;
             self.send(CommandBody::NewSession, "new_session");
             self.input.read(cx).focus(window);
             cx.notify();
@@ -1022,7 +1202,7 @@ impl OrbitApp {
         self.added = 0;
         self.removed = 0;
         self.context = None;
-        self.reset_turns();
+        self.reset_turns(cx);
         self.reset_queue();
         // A brand-new task starts unscoped (Build) and waits for its own id:
         // clearing the id keeps a mode chosen on the New Task page pending
@@ -1136,6 +1316,7 @@ impl OrbitApp {
         if self.current_session_path.as_ref() == Some(&session.path) {
             return;
         }
+        self.cancel_new_task_settle();
         // Native dialogs and approvals stay pending with their own session.
         self.cancel_custom_surfaces(cx);
         // ── park the outgoing session (running or idle) ──
@@ -1146,6 +1327,11 @@ impl OrbitApp {
         self.added = 0;
         self.removed = 0;
         self.transcript = Transcript::new();
+        // No client means the clock was not parked with a process. Drop it
+        // either way so the outgoing session cannot leak into the next one;
+        // a warm resume puts its own clock back below.
+        self.turns = crate::turn_review::TurnClock::default();
+        self.push_turn_records(cx);
         // The queue belongs to the session we just left; the target's state
         // re-establishes it from `get_state`/`queue_update`.
         self.reset_queue();
@@ -1156,6 +1342,9 @@ impl OrbitApp {
         // bookkeeping in place would show it on the incoming session.
         self.execution = SessionExecution::default();
         self.prompt_in_flight = None;
+        // A stop belonged to the session being left; the incoming process has
+        // nothing in flight for the deadline to be about.
+        self.abort_sent_at = None;
         self.retrying = false;
         self.is_compacting = false;
         self.retry_detail = None;
@@ -1207,6 +1396,8 @@ impl OrbitApp {
             // the process channel streams in from the next tick on.
             self.adopt_client(parked.client);
             self.transcript = parked.transcript;
+            self.turns = parked.turns;
+            self.push_turn_records(cx);
             self.busy = parked.busy;
             self.execution = parked.execution;
             self.prompt_in_flight = self.execution.prompt_id.clone();
@@ -1302,6 +1493,10 @@ impl OrbitApp {
         // Opening a session keeps its folder in Orbit's own sidebar list.
         self.add_workspace(session.cwd.clone(), cx);
         self.set_current_workspace(session.cwd.clone(), cx);
+        // The warm resume above pushed the card while `current_workspace`
+        // still named the session being left. Push again so absolute tool
+        // paths normalize against the session that is now on screen.
+        self.push_turn_records(cx);
         self.current_session_path = Some(session.path.clone());
         // The incoming session's own draft (if any) lands in the composer —
         // never the previous session's half-written text.
@@ -1344,7 +1539,7 @@ impl OrbitApp {
                 if !still_active || !app.transcript.is_empty() {
                     return;
                 }
-                app.apply_messages_snapshot(&payload);
+                app.apply_messages_snapshot(&payload, cx);
                 cx.notify();
             });
         })
@@ -1981,7 +2176,9 @@ impl OrbitApp {
                 .child(anchored_popover(
                     Corner::TopRight,
                     point(px(0.), popover::MENU_OFFSET),
-                    popup, "anchored_popover-in-2", &theme,
+                    popup,
+                    "anchored_popover-in-2",
+                    &theme,
                 ))
                 .into_any_element(),
         )
@@ -2367,7 +2564,9 @@ impl OrbitApp {
                 .child(anchored_popover(
                     Corner::TopRight,
                     point(px(0.), popover::MENU_OFFSET),
-                    popup, "anchored_popover-in-3", &theme,
+                    popup,
+                    "anchored_popover-in-3",
+                    &theme,
                 ))
                 .into_any_element(),
         )
@@ -2936,6 +3135,7 @@ impl OrbitApp {
                                 app.clear_explorer_notice(cx);
                                 app.project_panel
                                     .update(cx, |panel, cx| panel.mark_stale(cx));
+                                app.invalidate_index(true, cx);
                                 let display = relative_display(&display_root, &path);
                                 app.open_file_in_viewer(path, display, cx);
                                 app.toast_success(tr!("explorer.created_file", name = name));
@@ -2961,6 +3161,7 @@ impl OrbitApp {
                                 app.clear_explorer_notice(cx);
                                 app.project_panel
                                     .update(cx, |panel, cx| panel.mark_stale(cx));
+                                app.invalidate_index(true, cx);
                                 app.toast_success(tr!("explorer.created_folder", name = name));
                             }
                             Err(error) => app.explorer_op_error(&error, cx),
@@ -3002,6 +3203,7 @@ impl OrbitApp {
                                 app.clear_explorer_notice(cx);
                                 app.project_panel
                                     .update(cx, |panel, cx| panel.mark_stale(cx));
+                                app.invalidate_index(true, cx);
                                 app.toast_success(tr!("explorer.renamed", name = name));
                             }
                             Err(error) => app.explorer_op_error(&error, cx),
@@ -3033,6 +3235,7 @@ impl OrbitApp {
                                 app.clear_explorer_notice(cx);
                                 app.project_panel
                                     .update(cx, |panel, cx| panel.mark_stale(cx));
+                                app.invalidate_index(true, cx);
                                 app.toast_success(tr!("explorer.deleted", name = name));
                             }
                             Err(error) => {
@@ -3086,10 +3289,16 @@ impl OrbitApp {
     pub(super) fn review_opener(&self, cx: &Context<Self>) -> crate::transcript_view::ReviewOpener {
         let pane = self.sidepane.clone();
         let app = cx.entity().downgrade();
-        let latest = self.latest_turn;
         Rc::new(move |_window, cx| {
-            // Opening Review replaces the Git page, which shares the window.
-            let _ = app.update(cx, |app, cx| app.close_git_for_review(cx));
+            // Opening Review replaces the Git page and the subagent dock.
+            // Slice the turn from the transcript at click time so a turn that
+            // is still streaming shows the tools that have already landed.
+            let mut latest = None;
+            let _ = app.update(cx, |app, cx| {
+                app.push_turn_records(cx);
+                app.close_git_for_review(cx);
+                latest = app.turns.latest;
+            });
             pane.update(cx, |pane, cx| pane.show_review_turn(latest, cx));
         })
     }
@@ -3172,6 +3381,8 @@ impl OrbitApp {
         // The Explorer tree (a cheap no-op when it was never loaded).
         self.project_panel
             .update(cx, |panel, cx| panel.mark_stale(cx));
+        // `@` ranks this tree too; a workspace switch invalidates at once.
+        self.invalidate_index(true, cx);
         // The Review pane's diff, only while it is showing.
         if self.sidepane.read(cx).is_open() {
             self.sidepane

@@ -7,19 +7,20 @@
 
 use gpui::{
     div, point, prelude::*, px, App, Context, ElementId, Entity, FocusHandle, Focusable,
-    FontWeight, IntoElement, MouseDownEvent, ParentElement, Render, ScrollHandle, Styled,
+    FontWeight, IntoElement, MouseDownEvent, ParentElement, Pixels, Render, ScrollHandle, Styled,
     Subscription, Window,
 };
 
+use crate::app::helpers::text_width;
 use crate::app::{
     button_frame, icon, input_field_frame, menu_header, picker_entry, picker_search_frame,
-    picker_surface, ControlExt,
+    picker_surface, ControlExt, PressedRamp, StatefulControlExt,
 };
 use crate::composer::ComposerInput;
 use crate::git::BranchEntry;
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
-    context_menu, input, list, picker, ButtonSize, DynamicSpacing, TextSize,
+    context_menu, input, list, list_item, picker, ButtonSize, DynamicSpacing, TextSize,
 };
 use crate::theme::{self, Theme};
 
@@ -45,6 +46,22 @@ fn row_stride(theme: &Theme) -> f32 {
 /// Largest list height before it scrolls.
 fn list_max_h(theme: &Theme) -> f32 {
     VISIBLE_ROWS * row_stride(theme)
+}
+
+/// The name column's width: the popover's inner width less the row's chrome —
+/// the two hairline borders, the row's outer inset and inner padding, the
+/// branch mark, the reserved check slot, the gaps between them, and the age
+/// column. Stated once so the name and its truncation always agree.
+fn name_column_w(theme: &Theme, age_w: Pixels) -> Pixels {
+    let gap = list_item::content_gap(theme);
+    (px(POPOVER_W)
+        - px(2.)
+        - 2. * list_item::inset(theme)
+        - 2. * list_item::padding_x(theme)
+        - 2. * context_menu::ICON.px(theme)
+        - 3. * gap
+        - age_w)
+        .max(px(0.))
 }
 
 /// Checkout/create callback: the chosen branch plus the ambient window.
@@ -267,7 +284,7 @@ impl Focusable for BranchPicker {
 }
 
 impl Render for BranchPicker {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = *theme::get(cx);
         let this = cx.entity();
 
@@ -336,6 +353,21 @@ impl Render for BranchPicker {
 
         let rows = self.filtered_branches(&self.last_filter);
 
+        // The age is a column, not a per-row label: reserve the widest age in
+        // the list so every timestamp ends on one edge and the name column has
+        // one width. `truncate()` needs that width to be definite — gpui caches
+        // a nowrap text layout by wrap width alone, so a flex-sized column
+        // keeps the layout it measured at the row's width and paints past the
+        // column edge instead of ending in an ellipsis.
+        let age_size = picker::SECONDARY_TEXT.px(&theme);
+        let age_w = rows
+            .iter()
+            .filter_map(|row| row.age.as_deref())
+            .map(|age| text_width(window, age, age_size).ceil())
+            .max()
+            .unwrap_or(px(0.));
+        let name_w = name_column_w(&theme, age_w);
+
         let mut list = div()
             .id("branch-picker-list")
             .w_full()
@@ -358,12 +390,15 @@ impl Render for BranchPicker {
             let this = this.clone();
             list = list.child(
                 picker_entry(
-                    div().id(ElementId::NamedInteger("branch-row".into(), ix as u64)),
+                    div()
+                        .id(ElementId::NamedInteger("branch-row".into(), ix as u64))
+                        .debug_selector(move || format!("branch-row-{ix}")),
                     &theme,
                 )
                 .h(px(row_h(&theme)))
                 .flex_none()
                 .cursor_pointer()
+                .pressed_state(&theme, PressedRamp::Wash)
                 .when(selected || highlighted, |row| {
                     row.bg(theme.surface_selected)
                 })
@@ -400,12 +435,13 @@ impl Render for BranchPicker {
                         theme.text_muted
                     },
                 ))
-                // Name and age share one baseline row: the name truncates,
-                // the age keeps its column so the dates read straight down
-                // the list.
+                // Name and age share one baseline row: the name truncates
+                // inside its column, and every row reserves the same age
+                // column so the dates read straight down the list.
                 .child(
                     div()
-                        .flex_1()
+                        .debug_selector(move || format!("branch-name-{ix}"))
+                        .w(name_w)
                         .min_w_0()
                         .truncate()
                         .font_weight(if highlighted || selected {
@@ -422,24 +458,30 @@ impl Render for BranchPicker {
                         })
                         .child(name),
                 )
-                .when_some(age, |row, age| {
-                    row.child(
-                        div()
-                            .flex_none()
-                            .text_size(picker::SECONDARY_TEXT.px(&theme))
-                            .text_color(if highlighted || selected {
-                                theme.text_secondary
-                            } else {
-                                theme.text_muted
-                            })
-                            .child(age),
-                    )
-                })
+                // Every row reserves the age column, dated or not, so the
+                // check sits at one x down the whole list.
+                .child(
+                    div()
+                        .debug_selector(move || format!("branch-age-{ix}"))
+                        .w(age_w)
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .text_size(age_size)
+                        .text_color(if highlighted || selected {
+                            theme.text_secondary
+                        } else {
+                            theme.text_muted
+                        })
+                        .children(age),
+                )
                 // The check keeps its slot on every row — empty rows reserve
                 // it — so the ages above stay in one right-aligned column
                 // instead of jumping left on the current branch.
                 .child(
                     div()
+                        .debug_selector(move || format!("branch-check-{ix}"))
                         .flex_none()
                         .flex()
                         .items_center()
@@ -533,5 +575,125 @@ impl Render for BranchPicker {
                             ),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::ThemeId;
+
+    fn picker(
+        cx: &mut Context<BranchPicker>,
+        branches: Vec<(&str, Option<String>)>,
+    ) -> BranchPicker {
+        BranchPicker::new(
+            "orbit".into(),
+            branches
+                .into_iter()
+                .map(|(name, commit_date)| BranchEntry {
+                    name: name.to_string(),
+                    commit_date,
+                })
+                .collect(),
+            "main".into(),
+            Box::new(|_: String, _: &mut Window, _: &mut App| {}) as BranchAction,
+            Box::new(|_: String, _: &mut Window, _: &mut App| {}) as BranchAction,
+            Box::new(|_: bool, _: &mut Window, _: &mut App| {}) as BranchPickerDismiss,
+            cx,
+        )
+    }
+
+    /// Regression: a long branch name ran into its "last active" age and the
+    /// list's columns moved row to row, because the age kept only its natural
+    /// width and the name took whatever was left. The name now owns one column
+    /// and every age ends on the same edge, whatever the age's own width
+    /// ("just now" is wider than "2d ago").
+    #[gpui::test]
+    fn branch_names_and_ages_hold_one_column(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::for_id(ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        let now = chrono::Utc::now();
+        let picker = cx.update(|_, cx| {
+            cx.new(|cx| {
+                picker(
+                    cx,
+                    vec![
+                        ("refector/new-session-composer", Some(now.to_rfc3339())),
+                        ("main", Some((now - chrono::Duration::days(2)).to_rfc3339())),
+                        (
+                            "feat/sidebar-awaiting-review",
+                            Some((now - chrono::Duration::days(11)).to_rfc3339()),
+                        ),
+                    ],
+                )
+            })
+        });
+        let _ = cx.draw(
+            point(px(0.), px(0.)),
+            gpui::size(px(POPOVER_W + 16.), px(600.)),
+            |_, _| picker.clone(),
+        );
+
+        let theme = cx.update(|_, cx| *theme::get(cx));
+        let gap = list_item::content_gap(&theme);
+        let padding = list_item::padding_x(&theme);
+        let names = ["branch-name-0", "branch-name-1", "branch-name-2"];
+        let ages = ["branch-age-0", "branch-age-1", "branch-age-2"];
+        let rows = ["branch-row-0", "branch-row-1", "branch-row-2"];
+
+        let first_name = cx.debug_bounds(names[0]).expect("first name column");
+        let first_age = cx.debug_bounds(ages[0]).expect("first age column");
+        let first_check = cx.debug_bounds("branch-check-0").expect("first check");
+        let first_row = cx.debug_bounds(rows[0]).expect("first row");
+        assert!(
+            (first_name.right() + gap - first_age.left()).abs() <= px(1.),
+            "the name stops one gap before the age: name {first_name:?}, age {first_age:?}"
+        );
+        assert!(
+            (first_age.right() + gap - first_check.left()).abs() <= px(1.),
+            "the age column ends one gap before the check slot"
+        );
+        assert!(
+            (first_check.right() + padding - first_row.right()).abs() <= px(1.),
+            "the check sits in the row's padding: check {first_check:?}, row {first_row:?}"
+        );
+        // The columns add up to the row's content width: the name column is
+        // the exact remainder, so no space is left to push the row out.
+        let icon = context_menu::ICON.px(&theme);
+        let content_w = first_row.size.width - 2. * padding;
+        assert!(
+            (icon
+                + first_name.size.width
+                + first_age.size.width
+                + first_check.size.width
+                + 3. * gap
+                - content_w)
+                .abs()
+                <= px(1.),
+            "the row's columns fill its content width"
+        );
+
+        // One column across the list: every name ends on the same edge and
+        // every age ends on the same edge, even though the ages differ in
+        // width ("just now" against "2d ago").
+        for ix in 1..3 {
+            let name = cx.debug_bounds(names[ix]).expect("name column");
+            let age = cx.debug_bounds(ages[ix]).expect("age column");
+            let row = cx.debug_bounds(rows[ix]).expect("row");
+            assert!(
+                (name.right() - first_name.right()).abs() <= px(1.)
+                    && (name.size.width - first_name.size.width).abs() <= px(1.),
+                "row {ix} keeps the name column: {name:?} vs {first_name:?}"
+            );
+            assert!(
+                (age.right() - first_age.right()).abs() <= px(1.),
+                "row {ix} keeps the age column's right edge: {age:?} vs {first_age:?}"
+            );
+            assert!(
+                (row.size.width - first_row.size.width).abs() <= px(1.),
+                "rows share one width"
+            );
+        }
     }
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::motion::Hover;
 use crate::platform::WindowCommand;
 use crate::theme::tokens::{
     self, button, context_menu, input, list, list_item, looping, panel, picker, popover,
@@ -270,14 +271,6 @@ pub(crate) trait ControlExt: InteractiveElement + Styled + Sized {
         self.hover(move |style| style.bg(edge))
     }
 
-    /// The translucent wash with the strong hairline: a chip over a
-    /// translucent tray that still needs its edge to read.
-    fn hover_overlay_bordered(self, theme: &Theme) -> Self {
-        let wash = theme.overlay;
-        let edge = theme.border_strong;
-        self.hover(move |style| style.bg(wash).border_color(edge))
-    }
-
     /// A row wash whose ink steps to the accent's readable role — a link row.
     fn hover_accent_ink(self, theme: &Theme) -> Self {
         let fill = InteractionState::Hover.fill(theme).expect("Hover fills");
@@ -423,6 +416,26 @@ pub(crate) fn queue_row_slot(queue: &PendingQueue, target: QueuedMessage) -> u64
         QueueLane::Steer => target.index as u64,
         QueueLane::FollowUp => (queue.steering.len() + target.index) as u64,
     }
+}
+
+/// The one-line preview a queue row shows for a pending message: its text
+/// with every run of whitespace — newlines included — folded to one space.
+///
+/// `line_clamp` in gpui 0.2.2 bounds wrapped lines but still emits each
+/// explicit newline, so a queued skill file (hundreds of short lines) would
+/// grow the strip over the whole session page (issue #110). Folded to one
+/// logical line, the row's two-line clamp holds. The queued message itself is
+/// untouched: pi receives the text as written, and the row's editor opens the
+/// original.
+pub(crate) fn queue_preview(text: &str) -> String {
+    let mut preview = String::with_capacity(text.len());
+    for word in text.split_whitespace() {
+        if !preview.is_empty() {
+            preview.push(' ');
+        }
+        preview.push_str(word);
+    }
+    preview
 }
 
 /// Render an embedded HugeIcons SVG tinted with the given color.
@@ -1077,6 +1090,47 @@ fn chevron_angle(value: f32) -> f32 {
     std::f32::consts::FRAC_PI_2 * value.clamp(0.0, 1.0)
 }
 
+/// The caret on a picker trigger: `chevron-down` at rest, turning a half turn
+/// to point up while its menu is open.
+///
+/// This is deliberately not [`disclosure_chevron`]: a tree row's right/down pair
+/// means collapsed/expanded, while a menu button that opens *below* its trigger
+/// points down at rest. Using the disclosure glyph for both made every composer
+/// chip read as a breadcrumb (`Full access ›`, `Build ›`, `Work in … ›`) even
+/// though each one opens a picker in place.
+///
+/// One glyph rotates instead of two glyphs swapping, on the same
+/// [`Motion::Interaction`] role and with the same Reduce Motion result.
+pub(crate) fn dropdown_chevron(
+    id: impl Into<SharedString>,
+    open: bool,
+    size: impl Into<Pixels>,
+    color: Hsla,
+    theme: &Theme,
+) -> AnyElement {
+    let svg = gpui::svg()
+        .path("icons/chevron-down.svg")
+        .flex_none()
+        .size(size.into())
+        .text_color(color);
+    crate::motion::state(
+        svg,
+        id,
+        theme,
+        Motion::Interaction,
+        if open { 1.0 } else { 0.0 },
+        |svg, value| {
+            svg.with_transformation(Transformation::rotate(radians(dropdown_angle(value))))
+        },
+    )
+}
+
+/// The angle for a point on a dropdown caret's turn: 0 while closed (pointing
+/// down), a half turn (180°) while open (pointing up).
+fn dropdown_angle(value: f32) -> f32 {
+    std::f32::consts::PI * value.clamp(0.0, 1.0)
+}
+
 /// The app's one switch: a 36×20 track and a 14px knob that travels between the
 /// ends on [`Motion::Interaction`], with the track cross-fading from
 /// `surface_elevated` to `accent`.
@@ -1540,7 +1594,7 @@ fn caption_button(
         // lift already brightens it.
         glyph_el = glyph_el.text_color(theme.text_secondary);
     }
-    press(
+    let button = press(
         div()
             .id(id)
             .group(BUTTON_GROUP)
@@ -1550,13 +1604,13 @@ fn caption_button(
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .hover(move |style| style.bg(fill)),
-    )
-    .on_mouse_up(MouseButton::Left, move |_, window, _| {
-        crate::platform::window_command(window, command)
-    })
-    .tip(label)
-    .child(glyph_el)
+            .on_mouse_up(MouseButton::Left, move |_, window, _| {
+                crate::platform::window_command(window, command)
+            })
+            .tip(label)
+            .child(glyph_el),
+    );
+    crate::motion::hover(button, id, &theme, Hover::wash_in(fill))
 }
 
 /// Turn a header strip into a window drag region.
@@ -2026,6 +2080,19 @@ pub(crate) fn format_uptime(elapsed: Duration) -> String {
 mod tests {
     use super::*;
 
+    /// A queued skill file arrives with hundreds of newlines, and gpui's
+    /// `line_clamp` still emits every one of them. The row preview folds them
+    /// into one logical line so its two-line clamp holds (issue #110).
+    #[test]
+    fn a_queue_preview_folds_line_breaks_into_spaces() {
+        assert_eq!(
+            queue_preview("<skill name=\"design\">\n\n## Heading\nline one\n  line two  \n"),
+            "<skill name=\"design\"> ## Heading line one line two"
+        );
+        assert_eq!(queue_preview(""), "");
+        assert_eq!(queue_preview("one\ntwo"), "one two");
+    }
+
     /// The chevron's turn is a quarter turn and nothing else: the same glyph in
     /// the same place, so the row does not appear to swap icons.
     #[test]
@@ -2042,6 +2109,24 @@ mod tests {
         // Clamped, so a delayed frame cannot over-rotate the glyph.
         assert!((chevron_angle(2.0) - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
         assert_eq!(chevron_angle(-1.0), 0.0);
+    }
+
+    /// A picker's caret starts pointing down and turns a half turn to point up;
+    /// a quarter turn would leave it pointing right or down, which is the
+    /// disclosure language, not the dropdown one.
+    #[test]
+    fn a_dropdown_caret_turns_exactly_a_half_turn() {
+        assert_eq!(dropdown_angle(0.0), 0.0, "closed points down");
+        assert!(
+            (dropdown_angle(1.0) - std::f32::consts::PI).abs() < 1e-6,
+            "open points up"
+        );
+        assert!(
+            (dropdown_angle(0.5) - std::f32::consts::FRAC_PI_2).abs() < 1e-6,
+            "halfway is halfway"
+        );
+        assert!((dropdown_angle(2.0) - std::f32::consts::PI).abs() < 1e-6);
+        assert_eq!(dropdown_angle(-1.0), 0.0);
     }
 
     /// A switch's knob travels the track's inner span, and the span has to stay

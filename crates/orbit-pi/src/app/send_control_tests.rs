@@ -9,25 +9,23 @@ use crate::composer_send::SendMode;
 use crate::theme::{Theme, ThemeId};
 
 /// Put the composer on `text` with the completion menu open on a single known
-/// file. The catalog is seeded directly and stamped as belonging to the
-/// current workspace, so `ensure_mention_files` leaves it alone instead of
-/// re-scanning the real tree.
+/// file. The index is seeded directly and stamped as belonging to the current
+/// workspace, so `ensure_mention_index` leaves it alone instead of walking the
+/// real tree.
 ///
 /// The workspace itself is seeded too, because `at_paths` returns nothing at all
 /// without one: these tests must not pass or fail on whether this machine has a
-/// project open (and which one). `fd` is disabled for the same reason — `at_paths`
-/// prefers a live `fd` search of the *real* tree over this catalog, so the result
-/// would depend on the workspace on disk. These tests pin the completion gate,
-/// not the file search, so they take the bounded-walk path where the seeded
-/// catalog is authoritative.
+/// project open (and which one). These tests pin the completion gate, not the
+/// file search, so they seed the index the search reads.
 fn open_menu_on(app: &mut OrbitApp, text: &str, cx: &mut Context<OrbitApp>) {
     let root = std::env::temp_dir().join("orbit-send-control-mentions");
     app.current_workspace = Some(root.clone());
-    app.mention_fd_missing = true;
-    app.mention_fd_key = None;
-    app.mention_fd_hits.clear();
-    app.mention_files_workspace = Some(root);
-    app.mention_files = vec!["src/main.rs".to_string()];
+    app.mention_index_workspace = Some(root);
+    app.mention_index = Some(std::sync::Arc::new(
+        crate::mentions::MentionIndex::from_paths(vec!["src/main.rs".to_string()]),
+    ));
+    app.mention_index_stale = false;
+    app.mention_query_memo = None;
     app.input.update(cx, |input, cx| input.set_text(text, cx));
     let mut state = app.autocomplete.borrow_mut();
     state.open = true;

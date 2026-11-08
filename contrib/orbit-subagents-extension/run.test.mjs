@@ -86,6 +86,13 @@ test("argv always pins json mode, no session, approval and a task", () => {
     "mcp__*",
   ]);
   assert.equal(argv.filter((value) => value === "--extension").length, 2);
+  const first = argv.indexOf("--extension");
+  assert.deepEqual(argv.slice(first, first + 4), [
+    "--extension",
+    "/a/guard.js",
+    "--extension",
+    "/a/workflow.js",
+  ]);
   assert.ok(argv.includes("--approve"));
   assert.deepEqual(argv.slice(-4), ["--append-system-prompt", "/tmp/p.md", "--", "Task: find auth"]);
 });
@@ -229,6 +236,27 @@ test("a child with no assistant message fails with a readable reason", () => {
   const exited = child({ sawAssistant: true, stopReason: "stop" });
   finalizeChild(exited, { exitCode: 2, now: 2000 });
   assert.equal(exited.error, "child exited 2");
+});
+
+test("a failed child's reason carries its own stderr in the parent's copy", () => {
+  const state = child();
+  state.stderrTail = 'Error: Failed to load extension "/x"\nHint: start with -ne';
+  finalizeChild(state, { exitCode: 1, now: 2000 });
+  assert.equal(state.error, "child exited 1");
+
+  const content = runContent([state]);
+  assert.match(content, /scout — failed: child exited 1: Error: Failed to load extension/);
+  assert.match(content, /Hint: start with -ne/);
+
+  // Only the parent's copy joins them; the card keeps claim and evidence apart.
+  assert.equal(childDetails(state).error, "child exited 1");
+  assert.equal(childDetails(state).stderrTail, state.stderrTail);
+
+  // A blank tail adds nothing, so the reason stays one sentence.
+  const quiet = child({ sawAssistant: true, stopReason: "stop" });
+  finalizeChild(quiet, { exitCode: 1, now: 2000 });
+  quiet.stderrTail = "  \n";
+  assert.equal(runContent([quiet]).split("\n")[0], "scout — failed: child exited 1");
 });
 
 test("an error stop reason carries its message", () => {

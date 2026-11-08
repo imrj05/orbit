@@ -145,18 +145,19 @@ fn last_updated_does_not_override_activity_when_opening_a_session() {
 }
 
 #[test]
-fn active_session_leads_its_group_over_a_newer_run() {
-    // Within one group the open session (oldest) must beat a running sibling
-    // with newer activity; otherwise the two swap as each appends a message.
+fn opening_or_running_does_not_reorder_a_group() {
+    // The store is newest-first. The open session is the oldest, and a
+    // sibling is mid-run. Neither rises: only a new message changes order.
+    // Pins would still lead them.
     let sessions = vec![
-        store_session("a1", "/work/alpha", 10),
         store_session("a2", "/work/alpha", 30),
         store_session("a3", "/work/alpha", 20),
+        store_session("a1", "/work/alpha", 10),
     ];
     let workspaces = workspace_paths(&["/work/alpha"]);
     let expanded: HashSet<String> = ["alpha"].iter().map(|s| s.to_string()).collect();
-    let running: HashSet<PathBuf> = [sessions[1].path.clone()].into_iter().collect();
-    let active = Some(sessions[0].path.clone());
+    let running: HashSet<PathBuf> = [sessions[0].path.clone()].into_iter().collect();
+    let active = Some(sessions[2].path.clone());
     let rows = build_sidebar_rows(
         &sessions,
         &workspaces,
@@ -178,7 +179,8 @@ fn active_session_leads_its_group_over_a_newer_run() {
             _ => None,
         })
         .collect();
-    // Open session first, then the live run, then the idle sibling.
+    // Newest first: the running sibling (a2), the idle one (a3), then the
+    // open session (a1). Clicking a1 did not move it.
     assert_eq!(indices, vec![0, 1, 2]);
 }
 

@@ -29,8 +29,3 @@ export function parseBundledExtensions(raw) {
   }
   return out;
 }
-
-/** The `--extension <path>` argument pairs for a child. */
-export function extensionArgs(raw) {
-  return parseBundledExtensions(raw).flatMap((entry) => ["--extension", entry]);
-}

@@ -17,7 +17,7 @@ use gpui::{
     SharedString, Window,
 };
 
-use crate::app::{modal_card, modal_scrim};
+use crate::app::{modal_card, modal_scrim, PressedRamp, StatefulControlExt};
 use crate::composer::ComposerInput;
 use crate::theme::tokens::{button, input, list_item, modal, ButtonSize, DynamicSpacing, TextSize};
 use crate::theme::{self, Theme};
@@ -505,6 +505,7 @@ impl Dialog {
                         gpui::transparent_black()
                     })
                     .cursor_pointer()
+                    .pressed_state(&theme, PressedRamp::Wash)
                     // Pointer movement moves the highlight; a scroll sliding a
                     // row under a stationary pointer must not hijack ↑/↓ nav.
                     .on_mouse_move({
@@ -573,6 +574,7 @@ impl Dialog {
                     .items_center()
                     .justify_center()
                     .cursor_pointer()
+                    .pressed_state(&theme, PressedRamp::Wash)
                     .text_size(TextSize::Default.px(&theme))
                     .font_weight(FontWeight::MEDIUM)
                     .on_hover({

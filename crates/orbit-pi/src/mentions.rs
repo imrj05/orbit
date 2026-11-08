@@ -1,9 +1,10 @@
 //! Composer autocomplete — `/` command and `@` file mentions.
 //!
-//! Typing `/` at the very start of the composer (with the caret inside that
-//! first word) opens a slash-command menu fed by pi's `get_commands`; typing
-//! `@` after whitespace (or at the start) opens a workspace file menu. Both
-//! are filtered live by the text between the sigil and the caret.
+//! Typing `/` at the start of a word (the beginning of the composer, or right
+//! after whitespace, with the caret still inside that word) opens a
+//! slash-command menu fed by pi's `get_commands`; typing `@` after whitespace
+//! (or at the start) opens a workspace file menu. Both are filtered live by
+//! the text between the sigil and the caret.
 //!
 //! The trigger lives entirely in the composer's text: detection is a pure
 //! function of (content, cursor), so the popup opens/closes by itself as the
@@ -19,7 +20,7 @@ use std::rc::Rc;
 /// Which surface the active trigger opens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TriggerKind {
-    /// `/command` — caret is inside the first word of the composer.
+    /// `/command` — caret is inside a command token at a word boundary.
     Slash,
     /// `@file` — the token ends at the caret, starts after whitespace.
     At,
@@ -37,23 +38,23 @@ pub struct Trigger {
 
 /// Detect an autocomplete trigger at `cursor` in `content`.
 ///
-/// - Slash: content starts with `/` and the caret sits before the first
-///   whitespace — the whole first word is the token.
+/// - Slash: the word under the caret starts with `/`, and that `/` sits at
+///   the start of the message or right after whitespace. The caret must still
+///   be inside the word. The token runs to the next whitespace (so a caret in
+///   the middle of `/review` replaces the whole word); `query` is only the
+///   text between the sigil and the caret.
 /// - At: an `@` preceded by line start or whitespace, with no whitespace
-///   between it and the caret — `@query` is the token.
+///   between it and the caret — `@query` is the token. A `/` inside
+///   `@src/main.rs` stays part of the file token.
+///
+/// The menu is looser than paint. Any `/` at a word boundary opens it; a
+/// path like `/usr/local` still does, and the menu stays shut when the query
+/// matches no command. [`tokenize_mentions`] only colors names that look like
+/// commands.
 pub fn detect_trigger(content: &str, cursor: usize) -> Option<Trigger> {
     let cursor = cursor.min(content.len());
-    // Slash only opens at the very start of the message.
-    if let Some(rest) = content.strip_prefix('/') {
-        let token_end = 1 + rest.find(char::is_whitespace).unwrap_or(rest.len());
-        if cursor <= token_end {
-            return Some(Trigger {
-                kind: TriggerKind::Slash,
-                start: 0,
-                end: token_end,
-                query: content[1..cursor].to_string(),
-            });
-        }
+    if let Some(trigger) = detect_slash(content, cursor) {
+        return Some(trigger);
     }
     // At: last `@` before the caret; must start a token and run unbroken
     // (no whitespace) to the caret.
@@ -74,10 +75,41 @@ pub fn detect_trigger(content: &str, cursor: usize) -> Option<Trigger> {
     })
 }
 
+/// Slash trigger for the word containing `cursor`, if that word is a `/…`
+/// token at a boundary (message start or whitespace).
+fn detect_slash(content: &str, cursor: usize) -> Option<Trigger> {
+    let start = token_start_at(content, cursor)?;
+    if !content[start..cursor].starts_with('/') {
+        return None;
+    }
+    let query = &content[start + 1..cursor];
+    let rest = &content[start + 1..];
+    let end = start + 1 + rest.find(char::is_whitespace).unwrap_or(rest.len());
+    Some(Trigger {
+        kind: TriggerKind::Slash,
+        start,
+        end,
+        query: query.to_string(),
+    })
+}
+
+/// Byte index where the token containing `cursor` begins.
+///
+/// `None` when the caret sits on the boundary itself, so there is no token
+/// under it yet (including a caret parked before the first character).
+fn token_start_at(content: &str, cursor: usize) -> Option<usize> {
+    let start = content[..cursor]
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| ch.is_whitespace())
+        .map_or(0, |(index, ch)| index + ch.len_utf8());
+    (start < cursor).then_some(start)
+}
+
 /// Which composer token a span paints as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MentionKind {
-    /// `/command` — the leading token of a message.
+    /// `/command` — a command token at a word boundary.
     Command,
     /// `@file` — a workspace reference.
     File,
@@ -91,29 +123,33 @@ pub struct MentionSpan {
     pub kind: MentionKind,
 }
 
-/// Locate the tokens the composer paints in their own color: a leading
-/// `/command` and every `@file` mention. Pure, sorted and non-overlapping,
-/// so the editor's caret/selection model is untouched — this is paint only.
+/// Locate the tokens the composer paints in their own color: every `/command`
+/// at a word boundary and every `@file` mention. Pure, sorted and
+/// non-overlapping, so the editor's caret/selection model is untouched — this
+/// is paint only.
 ///
-/// The rules mirror [`detect_trigger`]: a slash token only opens at the very
-/// start of the message and must look like a command name (a path like
-/// `/usr/local` stays plain); an `@` must sit at a token boundary and runs
-/// unbroken to the next whitespace.
+/// The rules mirror [`detect_trigger`]: a slash token opens at the start of
+/// the message or right after whitespace, and must look like a command name
+/// (a path like `/usr/local` stays plain); an `@` must sit at a token boundary
+/// and runs unbroken to the next whitespace.
 pub fn tokenize_mentions(content: &str) -> Vec<MentionSpan> {
     let mut spans = Vec::new();
 
-    // Leading `/command`: the whole first word, only when every character
-    // after the sigil reads as a command name.
-    if content.starts_with('/') {
-        let word_end = content.find(char::is_whitespace).unwrap_or(content.len());
-        let name = &content[1..word_end];
-        if !name.is_empty()
-            && name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':'))
-        {
+    // `/command`: the whole word, only when every character after the sigil
+    // reads as a command name. A `/` glued to the previous word (`http://`,
+    // `please/review`) is not a command.
+    for (slash, _) in content.match_indices('/') {
+        if slash != 0 && !content[..slash].ends_with(char::is_whitespace) {
+            continue;
+        }
+        let end = content[slash..]
+            .find(char::is_whitespace)
+            .map(|off| slash + off)
+            .unwrap_or(content.len());
+        let name = &content[slash + 1..end];
+        if is_command_name(name) {
             spans.push(MentionSpan {
-                range: 0..word_end,
+                range: slash..end,
                 kind: MentionKind::Command,
             });
         }
@@ -136,7 +172,17 @@ pub fn tokenize_mentions(content: &str) -> Vec<MentionSpan> {
         }
     }
 
+    spans.sort_by_key(|span| span.range.start);
     spans
+}
+
+/// A `/command` name: non-empty, and only the characters pi command names use.
+/// A slash or other punctuation (`/usr/local`) keeps the word plain text.
+fn is_command_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':'))
 }
 
 /// Where a `/` command comes from — the scope badge shown on its row.
@@ -251,38 +297,45 @@ fn fuzzy_match(needle: &str, haystack: &str) -> Option<i32> {
     if needle.is_empty() {
         return Some(0);
     }
-    let haystack: Vec<char> = haystack.chars().collect();
+    // Allocation-free: the old version collected the haystack into a `Vec<char>`,
+    // which is one heap allocation per candidate per keystroke. `@` now scores
+    // every path in the workspace index, so this runs tens of thousands of
+    // times per query and has to stay on the stack.
     let mut score = 0i32;
-    let mut search_start = 0usize;
     let mut prev_hit: Option<usize> = None;
+    let mut position = 0usize;
+    // The haystack char immediately before the one about to be scanned, so a
+    // segment-start hit (`src/App.tsx`) is recognised without indexing back.
+    let mut before: Option<char> = None;
+    let mut hay_chars = haystack.chars();
     for c in needle.chars() {
-        let found = haystack[search_start..]
-            .iter()
-            .position(|h| *h == c)
-            .map(|p| p + search_start)?;
+        let found = loop {
+            let h = hay_chars.next()?;
+            if h == c {
+                break position;
+            }
+            before = Some(h);
+            position += 1;
+        };
         if prev_hit == Some(found.wrapping_sub(1)) {
             score += 3; // consecutive run
         }
-        if found == 0 || haystack[found - 1] == '/' {
+        if found == 0 || before == Some('/') {
             score += 2; // start of the path or a segment
         }
         let gap = found - prev_hit.map(|p| p + 1).unwrap_or(0);
         score -= gap.min(12) as i32;
         prev_hit = Some(found);
-        search_start = found + 1;
+        before = Some(c);
+        position += 1;
     }
     Some(score)
 }
 
 /// Filter the catalog by `query` with fuzzy (subsequence) matching —
-/// basename matches outrank path matches, higher scores rank first, ties
-/// keep catalog order. Returns at most `limit` entries.
-pub fn filter_entries(
-    query: &str,
-    files: &[String],
-    commands: &[SlashCommand],
-    limit: usize,
-) -> Vec<AcEntry> {
+/// higher scores rank first, ties keep catalog order. Returns at most `limit`
+/// entries. Files are ranked by [`MentionIndex`], not here.
+pub fn filter_entries(query: &str, commands: &[SlashCommand], limit: usize) -> Vec<AcEntry> {
     let q = query.to_lowercase();
     let mut scored: Vec<(i32, usize, AcEntry)> = Vec::new();
     for (ix, command) in commands.iter().enumerate() {
@@ -299,230 +352,120 @@ pub fn filter_entries(
             ));
         }
     }
-    for (ix, path) in files.iter().enumerate() {
-        let basename = path.rsplit('/').next().unwrap_or(path).to_lowercase();
-        // A basename hit (weighted 2×) outranks the same hit deep in the
-        // path, so `app` surfaces `src/App.tsx` over `crates/app/…`.
-        let score = fuzzy_match(&q, &basename)
-            .map(|s| s * 2)
-            .into_iter()
-            .chain(fuzzy_match(&q, &path.to_lowercase()))
-            .max();
-        if let Some(score) = score {
-            scored.push((
-                score,
-                ix + commands.len(),
-                AcEntry::File { path: path.clone() },
-            ));
-        }
-    }
     scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     scored.truncate(limit);
     scored.into_iter().map(|(_, _, entry)| entry).collect()
 }
 
-/// Walk the workspace for @-mentionable files (relative, `/`-separated).
-/// Skips VCS/dependency/build dirs and dot directories, caps depth and
-/// count so huge trees stay responsive.
-pub fn list_workspace_files(root: &Path) -> Vec<String> {
-    const MAX_FILES: usize = 4_000;
-    const MAX_DEPTH: usize = 12;
-    const SKIP_DIRS: &[&str] = &[
-        ".git",
-        ".pi",
-        ".hg",
-        ".svn",
-        "node_modules",
-        "target",
-        "dist",
-        "build",
-        "vendor",
-        "__pycache__",
-        ".next",
-        ".cache",
-    ];
-    let mut out = Vec::new();
-    let mut stack = vec![(root.to_path_buf(), 0usize)];
-    while let Some((dir, depth)) = stack.pop() {
-        if out.len() >= MAX_FILES || depth > MAX_DEPTH {
-            continue;
-        }
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if file_type.is_dir() {
-                if name.starts_with('.') || SKIP_DIRS.contains(&name.as_ref()) {
-                    continue;
-                }
-                stack.push((path, depth + 1));
-            } else if !name.starts_with('.') && out.len() < MAX_FILES {
-                let rel = path
-                    .strip_prefix(root)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                out.push(rel);
-            }
-        }
-    }
-    out.sort();
-    out
-}
-
-/// What `fd` did with an `@` query.
-pub(crate) enum FdSearch {
-    /// `fd` ran. An empty list is a real "nothing matched", not a failure.
-    Hits(Vec<String>),
-    /// No `fd` binary to run. The caller keeps the bounded directory walk.
-    Missing,
-}
-
-/// The regex `fd` should apply. A slash in the query searches the whole
-/// path; otherwise `fd` matches the file name. Same shape as pi's
-/// `buildFdPathQuery`.
-pub(crate) fn fd_pattern(query: &str) -> String {
-    let normalized = query.replace('\\', "/");
-    if !normalized.contains('/') {
-        return escape_regex(&normalized);
-    }
-    let trailing = normalized.ends_with('/');
-    let trimmed = normalized.trim_matches('/');
-    if trimmed.is_empty() {
-        return normalized;
-    }
-    let mut pattern = trimmed
-        .split('/')
-        .filter(|segment| !segment.is_empty())
-        .map(escape_regex)
-        .collect::<Vec<_>>()
-        .join("[\\\\/]");
-    if trailing {
-        pattern.push_str("[\\\\/]");
-    }
-    pattern
-}
-
-fn escape_regex(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for ch in value.chars() {
-        if matches!(
-            ch,
-            '.' | '*' | '+' | '?' | '^' | '$' | '{' | '}' | '(' | ')' | '|' | '[' | ']' | '\\'
-        ) {
-            out.push('\\');
-        }
-        out.push(ch);
-    }
-    out
-}
-
-/// pi's filename score: exact, then prefix, then substring, then path.
-fn score_path(path: &str, query: &str, is_dir: bool) -> i32 {
-    if query.is_empty() {
-        return 1;
-    }
-    let file_name = path.rsplit(['/', '\\']).next().unwrap_or(path);
-    let name = file_name.to_lowercase();
-    let query = query.to_lowercase();
-    let mut score = if name == query {
-        100
-    } else if name.starts_with(&query) {
-        80
-    } else if name.contains(&query) {
-        50
-    } else if path.to_lowercase().contains(&query) {
-        30
-    } else {
-        0
-    };
-    if is_dir && score > 0 {
-        score += 10;
-    }
-    score
-}
-
+/// `path` split into segments — its depth in the tree.
 fn path_depth(path: &str) -> usize {
     path.split('/')
         .filter(|segment| !segment.is_empty())
         .count()
 }
 
-/// Search `root` with `fd`, the same walker pi's TUI uses for `@`.
+/// The workspace as `@` ranks it: every path, pre-lowercased, with the
+/// basename offset and the hidden bit worked out once at build time.
 ///
-/// `fd` applies the pattern while it walks and skips ignored directories
-/// (Unity `Temp` / `Library`, `node_modules`, …), so a name match is not
-/// crowded out by the first few thousand generated files.
-pub(crate) fn search_fd(root: &Path, query: &str) -> FdSearch {
-    let Some(fd) = crate::onboarding::locate("fd") else {
-        return FdSearch::Missing;
-    };
-    let mut command = std::process::Command::new(&fd);
-    command
-        .current_dir(root)
-        .arg("--base-directory")
-        .arg(root)
-        .arg("--max-results")
-        .arg("100")
-        .arg("--type")
-        .arg("f")
-        .arg("--type")
-        .arg("d")
-        .arg("--follow")
-        .arg("--hidden")
-        .arg("--exclude")
-        .arg(".git")
-        .arg("--exclude")
-        .arg(".git/*")
-        .arg("--exclude")
-        .arg(".git/**")
-        .arg("--ignore-case")
-        .arg("--color")
-        .arg("never");
-    let normalized = query.replace('\\', "/");
-    if normalized.contains('/') {
-        command.arg("--full-path");
-    }
-    if !query.is_empty() {
-        command.arg(fd_pattern(query));
-    }
-    orbit_rpc::hide_console(&mut command);
-    let Ok(output) = command.output() else {
-        return FdSearch::Hits(Vec::new());
-    };
-    let text = String::from_utf8_lossy(&output.stdout);
-    let mut ranked: Vec<(i32, usize, usize, String)> = Vec::new();
-    for line in text.lines() {
-        let display = line.trim().replace('\\', "/");
-        if display.is_empty()
-            || display == ".git"
-            || display.starts_with(".git/")
-            || display.contains("/.git/")
-        {
-            continue;
+/// This replaces the `fd` subprocess that used to run on the UI thread once per
+/// keystroke. `--max-results` could only short-circuit when hits existed, so a
+/// query with no match walked the whole workspace while the frame waited
+/// (591–774 ms on a 90k-entry tree). Ranking in memory is 0.01–6.5 ms for the
+/// same queries and spawns nothing.
+///
+/// Cost is paid once per index build (~20 ms per 90k entries) and once per
+/// keystroke over the precomputed vectors, so `query` never allocates a
+/// lowercase copy of a path. The rules are the ones `filter_entries` already
+/// used for its file branch — a basename hit weighted 2× outranks the same hit
+/// deep in the path — so `app` still surfaces `src/App.tsx` over
+/// `crates/app/main.rs`.
+#[derive(Debug, Default)]
+pub struct MentionIndex {
+    /// Display paths, shallowest first (depth, then path).
+    paths: Vec<String>,
+    /// `paths[i]`, lowercased.
+    lower: Vec<String>,
+    /// Byte offset of the basename inside `lower[i]`.
+    name_at: Vec<u32>,
+    hidden: Vec<bool>,
+}
+
+impl MentionIndex {
+    /// Build from the workspace walk's directories and files.
+    pub fn build(dirs: &[String], files: &[String]) -> Self {
+        let mut order: Vec<&String> = dirs.iter().chain(files.iter()).collect();
+        order.sort_by(|a, b| path_depth(a).cmp(&path_depth(b)).then_with(|| a.cmp(b)));
+        let mut paths = Vec::with_capacity(order.len());
+        let mut lower = Vec::with_capacity(order.len());
+        let mut name_at = Vec::with_capacity(order.len());
+        let mut hidden = Vec::with_capacity(order.len());
+        for path in &order {
+            let lowered = path.to_lowercase();
+            let offset = lowered
+                .rfind('/')
+                .map(|i| i + 1)
+                .unwrap_or(0)
+                .min(u32::MAX as usize) as u32;
+            name_at.push(offset);
+            hidden.push(is_hidden(path));
+            lower.push(lowered);
+            paths.push((*path).clone());
         }
-        let is_dir = display.ends_with('/');
-        let path = display.trim_end_matches('/').to_string();
-        let score = score_path(&path, query, is_dir);
-        if !query.is_empty() && score == 0 {
-            continue;
+        Self {
+            paths,
+            lower,
+            name_at,
+            hidden,
         }
-        ranked.push((score, path_depth(&path), path.len(), path));
     }
-    ranked.sort_by(|a, b| {
-        b.0.cmp(&a.0)
-            .then(a.1.cmp(&b.1))
-            .then(a.2.cmp(&b.2))
-            .then(a.3.cmp(&b.3))
-    });
-    let hits: Vec<String> = ranked.into_iter().map(|(_, _, _, path)| path).collect();
-    FdSearch::Hits(hits)
+
+    /// Seed an index straight from paths, for tests.
+    #[cfg(test)]
+    pub fn from_paths(paths: Vec<String>) -> Self {
+        Self::build(&[], &paths)
+    }
+
+    /// The `limit` best paths for `query`, best first.
+    ///
+    /// An empty query is the shallow head of the index — the menu the user gets
+    /// the moment they type `@`.
+    pub fn query(&self, query: &str, limit: usize) -> Vec<String> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        if query.is_empty() {
+            return self.paths.iter().take(limit).cloned().collect();
+        }
+        let needle = query.to_lowercase();
+        // (score, hidden, index). The index is the (depth, path) position, so
+        // the tie-break below is shallow-first and then alphabetical.
+        let mut scored: Vec<(i32, bool, usize)> = Vec::new();
+        for (ix, lower) in self.lower.iter().enumerate() {
+            let basename = &lower[self.name_at[ix] as usize..];
+            let score = fuzzy_match(&needle, basename)
+                .map(|s| s * 2)
+                .into_iter()
+                .chain(fuzzy_match(&needle, lower))
+                .max();
+            if let Some(score) = score {
+                scored.push((score, self.hidden[ix], ix));
+            }
+        }
+        // Hidden entries are searchable; they only lose ties, so naming a
+        // dotfile outright still finds it, while a plain query prefers the
+        // files the Explorer shows.
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+        scored.truncate(limit);
+        scored
+            .into_iter()
+            .map(|(_, _, ix)| self.paths[ix].clone())
+            .collect()
+    }
+}
+
+/// Any path segment starting with `.` (`src/.env`, `.github/workflows/ci.yml`).
+fn is_hidden(path: &str) -> bool {
+    path.split('/').any(|segment| segment.starts_with('.'))
 }
 
 /// Shared keyboard-negotiation state between the composer (which owns
@@ -688,22 +631,78 @@ mod tests {
     }
 
     #[test]
-    fn slash_triggers_only_at_start_before_whitespace() {
+    fn slash_triggers_at_a_word_boundary_before_whitespace() {
         let t = detect_trigger("/rev", 4).unwrap();
         assert_eq!(t.kind, TriggerKind::Slash);
         assert_eq!(t.query, "rev");
         assert_eq!(t.start, 0);
         assert_eq!(t.end, 4);
-        // Query cut at the caret.
-        assert_eq!(detect_trigger("/rev", 2).unwrap().query, "r");
-        // Caret past the first word closes the trigger.
+        // Query cut at the caret; the replacement still covers the whole word.
+        let mid = detect_trigger("/review", 3).unwrap();
+        assert_eq!(mid.query, "re");
+        assert_eq!(mid.start, 0);
+        assert_eq!(mid.end, 7);
+        // Caret past the word closes the trigger.
         assert!(detect_trigger("/rev ", 5).is_none());
-        // `/` not at the start is plain text.
-        assert!(detect_trigger("run /rev", 8).is_none());
+        // A slash after whitespace opens on that token, not only at column 0.
+        let inline = detect_trigger("run /rev", 8).unwrap();
+        assert_eq!(inline.kind, TriggerKind::Slash);
+        assert_eq!(inline.query, "rev");
+        assert_eq!(inline.start, 4);
+        assert_eq!(inline.end, 8);
+        // Leading space and a new line are boundaries too.
+        assert_eq!(detect_trigger(" /rev", 5).unwrap().start, 1);
+        assert_eq!(detect_trigger("done\n/re", 8).unwrap().query, "re");
+        // No whitespace before the slash keeps it plain text.
+        assert!(detect_trigger("please/review", 13).is_none());
+        assert!(detect_trigger("http://example", 14).is_none());
+        // Caret moved into a later word closes the menu.
+        assert!(detect_trigger("请看 /skill 这里", "请看 /skill 这里".len()).is_none());
         // Empty query right after the sigil still triggers.
         assert_eq!(detect_trigger("/", 1).unwrap().query, "");
+        assert_eq!(detect_trigger("see /", 5).unwrap().query, "");
         // Trigger survives command names with trailing content later on.
-        assert!(detect_trigger("/review focus on app.rs", 2).is_some());
+        let leading = detect_trigger("/review focus on app.rs", 2).unwrap();
+        assert_eq!(leading.kind, TriggerKind::Slash);
+        assert_eq!(leading.query, "r");
+        assert_eq!(leading.end, 7);
+        // A `/` inside an @file stays a file mention.
+        let file = detect_trigger("look at @src/comp", 17).unwrap();
+        assert_eq!(file.kind, TriggerKind::At);
+        assert_eq!(file.query, "src/comp");
+        // The caret in a later @ token does not reopen the earlier slash.
+        let later = detect_trigger("see /cmd @fi", 12).unwrap();
+        assert_eq!(later.kind, TriggerKind::At);
+        assert_eq!(later.query, "fi");
+    }
+
+    #[test]
+    fn slash_trigger_respects_caret_edges() {
+        // Caret before a leading slash is not inside the token. The old
+        // detector sliced `content[1..0]` here.
+        assert!(detect_trigger("/rev", 0).is_none());
+        // Caret sitting on the space before `/` has not entered the token.
+        assert!(detect_trigger("run /rev", 4).is_none());
+        // Tab is whitespace, same as a space or a newline.
+        let tab = detect_trigger("a\t/re", 5).unwrap();
+        assert_eq!(tab.kind, TriggerKind::Slash);
+        assert_eq!(tab.start, 2);
+        assert_eq!(tab.query, "re");
+        // Ideographic space is whitespace too.
+        let wide = detect_trigger("a\u{3000}/re", 7).unwrap();
+        assert_eq!(wide.start, 4);
+        assert_eq!(wide.query, "re");
+        // Caret mid-word still replaces through the end of that word.
+        let mid = detect_trigger("please /review notes", 10).unwrap();
+        assert_eq!(mid.kind, TriggerKind::Slash);
+        assert_eq!(mid.query, "re");
+        assert_eq!(mid.start, 7);
+        assert_eq!(mid.end, 14);
+        // A later @file that itself contains `/` stays a file mention.
+        let file = detect_trigger("/cmd @src/ma", 12).unwrap();
+        assert_eq!(file.kind, TriggerKind::At);
+        assert_eq!(file.start, 5);
+        assert_eq!(file.query, "src/ma");
     }
 
     #[test]
@@ -751,12 +750,34 @@ mod tests {
 
     #[test]
     fn tokenize_leaves_paths_and_emails_plain() {
-        // A leading path is not a command; a mid-word `@` is not a mention.
+        // A path is not a command, even after whitespace; a mid-word `@` is
+        // not a mention. `http://` and `please/review` have no word boundary.
         assert!(tokenize_mentions("/usr/local/bin").is_empty());
+        assert!(tokenize_mentions("see /usr/local/bin").is_empty());
         assert!(tokenize_mentions("mail me at a@b.com").is_empty());
+        assert!(tokenize_mentions("see http://example.com").is_empty());
+        assert!(tokenize_mentions("please/review").is_empty());
         // A lone sigil has no payload yet.
         assert!(tokenize_mentions("/").is_empty());
         assert!(tokenize_mentions("@").is_empty());
+    }
+
+    #[test]
+    fn tokenize_colors_inline_commands_in_order() {
+        let content = "see @src/main.rs then /skill:impeccable";
+        let spans = tokenize_mentions(content);
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].kind, MentionKind::File);
+        assert_eq!(&content[spans[0].range.clone()], "@src/main.rs");
+        assert_eq!(spans[1].kind, MentionKind::Command);
+        assert_eq!(&content[spans[1].range.clone()], "/skill:impeccable");
+        // A command on its own line is colored too.
+        let multiline = tokenize_mentions("done\n/review");
+        assert_eq!(multiline[0].range, 5..12);
+        assert_eq!(multiline[0].kind, MentionKind::Command);
+        let tabbed = tokenize_mentions("done\t/review");
+        assert_eq!(tabbed[0].range, 5..12);
+        assert_eq!(tabbed[0].kind, MentionKind::Command);
     }
 
     #[test]
@@ -771,94 +792,106 @@ mod tests {
     }
 
     #[test]
-    fn filter_ranks_prefix_matches_first() {
-        let files = vec![
+    fn mention_index_ranks_prefix_matches_first() {
+        let index = MentionIndex::from_paths(vec![
             "crates/app/main.rs".to_string(),
             "src/main.rs".to_string(),
             "README.md".to_string(),
             "main.py".to_string(),
-        ];
-        let entries = filter_entries("main", &files, &[], 10);
-        // Basename prefix matches first (stable by catalog order), then
-        // path-contains matches.
-        let title = |e: &AcEntry| match e {
-            AcEntry::Command { name, .. } => name.clone(),
-            AcEntry::File { path } => path.clone(),
-        };
+        ]);
+        // All three basenames start with "main" — rank ties break shallow
+        // first, then alphabetically. "README.md" cannot spell "main".
         assert_eq!(
-            entries.iter().map(title).collect::<Vec<_>>(),
-            // All three basenames start with "main" — rank ties break by
-            // catalog order. "README.md" (contains-match) is excluded.
+            index.query("main", 10),
             vec![
-                "crates/app/main.rs".to_string(),
+                "main.py".to_string(),
                 "src/main.rs".to_string(),
-                "main.py".to_string()
+                "crates/app/main.rs".to_string()
             ]
         );
     }
 
     #[test]
-    fn filter_is_fuzzy_and_basename_first() {
+    fn mention_index_is_fuzzy_and_basename_first() {
         // Subsequence match: no exact substring of "appx" appears in the
         // path, yet fuzzy finds a-p-p-x in order.
-        let files = vec!["src/App.tsx".to_string()];
-        assert_eq!(filter_entries("appx", &files, &[], 10).len(), 1);
+        let index = MentionIndex::from_paths(vec!["src/App.tsx".to_string()]);
+        assert_eq!(index.query("appx", 10), vec!["src/App.tsx".to_string()]);
         // Basename hits outrank path hits: `app` ranks src/App.tsx (basename)
         // above crates/app/main.rs (path-only hit).
-        let files = vec!["crates/app/main.rs".to_string(), "src/App.tsx".to_string()];
+        let index = MentionIndex::from_paths(vec![
+            "crates/app/main.rs".to_string(),
+            "src/App.tsx".to_string(),
+        ]);
         assert_eq!(
-            filter_entries("app", &files, &[], 10)
-                .first()
-                .map(|e| match e {
-                    AcEntry::File { path } => path.as_str(),
-                    _ => "",
-                }),
+            index.query("app", 10).first().map(String::as_str),
             Some("src/App.tsx")
         );
         // No subsequence → no match ("zzq" can't be spelled from these).
-        assert!(filter_entries("zzq", &files, &[], 10).is_empty());
+        assert!(index.query("zzq", 10).is_empty());
     }
 
     #[test]
-    fn filter_is_case_insensitive_and_capped() {
-        let files = vec!["Big/FILE.Rs".to_string()];
-        assert_eq!(filter_entries("file", &files, &[], 10).len(), 1);
-        assert!(filter_entries("zzz", &files, &[], 10).is_empty());
+    fn mention_index_is_case_insensitive_and_capped() {
+        let index = MentionIndex::from_paths(vec!["Big/FILE.Rs".to_string()]);
+        assert_eq!(index.query("file", 10), vec!["Big/FILE.Rs".to_string()]);
+        assert!(index.query("zzz", 10).is_empty());
         let many: Vec<String> = (0..50).map(|i| format!("f{i}.rs")).collect();
-        assert_eq!(filter_entries("", &many, &[], 8).len(), 8);
+        let index = MentionIndex::from_paths(many);
+        assert_eq!(index.query("", 8).len(), 8);
+        assert_eq!(index.query("f", 8).len(), 8);
+        assert_eq!(index.query("", 100).len(), 50);
     }
 
+    /// An empty `@` is the shallow head of the index: what the walk saw first,
+    /// not an arbitrary slice of it.
     #[test]
-    fn fd_pattern_matches_pi_file_and_path_queries() {
-        assert_eq!(fd_pattern("MetaData"), "MetaData");
-        assert_eq!(fd_pattern("a.b"), "a\\.b");
-        // A slash searches the path, with either separator.
-        assert_eq!(fd_pattern("src/lib"), "src[\\\\/]lib");
-        assert_eq!(fd_pattern("src/lib/"), "src[\\\\/]lib[\\\\/]");
-        // Filename substring outranks a path-only accident, and a name that
-        // does not contain the query scores nothing.
-        assert!(score_path("Assets/FooMetaData.cs", "MetaData", false) >= 50);
+    fn mention_index_empty_query_opens_on_the_shallowest_entries() {
+        let index = MentionIndex::from_paths(vec![
+            "src/lib/deep/nested.rs".to_string(),
+            "README.md".to_string(),
+            "src/main.rs".to_string(),
+        ]);
         assert_eq!(
-            score_path("Temp/Agent/_adhoc/RunDataRegenAll.cs", "MetaData", false),
-            0
+            index.query("", 10),
+            vec![
+                "README.md".to_string(),
+                "src/main.rs".to_string(),
+                "src/lib/deep/nested.rs".to_string()
+            ]
         );
-        assert!(score_path("metadata.bytes", "MetaData", false) >= 50);
+        assert!(index.query("", 0).is_empty());
     }
 
+    /// Hidden entries are indexed and findable by name; a plain query still
+    /// prefers the files the Explorer shows, so a dotfile only wins when it is
+    /// what was asked for.
     #[test]
-    fn workspace_walk_skips_ignorable_dirs() {
-        let root = std::env::temp_dir().join(format!("orbit-mentions-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
-        std::fs::create_dir_all(root.join(".git/refs")).unwrap();
-        std::fs::write(root.join("src/lib.rs"), "").unwrap();
-        std::fs::write(root.join(".env"), "").unwrap();
-        std::fs::write(root.join("node_modules/pkg/i.js"), "").unwrap();
-        std::fs::write(root.join(".git/refs/x"), "").unwrap();
-        let files = list_workspace_files(&root);
-        assert_eq!(files, vec!["src/lib.rs".to_string()]);
-        std::fs::remove_dir_all(&root).ok();
+    fn mention_index_finds_hidden_entries_but_prefers_visible_ones() {
+        let index = MentionIndex::from_paths(vec![
+            ".env".to_string(),
+            "env.example".to_string(),
+            ".github/workflows/ci.yml".to_string(),
+        ]);
+        assert_eq!(
+            index.query("env", 10).first().map(String::as_str),
+            Some("env.example")
+        );
+        assert!(index.query(".env", 10).contains(&".env".to_string()));
+        assert_eq!(
+            index.query("workflows", 10),
+            vec![".github/workflows/ci.yml".to_string()]
+        );
+    }
+
+    /// The index takes directories as well as files, so `@dir` still resolves.
+    #[test]
+    fn mention_index_includes_directories() {
+        let index = MentionIndex::build(&["src".to_string()], &["src/main.rs".to_string()]);
+        assert_eq!(
+            index.query("src", 10),
+            vec!["src".to_string(), "src/main.rs".to_string()]
+        );
     }
 
     #[test]

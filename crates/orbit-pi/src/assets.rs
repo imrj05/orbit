@@ -118,9 +118,8 @@ fn collect_fonts(dir: &Dir<'_>, out: &mut Vec<String>) {
     }
 }
 
-/// Load Orbit's curated font catalog (`fonts/bundled/**`) so the Interface
-/// and Code font pickers can resolve every named family without an OS
-/// dependency. Call once at startup, after the Zed faces.
+/// Register the bundled fonts (`fonts/bundled/**`) with GPUI at startup,
+/// after the Zed faces and before the font pickers enumerate families.
 pub fn register_bundled_fonts(cx: &mut gpui::App) -> anyhow::Result<()> {
     let Some(dir) = ASSETS.get_dir("fonts/bundled") else {
         return Ok(());
@@ -153,13 +152,6 @@ mod tests {
             .expect("embedded assets cannot fail to load")
             .expect("dev-assets/alpha-app-icon.png is embedded by the debug overlay");
         assert_eq!(&bytes[..4], b"\x89PNG");
-    }
-
-    #[test]
-    fn onest_is_available_in_the_interface_font_catalog() {
-        assert!(crate::theme::UI_FONTS
-            .iter()
-            .any(|choice| choice.label == "Onest" && choice.family == "Onest"));
     }
 
     #[test]

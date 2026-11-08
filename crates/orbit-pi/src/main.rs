@@ -118,6 +118,7 @@ mod theme;
 mod toast;
 mod transcript;
 mod transcript_view;
+mod turn_review;
 mod updater;
 mod usage;
 mod wallpaper;
@@ -231,6 +232,9 @@ actions!(
         PickerSelectPrev
     ]
 );
+// New-task folder chip: native button activation while its focus handle owns
+// the keyboard. Scoped so Enter cannot fall through to the composer's Submit.
+actions!(new_task_keys, [OpenWorkspacePicker]);
 // Terminal-panel actions (bound to the `Terminal` context on the grid).
 // `TerminalTab` exists so Tab reaches the shell's completion instead of the
 // global focus-traversal binding. The rest are the panel's tab commands: they
@@ -495,6 +499,10 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("enter", PickerConfirm, Some("Picker")),
         KeyBinding::new("up", PickerSelectPrev, Some("Picker")),
         KeyBinding::new("down", PickerSelectNext, Some("Picker")),
+        // New-task folder trigger — Enter and Space open its picker while the
+        // chip, rather than the composer, owns focus.
+        KeyBinding::new("enter", OpenWorkspacePicker, Some("NewTaskFolder")),
+        KeyBinding::new("space", OpenWorkspacePicker, Some("NewTaskFolder")),
         // Add-menu keys — the `AddMenu` context rides on the menu's own
         // focus handle (deeper than the global escape/enter bindings, so
         // these win while the menu is open).
@@ -716,8 +724,7 @@ fn main() {
         // dormant. The launch check runs on its own thread.
         let updater = updater::Updater::init();
         cx.set_global(updater::UpdaterState(updater));
-        // Bundle Zed's UI/mono faces plus the curated font catalog so every
-        // picker choice resolves to a real face without OS dependencies.
+        // Register bundled faces before the font pickers enumerate GPUI families.
         assets::register_zed_fonts(cx).expect("failed to register Zed fonts");
         assets::register_symbol_fonts(cx).expect("failed to register the symbols font");
         assets::register_bundled_fonts(cx).expect("failed to register bundled fonts");

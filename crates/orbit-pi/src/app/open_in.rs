@@ -322,7 +322,9 @@ impl OrbitApp {
                 .child(anchored_popover(
                     Corner::TopRight,
                     point(px(0.), popover::MENU_OFFSET),
-                    popup, "anchored_popover-in-10", &theme,
+                    popup,
+                    "anchored_popover-in-10",
+                    &theme,
                 ))
                 .into_any_element(),
         )

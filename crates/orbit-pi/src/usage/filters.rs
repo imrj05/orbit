@@ -11,7 +11,8 @@
 
 use crate::app::{
     button_frame, context_menu_separator, icon_button_frame, menu_header, picker_entry,
-    picker_search_frame, picker_surface, press, refresh_glyph, ControlExt, TipExt, BUTTON_GROUP,
+    picker_search_frame, picker_surface, press, refresh_glyph, ControlExt, PressedRamp,
+    StatefulControlExt, TipExt, BUTTON_GROUP,
 };
 use chrono::Datelike;
 use gpui::{
@@ -237,6 +238,7 @@ fn row(
         })
         .flex_none()
         .cursor_pointer()
+        .pressed_state(&theme, PressedRamp::Wash)
         .when(highlighted, |row| row.bg(theme.surface_hover))
         .when(!highlighted, |row| row.hover_state(&theme))
         .on_hover(on_hover)

@@ -9,6 +9,7 @@
 
 use super::helpers::*;
 use super::*;
+use crate::motion::Hover;
 use crate::theme::tokens::{
     button, looping, modal, ButtonSize, DynamicSpacing, IconSize, TextSize,
 };
@@ -701,30 +702,33 @@ impl OrbitApp {
     ) -> Option<AnyElement> {
         let url = crate::updater::changelog_url(version)?;
         Some(
-            div()
-                .id("update-changelog-link")
-                .flex_none()
-                .flex()
-                .items_center()
-                .gap(DynamicSpacing::Base04.px(&theme))
-                .cursor_pointer()
-                .text_size(TextSize::Small.px(&theme))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(theme.accent_text)
-                .hover(move |style| style.text_color(theme.accent))
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(move |_, _: &MouseUpEvent, _, cx| {
-                        cx.open_url(&url);
-                    }),
-                )
-                .child(tr!("updater_ui.view_changelog"))
-                .child(icon(
-                    "icons/arrow-up-right.svg",
-                    IconSize::XSmall.px(&theme),
-                    theme.accent_text,
-                ))
-                .into_any_element(),
+            crate::motion::hover(
+                div()
+                    .id("update-changelog-link")
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(DynamicSpacing::Base04.px(&theme))
+                    .cursor_pointer()
+                    .text_size(TextSize::Small.px(&theme))
+                    .font_weight(FontWeight::MEDIUM)
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |_, _: &MouseUpEvent, _, cx| {
+                            cx.open_url(&url);
+                        }),
+                    )
+                    .child(tr!("updater_ui.view_changelog"))
+                    .child(icon(
+                        "icons/arrow-up-right.svg",
+                        IconSize::XSmall.px(&theme),
+                        theme.accent_text,
+                    )),
+                "update-changelog-link",
+                &theme,
+                Hover::ink(theme.accent_text, theme.accent),
+            )
+            .into_any_element(),
         )
     }
 

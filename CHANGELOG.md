@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A delegation card opens one child's log, not all of them.** Clicking a
+  child row shows that child's steps and report and leaves the row selected;
+  clicking it again closes the card, and picking another child swaps the body.
+  A parallel run with three finished children used to expand into three
+  unlabelled logs in a row — the steps were there, but not whose they were.
+  A one-child delegation is unchanged: opening the card is opening its log.
+- **`@` mentions no longer freeze the window while you type.** Each keystroke
+  used to spawn `fd` on the UI thread and wait for it — 300–700 ms per
+  character on a large project, and worst of all when nothing matched, because
+  `--max-results` could only short-circuit when hits existed. The composer now
+  ranks an in-memory index of the workspace instead: the same queries cost
+  milliseconds and spawn nothing. The index is built off the UI thread, rebuilt
+  at most once every 2 s after a change, and immediately after your own file
+  operations, so a created, renamed, or deleted file is in the next `@`.
+  Dotfiles stay searchable as they were (`.env`, `.github/**`) while
+  version-control and OS metadata (`.git`, `.svn`, `.hg`, `.jj`, `.DS_Store`,
+  `Thumbs.db`) is never indexed, and a `.gitignore` in a *parent* directory is
+  no longer consulted — matching `fd`, and the same walk the Explorer uses.
+- **A `/` command opens after any whitespace, not only at the start of the
+  message.** Typing `run /rev` opens the command menu with the caret still in
+  that word, so a skill or extension command can be reached mid-sentence the
+  same way it can at column 0. A slash glued to the previous word (`http://`,
+  `please/review`) stays plain text, and so does a path like `/usr/local`: the
+  menu opens on it but no command matches, and the word is never coloured as
+  one.
+
 ## [0.2.16] - 2026-11-05
 
 ### Added
@@ -341,6 +369,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leads each row in the table below. Clicking a row still scopes the page, and a
   row in scope reads as selected. Hover washes the row at once, with no
   transition.
+
+### Fixed
+
+- **Stop and Esc now interrupt a stuck pi.** They sent `abort` and then waited
+  for `agent_settled`, which a pi whose event loop is wedged never sends — one
+  bash call that dumps several GB (`rg -r '' -n ""` over a large repo) was enough
+  to freeze it, and both controls went silent while the turn stayed “Working
+  for…” for minutes. A stop is now timestamped: the composer says it is waiting
+  on pi, pressing again after a moment acts at once, and if pi has not answered
+  within 10 s Orbit closes the turn itself, takes the process down and starts a
+  fresh one on the same session. The process kill is a tree kill on Windows, so
+  the wedged tool child goes with it instead of outliving the restart. Queue text
+  that was waiting behind the stop is handed back to the composer.
 
 ## [0.2.13] - 2026-10-27
 

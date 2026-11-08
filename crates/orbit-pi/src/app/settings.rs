@@ -1,5 +1,6 @@
 use super::helpers::*;
 use super::*;
+use crate::motion::Hover;
 use crate::quota::note_should_render;
 use crate::theme::tokens::{
     button, context_menu, input, modal, panel, picker, popover, BufferLineHeight, ButtonSize,
@@ -7,6 +8,26 @@ use crate::theme::tokens::{
 };
 use crate::theme::MotionPreference;
 use gpui::{canvas, Bounds, DispatchPhase, Hitbox, HitboxBehavior, MouseMoveEvent};
+
+// Font registration completes at startup, before settings can render. Cache the
+// snapshot for this process rather than enumerating platform fonts each frame.
+fn font_family_options(cx: &App, current: &str) -> Vec<String> {
+    static AVAILABLE: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    font_options_with_current(
+        AVAILABLE.get_or_init(|| cx.text_system().all_font_names()),
+        current,
+    )
+}
+
+fn font_options_with_current(available: &[String], current: &str) -> Vec<String> {
+    let mut options = available.to_vec();
+    if !current.is_empty() && !options.iter().any(|family| family == current) {
+        options.push(current.to_owned());
+    }
+    options.sort();
+    options.dedup();
+    options
+}
 
 /// A Plugins-page button action, dispatched through one entry point.
 #[derive(Clone)]
@@ -629,7 +650,7 @@ impl OrbitApp {
                             .px(DynamicSpacing::Base12.px(&theme))
                             .pt(DynamicSpacing::Base08.px(&theme))
                             .pb(DynamicSpacing::Base16.px(&theme))
-                            .child(
+                            .child(crate::motion::hover(
                                 press(
                                     div()
                                         .id("settings-back")
@@ -640,8 +661,7 @@ impl OrbitApp {
                                         .flex()
                                         .items_center()
                                         .gap(DynamicSpacing::Base08.px(&theme))
-                                        .cursor_pointer()
-                                        .hover_state(&theme),
+                                        .cursor_pointer(),
                                 )
                                 .on_mouse_up(MouseButton::Left, cx.listener(Self::on_settings_back))
                                 .child(icon(
@@ -655,7 +675,10 @@ impl OrbitApp {
                                         .text_color(theme.text_secondary)
                                         .child(tr!("settings.back")),
                                 ),
-                            ),
+                                "settings-back",
+                                &theme,
+                                Hover::wash(&theme),
+                            )),
                     )
                     // Search — the first control in the column, just above
                     // the list it reaches into, so a query is one click from
@@ -964,46 +987,50 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
     ) -> AnyElement {
         let (section_icon, section_key) = settings_section_meta(section);
-        press(
-            div()
-                .id(ElementId::Name(
-                    format!("settings-result-{label_key}").into(),
-                ))
-                .w_full()
-                .px(DynamicSpacing::Base16.px(&theme))
-                .py(DynamicSpacing::Base12.px(&theme))
-                .flex()
-                .items_center()
-                .gap(DynamicSpacing::Base12.px(&theme))
-                .cursor_pointer()
-                .hover_state(&theme),
-        )
-        .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-            this.update(cx, |app, cx| {
-                app.settings_search.update(cx, |input, cx| input.clear(cx));
-                app.set_settings_section(section, cx);
-            });
-        })
-        .child(icon(
-            section_icon,
-            IconSize::Small.px(&theme),
-            theme.text_muted,
-        ))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .text_size(TextSize::Default.px(&theme))
-                .text_color(theme.text_primary)
-                .child(tr!(label_key).to_string()),
-        )
-        .child(
-            div()
-                .flex_none()
-                .text_size(TextSize::Small.px(&theme))
-                .text_color(theme.text_muted)
-                .child(tr!(section_key).to_string()),
+        crate::motion::hover(
+            press(
+                div()
+                    .id(ElementId::Name(
+                        format!("settings-result-{label_key}").into(),
+                    ))
+                    .w_full()
+                    .px(DynamicSpacing::Base16.px(&theme))
+                    .py(DynamicSpacing::Base12.px(&theme))
+                    .flex()
+                    .items_center()
+                    .gap(DynamicSpacing::Base12.px(&theme))
+                    .cursor_pointer(),
+            )
+            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                this.update(cx, |app, cx| {
+                    app.settings_search.update(cx, |input, cx| input.clear(cx));
+                    app.set_settings_section(section, cx);
+                });
+            })
+            .child(icon(
+                section_icon,
+                IconSize::Small.px(&theme),
+                theme.text_muted,
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(TextSize::Default.px(&theme))
+                    .text_color(theme.text_primary)
+                    .child(tr!(label_key).to_string()),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(TextSize::Small.px(&theme))
+                    .text_color(theme.text_muted)
+                    .child(tr!(section_key).to_string()),
+            ),
+            format!("settings-result-{label_key}"),
+            &theme,
+            Hover::wash(&theme),
         )
         .into_any_element()
     }
@@ -1304,81 +1331,99 @@ impl OrbitApp {
         // A filter chip in the toolbar's button language: `surface_elevated` + a
         // hairline when off, the standard `selection` fill when on — never an
         // accent wash, which is reserved for the favorite stars themselves.
-        let favorites_button = button_frame(
-            div().id("models-favorites-filter"),
-            &theme,
-            ButtonSize::Large,
-        )
-        .border_1()
-        .border_color(theme.border)
-        .cursor_pointer()
-        .when(self.models_favorites_only, |button| {
-            button
-                .raised(theme.surface_active, &theme)
-                .text_color(theme.text_primary)
-        })
-        .when(!self.models_favorites_only, |button| {
-            button
-                .raised(theme.surface_elevated, &theme)
-                .hover_state(&theme)
-        })
-        .on_mouse_up(MouseButton::Left, {
-            let this = this.clone();
-            move |_, _, cx| {
-                this.update(cx, |app, cx| app.toggle_models_favorites_only(cx));
-            }
-        })
-        .child(icon(
-            "icons/star.svg",
-            ButtonSize::Large.icon_size().px(&theme),
-            if self.models_favorites_only {
-                theme.text_primary
-            } else {
-                theme.text_secondary
-            },
-        ))
-        .child(
-            div()
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(if self.models_favorites_only {
+        let favorites_button = crate::motion::hover(
+            button_frame(
+                div().id("models-favorites-filter"),
+                &theme,
+                ButtonSize::Large,
+            )
+            .border_1()
+            .border_color(theme.border)
+            .cursor_pointer()
+            .when(self.models_favorites_only, |button| {
+                button
+                    .raised(theme.surface_active, &theme)
+                    .text_color(theme.text_primary)
+            })
+            .when(!self.models_favorites_only, |button| {
+                button.raised(theme.surface_elevated, &theme)
+            })
+            .on_mouse_up(MouseButton::Left, {
+                let this = this.clone();
+                move |_, _, cx| {
+                    this.update(cx, |app, cx| app.toggle_models_favorites_only(cx));
+                }
+            })
+            .child(icon(
+                "icons/star.svg",
+                ButtonSize::Large.icon_size().px(&theme),
+                if self.models_favorites_only {
                     theme.text_primary
                 } else {
                     theme.text_secondary
-                })
-                .child(tr!("settings.favorites")),
+                },
+            ))
+            .child(
+                div()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(if self.models_favorites_only {
+                        theme.text_primary
+                    } else {
+                        theme.text_secondary
+                    })
+                    .child(tr!("settings.favorites")),
+            ),
+            "models-favorites-filter",
+            &theme,
+            Hover::over(
+                Some(if self.models_favorites_only {
+                    theme.surface_active
+                } else {
+                    theme.surface_elevated
+                }),
+                if self.models_favorites_only {
+                    theme.surface_active
+                } else {
+                    theme.surface_hover
+                },
+            ),
         );
 
         // Refresh pi's provider/model catalog (`pi update --models`) and
         // reload it. The catalog is pi's own data, so this is the one control
         // that fetches new providers/models rather than filtering what we have.
-        let update_button = button_frame(div().id("models-update"), &theme, ButtonSize::Large)
-            .group(BUTTON_GROUP)
-            .border_1()
-            .border_color(theme.border)
-            .raised(theme.surface_elevated, &theme)
-            .cursor_pointer()
-            .when(self.models_refreshing, |button| button.opacity(0.6))
-            .hover_state(&theme)
-            .pressed_state(&theme, PressedRamp::Wash)
-            .on_mouse_up(MouseButton::Left, {
-                let this = this.clone();
-                move |_, _, cx| {
-                    this.update(cx, |app, cx| app.models_refresh(cx));
-                }
-            })
-            .child(refresh_glyph(
-                "models-update-spin",
-                ButtonSize::Large.icon_size().px(&theme),
-                self.models_refreshing,
-                theme.text_secondary,
-                theme,
-            ))
-            .child(
-                div()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_secondary)
-                    .child(tr!("settings.models_update")),
-            );
+        let update_button = crate::motion::hover(
+            button_frame(div().id("models-update"), &theme, ButtonSize::Large)
+                .group(BUTTON_GROUP)
+                .border_1()
+                .border_color(theme.border)
+                .raised(theme.surface_elevated, &theme)
+                .cursor_pointer()
+                .when(self.models_refreshing, |button| button.opacity(0.6))
+                .pressed_state(&theme, PressedRamp::Wash)
+                .on_mouse_up(MouseButton::Left, {
+                    let this = this.clone();
+                    move |_, _, cx| {
+                        this.update(cx, |app, cx| app.models_refresh(cx));
+                    }
+                })
+                .child(refresh_glyph(
+                    "models-update-spin",
+                    ButtonSize::Large.icon_size().px(&theme),
+                    self.models_refreshing,
+                    theme.text_secondary,
+                    theme,
+                ))
+                .child(
+                    div()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.text_secondary)
+                        .child(tr!("settings.models_update")),
+                ),
+            "models-update",
+            &theme,
+            Hover::over(Some(theme.surface_elevated), theme.surface_hover),
+        );
 
         // Provider filter: a dropdown instead of a badge per provider, so the
         // control scales to any catalog. Hidden when there is nothing to choose.
@@ -2501,51 +2546,59 @@ impl OrbitApp {
             theme.text_secondary,
             theme,
         );
-        let refresh_button = button_frame(div().id("providers-refresh"), &theme, ButtonSize::Large)
-            .group(BUTTON_GROUP)
-            .border_1()
-            .border_color(theme.border)
-            .raised(theme.surface_elevated, &theme)
-            .cursor_pointer()
-            .when(self.providers_refreshing, |button| button.opacity(0.6))
-            .hover_state(&theme)
-            .pressed_state(&theme, PressedRamp::Wash)
-            .on_mouse_up(MouseButton::Left, {
-                let this = this.clone();
-                move |_, _, cx| {
-                    this.update(cx, |app, cx| app.provider_refresh(cx));
-                }
-            })
-            .child(refresh_icon)
-            .child(
-                div()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.text_secondary)
-                    .child(tr!("settings.refresh")),
-            );
+        let refresh_button = crate::motion::hover(
+            button_frame(div().id("providers-refresh"), &theme, ButtonSize::Large)
+                .group(BUTTON_GROUP)
+                .border_1()
+                .border_color(theme.border)
+                .raised(theme.surface_elevated, &theme)
+                .cursor_pointer()
+                .when(self.providers_refreshing, |button| button.opacity(0.6))
+                .pressed_state(&theme, PressedRamp::Wash)
+                .on_mouse_up(MouseButton::Left, {
+                    let this = this.clone();
+                    move |_, _, cx| {
+                        this.update(cx, |app, cx| app.provider_refresh(cx));
+                    }
+                })
+                .child(refresh_icon)
+                .child(
+                    div()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.text_secondary)
+                        .child(tr!("settings.refresh")),
+                ),
+            "providers-refresh",
+            &theme,
+            Hover::over(Some(theme.surface_elevated), theme.surface_hover),
+        );
 
-        let add_button = button_frame(div().id("providers-add"), &theme, ButtonSize::Large)
-            .raised(theme.action, &theme)
-            .cursor_pointer()
-            .hover_action(&theme)
-            .pressed_state(&theme, PressedRamp::Action)
-            .on_mouse_up(MouseButton::Left, {
-                let this = this.clone();
-                move |_, window, cx| {
-                    this.update(cx, |app, cx| app.provider_editor_open(None, window, cx));
-                }
-            })
-            .child(icon(
-                "icons/plus.svg",
-                ButtonSize::Large.icon_size().px(&theme),
-                theme.action_fg,
-            ))
-            .child(
-                div()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme.action_fg)
-                    .child(tr!("settings.add_provider")),
-            );
+        let add_button = crate::motion::hover(
+            button_frame(div().id("providers-add"), &theme, ButtonSize::Large)
+                .raised(theme.action, &theme)
+                .cursor_pointer()
+                .pressed_state(&theme, PressedRamp::Action)
+                .on_mouse_up(MouseButton::Left, {
+                    let this = this.clone();
+                    move |_, window, cx| {
+                        this.update(cx, |app, cx| app.provider_editor_open(None, window, cx));
+                    }
+                })
+                .child(icon(
+                    "icons/plus.svg",
+                    ButtonSize::Large.icon_size().px(&theme),
+                    theme.action_fg,
+                ))
+                .child(
+                    div()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.action_fg)
+                        .child(tr!("settings.add_provider")),
+                ),
+            "providers-add",
+            &theme,
+            Hover::over(Some(theme.action), theme.action_hover),
+        );
 
         let toolbar = div()
             .w_full()
@@ -7555,7 +7608,7 @@ impl OrbitApp {
         )
     }
 
-    /// The Interface / Code font-family dropdowns — Orbit's curated catalog.
+    /// The Interface / Code font-family dropdowns share GPUI's available families.
     pub(super) fn font_family_select(
         &self,
         kind: SettingsSelect,
@@ -7563,30 +7616,22 @@ impl OrbitApp {
         this: Entity<OrbitApp>,
         cx: &Context<Self>,
     ) -> AnyElement {
-        use crate::theme::{FontChoice, CODE_FONTS, UI_FONTS};
         let prefs = theme::font_prefs();
-        let (id, current, choices): (&'static str, SharedString, &[FontChoice]) = match kind {
-            SettingsSelect::UiFontFamily => (
-                "ui-font-family-select",
-                prefs.ui_font_family.clone(),
-                &UI_FONTS,
-            ),
-            SettingsSelect::CodeFontFamily => (
-                "code-font-family-select",
-                prefs.code_font_family.clone(),
-                &CODE_FONTS,
-            ),
+        let (id, current) = match kind {
+            SettingsSelect::UiFontFamily => ("ui-font-family-select", prefs.ui_font_family),
+            SettingsSelect::CodeFontFamily => ("code-font-family-select", prefs.code_font_family),
             _ => unreachable!(),
         };
+        let choices = font_family_options(cx, current.as_ref());
         let selected = choices
             .iter()
-            .position(|f| f.family == current.as_ref())
+            .position(|f| f == current.as_ref())
             .unwrap_or(0);
         self.select_control(
             id,
             kind,
-            theme::font_choice_label(current.as_ref()),
-            choices.iter().map(|f| f.label.to_string()).collect(),
+            current.to_string(),
+            choices,
             selected,
             theme,
             this,
@@ -7703,6 +7748,7 @@ impl OrbitApp {
                                 app.settings_select_highlight = Some(selected);
                                 app.settings_select_scroll
                                     .scroll_to_item(selected, ScrollStrategy::Center);
+                                app.settings_select_query.clear();
                                 app.settings_filter
                                     .update(cx, |filter, cx| filter.clear(cx));
                                 let handle = app.settings_filter.read(cx).focus_handle(cx);
@@ -7768,7 +7814,10 @@ impl OrbitApp {
         });
         let active_provider = self.model_provider.clone();
         let active_model = self.model_label.clone();
-        let highlight = self.settings_select_highlight;
+        let highlight = self
+            .settings_select_highlight
+            .filter(|ix| rows.iter().any(|(row_ix, _)| row_ix == ix))
+            .or_else(|| rows.first().map(|(ix, _)| *ix));
         // Virtualized list — only the visible rows are laid out and painted.
         // The font-family dropdowns can have a thousand+ entries, and the
         // whole app re-renders on every scroll tick, so rendering every row
@@ -7843,75 +7892,75 @@ impl OrbitApp {
                         children.push(
                             div().h(row_h).w_full().child(
                                 picker_entry(
-                                    div()
-                                        .id(row_id)
-                                        .debug_selector(move || {
-                                            format!("settings-select-row-{orig_ix}")
-                                        }),
+                                    div().id(row_id).debug_selector(move || {
+                                        format!("settings-select-row-{orig_ix}")
+                                    }),
                                     &theme,
                                 )
-                                    .h(row_h)
-                                    .justify_between()
-                                    .cursor_pointer()
-                                    // The chosen option keeps the fill; the
-                                    // keyboard cursor rides the same wash.
-                                    .when(highlighted_row || selected_row, |row| {
-                                        row.bg(theme.surface_active)
-                                    })
-                                    .when(!highlighted_row && !selected_row, |row| {
-                                        row.hover_state(&theme)
-                                    })
-                                    .text_color(if selected_row || highlighted_row {
-                                        theme.text_primary
-                                    } else {
-                                        theme.text_secondary
-                                    })
-                                    .when(kind == SettingsSelect::AccentColor, |row| {
-                                        let base = Theme::for_id(theme.theme_id);
-                                        let color =
-                                            theme::AccentColor::ALL[orig_ix].apply(base).accent;
-                                        row.child(div().size(px(14.)).rounded_full().bg(color))
-                                    })
-                                    .when_some(provider, |row, provider| {
-                                        row.child(icon_dyn(
-                                            provider_icon(provider),
-                                            context_menu::ICON.px(&theme),
-                                            provider_mark_color(provider, &theme, theme.text_muted),
-                                        ))
-                                    })
-                                    .child(
+                                .h(row_h)
+                                .justify_between()
+                                .cursor_pointer()
+                                // The chosen option keeps the fill; the
+                                // keyboard cursor rides the same wash.
+                                .when(highlighted_row || selected_row, |row| {
+                                    row.bg(theme.surface_active)
+                                })
+                                .when(!highlighted_row && !selected_row, |row| {
+                                    row.hover_state(&theme)
+                                })
+                                .text_color(if selected_row || highlighted_row {
+                                    theme.text_primary
+                                } else {
+                                    theme.text_secondary
+                                })
+                                .when(kind == SettingsSelect::AccentColor, |row| {
+                                    let base = Theme::for_id(theme.theme_id);
+                                    let color = theme::AccentColor::ALL[orig_ix].apply(base).accent;
+                                    row.child(div().size(px(14.)).rounded_full().bg(color))
+                                })
+                                .when_some(provider, |row, provider| {
+                                    row.child(icon_dyn(
+                                        provider_icon(provider),
+                                        context_menu::ICON.px(&theme),
+                                        provider_mark_color(provider, &theme, theme.text_muted),
+                                    ))
+                                })
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .child(primary.to_owned()),
+                                )
+                                .when_some(secondary, |row, provider| {
+                                    row.child(
                                         div()
-                                            .flex_1()
-                                            .min_w_0()
+                                            .flex_none()
+                                            .max_w(px(120.))
                                             .truncate()
-                                            .child(primary.to_owned()),
+                                            .text_size(TextSize::Small.px(&theme))
+                                            .text_color(theme.text_muted)
+                                            .child(provider),
                                     )
-                                    .when_some(secondary, |row, provider| {
-                                        row.child(
-                                            div()
-                                                .flex_none()
-                                                .max_w(px(120.))
-                                                .truncate()
-                                                .text_size(TextSize::Small.px(&theme))
-                                                .text_color(theme.text_muted)
-                                                .child(provider),
-                                        )
-                                    })
-                                    .when(selected_row, |row| {
-                                        row.child(icon(
-                                            "icons/check.svg",
-                                            context_menu::ICON.px(&theme),
-                                            theme.accent_text,
-                                        ))
-                                    })
-                                    .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                                })
+                                .when(selected_row, |row| {
+                                    row.child(icon(
+                                        "icons/check.svg",
+                                        context_menu::ICON.px(&theme),
+                                        theme.accent_text,
+                                    ))
+                                })
+                                .on_mouse_up(
+                                    MouseButton::Left,
+                                    move |_, _, cx| {
                                         this.update(cx, |app, cx| {
                                             if app.apply_settings_select(kind, orig_ix, cx) {
                                                 app.settings_select = None;
                                             }
                                             cx.notify();
                                         });
-                                    }),
+                                    },
+                                ),
                             ),
                         );
                     }
@@ -7933,59 +7982,59 @@ impl OrbitApp {
             &theme,
         )
         .w(px(360.))
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .occlude()
-            .on_mouse_down_out({
-                let this = this.clone();
-                move |_: &MouseDownEvent, _, cx: &mut App| {
-                    this.update(cx, |app, cx| {
-                        if app.settings_select.take().is_some() {
-                            // Arm the click-through guard so this same click's
-                            // mouse-up on the chip cannot immediately re-open
-                            // the dropdown.
-                            app.menu_dismissed_at = Some(Instant::now());
-                            cx.notify();
-                        }
-                    });
-                }
-            })
-            // The filter input carries the `Picker` context, so these ride
-            // the same dispatch node as the model picker's: arrows move the
-            // cursor, Enter chooses it, Escape (global) closes.
-            .on_action({
-                let this = this.clone();
-                let options = options.clone();
-                move |_: &crate::PickerSelectPrev, _, cx: &mut App| {
-                    this.update(cx, |app, cx| app.settings_select_step(&options, -1, cx));
-                }
-            })
-            .on_action({
-                let this = this.clone();
-                let options = options.clone();
-                move |_: &crate::PickerSelectNext, _, cx: &mut App| {
-                    this.update(cx, |app, cx| app.settings_select_step(&options, 1, cx));
-                }
-            })
-            .on_action({
-                let this = this.clone();
-                let options = options.clone();
-                move |_: &crate::PickerConfirm, _, cx: &mut App| {
-                    this.update(cx, |app, cx| app.settings_select_confirm(&options, cx));
-                }
-            })
-            // Search field — filters the options below.
-            .child(
-                picker_search_frame(div(), &theme)
-                    .child(icon(
-                        "icons/search.svg",
-                        input::ICON.px(&theme),
-                        theme.text_muted,
-                    ))
-                    .child(div().flex_1().min_w_0().child(self.settings_filter.clone())),
-            )
-            .child(list);
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .occlude()
+        .on_mouse_down_out({
+            let this = this.clone();
+            move |_: &MouseDownEvent, _, cx: &mut App| {
+                this.update(cx, |app, cx| {
+                    if app.settings_select.take().is_some() {
+                        // Arm the click-through guard so this same click's
+                        // mouse-up on the chip cannot immediately re-open
+                        // the dropdown.
+                        app.menu_dismissed_at = Some(Instant::now());
+                        cx.notify();
+                    }
+                });
+            }
+        })
+        // The filter input carries the `Picker` context, so these ride
+        // the same dispatch node as the model picker's: arrows move the
+        // cursor, Enter chooses it, Escape (global) closes.
+        .on_action({
+            let this = this.clone();
+            let options = options.clone();
+            move |_: &crate::PickerSelectPrev, _, cx: &mut App| {
+                this.update(cx, |app, cx| app.settings_select_step(&options, -1, cx));
+            }
+        })
+        .on_action({
+            let this = this.clone();
+            let options = options.clone();
+            move |_: &crate::PickerSelectNext, _, cx: &mut App| {
+                this.update(cx, |app, cx| app.settings_select_step(&options, 1, cx));
+            }
+        })
+        .on_action({
+            let this = this.clone();
+            let options = options.clone();
+            move |_: &crate::PickerConfirm, _, cx: &mut App| {
+                this.update(cx, |app, cx| app.settings_select_confirm(&options, cx));
+            }
+        })
+        // Search field — filters the options below.
+        .child(
+            picker_search_frame(div(), &theme)
+                .child(icon(
+                    "icons/search.svg",
+                    input::ICON.px(&theme),
+                    theme.text_muted,
+                ))
+                .child(div().flex_1().min_w_0().child(self.settings_filter.clone())),
+        )
+        .child(list);
         // Anchor to the chip's top-right corner (via a zero-size point) and
         // drop the popup `popover::MENU_OFFSET` below the chip
         // (`SELECT_CHIP_SIZE`), right-aligned. `Window`
@@ -8094,19 +8143,21 @@ impl OrbitApp {
                 return true;
             }
             SettingsSelect::UiFontFamily | SettingsSelect::CodeFontFamily => {
-                use crate::theme::{CODE_FONTS, UI_FONTS};
-                let choices = match kind {
-                    SettingsSelect::UiFontFamily => &UI_FONTS[..],
-                    SettingsSelect::CodeFontFamily => &CODE_FONTS[..],
+                let mut prefs = theme::font_prefs();
+                let current = match kind {
+                    SettingsSelect::UiFontFamily => &prefs.ui_font_family,
+                    SettingsSelect::CodeFontFamily => &prefs.code_font_family,
                     _ => unreachable!(),
                 };
+                let choices = font_family_options(cx, current.as_ref());
                 let Some(choice) = choices.get(ix) else {
                     return true;
                 };
-                let mut prefs = theme::font_prefs();
                 match kind {
-                    SettingsSelect::UiFontFamily => prefs.ui_font_family = choice.family.into(),
-                    SettingsSelect::CodeFontFamily => prefs.code_font_family = choice.family.into(),
+                    SettingsSelect::UiFontFamily => prefs.ui_font_family = choice.clone().into(),
+                    SettingsSelect::CodeFontFamily => {
+                        prefs.code_font_family = choice.clone().into()
+                    }
                     _ => unreachable!(),
                 }
                 theme::set_font_prefs(prefs);
@@ -9259,7 +9310,37 @@ fn stepped_visible_position(
 
 #[cfg(test)]
 mod settings_select_tests {
-    use super::stepped_visible_position;
+    use super::{font_options_with_current, stepped_visible_position};
+
+    #[test]
+    fn font_options_include_all_families_and_missing_current_without_duplicates() {
+        let available = ["Onest", ".ZedSans", "Onest", "Lilex"].map(str::to_owned);
+        let options = font_options_with_current(&available, "Legacy Font");
+        assert_eq!(options, [".ZedSans", "Legacy Font", "Lilex", "Onest"]);
+        assert_eq!(
+            font_options_with_current(&available, "Onest"),
+            [".ZedSans", "Lilex", "Onest"]
+        );
+    }
+
+    #[test]
+    fn font_option_indices_match_filtered_keyboard_navigation() {
+        let available = ["Beta", "Alpha", "Gamma"].map(str::to_owned);
+        let options = font_options_with_current(&available, "Missing");
+        let visible: Vec<_> = options
+            .iter()
+            .enumerate()
+            .filter(|(_, family)| family.contains('a'))
+            .map(|(index, _)| index)
+            .collect();
+        let position = stepped_visible_position(&visible, Some(0), 1).unwrap();
+        let index = visible[position];
+        assert_eq!(options[index], "Beta");
+        assert_eq!(
+            font_options_with_current(&available, "Missing")[index],
+            "Beta"
+        );
+    }
 
     /// The cursor is an original option index; `visible` holds the indices
     /// the current query left in the list, in display order.
@@ -9332,6 +9413,7 @@ mod theme_catalog_tests {
                         theme::ThemeId::OrbitCobalt,
                         theme::ThemeId::OrbitAzure,
                         theme::ThemeId::Flexoki,
+                        theme::ThemeId::OrbitOnyx,
                     ]
                 );
             });

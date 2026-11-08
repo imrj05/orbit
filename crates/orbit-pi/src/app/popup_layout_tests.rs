@@ -1362,6 +1362,32 @@ fn settings_select_rows_fill_the_popup(cx: &mut gpui::TestAppContext) {
     }
 }
 
+/// Filtering after scrolling must bring the keyboard's first match into view.
+#[gpui::test]
+fn settings_select_filter_resets_scrolled_cursor(cx: &mut gpui::TestAppContext) {
+    let cx = cx.add_empty_window();
+    let app = privacy_select_open(cx);
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.settings_select_scroll
+                .scroll_to_item(1, ScrollStrategy::Center);
+            app.settings_filter
+                .update(cx, |filter, cx| filter.set_text("arch", cx));
+        });
+    });
+    cx.update(|_, cx| {
+        let app = app.read(cx);
+        assert_eq!(app.settings_select_highlight, None);
+        let state = app.settings_select_scroll.0.borrow();
+        let scroll = state.deferred_scroll_to_item.expect("filter resets scroll");
+        assert_eq!(scroll.item_index, 0);
+        assert_eq!(scroll.strategy, ScrollStrategy::Top);
+    });
+    let viewport = gpui::size(px(1200.), px(820.));
+    let _ = cx.draw(point(px(0.), px(0.)), viewport, |_, _| app.clone());
+    assert!(cx.debug_bounds("settings-select-row-0").is_some());
+}
+
 /// A query that matches no option still says so inside the popup, rather
 /// than leaving an empty panel.
 #[gpui::test]

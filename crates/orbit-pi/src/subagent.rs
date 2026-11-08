@@ -138,6 +138,9 @@ pub(crate) struct SubagentChild {
     pub steps_total: u64,
     pub report: Option<String>,
     pub error: Option<String>,
+    /// The child's own stderr (the extension caps it at 2 KiB). Machine output:
+    /// shown as-is beneath a failure's sentence, never reinterpreted.
+    pub stderr_tail: Option<String>,
     pub usage: MessageUsage,
     pub started_at: Option<i64>,
     pub ended_at: Option<i64>,
@@ -266,6 +269,12 @@ impl SubagentChild {
                 .get("error")
                 .and_then(Value::as_str)
                 .filter(|error| !error.trim().is_empty())
+                .map(str::to_string),
+            stderr_tail: value
+                .get("stderrTail")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|tail| !tail.is_empty())
                 .map(str::to_string),
             usage: MessageUsage::from_value(value.get("usage")).unwrap_or_else(zero_usage),
             started_at: value.get("startedAt").and_then(Value::as_i64),
@@ -660,6 +669,27 @@ mod tests {
         assert_eq!(
             refused.error.as_deref(),
             Some("worker runs commands; this session is supervised")
+        );
+    }
+
+    #[test]
+    fn a_failed_child_carries_its_stderr_but_an_empty_tail_is_absent() {
+        let failed = child(json!({
+            "agent": "scout",
+            "status": "failed",
+            "endedAt": 1,
+            "error": "child exited 1",
+            "stderrTail": "\nError: Failed to load extension \"/x\"\n"
+        }));
+        assert_eq!(
+            failed.stderr_tail.as_deref(),
+            Some("Error: Failed to load extension \"/x\"")
+        );
+
+        assert_eq!(child(json!({"agent": "scout"})).stderr_tail, None);
+        assert_eq!(
+            child(json!({"agent": "scout", "stderrTail": "   \n"})).stderr_tail,
+            None
         );
     }
 

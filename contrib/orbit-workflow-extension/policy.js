@@ -74,11 +74,18 @@ export function allowedTools(mode, baseTools = []) {
  * `tool_search`) when a server with that exposure connects — and a cached
  * snapshot would silently drop them on the next mode change.
  *
+ * `restorable` names are this policy's own disabled tools that a *resumed*
+ * session may re-activate. A restricted set outlives the process that applied
+ * it: pi starts the next process with the tools the last one left active, so
+ * `removedByUs` (per process) is empty while `edit`/`write` are simply gone.
+ * Only names the caller has established are ours may ride here; the default
+ * empty list keeps this function strictly "restore what I removed".
+ *
  * Returns the new tool list and the updated set of names this extension has
  * removed, so switching to a mode that allows them restores exactly what it
  * took away (and never re-adds a tool another extension removed).
  */
-export function applyToolScoping(mode, current = [], removedByUs = []) {
+export function applyToolScoping(mode, current = [], removedByUs = [], restorable = []) {
   const disabled = new Set(DISABLED_TOOLS[normalizeMode(mode)] ?? []);
   const removed = new Set(removedByUs);
   const restore = [];
@@ -87,12 +94,39 @@ export function applyToolScoping(mode, current = [], removedByUs = []) {
     restore.push(name);
     removed.delete(name);
   }
+  for (const name of restorable) {
+    if (disabled.has(name) || current.includes(name) || restore.includes(name)) continue;
+    restore.push(name);
+  }
   const base = [...new Set([...current, ...restore])];
   const tools = allowedTools(mode, base);
   for (const name of base) {
     if (!tools.includes(name)) removed.add(name);
   }
   return { tools, removed: [...removed] };
+}
+
+/**
+ * Whether this session was scoped read-only by this extension at least once,
+ * read from the `orbit:workflow` entries it appends as it applies a mode.
+ *
+ * That entry is the record of a restriction that may have outlived its
+ * process: a resumed session can start with the write tools already gone, and
+ * then there is nothing for a per-process memory to restore from. Once the
+ * session says this extension took them away, Build may put the policy's own
+ * disabled tools back without guessing at pi's defaults.
+ */
+export function wasScopedReadOnly(entries = []) {
+  return (entries ?? []).some((entry) => {
+    if (entry?.type !== "custom" || entry.customType !== WORKFLOW_ENTRY_TYPE) return false;
+    const disabled = DISABLED_TOOLS[normalizeMode(entry.data?.mode)] ?? [];
+    return disabled.length > 0;
+  });
+}
+
+/** Every tool name this policy owns: what plan and ask force off. */
+export function policyTools() {
+  return [...new Set([...DISABLED_TOOLS.plan, ...DISABLED_TOOLS.ask])];
 }
 
 // Destructive shell operations. A conservative backstop to the allowlist: if

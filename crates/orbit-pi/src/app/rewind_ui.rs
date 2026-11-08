@@ -437,7 +437,7 @@ impl OrbitApp {
         self.session_usage = None;
         // Widgets and dialogs belonged to the process context pi replaced.
         self.extension_widgets.clear();
-        self.reset_turns();
+        self.reset_turns(cx);
         self.reset_queue();
         self.session_id = None;
         self.reset_quota_entries();
