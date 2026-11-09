@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **Settings → Privacy no longer lists or deletes temporary files.** The
+  **Temporary files** and **AI scratch files** sections are gone, along with
+  the scanning and cleanup code behind them (`temp_files.rs`, `temp_ui.rs`).
+  Session retention remains. Bug-report screenshots, update staging, and login
+  helpers are still written to `<system temp>/orbit-pi/`; Orbit simply stops
+  offering to enumerate and remove them, so clean that folder up yourself if
+  you want it emptied.
+
 ## [0.2.17] - 2026-11-08
 
 ### Changed

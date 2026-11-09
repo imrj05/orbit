@@ -117,9 +117,7 @@ Settings → **Git Accounts** inspects local Git author settings, generic and ho
 - **Report a bug** — Settings → Report a bug takes an issue type (bug / feature / other) and the bug context, then **Generate draft** writes the title and description with the active session model or a separately selected model
 - It files the issue against the project with your build details attached (Orbit version, app ID, OS and architecture, install kind, pi CLI, and `gh` account): through the `gh` CLI when it is signed in, or as a prefilled GitHub new-issue page otherwise
 - Screenshots attach too. They upload with `gh issue create --attach` when permitted; otherwise, if the CLI cannot upload them before creating an issue, the web form and saved screenshot folder open so you can drag them in
-- **Privacy** — Settings → Privacy archives or deletes idle `pi` sessions on a schedule you choose
-- It also lists Orbit's own scratch files in the `orbit-pi` folder inside the system temp directory (bug-report screenshots, update downloads, helper scripts), with **Open folder** and **Clean up now**. Older top-level `orbit-*` leftovers are included, and entries a live Orbit process still needs are kept
-- A separate **AI scratch files** group lists pi's own `pi-*` temp entries (shell output, codemode images, share/editor working files) and removes only those last used more than an hour ago
+- **Privacy** — Settings → Privacy archives or deletes idle `pi` sessions on a schedule you choose. Nothing is uploaded
 - Appearance — **Light / Dark / System**, a persisted **Design system** choice (**Classic** keeps the existing palette and geometry; **Operational** applies the near-black, lime-accented Restrained Operational Minimalism system), independent light and dark theme palettes, a customizable wallpaper (hero or full-window, with artwork effects, effect-intensity and pixel-size controls, and translucent surfaces), bundled interface fonts (including Onest), code fonts, sizes, spacing density, and **interface language** (English, 简体中文, 日本語, 한국어, Español, Français, Deutsch, Português do Brasil, Русский, Italiano, or the system language)
 - System follows OS appearance changes live; new installations use System, while existing theme choices are preserved. Switching design systems is opt-in and does not modify the Classic palettes or their geometry
 - With no wallpaper set, the new-task page carries a living ordered-dither field with the app monogram screened into it: it follows the palette, drifts slowly enough to breathe instead of strobe, and freezes under Reduce Motion
@@ -133,6 +131,10 @@ Settings → **Git Accounts** inspects local Git author settings, generic and ho
 - macOS window handling — closing the window keeps the session, its pi process, and any running stream alive; clicking the Dock icon reopens that same session, and a run that settles with no window open still posts its notification
 - A first-run dependency check for `pi`, `node`, and `git` that reports anything missing with its install command
 - Signed releases: macOS `.dmg` (signed + notarized, universal) and `.tar.gz`, Windows `.exe` / `.zip`, Linux `.deb` / `.tar.gz`, with signed in-app updates on every platform
+
+### Linux updates
+
+Extract the release tarball into its own `orbit-pi` or `orbit-pi-*` directory and run `bin/orbit-pi` there. Do not merge it into a shared prefix such as `~/.local` or `/usr`. The in-app installer only replaces a dedicated directory with the known release layout and no extra files or symlinks; on unsupported layouts the updater is normally disabled, so update manually or through your package manager. `ORBIT_FORCE_UPDATER=1` enables checking without installation for development. Existing tarball layouts remain supported. Keep personal files outside the install directory. Linux updates retain the old directory as a hidden `.orbit-pi*.rollback-*` sibling; after checking the new version, you may remove that backup yourself. Release packaging changes must update the updater's layout validation before adding files.
 
 ## Structure
 

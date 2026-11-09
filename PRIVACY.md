@@ -39,16 +39,9 @@ events.
 
 ## Privacy controls
 
-**Settings → Privacy** holds both local cleanup controls. **Session retention**
-lets you archive or delete old `pi` sessions on a schedule you choose, entirely
-on your machine. **Temporary files** lists Orbit's own scratch entries in
-its `orbit-pi` folder inside the system temp directory — bug-report
-screenshots, update downloads, and helper scripts — with **Open folder** and
-**Clean up now**; older top-level `orbit-*` leftovers are included too, and
-entries a live Orbit process still needs are kept. **AI scratch files** lists
-pi's own `pi-*` entries in the temp root — shell output, codemode images, and
-share/editor working files — and only removes files last used more than an
-hour ago. Orbit never uploads either.
+**Settings → Privacy** holds the session-retention control. It lets you
+archive or delete old `pi` sessions on a schedule you choose, entirely on your
+machine. Orbit never uploads anything from that store.
 
 ## Source of truth
 

@@ -524,16 +524,6 @@ const SETTINGS_SEARCH_INDEX: &[(SettingsSection, &str, &str)] = &[
         "privacy session retention cleanup local data",
     ),
     (
-        SettingsSection::Privacy,
-        "settings.temporary_files",
-        "temporary temp cache scratch files cleanup remove folder",
-    ),
-    (
-        SettingsSection::Privacy,
-        "settings.ai_scratch_files",
-        "ai pi agent scratch logs codemode images share editor cleanup temp",
-    ),
-    (
         SettingsSection::About,
         "settings.about",
         "about version updates source github",
@@ -6051,8 +6041,6 @@ impl OrbitApp {
                     ),
                 ],
             ),
-            self.temporary_files_section(theme, this.clone()),
-            self.ai_scratch_files_section(theme, this.clone()),
             self.remembered_approvals_section(theme, this),
         ]
     }
@@ -8474,7 +8462,6 @@ impl OrbitApp {
                 self.reload_custom_providers_later(cx);
                 self.refresh_auth();
             }
-            SettingsSection::Privacy => self.refresh_temp_files(cx),
             SettingsSection::Skills => self.refresh_skills(cx),
             SettingsSection::Subagents => self.refresh_subagents(cx),
             SettingsSection::Plugins => self.refresh_plugins(cx),

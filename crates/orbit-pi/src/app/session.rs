@@ -3402,7 +3402,6 @@ impl OrbitApp {
                 SettingsSection::GitAccounts if !self.git_accounts_loading => {
                     self.refresh_git_accounts_for_workspace(cx)
                 }
-                SettingsSection::Privacy => self.refresh_temp_files(cx),
                 SettingsSection::General => self.refresh_notification_auth(cx),
                 _ => {}
             }

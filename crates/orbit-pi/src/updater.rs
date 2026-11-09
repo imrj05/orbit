@@ -778,6 +778,10 @@ impl InstallLayout {
         };
 
         let install_dir = install_dir.canonicalize().ok()?;
+        #[cfg(not(target_os = "macos"))]
+        if !linux_replaceable_install(&install_dir) {
+            return None;
+        }
         let parent = install_dir.parent()?.canonicalize().ok()?;
         let prefix_name = install_dir.file_name()?.to_str()?.to_owned();
 
@@ -803,6 +807,61 @@ impl InstallLayout {
         self.parent
             .join(format!(".{}.update-error", self.prefix_name))
     }
+}
+
+/// Linux tarballs are dedicated directories, not generic filesystem prefixes.
+/// Reject unknown entries and symlinks, including in legacy unmarked releases.
+#[cfg(all(unix, any(not(target_os = "macos"), test)))]
+fn linux_replaceable_install(install: &Path) -> bool {
+    const DIRS: &[&str] = &[
+        "bin",
+        "share",
+        "share/applications",
+        "share/icons",
+        "share/icons/hicolor",
+        "share/icons/hicolor/256x256",
+        "share/icons/hicolor/256x256/apps",
+        "share/licenses",
+        "share/licenses/orbit-pi",
+    ];
+    const FILES: &[&str] = &[
+        "bin/orbit-pi",
+        "share/applications/dev.orbit.pi.desktop",
+        "share/icons/hicolor/256x256/apps/dev.orbit.pi.png",
+        "share/licenses/orbit-pi/LICENSE",
+    ];
+    let Some(name) = install.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    if !(name == "orbit-pi" || name.starts_with("orbit-pi-"))
+        || install.canonicalize().ok().as_deref() != Some(install)
+    {
+        return false;
+    }
+    fn check(root: &Path, relative: &Path, dirs: &[&str], files: &[&str]) -> bool {
+        let Ok(entries) = std::fs::read_dir(root.join(relative)) else {
+            return false;
+        };
+        for entry in entries {
+            let Ok(entry) = entry else { return false };
+            let path = relative.join(entry.file_name());
+            let Some(name) = path.to_str() else {
+                return false;
+            };
+            let Ok(kind) = entry.file_type() else {
+                return false;
+            };
+            if kind.is_dir() && dirs.contains(&name) {
+                if !check(root, &path, dirs, files) {
+                    return false;
+                }
+            } else if !(kind.is_file() && files.contains(&name)) {
+                return false;
+            }
+        }
+        true
+    }
+    install.join("bin/orbit-pi").is_file() && check(install, Path::new(""), DIRS, FILES)
 }
 
 /// The executable to relaunch inside an installed tree.
@@ -890,6 +949,10 @@ impl HelperFlags {
 
 #[cfg(unix)]
 fn run_install(flags: &HelperFlags) -> i32 {
+    let running_exe = match std::env::current_exe().and_then(std::fs::File::open) {
+        Ok(file) => file,
+        Err(_) => return helper_error(flags, "the running executable is unavailable"),
+    };
     let exe_name = match std::env::current_exe().ok().and_then(|exe| {
         exe.file_name()
             .map(|name| name.to_string_lossy().into_owned())
@@ -900,6 +963,19 @@ fn run_install(flags: &HelperFlags) -> i32 {
 
     if !flags.install_dir.is_dir() {
         return helper_error(flags, "the install directory is missing");
+    }
+    #[cfg(not(target_os = "macos"))]
+    if unsafe { libc::geteuid() } == 0
+        || !linux_replaceable_install(&flags.install_dir)
+        || std::env::current_exe()
+            .ok()
+            .and_then(|p| p.canonicalize().ok())
+            != flags.install_dir.join("bin/orbit-pi").canonicalize().ok()
+    {
+        return helper_error(
+            flags,
+            "the install directory is not a dedicated Orbit install",
+        );
     }
     // Only ever swap a namespaced staging sibling of this install, whose new
     // executable really is executable. The staged directory is the extracted
@@ -932,6 +1008,19 @@ fn run_install(flags: &HelperFlags) -> i32 {
         return helper_error(flags, "the app did not quit in time");
     }
 
+    // Hold the directory lock through the swap and any rollback. Unlike a
+    // lock file, the directory cannot be replaced without moving the install.
+    let _lock = match lock_update_parent(flags.parent_dir()) {
+        Ok(lock) => lock,
+        Err(_) => return relaunch_after_error(flags, &exe_name, "the update lock is unavailable"),
+    };
+    if !same_executable(
+        &running_exe,
+        &relaunch_executable(&flags.install_dir, &exe_name),
+    ) {
+        return relaunch_after_error(flags, &exe_name, "the install changed during handoff");
+    }
+
     let prefix_name = flags
         .install_dir
         .file_name()
@@ -942,7 +1031,23 @@ fn run_install(flags: &HelperFlags) -> i32 {
         std::process::id(),
         unique_nonce()
     ));
+    #[cfg(target_os = "macos")]
     let _ = std::fs::remove_dir_all(&backup);
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Never remove a pre-existing path, even one with our generated name.
+        match backup.symlink_metadata() {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => return relaunch_after_error(flags, &exe_name, "the rollback path is unavailable"),
+        }
+        if !linux_replaceable_install(&flags.install_dir) {
+            return relaunch_after_error(
+                flags,
+                &exe_name,
+                "the install directory changed during handoff",
+            );
+        }
+    }
 
     if let Err(error) = std::fs::rename(&flags.install_dir, &backup) {
         let _ = spawn_install(&flags.install_dir, &exe_name, None);
@@ -961,7 +1066,10 @@ fn run_install(flags: &HelperFlags) -> i32 {
     let mut child = match spawn_install(&flags.install_dir, &exe_name, Some(&flags.ready_file)) {
         Ok(child) => child,
         Err(error) => {
+            #[cfg(target_os = "macos")]
             let _ = std::fs::remove_dir_all(&flags.install_dir);
+            #[cfg(not(target_os = "macos"))]
+            let _ = std::fs::rename(&flags.install_dir, &flags.staged_dir);
             let _ = std::fs::rename(&backup, &flags.install_dir);
             sync_directory(flags.parent_dir());
             let _ = spawn_install(&flags.install_dir, &exe_name, None);
@@ -971,7 +1079,11 @@ fn run_install(flags: &HelperFlags) -> i32 {
 
     match wait_for_relaunch(&mut child, &flags.ready_file, RELAUNCH_READY_TIMEOUT) {
         RelaunchState::Ready => {
+            // Do not delete an untrusted helper argument on Linux.
+            #[cfg(target_os = "macos")]
             let _ = std::fs::remove_file(&flags.ready_file);
+            // Even release paths can contain user-modified files.
+            #[cfg(target_os = "macos")]
             let _ = std::fs::remove_dir_all(&backup);
             sync_directory(flags.parent_dir());
             0
@@ -980,7 +1092,10 @@ fn run_install(flags: &HelperFlags) -> i32 {
             // The replacement died before it opened a window. Put the old
             // build back and relaunch it, so a bad release cannot strand the
             // user.
+            #[cfg(target_os = "macos")]
             let _ = std::fs::remove_dir_all(&flags.install_dir);
+            #[cfg(not(target_os = "macos"))]
+            let _ = std::fs::rename(&flags.install_dir, &flags.staged_dir);
             let _ = std::fs::rename(&backup, &flags.install_dir);
             sync_directory(flags.parent_dir());
             let _ = spawn_install(&flags.install_dir, &exe_name, None);
@@ -1000,6 +1115,37 @@ fn run_install(flags: &HelperFlags) -> i32 {
             0
         }
     }
+}
+
+#[cfg(unix)]
+fn lock_update_parent(parent: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::io::AsRawFd as _;
+    let directory = std::fs::File::open(parent)?;
+    loop {
+        if unsafe { libc::flock(directory.as_raw_fd(), libc::LOCK_EX) } == 0 {
+            return Ok(directory);
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn same_executable(running: &std::fs::File, installed: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    match (running.metadata(), std::fs::metadata(installed)) {
+        (Ok(a), Ok(b)) => a.is_file() && b.is_file() && a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    }
+}
+
+#[cfg(unix)]
+fn relaunch_after_error(flags: &HelperFlags, exe_name: &str, reason: &str) -> i32 {
+    let result = helper_error(flags, reason);
+    let _ = spawn_install(&flags.install_dir, exe_name, None);
+    result
 }
 
 /// Relaunch an installed build, optionally arming the startup handshake.
@@ -1140,7 +1286,19 @@ fn helper_error(flags: &HelperFlags, reason: &str) -> i32 {
     let path = flags
         .parent_dir()
         .join(format!(".{prefix_name}.update-error"));
+    #[cfg(target_os = "macos")]
     let _ = std::fs::write(path, format!("{reason}\n"));
+    #[cfg(not(target_os = "macos"))]
+    {
+        use std::io::Write as _;
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+        {
+            let _ = writeln!(file, "{reason}");
+        }
+    }
     println!("ERROR\t{reason}");
     1
 }
@@ -1809,7 +1967,7 @@ fn take_update_error(layout: &InstallLayout) -> Option<String> {
 // ── small utilities ─────────────────────────────────────────────────────
 
 fn unique_temp_directory(kind: &str) -> anyhow::Result<PathBuf> {
-    let root = crate::temp_files::ensure_dir()?;
+    let root = crate::platform::scratch_dir()?;
     for _ in 0..100 {
         let candidate = root.join(format!("{kind}-{}-{}", std::process::id(), unique_nonce()));
         match std::fs::create_dir(&candidate) {
@@ -2192,6 +2350,118 @@ mod tests {
             &install,
             &parent.join("nested").join(".orbit-pi.update-42-0")
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executable_identity_detects_replacement_at_same_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("exe");
+        std::fs::write(&path, b"old").unwrap();
+        let running = std::fs::File::open(&path).unwrap();
+        assert!(same_executable(&running, &path));
+        std::fs::rename(&path, temp.path().join("old")).unwrap();
+        std::fs::write(&path, b"new").unwrap();
+        assert!(!same_executable(&running, &path));
+        std::fs::remove_file(&path).unwrap();
+        assert!(!same_executable(&running, &path));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn post_handoff_error_relaunches_existing_install() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let temp = tempfile::tempdir().unwrap();
+        let install = temp.path().join("orbit-pi");
+        let executable = relaunch_executable(&install, "orbit-pi");
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        let marker = temp.path().join("relaunched");
+        let error_marker = temp.path().join(".orbit-pi.update-error");
+        std::fs::write(
+            &executable,
+            format!(
+                "#!/bin/sh\ngrep -qx 'revalidation failed' '{}' && touch '{}'\n",
+                error_marker.display(),
+                marker.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let flags = HelperFlags {
+            install_dir: install,
+            staged_dir: temp.path().join("staged"),
+            parent_pid: 0,
+            ready_file: temp.path().join("ready"),
+        };
+        assert_eq!(
+            relaunch_after_error(&flags, "orbit-pi", "revalidation failed"),
+            1
+        );
+        for _ in 0..100 {
+            if marker.exists() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("relaunched install did not observe the error marker");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_parent_lock_serializes_helpers() {
+        use std::os::unix::io::AsRawFd as _;
+        let temp = tempfile::tempdir().unwrap();
+        let lock = lock_update_parent(temp.path()).unwrap();
+        let other = std::fs::File::open(temp.path()).unwrap();
+        assert_eq!(
+            unsafe { libc::flock(other.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            -1
+        );
+        drop(lock);
+        assert_eq!(
+            unsafe { libc::flock(other.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linux_replacement_requires_dedicated_clean_release_tree() {
+        let temp = tempfile::tempdir().unwrap();
+        let install = temp
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("orbit-pi-0.2.17-x86_64-unknown-linux-gnu");
+        std::fs::create_dir_all(install.join("bin")).unwrap();
+        std::fs::write(install.join("bin/orbit-pi"), b"binary").unwrap();
+        assert!(linux_replaceable_install(&install));
+        std::fs::write(install.join("bin/other"), b"user data").unwrap();
+        assert!(!linux_replaceable_install(&install));
+        std::fs::remove_file(install.join("bin/other")).unwrap();
+        std::os::unix::fs::symlink("/tmp", install.join("share")).unwrap();
+        assert!(!linux_replaceable_install(&install));
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn helper_rejects_shared_prefix_without_touching_user_data() {
+        let temp = tempfile::tempdir().unwrap();
+        let install = temp.path().join(".local");
+        std::fs::create_dir_all(install.join("bin")).unwrap();
+        std::fs::write(install.join("bin/orbit-pi"), b"binary").unwrap();
+        std::fs::write(install.join("precious"), b"user data").unwrap();
+        let flags = HelperFlags {
+            install_dir: install.clone(),
+            staged_dir: temp.path().join("..local.update-test"),
+            parent_pid: unsafe { libc::getppid() as u32 },
+            ready_file: temp.path().join("ready"),
+        };
+        assert_eq!(run_install(&flags), 1);
+        assert_eq!(
+            std::fs::read(install.join("precious")).unwrap(),
+            b"user data"
+        );
     }
 
     /// An archive whose single top-level directory names another build must not
