@@ -881,6 +881,17 @@ pub fn open_path_default(path: &Path) {
     let _ = std::process::Command::new("xdg-open").arg(path).spawn();
 }
 
+/// Orbit's own scratch folder, `<system temp>/orbit-pi`, created on demand.
+///
+/// Bug-report screenshots, update staging, and login helpers are written here
+/// so a producer never falls back to a relative path and the leftovers stay in
+/// one place on disk.
+pub fn scratch_dir() -> std::io::Result<PathBuf> {
+    let dir = std::env::temp_dir().join("orbit-pi");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
 /// The user's home directory — the root of both pi's store (`~/.pi`) and
 /// Orbit's own (`~/.orbit-pi`).
 ///
@@ -1160,7 +1171,7 @@ pub fn open_terminal_command(command: &str) -> Result<(), String> {
     // A `.command` file opened with `open` runs in Terminal.app without
     // requiring Automation (AppleScript) permission, and works even when a
     // non-default terminal is installed.
-    let path = crate::temp_files::ensure_dir()
+    let path = scratch_dir()
         .map_err(|err| tr!("platform.login_script_failed", error = err))?
         .join(format!("login-{}.command", std::process::id()));
     let script = format!("#!/bin/zsh\n{command}\n");

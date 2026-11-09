@@ -225,7 +225,7 @@ pub fn save_screenshots(files: &[(String, Vec<u8>)]) -> Result<(PathBuf, Vec<Pat
         .unwrap_or(0);
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = crate::temp_files::ensure_dir()
+    let dir = crate::platform::scratch_dir()
         .map_err(|err| err.to_string())?
         .join(format!(
             "bug-report-{stamp}-{}-{sequence}",

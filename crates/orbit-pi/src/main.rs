@@ -112,7 +112,6 @@ mod skills;
 mod subagent;
 mod subagent_file;
 mod subagents;
-mod temp_files;
 mod terminal;
 mod theme;
 mod toast;

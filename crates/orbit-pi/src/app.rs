@@ -471,10 +471,6 @@ pub struct OrbitApp {
     retention: crate::session_retention::RetentionConfig,
     /// One-shot latch: the launch retention pass must run exactly once.
     retention_ran: bool,
-    /// Settings → Privacy: Orbit's scratch files in the system temp folder.
-    /// Refreshed when the page opens and after a cleanup, so rendering never
-    /// touches the filesystem.
-    temp_files: crate::temp_files::TempFiles,
     /// Display name pi reports for the session (`get_state.sessionName`).
     session_name: Option<String>,
     /// pi is compacting right now (`get_state` / `compaction_*`).
@@ -2217,7 +2213,6 @@ impl OrbitApp {
             agent_calls: crate::agent_call_display::AgentCallDisplay::load(),
             retention: crate::session_retention::RetentionConfig::load(),
             retention_ran: false,
-            temp_files: crate::temp_files::TempFiles::default(),
             session_name: None,
             is_compacting: false,
             retrying: false,
@@ -4033,7 +4028,6 @@ mod settings;
 mod sidebar;
 mod skills_ui;
 mod subagents_ui;
-mod temp_ui;
 mod toast_ui;
 mod transcript_export;
 mod updater_ui;
