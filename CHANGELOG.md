@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The sidebar and the chat are one plane again.** The chat column no longer
+  rounds its left corners, and the hairline between it and the sidebar runs the
+  full height of the window instead of stopping an 8px radius short at each end.
+  The curved notch the two corners left against the sidebar was the most
+  noticeable detail in light mode.
+
 ### Removed
 
 - **Settings → Privacy no longer lists or deletes temporary files.** The

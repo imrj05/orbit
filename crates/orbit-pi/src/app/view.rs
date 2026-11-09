@@ -693,8 +693,8 @@ impl Render for OrbitApp {
                                     .child(
                                         div()
                                             .absolute()
-                                            .top(panel::RADIUS.px(&theme))
-                                            .bottom(panel::RADIUS.px(&theme))
+                                            .top_0()
+                                            .bottom_0()
                                             .right_0()
                                             .w(px(1.))
                                             .bg(theme.border)
@@ -1429,9 +1429,6 @@ impl Render for OrbitApp {
                     // every other mode this resolves to the same opaque
                     // background the window already paints.
                     .bg(theme.panel_fill(theme.background))
-                    .when(sidebar_shown, |main| {
-                        main.rounded_l(panel::RADIUS.px(&theme))
-                    })
                     .children(if feature_open || pane_full {
                         None
                     } else {
