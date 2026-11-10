@@ -151,6 +151,8 @@ pub struct Layout {
     pub sidepane_width: Option<f32>,
     pub explorer_width: Option<f32>,
     pub terminal_height: Option<f32>,
+    /// Width of the GitHub list pane inside the Issues/Pulls split view.
+    pub github_list_width: Option<f32>,
     pub sidebar_visible: Option<bool>,
     pub project_panel: Option<bool>,
     pub side_pane: Option<bool>,
@@ -171,6 +173,7 @@ impl Layout {
             sidepane_width: field(value, "sidepane_width"),
             explorer_width: field(value, "explorer_width"),
             terminal_height: field(value, "terminal_height"),
+            github_list_width: field(value, "github_list_width"),
             sidebar_visible: flag(value, "sidebar_visible"),
             project_panel: flag(value, "project_panel"),
             side_pane: flag(value, "side_pane"),
@@ -186,6 +189,7 @@ impl Layout {
             "sidepane_width": self.sidepane_width,
             "explorer_width": self.explorer_width,
             "terminal_height": self.terminal_height,
+            "github_list_width": self.github_list_width,
             "sidebar_visible": self.sidebar_visible,
             "project_panel": self.project_panel,
             "side_pane": self.side_pane,
@@ -434,6 +438,11 @@ pub fn terminal_height() -> Option<f32> {
     with_store(|store| store.arrangement.layout.terminal_height)
 }
 
+/// The GitHub list pane's width, if the user has ever dragged its divider.
+pub fn github_list_width() -> Option<f32> {
+    with_store(|store| store.arrangement.layout.github_list_width)
+}
+
 /// The stored arrangement, for the launch-time restore.
 pub fn arrangement() -> Arrangement {
     with_store(|store| store.arrangement.clone())
@@ -461,6 +470,9 @@ pub fn set_explorer_width(px: f32) {
 }
 pub fn set_terminal_height(px: f32) {
     record(|layout| layout.terminal_height = Some(px));
+}
+pub fn set_github_list_width(px: f32) {
+    record(|layout| layout.github_list_width = Some(px));
 }
 
 /// Snapshot which panels are open (and whether the sidebar shows) after a
@@ -688,6 +700,11 @@ mod tests {
                 crate::terminal::PANEL_MIN_H,
                 crate::terminal::PANEL_MAX_H,
             ),
+            (
+                "github list",
+                crate::git_panel::GITHUB_LIST_MIN_W,
+                crate::git_panel::GITHUB_LIST_MAX_W,
+            ),
         ];
         for (panel, min, max) in clamps {
             assert!(
@@ -707,6 +724,7 @@ mod tests {
             sidepane_width: Some(460.),
             explorer_width: Some(300.),
             terminal_height: Some(260.),
+            github_list_width: Some(360.),
             sidebar_visible: Some(true),
             project_panel: Some(false),
             side_pane: Some(true),

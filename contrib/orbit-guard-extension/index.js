@@ -17,6 +17,13 @@
  * call, so a change in Orbit re-arms live sessions with no restart. See
  * `policy.js` for the decision table.
  *
+ * Settings → Permissions writes `~/.orbit-pi/access-rules.json`, which is the
+ * finer-grained half: a rule can allow, ask or deny one tool family for one
+ * scope (every session, main sessions, or a named subagent) when the call's
+ * command / path / URL matches a glob. It is read fresh here on every call, and
+ * a `deny` rule blocks without prompting — the model is told which rule matched
+ * rather than being asked to approve around it.
+ *
  * Fail-safe: if no UI is available to confirm (print/json mode) or the prompt
  * throws/returns nothing, the call is blocked rather than allowed.
  */
@@ -30,8 +37,10 @@ import {
   decide,
   formatTitle,
   grantable,
+  matchText,
   readAllowlist,
   readMode,
+  readRules,
   summarize,
 } from "./policy.js";
 
@@ -60,14 +69,29 @@ export default function activate(pi) {
 
     // A child session carries the ceiling its agent's tool list implies. This
     // runs before any prompt: a tier is not something the user can approve
-    // away, and a json-mode child has nobody to ask anyway.
+    // away, and a json-mode child has nobody to ask anyway. It also runs before
+    // a rule, so no rule can widen a child past what its agent may use.
     const ceiling = process.env.ORBIT_SUBAGENT_CEILING;
     if (ceiling && !ceilingAllows(ceiling, tool)) {
       const agent = process.env.ORBIT_SUBAGENT_AGENT ?? "";
       return { block: true, reason: ceilingBlockReason(ceiling, tool, agent) };
     }
 
-    if (decide(mode, tool, readAllowlist(mode)) === "allow") return;
+    const decision = decide(mode, tool, readAllowlist(mode), {
+      rules: readRules(),
+      agent: process.env.ORBIT_SUBAGENT_AGENT ?? null,
+      input: event.input,
+    });
+    if (decision === "allow") return;
+
+    // A rule that denies is not a prompt: it is the user's answer already
+    // given, so it blocks with the reason the model can act on.
+    if (decision === "deny") {
+      return {
+        block: true,
+        reason: `Blocked by an Orbit permission rule: ${tool} ${matchText(tool, event.input)}`,
+      };
+    }
 
     // No UI (print / json mode): there is no way to ask, so deny rather than
     // silently run a mutating tool the current mode wants confirmed.

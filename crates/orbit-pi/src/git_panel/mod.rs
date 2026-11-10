@@ -19,8 +19,9 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     canvas, deferred, div, fill, hsla, img, point, prelude::*, px, size, AnyElement, Background,
-    Bounds, ClickEvent, Context, Corner, Entity, Focusable, FontWeight, Hsla, MouseDownEvent,
-    ObjectFit, PathBuilder, Pixels, Render, ScrollHandle, Subscription, Window,
+    Bounds, ClickEvent, Context, Corner, CursorStyle, Entity, Focusable, FontWeight, Hsla,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, PathBuilder, Pixels,
+    Render, ScrollHandle, Subscription, Window,
 };
 
 use crate::app::{
@@ -79,6 +80,16 @@ const REFRESH_FEEDBACK: Duration = Duration::from_millis(650);
 /// Width of the branch / PR-base / ref pickers — one family, one width.
 const BRANCH_MENU_W: f32 = 320.;
 
+/// The GitHub list pane: its built-in width, the bounds a drag may reach, and
+/// the width the detail pane beside it always keeps.
+pub(crate) const GITHUB_LIST_DEFAULT_W: f32 = 320.;
+pub(crate) const GITHUB_LIST_MIN_W: f32 = 240.;
+pub(crate) const GITHUB_LIST_MAX_W: f32 = 420.;
+const GITHUB_DETAIL_MIN_W: f32 = 400.;
+/// The grab strip between the list and the detail. Its 1px divider is drawn
+/// inside it, so the divider is a handle rather than a static rule.
+const GITHUB_LIST_HANDLE_W: f32 = 7.;
+
 /// Width of the commit bar's model picker, and how tall its list grows before
 /// it scrolls (roughly eight rows).
 const COMMIT_MODEL_MENU_W: f32 = 340.;
@@ -95,6 +106,12 @@ enum GitTab {
     Stashes,
     Issues,
     Pulls,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LabelMenuTarget {
+    Filter,
+    Issue,
 }
 
 /// Which commit-bar action is running, for the button state.
@@ -298,10 +315,15 @@ pub struct GitPanel {
     /// The issue whose detail view is open, if any.
     issue_detail: Option<gh::GhIssue>,
     issue_detail_loading: bool,
+    issue_request: u64,
+    selected_issue: Option<u64>,
     issue_comment: Entity<crate::composer::ComposerInput>,
+    issue_comment_owner: Option<u64>,
+    issue_comment_drafts: HashMap<u64, String>,
     /// Repository labels for the picker.
     issue_labels: Vec<gh::GhLabel>,
-    label_menu_open: bool,
+    label_menu: Option<LabelMenuTarget>,
+    label_menu_dismissed: Option<(LabelMenuTarget, Instant)>,
     /// True while an issue mutation runs.
     issue_busy: bool,
     /// The new-issue form.
@@ -322,7 +344,11 @@ pub struct GitPanel {
     /// The PR whose detail view is open, if any.
     pr_detail: Option<gh::GhPull>,
     pr_detail_loading: bool,
+    pr_request: u64,
+    selected_pr: Option<u64>,
     pr_comment: Entity<crate::composer::ComposerInput>,
+    pr_comment_owner: Option<u64>,
+    pr_comment_drafts: HashMap<u64, String>,
     pr_busy: bool,
     /// The merge method the merge confirmation will use.
     pr_merge_method: gh::MergeMethod,
@@ -350,6 +376,16 @@ pub struct GitPanel {
     pr_template: Option<usize>,
     /// Which New form's template menu is open, if any.
     template_menu: Option<DraftForm>,
+
+    /// Width of the Git page, supplied by its host after sidebar layout.
+    page_width: Pixels,
+    /// The width the user picked for the GitHub list pane in the Issues/Pulls
+    /// split view. This is the preference: [`github_list_pane_width`] clamps
+    /// only the displayed width, so a narrow window never overwrites it.
+    github_list_width: Pixels,
+    /// Where the divider drag started, so it tracks the pointer from the width
+    /// that was on screen rather than re-anchoring every move.
+    github_list_drag: Option<GithubListDrag>,
 
     // ── header ──
     branch: Option<String>,
@@ -574,9 +610,14 @@ impl GitPanel {
             issue_search,
             issue_detail: None,
             issue_detail_loading: false,
+            issue_request: 0,
+            selected_issue: None,
             issue_comment,
+            issue_comment_owner: None,
+            issue_comment_drafts: HashMap::new(),
             issue_labels: Vec::new(),
-            label_menu_open: false,
+            label_menu: None,
+            label_menu_dismissed: None,
             issue_busy: false,
             issue_new_open: false,
             issue_new_title,
@@ -590,7 +631,11 @@ impl GitPanel {
             pr_search,
             pr_detail: None,
             pr_detail_loading: false,
+            pr_request: 0,
+            selected_pr: None,
             pr_comment,
+            pr_comment_owner: None,
+            pr_comment_drafts: HashMap::new(),
             pr_busy: false,
             pr_merge_method: gh::MergeMethod::default(),
             pr_delete_branch: false,
@@ -606,6 +651,11 @@ impl GitPanel {
             issue_template: None,
             pr_template: None,
             template_menu: None,
+            page_width: px(0.),
+            github_list_width: px(
+                crate::layout::github_list_width().unwrap_or(GITHUB_LIST_DEFAULT_W)
+            ),
+            github_list_drag: None,
             branch: None,
             ahead_behind: None,
             has_commits: false,
@@ -731,12 +781,23 @@ impl GitPanel {
             self.history_filter = git::HistoryFilter::default();
             self.file_menu = None;
             self.issues.clear();
+            self.selected_issue = None;
             self.issue_detail = None;
+            self.issue_detail_loading = false;
+            self.issue_comment_owner = None;
+            self.issue_comment_drafts.clear();
+            self.issue_comment.update(cx, |input, cx| input.clear(cx));
+            self.label_menu = None;
             self.issue_new_open = false;
             self.issue_generating = false;
             self.issue_filter = gh::IssueFilter::default();
             self.pulls.clear();
+            self.selected_pr = None;
             self.pr_detail = None;
+            self.pr_detail_loading = false;
+            self.pr_comment_owner = None;
+            self.pr_comment_drafts.clear();
+            self.pr_comment.update(cx, |input, cx| input.clear(cx));
             self.pr_new_open = false;
             self.pr_generating = false;
             self.pr_filter = gh::PrFilter::default();
@@ -783,8 +844,23 @@ impl GitPanel {
     /// Feed the embedded review browser the width of the surface hosting it,
     /// so its responsive toolbar and changed-files tree match the page.
     pub fn set_review_width(&mut self, width: Pixels, cx: &mut Context<Self>) {
+        if self.page_width != width {
+            self.page_width = width;
+            cx.notify();
+        }
         self.review
             .update(cx, |pane, cx| pane.set_available_width(width, cx));
+    }
+
+    /// Apply a stored GitHub list width. This is the user's preference, so it is
+    /// clamped only to the draggable range — never to the detail reserve, which
+    /// belongs to the displayed width alone.
+    pub fn set_github_list_width(&mut self, width: Pixels, cx: &mut Context<Self>) {
+        let width = width.clamp(px(GITHUB_LIST_MIN_W), px(GITHUB_LIST_MAX_W));
+        if self.github_list_width != width {
+            self.github_list_width = width;
+            cx.notify();
+        }
     }
 
     /// Mark the embedded review browser stale so its diff reloads on the next
@@ -1195,14 +1271,27 @@ impl GitPanel {
     /// Load one issue (body + comments) into the detail view.
     fn open_issue(&mut self, number: u64, cx: &mut Context<Self>) {
         let Some(cwd) = self.cwd() else { return };
+        switch_comment_draft(
+            &self.issue_comment,
+            &mut self.issue_comment_owner,
+            &mut self.issue_comment_drafts,
+            number,
+            cx,
+        );
         self.issue_detail = None;
+        self.selected_issue = Some(number);
+        self.issue_request = self.issue_request.wrapping_add(1);
+        let request = self.issue_request;
         self.issue_detail_loading = true;
-        self.label_menu_open = false;
+        self.label_menu = None;
         cx.notify();
         self.spawn_data(
             cx,
             move || gh::view_issue(&cwd, number),
-            |panel, result, cx| {
+            move |panel, result, cx| {
+                if panel.selected_issue != Some(number) || panel.issue_request != request {
+                    return;
+                }
                 panel.issue_detail_loading = false;
                 match result {
                     Ok(issue) => panel.issue_detail = Some(issue),
@@ -1214,9 +1303,11 @@ impl GitPanel {
     }
 
     fn close_issue_detail(&mut self, cx: &mut Context<Self>) {
+        self.selected_issue = None;
+        self.issue_detail_loading = false;
         self.issue_detail = None;
         self.issue_new_open = false;
-        self.label_menu_open = false;
+        self.label_menu = None;
         cx.notify();
     }
 
@@ -1412,6 +1503,9 @@ impl GitPanel {
     fn open_issue_new(&mut self, cx: &mut Context<Self>) {
         self.issue_new_open = true;
         self.issue_generating = false;
+        self.issue_detail_loading = false;
+        self.label_menu = None;
+        self.selected_issue = None;
         self.issue_detail = None;
         self.template_menu = None;
         if self.issue_templates.is_empty() {
@@ -1427,6 +1521,8 @@ impl GitPanel {
         self.pr_new_base = Some(self.default_base());
         self.pr_new_open = true;
         self.pr_generating = false;
+        self.pr_detail_loading = false;
+        self.selected_pr = None;
         self.pr_detail = None;
         self.template_menu = None;
         self.ref_menu = None;
@@ -1940,9 +2036,22 @@ impl GitPanel {
         cx.notify();
     }
 
+    fn toggle_label_menu(&mut self, target: LabelMenuTarget, cx: &mut Context<Self>) {
+        let just_dismissed = self
+            .label_menu_dismissed
+            .take()
+            .is_some_and(|(dismissed, at)| {
+                dismissed == target && at.elapsed() < Duration::from_millis(200)
+            });
+        if !just_dismissed {
+            self.label_menu = (self.label_menu != Some(target)).then_some(target);
+            cx.notify();
+        }
+    }
+
     fn set_issue_label_filter(&mut self, label: Option<String>, cx: &mut Context<Self>) {
         self.issue_filter.label = label;
-        self.label_menu_open = false;
+        self.label_menu = None;
         self.refresh_issues(cx);
         cx.notify();
     }
@@ -1979,13 +2088,26 @@ impl GitPanel {
 
     fn open_pull(&mut self, number: u64, cx: &mut Context<Self>) {
         let Some(cwd) = self.cwd() else { return };
+        switch_comment_draft(
+            &self.pr_comment,
+            &mut self.pr_comment_owner,
+            &mut self.pr_comment_drafts,
+            number,
+            cx,
+        );
         self.pr_detail = None;
+        self.selected_pr = Some(number);
+        self.pr_request = self.pr_request.wrapping_add(1);
+        let request = self.pr_request;
         self.pr_detail_loading = true;
         cx.notify();
         self.spawn_data(
             cx,
             move || gh::view_pull(&cwd, number),
-            |panel, result, cx| {
+            move |panel, result, cx| {
+                if panel.selected_pr != Some(number) || panel.pr_request != request {
+                    return;
+                }
                 panel.pr_detail_loading = false;
                 match result {
                     Ok(pull) => panel.pr_detail = Some(pull),
@@ -1997,6 +2119,8 @@ impl GitPanel {
     }
 
     fn close_pull_detail(&mut self, cx: &mut Context<Self>) {
+        self.selected_pr = None;
+        self.pr_detail_loading = false;
         self.pr_detail = None;
         self.pr_new_open = false;
         cx.notify();
@@ -2596,9 +2720,9 @@ impl GitPanel {
     /// flags: while a detail loads the list is still on screen, so Escape
     /// keeps its page-level meaning.
     pub fn has_transient_view(&self) -> bool {
-        self.issue_detail.is_some()
+        self.selected_issue.is_some()
             || self.issue_new_open
-            || self.pr_detail.is_some()
+            || self.selected_pr.is_some()
             || self.pr_new_open
     }
 
@@ -2607,15 +2731,17 @@ impl GitPanel {
     pub fn close_transient_view(&mut self, cx: &mut Context<Self>) -> bool {
         let had = self.has_transient_view();
         if had {
+            self.selected_issue = None;
             self.issue_detail = None;
             self.issue_detail_loading = false;
             self.issue_new_open = false;
             self.issue_generating = false;
+            self.selected_pr = None;
             self.pr_detail = None;
             self.pr_detail_loading = false;
             self.pr_new_open = false;
             self.pr_generating = false;
-            self.label_menu_open = false;
+            self.label_menu = None;
             self.template_menu = None;
             self.ref_menu = None;
             cx.notify();
@@ -5294,6 +5420,120 @@ impl GitPanel {
 
     // ── issues rendering ───────────────────────────────────────────────
 
+    /// The GitHub list/detail split at the width the divider last left it.
+    fn github_split(
+        &self,
+        list: AnyElement,
+        detail: Option<AnyElement>,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let width = github_list_pane_width(self.page_width, self.github_list_width);
+        // The pointer leaves the 7px grab strip as soon as the drag starts, so
+        // the split itself tracks the move and the release. It is an ancestor
+        // of the handle, which means the hit test always includes it.
+        div()
+            .flex_1()
+            .h_full()
+            .min_h_0()
+            .min_w_0()
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                if event.pressed_button != Some(MouseButton::Left) {
+                    // A move without the button proves the gesture ended even
+                    // if the release was delivered elsewhere.
+                    this.github_list_drag = None;
+                    return;
+                }
+                let Some((origin_width, origin_x)) = this
+                    .github_list_drag
+                    .as_ref()
+                    .map(|drag| (drag.origin_width, drag.origin_x))
+                else {
+                    return;
+                };
+                // Only a change on screen becomes the new preference. When the
+                // detail reserve holds the list at its ceiling (or the floor),
+                // pushing against that edge leaves the stored width alone
+                // instead of replacing it with a page-clamped value.
+                let Some(width) = dragged_github_list_pane_width(
+                    this.page_width,
+                    this.github_list_width,
+                    origin_width,
+                    origin_x,
+                    event.position.x,
+                ) else {
+                    return;
+                };
+                this.github_list_width = width;
+                if let Some(drag) = this.github_list_drag.as_mut() {
+                    drag.moved = true;
+                }
+                cx.notify();
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| this.finish_github_list_resize(cx)),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| this.finish_github_list_resize(cx)),
+            )
+            .child(github_split_view(
+                list,
+                detail,
+                width,
+                self.github_list_handle(theme, cx),
+            ))
+            .into_any_element()
+    }
+
+    /// The divider between the GitHub list and its detail: a 7px grab strip
+    /// with the seam drawn inside it, replacing the static border the list used
+    /// to carry. Dragging it resizes the list; the width is persisted when the
+    /// drag ends, so one drag costs one write.
+    fn github_list_handle(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id("git-github-list-resize")
+            .debug_selector(|| "github-split-handle".into())
+            .group("github-list-resize")
+            .flex_none()
+            .w(px(GITHUB_LIST_HANDLE_W))
+            .h_full()
+            .flex()
+            .justify_center()
+            .cursor(CursorStyle::ResizeLeftRight)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, _, _| {
+                    // Do not stop propagation: the drag's pending-mouse-down
+                    // listener is registered after this one, and swallowing the
+                    // event here would leave the divider unable to drag.
+                    let width = github_list_pane_width(this.page_width, this.github_list_width);
+                    this.github_list_drag = Some(GithubListDrag {
+                        origin_width: width,
+                        origin_x: event.position.x,
+                        moved: false,
+                    });
+                }),
+            )
+            .border_l_1()
+            .border_color(theme.border)
+            .group_hover("github-list-resize", |style| {
+                style.border_color(theme.border_strong)
+            })
+            .into_any_element()
+    }
+
+    /// End a list-divider drag: persist the width it settled on, but only when
+    /// the drag actually moved it and the result is inside the draggable range.
+    fn finish_github_list_resize(&mut self, cx: &mut Context<Self>) {
+        let drag = self.github_list_drag.take();
+        if let Some(width) = github_list_width_to_persist(drag.as_ref(), self.github_list_width) {
+            crate::layout::set_github_list_width(width);
+            cx.notify();
+        }
+    }
+
     /// The Issues tab: the real browser once `gh` is installed and signed in,
     /// otherwise the honest setup state.
     fn issues_tab(&self, theme: Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -5307,8 +5547,24 @@ impl GitPanel {
         if self.issue_new_open {
             return self.issue_new_view(theme, cx);
         }
-        if let Some(issue) = self.issue_detail.clone() {
-            return self.issue_detail_view(&issue, theme, cx);
+        if split_github_view(self.page_width) {
+            let list = self.issues_list_view(theme, cx);
+            let detail = if let Some(issue) = &self.issue_detail {
+                Some(self.issue_detail_view(issue, theme, cx))
+            } else if self.issue_detail_loading {
+                Some(empty_note(
+                    theme,
+                    "icons/circle-dot.svg",
+                    &tr!("git_panel.reading_issues"),
+                    None,
+                ))
+            } else {
+                None
+            };
+            return self.github_split(list, detail, theme, cx);
+        }
+        if let Some(issue) = &self.issue_detail {
+            return self.issue_detail_view(issue, theme, cx);
         }
         self.issues_list_view(theme, cx)
     }
@@ -5327,11 +5583,12 @@ impl GitPanel {
         div()
             .id("git-issue-filters")
             .flex_none()
-            .px(DynamicSpacing::Base16.px(&theme))
+            .px(DynamicSpacing::Base08.px(&theme))
             .py(DynamicSpacing::Base08.px(&theme))
             .border_b_1()
             .border_color(theme.border)
             .flex()
+            .flex_wrap()
             .items_center()
             .gap(DynamicSpacing::Base06.px(&theme))
             .children(
@@ -5378,20 +5635,10 @@ impl GitPanel {
                     "icons/chevron-down.svg",
                     theme,
                     cx.listener(|this, _: &ClickEvent, _, cx| {
-                        // mouse-down-out closes the popup; the chip's mouse-up
-                        // would otherwise toggle it straight back open on the
-                        // same gesture (see AGENT.md popovers).
-                        const GESTURE: Duration = Duration::from_millis(200);
-                        if let Some(dismissed) = this.menu_dismissed_at.take() {
-                            if dismissed.elapsed() < GESTURE {
-                                return;
-                            }
-                        }
-                        this.label_menu_open = !this.label_menu_open;
-                        cx.notify();
+                        this.toggle_label_menu(LabelMenuTarget::Filter, cx);
                     }),
                 );
-                self.label_selector(theme, trigger, true, cx)
+                self.label_selector(theme, trigger, LabelMenuTarget::Filter, cx)
             })
             .children(filter.is_active().then(|| {
                 filter_chip(
@@ -5449,12 +5696,13 @@ impl GitPanel {
                 .flex()
                 .flex_col()
                 .py(DynamicSpacing::Base06.px(&theme));
-            let total = self.issues.len();
-            for (ix, issue) in self.issues.iter().enumerate() {
-                list = list.child(issue_row(issue, theme, cx));
-                if ix + 1 < total {
-                    list = list.child(commit_separator(theme));
-                }
+            for issue in &self.issues {
+                list = list.child(issue_row(
+                    issue,
+                    self.selected_issue == Some(issue.number),
+                    theme,
+                    cx,
+                ));
             }
             body = body.child(
                 div()
@@ -5471,6 +5719,16 @@ impl GitPanel {
             .flex()
             .flex_col()
             .child(self.issue_filter_bar(theme, cx))
+            .children(
+                (self.issue_detail_loading && !split_github_view(self.page_width)).then(|| {
+                    empty_note(
+                        theme,
+                        "icons/circle-dot.svg",
+                        &tr!("git_panel.reading_issues"),
+                        None,
+                    )
+                }),
+            )
             .child(body)
             .into_any_element()
     }
@@ -5519,15 +5777,17 @@ impl GitPanel {
         let meta_text = format!("{opened_by} \u{b7} {updated} \u{b7} {comments}");
         let title_row = div()
             .flex()
+            .flex_wrap()
             .items_start()
             .gap(DynamicSpacing::Base08.px(&theme))
             .child(
                 div()
                     .flex_1()
-                    .min_w_0()
+                    .min_w(px(160.))
                     .flex()
                     .flex_col()
                     .gap(DynamicSpacing::Base08.px(&theme))
+                    .child(github_detail_reference(&issue.url, issue.number, theme))
                     .child(
                         div()
                             .text_size(TextSize::Large.px(&theme))
@@ -5565,9 +5825,10 @@ impl GitPanel {
             )
             .child(
                 div()
-                    .flex_none()
+                    .min_w_0()
                     .flex()
                     .items_center()
+                    .flex_wrap()
                     .gap(DynamicSpacing::Base06.px(&theme))
                     .children((!issue.url.is_empty()).then(|| {
                         let url = issue.url.clone();
@@ -5646,20 +5907,10 @@ impl GitPanel {
                         self.issue_busy,
                         theme,
                         cx.listener(|this, _: &ClickEvent, _, cx| {
-                            // mouse-down-out closes the popup; the button's
-                            // mouse-up would otherwise toggle it straight back
-                            // open on the same gesture (see AGENT.md popovers).
-                            const GESTURE: Duration = Duration::from_millis(200);
-                            if let Some(dismissed) = this.menu_dismissed_at.take() {
-                                if dismissed.elapsed() < GESTURE {
-                                    return;
-                                }
-                            }
-                            this.label_menu_open = !this.label_menu_open;
-                            cx.notify();
+                            this.toggle_label_menu(LabelMenuTarget::Issue, cx);
                         }),
                     );
-                    self.label_selector(theme, trigger, false, cx)
+                    self.label_selector(theme, trigger, LabelMenuTarget::Issue, cx)
                 }),
         );
         // Assignees are the one thing the header did not already carry; they
@@ -5903,20 +6154,16 @@ impl GitPanel {
             .into_any_element()
     }
 
-    /// The repo-label popover. On an open issue it toggles labels on that
-    /// issue; otherwise it sets the list's label filter.
-    /// Wrap a label trigger so its picker anchors to it and paints above the
-    /// page via `deferred`. `align_right` right-aligns the menu with the
-    /// trigger — the filter bar's chip sits near the right edge.
+    /// Anchor the picker to its trigger and paint it above the page.
     fn label_selector(
         &self,
         theme: Theme,
         trigger: AnyElement,
-        align_right: bool,
+        target: LabelMenuTarget,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let popup = if self.label_menu_open {
-            self.label_popup(theme, align_right, cx)
+        let popup = if self.label_menu == Some(target) {
+            self.label_popup(theme, target, cx)
         } else {
             None
         };
@@ -5928,17 +6175,17 @@ impl GitPanel {
             .into_any_element()
     }
 
-    /// The repository-label picker. On an open issue it toggles labels on that
-    /// issue; otherwise it sets the list's label filter.
+    /// The repository-label picker acts on its trigger's explicit target.
     fn label_popup(
         &self,
         theme: Theme,
-        align_right: bool,
+        target: LabelMenuTarget,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        if !self.label_menu_open {
+        if self.label_menu != Some(target) {
             return None;
         }
+        let align_right = target == LabelMenuTarget::Filter;
         let detail = self.issue_detail.clone();
         let mut list = div()
             .id("git-label-scroll")
@@ -5957,22 +6204,28 @@ impl GitPanel {
         }
         for label in &self.issue_labels {
             let name = label.name.clone();
-            let selected = detail
-                .as_ref()
-                .is_some_and(|issue| issue.labels.iter().any(|entry| entry.name == name));
+            let selected = match target {
+                LabelMenuTarget::Issue => detail
+                    .as_ref()
+                    .is_some_and(|issue| issue.labels.iter().any(|entry| entry.name == name)),
+                LabelMenuTarget::Filter => {
+                    self.issue_filter.label.as_deref() == Some(name.as_str())
+                }
+            };
             let id = gpui::ElementId::Name(format!("git-label-{name}").into());
             list = list.child(
                 picker_entry(div().id(id), &theme)
                     .cursor_pointer()
                     .text_color(theme.text_secondary)
                     .hover_state(&theme)
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        if this.issue_detail.is_some() {
-                            this.toggle_issue_label(name.clone(), cx);
-                        } else {
-                            this.set_issue_label_filter(Some(name.clone()), cx);
-                        }
-                    }))
+                    .on_click(
+                        cx.listener(move |this, _: &ClickEvent, _, cx| match target {
+                            LabelMenuTarget::Issue => this.toggle_issue_label(name.clone(), cx),
+                            LabelMenuTarget::Filter => {
+                                this.set_issue_label_filter(Some(name.clone()), cx)
+                            }
+                        }),
+                    )
                     .child(issue_label_chip(label, theme))
                     .child(div().flex_1())
                     .when(selected, |row| {
@@ -5990,11 +6243,10 @@ impl GitPanel {
             .flex_col()
             .overflow_hidden()
             .occlude()
-            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                this.label_menu_open = false;
-                // Arm the gesture guard so the same click's mouse-up on the
-                // trigger cannot immediately re-open the popup.
-                this.menu_dismissed_at = Some(Instant::now());
+            .on_mouse_down_out(cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                this.label_menu = None;
+                // Suppress only the dismissed trigger's subsequent mouse-up.
+                this.label_menu_dismissed = Some((target, Instant::now()));
                 cx.notify();
             }))
             .child(menu_header(tr!("git_panel.labels"), &theme))
@@ -6004,7 +6256,21 @@ impl GitPanel {
         } else {
             div().absolute().left(px(0.)).top(px(30.))
         };
-        Some(wrapper.child(deferred(menu)).into_any_element())
+        Some(
+            wrapper
+                .child(anchored_popover(
+                    if align_right {
+                        Corner::TopRight
+                    } else {
+                        Corner::TopLeft
+                    },
+                    point(px(0.), px(0.)),
+                    menu,
+                    "git-label-popover",
+                    &theme,
+                ))
+                .into_any_element(),
+        )
     }
 
     // ── pull request rendering ─────────────────────────────────────────
@@ -6016,8 +6282,24 @@ impl GitPanel {
         if self.pr_new_open {
             return self.pr_new_view(theme, cx);
         }
-        if let Some(pull) = self.pr_detail.clone() {
-            return self.pr_detail_view(&pull, theme, cx);
+        if split_github_view(self.page_width) {
+            let list = self.pulls_list_view(theme, cx);
+            let detail = if let Some(pull) = &self.pr_detail {
+                Some(self.pr_detail_view(pull, theme, cx))
+            } else if self.pr_detail_loading {
+                Some(empty_note(
+                    theme,
+                    "icons/git-pull-request.svg",
+                    &tr!("git_panel.reading_pulls"),
+                    None,
+                ))
+            } else {
+                None
+            };
+            return self.github_split(list, detail, theme, cx);
+        }
+        if let Some(pull) = &self.pr_detail {
+            return self.pr_detail_view(pull, theme, cx);
         }
         self.pulls_list_view(theme, cx)
     }
@@ -6033,11 +6315,12 @@ impl GitPanel {
         div()
             .id("git-pr-filters")
             .flex_none()
-            .px(DynamicSpacing::Base16.px(&theme))
+            .px(DynamicSpacing::Base08.px(&theme))
             .py(DynamicSpacing::Base08.px(&theme))
             .border_b_1()
             .border_color(theme.border)
             .flex()
+            .flex_wrap()
             .items_center()
             .gap(DynamicSpacing::Base06.px(&theme))
             .children(
@@ -6134,12 +6417,13 @@ impl GitPanel {
                 .flex()
                 .flex_col()
                 .py(DynamicSpacing::Base06.px(&theme));
-            let total = self.pulls.len();
-            for (ix, pull) in self.pulls.iter().enumerate() {
-                list = list.child(pr_row(pull, theme, cx));
-                if ix + 1 < total {
-                    list = list.child(commit_separator(theme));
-                }
+            for pull in &self.pulls {
+                list = list.child(pr_row(
+                    pull,
+                    self.selected_pr == Some(pull.number),
+                    theme,
+                    cx,
+                ));
             }
             body = body.child(
                 div()
@@ -6156,6 +6440,16 @@ impl GitPanel {
             .flex()
             .flex_col()
             .child(self.pr_filter_bar(theme, cx))
+            .children(
+                (self.pr_detail_loading && !split_github_view(self.page_width)).then(|| {
+                    empty_note(
+                        theme,
+                        "icons/git-pull-request.svg",
+                        &tr!("git_panel.reading_pulls"),
+                        None,
+                    )
+                }),
+            )
             .child(body)
             .into_any_element()
     }
@@ -6196,15 +6490,17 @@ impl GitPanel {
         content = content.child(
             div()
                 .flex()
+                .flex_wrap()
                 .items_start()
                 .gap(DynamicSpacing::Base08.px(&theme))
                 .child(
                     div()
                         .flex_1()
-                        .min_w_0()
+                        .min_w(px(160.))
                         .flex()
                         .flex_col()
                         .gap(DynamicSpacing::Base06.px(&theme))
+                        .child(github_detail_reference(&pull.url, pull.number, theme))
                         .child(
                             div()
                                 .text_size(TextSize::Large.px(&theme))
@@ -6245,8 +6541,7 @@ impl GitPanel {
                                         .text_size(TextSize::Small.px(&theme))
                                         .text_color(theme.text_muted)
                                         .child(format!(
-                                            "#{} \u{b7} {} \u{b7} {} \u{2192} {} \u{b7} {} {} \u{b7} {} {}",
-                                            pull.number,
+                                            "{} \u{b7} {} \u{2192} {} \u{b7} {} {} \u{b7} {} {}",
                                             pull.author.login,
                                             pull.base_ref,
                                             pull.head_ref,
@@ -6356,19 +6651,13 @@ impl GitPanel {
                             .child(label.clone()),
                     );
                 if !link.is_empty() {
-                    row = row.child(
-                        div()
-                            .flex_none()
-                            .opacity(0.)
-                            .group_hover("git-row", |s| s.opacity(1.))
-                            .child(row_button(
-                                "git-check-open",
-                                "icons/arrow-up-right.svg",
-                                "git_panel.open_on_github",
-                                theme,
-                                move |_, _, cx| cx.open_url(&link),
-                            )),
-                    );
+                    row = row.child(div().flex_none().child(row_button(
+                        "git-check-open",
+                        "icons/arrow-up-right.svg",
+                        "git_panel.open_on_github",
+                        theme,
+                        move |_, _, cx| cx.open_url(&link),
+                    )));
                 }
                 checks = checks.child(row);
             }
@@ -7672,6 +7961,91 @@ impl Render for GitPanel {
     }
 }
 
+/// Reserve enough room for a compact browser and a usable detail surface.
+fn split_github_view(width: Pixels) -> bool {
+    width >= px(800.)
+}
+
+/// The list pane's width inside the split view: never below its own minimum,
+/// never wider than the detail pane and its grab strip can afford. `stored` is
+/// the persisted choice; clamping here means a narrow window narrows the list
+/// without overwriting the width the user picked.
+fn github_list_pane_width(page_width: Pixels, stored: Pixels) -> Pixels {
+    let reserve = px(GITHUB_DETAIL_MIN_W) + px(GITHUB_LIST_HANDLE_W);
+    let ceiling = (page_width - reserve)
+        .min(px(GITHUB_LIST_MAX_W))
+        .max(px(GITHUB_LIST_MIN_W));
+    stored.clamp(px(GITHUB_LIST_MIN_W), ceiling)
+}
+
+/// The width a pointer drag asks for, or `None` when the pane is already held
+/// at a clamped edge and the pointer push would not move it on screen. Returning
+/// `None` is what keeps a narrow page from replacing the stored preference with
+/// its clamped display width.
+fn dragged_github_list_pane_width(
+    page_width: Pixels,
+    stored: Pixels,
+    origin_width: Pixels,
+    origin_x: Pixels,
+    pointer_x: Pixels,
+) -> Option<Pixels> {
+    let shown = github_list_pane_width(page_width, stored);
+    let width = github_list_pane_width(page_width, origin_width + pointer_x - origin_x);
+    (width != shown).then_some(width)
+}
+
+/// The width a release should write, if any: a click or a push against a
+/// clamped edge writes nothing, and the value must be inside the draggable
+/// range rather than a page-clamped display width.
+fn github_list_width_to_persist(drag: Option<&GithubListDrag>, width: Pixels) -> Option<f32> {
+    let drag = drag?;
+    if !drag.moved {
+        return None;
+    }
+    let width = f32::from(width);
+    (GITHUB_LIST_MIN_W..=GITHUB_LIST_MAX_W)
+        .contains(&width)
+        .then_some(width)
+}
+
+/// The list/detail split: the resizable list, the drag handle that replaces its
+/// static border, and the detail surface taking the rest.
+fn github_split_view(
+    list: AnyElement,
+    detail: Option<AnyElement>,
+    list_width: Pixels,
+    handle: AnyElement,
+) -> AnyElement {
+    div()
+        .flex_1()
+        .h_full()
+        .min_h_0()
+        .min_w_0()
+        .flex()
+        .child(
+            div()
+                .debug_selector(|| "github-split-list".into())
+                .w(list_width)
+                .flex_none()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .child(list),
+        )
+        .child(handle)
+        .child(
+            div()
+                .debug_selector(|| "github-split-detail".into())
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .children(detail),
+        )
+        .into_any_element()
+}
+
 /// What the commit bar offers for the current repository state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BarActions {
@@ -8018,19 +8392,33 @@ fn detail_note(theme: Theme, label: &str) -> AnyElement {
 
 // ── Issues ─────────────────────────────────────────────────────────
 
+/// One in-flight divider drag. `origin_width` is what was displayed when the
+/// pointer went down (not necessarily the stored preference), so a clamped
+/// pane does not lose the width the user had picked.
+#[derive(Debug)]
+struct GithubListDrag {
+    origin_width: Pixels,
+    origin_x: Pixels,
+    /// Whether the drag ever changed the width on screen. A click or a push
+    /// against a clamped edge writes nothing.
+    moved: bool,
+}
+
 /// The label chips for a list row: up to `take` real chips plus a `+N`
-/// indicator when more are hidden, so a heavily labeled item never pushes the
-/// author and time out of the row.
+/// indicator when more are hidden, so a heavily labeled item never needs a
+/// fourth line to show them all.
 fn label_summary(labels: &[gh::GhLabel], take: usize, theme: Theme) -> Vec<AnyElement> {
     let mut chips: Vec<AnyElement> = labels
         .iter()
         .take(take)
-        .map(|label| issue_label_chip(label, theme))
+        .map(|label| list_label_chip(label, theme))
         .collect();
     if labels.len() > take {
         chips.push(
             div()
+                .debug_selector(|| "github-row-label-overflow".into())
                 .h(px(18.))
+                .flex_none()
                 .px(DynamicSpacing::Base06.px(&theme))
                 .rounded(Radius::Small.px(&theme))
                 .border_1()
@@ -8047,142 +8435,289 @@ fn label_summary(labels: &[gh::GhLabel], take: usize, theme: Theme) -> Vec<AnyEl
     chips
 }
 
-/// A right-aligned, fixed-width relative time so list rows line their times up
-/// in a column the eye can scan.
-fn row_time(value: &str, theme: Theme) -> AnyElement {
+/// A GitHub item's title flattened to one line. Titles come from GitHub and may
+/// carry newlines and runs of whitespace; a row that let them through would grow
+/// a second line and break the three-line anatomy.
+fn single_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// A compact draft marker for a pull-request row: a badge on the header line, so
+/// a draft is visible without earning the row a fourth line. The detail header
+/// repeats the full draft state.
+fn github_draft_marker(theme: Theme) -> AnyElement {
     div()
+        .debug_selector(|| "github-row-draft".into())
         .flex_none()
-        .w(px(64.))
-        .text_right()
-        .whitespace_nowrap()
-        .text_size(TextSize::Small.px(&theme))
+        .h(px(16.))
+        .px(DynamicSpacing::Base04.px(&theme))
+        .rounded(Radius::Small.px(&theme))
+        .border_1()
+        .border_color(theme.border)
+        .flex()
+        .items_center()
+        .text_size(TextSize::XSmall.px(&theme))
+        .font_weight(FontWeight::MEDIUM)
         .text_color(theme.text_muted)
-        .child(value.to_string())
+        .child(tr!("git_panel.pr_draft"))
         .into_any_element()
 }
 
-/// One issue row in the list: state glyph, number/title, labels, author,
-/// comment count, and relative time.
-fn issue_row(issue: &gh::GhIssue, theme: Theme, cx: &Context<GitPanel>) -> AnyElement {
-    let number = issue.number;
-    let open = issue.is_open();
-    let state_color = if open { theme.success } else { theme.error };
-    let state_glyph = if open {
-        "icons/circle-dot.svg"
-    } else {
-        "icons/circle-check.svg"
+/// The GitHub action on a list row. Always visible — an essential link never
+/// waits for a hover — with the tooltip naming the glyph rather than being the
+/// only way to find it.
+fn github_row_link(number: u64, url: &str, theme: Theme) -> AnyElement {
+    let label = tr!("git_panel.open_on_github");
+    let url = url.to_owned();
+    press(
+        icon_button_frame(
+            div()
+                .id(gpui::ElementId::Name(format!("git-open-{number}").into()))
+                .debug_selector(|| "github-row-link".into()),
+            &theme,
+            ButtonSize::Compact,
+        )
+        .group(BUTTON_GROUP)
+        .cursor_pointer()
+        .hover_state(&theme),
+    )
+    .tooltip(move |_, cx| cx.new(|_| Tooltip::new(label.clone())).into())
+    .on_click(move |_, _, cx| {
+        cx.stop_propagation();
+        cx.open_url(&url);
+    })
+    .child(icon(
+        "icons/github.svg",
+        ButtonSize::Compact.icon_size().px(&theme),
+        theme.text_muted,
+    ))
+    .into_any_element()
+}
+
+/// Line one of every GitHub list row: state glyph, translated state and number,
+/// an optional draft marker, the relative updated time right-aligned, and the
+/// GitHub action. The state cluster truncates rather than wrapping, so this is
+/// one line at any normal width; wrapping stays only as the fallback for an
+/// extreme text scale, where the time cannot shrink.
+fn github_row_header(parts: &GithubRowParts<'_>, theme: Theme) -> AnyElement {
+    let mut header = div()
+        .debug_selector(|| "github-row-header".into())
+        .w_full()
+        .min_w_0()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(DynamicSpacing::Base06.px(&theme))
+        .child(
+            div()
+                .debug_selector(|| "github-row-state".into())
+                // A zero basis keeps the (possibly long) state text out of the
+                // line-break decision, so it truncates instead of pushing the
+                // time onto another line.
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap(DynamicSpacing::Base06.px(&theme))
+                .child(div().flex_none().child(icon(
+                    parts.glyph,
+                    IconSize::Small.px(&theme),
+                    parts.color,
+                )))
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(TextSize::XSmall.px(&theme))
+                        .text_color(theme.text_muted)
+                        .child(format!("{} · #{}", parts.state, parts.number)),
+                ),
+        )
+        .children(parts.draft.then(|| github_draft_marker(theme)))
+        .child(
+            div()
+                .debug_selector(|| "github-row-time".into())
+                .flex_none()
+                .whitespace_nowrap()
+                .text_size(TextSize::XSmall.px(&theme))
+                .text_color(theme.text_muted)
+                .child(parts.time.clone()),
+        );
+    if !parts.url.is_empty() {
+        header = header.child(github_row_link(parts.number, parts.url, theme));
+    }
+    header.into_any_element()
+}
+
+/// Line two: the title, exactly one line at a definite width, ellipsized when it
+/// does not fit. The detail pane shows it in full.
+fn github_row_title(title: &str, emphasized: bool, theme: Theme) -> AnyElement {
+    div()
+        .debug_selector(|| "github-row-title".into())
+        .w_full()
+        .min_w_0()
+        .truncate()
+        .text_size(TextSize::Small.px(&theme))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(if emphasized {
+            theme.text_primary
+        } else {
+            theme.text_secondary
+        })
+        .child(single_line(title))
+        .into_any_element()
+}
+
+/// Line three: the repository and up to two labels with the `+N` indicator. One
+/// line — the repository truncates first, then the chips — because the author,
+/// branches, checks, review state and diff stats all live in the detail pane.
+fn github_row_meta(url: &str, labels: &[gh::GhLabel], theme: Theme) -> AnyElement {
+    div()
+        .debug_selector(|| "github-row-meta".into())
+        .w_full()
+        .min_w_0()
+        .flex()
+        .items_center()
+        .gap(DynamicSpacing::Base06.px(&theme))
+        .overflow_hidden()
+        .children(github_repo(url).map(|repo| github_repo_label(repo, theme)))
+        .children(label_summary(labels, 2, theme))
+        .into_any_element()
+}
+
+/// Extract the repository from a GitHub item URL without fabricating a source.
+fn github_repo(url: &str) -> Option<&str> {
+    let path = url.split_once("://")?.1.split_once('/')?.1;
+    let end = path.match_indices('/').nth(1)?.0;
+    let repo = &path[..end];
+    (!repo.starts_with('/') && !repo.ends_with('/')).then_some(repo)
+}
+
+fn github_repo_label(repo: &str, theme: Theme) -> AnyElement {
+    div()
+        .min_w_0()
+        .max_w(px(120.))
+        .truncate()
+        .text_size(TextSize::XSmall.px(&theme))
+        .text_color(theme.text_muted)
+        .child(repo.to_owned())
+        .into_any_element()
+}
+
+fn github_detail_reference(url: &str, number: u64, theme: Theme) -> AnyElement {
+    let reference = match github_repo(url) {
+        Some(repo) => format!("{repo} · #{number}"),
+        None => format!("#{number}"),
     };
-    let mut row = div()
-        .id(gpui::ElementId::Name(format!("git-issue-{number}").into()))
+    div()
+        .min_w_0()
+        .whitespace_normal()
+        .text_size(TextSize::Small.px(&theme))
+        .text_color(theme.text_muted)
+        .child(reference)
+        .into_any_element()
+}
+
+/// The pieces of a GitHub list row that differ between an issue and a pull
+/// request. The anatomy itself — three lines, the truncation and the GitHub
+/// action — is shared, so both lists read the same way.
+struct GithubRowParts<'a> {
+    /// Leading half of the row id (`git-issue-3`), keeping the two lists apart.
+    kind: &'static str,
+    number: u64,
+    glyph: &'static str,
+    color: Hsla,
+    state: String,
+    /// The compact draft marker on the header line. Only pull requests use it.
+    draft: bool,
+    time: String,
+    title: &'a str,
+    url: &'a str,
+    labels: &'a [gh::GhLabel],
+    /// Primary ink for an open item, secondary for a closed one.
+    emphasized: bool,
+}
+
+/// One compact GitHub list row: three lines at any normal width. Line one is
+/// state, number, time and the GitHub link; line two is the title in a single
+/// ellipsized run; line three is the repository and labels. Everything else —
+/// author, branches, review and check state, diff stats, comments — is in the
+/// detail pane, so a row's height never depends on how much metadata an item
+/// carries.
+fn github_list_row<P>(
+    parts: GithubRowParts<'_>,
+    selected: bool,
+    theme: Theme,
+    on_click: P,
+) -> AnyElement
+where
+    P: Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
+{
+    div()
+        .id(gpui::ElementId::Name(
+            format!("git-{}-{}", parts.kind, parts.number).into(),
+        ))
+        .debug_selector(|| "github-row".into())
         .group("git-row")
-        .mx(DynamicSpacing::Base12.px(&theme))
+        .mx(DynamicSpacing::Base08.px(&theme))
         .px(DynamicSpacing::Base08.px(&theme))
         .py(DynamicSpacing::Base06.px(&theme))
         .rounded(Radius::Medium.px(&theme))
         .flex()
-        .items_center()
-        .gap(DynamicSpacing::Base08.px(&theme))
+        .flex_col()
+        .items_start()
+        .gap(DynamicSpacing::Base03.px(&theme))
         .cursor_pointer()
         .hover_state(&theme)
-        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open_issue(number, cx)))
-        .child(state_tile(state_glyph, state_color, theme))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(DynamicSpacing::Base03.px(&theme))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(DynamicSpacing::Base06.px(&theme))
-                        .min_w_0()
-                        .child(
-                            div()
-                                .flex_none()
-                                .text_size(TextSize::Small.px(&theme))
-                                .text_color(theme.text_muted)
-                                .child(format!("#{number}")),
-                        )
-                        .child(
-                            div()
-                                .min_w_0()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_size(TextSize::Small.px(&theme))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(if open {
-                                    theme.text_primary
-                                } else {
-                                    theme.text_secondary
-                                })
-                                .child(issue.title.clone()),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(DynamicSpacing::Base06.px(&theme))
-                        .min_w_0()
-                        .children(label_summary(&issue.labels, 3, theme))
-                        .child(author_avatar(&issue.author.login, "", theme))
-                        .child(
-                            div()
-                                .text_size(TextSize::Small.px(&theme))
-                                .text_color(theme.text_muted)
-                                .child(issue.author.login.clone()),
-                        ),
-                ),
-        )
-        // Status reads down the right edge — comment count, then the relative
-        // time — matching the pull-request row so both lists scan the same way.
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(DynamicSpacing::Base03.px(&theme))
-                .text_size(TextSize::Small.px(&theme))
-                .text_color(theme.text_muted)
-                .child(icon(
-                    "icons/chat.svg",
-                    IconSize::Indicator.px(&theme),
-                    theme.text_muted,
-                ))
-                .child(issue.comments.len().to_string()),
-        )
-        .child(row_time(&gh::relative_time(&issue.updated_at), theme));
-    if !issue.url.is_empty() {
-        let url = issue.url.clone();
-        row = row.child(
-            // The open-on-GitHub affordance reveals on hover, like file rows.
-            div()
-                .flex_none()
-                .opacity(0.)
-                .group_hover("git-row", |s| s.opacity(1.))
-                .child(row_button(
-                    "git-issue-open",
-                    "icons/arrow-up-right.svg",
-                    "git_panel.open_on_github",
-                    theme,
-                    move |_, _, cx| cx.open_url(&url),
-                )),
-        );
-    }
-    row.into_any_element()
+        .when(selected, |row| row.bg(theme.surface_selected))
+        .on_click(on_click)
+        .child(github_row_header(&parts, theme))
+        .child(github_row_title(parts.title, parts.emphasized, theme))
+        .child(github_row_meta(parts.url, parts.labels, theme))
+        .into_any_element()
+}
+
+/// One issue row in the list: state, title, repository and labels.
+fn issue_row(
+    issue: &gh::GhIssue,
+    selected: bool,
+    theme: Theme,
+    cx: &Context<GitPanel>,
+) -> AnyElement {
+    let number = issue.number;
+    let open = issue.is_open();
+    github_list_row(
+        GithubRowParts {
+            kind: "issue",
+            number,
+            glyph: if open {
+                "icons/circle-dot.svg"
+            } else {
+                "icons/circle-check.svg"
+            },
+            color: if open { theme.success } else { theme.error },
+            state: if open {
+                tr!("git_panel.issue_open")
+            } else {
+                tr!("git_panel.issue_closed")
+            },
+            draft: false,
+            time: gh::relative_time(&issue.updated_at),
+            title: &issue.title,
+            url: &issue.url,
+            labels: &issue.labels,
+            emphasized: open,
+        },
+        selected,
+        theme,
+        cx.listener(move |this, _: &ClickEvent, _, cx| this.open_issue(number, cx)),
+    )
 }
 
 /// A GitHub label as a filled chip in its own color, with a contrasting text
 /// color chosen from the fill's luminance.
 fn issue_label_chip(label: &gh::GhLabel, theme: Theme) -> AnyElement {
-    let color = label_color(&label.color);
-    let fg = if color.l > 0.6 {
-        hsla(0., 0., 0.12, 1.)
-    } else {
-        hsla(0., 0., 0.98, 1.)
-    };
+    let (color, fg) = label_chip_colors(label);
     div()
         .h(px(18.))
         .px(DynamicSpacing::Base06.px(&theme))
@@ -8197,27 +8732,43 @@ fn issue_label_chip(label: &gh::GhLabel, theme: Theme) -> AnyElement {
         .into_any_element()
 }
 
+/// The same label as [`issue_label_chip`], sized for a list row: capped and
+/// shrinkable, with the name ellipsized, so line three can never wrap however
+/// long a label name is. The detail pane shows it uncapped.
+fn list_label_chip(label: &gh::GhLabel, theme: Theme) -> AnyElement {
+    let (color, fg) = label_chip_colors(label);
+    div()
+        .h(px(18.))
+        .max_w(px(112.))
+        .min_w_0()
+        .px(DynamicSpacing::Base06.px(&theme))
+        .rounded(Radius::Small.px(&theme))
+        .bg(color)
+        .flex()
+        .items_center()
+        .text_size(TextSize::XSmall.px(&theme))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(fg)
+        .child(div().min_w_0().truncate().child(label.name.clone()))
+        .into_any_element()
+}
+
+/// A label's fill and a contrasting ink chosen from that fill's luminance. The
+/// label owns its colour (GitHub supplies it); no theme role applies.
+fn label_chip_colors(label: &gh::GhLabel) -> (Hsla, Hsla) {
+    let color = label_color(&label.color);
+    let fg = if color.l > 0.6 {
+        hsla(0., 0., 0.12, 1.)
+    } else {
+        hsla(0., 0., 0.98, 1.)
+    };
+    (color, fg)
+}
+
 /// A 6-digit hex label color (`d73a4a`) as an `Hsla`.
 fn label_color(hex: &str) -> Hsla {
     let value = u32::from_str_radix(hex.trim_start_matches('#'), 16).unwrap_or(0x80_80_80);
     Hsla::from(gpui::rgba((value << 8) | 0xff))
-}
-
-/// The leading marker of an issue/PR row: the state glyph on a softly tinted
-/// tile, the same treatment the Changes rows give their status letter — the
-/// glyph carries the signal and the color only washes it (paired, never color
-/// alone).
-fn state_tile(glyph: &'static str, color: Hsla, theme: Theme) -> AnyElement {
-    div()
-        .size(px(22.))
-        .flex_none()
-        .rounded(Radius::Medium.px(&theme))
-        .bg(color.opacity(0.12))
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(icon(glyph, IconSize::Small.px(&theme), color))
-        .into_any_element()
 }
 
 /// A pill chip for an issue/PR state: an optional leading glyph (circle-dot,
@@ -8239,6 +8790,29 @@ fn state_chip(label: &str, color: Hsla, glyph: Option<&'static str>, theme: Them
         .children(glyph.map(|path| icon(path, IconSize::Indicator.px(&theme), color)))
         .child(label.to_string())
         .into_any_element()
+}
+
+fn switch_comment_draft(
+    input: &Entity<crate::composer::ComposerInput>,
+    owner: &mut Option<u64>,
+    drafts: &mut HashMap<u64, String>,
+    number: u64,
+    cx: &mut Context<GitPanel>,
+) {
+    if *owner == Some(number) {
+        return;
+    }
+    if let Some(previous) = *owner {
+        let text = input.read(cx).text();
+        if text.is_empty() {
+            drafts.remove(&previous);
+        } else {
+            drafts.insert(previous, text);
+        }
+    }
+    let draft = drafts.remove(&number).unwrap_or_default();
+    input.update(cx, |field, cx| field.set_text(draft, cx));
+    *owner = Some(number);
 }
 
 /// Replace a `ComposerInput`'s whole contents in one edit, so a generated
@@ -8301,7 +8875,6 @@ fn search_field(theme: Theme, input: Entity<crate::composer::ComposerInput>) -> 
     picker_search_frame(div(), &theme)
         .flex_1()
         .min_w(px(160.))
-        .ml(DynamicSpacing::Base04.px(&theme))
         .child(icon(
             "icons/search.svg",
             input::ICON.px(&theme),
@@ -8369,130 +8942,52 @@ fn issue_comment_card(comment: &gh::GhComment, theme: Theme) -> AnyElement {
 
 // ── Pull requests ───────────────────────────────────────────────────
 
-/// One PR row: state glyph, number/title, draft chip, labels, author,
-/// base→head, review decision, CI rollup, ± and files, relative time.
-fn pr_row(pull: &gh::GhPull, theme: Theme, cx: &Context<GitPanel>) -> AnyElement {
+/// One PR row in the list: state, title, repository and labels — the same
+/// three lines as an issue row, plus the compact draft marker on the header
+/// line. Review state, checks, diff stats and branches are in the detail pane.
+fn pr_row(pull: &gh::GhPull, selected: bool, theme: Theme, cx: &Context<GitPanel>) -> AnyElement {
     let number = pull.number;
-    let state_color = if pull.is_merged() {
-        theme.accent_text
-    } else if pull.is_open() {
-        theme.success
-    } else {
-        theme.error
-    };
     // Same glyph logic as the detail header, so a merged PR reads as merged
     // here too instead of always drawing the open-PR glyph recoloured.
-    let state_glyph = if pull.is_merged() {
+    let glyph = if pull.is_merged() {
         "icons/git-merge.svg"
     } else if pull.is_open() {
         "icons/git-pull-request.svg"
     } else {
         "icons/circle-x.svg"
     };
-    let mut row = div()
-        .id(gpui::ElementId::Name(format!("git-pr-{number}").into()))
-        .group("git-row")
-        .mx(DynamicSpacing::Base12.px(&theme))
-        .px(DynamicSpacing::Base08.px(&theme))
-        .py(DynamicSpacing::Base06.px(&theme))
-        .rounded(Radius::Medium.px(&theme))
-        .flex()
-        .items_center()
-        .gap(DynamicSpacing::Base08.px(&theme))
-        .cursor_pointer()
-        .hover_state(&theme)
-        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.open_pull(number, cx)))
-        .child(state_tile(state_glyph, state_color, theme))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(DynamicSpacing::Base03.px(&theme))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(DynamicSpacing::Base06.px(&theme))
-                        .min_w_0()
-                        .child(
-                            div()
-                                .flex_none()
-                                .text_size(TextSize::Small.px(&theme))
-                                .text_color(theme.text_muted)
-                                .child(format!("#{number}")),
-                        )
-                        .child(
-                            div()
-                                .min_w_0()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_size(TextSize::Small.px(&theme))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(if pull.is_open() {
-                                    theme.text_primary
-                                } else {
-                                    theme.text_secondary
-                                })
-                                .child(pull.title.clone()),
-                        )
-                        .children(pull.is_draft.then(|| {
-                            state_chip(
-                                &tr!("git_panel.pr_draft"),
-                                theme.text_muted,
-                                Some("icons/pencil.svg"),
-                                theme,
-                            )
-                        })),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(DynamicSpacing::Base06.px(&theme))
-                        .min_w_0()
-                        .children(label_summary(&pull.labels, 3, theme))
-                        .child(author_avatar(&pull.author.login, "", theme))
-                        .child(
-                            div()
-                                .text_size(TextSize::Small.px(&theme))
-                                .text_color(theme.text_muted)
-                                .child(pull.author.login.clone()),
-                        )
-                        .child(
-                            div()
-                                .text_size(TextSize::Small.px(&theme))
-                                .text_color(theme.text_muted)
-                                .child(format!("{} \u{2192} {}", pull.base_ref, pull.head_ref)),
-                        ),
-                ),
-        )
-        // Status reads down the right edge — review decision, CI rollup,
-        // diffstat, then the relative time — while identity stays on the left,
-        // so the eye has one column to scan instead of a mixed middle line.
-        .children(review_chip(pull, theme))
-        .children(check_bucket_chip(pull.checks_summary(), theme))
-        .child(delta_stats(pull.additions, pull.deletions, theme))
-        .child(row_time(&gh::relative_time(&pull.updated_at), theme));
-    if !pull.url.is_empty() {
-        let url = pull.url.clone();
-        row = row.child(
-            // The open-on-GitHub affordance reveals on hover, like file rows.
-            div()
-                .flex_none()
-                .opacity(0.)
-                .group_hover("git-row", |s| s.opacity(1.))
-                .child(row_button(
-                    "git-pr-open",
-                    "icons/arrow-up-right.svg",
-                    "git_panel.open_on_github",
-                    theme,
-                    move |_, _, cx| cx.open_url(&url),
-                )),
-        );
-    }
-    row.into_any_element()
+    let color = if pull.is_merged() {
+        theme.accent_text
+    } else if pull.is_open() {
+        theme.success
+    } else {
+        theme.error
+    };
+    let state = if pull.is_merged() {
+        tr!("git_panel.pr_merged")
+    } else if pull.is_open() {
+        tr!("git_panel.issue_open")
+    } else {
+        tr!("git_panel.issue_closed")
+    };
+    github_list_row(
+        GithubRowParts {
+            kind: "pr",
+            number,
+            glyph,
+            color,
+            state,
+            draft: pull.is_draft,
+            time: gh::relative_time(&pull.updated_at),
+            title: &pull.title,
+            url: &pull.url,
+            labels: &pull.labels,
+            emphasized: pull.is_open(),
+        },
+        selected,
+        theme,
+        cx.listener(move |this, _: &ClickEvent, _, cx| this.open_pull(number, cx)),
+    )
 }
 
 /// A chip for the PR's overall CI state, or `None` when it has no checks.
@@ -9341,6 +9836,170 @@ fn commit_separator(theme: Theme) -> AnyElement {
 mod tests {
     use super::*;
 
+    #[gpui::test]
+    fn github_drafts_follow_items_and_reset_with_workspace(cx: &mut gpui::TestAppContext) {
+        let panel = cx.update(|cx| cx.new(GitPanel::new));
+        cx.update(|cx| {
+            panel.update(cx, |panel, cx| {
+                for is_issue in [true, false] {
+                    let (input, owner, drafts) = if is_issue {
+                        (
+                            &panel.issue_comment,
+                            &mut panel.issue_comment_owner,
+                            &mut panel.issue_comment_drafts,
+                        )
+                    } else {
+                        (
+                            &panel.pr_comment,
+                            &mut panel.pr_comment_owner,
+                            &mut panel.pr_comment_drafts,
+                        )
+                    };
+                    switch_comment_draft(input, owner, drafts, 1, cx);
+                    set_composer_text(input, "draft one", cx);
+                    switch_comment_draft(input, owner, drafts, 2, cx);
+                    assert_eq!(input.read(cx).text(), "");
+                    set_composer_text(input, "draft two", cx);
+                    switch_comment_draft(input, owner, drafts, 1, cx);
+                    assert_eq!(input.read(cx).text(), "draft one");
+                    switch_comment_draft(input, owner, drafts, 1, cx);
+                    assert_eq!(input.read(cx).text(), "draft one");
+                    switch_comment_draft(input, owner, drafts, 2, cx);
+                    assert_eq!(input.read(cx).text(), "draft two");
+                }
+                panel.set_context(
+                    Some(PathBuf::from("/different-workspace")),
+                    String::new(),
+                    String::new(),
+                    None,
+                    Vec::new(),
+                    cx,
+                );
+                assert!(panel.issue_comment.read(cx).text().is_empty());
+                assert!(panel.pr_comment.read(cx).text().is_empty());
+                assert!(panel.issue_comment_drafts.is_empty());
+                assert!(panel.pr_comment_drafts.is_empty());
+            })
+        });
+    }
+
+    #[gpui::test]
+    fn switching_comment_drafts_clears_undo_history(cx: &mut gpui::TestAppContext) {
+        let cx = cx.add_empty_window();
+        let panel = cx.update(|_, cx| {
+            cx.set_global(Theme::for_id(crate::theme::ThemeId::Orbit));
+            cx.new(GitPanel::new)
+        });
+        let input = cx.update(|_, cx| panel.read(cx).issue_comment.clone());
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                switch_comment_draft(
+                    &panel.issue_comment,
+                    &mut panel.issue_comment_owner,
+                    &mut panel.issue_comment_drafts,
+                    1,
+                    cx,
+                );
+                set_composer_text(&panel.issue_comment, "draft one", cx);
+                switch_comment_draft(
+                    &panel.issue_comment,
+                    &mut panel.issue_comment_owner,
+                    &mut panel.issue_comment_drafts,
+                    2,
+                    cx,
+                );
+            });
+        });
+        cx.draw(
+            gpui::point(px(0.), px(0.)),
+            gpui::size(px(500.), px(400.)),
+            |_, _| input.clone(),
+        );
+        cx.update(|window, cx| input.read(cx).focus_handle(cx).focus(window));
+        cx.draw(
+            gpui::point(px(0.), px(0.)),
+            gpui::size(px(500.), px(400.)),
+            |_, _| input.clone(),
+        );
+        cx.update(|_, cx| input.update(cx, |input, cx| input.replace_range(0..0, "new", cx)));
+        cx.dispatch_action(crate::Undo);
+        assert_eq!(cx.update(|_, cx| input.read(cx).text()), "");
+        let revision = cx.update(|_, cx| input.read(cx).revision());
+        cx.dispatch_action(crate::Undo);
+        assert_eq!(cx.update(|_, cx| input.read(cx).text()), "");
+        assert_eq!(
+            cx.update(|_, cx| input.read(cx).revision()),
+            revision,
+            "a leftover undo snapshot would restore the other item's draft"
+        );
+    }
+
+    #[gpui::test]
+    fn label_dismissal_only_blocks_the_same_trigger(cx: &mut gpui::TestAppContext) {
+        let panel = cx.update(|cx| cx.new(GitPanel::new));
+        cx.update(|cx| {
+            panel.update(cx, |panel, cx| {
+                for (dismissed, opposite) in [
+                    (LabelMenuTarget::Filter, LabelMenuTarget::Issue),
+                    (LabelMenuTarget::Issue, LabelMenuTarget::Filter),
+                ] {
+                    panel.label_menu = None;
+                    panel.label_menu_dismissed = Some((dismissed, Instant::now()));
+                    panel.toggle_label_menu(dismissed, cx);
+                    assert_eq!(panel.label_menu, None);
+
+                    panel.label_menu_dismissed = Some((dismissed, Instant::now()));
+                    panel.toggle_label_menu(opposite, cx);
+                    assert_eq!(panel.label_menu, Some(opposite));
+
+                    panel.label_menu = None;
+                    panel.label_menu_dismissed =
+                        Some((dismissed, Instant::now() - Duration::from_secs(1)));
+                    panel.toggle_label_menu(dismissed, cx);
+                    assert_eq!(panel.label_menu, Some(dismissed));
+                }
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn github_new_forms_cancel_detail_loading_and_label_menu_is_targeted(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| cx.set_global(Theme::for_id(crate::theme::ThemeId::Orbit)));
+        let panel = cx.update(|cx| cx.new(GitPanel::new));
+        cx.update(|cx| {
+            panel.update(cx, |panel, cx| {
+                panel.label_menu = Some(LabelMenuTarget::Filter);
+                let theme = *theme::get(cx);
+                assert!(panel
+                    .label_popup(theme, LabelMenuTarget::Filter, cx)
+                    .is_some());
+                assert!(panel
+                    .label_popup(theme, LabelMenuTarget::Issue, cx)
+                    .is_none());
+                panel.label_menu = Some(LabelMenuTarget::Issue);
+                assert!(panel
+                    .label_popup(theme, LabelMenuTarget::Issue, cx)
+                    .is_some());
+                assert!(panel
+                    .label_popup(theme, LabelMenuTarget::Filter, cx)
+                    .is_none());
+                panel.selected_issue = Some(1);
+                panel.issue_detail_loading = true;
+                panel.open_issue_new(cx);
+                assert!(!panel.issue_detail_loading);
+                assert_eq!(panel.selected_issue, None);
+                assert_eq!(panel.label_menu, None);
+                panel.selected_pr = Some(2);
+                panel.pr_detail_loading = true;
+                panel.open_pull_new(cx);
+                assert!(!panel.pr_detail_loading);
+                assert_eq!(panel.selected_pr, None);
+            })
+        });
+    }
+
     struct ConfirmPopupProbe(Entity<GitPanel>);
 
     impl Render for ConfirmPopupProbe {
@@ -9362,8 +10021,14 @@ mod tests {
         let mut short_card_height = px(0.);
         for (width, path) in [
             (800., "short.rs"),
-            (800., ".argent/recordings/screen-recording-43F6B111-4588-41BC-96D7-2A58D84E9BA1-1793269223730.mp4"),
-            (340., ".argent/recordings/screen-recording-43F6B111-4588-41BC-96D7-2A58D84E9BA1-1793269223730.mp4"),
+            (
+                800.,
+                ".argent/recordings/screen-recording-43F6B111-4588-41BC-96D7-2A58D84E9BA1-1793269223730.mp4",
+            ),
+            (
+                340.,
+                ".argent/recordings/screen-recording-43F6B111-4588-41BC-96D7-2A58D84E9BA1-1793269223730.mp4",
+            ),
         ] {
             cx.update(|_, cx| {
                 panel.update(cx, |panel, cx| {
@@ -9378,9 +10043,18 @@ mod tests {
             let title = cx.debug_bounds("git-confirm-title").unwrap();
             let body = cx.debug_bounds("git-confirm-body").unwrap();
             let actions = cx.debug_bounds("git-confirm-actions").unwrap();
-            assert!(body.top() >= title.bottom(), "title {title:?}, body {body:?}");
-            assert!(actions.top() >= body.bottom(), "body {body:?}, actions {actions:?}");
-            assert!(actions.bottom() + px(16.) <= card.bottom(), "width {width}, card {card:?}, actions {actions:?}");
+            assert!(
+                body.top() >= title.bottom(),
+                "title {title:?}, body {body:?}"
+            );
+            assert!(
+                actions.top() >= body.bottom(),
+                "body {body:?}, actions {actions:?}"
+            );
+            assert!(
+                actions.bottom() + px(16.) <= card.bottom(),
+                "width {width}, card {card:?}, actions {actions:?}"
+            );
             assert!(card.size.width <= px(width - 32.));
             if path == "short.rs" {
                 short_card_height = card.size.height;
@@ -9388,6 +10062,317 @@ mod tests {
                 assert!(card.size.height > short_card_height);
             }
         }
+    }
+
+    struct GithubHeaderProbe;
+
+    impl Render for GithubHeaderProbe {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let theme = *theme::get(cx);
+            let labels = [];
+            github_row_header(
+                &GithubRowParts {
+                    kind: "issue",
+                    number: u64::MAX,
+                    glyph: "icons/circle-dot.svg",
+                    color: theme.success,
+                    state: "A very long translated issue state that must remain readable".into(),
+                    draft: true,
+                    time: "2h ago".into(),
+                    title: "a title",
+                    url: "https://github.com/orbit/app/issues/7",
+                    labels: &labels,
+                    emphasized: true,
+                },
+                theme,
+            )
+        }
+    }
+
+    /// Line one holds state, time and the GitHub action in one run: the state
+    /// cluster truncates instead of pushing the time onto a second line, which
+    /// is the extreme-scale fallback and not the normal case.
+    #[gpui::test]
+    fn github_header_keeps_state_time_and_link_on_one_line(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::for_id(crate::theme::ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        for width in [208., 240., 320.] {
+            cx.draw(point(px(0.), px(0.)), size(px(width), px(400.)), |_, cx| {
+                cx.new(|_| GithubHeaderProbe)
+            });
+            let header = cx.debug_bounds("github-row-header").unwrap();
+            let state = cx.debug_bounds("github-row-state").unwrap();
+            let time = cx.debug_bounds("github-row-time").unwrap();
+            let link = cx.debug_bounds("github-row-link").unwrap();
+            assert!(state.right() <= header.right(), "{state:?} {header:?}");
+            assert!(time.right() <= header.right(), "{time:?} {header:?}");
+            assert!(link.right() <= header.right(), "{link:?} {header:?}");
+            assert_eq!(
+                state.center().y,
+                time.center().y,
+                "width {width}: the time shares the state's line"
+            );
+            assert_eq!(
+                state.center().y,
+                link.center().y,
+                "width {width}: the GitHub action shares the state's line"
+            );
+            assert!(
+                time.right() >= state.right(),
+                "width {width}: the time sits right of the state cluster"
+            );
+            assert!(
+                link.right() >= time.right(),
+                "width {width}: the GitHub action sits right of the time"
+            );
+        }
+    }
+
+    /// Renders one row; `true` floods it with the worst content GitHub can
+    /// hand a row.
+    struct RowProbe(bool);
+
+    impl Render for RowProbe {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let theme = *theme::get(cx);
+            let pathological = self.0;
+            let long_title = format!(
+                "{}\n\t second line that must not render \n  third line",
+                "a title much longer than the list pane, so it has to be truncated ".repeat(3)
+            );
+            let long_labels = vec![
+                gh::GhLabel {
+                    name: "a label name long enough to be capped".into(),
+                    color: "d73a4a".into(),
+                    description: None,
+                };
+                4
+            ];
+            let short_labels = vec![gh::GhLabel {
+                name: "bug".into(),
+                color: "d73a4a".into(),
+                description: None,
+            }];
+            let row = github_list_row(
+                GithubRowParts {
+                    kind: "issue",
+                    number: if pathological { 12842 } else { 7 },
+                    glyph: "icons/circle-dot.svg",
+                    color: theme.success,
+                    state: if pathological {
+                        "A very long translated issue state that must remain readable".into()
+                    } else {
+                        "Open".into()
+                    },
+                    draft: pathological,
+                    time: "2 days ago".into(),
+                    title: if pathological {
+                        &long_title
+                    } else {
+                        "Fix flaky test"
+                    },
+                    url: if pathological {
+                        "https://github.com/a-very-long-owner-name/a-repository-longer-than-the-pane/issues/12842"
+                    } else {
+                        "https://github.com/orbit/app/issues/7"
+                    },
+                    labels: if pathological {
+                        &long_labels
+                    } else {
+                        &short_labels
+                    },
+                    emphasized: true,
+                },
+                false,
+                theme,
+                |_, _, _| {},
+            );
+            div().w_full().child(row)
+        }
+    }
+
+    /// A row's height is the same whatever it carries — a title with newlines, a
+    /// long repository, four labels, a draft marker — because it is always
+    /// exactly three lines. Height that followed content would be the fourth
+    /// line the list does not allow.
+    #[gpui::test]
+    fn github_rows_stay_three_lines_for_any_content(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::for_id(crate::theme::ThemeId::Orbit)));
+        let cx = cx.add_empty_window();
+        for width in [240., 320.] {
+            let mut heights = Vec::new();
+            let mut title_heights = Vec::new();
+            let mut title_widths = Vec::new();
+            for pathological in [false, true] {
+                cx.draw(point(px(0.), px(0.)), size(px(width), px(600.)), |_, cx| {
+                    cx.new(|_| RowProbe(pathological))
+                });
+                let row = cx.debug_bounds("github-row").unwrap();
+                let header = cx.debug_bounds("github-row-header").unwrap();
+                let time = cx.debug_bounds("github-row-time").unwrap();
+                let title = cx.debug_bounds("github-row-title").unwrap();
+                let meta = cx.debug_bounds("github-row-meta").unwrap();
+                assert_eq!(
+                    header.size.height, time.size.height,
+                    "width {width}: the header wrapped onto a second line"
+                );
+                assert!(title.size.width <= row.size.width, "{title:?} {row:?}");
+                assert!(meta.top() >= title.bottom(), "{title:?} {meta:?}");
+                heights.push(row.size.height);
+                title_heights.push(title.size.height);
+                title_widths.push(title.size.width);
+            }
+            assert_eq!(
+                heights[0], heights[1],
+                "width {width}: content changed the row's height"
+            );
+            assert_eq!(
+                title_heights[0], title_heights[1],
+                "width {width}: an embedded newline or a long title added a title line"
+            );
+            assert_eq!(
+                title_widths[0], title_widths[1],
+                "width {width}: the title's width is definite, not content-driven"
+            );
+        }
+    }
+
+    #[test]
+    fn github_titles_are_flattened_to_one_line() {
+        assert_eq!(single_line("Fix  the\nflaky\ttest "), "Fix the flaky test");
+        assert_eq!(single_line("\n\n"), "");
+        assert_eq!(single_line("already one line"), "already one line");
+    }
+
+    struct GithubSplitProbe(Entity<GitPanel>);
+
+    impl Render for GithubSplitProbe {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.0.update(cx, |panel, cx| {
+                panel.github_split(
+                    div().into_any_element(),
+                    Some(div().into_any_element()),
+                    *theme::get(cx),
+                    cx,
+                )
+            })
+        }
+    }
+
+    #[gpui::test]
+    fn github_split_gives_detail_the_remaining_width(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::for_id(crate::theme::ThemeId::Orbit)));
+        let panel = cx.update(|cx| cx.new(GitPanel::new));
+        panel.update(cx, |panel, _| {
+            panel.page_width = px(1000.);
+            panel.github_list_width = px(GITHUB_LIST_DEFAULT_W);
+        });
+        let cx = cx.add_empty_window();
+        let _ = cx.draw(point(px(0.), px(0.)), size(px(1000.), px(600.)), |_, cx| {
+            cx.new(|_| GithubSplitProbe(panel.clone()))
+        });
+        let list = cx.debug_bounds("github-split-list").unwrap();
+        let handle = cx.debug_bounds("github-split-handle").unwrap();
+        let detail = cx.debug_bounds("github-split-detail").unwrap();
+        assert_eq!(list.size.width, px(GITHUB_LIST_DEFAULT_W));
+        assert_eq!(handle.size.width, px(GITHUB_LIST_HANDLE_W));
+        assert_eq!(
+            detail.size.width,
+            px(1000. - GITHUB_LIST_DEFAULT_W - GITHUB_LIST_HANDLE_W)
+        );
+        // The handle *is* the seam: the list has no border of its own.
+        assert_eq!(list.right(), handle.left());
+        assert_eq!(handle.right(), detail.left());
+    }
+
+    /// The pure drag arithmetic: a pointer delta moves the pane, but a push
+    /// against a page-clamped edge reports no movement so the stored preference
+    /// survives.
+    #[test]
+    fn github_list_drag_respects_clamped_edges() {
+        assert_eq!(
+            dragged_github_list_pane_width(px(1000.), px(320.), px(320.), px(323.), px(383.)),
+            Some(px(380.))
+        );
+        // At 800 the pane is held at 393; pushing right cannot move it.
+        assert_eq!(
+            dragged_github_list_pane_width(px(800.), px(420.), px(393.), px(393.), px(443.)),
+            None
+        );
+        // Pulling left does move it, so that becomes the new preference.
+        assert_eq!(
+            dragged_github_list_pane_width(px(800.), px(420.), px(393.), px(393.), px(392.)),
+            Some(px(392.))
+        );
+    }
+
+    /// Release writes the settled width, but a click or a push against a
+    /// clamped edge writes nothing, and an out-of-range value never reaches the
+    /// store.
+    #[test]
+    fn github_list_width_persists_only_after_a_moved_drag() {
+        let moved = GithubListDrag {
+            origin_width: px(320.),
+            origin_x: px(320.),
+            moved: true,
+        };
+        let still = GithubListDrag {
+            moved: false,
+            ..moved
+        };
+        assert_eq!(
+            github_list_width_to_persist(Some(&moved), px(380.)),
+            Some(380.)
+        );
+        assert_eq!(github_list_width_to_persist(Some(&still), px(380.)), None);
+        assert_eq!(github_list_width_to_persist(None, px(380.)), None);
+        assert_eq!(
+            github_list_width_to_persist(Some(&moved), px(GITHUB_LIST_MAX_W + 1.)),
+            None
+        );
+    }
+
+    /// The list pane's own clamp: never narrower than it can render, never wider
+    /// than the detail pane's reserve allows, whatever a stored value says.
+    #[test]
+    fn github_list_width_is_clamped_to_its_bounds_and_the_detail_reserve() {
+        // A width the user picked survives a page that can afford it.
+        assert_eq!(github_list_pane_width(px(1400.), px(320.)), px(320.));
+        // The ceiling is the panel maximum, or page - 400 when that is smaller.
+        assert_eq!(github_list_pane_width(px(1400.), px(600.)), px(420.));
+        // 800 - (400 detail + 7 handle) leaves 393 for the list.
+        assert_eq!(github_list_pane_width(px(800.), px(420.)), px(393.));
+        assert_eq!(github_list_pane_width(px(807.), px(420.)), px(400.));
+        // The floor holds even when the page cannot afford the detail reserve.
+        assert_eq!(github_list_pane_width(px(700.), px(100.)), px(240.));
+        assert_eq!(github_list_pane_width(px(0.), px(320.)), px(240.));
+        // The default is inside the bounds the split view can render.
+        assert_eq!(
+            github_list_pane_width(px(800.), px(GITHUB_LIST_DEFAULT_W)),
+            px(GITHUB_LIST_DEFAULT_W)
+        );
+    }
+
+    #[test]
+    fn github_item_repository_requires_owner_and_repo() {
+        assert_eq!(
+            github_repo("https://github.com/orbit/app/issues/42"),
+            Some("orbit/app")
+        );
+        assert_eq!(
+            github_repo("https://enterprise.example/team/repo/pull/8"),
+            Some("team/repo")
+        );
+        assert_eq!(github_repo(""), None);
+        assert_eq!(github_repo("https://github.com/owner//issues/1"), None);
+    }
+
+    #[test]
+    fn github_split_respects_available_page_width() {
+        assert!(!split_github_view(px(0.)));
+        assert!(!split_github_view(px(799.)));
+        assert!(split_github_view(px(800.)));
+        assert!(split_github_view(px(1200.)));
     }
 
     #[test]

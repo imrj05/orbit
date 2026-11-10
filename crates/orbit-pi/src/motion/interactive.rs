@@ -19,7 +19,9 @@
 //!    resumes from the value on screen, and the easing lives in one place
 //!    (`Transition`), not in two.
 //! 3. While a transition is in flight the element asks for the next frame, so a
-//!    fade that nothing else is repainting still moves.
+//!    fade that nothing else is repainting still moves — and a frame that
+//!    painted a value the pointer has already left asks for one too, so a stale
+//!    wash cannot outlive the frame that painted it.
 //!
 //! # What it deliberately does not do
 //!
@@ -206,6 +208,7 @@ where
         name,
         pump: None,
         theme,
+        baked: value,
         child: element.into_any_element(),
     }
     .into_any_element()
@@ -232,6 +235,11 @@ struct PointerWatch {
     /// selection).
     pump: Option<ElementId>,
     theme: Theme,
+    /// The value the child was built with: the transition's, read at render
+    /// time, before this frame's hit test existed. Paint compares it with the
+    /// target it derives to tell whether the frame it just drew is already out
+    /// of date.
+    baked: f32,
     child: AnyElement,
 }
 
@@ -328,7 +336,7 @@ impl Element for PointerWatch {
         let pumping = self.pump.as_ref().is_some_and(|key| {
             Transitions::get(key.clone()).is_some_and(|t| !t.is_done(Instant::now()))
         });
-        if in_flight || pumping {
+        if repaint_needed(in_flight, pumping, self.baked, target) {
             window.request_animation_frame();
         }
 
@@ -437,15 +445,35 @@ where
         return apply(element, hover.value_at(now), state.value_at(now)).into_any_element();
     }
 
+    let baked = hover.value_at(now);
     PointerWatch {
         name,
         // The state fade is retargeted from the caller's value, so the watch has
         // to keep its frames coming too.
         pump: Some(state_key),
         theme,
-        child: apply(element, hover.value_at(now), state.value_at(now)).into_any_element(),
+        baked,
+        child: apply(element, baked, state.value_at(now)).into_any_element(),
     }
     .into_any_element()
+}
+
+/// Two painted values closer than this are the same frame's worth of fade: the
+/// difference is invisible, and treating it as a mismatch would ask for a frame
+/// that would ask for another one, forever.
+const PAINTED_TOLERANCE: f32 = 1e-3;
+
+/// Whether the frame just painted needs a successor.
+///
+/// A fade in flight needs one to keep moving, and a pumped state fade needs one
+/// on the caller's behalf. The third case is the one that bites a scrolling
+/// list: the fill a frame carries is baked at render time, before the pointer's
+/// hit test for that frame exists, so a control that leaves the screen while
+/// washed and comes back is painted with the wash of the instance that left.
+/// Its mount settles the transition, so nothing is in flight to repaint it and
+/// the wash would stay for as long as the window had no other reason to draw.
+fn repaint_needed(in_flight: bool, pumping: bool, baked: f32, target: f32) -> bool {
+    in_flight || pumping || (baked - target).abs() > PAINTED_TOLERANCE
 }
 
 /// Mix two colours by `t` (0 = `a`, 1 = `b`), hue over the shortest arc.
@@ -893,6 +921,41 @@ mod tests {
         assert!(
             remounted.is_done(Instant::now()),
             "a fresh instance mounts at rest instead of fading from the old wash"
+        );
+    }
+
+    /// The fill a frame carries is baked at render time; the target is decided
+    /// in paint, from the hit test for that same frame. When the two disagree,
+    /// a fade in flight repaints itself — but a *settled* transition, which is
+    /// what a remount leaves behind, asks for no frames at all. The wash would
+    /// then stay lit on a row that scrolled out and came back until the window
+    /// happened to draw for some other reason, and a sidebar at rest does not
+    /// draw.
+    #[test]
+    fn a_frame_that_painted_a_value_the_pointer_left_asks_for_another() {
+        assert!(
+            !repaint_needed(false, false, 0.0, 0.0),
+            "a frame that matches its target is done"
+        );
+        assert!(
+            !repaint_needed(false, false, 1.0, 1.0),
+            "a settled wash under the pointer is done"
+        );
+        assert!(
+            !repaint_needed(false, false, 0.0, 0.0004),
+            "a difference this small is not worth a frame"
+        );
+        assert!(
+            repaint_needed(true, false, 0.4, 1.0),
+            "a fade in flight keeps asking until it lands"
+        );
+        assert!(
+            repaint_needed(false, true, 1.0, 1.0),
+            "a pumped state fade keeps its frames coming"
+        );
+        assert!(
+            repaint_needed(false, false, 1.0, 0.0),
+            "a remount that painted the wash of the instance that left must repaint itself away"
         );
     }
 

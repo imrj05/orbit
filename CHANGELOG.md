@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Settings → Permissions: per-command and per-agent rules.** The access mode
+  could only say "ask before commands" or "do not". The page is one row per tool
+  family (commands, edits, reads, web fetches, MCP tools, delegation, other) with
+  `Inherit · Allow · Ask · Deny`, the value it resolves to shown beside it, and
+  pattern rules beneath (`rm *` → Deny) added inline. The scope row switches the
+  whole page between every session, main sessions only, and one subagent, so
+  "`bash` may run, but `rm` asks" and "the worker may run commands" need no mode
+  change. Most specific scope wins, and inside it deny > ask > allow. Full
+  access is answered before the rules — the mode keeps its promise that nothing
+  asks and nothing is refused, and the page says so instead of offering rows
+  that cannot take effect. Rules live in `~/.orbit-pi/access-rules.json`, which
+  the guard extension reads on every tool call, so they apply to running
+  sessions.
+  Two deliberate limits: an `allow` never covers a chained or redirected command
+  (`ls; rm -rf x` still asks), and an `ask` rule is a refusal inside a subagent,
+  which has no approval window. Web fetches are now their own family so they can
+  be gated; their default behaviour is unchanged. See
+  `crates/orbit-pi/docs/permissions.md`.
 - **Glass panes over the wallpaper.** Panes that sit over a wallpaper now
   frost what is behind them instead of showing the picture sharp through a
   tint: the sidebar, the composer, and every floating layer (menus, pickers,
@@ -29,6 +47,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   full height of the window instead of stopping an 8px radius short at each end.
   The curved notch the two corners left against the sidebar was the most
   noticeable detail in light mode.
+- **Typing no longer rebuilds the window.** A composer edit used to repaint the
+  app on every keystroke so the send control could move between two states; in a
+  long session that paid for the sidebar, the header and every visible
+  transcript row to redraw one text caret. The observer now compares the facts
+  the app-level chrome actually reads — the send control, the attachment tray,
+  the follow-up chips, the slash/`@` menu — and repaints only when one of them
+  moved. The text itself, the caret and the box's grown height were always
+  drawn by the composer and still are.
 
 ### Removed
 

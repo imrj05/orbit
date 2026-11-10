@@ -993,9 +993,13 @@ pub struct OrbitApp {
     open_in_save_task: Option<gpui::Task<()>>,
     /// Keeps the theme global observer alive so a settings toggle redraws.
     _theme_sub: Subscription,
-    /// Keeps the composer observer alive: edits re-render the app so the
-    /// send button's quiet/ready state tracks the text live.
+    /// Keeps the composer observer alive: edits re-rank the slash/mention menu
+    /// and may flip what the app-level chrome shows (a live send control, the
+    /// attachment tray, the follow-up chips).
     _input_sub: Subscription,
+    /// The composer facts that chrome was last built from. An edit that leaves
+    /// this key alone is drawn by the composer itself and needs no repaint.
+    composer_chrome: composer_ops::ComposerChrome,
     /// Keeps the transcript `cmd-c` interceptor alive: a live transcript
     /// selection wins over the focused composer's own copy, but only while
     /// one exists (the composer keeps its copy otherwise).
@@ -1110,6 +1114,17 @@ pub struct OrbitApp {
     /// The active access mode. Persisted to `~/.orbit-pi/access.json`, which
     /// the guard extension reads fresh on every tool call.
     access_mode: AccessMode,
+    /// The per-command / per-agent rules from `~/.orbit-pi/access-rules.json`,
+    /// which the guard also reads fresh on every tool call. Settings →
+    /// Permissions writes them; the extension is the only enforcer.
+    permission_rules: crate::permissions::Rules,
+    /// Which scope Settings → Permissions is editing: every session, main
+    /// sessions only, or one subagent. The page's rows read and write this.
+    permission_scope: crate::permissions::Scope,
+    /// The open "add a pattern" form on Settings → Permissions, if any.
+    pattern_editor: Option<permissions_ui::PatternEditor>,
+    /// Subagent names a rule may be scoped to, refreshed when the page opens.
+    permission_agents: Vec<String>,
     /// Whether the composer's access-mode picker popover is open.
     access_menu_open: bool,
     /// Highlighted row in the access-mode picker (arrow keys + hover move it).
@@ -1912,12 +1927,23 @@ impl OrbitApp {
             cx.notify();
         });
 
-        // Composer edits notify only the input entity; re-sync the
-        // slash/mention menu and re-render the app so the send button's
-        // quiet/ready state tracks the text as you type.
+        // Composer edits notify only the input entity. Re-rank the
+        // slash/mention menu here, then repaint the app only when the chrome
+        // that reads the draft actually changed: notifying on every keystroke
+        // rebuilt the whole window — sidebar, header, git panel, every visible
+        // transcript row — to move one button between two states, which is what
+        // typing mid-message felt like.
+        //
+        // The key is advisory in one direction: a path that repaints the app for
+        // its own reason (a paste, a queue change) leaves it stale, which costs
+        // one extra repaint on the next edit and nothing else.
         let input_sub = cx.observe(&input, |this, _, cx| {
             this.sync_autocomplete(cx);
-            cx.notify();
+            let chrome = this.composer_chrome(cx);
+            if chrome != this.composer_chrome {
+                this.composer_chrome = chrome;
+                cx.notify();
+            }
         });
 
         // Ctrl+C / Cmd+C with a live transcript selection copies that
@@ -2436,6 +2462,7 @@ impl OrbitApp {
             open_in_save_task: None,
             _theme_sub: theme_sub,
             _input_sub: input_sub,
+            composer_chrome: composer_ops::ComposerChrome::default(),
             _copy_selection_sub: copy_selection_sub,
             deps,
             pi_install,
@@ -2476,6 +2503,10 @@ impl OrbitApp {
             quota: QuotaManager::new(),
             extensions,
             access_mode,
+            permission_rules: crate::permissions::Rules::load(),
+            permission_scope: crate::permissions::Scope::Any,
+            pattern_editor: None,
+            permission_agents: Vec::new(),
             access_menu_open: false,
             access_menu_highlight: 0,
             access_menu_focus: cx.focus_handle(),
@@ -3613,6 +3644,7 @@ pub(crate) enum SettingsSection {
     Models,
     Skills,
     Subagents,
+    Permissions,
     Plugins,
     Mcp,
     About,
@@ -3999,6 +4031,8 @@ enum SettingsSelect {
     /// The session-retention action and threshold (Settings → Privacy).
     RetentionMode,
     RetentionDays,
+    /// The active access mode (Settings → Permissions).
+    AccessMode,
 }
 
 // ── feature modules ───────────────────────────────────────────────────────
@@ -4015,6 +4049,7 @@ pub(crate) mod helpers;
 mod mcp_ui;
 mod new_task;
 mod open_in;
+mod permissions_ui;
 mod pi_update_ui;
 mod pickers;
 mod plugin_update_ui;
@@ -4043,6 +4078,8 @@ mod backdrop_layout_tests;
 #[cfg(test)]
 mod cancel_tests;
 #[cfg(test)]
+mod composer_chrome_tests;
+#[cfg(test)]
 mod composer_draft_tests;
 #[cfg(test)]
 mod composer_layout_tests;
@@ -4064,6 +4101,8 @@ mod new_task_panels_tests;
 mod new_task_reconnect_tests;
 #[cfg(test)]
 mod perf_sampler_tests;
+#[cfg(test)]
+mod permissions_ui_tests;
 #[cfg(test)]
 mod popup_layout_tests;
 #[cfg(test)]

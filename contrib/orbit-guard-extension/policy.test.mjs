@@ -20,7 +20,9 @@ import {
   ceilingBlockReason,
   classify,
   confirmOptions,
+  commandSegments,
   decide,
+  defaultAction,
   formatTitle,
   grantable,
   modeFilePath,
@@ -28,8 +30,15 @@ import {
   OPTION_ALWAYS_ALLOW,
   OPTION_ALLOW_ONCE,
   OPTION_DENY,
+  isCompoundCommand,
+  matchText,
+  patternMatches,
   readAllowlist,
   readMode,
+  readRules,
+  ruleDecision,
+  rulesFilePath,
+  scopesFor,
   summarize,
 } from "./policy.js";
 
@@ -230,4 +239,204 @@ test("a ceiling block names the agent and the tool", () => {
   assert.match(ceilingBlockReason("read", "bash", "scout"), /Subagent scout is read-only and cannot use bash/);
   assert.match(ceilingBlockReason("edit", "bash", "worker"), /may edit files but cannot use bash/);
   assert.match(ceilingBlockReason("exec", "mcp__x", "worker"), /may run commands but may not use mcp__x/);
+});
+
+// ── permission rules ────────────────────────────────────────────────────
+
+test("network tools are their own kind but still allowed by the mode defaults", () => {
+  assert.equal(classify("webfetch"), "net");
+  assert.equal(classify("websearch"), "net");
+  assert.equal(classify("WebFetch"), "net");
+  for (const mode of MODES) {
+    assert.equal(decide(mode, "webfetch"), "allow", mode);
+  }
+});
+
+test("defaultAction is the table the mode defaults implement", () => {
+  // One representative tool per kind; the Rust table the Settings page renders
+  // (`permissions::Target::default_action`) mirrors this and has its own test.
+  const sample = {
+    read: "read",
+    net: "webfetch",
+    edit: "edit",
+    exec: "bash",
+    mcp: "mcp__github__get_issue",
+    other: "some_extension_tool",
+    delegate: "subagent",
+  };
+  for (const mode of MODES) {
+    for (const [kind, tool] of Object.entries(sample)) {
+      assert.equal(classify(tool), kind, tool);
+      assert.equal(decide(mode, tool), defaultAction(mode, kind), `${mode}/${kind}`);
+    }
+  }
+});
+
+test("patternMatches is an anchored glob with one metacharacter", () => {
+  assert.ok(patternMatches("", "anything"), "empty pattern matches every call");
+  assert.ok(patternMatches("ls", "ls"));
+  assert.ok(!patternMatches("ls", "ls -la"), "no implicit prefix match");
+  assert.ok(patternMatches("ls *", "ls -la"));
+  assert.ok(patternMatches("git status*", "git status --short"));
+  assert.ok(patternMatches("*.log", "build/output.log"), "* spans directories");
+  assert.ok(patternMatches("*rm -rf*", "cd x && rm -rf y"), "found anywhere");
+  assert.ok(!patternMatches("rm *", "/bin/rm -rf x"), "a different binary is a different text");
+  assert.ok(patternMatches("a.b(c)", "a.b(c)"), "regex metacharacters are literal");
+  assert.ok(!patternMatches("a.b", "axb"), "dots do not act as wildcards");
+  assert.ok(patternMatches("*", "anything at all"));
+});
+
+test("matchText names the text the approval bar shows", () => {
+  assert.equal(matchText("bash", { command: "git status" }), "git status");
+  assert.equal(matchText("edit", { path: "src/a.rs" }), "src/a.rs");
+  assert.equal(matchText("grep", { pattern: "TODO" }), "TODO");
+  assert.equal(matchText("webfetch", { url: "https://example.com" }), "https://example.com");
+  assert.equal(matchText("subagent", { task: "review the diff" }), "review the diff");
+  assert.ok(matchText("mcp__github__get_issue", { number: 12 }).startsWith("mcp__github__get_issue "));
+  assert.ok(matchText("some_extension_tool", {}).startsWith("some_extension_tool "));
+});
+
+test("a compound command is split so a deny rule still sees every segment", () => {
+  assert.deepEqual(commandSegments("cd x && rm -rf y"), ["cd x", "rm -rf y"]);
+  assert.deepEqual(commandSegments("a; b | c || d"), ["a", "b", "c", "d"]);
+  assert.ok(isCompoundCommand("ls && rm -rf x"));
+  assert.ok(isCompoundCommand("ls > out.txt"));
+  assert.ok(isCompoundCommand("echo $(rm -rf x)"));
+  assert.ok(isCompoundCommand("rm -rf x &"));
+  assert.ok(!isCompoundCommand("git status --short"));
+});
+
+test("a rule decides the call, and the most specific scope wins", () => {
+  const rules = [
+    { scope: "any", target: "exec", pattern: "git *", action: "allow" },
+    { scope: "session", target: "exec", pattern: "git push*", action: "ask" },
+    { scope: "agent:worker", target: "exec", pattern: "git push*", action: "deny" },
+  ];
+  // Main session: the `session` rule narrows the `any` allow.
+  assert.equal(
+    decide("supervised", "bash", [], { rules, input: { command: "git push origin main" } }),
+    "ask",
+  );
+  // The same call in the worker: its own scope overrides both.
+  assert.equal(
+    decide("supervised", "bash", [], {
+      rules,
+      agent: "worker",
+      input: { command: "git push origin main" },
+    }),
+    "deny",
+  );
+  // Unmatched calls fall through to the `any` allow, then the mode default.
+  assert.equal(
+    decide("supervised", "bash", [], { rules, input: { command: "git status" } }),
+    "allow",
+  );
+  assert.equal(decide("supervised", "bash", [], { rules, input: { command: "rm -rf x" } }), "ask");
+});
+
+test("rules apply in the confined modes, including delegation", () => {
+  const deny = [{ scope: "any", target: "exec", pattern: "rm *", action: "deny" }];
+  assert.equal(
+    decide("supervised", "bash", [], { rules: deny, input: { command: "rm -rf build" } }),
+    "deny",
+  );
+  assert.equal(
+    decide("auto-accept-edits", "bash", [], { rules: deny, input: { command: "rm -rf build" } }),
+    "deny",
+  );
+  const noDelegate = [{ scope: "any", target: "delegate", pattern: "", action: "deny" }];
+  assert.equal(decide("supervised", "subagent", [], { rules: noDelegate }), "deny");
+});
+
+test("full access runs before the rule table: nothing asks, nothing is refused", () => {
+  // Full access is a promise, not a baseline: an Ask rule must not turn it back
+  // into a prompt, and a Deny rule must not block a mode chosen for trust.
+  const rules = [
+    { scope: "any", target: "exec", pattern: "rm *", action: "deny" },
+    { scope: "any", target: "any", pattern: "*", action: "ask" },
+    { scope: "agent:worker", target: "mcp", pattern: "", action: "deny" },
+  ];
+  for (const [tool, input] of [
+    ["bash", { command: "rm -rf build" }],
+    ["edit", { path: "a" }],
+    ["mcp__github__create_issue", { title: "x" }],
+    ["webfetch", { url: "https://example.com" }],
+  ]) {
+    assert.equal(decide("full-access", tool, [], { rules, agent: "worker", input }), "allow", tool);
+  }
+});
+
+test("deny beats allow inside one scope", () => {
+  const rules = [
+    { scope: "any", target: "exec", pattern: "*", action: "allow" },
+    { scope: "any", target: "any", pattern: "rm *", action: "deny" },
+  ];
+  assert.equal(decide("supervised", "bash", [], { rules, input: { command: "rm -rf x" } }), "deny");
+  assert.equal(decide("supervised", "bash", [], { rules, input: { command: "ls" } }), "allow");
+});
+
+test("an allow rule never covers a chained command", () => {
+  const rules = [{ scope: "any", target: "exec", pattern: "ls*", action: "allow" }];
+  assert.equal(decide("supervised", "bash", [], { rules, input: { command: "ls -la" } }), "allow");
+  assert.equal(
+    decide("supervised", "bash", [], { rules, input: { command: "ls; rm -rf build" } }),
+    "ask",
+  );
+});
+
+test("a rule can gate a fetch, which no mode gates by default", () => {
+  const rules = [{ scope: "any", target: "net", pattern: "*", action: "ask" }];
+  assert.equal(decide("supervised", "webfetch", [], { rules }), "ask");
+  assert.equal(decide("supervised", "read", [], { rules }), "allow", "only the net family is gated");
+});
+
+test("a malformed rule is dropped, never widened", () => {
+  assert.equal(ruleDecision([{ scope: "any", target: "nope", pattern: "", action: "deny" }], null, "bash", "exec", { command: "rm x" }), null);
+  assert.equal(ruleDecision([{ scope: "any", target: "exec", pattern: "", action: "maybe" }], null, "bash", "exec", { command: "rm x" }), null);
+  assert.equal(ruleDecision([{ scope: "bogus", target: "exec", pattern: "", action: "deny" }], null, "bash", "exec", { command: "rm x" }), null);
+  assert.equal(ruleDecision(null, null, "bash", "exec", {}), null);
+});
+
+test("readRules loads what Orbit wrote and degrades to no rules", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "orbit-rules-"));
+  const file = path.join(dir, "access-rules.json");
+  try {
+    assert.deepEqual(readRules(file), [], "missing file");
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1,
+        rules: [
+          { scope: "any", target: "exec", pattern: "rm *", action: "deny" },
+          { scope: "agent:worker", target: "any", pattern: "", action: "ask" },
+          { scope: "any", target: "exec", pattern: "ls", action: "sometimes" },
+          "not a rule",
+        ],
+      }),
+    );
+    assert.deepEqual(readRules(file), [
+      { scope: "any", target: "exec", pattern: "rm *", action: "deny" },
+      { scope: "agent:worker", target: "any", pattern: "", action: "ask" },
+    ]);
+    fs.writeFileSync(file, "{not json");
+    assert.deepEqual(readRules(file), [], "broken json → no rules, so the mode default applies");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("scopesFor is most-specific-first and never applies an agent scope to a main session", () => {
+  assert.deepEqual(scopesFor(null), ["session", "any"]);
+  assert.deepEqual(scopesFor(""), ["session", "any"]);
+  assert.deepEqual(scopesFor("worker"), ["agent:worker", "any"]);
+});
+
+test("rulesFilePath sits beside the mode file", () => {
+  const prev = process.env.HOME;
+  process.env.HOME = "/tmp/orbit-home-test";
+  try {
+    assert.equal(rulesFilePath(), "/tmp/orbit-home-test/.orbit-pi/access-rules.json");
+  } finally {
+    process.env.HOME = prev;
+  }
 });

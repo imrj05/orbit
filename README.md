@@ -76,7 +76,8 @@ summary sparkline to read that day across the whole row:
 - Access modes — Supervised, Auto-accept edits, or Full access, chosen from the composer
 - Enforced by a bundled pi extension that hooks `tool_call` and confirms mutating calls the mode does not auto-approve
 - An inline bar above the composer offers **Allow once / Always allow this tool / Deny** (↑ ↓ ⏎ esc), with the allowlist recorded per mode
-- A confirmation guard, not a sandbox — pi ships no sandbox, and Orbit does not add one
+- **Permissions** — one row per tool family (commands, edits, reads, fetches, MCP, delegation, other) with `Inherit · Allow · Ask · Deny`, the resolved value shown beside it, and pattern rules beneath (`rm *` → Deny). Switch the scope between every session, main sessions only, or one subagent. Full access still means full access: it is answered before the rules, so nothing asks and nothing is refused there. "`bash` may run, but `rm` asks" needs no mode change; a subagent has no approval window, so its rules are what let a worker use a command at all
+- A confirmation guard, not a sandbox — pi ships no sandbox, and Orbit does not add one. Permission rules change when Orbit asks; they are not a shell parser, so a chained command is never auto-approved by an `allow` rule
 - **Subagents** — the model can delegate a scoped task to a child `pi` process with its own context window and get back a short report plus its cost. Children inherit the session's access and workflow modes; a delegation the session mode cannot finish is refused before it spends anything
 
 **Review and Git**

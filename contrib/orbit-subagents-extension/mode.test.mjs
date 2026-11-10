@@ -16,11 +16,14 @@ import {
   agentEntry,
   allowedCeiling,
   ceilingAllowed,
+  effectiveCeiling,
   loadConfig,
   modeLabel,
   readAccessMode,
+  readRules,
   readWorkflowStore,
   resolveWorkflowMode,
+  rulesAllowFamily,
 } from "./mode.js";
 
 function tempDir() {
@@ -120,4 +123,98 @@ test("ceiling comparisons rank all above exec", () => {
 test("the mode label names both halves", () => {
   assert.equal(modeLabel("supervised", "plan"), "Plan · Supervised");
   assert.equal(modeLabel("full-access", "build"), "Build · Full access");
+});
+
+// ── permission rules (Settings → Permissions) ───────────────────────────
+
+test("only an unconditional allow rule raises a family for an agent", () => {
+  const rules = [
+    { scope: "agent:worker", target: "exec", pattern: "", action: "allow" },
+    { scope: "agent:scout", target: "exec", pattern: "git *", action: "allow" },
+  ];
+  assert.ok(rulesAllowFamily(rules, "worker", "exec"));
+  // A pattern authorizes the commands it matches, not the tier.
+  assert.equal(rulesAllowFamily(rules, "scout", "exec"), false);
+  // Scoped rules never leak to another agent or to a main session.
+  assert.equal(rulesAllowFamily(rules, "reviewer", "exec"), false);
+  assert.equal(rulesAllowFamily(rules, "", "exec"), false);
+  assert.equal(rulesAllowFamily(rules, "worker", "edit"), false);
+});
+
+test("a deny or ask rule never widens, and beats a broader allow", () => {
+  assert.equal(
+    rulesAllowFamily([{ scope: "any", target: "any", pattern: "", action: "deny" }], "worker", "exec"),
+    false,
+  );
+  assert.equal(
+    rulesAllowFamily([{ scope: "any", target: "exec", pattern: "", action: "ask" }], "worker", "exec"),
+    false,
+  );
+  // The most specific scope with a matching rule decides, guard order.
+  const rules = [
+    { scope: "any", target: "exec", pattern: "", action: "allow" },
+    { scope: "agent:worker", target: "exec", pattern: "", action: "deny" },
+  ];
+  assert.equal(rulesAllowFamily(rules, "worker", "exec"), false, "the worker's own deny wins");
+  assert.equal(rulesAllowFamily(rules, "scout", "exec"), true, "other agents keep the allow");
+});
+
+test("effectiveCeiling raises only what a rule pre-authorizes, and never in Plan or Ask", () => {
+  const rules = [{ scope: "agent:worker", target: "exec", pattern: "", action: "allow" }];
+  assert.equal(
+    effectiveCeiling({ agentName: "worker", allowed: "read", workflowMode: "build", rules }),
+    "exec",
+  );
+  assert.equal(
+    effectiveCeiling({ agentName: "scout", allowed: "read", workflowMode: "build", rules }),
+    "read",
+    "another agent is unchanged",
+  );
+  // Plan and Ask drop the write tools outright: a rule must not promise more.
+  for (const workflowMode of ["plan", "ask"]) {
+    assert.equal(
+      effectiveCeiling({ agentName: "worker", allowed: "read", workflowMode, rules }),
+      "read",
+    );
+  }
+  // No rules at all is exactly the old behaviour.
+  for (const allowed of ["read", "edit", "exec", "all"]) {
+    assert.equal(
+      effectiveCeiling({ agentName: "worker", allowed, workflowMode: "build", rules: [] }),
+      allowed,
+    );
+  }
+  // An allow for MCP/other needs the `all` ceiling.
+  const mcp = [{ scope: "any", target: "mcp", pattern: "", action: "allow" }];
+  assert.equal(
+    effectiveCeiling({ agentName: "worker", allowed: "read", workflowMode: "build", rules: mcp }),
+    "all",
+  );
+});
+
+test("readRules loads what the Permissions page wrote and ignores the rest", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "orbit-rules-"));
+  const file = path.join(dir, "access-rules.json");
+  try {
+    assert.deepEqual(readRules(file), [], "missing file");
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        rules: [
+          { scope: "agent:worker", target: "exec", pattern: "", action: "allow" },
+          { scope: "any", target: "exec", pattern: "rm *", action: "deny" },
+          { scope: "everyone", target: "exec", pattern: "", action: "allow" },
+          "not a rule",
+        ],
+      }),
+    );
+    assert.deepEqual(readRules(file), [
+      { scope: "agent:worker", target: "exec", pattern: "", action: "allow" },
+      { scope: "any", target: "exec", pattern: "rm *", action: "deny" },
+    ]);
+    fs.writeFileSync(file, "{not json");
+    assert.deepEqual(readRules(file), [], "a broken file is no rules, so nothing widens");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

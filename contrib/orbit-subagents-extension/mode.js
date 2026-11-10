@@ -61,6 +61,11 @@ export function accessPath(dir = orbitDir()) {
   return path.join(dir, "access.json");
 }
 
+/** The per-command / per-agent permission rules Settings → Permissions writes. */
+export function rulesPath(dir = orbitDir()) {
+  return path.join(dir, "access-rules.json");
+}
+
 function readJson(filePath) {
   try {
     return JSON.parse(fs.readFileSync(filePath, "utf8"));
@@ -166,6 +171,99 @@ export function allowedCeiling(accessMode, workflowMode) {
 /** Whether `ceiling` is permitted by `allowed`. */
 export function ceilingAllowed(ceiling, allowed) {
   return (CEILING_RANK[ceiling] ?? CEILING_RANK.all) <= (CEILING_RANK[allowed] ?? CEILING_RANK.read);
+}
+
+/** The ceiling a tool family needs, for the rule-aware pre-flight below. */
+const FAMILY_CEILING = {
+  read: "read",
+  net: "read",
+  edit: "edit",
+  exec: "exec",
+  mcp: "all",
+  other: "all",
+  delegate: "all",
+  any: "all",
+};
+
+/** A scope the guard understands: `any`, `session`, or `agent:<name>`. */
+function isRuleScope(scope) {
+  if (scope === "any" || scope === "session") return true;
+  return typeof scope === "string" && scope.startsWith("agent:") && scope.slice("agent:".length).trim() !== "";
+}
+
+/**
+ * The rules Orbit's Permissions page wrote, read leniently. Only the fields the
+ * pre-flight needs are kept; the guard validates the rest on its own.
+ */
+export function readRules(filePath = rulesPath()) {
+  const raw = readJson(filePath);
+  const list = Array.isArray(raw?.rules) ? raw.rules : [];
+  return list
+    .filter(
+      (rule) =>
+        rule &&
+        typeof rule === "object" &&
+        isRuleScope(rule.scope) &&
+        typeof rule.target === "string" &&
+        typeof rule.action === "string",
+    )
+    .map((rule) => ({
+      scope: rule.scope,
+      target: rule.target,
+      pattern: typeof rule.pattern === "string" ? rule.pattern : "",
+      action: rule.action,
+    }))
+    .slice(0, 200);
+}
+
+/** The scopes that apply to `agentName`, most specific first (guard order). */
+function scopesFor(agentName) {
+  const name = typeof agentName === "string" ? agentName.trim() : "";
+  return name === "" ? ["session", "any"] : [`agent:${name}`, "any"];
+}
+
+/**
+ * Whether an **unconditional** `allow` rule lets `agentName` use `family`.
+ *
+ * Unconditional means an empty pattern: a rule that authorizes `git status*`
+ * authorizes those commands, not the family, and the pre-flight must not promise
+ * a run it cannot finish. Deny and ask rules narrow, never widen; the guard's
+ * scope precedence (most specific first) is mirrored here so the two agree.
+ */
+export function rulesAllowFamily(rules, agentName, family) {
+  for (const scope of scopesFor(agentName)) {
+    const matching = rules.filter(
+      (rule) =>
+        rule.scope === scope &&
+        (rule.target === family || rule.target === "any") &&
+        String(rule.pattern ?? "").trim() === "",
+    );
+    if (matching.length === 0) continue;
+    return matching.every((rule) => rule.action === "allow");
+  }
+  return false;
+}
+
+/**
+ * The ceiling a child may reach once its own rules are taken into account.
+ *
+ * Plan/Ask keep their read-only floor whatever a rule says — they disable the
+ * write tools outright, so a rule must not promise what the workflow will
+ * refuse. In Build, an unconditional `allow` rule for a family raises the
+ * permitted ceiling to that family; anything the rule does not cover is still
+ * decided by the guard on the call itself.
+ */
+export function effectiveCeiling({ agentName, allowed, workflowMode, rules = [] }) {
+  if (workflowMode !== "build") return allowed;
+  let best = CEILING_RANK[allowed] ?? CEILING_RANK.read;
+  let name = allowed;
+  for (const [family, ceiling] of Object.entries(FAMILY_CEILING)) {
+    if ((CEILING_RANK[ceiling] ?? 0) <= best) continue;
+    if (!rulesAllowFamily(rules, agentName, family)) continue;
+    best = CEILING_RANK[ceiling];
+    name = ceiling;
+  }
+  return name;
 }
 
 /** A human sentence naming the mode, for refusal and card copy. */

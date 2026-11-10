@@ -488,3 +488,39 @@ test("a spawn failure is a readable failed run, not a throw", async () => {
   assert.equal(result.details.children[0].status, "failed");
   assert.match(result.content[0].text, /could not start pi: spawn ENOENT/);
 });
+
+test("a Permissions allow rule lets a worker run under Supervised", async () => {
+  // The rule is what the Settings → Permissions page writes: unconditional, so
+  // the pre-flight can promise the run rather than refusing it up front.
+  writeOrbitFile("access-rules.json", {
+    version: 1,
+    rules: [{ scope: "agent:worker", target: "exec", pattern: "", action: "allow" }],
+  });
+  const spawn = fakeSpawn(successfulChild);
+  const result = await callTool(fakePi(), spawn, { agent: "worker", task: "fix it" });
+  assert.equal(spawn.calls.length, 1, "the child started");
+  assert.doesNotMatch(result.content[0].text, /command-running agent/);
+});
+
+test("a pattern rule does not promise a tier the run cannot finish", async () => {
+  writeOrbitFile("access-rules.json", {
+    version: 1,
+    rules: [{ scope: "agent:worker", target: "exec", pattern: "git status*", action: "allow" }],
+  });
+  const spawn = fakeSpawn(successfulChild);
+  const result = await callTool(fakePi(), spawn, { agent: "worker", task: "fix it" });
+  assert.equal(spawn.calls.length, 0, "still refused up front");
+  assert.match(result.content[0].text, /Settings → Permissions/);
+});
+
+test("a rule never widens Plan mode", async () => {
+  writeOrbitFile("workflow.json", { "session-a": "plan" });
+  writeOrbitFile("access-rules.json", {
+    version: 1,
+    rules: [{ scope: "any", target: "any", pattern: "", action: "allow" }],
+  });
+  const spawn = fakeSpawn(successfulChild);
+  const result = await callTool(fakePi(), spawn, { agent: "worker", task: "fix it" });
+  assert.equal(spawn.calls.length, 0);
+  assert.match(result.content[0].text, /Plan/);
+});

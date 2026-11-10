@@ -40,7 +40,37 @@ type Key = (u32, u32, i64, [u8; 4], [u8; 4]);
 #[derive(Default)]
 struct Cache {
     image: Option<(Key, Arc<RenderImage>)>,
+    /// The size the previous frame laid out. A raster is only requested once
+    /// the size holds still, so an animated column (the sessions sidebar
+    /// sliding) does not queue one full field per frame.
+    size: (u32, u32),
     pending: bool,
+}
+
+/// What one frame does with the field it has: whether to ask for a new raster,
+/// and whether the cached one still belongs on screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FramePlan {
+    request: bool,
+    paint: bool,
+}
+
+/// Decide a frame from the key it wants and the field it has.
+///
+/// The two answers are independent. A size that is still moving is not worth a
+/// raster yet — a slide would queue one full field per frame, each a texture
+/// upload for a width that no longer exists — so the request waits for the
+/// size to hold. The field it leaves behind is still this page's own colours at
+/// an older size, and that keeps painting into the new bounds: stretching the
+/// dither for the length of a slide is invisible, blanking it is a flash across
+/// the whole page. Only a *colour* change blanks, because the wrong background
+/// would be a lie rather than a stretch.
+fn frame_plan(key: Key, cached: Option<Key>, laid_out: (u32, u32), pending: bool) -> FramePlan {
+    let settled = laid_out == (key.0, key.1);
+    FramePlan {
+        request: !pending && cached.is_none_or(|old| old != key) && (settled || cached.is_none()),
+        paint: cached.is_some_and(|old| old.3 == key.3 && old.4 == key.4),
+    }
 }
 
 fn color(value: gpui::Hsla) -> [u8; 4] {
@@ -80,8 +110,14 @@ pub fn layer(theme: Theme, phase: f32) -> impl IntoElement + use<> {
                         Cache::default()
                     });
                     cache.update(cx, |cache, cx| {
-                        if !cache.pending && cache.image.as_ref().is_none_or(|(old, _)| *old != key)
-                        {
+                        let plan = frame_plan(
+                            key,
+                            cache.image.as_ref().map(|(old, _)| *old),
+                            cache.size,
+                            cache.pending,
+                        );
+                        cache.size = (width, height);
+                        if plan.request {
                             cache.pending = true;
                             let task = cx.background_spawn(async move {
                                 raster(width, height, tick as f32 / FPS, background, ink)
@@ -100,14 +136,10 @@ pub fn layer(theme: Theme, phase: f32) -> impl IntoElement + use<> {
                             })
                             .detach();
                         }
-                        // Never show a stale theme or stretch an old size while a job runs.
-                        cache
-                            .image
-                            .as_ref()
-                            .filter(|(old, _)| {
-                                old.0 == key.0 && old.1 == key.1 && old.3 == key.3 && old.4 == key.4
-                            })
-                            .map(|(_, image)| image.clone())
+                        if !plan.paint {
+                            return None;
+                        }
+                        cache.image.as_ref().map(|(_, image)| image.clone())
                     })
                 },
                 move |bounds, image, window, _| {
@@ -296,6 +328,90 @@ fn raster(width: u32, height: u32, phase: f32, bg: [u8; 4], ink: [u8; 4]) -> Rgb
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const BACKGROUND: [u8; 4] = [0, 0, 0, 255];
+    const INK: [u8; 4] = [255, 255, 255, 255];
+
+    fn key(width: u32, height: u32, tick: i64) -> Key {
+        (width, height, tick, BACKGROUND, INK)
+    }
+
+    /// The field used to blank whenever its size changed, because the cached
+    /// raster was only painted at exactly the bounds it was made for. Toggling
+    /// the sessions sidebar animates the chat column's width, so every frame of
+    /// the slide failed that check and the whole page fell back to a flat slab
+    /// until the slide ended — a flash on every show and hide.
+    #[test]
+    fn a_field_that_outgrew_its_raster_keeps_painting() {
+        let plan = frame_plan(
+            key(1150, 878, 3),
+            Some(key(1133, 878, 3)),
+            (1133, 878),
+            false,
+        );
+        assert!(
+            plan.paint,
+            "a size change must not blank the page mid-slide"
+        );
+        assert!(
+            !plan.request,
+            "a size that is still moving is not worth a raster yet"
+        );
+    }
+
+    /// Once the slide lands, exactly one raster is made for the settled size:
+    /// the frame after it is asked for, and no frame before it is.
+    #[test]
+    fn the_settled_size_asks_for_one_raster() {
+        assert_eq!(
+            frame_plan(
+                key(1410, 878, 3),
+                Some(key(1133, 878, 3)),
+                (1410, 878),
+                false
+            ),
+            FramePlan {
+                request: true,
+                paint: true
+            }
+        );
+        assert!(
+            !frame_plan(
+                key(1410, 878, 3),
+                Some(key(1410, 878, 3)),
+                (1410, 878),
+                false
+            )
+            .request,
+            "a field that already matches its bounds is not re-made"
+        );
+    }
+
+    #[test]
+    fn a_stale_theme_blanks_instead_of_painting_the_wrong_colours() {
+        let recoloured = (1410, 878, 3, [255, 0, 0, 255], INK);
+        assert!(
+            !frame_plan(recoloured, Some(key(1410, 878, 3)), (1410, 878), false).paint,
+            "an old palette must not stand in for the new one"
+        );
+    }
+
+    #[test]
+    fn the_first_frame_asks_immediately_even_while_the_window_settles() {
+        assert_eq!(
+            frame_plan(key(913, 817, 0), None, (0, 0), false),
+            FramePlan {
+                request: true,
+                paint: false
+            },
+            "nothing on screen to keep, so there is nothing to wait for"
+        );
+        assert!(
+            !frame_plan(key(913, 817, 0), None, (0, 0), true).request,
+            "one raster in flight at a time"
+        );
+    }
+
     #[test]
     fn bayer_has_all_thresholds() {
         let mut thresholds = BAYER.into_iter().flatten().collect::<Vec<_>>();

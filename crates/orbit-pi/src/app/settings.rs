@@ -218,6 +218,11 @@ const SETTINGS_SECTIONS: &[(SettingsSection, &str, &str)] = &[
         "settings.subagents",
     ),
     (
+        SettingsSection::Permissions,
+        "icons/lock.svg",
+        "settings.permissions",
+    ),
+    (
         SettingsSection::Plugins,
         "icons/extensions.svg",
         "settings.plugins",
@@ -497,6 +502,11 @@ const SETTINGS_SEARCH_INDEX: &[(SettingsSection, &str, &str)] = &[
         SettingsSection::Subagents,
         "settings.subagents",
         "subagents agents delegate child task scout worker reviewer",
+    ),
+    (
+        SettingsSection::Permissions,
+        "settings.permissions",
+        "permissions rules allow deny ask approve guard bash command tool access scope subagent",
     ),
     (
         SettingsSection::Plugins,
@@ -1051,6 +1061,10 @@ impl OrbitApp {
                 tr!("settings.subagents"),
                 tr!("settings.subagents_description"),
             ),
+            SettingsSection::Permissions => (
+                tr!("settings.permissions"),
+                tr!("settings.permissions_description"),
+            ),
             SettingsSection::Plugins => {
                 (tr!("settings.plugins"), tr!("settings.plugins_description"))
             }
@@ -1187,6 +1201,7 @@ impl OrbitApp {
             SettingsSection::Skills => Vec::new(),
             // Rendered by `subagents_ui::render_subagents_page`.
             SettingsSection::Subagents => Vec::new(),
+            SettingsSection::Permissions => self.permissions_rows(theme, this.clone(), cx),
             SettingsSection::Plugins => self.plugin_rows(theme, this.clone(), cx),
             // The MCP page's rows are owned by `mcp_ui`; it needs the cursor
             // and filter state that lives beside the manager.
@@ -7598,7 +7613,8 @@ impl OrbitApp {
             | SettingsSelect::ActiveModel
             | SettingsSelect::ModelProvider
             | SettingsSelect::RetentionMode
-            | SettingsSelect::RetentionDays => unreachable!(),
+            | SettingsSelect::RetentionDays
+            | SettingsSelect::AccessMode => unreachable!(),
         };
         let selected = values
             .iter()
@@ -8141,6 +8157,11 @@ impl OrbitApp {
         ix: usize,
         cx: &mut Context<Self>,
     ) -> bool {
+        // Settings → Permissions owns four dropdowns; they live beside that
+        // page's state rather than in this file.
+        if self.apply_permission_select(kind, ix, cx) {
+            return true;
+        }
         match kind {
             SettingsSelect::AccentColor => {
                 if let Some(color) = theme::AccentColor::ALL.get(ix).copied() {
@@ -8389,7 +8410,8 @@ impl OrbitApp {
             | SettingsSelect::ActiveModel
             | SettingsSelect::ModelProvider
             | SettingsSelect::RetentionMode
-            | SettingsSelect::RetentionDays => unreachable!(),
+            | SettingsSelect::RetentionDays
+            | SettingsSelect::AccessMode => unreachable!(),
         }
         theme::set_ui_prefs(cx, ui);
         true
@@ -8494,6 +8516,7 @@ impl OrbitApp {
             }
             SettingsSection::Skills => self.refresh_skills(cx),
             SettingsSection::Subagents => self.refresh_subagents(cx),
+            SettingsSection::Permissions => self.refresh_permissions(cx),
             SettingsSection::Plugins => self.refresh_plugins(cx),
             SettingsSection::Mcp => self.mcp_section_opened(cx),
             _ => {}

@@ -271,3 +271,136 @@ test("no ceiling leaves the previous behaviour untouched", async () => {
   assert.equal(result, undefined);
   assert.equal(selectCalls, 1);
 });
+
+// ── permission rules (Settings → Permissions) ───────────────────────────
+
+/** Write the rules file Orbit's Settings page owns. */
+function setRules(rules) {
+  fs.writeFileSync(
+    path.join(home, ".orbit-pi", "access-rules.json"),
+    JSON.stringify({ version: 1, rules }),
+  );
+}
+
+test("an allow rule runs a command without prompting", async () => {
+  setMode("supervised");
+  setRules([{ scope: "any", target: "exec", pattern: "git status*", action: "allow" }]);
+  const pi = fakePi();
+  activate(pi);
+
+  const result = await pi.fire(
+    "tool_call",
+    { toolName: "bash", input: { command: "git status --short" } },
+    fakeCtx(),
+  );
+  assert.equal(result, undefined, "runs");
+  assert.equal(selectCalls, 0, "no prompt");
+});
+
+test("full-access never prompts, even with an ask rule stored", async () => {
+  setMode("full-access");
+  setRules([
+    { scope: "any", target: "exec", pattern: "rm *", action: "ask" },
+    { scope: "any", target: "edit", pattern: "", action: "deny" },
+  ]);
+  const pi = fakePi();
+  activate(pi);
+
+  for (const [tool, input] of [
+    ["bash", { command: "rm -rf build" }],
+    ["edit", { path: "a" }],
+  ]) {
+    const result = await pi.fire("tool_call", { toolName: tool, input }, fakeCtx());
+    assert.equal(result, undefined, `${tool} runs`);
+  }
+  assert.equal(selectCalls, 0, "nothing asked");
+});
+
+test("a deny rule blocks without a prompt and names the call", async () => {
+  setMode("supervised");
+  setRules([{ scope: "any", target: "exec", pattern: "rm *", action: "deny" }]);
+  const pi = fakePi();
+  activate(pi);
+
+  const result = await pi.fire("tool_call", { toolName: "bash", input: { command: "rm -rf .." } }, fakeCtx());
+  assert.equal(result.block, true);
+  assert.match(result.reason, /permission rule/);
+  assert.match(result.reason, /rm -rf \.\./);
+  assert.equal(selectCalls, 0, "nothing to approve");
+});
+
+test("a subagent-scoped rule applies to that child only", async () => {
+  setMode("supervised");
+  setRules([{ scope: "agent:worker", target: "exec", pattern: "git *", action: "allow" }]);
+  const pi = fakePi();
+  activate(pi);
+
+  process.env.ORBIT_SUBAGENT_CEILING = "exec";
+  process.env.ORBIT_SUBAGENT_AGENT = "worker";
+  try {
+    const child = await pi.fire(
+      "tool_call",
+      { toolName: "bash", input: { command: "git status" } },
+      fakeCtx({ hasUI: false }),
+    );
+    assert.equal(child, undefined, "the worker's own rule allows it with no UI");
+  } finally {
+    delete process.env.ORBIT_SUBAGENT_CEILING;
+    delete process.env.ORBIT_SUBAGENT_AGENT;
+  }
+
+  selectResult = OPTION_ALLOW_ONCE;
+  await pi.fire("tool_call", { toolName: "bash", input: { command: "git status" } }, fakeCtx());
+  assert.equal(selectCalls, 1, "the main session is still asked");
+});
+
+test("a main-session rule never applies to a child", async () => {
+  setMode("supervised");
+  setRules([{ scope: "session", target: "exec", pattern: "git *", action: "allow" }]);
+  const pi = fakePi();
+  activate(pi);
+
+  process.env.ORBIT_SUBAGENT_CEILING = "exec";
+  process.env.ORBIT_SUBAGENT_AGENT = "worker";
+  try {
+    const child = await pi.fire(
+      "tool_call",
+      { toolName: "bash", input: { command: "git status" } },
+      fakeCtx({ hasUI: false }),
+    );
+    assert.equal(child.block, true, "a child has no UI, so an unruled call is blocked");
+  } finally {
+    delete process.env.ORBIT_SUBAGENT_CEILING;
+    delete process.env.ORBIT_SUBAGENT_AGENT;
+  }
+});
+
+test("a rule cannot widen a child past its ceiling", async () => {
+  setMode("full-access");
+  setRules([{ scope: "any", target: "exec", pattern: "*", action: "allow" }]);
+  process.env.ORBIT_SUBAGENT_CEILING = "read";
+  process.env.ORBIT_SUBAGENT_AGENT = "scout";
+  try {
+    const pi = fakePi();
+    activate(pi);
+    const result = await pi.fire(
+      "tool_call",
+      { toolName: "bash", input: { command: "ls" } },
+      fakeCtx({ hasUI: false }),
+    );
+    assert.equal(result.block, true, "the ceiling still clamps");
+    assert.match(result.reason, /read-only/);
+  } finally {
+    delete process.env.ORBIT_SUBAGENT_CEILING;
+    delete process.env.ORBIT_SUBAGENT_AGENT;
+  }
+});
+
+test("a broken rules file is no rules, so the mode default still applies", async () => {
+  setMode("supervised");
+  fs.writeFileSync(path.join(home, ".orbit-pi", "access-rules.json"), "{not json");
+  const pi = fakePi();
+  activate(pi);
+  await pi.fire("tool_call", { toolName: "edit", input: { path: "a" } }, fakeCtx());
+  assert.equal(selectCalls, 1, "asked as supervised does");
+});

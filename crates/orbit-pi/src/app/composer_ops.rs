@@ -16,6 +16,24 @@ pub(super) enum CompletionIntent {
     Send,
 }
 
+/// The composer facts the app-level chrome renders from, compared across edits
+/// so an ordinary keystroke does not rebuild the window. See
+/// [`super::OrbitApp::composer_chrome`].
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(super) struct ComposerChrome {
+    /// Chips in the attachment tray: its presence, and the count header.
+    slots: usize,
+    /// A send would deliver something, so the primary control is live.
+    ready: bool,
+    /// The draft holds characters, so the follow-up chips step aside.
+    typed: bool,
+    /// The slash/`@` menu, and what it was ranked for.
+    menu_open: bool,
+    menu_trigger: Option<(TriggerKind, String)>,
+    menu_count: usize,
+    menu_highlighted: usize,
+}
+
 /// The three text slots of an attachment chip: what it is called, its one
 /// secondary fact (size or line count), and the hover explanation.
 struct ChipContent {
@@ -268,6 +286,33 @@ impl OrbitApp {
     pub(super) fn swap_to_new_task_draft(&mut self, cx: &mut Context<Self>) {
         self.save_composer_draft(cx);
         self.restore_composer_draft(None, cx);
+    }
+
+    /// What the app-level composer chrome reads out of an edit: the send
+    /// control's live state, the attachment tray, the follow-up chips and the
+    /// slash/`@` menu.
+    ///
+    /// Everything else an edit changes — the text itself, the caret, the box's
+    /// grown height, the selection — is drawn by `ComposerInput`'s own render,
+    /// which GPUI repaints without the app. So this key is what decides whether
+    /// a keystroke has to rebuild the window (see `OrbitApp::_input_sub`); a
+    /// field added here must be a fact the app-level render actually reads.
+    pub(super) fn composer_chrome(&self, cx: &Context<Self>) -> ComposerChrome {
+        let input = self.input.read(cx);
+        let draft = input.text();
+        let slots = self.attachment_slots_used();
+        let menu = self.autocomplete.borrow();
+        ComposerChrome {
+            slots,
+            // `send_controls` reads the same rule as `send_has_payload`.
+            ready: !draft.trim().is_empty() || slots > 0,
+            // The follow-up chips step aside once the box holds any character.
+            typed: !draft.is_empty(),
+            menu_open: menu.open,
+            menu_trigger: input.active_trigger().map(|t| (t.kind, t.query)),
+            menu_count: menu.count,
+            menu_highlighted: menu.highlighted,
+        }
     }
 
     /// Derive the open/closed/highlight state from the composer text.
