@@ -397,7 +397,7 @@ test("a malformed rule is dropped, never widened", () => {
   assert.equal(ruleDecision(null, null, "bash", "exec", {}), null);
 });
 
-test("readRules loads what Orbit wrote and degrades to no rules", () => {
+test("readRules loads valid rules and fails closed on malformed stores", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "orbit-rules-"));
   const file = path.join(dir, "access-rules.json");
   try {
@@ -409,8 +409,6 @@ test("readRules loads what Orbit wrote and degrades to no rules", () => {
         rules: [
           { scope: "any", target: "exec", pattern: "rm *", action: "deny" },
           { scope: "agent:worker", target: "any", pattern: "", action: "ask" },
-          { scope: "any", target: "exec", pattern: "ls", action: "sometimes" },
-          "not a rule",
         ],
       }),
     );
@@ -418,8 +416,15 @@ test("readRules loads what Orbit wrote and degrades to no rules", () => {
       { scope: "any", target: "exec", pattern: "rm *", action: "deny" },
       { scope: "agent:worker", target: "any", pattern: "", action: "ask" },
     ]);
-    fs.writeFileSync(file, "{not json");
-    assert.deepEqual(readRules(file), [], "broken json → no rules, so the mode default applies");
+    for (const pattern of [null, 42, undefined]) {
+      fs.writeFileSync(file, JSON.stringify({ rules: [{ scope: "any", target: "exec", pattern, action: "allow" }] }));
+      assert.equal(readRules(file), null, "invalid pattern cannot become an unconditional grant");
+    }
+    for (const raw of ["{not json", "{}", JSON.stringify({ rules: [{ scope: "any", target: "exec", pattern: "", action: "unknown" }] })]) {
+      fs.writeFileSync(file, raw);
+      assert.equal(readRules(file), null, "invalid store fails closed");
+    }
+    assert.equal(readRules(dir), null, "unreadable file fails closed");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

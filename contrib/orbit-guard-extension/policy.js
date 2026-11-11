@@ -353,27 +353,33 @@ export function ruleDecision(rules, agent, toolName, kind, input) {
   return null;
 }
 
-/** One stored rule, or `null` when it is not a shape Orbit writes. A dropped
- * rule falls through to the mode default — asking — never to a silent allow. */
+/** One stored rule, or `null` when it is not a shape Orbit writes. */
 function normalizeRule(raw) {
   if (!raw || typeof raw !== "object") return null;
   const scope = normalizeScope(raw.scope);
   const target = RULE_TARGETS.includes(raw.target) ? raw.target : null;
   const action = RULE_ACTIONS.includes(raw.action) ? raw.action : null;
-  if (scope === null || target === null || action === null) return null;
-  const pattern = typeof raw.pattern === "string" ? raw.pattern.slice(0, MAX_PATTERN) : "";
+  if (scope === null || target === null || action === null ||
+      typeof raw.pattern !== "string" || [...raw.pattern].length > MAX_PATTERN) return null;
+  const pattern = raw.pattern;
   return { scope, target, pattern, action };
 }
 
-/** The rules Orbit's Settings page wrote, read leniently. Any failure is "no
- * rules", which is the mode default and therefore still fail-safe. */
+/** Return rules, or `null` when an existing store cannot be trusted. */
 export function readRules(filePath = rulesFilePath()) {
+  let raw;
   try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
-    const list = Array.isArray(parsed?.rules) ? parsed.rules : [];
-    return list.slice(0, MAX_RULES).map(normalizeRule).filter(Boolean);
+    raw = fs.readFileSync(filePath, "utf8");
+  } catch (error) {
+    return error?.code === "ENOENT" ? [] : null;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed?.rules) || parsed.rules.length > MAX_RULES) return null;
+    const rules = parsed.rules.map(normalizeRule);
+    return rules.some((rule) => rule === null) ? null : rules;
   } catch {
-    return [];
+    return null;
   }
 }
 

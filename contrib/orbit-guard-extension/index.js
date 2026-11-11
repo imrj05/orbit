@@ -77,8 +77,12 @@ export default function activate(pi) {
       return { block: true, reason: ceilingBlockReason(ceiling, tool, agent) };
     }
 
+    const rules = readRules();
+    if (rules === null) {
+      return { block: true, reason: "Blocked: Orbit permission rules are unreadable or invalid. Repair access-rules.json before running tools." };
+    }
     const decision = decide(mode, tool, readAllowlist(mode), {
-      rules: readRules(),
+      rules,
       agent: process.env.ORBIT_SUBAGENT_AGENT ?? null,
       input: event.input,
     });

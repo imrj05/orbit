@@ -70,6 +70,21 @@ function fakeCtx({ hasUI = true } = {}) {
   };
 }
 
+test("a broken rules store blocks tools even when the mode normally allows them", async () => {
+  fs.writeFileSync(path.join(home, ".orbit-pi", "access-rules.json"), "{broken");
+  const pi = fakePi();
+  activate(pi);
+  for (const mode of ["supervised", "auto-accept-edits", "full-access"]) {
+    setMode(mode);
+    for (const toolName of ["read", "webfetch", "edit", "bash"]) {
+      const result = await pi.fire("tool_call", { toolName, input: {} }, fakeCtx());
+      assert.equal(result.block, true, `${mode} ${toolName}`);
+      assert.match(result.reason, /permission rules/i);
+    }
+  }
+  assert.equal(selectCalls, 0);
+});
+
 test("full-access never prompts", async () => {
   setMode("full-access");
   const pi = fakePi();
@@ -396,9 +411,8 @@ test("a rule cannot widen a child past its ceiling", async () => {
   }
 });
 
-test("a broken rules file is no rules, so the mode default still applies", async () => {
+test("a missing rules file keeps the mode default", async () => {
   setMode("supervised");
-  fs.writeFileSync(path.join(home, ".orbit-pi", "access-rules.json"), "{not json");
   const pi = fakePi();
   activate(pi);
   await pi.fire("tool_call", { toolName: "edit", input: { path: "a" } }, fakeCtx());

@@ -120,12 +120,11 @@ read only by the extension. The extension's own "Always allow this tool" grants
 stay in `access-allow.json`, written only by the extension, so there is never a
 two-writer race on one file.
 
-The file is read leniently in the safe direction:
-
-- a missing, unreadable or malformed file ⇒ **no rules**, i.e. the mode default;
-- a rule with an unknown `scope`, `target` or `action` is **dropped**, never
-  half-applied — a dropped `deny` falls back to asking, never to allowing;
-- at most 200 rules are stored, and a pattern is truncated at 200 characters.
+A missing file means **no rules**, as on first launch. An unreadable or
+malformed file, including an invalid rule or pattern, blocks tool calls until
+`access-rules.json` is repaired. This applies even in Full access: the guard
+cannot safely determine which rules were intended. The app stores at most 200
+rules and truncates patterns to 200 characters when creating them.
 
 ## Where the code lives
 

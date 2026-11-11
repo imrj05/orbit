@@ -469,7 +469,70 @@ pub fn markdown_body(raw: &str) -> String {
     if !looks_like_html(raw) {
         return raw.to_string();
     }
-    decode_entities(&collapse_blank_lines(&normalize_html(raw)))
+    let (protected, code, marker) = protect_markdown_code(raw);
+    let mut result = decode_entities(&collapse_blank_lines(&normalize_html(&protected)));
+    for (index, original) in code.iter().enumerate() {
+        result = result.replace(&format!("{marker}{index}END"), original);
+    }
+    result
+}
+
+/// Hide Markdown code from the HTML converter, including entity decoding.
+fn protect_markdown_code(raw: &str) -> (String, Vec<&str>, String) {
+    let mut marker = "ORBITCODETOKEN".to_string();
+    while raw.contains(&marker) {
+        marker.push('X');
+    }
+    let mut output = String::with_capacity(raw.len());
+    let mut code = Vec::new();
+    let mut fence: Option<(u8, usize)> = None;
+    let mut indented_code = false;
+    for line in raw.split_inclusive('\n') {
+        let content = line.strip_suffix('\n').unwrap_or(line);
+        let trimmed = content.trim_start_matches(' ');
+        let indent = content.len() - trimmed.len();
+        let first = trimmed.as_bytes().first().copied();
+        let run = first.map_or(0, |ch| trimmed.bytes().take_while(|&b| b == ch).count());
+        let fence_line = indent <= 3 && matches!(first, Some(b'`' | b'~')) && run >= 3;
+        let in_fence = fence.is_some();
+        if let Some((ch, length)) = fence {
+            if fence_line && first == Some(ch) && run >= length && trimmed[run..].trim().is_empty()
+            {
+                fence = None;
+            }
+        } else if fence_line {
+            fence = Some((first.unwrap_or_default(), run));
+        }
+        let indented = content.starts_with("    ") || content.starts_with('\t');
+        indented_code = indented || (indented_code && content.trim().is_empty());
+        if in_fence || fence.is_some() || fence_line || indented_code {
+            output.push_str(&format!("{marker}{}END", code.len()));
+            code.push(content);
+        } else {
+            let mut rest = content;
+            while let Some(start) = rest.find('`') {
+                output.push_str(&rest[..start]);
+                let ticks = rest[start..].bytes().take_while(|&b| b == b'`').count();
+                let delimiter = "`".repeat(ticks);
+                let after = start + ticks;
+                if let Some(end) = rest[after..].find(&delimiter) {
+                    let end = after + end + ticks;
+                    output.push_str(&format!("{marker}{}END", code.len()));
+                    code.push(&rest[start..end]);
+                    rest = &rest[end..];
+                } else {
+                    output.push_str(&rest[start..]);
+                    rest = "";
+                    break;
+                }
+            }
+            output.push_str(rest);
+        }
+        if line.ends_with('\n') {
+            output.push('\n');
+        }
+    }
+    (output, code, marker)
 }
 
 /// A body needs normalization only when it actually carries an HTML tag, not
@@ -585,12 +648,17 @@ fn normalize_html(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut rest = raw;
     while !rest.is_empty() {
-        let Some(open) = rest.find('<').filter(|&i| looks_like_tag_at(rest, i)) else {
+        let Some(open) = rest
+            .match_indices('<')
+            .map(|(index, _)| index)
+            .find(|&index| looks_like_tag_at(rest, index))
+        else {
             out.push_str(rest);
             break;
         };
         out.push_str(&rest[..open]);
         rest = &rest[open..];
+        let tag_start = rest;
         let Some((name, closing, body, after)) = take_tag(rest) else {
             // A lone '<' with no '>' is prose, not markup.
             out.push('<');
@@ -604,6 +672,8 @@ fn normalize_html(raw: &str) -> String {
                 "p" | "ul" | "ol" | "blockquote" | "div" | "section"
             ) {
                 out.push('\n');
+            } else if !matches!(name.as_str(), "li" | "details") {
+                out.push_str(&tag_start[..tag_start.len() - after.len()]);
             }
             continue;
         }
@@ -658,7 +728,7 @@ fn normalize_html(raw: &str) -> String {
             "p" | "ul" | "ol" | "blockquote" | "details" | "div" | "section" => {
                 out.push('\n');
             }
-            _ => {}
+            _ => out.push_str(&tag_start[..tag_start.len() - after.len()]),
         }
     }
     out
@@ -702,8 +772,7 @@ fn collapse_blank_lines(text: &str) -> String {
             dangling_item = false;
         }
         blank = false;
-        // Drop the indentation HTML introduces around list content.
-        out.push_str(line.trim_start());
+        out.push_str(line);
     }
     out
 }
@@ -1382,6 +1451,19 @@ mod tests {
             "img: {md}"
         );
         assert!(!md.contains("\n\n\n"), "blank runs collapse: {md}");
+    }
+
+    #[test]
+    fn html_normalization_preserves_markdown_code_and_indentation() {
+        let raw = "<details><summary>Example</summary></details>\n\n    indented code\n\n```rust\nfn f<T>() {\n    println!(\"&lt;T&gt;\");\n}\n```\n\nInline `Vec<T>` and Vec<T>.";
+        let result = markdown_body(raw);
+        assert!(result.contains("    indented code"), "{result}");
+        assert!(
+            result.contains("```rust\nfn f<T>() {\n    println!(\"&lt;T&gt;\");\n}\n```"),
+            "{result}"
+        );
+        assert!(result.contains("Inline `Vec<T>` and Vec<T>."), "{result}");
+        assert!(result.contains("**Example**"), "{result}");
     }
 
     #[test]

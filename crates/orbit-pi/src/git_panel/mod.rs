@@ -10844,8 +10844,8 @@ mod tests {
 
     #[derive(Clone)]
     enum GithubDetailFixture {
-        Issue(gh::GhIssue),
-        Pull(gh::GhPull),
+        Issue(Box<gh::GhIssue>),
+        Pull(Box<gh::GhPull>),
     }
 
     struct GithubDetailProbe {
@@ -10858,8 +10858,8 @@ mod tests {
             self.panel.update(cx, |panel, cx| {
                 let theme = *theme::get(cx);
                 match &self.fixture {
-                    GithubDetailFixture::Issue(issue) => panel.issue_detail_view(issue, theme, cx),
-                    GithubDetailFixture::Pull(pull) => panel.pr_detail_view(pull, theme, cx),
+                    GithubDetailFixture::Issue(issue) => panel.issue_detail_view(issue.as_ref(), theme, cx),
+                    GithubDetailFixture::Pull(pull) => panel.pr_detail_view(pull.as_ref(), theme, cx),
                 }
             })
         }
@@ -10940,8 +10940,8 @@ mod tests {
         let cx = cx.add_empty_window();
         for (width, height) in [(400., 320.), (400., 720.), (560., 720.), (760., 720.)] {
             for fixture in [
-                GithubDetailFixture::Issue(issue.clone()),
-                GithubDetailFixture::Pull(pull.clone()),
+                GithubDetailFixture::Issue(Box::new(issue.clone())),
+                GithubDetailFixture::Pull(Box::new(pull.clone())),
             ] {
                 let is_pr = matches!(fixture, GithubDetailFixture::Pull(_));
                 let _ = cx.draw(
