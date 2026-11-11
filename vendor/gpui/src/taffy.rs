@@ -309,7 +309,10 @@ impl ToTaffy<taffy::style::Style> for Style {
             unit: &Option<u16>,
         ) -> Vec<taffy::GridTemplateComponent<T>> {
             // grid-template-columns: repeat(<number>, minmax(0, 1fr));
-            unit.map(|count| vec![repeat(count, vec![minmax(length(0.0), fr(1.0))])])
+            // The `_f32` suffixes are required: `length`/`fr` take
+            // `Into<f32>`, and an untyped float literal otherwise falls back
+            // from `f64` (a future-incompatible lint, denied on newer Rust).
+            unit.map(|count| vec![repeat(count, vec![minmax(length(0.0_f32), fr(1.0_f32))])])
                 .unwrap_or_default()
         }
 

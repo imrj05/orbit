@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 /// Environment override for the `gh` binary, mirroring `PI_BIN`.
 pub const GH_BIN_ENV: &str = "GH_BIN";
@@ -343,10 +343,12 @@ pub fn list_issues(cwd: &Path, filter: &IssueFilter) -> Result<Vec<GhIssue>, Str
 /// One issue with its comments.
 pub fn view_issue(cwd: &Path, number: u64) -> Result<GhIssue, String> {
     let number = number.to_string();
-    parse_json(&run(
+    let mut issue: GhIssue = parse_json(&run(
         cwd,
         &["issue", "view", &number, "--json", ISSUE_VIEW_FIELDS],
-    )?)
+    )?)?;
+    normalize_issue(&mut issue);
+    Ok(issue)
 }
 
 /// Create an issue, returning `gh`'s printed URL. `repo` targets an explicit
@@ -455,6 +457,276 @@ fn parse_json<T: serde::de::DeserializeOwned>(out: &str) -> Result<T, String> {
     serde_json::from_str(out).map_err(|err| tr!("git_panel.gh_json_error", error = err))
 }
 
+// ── GitHub HTML → Markdown ───────────────────────────────────────────
+
+/// GitHub stores Dependabot/Renovate bodies (and some comments and reviews)
+/// with raw HTML: `<details>`, `<summary>`, `<ul>`, `<li>`, `<a href>`,
+/// `<h2>`, `<code>`, `<em>`, `<blockquote>`, `<br>`. Orbit's Markdown
+/// renderer prints unknown tags literally, so convert the common GitHub HTML
+/// to Markdown before it reaches the transcript renderer. Raw `<img>` tags
+/// become Markdown images, which the renderer already understands.
+pub fn markdown_body(raw: &str) -> String {
+    if !looks_like_html(raw) {
+        return raw.to_string();
+    }
+    decode_entities(&collapse_blank_lines(&normalize_html(raw)))
+}
+
+/// A body needs normalization only when it actually carries an HTML tag, not
+/// when prose merely mentions `<something>` — a tag is `<` + a letter or `/`.
+fn looks_like_tag_at(text: &str, at: usize) -> bool {
+    text[at + 1..]
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '/' || c == '!')
+}
+
+fn looks_like_html(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    (0..bytes.len().saturating_sub(1)).any(|i| bytes[i] == b'<' && looks_like_tag_at(text, i))
+}
+
+/// One parsed tag: its lowercase name, whether it closes, and its raw body
+/// (`href="…" src="…" …`), with `rest` pointing past the `>`.
+fn take_tag(mut rest: &str) -> Option<(String, bool, &str, &str)> {
+    rest = rest.strip_prefix('<')?;
+    let end = rest.find('>')?;
+    let inner = &rest[..end];
+    let after = &rest[end + 1..];
+    let (closing, inner) = match inner.strip_prefix('/') {
+        Some(inner) => (true, inner.trim_start()),
+        None => (false, inner.trim()),
+    };
+    let name_len = inner
+        .find(|c: char| c.is_ascii_whitespace() || c == '/')
+        .unwrap_or(inner.len());
+    Some((
+        inner[..name_len].to_ascii_lowercase(),
+        closing,
+        inner[name_len..].trim(),
+        after,
+    ))
+}
+
+/// The value of one attribute in a tag body (`href="…"` or `href='…'`),
+/// matched case-insensitively. Values are extracted from the original body by
+/// byte offset whenever lowercasing preserves length (true for ASCII HTML);
+/// otherwise the exact-case scan covers real GitHub markup.
+fn tag_attr(body: &str, name: &str) -> Option<String> {
+    // `to_ascii_lowercase` is byte-length preserving, so offsets map one to
+    // one onto the original body.
+    let lower = body.to_ascii_lowercase();
+    tag_attr_exact(&lower, name).map(|value| {
+        let start = value.as_ptr() as usize - lower.as_ptr() as usize;
+        body[start..start + value.len()].to_string()
+    })
+}
+
+fn tag_attr_exact<'a>(body: &'a str, name: &str) -> Option<&'a str> {
+    let mut search_from = 0;
+    while let Some(at) = body[search_from..].find(name) {
+        let at = search_from + at;
+        let after_name = at + name.len();
+        let rest = body[after_name..].trim_start();
+        let Some(rest) = rest.strip_prefix('=') else {
+            search_from = after_name;
+            continue;
+        };
+        let rest = rest.trim_start();
+        let quote = rest.chars().next()?;
+        if quote != '"' && quote != '\'' {
+            search_from = after_name;
+            continue;
+        }
+        let content = &rest[quote.len_utf8()..];
+        let end = content.find(quote)?;
+        return Some(&content[..end]);
+    }
+    None
+}
+
+/// Find the matching `</name>` for a tag opened at `rest`, honoring nesting of
+/// the same tag. Returns (inner, after-close) or the whole rest when unclosed.
+/// The scan steps byte by byte but only ever *slices* at ASCII `<`, which is
+/// always a char boundary even in bodies with multi-byte characters.
+fn take_until_close<'a>(rest: &'a str, name: &str) -> (&'a str, &'a str) {
+    let open = format!("<{name}");
+    let close = format!("</{name}");
+    let lower = rest.to_ascii_lowercase();
+    let mut depth = 1usize;
+    let mut at = 0;
+    while at < lower.len() {
+        if lower.as_bytes()[at] != b'<' {
+            at += 1;
+            continue;
+        }
+        let tail = &lower[at..];
+        if tail.starts_with(&close) {
+            depth -= 1;
+            if depth == 0 {
+                let close_end = tail.find('>').map(|e| at + e + 1).unwrap_or(lower.len());
+                return (&rest[..at], &rest[close_end..]);
+            }
+            at += close.len();
+        } else if tail.starts_with(&open) {
+            depth += 1;
+            at += open.len();
+        } else {
+            at += 1;
+        }
+    }
+    (rest, "")
+}
+
+/// The recursive normalizer. Paired inline containers (a/code/em/strong and
+/// h1–h4/summary) wrap their inner, already-normalized content; block tags
+/// contribute newlines; unknown tags are dropped and their text kept.
+fn normalize_html(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+    while !rest.is_empty() {
+        let Some(open) = rest.find('<').filter(|&i| looks_like_tag_at(rest, i)) else {
+            out.push_str(rest);
+            break;
+        };
+        out.push_str(&rest[..open]);
+        rest = &rest[open..];
+        let Some((name, closing, body, after)) = take_tag(rest) else {
+            // A lone '<' with no '>' is prose, not markup.
+            out.push('<');
+            rest = &rest[1..];
+            continue;
+        };
+        rest = after;
+        if closing {
+            if matches!(
+                name.as_str(),
+                "p" | "ul" | "ol" | "blockquote" | "div" | "section"
+            ) {
+                out.push('\n');
+            }
+            continue;
+        }
+        match name.as_str() {
+            "a" => {
+                let href = tag_attr(body, "href").unwrap_or_default();
+                let (inner, after) = take_until_close(rest, "a");
+                let inner = normalize_html(inner);
+                if href.is_empty() {
+                    out.push_str(&inner);
+                } else {
+                    out.push_str(&format!("[{}]({})", inner.trim(), href));
+                }
+                rest = after;
+            }
+            "code" | "em" | "i" | "strong" | "b" => {
+                let (inner, after) = take_until_close(rest, &name);
+                let inner = normalize_html(inner);
+                let marks = if name == "code" {
+                    "`"
+                } else if matches!(name.as_str(), "em" | "i") {
+                    "*"
+                } else {
+                    "**"
+                };
+                out.push_str(marks);
+                out.push_str(inner.trim());
+                out.push_str(marks);
+                rest = after;
+            }
+            "h1" | "h2" | "h3" | "h4" | "summary" => {
+                let (inner, after) = take_until_close(rest, &name);
+                let inner = normalize_html(inner);
+                let hashes = "#".repeat(name.trim_start_matches('h').parse().unwrap_or(2).max(2));
+                if name == "summary" {
+                    out.push_str(&format!("\n\n**{}**\n\n", inner.trim()));
+                } else {
+                    out.push_str(&format!("\n\n{hashes} {}\n\n", inner.trim()));
+                }
+                rest = after;
+            }
+            "img" => {
+                let src = tag_attr(body, "src").unwrap_or_default();
+                let alt = tag_attr(body, "alt").unwrap_or_default();
+                if !src.is_empty() {
+                    out.push_str(&format!("\n\n![{}]({})\n\n", alt, src));
+                }
+            }
+            "br" => out.push('\n'),
+            "hr" => out.push_str("\n\n---\n\n"),
+            "li" => out.push_str("\n- "),
+            "p" | "ul" | "ol" | "blockquote" | "details" | "div" | "section" => {
+                out.push('\n');
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Decode the handful of entities GitHub actually emits in bodies.
+fn decode_entities(text: &str) -> String {
+    text.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+}
+
+/// Normalization can introduce blank runs and dangling list markers (a `<li>`
+/// whose text sits inside a nested `<p>`). Collapse 3+ newlines to 2 and
+/// reattach a lone `-` line to the content that follows it.
+fn collapse_blank_lines(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut blank = false;
+    let mut dangling_item = false;
+    for line in text.split('\n') {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            blank = !out.is_empty();
+            continue;
+        }
+        if trimmed == "-" {
+            dangling_item = true;
+            continue;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+            if blank {
+                out.push('\n');
+            }
+        }
+        if dangling_item {
+            out.push_str("- ");
+            dangling_item = false;
+        }
+        blank = false;
+        // Drop the indentation HTML introduces around list content.
+        out.push_str(line.trim_start());
+    }
+    out
+}
+
+/// Normalize every Markdown-carrying field of a fetched issue.
+fn normalize_issue(issue: &mut GhIssue) {
+    issue.body = markdown_body(&issue.body);
+    for comment in &mut issue.comments {
+        comment.body = markdown_body(&comment.body);
+    }
+}
+
+/// Normalize every Markdown-carrying field of a fetched pull request.
+fn normalize_pull(pull: &mut GhPull) {
+    pull.body = markdown_body(&pull.body);
+    for comment in &mut pull.comments {
+        comment.body = markdown_body(&comment.body);
+    }
+    for review in &mut pull.reviews {
+        review.body = markdown_body(&review.body);
+    }
+}
+
 /// A compact "3d ago"-style label for an RFC3339 timestamp. Unknown formats
 /// fall back to the raw date so nothing is hidden.
 pub fn relative_time(iso: &str) -> String {
@@ -507,8 +779,13 @@ pub struct GhCheck {
     pub name: String,
     #[serde(default)]
     pub context: String,
+    /// StatusContext result (`SUCCESS`, `PENDING`, …).
     #[serde(default)]
     pub state: String,
+    /// CheckRun execution state (`QUEUED`, `IN_PROGRESS`, `COMPLETED`, …).
+    /// This is distinct from StatusContext's `state` in `gh --json` output.
+    #[serde(default)]
+    pub status: String,
     #[serde(default)]
     pub conclusion: String,
     #[serde(default)]
@@ -536,8 +813,10 @@ impl GhCheck {
         }
         let raw = if !self.conclusion.is_empty() {
             self.conclusion.as_str()
-        } else {
+        } else if !self.state.is_empty() {
             self.state.as_str()
+        } else {
+            self.status.as_str()
         };
         match raw.to_ascii_uppercase().as_str() {
             "SUCCESS" => CheckBucket::Passed,
@@ -632,7 +911,11 @@ pub struct GhPull {
     pub head_ref: String,
     #[serde(rename = "baseRefName", default)]
     pub base_ref: String,
-    #[serde(rename = "statusCheckRollup", default)]
+    #[serde(
+        rename = "statusCheckRollup",
+        default,
+        deserialize_with = "deserialize_null_default"
+    )]
     pub checks: Vec<GhCheck>,
     #[serde(default)]
     pub additions: u64,
@@ -764,7 +1047,7 @@ impl ReviewAction {
     }
 }
 
-const PR_LIST_FIELDS: &str = "number,title,state,isDraft,author,labels,reviewDecision,mergeable,mergeStateStatus,headRefName,baseRefName,statusCheckRollup,additions,deletions,changedFiles,updatedAt,url";
+const PR_LIST_FIELDS: &str = "number,title,state,isDraft,author,labels,reviewDecision,mergeable,mergeStateStatus,headRefName,baseRefName,statusCheckRollup,additions,deletions,changedFiles,createdAt,updatedAt,url";
 const PR_VIEW_FIELDS: &str = "number,title,state,isDraft,body,author,labels,reviewDecision,mergeable,mergeStateStatus,headRefName,baseRefName,statusCheckRollup,additions,deletions,changedFiles,createdAt,updatedAt,url,comments,reviews,commits,files";
 
 /// The repository's pull requests, newest first, under `filter`.
@@ -792,13 +1075,25 @@ pub fn list_pulls(cwd: &Path, filter: &PrFilter) -> Result<Vec<GhPull>, String> 
     parse_json(&run(cwd, &args)?)
 }
 
+/// GitHub serializes an absent rollup as either an empty list or `null`.
+/// Neither should invalidate the otherwise complete pull-request summary.
+fn deserialize_null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Option::<T>::deserialize(deserializer).map(Option::unwrap_or_default)
+}
+
 /// One pull request with its description, comments, reviews, commits, and files.
 pub fn view_pull(cwd: &Path, number: u64) -> Result<GhPull, String> {
     let number = number.to_string();
-    parse_json(&run(
+    let mut pull: GhPull = parse_json(&run(
         cwd,
         &["pr", "view", &number, "--json", PR_VIEW_FIELDS],
-    )?)
+    )?)?;
+    normalize_pull(&mut pull);
+    Ok(pull)
 }
 
 /// Create a pull request from the current branch, returning `gh`'s printed URL.
@@ -1010,6 +1305,33 @@ mod tests {
     }
 
     #[test]
+    fn running_check_run_status_makes_the_rollup_pending() {
+        let raw = r#"[{
+          "number":17,"title":"Feature","state":"OPEN","author":{"login":"octocat"},
+          "statusCheckRollup":[
+            {"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS"},
+            {"__typename":"CheckRun","name":"build","status":"IN_PROGRESS","conclusion":""}
+          ]
+        }]"#;
+        let pulls: Vec<GhPull> = serde_json::from_str(raw).unwrap();
+        assert_eq!(pulls[0].checks[1].bucket_kind(), CheckBucket::Pending);
+        assert_eq!(pulls[0].checks_summary(), Some(CheckBucket::Pending));
+    }
+
+    #[test]
+    fn a_null_check_rollup_does_not_invalidate_the_pr_summary() {
+        let raw = r#"{
+          "number":17,"title":"Feature","state":"OPEN","author":{"login":"octocat"},
+          "additions":10,"deletions":2,"changedFiles":3,"statusCheckRollup":null
+        }"#;
+        let pull: GhPull = serde_json::from_str(raw).unwrap();
+        assert!(pull.checks.is_empty());
+        assert_eq!(pull.additions, 10);
+        assert_eq!(pull.deletions, 2);
+        assert_eq!(pull.changed_files, 3);
+    }
+
+    #[test]
     fn reviews_and_files_parse() {
         let review: GhReview = serde_json::from_str(
             r#"{"author":{"login":"octocat"},"body":"lgtm","state":"APPROVED","submittedAt":"2026-01-01T00:00:00Z"}"#,
@@ -1022,5 +1344,52 @@ mod tests {
         .unwrap();
         assert_eq!(file.path, "src/lib.rs");
         assert_eq!(file.change_type, "MODIFIED");
+    }
+
+    #[test]
+    fn dependabot_html_becomes_markdown() {
+        let raw = "Updates `cn` from 0.3.3 to 0.5.2\n\
+<details>\n<summary>Release notes</summary>\n\
+<p><em>Sourced from <a href=\"https://github.com/shadcn-ui/cn/releases\">cn's releases</a>.</em></p>\n\
+<blockquote>\n<h2>cn@0.5.2</h2>\n<h3>Patch Changes</h3>\n<ul>\n<li>\n\
+<p><a href=\"https://redirect.github.com/shadcn-ui/cn/pull/162\">#162</a> \
+<a href=\"https://github.com/shadcn-ui/cn/commit/b8c5a1b\"><code>b8c5a1b</code></a> Thanks!</p>\n\
+</li>\n</ul>\n</blockquote>\n</details>\n<br />\n\
+<img alt=\"Image\" src=\"https://example.com/shot.png\" />";
+        let md = markdown_body(raw);
+        assert!(!md.contains('<'), "no raw HTML remains:\n{md}");
+        assert!(
+            md.contains("**Release notes**"),
+            "summary becomes bold: {md}"
+        );
+        assert!(md.contains("## cn@0.5.2"), "h2 becomes a heading: {md}");
+        assert!(md.contains("### Patch Changes"), "h3: {md}");
+        assert!(
+            md.contains("[cn's releases](https://github.com/shadcn-ui/cn/releases)"),
+            "link: {md}"
+        );
+        assert!(
+            md.contains("[#162](https://redirect.github.com/shadcn-ui/cn/pull/162)"),
+            "pr link: {md}"
+        );
+        assert!(
+            md.contains("[`b8c5a1b`](https://github.com/shadcn-ui/cn/commit/b8c5a1b)"),
+            "commit link keeps inline code: {md}"
+        );
+        assert!(md.contains("- "), "list item: {md}");
+        assert!(
+            md.contains("![Image](https://example.com/shot.png)"),
+            "img: {md}"
+        );
+        assert!(!md.contains("\n\n\n"), "blank runs collapse: {md}");
+    }
+
+    #[test]
+    fn plain_markdown_and_prose_angles_pass_through() {
+        let plain = "Fix the bug.\n\n- step one\n- step two";
+        assert_eq!(markdown_body(plain), plain);
+        // A `<` that does not open a tag is prose, not markup.
+        let prose = "assert!(a < b && c > d)";
+        assert_eq!(markdown_body(prose), prose);
     }
 }

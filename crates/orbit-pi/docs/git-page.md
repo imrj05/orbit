@@ -23,8 +23,8 @@ removal, moving, locking, pruning — lives on the Worktrees page
 | **History** | `git log` | Commit rows with ref badges, author, relative time, paged. Clicking a row expands it in place: full body, author/committer facts, **Open on GitHub**, copy hash, and the changed files with a per-file actions menu. |
 | **Graph** | `git log --branches HEAD` (plus `--remotes --tags` with **All refs**) | Lane graph laid out by `git::layout_graph`, with the same expandable commit detail as History. |
 | **Stashes** | `git stash list` | The stash stack newest first: **Stash changes**, then pop / apply / drop per entry. |
-| **Issues** | `gh issue …` | Open/Closed/All, search, label filter/picker, **New issue** (with **Generate**), list, and a detail view with the rendered Markdown body, comments, a comment composer, **Close/Reopen**, **Edit labels**, and **Open on GitHub**. |
-| **Pull requests** | `gh pr …` | Open/Closed/Merged/All, search, **New pull request** (title, body, base picker, draft, **Generate**), list with CI rollup and review-decision chips, and a detail view with description, checks, commits, changed files, comments, reviews, **Approve** / **Request changes**, **Merge** (method + delete-branch confirm), **Close/Reopen**, and **Checkout branch**. |
+| **Issues** | `gh issue …` | Open/Closed/All state tabs, search, label filter/picker, **New issue** (with **Generate**), a compact list, and a detail view with the rendered Markdown body, comments, a comment composer, **Close/Reopen**, **Edit labels**, and **Open on GitHub**. |
+| **Pull requests** | `gh pr …` | Open/Closed/Merged/All state tabs, search, **New pull request** (title, body, base picker, draft, **Generate**), a compact list, and a detail view with description, checks, commits, changed files, comments, reviews, **Approve** / **Request changes**, **Merge** (method + delete-branch confirm), **Close/Reopen**, and **Checkout branch**. |
 
 The Issues and Pull requests tabs only appear when `gh` is installed. A missing
 `gh` or a signed-out CLI renders an honest setup state instead of an empty tab.
@@ -94,10 +94,32 @@ the branch name read as words; the body lists the branch's commits and changed f
 `## Summary` / `## What happened`. Either way the result lands in the editable title and
 body fields, and **Create** is still a separate, deliberate press.
 
-The Issues and Pull requests lists are built to scan: labels collapse to a `+N` chip, each
-row ends in a fixed relative-time column, and closed items are de-emphasized. The issue
-detail's reading-column + metadata-rail layout is now shared by the pull-request detail,
-whose rail summarizes review, checks, changes, branches, and the timeline.
+Issues and pull requests share a quiet three-line row: type, number, state glyph, relative
+time and external link; a single-line title; then repository and up to two label badges
+(with a `+N` overflow badge). Open items use primary title ink and closed items are
+de-emphasized.
+
+Every line of that row is a truncating run inside a flex row, with `flex_1 min_w_0` on the
+text itself. A percentage-width block as a direct child of the row's column is measured
+against an indefinite width: its run truncates at zero and paints nothing but the ellipsis.
+The row's column therefore stretches its children rather than aligning them to the start,
+and the row clips any run longer than its content box, so an over-long title stops inside the
+row's padding instead of under the pane divider.
+
+State tabs sit above one separate tool row — the search field, the repository-label picker
+and **New issue** / **New pull request**. Search submits from the glyph inside its own frame,
+so the field keeps the row's spare width instead of sharing it with a duplicate button; at
+narrow list widths the label picker drops to its glyph, and the create action to a plus with
+a tooltip, so nothing wraps away from reach.
+
+At 800px and wider a resizable list sits beside the detail; below that the detail replaces
+the list and its back arrow restores the list. The detail header keeps the item type,
+number, state, full wrapping title, author/timeline and actions above a separately scrolling
+reading column. Descriptions and discussions use full Markdown with hairline separation
+rather than nested cards. The PR header also carries branch flow, review/check state and
+diff totals; its reading column retains checks, commits, changed files, reviews, merge and
+comment/review controls. Empty descriptions and unselected detail panes have explicit
+states rather than blank surfaces.
 
 The branch chip opens a menu with **Merge branch…**, **Rebase onto…**, every
 local branch (checkout; delete uses safe `-d` first, then a confirmed `-D`),

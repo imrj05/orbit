@@ -11,8 +11,22 @@ cannot be faked with a pre-blurred image copy, because a popover must blur what
 is actually behind it (a transcript, a diff, another pane), not just the
 photograph.
 
-Only four places differ from the crates.io source. Everything else is
-untouched, so re-vendoring a 0.2.x release means replaying these files.
+Four places differ from the crates.io source to add the glass pass. Everything
+else is untouched, so re-vendoring a 0.2.x release means replaying these files.
+
+Two further changes are lint cleanliness, not features, and must be replayed
+too:
+
+- `src/taffy.rs`'s grid-repeat helper spells its float literals `0.0_f32` /
+  `1.0_f32`. `length()`/`fr()` take `Into<f32>`, and an untyped literal used to
+  fall back from `f64` silently; newer toolchains warn (future-incompatible),
+  which fails `-D warnings` builds.
+- `Cargo.toml`'s `[lints.clippy]` table allows `derivable_impls`,
+  `unnecessary_unwrap` and `approx_constant`. This release trips them, upstream's
+  workspace policy silences them, and they are style nits in code Orbit does not
+  own — the flagged constant is the frost marker's hue sentinel, not a
+  mathematical constant. With these, the vendored crate lints clean on its own
+  instead of only through the app.
 
 ## 1. `src/scene.rs` — the marker
 
@@ -65,6 +79,8 @@ run a timer to release either cache.
 
 ## Re-verifying a re-vendor
 
+- `cargo clippy --lib -p gpui --no-deps -- -D warnings` is clean, so the
+  vendored crate can be checked on its own rather than only through the app.
 - `cargo test -p orbit-pi glass` covers the marker contract and the theme gate.
 - Launch with a wallpaper (Settings → Appearance) and confirm the sidebar and
   composer smear the image behind them, with the wallpaper beside them sharp.

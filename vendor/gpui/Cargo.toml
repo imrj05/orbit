@@ -619,6 +619,15 @@ single_range_in_vec_init = "allow"
 todo = "deny"
 too_many_arguments = "allow"
 type_complexity = "allow"
+# This pinned release trips three lints that upstream's workspace policy
+# silences. They are style nits in code Orbit does not own, and the constant
+# flagged by `approx_constant` is the frost marker's hue sentinel, not a
+# mathematical constant. Keeping them allowed is what makes
+# `cargo clippy --lib -p gpui --no-deps -- -D warnings` clean without
+# editing upstream source; see README.orbit.md.
+derivable_impls = "allow"
+unnecessary_unwrap = "allow"
+approx_constant = "allow"
 
 [lints.clippy.style]
 level = "allow"
