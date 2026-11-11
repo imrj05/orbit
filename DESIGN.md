@@ -561,9 +561,13 @@ under one grammar — ordered dither, the same screen the wallpaper's `Dither` e
   behind the transcript; panels and cards keep the card-opacity treatment and its frost,
   and the black overlay is resolved against the image's own dot extremes (not its cell
   averages) wherever text reads on the sharp picture. Edge fades — the transcript's
-  bottom settle above the composer, the navigation rail's ends — end on the page's fill
-  at the page's own opacity, so a fade dissolves into the page instead of printing a
-  band of palette canvas across the picture.
+  bottom settle above the composer, the navigation rail's ends — **frost** what they
+  cover instead of painting the page's colour over it: a colour stop cannot match a
+  translucent page over a picture (every extra layer pulls the strip toward the palette
+  canvas and prints a band that looks separate from the page), while a blur keeps the
+  picture's own brightness, so the strip reads as the page it sits on and the text under
+  it stops being text. Without a backdrop pass the strip falls back to the page's
+  composited appearance.
 
 Both are the page's floor, not an illustration: nothing on the page depends on them, and
 the chat page has neither.
