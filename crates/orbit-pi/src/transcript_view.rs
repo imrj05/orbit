@@ -1814,6 +1814,9 @@ fn render_navigation_rail(
 /// Rail edge fade: a 20px gradient from the background so scrolling
 /// ticks dissolve instead of clipping.
 fn render_rail_fade(top: bool, theme: Theme) -> impl IntoElement {
+    // The page's own fill, for the same reason the transcript's bottom fade
+    // uses it: over a wallpaper an opaque palette stop would print a band.
+    let (clear, page) = crate::message_scroller::fade_stops(theme);
     let base = div()
         .absolute()
         .left_0()
@@ -1821,15 +1824,15 @@ fn render_rail_fade(top: bool, theme: Theme) -> impl IntoElement {
         .h(px(20.))
         .bg(linear_gradient(
             180.,
-            linear_color_stop(theme.background.opacity(0.), 0.),
-            linear_color_stop(theme.background, 1.),
+            linear_color_stop(clear, 0.),
+            linear_color_stop(page, 1.),
         ));
     if top {
         // Solid at the top edge, fading down: flip the stop order.
         base.top_0().bg(linear_gradient(
             180.,
-            linear_color_stop(theme.background, 0.),
-            linear_color_stop(theme.background.opacity(0.), 1.),
+            linear_color_stop(page, 0.),
+            linear_color_stop(clear, 1.),
         ))
     } else {
         base.bottom_0()
@@ -2261,10 +2264,10 @@ fn user_message_bubble(body: &str, theme: Theme, column_width: Option<Pixels>) -
         )
         .max_w(px(USER_BUBBLE_MAX_WIDTH))
         .rounded(panel::RADIUS.px(&theme))
-        .bg(theme.card_fill(theme.surface_elevated))
-        .when_some(theme.glass_sigma(), |bubble, sigma| {
-            bubble.border_color(gpui::backdrop_blur_marker(sigma))
-        })
+        // The reader's own words keep the palette's surface over a wallpaper:
+        // a picture showing through the text they wrote is not a material, and
+        // the page behind the transcript already carries it.
+        .bg(theme.surface_elevated)
         .text_color(theme.text_primary)
         .px(DynamicSpacing::Base12.px(&theme))
         .py(DynamicSpacing::Base08.px(&theme))

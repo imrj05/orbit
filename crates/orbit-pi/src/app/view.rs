@@ -1304,33 +1304,21 @@ impl Render for OrbitApp {
                                                 .debug_selector(|| "composer-box".to_string())
                                                 .w_full()
                                                 .relative()
-                                                .bg(theme.card_fill(theme.surface_secondary))
+                                                // Chrome you type into stays the
+                                                // palette's own surface, even over
+                                                // a wallpaper. A frosted box turns
+                                                // the picture behind it into
+                                                // blotches inside the field the
+                                                // reader is writing in, and the
+                                                // wallpaper is meant to sit behind
+                                                // the page, not inside it.
+                                                .bg(theme.surface_secondary)
                                                 .rounded(input::composer_radius(&theme))
-                                                // The composer floats on the
-                                                // wallpaper, so it frosts: what
-                                                // it sits over is soft, what is
-                                                // typed into it stays crisp.
-                                                .when_some(theme.glass_sigma(), |card, sigma| {
-                                                    let marker = gpui::backdrop_blur_marker(sigma);
-                                                    card.border_1().border_color(marker)
-                                                })
-                                                .when(theme.glass_sigma().is_none(), |card| {
-                                                    card.border_1().border_color(
-                                                        Self::composer_border_color(
-                                                            &theme,
-                                                            self.file_drag_hovered,
-                                                        ),
-                                                    )
-                                                })
-                                                .children(theme.glass_sigma().map(|_| {
-                                                    crate::theme::tokens::frosted_edge(
-                                                        Self::composer_border_color(
-                                                            &theme,
-                                                            self.file_drag_hovered,
-                                                        ),
-                                                        input::composer_radius(&theme),
-                                                    )
-                                                }))
+                                                .border_1()
+                                                .border_color(Self::composer_border_color(
+                                                    &theme,
+                                                    self.file_drag_hovered,
+                                                ))
                                                 .shadow(theme.composer_shadow())
                                                 .text_size(TextSize::Default.px(&theme))
                                                 .flex()

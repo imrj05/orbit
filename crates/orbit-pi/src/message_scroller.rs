@@ -12,8 +12,8 @@
 use std::{cell::Cell, ops::Range, rc::Rc};
 
 use gpui::{
-    div, linear_color_stop, linear_gradient, prelude::*, px, rems, svg, ElementId, ListAlignment,
-    ListOffset, ListScrollEvent, ListState, Pixels,
+    div, linear_color_stop, linear_gradient, prelude::*, px, rems, svg, ElementId, Hsla,
+    ListAlignment, ListOffset, ListScrollEvent, ListState, Pixels,
 };
 
 use crate::app::{button_frame, icon_button_frame, ControlExt, TipExt, BUTTON_GROUP};
@@ -308,7 +308,20 @@ pub fn render_scroller(
         })
 }
 
+/// The two colours a scroller edge fades between: the page's own appearance,
+/// and that appearance fully cleared.
+///
+/// The page is translucent over a wallpaper, so its *appearance* is the fill
+/// composited with the dimmed picture ([`Theme::page_appearance`]). Ending the
+/// fade on the bare palette canvas instead printed a darker band with a hard
+/// edge at the composer, exactly where the page carried any of the picture.
+pub(crate) fn fade_stops(theme: Theme) -> (Hsla, Hsla) {
+    let page = theme.page_appearance();
+    (page.opacity(0.), page)
+}
+
 fn render_bottom_fade(theme: Theme) -> impl IntoElement {
+    let (clear, page) = fade_stops(theme);
     div()
         .id(ElementId::Name("message-scroller-fade".into()))
         .absolute()
@@ -318,8 +331,8 @@ fn render_bottom_fade(theme: Theme) -> impl IntoElement {
         .h(rems(3.))
         .bg(linear_gradient(
             180.,
-            linear_color_stop(theme.background.opacity(0.), 0.),
-            linear_color_stop(theme.background, 1.),
+            linear_color_stop(clear, 0.),
+            linear_color_stop(page, 1.),
         ))
 }
 
@@ -380,6 +393,50 @@ fn render_jump_button(state: MessageScrollerState, theme: Theme) -> impl IntoEle
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The transcript's edge fade settles into the page, so its far stop is the
+    /// page's own appearance — opaque, because a fade has to hide the content it
+    /// covers, but composited with the picture the page is showing. Ending on
+    /// the bare palette canvas printed a darker band with a hard edge above the
+    /// composer wherever the page carried any of the picture.
+    #[test]
+    fn the_scroller_fade_ends_on_the_page_appearance() {
+        use crate::theme::ThemeId;
+        use crate::wallpaper::{surfaces, Brightness, WallpaperMode, WallpaperSettings};
+
+        let plain = Theme::for_id(ThemeId::OrbitOnyx);
+        let (clear, page) = fade_stops(plain);
+        assert_eq!(clear, clear.opacity(0.), "the near stop is fully cleared");
+        assert_eq!(
+            page, plain.background,
+            "no wallpaper: the canvas is the page"
+        );
+
+        // A bright dithered picture: the page shows some of it, so its
+        // appearance is lighter than the canvas the fade used to end on.
+        let brightness = Brightness {
+            samples: vec![[0.72, 0.66, 0.38]; 16],
+            extremes: vec![[0.02, 0.02, 0.02], [0.72, 0.66, 0.38]],
+        };
+        let settings = WallpaperSettings {
+            mode: WallpaperMode::FullWindow,
+            path: Some(std::path::PathBuf::from("/tmp/any")),
+            ..WallpaperSettings::default()
+        };
+        let wallpapered = plain.with_wallpaper(surfaces(plain, &settings, Some(&brightness)));
+        let (_, page) = fade_stops(wallpapered);
+        assert_eq!(
+            page.a, 1.,
+            "the fade still has to hide the content it covers"
+        );
+        assert_eq!(page, wallpapered.page_appearance());
+        assert!(
+            page.l > plain.background.l,
+            "a bright picture lightens the page: {} vs {}",
+            page.l,
+            plain.background.l
+        );
+    }
 
     type RowHeights = Rc<std::cell::RefCell<std::collections::HashMap<usize, f32>>>;
 

@@ -248,7 +248,7 @@ wallpaper.image_opacity_description: "How strongly the image reads through the w
 wallpaper.blur: "Desenfoque"
 wallpaper.blur_description: "Softens the backdrop so text and controls stay the focus."
 wallpaper.dim: "Dim overlay"
-wallpaper.dim_description: "A theme-coloured overlay that settles a bright image behind the interface."
+wallpaper.dim_description: "A black overlay that settles a bright image behind the interface."
 wallpaper.card_opacity: "Card opacity"
 wallpaper.card_opacity_description: "Requested translucency for cards, panels, and dialogs. Contrast checks may raise it."
 wallpaper.glass: "Glass panes"

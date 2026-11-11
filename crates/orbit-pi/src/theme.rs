@@ -308,7 +308,7 @@ pub struct SurfaceTreatment {
     pub full_window: bool,
     /// Requested image-layer opacity, 0..=1.
     pub image_opacity: f32,
-    /// Effective theme-coloured overlay over the image, 0..=1.
+    /// Effective alpha of the black overlay between the image and the UI, 0..=1.
     pub dim: f32,
     /// Effective alpha for cards, menus, and dialogs.
     pub card_alpha: f32,
@@ -318,6 +318,11 @@ pub struct SurfaceTreatment {
     /// their fill. False wherever the renderer has no backdrop pass, so a
     /// surface never asks for a blur that cannot be painted.
     pub glass: bool,
+    /// The page's own appearance, composited once: its fill over the dimmed
+    /// picture's average. Opaque, so an edge fade that has to hide content can
+    /// land on the page instead of on the bare palette canvas behind it.
+    /// `None` means the palette canvas is the page (no wallpaper).
+    pub page: Option<Hsla>,
 }
 
 impl SurfaceTreatment {
@@ -331,6 +336,7 @@ impl SurfaceTreatment {
         card_alpha: 1.0,
         panel_alpha: 1.0,
         glass: false,
+        page: None,
     };
 }
 
@@ -1513,8 +1519,12 @@ impl Theme {
         self
     }
 
-    /// The fill of a card-like surface (settings board, composer, menu,
+    /// The fill of a card-like surface (settings board, transcript card, menu,
     /// dialog). With no active wallpaper this is exactly `base`.
+    ///
+    /// The composer and the reader's own message bubble do not use this: they
+    /// carry the text someone is writing or reading back, so they keep the
+    /// palette surface and let the wallpaper stay behind the page.
     pub fn card_fill(self, base: Hsla) -> Hsla {
         if self.wallpaper.active {
             base.opacity(self.wallpaper.card_alpha)
@@ -1558,6 +1568,20 @@ impl Theme {
     /// plain translucent fill, which is the whole difference between the two.
     pub fn glass_sigma(self) -> Option<f32> {
         (self.wallpaper.active && self.wallpaper.glass).then_some(GLASS_BLUR)
+    }
+
+    /// What the page behind the transcript reads as: the palette canvas, or —
+    /// over a wallpaper — that canvas composited with the dimmed picture.
+    ///
+    /// Edge fades end here. A fade has to hide the content it covers, so it
+    /// cannot be translucent; ending it on `background` printed a band of bare
+    /// canvas across the picture wherever the page carried any of it.
+    pub fn page_appearance(self) -> Hsla {
+        if self.wallpaper.active {
+            self.wallpaper.page.unwrap_or(self.background)
+        } else {
+            self.background
+        }
     }
 
     /// The fill of the sidebar and the main column. Hero-only wallpaper leaves
