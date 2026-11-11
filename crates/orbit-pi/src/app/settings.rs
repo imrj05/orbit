@@ -4,7 +4,7 @@ use crate::motion::Hover;
 use crate::quota::note_should_render;
 use crate::theme::tokens::{
     button, context_menu, input, modal, panel, picker, popover, BufferLineHeight, ButtonSize,
-    DynamicSpacing, HeadlineSize, IconSize, Radius, TextSize, BORDER_WIDTH,
+    DynamicSpacing, HeadlineSize, IconSize, Radius, StyledExt, TextSize, BORDER_WIDTH,
 };
 use crate::theme::MotionPreference;
 use gpui::{canvas, Bounds, DispatchPhase, Hitbox, HitboxBehavior, MouseMoveEvent};
@@ -218,6 +218,11 @@ const SETTINGS_SECTIONS: &[(SettingsSection, &str, &str)] = &[
         "settings.subagents",
     ),
     (
+        SettingsSection::Permissions,
+        "icons/lock.svg",
+        "settings.permissions",
+    ),
+    (
         SettingsSection::Plugins,
         "icons/extensions.svg",
         "settings.plugins",
@@ -429,6 +434,11 @@ const SETTINGS_SEARCH_INDEX: &[(SettingsSection, &str, &str)] = &[
     ),
     (
         SettingsSection::Appearance,
+        "wallpaper.glass",
+        "wallpaper glass frost blur frosted backdrop pane panel translucent",
+    ),
+    (
+        SettingsSection::Appearance,
         "wallpaper.derive_accent",
         "wallpaper accent tint color extract",
     ),
@@ -492,6 +502,11 @@ const SETTINGS_SEARCH_INDEX: &[(SettingsSection, &str, &str)] = &[
         SettingsSection::Subagents,
         "settings.subagents",
         "subagents agents delegate child task scout worker reviewer",
+    ),
+    (
+        SettingsSection::Permissions,
+        "settings.permissions",
+        "permissions rules allow deny ask approve guard bash command tool access scope subagent",
     ),
     (
         SettingsSection::Plugins,
@@ -1046,6 +1061,10 @@ impl OrbitApp {
                 tr!("settings.subagents"),
                 tr!("settings.subagents_description"),
             ),
+            SettingsSection::Permissions => (
+                tr!("settings.permissions"),
+                tr!("settings.permissions_description"),
+            ),
             SettingsSection::Plugins => {
                 (tr!("settings.plugins"), tr!("settings.plugins_description"))
             }
@@ -1182,6 +1201,7 @@ impl OrbitApp {
             SettingsSection::Skills => Vec::new(),
             // Rendered by `subagents_ui::render_subagents_page`.
             SettingsSection::Subagents => Vec::new(),
+            SettingsSection::Permissions => self.permissions_rows(theme, this.clone(), cx),
             SettingsSection::Plugins => self.plugin_rows(theme, this.clone(), cx),
             // The MCP page's rows are owned by `mcp_ui`; it needs the cursor
             // and filter state that lives beside the manager.
@@ -2479,8 +2499,10 @@ impl OrbitApp {
         div()
             .w_full()
             .bg(theme.surface_secondary)
-            .border_1()
-            .border_color(theme.border)
+            .when_some(theme.glass_sigma(), |card, _| {
+                card.bg(theme.card_fill(theme.surface_secondary))
+            })
+            .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
             .rounded(panel::RADIUS.px(&theme))
             .px(DynamicSpacing::Base12.px(&theme))
             .py(DynamicSpacing::Base40.px(&theme))
@@ -3779,8 +3801,10 @@ impl OrbitApp {
             .w_full()
             .min_w_0()
             .bg(theme.surface_secondary)
-            .border_1()
-            .border_color(theme.border)
+            .when_some(theme.glass_sigma(), |card, _| {
+                card.bg(theme.card_fill(theme.surface_secondary))
+            })
+            .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
             .rounded(panel::RADIUS.px(&theme))
             .p(DynamicSpacing::Base12.px(&theme))
             .flex()
@@ -4694,8 +4718,7 @@ impl OrbitApp {
         let mut board = div()
             .w_full()
             .bg(theme.card_fill(theme.surface_secondary))
-            .border_1()
-            .border_color(theme.border)
+            .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
             .rounded(panel::RADIUS.px(&theme))
             .flex()
             .flex_col();
@@ -6690,6 +6713,21 @@ impl OrbitApp {
                         &settings,
                     )),
                 ));
+                if gpui::backdrop_blur_supported() {
+                    rows.push(self.setting_row(
+                        theme,
+                        &tr!("wallpaper.glass"),
+                        Some(&tr!("wallpaper.glass_description")),
+                        None,
+                        Some(self.settings_toggle(
+                            "wallpaper-glass",
+                            settings.glass,
+                            theme,
+                            this.clone(),
+                            Self::toggle_wallpaper_glass,
+                        )),
+                    ));
+                }
                 rows.push(self.setting_row(
                     theme,
                     &tr!("wallpaper.derive_accent"),
@@ -6926,6 +6964,13 @@ impl OrbitApp {
                     .child(display),
             )
             .into_any_element()
+    }
+
+    /// Frost the panes over the wallpaper, or show it sharp through them.
+    pub(super) fn toggle_wallpaper_glass(&mut self, cx: &mut Context<Self>) {
+        let mut settings = crate::wallpaper::settings();
+        settings.glass = !settings.glass;
+        self.set_wallpaper(settings, cx);
     }
 
     pub(super) fn toggle_wallpaper_accent(&mut self, cx: &mut Context<Self>) {
@@ -7568,7 +7613,8 @@ impl OrbitApp {
             | SettingsSelect::ActiveModel
             | SettingsSelect::ModelProvider
             | SettingsSelect::RetentionMode
-            | SettingsSelect::RetentionDays => unreachable!(),
+            | SettingsSelect::RetentionDays
+            | SettingsSelect::AccessMode => unreachable!(),
         };
         let selected = values
             .iter()
@@ -8111,6 +8157,11 @@ impl OrbitApp {
         ix: usize,
         cx: &mut Context<Self>,
     ) -> bool {
+        // Settings → Permissions owns four dropdowns; they live beside that
+        // page's state rather than in this file.
+        if self.apply_permission_select(kind, ix, cx) {
+            return true;
+        }
         match kind {
             SettingsSelect::AccentColor => {
                 if let Some(color) = theme::AccentColor::ALL.get(ix).copied() {
@@ -8359,7 +8410,8 @@ impl OrbitApp {
             | SettingsSelect::ActiveModel
             | SettingsSelect::ModelProvider
             | SettingsSelect::RetentionMode
-            | SettingsSelect::RetentionDays => unreachable!(),
+            | SettingsSelect::RetentionDays
+            | SettingsSelect::AccessMode => unreachable!(),
         }
         theme::set_ui_prefs(cx, ui);
         true
@@ -8464,6 +8516,7 @@ impl OrbitApp {
             }
             SettingsSection::Skills => self.refresh_skills(cx),
             SettingsSection::Subagents => self.refresh_subagents(cx),
+            SettingsSection::Permissions => self.refresh_permissions(cx),
             SettingsSection::Plugins => self.refresh_plugins(cx),
             SettingsSection::Mcp => self.mcp_section_opened(cx),
             _ => {}

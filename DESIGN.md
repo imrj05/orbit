@@ -535,23 +535,39 @@ under one grammar — ordered dither, the same screen the wallpaper's `Dither` e
 
 - **No image configured:** a painted halftone field (`backdrop`) — an 8×8 Bayer screen of
   four dot sizes over a soft density field, densest in a band behind the composer and
-  calmer — never empty — toward the window's edges through a floored elliptical
-  vignette, so the screen runs edge to edge and its drift is visible to the frame. It is
-  drawn in
-  `text_muted` at 55% (dark) / 62% (light), so it is paper texture, never a second content
-  layer, and it works in all thirteen palettes without a per-palette asset.
+  calmer — never empty — toward the window's edges, so the screen runs edge to edge and
+  its drift is visible to the frame. **The plane is the palette's own `background`, never a
+  wash:** the accent appears only as the dots' ink, at 32/42/52% of its own alpha across
+  the ladder, so a full page still reads as the theme's canvas carrying a texture rather
+  than an accent-tinted slab. That keeps it a paper texture, never a second content layer,
+  and works in all thirteen palettes without a per-palette asset.
 - **The monogram is screened into that field.** Where the app mark sits — in the band of
   open grain under the centered composer column, at `MARK_CY` — the same screen takes over its
   shape: a coverage
   mask sampled from the shipped `app-icon.png` (never redrawn by hand, so the backdrop
-  cannot drift from the icon), glyphs holding a quiet density at rest while a soft band
-  of light crosses them every twenty seconds, filling each letter with the largest dot in
-  turn. The mark paints one step quieter than the grain around it (`MARK_INK`), and a
-  layer too small to hold it drops it rather than stretching a wordmark into mush.
+  cannot drift from the icon), glyphs holding a density above the page grain at rest while
+  a soft band of light crosses them every twenty seconds, filling each letter with the
+  largest dot in turn. The mark is denser, not a different colour, and a layer too small to
+  hold it drops it rather than stretching a wordmark into mush.
 - **A wallpaper configured:** the processed image (`wallpaper`), with an optional artwork
   effect (`None`, `Dither`, `ASCII`, `Halftone`, or `Scanlines`), an effect intensity, an
-  effect pixel size, and a theme-coloured dim overlay. Hero mode paints it only in the main
-  column; full-window mode paints it behind the sidebar too, with translucent surfaces above.
+  effect pixel size, and a **black** overlay — never a palette tint, which washed a bright
+  picture out while claiming to dim it. Hero mode paints it only in the main column;
+  full-window mode paints it behind the sidebar too, with translucent surfaces above.
+  The wallpaper stays *behind the page*: the composer and the reader's own message bubble
+  paint the palette's surface at full opacity, because a picture showing through the field
+  you are typing in reads as a stain, not as a material. The page itself never goes below
+  88% of the palette canvas, so an artwork effect's dots tint the page instead of drawing
+  behind the transcript; panels and cards keep the card-opacity treatment and its frost,
+  and the black overlay is resolved against the image's own dot extremes (not its cell
+  averages) wherever text reads on the sharp picture. Edge fades — the transcript's
+  bottom settle above the composer, the navigation rail's ends — **frost** what they
+  cover instead of painting the page's colour over it: a colour stop cannot match a
+  translucent page over a picture (every extra layer pulls the strip toward the palette
+  canvas and prints a band that looks separate from the page), while a blur keeps the
+  picture's own brightness, so the strip reads as the page it sits on and the text under
+  it stops being text. Without a backdrop pass the strip falls back to the page's
+  composited appearance.
 
 Both are the page's floor, not an illustration: nothing on the page depends on them, and
 the chat page has neither.

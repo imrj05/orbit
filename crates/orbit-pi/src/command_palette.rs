@@ -615,6 +615,12 @@ impl CommandPalette {
                 "settings preferences skills skill.md instructions agent",
             ),
             (
+                SettingsSection::Permissions,
+                "icons/lock.svg",
+                tr!("settings.permissions"),
+                "settings preferences permissions rules allow deny ask approve guard commands subagents",
+            ),
+            (
                 SettingsSection::Plugins,
                 "icons/extensions.svg",
                 tr!("settings.plugins"),

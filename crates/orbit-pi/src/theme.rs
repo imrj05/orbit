@@ -295,6 +295,11 @@ impl ThemeId {
 /// The values live on [`Theme`] so paint sites that only receive a theme (the
 /// elevation helpers, transcript cards, settings boards) can make the same
 /// decision as the window renderer without threading an `App` through.
+/// How far a frosted pane spreads the image behind it, in logical points.
+/// Twelve points is the strength a menu or a popover needs to read as glass at
+/// arm's length without turning the wallpaper into a flat wash.
+pub const GLASS_BLUR: f32 = 12.;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SurfaceTreatment {
     /// A processed wallpaper is behind the UI.
@@ -303,12 +308,21 @@ pub struct SurfaceTreatment {
     pub full_window: bool,
     /// Requested image-layer opacity, 0..=1.
     pub image_opacity: f32,
-    /// Effective theme-coloured overlay over the image, 0..=1.
+    /// Effective alpha of the black overlay between the image and the UI, 0..=1.
     pub dim: f32,
     /// Effective alpha for cards, menus, and dialogs.
     pub card_alpha: f32,
     /// Effective alpha for the sidebar/main-column surfaces.
     pub panel_alpha: f32,
+    /// Panes frost the image behind them instead of showing it sharp through
+    /// their fill. False wherever the renderer has no backdrop pass, so a
+    /// surface never asks for a blur that cannot be painted.
+    pub glass: bool,
+    /// The page's own appearance, composited once: its fill over the dimmed
+    /// picture's average. Opaque, so an edge fade that has to hide content can
+    /// land on the page instead of on the bare palette canvas behind it.
+    /// `None` means the palette canvas is the page (no wallpaper).
+    pub page: Option<Hsla>,
 }
 
 impl SurfaceTreatment {
@@ -321,6 +335,8 @@ impl SurfaceTreatment {
         dim: 0.0,
         card_alpha: 1.0,
         panel_alpha: 1.0,
+        glass: false,
+        page: None,
     };
 }
 
@@ -1503,13 +1519,68 @@ impl Theme {
         self
     }
 
-    /// The fill of a card-like surface (settings board, composer, menu,
+    /// The fill of a card-like surface (settings board, transcript card, menu,
     /// dialog). With no active wallpaper this is exactly `base`.
+    ///
+    /// The composer and the reader's own message bubble do not use this: they
+    /// carry the text someone is writing or reading back, so they keep the
+    /// palette surface and let the wallpaper stay behind the page.
     pub fn card_fill(self, base: Hsla) -> Hsla {
         if self.wallpaper.active {
             base.opacity(self.wallpaper.card_alpha)
         } else {
             base
+        }
+    }
+
+    /// The hover wash for a control.
+    ///
+    /// On an opaque surface this is the palette's own `surface_hover` step.
+    /// Once that surface shows the wallpaper through it the step has to be ink
+    /// at alpha instead: an opaque wash on a frosted card or pane reads as a
+    /// slab cut into the glass rather than a state of it. With no wallpaper
+    /// this resolves to exactly the same colour as before.
+    pub fn hover_wash(self) -> Hsla {
+        if self.wallpaper.active {
+            self.overlay_strong
+        } else {
+            self.surface_hover
+        }
+    }
+
+    /// The pressed wash: [`Self::hover_wash`]'s rule, one step deeper.
+    ///
+    /// Deepened from `overlay_strong`'s own alpha rather than from a new
+    /// palette value, so each palette still decides how strong its ink states
+    /// are. The clamp keeps a heavy wash from burying the surface it sits on.
+    pub fn pressed_wash(self) -> Hsla {
+        if self.wallpaper.active {
+            self.text_primary
+                .opacity((self.overlay_strong.a * 1.5).min(0.30))
+        } else {
+            self.surface_active
+        }
+    }
+
+    /// The blur radius, in logical points, a pane over the wallpaper frosts its
+    /// backdrop with. `None` when there is no wallpaper, the Glass panes setting
+    /// is off, or this renderer has no backdrop pass — the pane then keeps its
+    /// plain translucent fill, which is the whole difference between the two.
+    pub fn glass_sigma(self) -> Option<f32> {
+        (self.wallpaper.active && self.wallpaper.glass).then_some(GLASS_BLUR)
+    }
+
+    /// What the page behind the transcript reads as: the palette canvas, or —
+    /// over a wallpaper — that canvas composited with the dimmed picture.
+    ///
+    /// Edge fades end here. A fade has to hide the content it covers, so it
+    /// cannot be translucent; ending it on `background` printed a band of bare
+    /// canvas across the picture wherever the page carried any of it.
+    pub fn page_appearance(self) -> Hsla {
+        if self.wallpaper.active {
+            self.wallpaper.page.unwrap_or(self.background)
+        } else {
+            self.background
         }
     }
 
@@ -2794,6 +2865,82 @@ mod tests {
         let light = Theme::for_id(ThemeId::OrbitLight).with_ui(theme.ui);
         assert_eq!(light.theme_id, ThemeId::OrbitLight);
         assert_eq!(light.ui, theme.ui);
+    }
+
+    #[test]
+    fn glass_needs_a_wallpaper_and_the_setting() {
+        let theme = Theme::dark();
+        assert_eq!(
+            theme.glass_sigma(),
+            None,
+            "no wallpaper means nothing to frost"
+        );
+
+        let treatment = SurfaceTreatment {
+            active: true,
+            glass: true,
+            ..SurfaceTreatment::OPAQUE
+        };
+        assert_eq!(
+            theme.with_wallpaper(treatment).glass_sigma(),
+            Some(GLASS_BLUR)
+        );
+
+        let off = SurfaceTreatment {
+            glass: false,
+            ..treatment
+        };
+        assert_eq!(theme.with_wallpaper(off).glass_sigma(), None);
+    }
+
+    /// A control's wash follows the surface under it: the palette's own step
+    /// while that surface is opaque, ink at alpha once the wallpaper shows
+    /// through it — and always one visible step from rest to pressed.
+    #[test]
+    fn a_control_wash_follows_the_surface_under_it() {
+        for base in [Theme::dark(), Theme::light()] {
+            assert_eq!(
+                base.hover_wash(),
+                base.surface_hover,
+                "an opaque surface keeps the palette's hover step"
+            );
+            assert_eq!(base.pressed_wash(), base.surface_active);
+
+            let glass = base.with_wallpaper(SurfaceTreatment {
+                active: true,
+                ..SurfaceTreatment::OPAQUE
+            });
+            assert_eq!(
+                glass.hover_wash(),
+                glass.overlay_strong,
+                "over the wallpaper the hover is the palette's ink wash"
+            );
+            assert_eq!(
+                glass.hover_wash().h,
+                glass.text_primary.h,
+                "a wash is the ink role, never a surface step"
+            );
+            // A state is never a slab: pressing deepens the wash and stays
+            // translucent, so the image still reads through the control.
+            assert!(
+                glass.pressed_wash().a > glass.hover_wash().a,
+                "pressed must be visible against hover"
+            );
+            assert!(
+                glass.pressed_wash().a < 0.31,
+                "pressed must stay a wash, got {}",
+                glass.pressed_wash().a
+            );
+            // The setting alone decides the frost; the fill rule does not
+            // change when the renderer cannot blur.
+            let unfrosted = base.with_wallpaper(SurfaceTreatment {
+                active: true,
+                glass: false,
+                ..SurfaceTreatment::OPAQUE
+            });
+            assert_eq!(unfrosted.glass_sigma(), None);
+            assert_eq!(unfrosted.hover_wash(), glass.hover_wash());
+        }
     }
 
     #[test]

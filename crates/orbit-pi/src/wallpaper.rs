@@ -19,8 +19,9 @@
 //! Readability is part of the pipeline, not a fixed alpha: [`surfaces`]
 //! composites representative wallpaper samples with the active palette and
 //! raises the card/panel alpha until primary and secondary text clear their
-//! contrast targets. In hero mode it also raises the dim overlay for text
-//! that sits directly on the image.
+//! contrast targets, then raises the black overlay for text that has to read
+//! against the sharp image — directly in hero mode, through the page's
+//! translucent fill in full-window mode.
 
 use std::{
     borrow::Cow,
@@ -62,7 +63,12 @@ const SECONDARY_TARGET: f32 = 3.0;
 /// rather than making the UI unreadable.
 const MIN_CARD_ALPHA: f32 = 0.35;
 const MAX_CARD_ALPHA: f32 = 1.0;
-/// The dim overlay may reach almost-but-not-quite opaque. A full-white image
+/// How opaque the page behind the transcript and the sessions rail is at
+/// minimum, in full-window mode. Text reads on the page itself, not on a card,
+/// so the picture underneath it may tint the page but may not draw on it: the
+/// artwork effect's dots competing with body copy is noise, not material.
+const MIN_PAGE_ALPHA: f32 = 0.88;
+/// The black overlay may reach almost-but-not-quite opaque. A full-white image
 /// with dark text in a dark theme may need almost all of it.
 const MAX_DIM: f32 = 0.92;
 
@@ -142,13 +148,20 @@ pub struct WallpaperSettings {
     pub image_opacity: f32,
     /// Gaussian blur radius, 0..=40.
     pub blur: f32,
-    /// Theme-coloured overlay over the image, 0..=0.9.
+    /// Opacity of the black overlay painted between the picture and the
+    /// interface, 0..=0.9. Black on purpose: it settles a bright image without
+    /// washing its colour, and it is the layer the page's own transparency
+    /// reveals rather than a tint baked into the palette.
     pub dim: f32,
     /// Requested alpha for cards and panels, 0.35..=1. The contrast pass may
     /// raise this.
     pub card_opacity: f32,
     /// Derive the theme accent from the wallpaper.
     pub derive_accent: bool,
+    /// Frost the wallpaper behind panes instead of showing it sharp through a
+    /// tint. Only the macOS renderer can run the backdrop pass; elsewhere the
+    /// panes keep their plain translucent fill.
+    pub glass: bool,
 }
 
 impl Default for WallpaperSettings {
@@ -165,6 +178,7 @@ impl Default for WallpaperSettings {
             dim: 0.35,
             card_opacity: 0.82,
             derive_accent: true,
+            glass: true,
         }
     }
 }
@@ -233,6 +247,9 @@ impl WallpaperSettings {
         if let Some(derive) = value.get("derive_accent").and_then(Value::as_bool) {
             settings.derive_accent = derive;
         }
+        if let Some(glass) = value.get("glass").and_then(Value::as_bool) {
+            settings.glass = glass;
+        }
         settings
     }
 
@@ -254,6 +271,7 @@ impl WallpaperSettings {
                 "dim": self.dim,
                 "card_opacity": self.card_opacity,
                 "derive_accent": self.derive_accent,
+                "glass": self.glass,
             })
             .to_string(),
         )
@@ -464,7 +482,12 @@ fn is_managed(path: &Path) -> bool {
 /// serialisable so contrast is a pure CPU calculation on the UI thread.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Brightness {
+    /// Each cell's average colour: what a frosted surface shows of the image.
     pub samples: Vec<[f32; 3]>,
+    /// Each cell's darkest and brightest pixel: what text reading against the
+    /// sharp image actually has to separate from. An artwork effect paints dots
+    /// far from the cell's mean, so a mean-only reading would miss them.
+    pub extremes: Vec<[f32; 3]>,
 }
 
 /// The decoded result of one wallpaper pass, before it becomes a GPUI texture.
@@ -580,9 +603,11 @@ fn to_bgra(image: &RgbaImage) -> Vec<u8> {
     bytes
 }
 
-/// An 8×8-ish sample grid. `thumbnail` preserves the photograph's overall
-/// brightness distribution while keeping the set small enough to evaluate
-/// every contrast candidate against.
+/// An 8×8 sample grid, twice over: the cells' means and the cells' extremes.
+/// `thumbnail` preserves the photograph's overall brightness distribution while
+/// keeping the set small enough to evaluate every contrast candidate against;
+/// the extremes come from the painted image itself, because that is where the
+/// artwork effect's dots live.
 fn sample_brightness(image: &RgbaImage) -> Brightness {
     let thumb = image::imageops::thumbnail(image, 8, 8);
     let mut samples = Vec::new();
@@ -590,13 +615,47 @@ fn sample_brightness(image: &RgbaImage) -> Brightness {
         if pixel.0[3] < 16 {
             continue;
         }
-        samples.push([
-            pixel.0[0] as f32 / 255.,
-            pixel.0[1] as f32 / 255.,
-            pixel.0[2] as f32 / 255.,
-        ]);
+        samples.push(rgb_of_pixel(pixel.0));
     }
-    Brightness { samples }
+
+    let (width, height) = image.dimensions();
+    let (width, height) = (u64::from(width.max(1)), u64::from(height.max(1)));
+    let cell_of = |x: u32, y: u32| {
+        let column = (u64::from(x) * 8 / width).min(7);
+        let row = (u64::from(y) * 8 / height).min(7);
+        (row * 8 + column) as usize
+    };
+    // (darkest, brightest) colour seen in the cell so far.
+    let mut cells: Vec<Option<([f32; 3], [f32; 3])>> = vec![None; 64];
+    for (x, y, pixel) in image.enumerate_pixels() {
+        let rgba = pixel.0;
+        if rgba[3] < 16 {
+            continue;
+        }
+        let rgb = rgb_of_pixel(rgba);
+        let value = luminance(rgb);
+        match &mut cells[cell_of(x, y)] {
+            None => cells[cell_of(x, y)] = Some((rgb, rgb)),
+            Some((dark, bright)) => {
+                if value < luminance(*dark) {
+                    *dark = rgb;
+                }
+                if value > luminance(*bright) {
+                    *bright = rgb;
+                }
+            }
+        }
+    }
+    let extremes = cells
+        .into_iter()
+        .flatten()
+        .flat_map(|(dark, bright)| [dark, bright])
+        .collect();
+    Brightness { samples, extremes }
+}
+
+fn rgb_of_pixel([r, g, b, _]: [u8; 4]) -> [f32; 3] {
+    [r as f32 / 255., g as f32 / 255., b as f32 / 255.]
 }
 
 /// Pick a readable, representative accent: the busiest saturated hue bucket,
@@ -947,7 +1006,8 @@ fn blend(from: [f32; 3], to: [f32; 3], alpha: f32) -> [f32; 3] {
     ]
 }
 
-/// The wallpaper after image opacity and the theme-coloured dim overlay.
+/// The wallpaper after image opacity and the black overlay: what the interface
+/// actually sits on.
 fn effective_backdrop(
     sample: [f32; 3],
     theme_bg: [f32; 3],
@@ -955,7 +1015,9 @@ fn effective_backdrop(
     dim: f32,
 ) -> [f32; 3] {
     let image = blend(theme_bg, sample, image_opacity);
-    blend(image, theme_bg, dim)
+    // The overlay is black, not the palette's canvas: a bright picture behind a
+    // light theme has to get darker, and a tint is what made it look washed.
+    blend(image, [0., 0., 0.], dim)
 }
 
 fn surface_over(backdrop: [f32; 3], surface: [f32; 3], alpha: f32) -> [f32; 3] {
@@ -1003,19 +1065,32 @@ fn minimum_alpha(theme: Theme, base: Hsla, brightness: &Brightness) -> f32 {
     hi
 }
 
-/// The dim needed for text sitting directly on the image (hero mode).
-fn minimum_dim(theme: Theme, brightness: &Brightness) -> f32 {
-    if brightness.samples.is_empty() {
+/// The overlay needed for text that reads against the sharp image: directly in
+/// hero mode (`page_alpha` 0), and through the page's translucent fill in
+/// full-window mode.
+///
+/// This reads the cells' extremes, not their means: an artwork effect paints
+/// dots a long way from the cell average, and the dots are what the reader's
+/// eye has to separate from the glyphs.
+fn minimum_dim(theme: Theme, brightness: &Brightness, page_alpha: f32) -> f32 {
+    let samples: &[[f32; 3]] = if brightness.extremes.is_empty() {
+        &brightness.samples
+    } else {
+        &brightness.extremes
+    };
+    if samples.is_empty() {
         return 0.;
     }
     let theme_bg = rgb_of(theme.background);
+    let page = rgb_of(theme.background);
     let (primary, secondary) = (rgb_of(theme.text_primary), rgb_of(theme.text_secondary));
     let at = |dim: f32| {
-        brightness.samples.iter().all(|sample| {
+        samples.iter().all(|sample| {
             let backdrop =
                 effective_backdrop(*sample, theme_bg, theme.wallpaper.image_opacity, dim);
-            contrast_ratio(primary, backdrop) >= PRIMARY_TARGET
-                && contrast_ratio(secondary, backdrop) >= SECONDARY_TARGET
+            let composite = surface_over(backdrop, page, page_alpha);
+            contrast_ratio(primary, composite) >= PRIMARY_TARGET
+                && contrast_ratio(secondary, composite) >= SECONDARY_TARGET
         })
     };
     if at(0.) {
@@ -1058,15 +1133,9 @@ pub fn surfaces(
         dim: clamp(settings.dim, DIM_RANGE),
         card_alpha: clamp(settings.card_opacity, CARD_OPACITY_RANGE),
         panel_alpha: 1.0,
+        glass: settings.glass && gpui::backdrop_blur_supported(),
+        page: None,
     };
-    if !full_window {
-        // Hero-only: headings and folder metadata sit on the image itself.
-        // Raise the overlay until they clear the targets.
-        treatment.dim = treatment
-            .dim
-            .max(minimum_dim(theme.with_wallpaper(treatment), brightness));
-    }
-
     let decorated = theme.with_wallpaper(treatment);
     let mut alpha = treatment.card_alpha;
     for base in [
@@ -1079,11 +1148,67 @@ pub fn surfaces(
     }
     treatment.card_alpha = clamp(alpha, (MIN_CARD_ALPHA, MAX_CARD_ALPHA));
     treatment.panel_alpha = if full_window {
-        treatment.card_alpha
+        // The page is not a card: it carries the transcript, and the sessions
+        // rail carries the session list. It may show the picture through a
+        // black fill, never the picture's own dots drawing behind the words.
+        treatment.card_alpha.max(MIN_PAGE_ALPHA)
     } else {
         1.0
     };
+    // Text sits on the image itself in hero mode and on the page's fill in
+    // full-window mode; either way the black overlay has to settle the picture
+    // far enough for the two ink roles to clear their targets.
+    let page_alpha = if full_window {
+        treatment.panel_alpha
+    } else {
+        0.
+    };
+    treatment.dim = treatment.dim.max(minimum_dim(
+        theme.with_wallpaper(treatment),
+        brightness,
+        page_alpha,
+    ));
+    treatment.page = page_appearance(theme, &treatment, brightness);
     treatment
+}
+
+/// The page's appearance as one opaque colour: the page fill composited over
+/// the dimmed picture's average.
+///
+/// A fade over the transcript has to hide the content it covers, so it cannot
+/// end translucent like the page itself; without this it ended on the bare
+/// palette canvas, and every place the page carried any of the picture showed a
+/// darker band with a hard edge above the composer.
+fn page_appearance(
+    theme: Theme,
+    treatment: &SurfaceTreatment,
+    brightness: &Brightness,
+) -> Option<Hsla> {
+    if brightness.samples.is_empty() {
+        return None;
+    }
+    let mut mean = [0f32; 3];
+    for sample in &brightness.samples {
+        for (sum, channel) in mean.iter_mut().zip(sample) {
+            *sum += channel / brightness.samples.len() as f32;
+        }
+    }
+    let backdrop = effective_backdrop(
+        mean,
+        rgb_of(theme.background),
+        treatment.image_opacity,
+        treatment.dim,
+    );
+    let page = surface_over(backdrop, rgb_of(theme.background), treatment.panel_alpha);
+    Some(
+        gpui::Rgba {
+            r: page[0],
+            g: page[1],
+            b: page[2],
+            a: 1.,
+        }
+        .into(),
+    )
 }
 
 /// Apply the wallpaper-derived accent and surface treatment to a base theme.
@@ -1147,7 +1272,7 @@ fn layer_inner(theme: Theme, reduce_motion: bool, id: &'static str) -> Option<An
                 .left_0()
                 .right_0()
                 .bottom_0()
-                .bg(theme.background.opacity(theme.wallpaper.dim)),
+                .bg(gpui::black().opacity(theme.wallpaper.dim)),
         );
     }
     if reduce_motion {
@@ -1235,6 +1360,7 @@ mod tests {
             dim: 0.2,
             card_opacity: 0.7,
             derive_accent: false,
+            glass: false,
         };
         settings.persist_to(&path).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
@@ -1321,9 +1447,11 @@ mod tests {
         let theme = Theme::for_id(ThemeId::OrbitAzure);
         let calm = Brightness {
             samples: vec![[0.02, 0.02, 0.02]],
+            ..Brightness::default()
         };
         let hostile = Brightness {
             samples: vec![[0.95, 0.95, 0.95]],
+            ..Brightness::default()
         };
         let calm_alpha = minimum_alpha(
             theme.with_wallpaper(SurfaceTreatment::OPAQUE),
@@ -1344,6 +1472,7 @@ mod tests {
         let theme = Theme::for_id(ThemeId::OrbitAzure);
         let brightness = Brightness {
             samples: vec![[0.92, 0.92, 0.92]],
+            ..Brightness::default()
         };
         let settings = WallpaperSettings {
             mode: WallpaperMode::Hero,
@@ -1372,10 +1501,52 @@ mod tests {
     }
 
     #[test]
+    fn glass_panes_follow_the_setting_and_the_renderer() {
+        let theme = Theme::for_id(ThemeId::OrbitAzure);
+        let brightness = Brightness {
+            samples: vec![[0.2, 0.2, 0.2]],
+            ..Brightness::default()
+        };
+        let settings = WallpaperSettings {
+            mode: WallpaperMode::FullWindow,
+            path: Some(PathBuf::from("/tmp/any")),
+            ..WallpaperSettings::default()
+        };
+        let on = surfaces(theme, &settings, Some(&brightness));
+        assert_eq!(on.glass, gpui::backdrop_blur_supported());
+
+        let off = surfaces(
+            theme,
+            &WallpaperSettings {
+                glass: false,
+                ..settings.clone()
+            },
+            Some(&brightness),
+        );
+        assert!(!off.glass);
+
+        // No wallpaper means nothing to frost, whatever the setting says.
+        assert!(!surfaces(theme, &WallpaperSettings::default(), None).glass);
+    }
+
+    #[test]
+    fn glass_defaults_on_and_survives_a_settings_file_without_it() {
+        assert!(WallpaperSettings::default().glass);
+        let parsed = WallpaperSettings::parse(r#"{"mode":"full","path":"/tmp/a.png"}"#);
+        assert!(
+            parsed.glass,
+            "an existing wallpaper.json predates the setting, so it must not turn glass off"
+        );
+        let parsed = WallpaperSettings::parse(r#"{"mode":"full","glass":false}"#);
+        assert!(!parsed.glass);
+    }
+
+    #[test]
     fn full_window_mode_makes_panels_translucent() {
         let theme = Theme::for_id(ThemeId::OrbitAzure);
         let brightness = Brightness {
             samples: vec![[0.2, 0.2, 0.2], [0.7, 0.7, 0.7]],
+            ..Brightness::default()
         };
         let settings = WallpaperSettings {
             mode: WallpaperMode::FullWindow,
@@ -1385,16 +1556,117 @@ mod tests {
         let treatment = surfaces(theme, &settings, Some(&brightness));
         assert!(treatment.active);
         assert!(treatment.full_window);
-        assert_eq!(treatment.panel_alpha, treatment.card_alpha);
+        assert!(
+            treatment.panel_alpha >= treatment.card_alpha,
+            "the page may never be thinner than a card: {} < {}",
+            treatment.panel_alpha,
+            treatment.card_alpha
+        );
+        assert!(treatment.panel_alpha >= MIN_PAGE_ALPHA);
         let decorated = theme.with_wallpaper(treatment);
         assert!(decorated.panel_fill(theme.background).a < 1.0);
         assert!(decorated.card_fill(theme.surface_elevated).a < 1.0);
+    }
+
+    /// The page carries the transcript, so the artwork effect's dots must never
+    /// be the contrast the words are read against. Full window, a dithered
+    /// image: an ink-black ground with bright dots, which the cells' means
+    /// would report as a calm mid-grey.
+    #[test]
+    fn the_page_settles_the_effects_dots_under_the_text() {
+        let ground = [0.02, 0.02, 0.02];
+        let dots = [0.72, 0.66, 0.38];
+        let brightness = Brightness {
+            samples: vec![[0.2, 0.19, 0.11]],
+            extremes: vec![ground, dots],
+        };
+        let settings = WallpaperSettings {
+            mode: WallpaperMode::FullWindow,
+            path: Some(PathBuf::from("/tmp/any")),
+            dim: 0.,
+            card_opacity: 0.65,
+            ..WallpaperSettings::default()
+        };
+        for id in ThemeId::ALL {
+            let theme = Theme::for_id(id);
+            let treatment = surfaces(theme, &settings, Some(&brightness));
+            let theme_bg = rgb_of(theme.background);
+            for (text, target) in [
+                (theme.text_primary, PRIMARY_TARGET),
+                (theme.text_secondary, SECONDARY_TARGET),
+            ] {
+                for sample in &brightness.extremes {
+                    let backdrop = effective_backdrop(
+                        *sample,
+                        theme_bg,
+                        treatment.image_opacity,
+                        treatment.dim,
+                    );
+                    let page = surface_over(backdrop, theme_bg, treatment.panel_alpha);
+                    let ratio = contrast_ratio(rgb_of(text), page);
+                    assert!(
+                        ratio >= target,
+                        "{id:?}: {ratio} < {target} against a dot at the page's own alpha"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The overlay is black, so it darkens a bright picture instead of painting
+    /// the palette over it — a light theme's canvas used to wash the image out
+    /// while claiming to dim it.
+    #[test]
+    fn the_overlay_darkens_instead_of_tinting() {
+        let bright = [0.9, 0.85, 0.6];
+        let background = [0.98, 0.98, 0.97];
+        let clear = effective_backdrop(bright, background, 1., 0.);
+        let dimmed = effective_backdrop(bright, background, 1., 0.5);
+        assert!(
+            luminance(dimmed) < luminance(clear) * 0.6,
+            "half the overlay must take half the light: {} vs {}",
+            luminance(dimmed),
+            luminance(clear)
+        );
+    }
+
+    /// What a frosted surface shows and what a sharp one shows are different
+    /// measurements of the same picture.
+    #[test]
+    fn brightness_reports_cell_means_and_cell_extremes() {
+        let mut image = RgbaImage::from_pixel(32, 32, image::Rgba([0, 0, 0, 255]));
+        image.put_pixel(3, 3, image::Rgba([255, 255, 255, 255]));
+        image.put_pixel(20, 20, image::Rgba([250, 250, 250, 255]));
+        let brightness = sample_brightness(&image);
+        assert_eq!(brightness.samples.len(), 64);
+        assert!(
+            brightness
+                .extremes
+                .iter()
+                .any(|sample| luminance(*sample) > 0.9),
+            "the white pixels have to reach the extremes"
+        );
+        assert!(
+            brightness
+                .extremes
+                .iter()
+                .any(|sample| luminance(*sample) < 0.01),
+            "so does the black ground"
+        );
+        assert!(
+            brightness
+                .samples
+                .iter()
+                .all(|sample| luminance(*sample) < 0.5),
+            "the means stay calm: two dots in a black cell are not a grey cell"
+        );
     }
 
     #[test]
     fn every_palette_keeps_text_readable_over_a_hostile_wallpaper() {
         let brightness = Brightness {
             samples: vec![[0.98, 0.98, 0.98], [0.72, 0.72, 0.72], [0.04, 0.04, 0.04]],
+            ..Brightness::default()
         };
         let settings = WallpaperSettings {
             mode: WallpaperMode::FullWindow,

@@ -7,7 +7,7 @@ use gpui::StyledText;
 
 use crate::theme::tokens::{
     button, context_menu, input, looping, panel, picker, popover, ButtonSize, DynamicSpacing,
-    IconSize, Radius, TextSize,
+    IconSize, Radius, StyledExt, TextSize,
 };
 use crate::usage::tooltip::Tooltip;
 use crate::widgets as ext_widgets;
@@ -656,6 +656,12 @@ impl Render for OrbitApp {
                     .h_full()
                     .overflow_hidden()
                     .bg(theme.panel_fill(theme.surface))
+                    // The rail is the one structural pane that frosts: the
+                    // wallpaper stays sharp beside it, so the image reads as
+                    // something the rail is laid over rather than painted on.
+                    .when_some(theme.glass_sigma(), |panel, sigma| {
+                        panel.border_color(gpui::backdrop_blur_marker(sigma))
+                    })
                     .child(
                         div()
                             .id("sidebar")
@@ -1298,13 +1304,21 @@ impl Render for OrbitApp {
                                                 .debug_selector(|| "composer-box".to_string())
                                                 .w_full()
                                                 .relative()
-                                                .bg(theme.card_fill(theme.surface_secondary))
+                                                // Chrome you type into stays the
+                                                // palette's own surface, even over
+                                                // a wallpaper. A frosted box turns
+                                                // the picture behind it into
+                                                // blotches inside the field the
+                                                // reader is writing in, and the
+                                                // wallpaper is meant to sit behind
+                                                // the page, not inside it.
+                                                .bg(theme.surface_secondary)
+                                                .rounded(input::composer_radius(&theme))
                                                 .border_1()
                                                 .border_color(Self::composer_border_color(
                                                     &theme,
                                                     self.file_drag_hovered,
                                                 ))
-                                                .rounded(input::composer_radius(&theme))
                                                 .shadow(theme.composer_shadow())
                                                 .text_size(TextSize::Default.px(&theme))
                                                 .flex()
@@ -3124,7 +3138,9 @@ impl OrbitApp {
             .w_full()
             .relative()
             .overflow_hidden()
-            .child(Self::dot_backdrop(theme))
+            // Setup contains text throughout the page; the binary new-task
+            // screen cannot provide a reliable contrast behind that text.
+            .bg(theme.background)
             .child(
                 div()
                     .relative()
@@ -4584,8 +4600,10 @@ impl OrbitApp {
                     .px(px(10.))
                     .py(px(7.))
                     .rounded(panel::RADIUS.px(&theme))
-                    .border_1()
-                    .border_color(theme.border)
+                    // A floating strip over the wallpaper, like the approval
+                    // bar below it: translucent, and frosted wherever the
+                    // renderer can blur.
+                    .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
                     .bg(theme.card_fill(theme.surface_elevated))
                     .flex()
                     .items_center()
@@ -4634,8 +4652,7 @@ impl OrbitApp {
                     .px(px(10.))
                     .py(px(7.))
                     .rounded(panel::RADIUS.px(&theme))
-                    .border_1()
-                    .border_color(theme.border)
+                    .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
                     .bg(theme.card_fill(theme.surface_elevated))
                     .flex()
                     .items_center()
@@ -4685,9 +4702,11 @@ impl OrbitApp {
             .w_full()
             .mb(DynamicSpacing::Base08.px(&theme))
             .rounded(panel::RADIUS.px(&theme))
-            .border_1()
-            .border_color(theme.accent.opacity(0.3))
-            .bg(theme.surface_elevated)
+            // Sits in the composer column beside the approval bar and the run
+            // strip, so it takes the same glass: a pane over the wallpaper,
+            // not an opaque slab dropped on it.
+            .frosted_card(&theme, theme.accent.opacity(0.3), panel::RADIUS.px(&theme))
+            .bg(theme.card_fill(theme.surface_elevated))
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -5135,8 +5154,7 @@ impl OrbitApp {
             .mb(px(GAP))
             .px(DynamicSpacing::Base12.px(&theme))
             .rounded(panel::RADIUS.px(&theme))
-            .border_1()
-            .border_color(theme.accent.opacity(0.3))
+            .frosted_card(&theme, theme.accent.opacity(0.3), panel::RADIUS.px(&theme))
             .bg(theme.card_fill(theme.surface_elevated))
             .flex()
             .items_center()
@@ -5255,9 +5273,8 @@ impl OrbitApp {
                 .w_full()
                 .mb(DynamicSpacing::Base08.px(&theme))
                 .rounded(panel::RADIUS.px(&theme))
-                .border_1()
-                .border_color(theme.border)
-                .bg(theme.surface_elevated)
+                .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
+                .bg(theme.card_fill(theme.surface_elevated))
                 .flex()
                 .flex_col()
                 // Clip the rows' hairline separators to the rounded corners.

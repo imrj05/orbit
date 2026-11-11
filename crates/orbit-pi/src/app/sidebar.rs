@@ -3649,6 +3649,10 @@ impl OrbitApp {
             self.sidepane
                 .update(cx, |pane, cx| pane.set_width(px(width), cx));
         }
+        if let Some(width) = layout.github_list_width {
+            self.git_panel
+                .update(cx, |panel, cx| panel.set_github_list_width(px(width), cx));
+        }
         if let Some(height) = layout.terminal_height {
             self.terminal_panel
                 .update(cx, |panel, cx| panel.set_height(px(height), cx));

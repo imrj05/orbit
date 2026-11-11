@@ -360,6 +360,40 @@ every mode: the child cannot exceed the mode and the extension refuses impossibl
 would approve nothing. Depth is 1 and applies to Orbit's own tool; a third-party delegation extension
 loaded in the child is not constrained by it.
 
+### D19 — Permissions: rules over the guard, per command and per agent
+
+**Choice:** the access mode stays the global baseline, and a second layer —
+*granular rules* — lives in `~/.orbit-pi/access-rules.json`, written by
+Settings → Permissions and read fresh by the guard extension on every tool call.
+A rule names a scope (`any` / `session` / `agent:<name>`), a tool family (the
+guard's own `classify()` kinds plus `any`), an optional glob on the call's
+salient argument, and an action (`allow` / `ask` / `deny`). Precedence: **Full
+access is answered before the table** — it means "nothing asks, nothing is
+refused", so no rule can turn it back into a prompt; in a confined mode the
+scopes resolve most-specific first, then deny > ask > allow inside the winning
+scope, then the mode's default. The subagent ceiling is clamped before any
+rule. `deny` blocks
+without a prompt, `ask` with no UI to ask through is refused, and an `allow`
+never covers a compound shell command.
+
+**Rationale:** the mode could only answer "ask for everything" or "ask for
+nothing", and `grantable()` already refused tool-wide grants for `bash` and MCP
+for exactly that reason — one approval would have covered every future command.
+Rules close that gap without a second decision engine: `policy.js` keeps the
+one decision table, and `permissions.rs` only describes it (the defaults table is
+mirrored for the page's baseline, with a test on each side). Per-agent scoping is
+free because a child already carries `ORBIT_SUBAGENT_AGENT`, and it is where the
+feature pays most: a child has no approval window, so an `allow` rule is what
+lets a worker run `git status` at all.
+
+**Consequence:** `net` (`webfetch`, `websearch`) became its own family so a fetch
+can be gated, while its mode default stays `allow` — no existing session changed
+behaviour. The file has one writer each: the app owns `access-rules.json`, the
+extension owns `access-allow.json`, so there is no read-modify-write race. A
+rule is a guard, not a sandbox: command matching is a glob, not a shell parser,
+which is why an `allow` is refused for chained/redirected/substituted commands
+and why `deny` re-checks every segment.
+
 ## The feature parity contract
 
 Everything below must behave identically in the GPUI app (against the pi CLI) as it does in the
@@ -397,6 +431,20 @@ the thinking level, the description and the prompt. Saves are surgical — only 
 owns change, and a file edited elsewhere is never clobbered without an explicit overwrite; a user
 agent can be created, duplicated, renamed, disabled, deleted (Undo restores the exact bytes) and
 reset to builtin. The inspectable-run viewer in `docs/plans/subagents.md` is not built.
+
+Permissions (D19) ship Settings → Permissions as one flat list, not an editor:
+a scope row (every session / main sessions only / one subagent), then one row per
+tool family carrying `Inherit · Allow · Ask · Deny`, the value that resolves to
+(`→ Ask`), and its pattern rules indented beneath it (`rm *` → Deny) with an
+inline form to add one. `Inherit` stores nothing, so the file only holds
+decisions a person made. Under Full access the board is replaced by a statement
+of what that mode does, because the mode short-circuits the table. The guard
+enforces the same file on every tool call, live sessions included; a `deny`
+blocks with a reason the model can act on, and an `ask` in a child (which has no
+approval window) is refused.
+`contrib/orbit-guard-extension/*.test.mjs` covers the engine and the entry point,
+`permissions.rs` covers the store, and `app/permissions_ui_tests.rs` covers the
+page. `docs/permissions.md` is the reference.
 
 The Report a bug draft generator has a searchable model selector. It defaults to the active session model and saves an independent override in `~/.orbit-pi/bug-report-model.json`, leaving both the session and commit-message model unchanged.
 
@@ -712,7 +760,7 @@ per-tool renderers, Windows/Linux native polish.
 1. **P3 scope** — *resolved:* was the dominant estimate (25–40 days); it shipped by keeping the
    Waku pattern map (AGENT.md), one-StyledText-per-block markdown from day one, and tool
    renderers by spec.
-2. **Tool approval protocol gap (D1 residual)** — resolved: pi exposes no native per-tool permission in RPC mode, so Orbit enforces access modes through a bundled `tool_call` extension that prompts via `ctx.ui.select` (Allow once / Always allow this tool / Deny), rendered natively as an inline bar.
+2. **Tool approval protocol gap (D1 residual)** — resolved: pi exposes no native per-tool permission in RPC mode, so Orbit enforces access modes through a bundled `tool_call` extension that prompts via `ctx.ui.select` (Allow once / Always allow this tool / Deny), rendered natively as an inline bar. Settings → Permissions adds per-command and per-agent rules over the same guard (D19), so "`bash` may run but `rm` asks" no longer needs a mode change.
 3. **Composer editor** — *resolved:* the multi-line `ComposerInput` (`EntityInputHandler`) has
    shipped, wrapping, auto-growing, and scrolling. Reuse it for new text controls rather than
    introducing another editor abstraction.

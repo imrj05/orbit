@@ -93,6 +93,7 @@ mod platform;
 // binary must not carry a frame hook or a recorder.
 #[cfg(debug_assertions)]
 mod perf;
+mod permissions;
 mod plugins;
 mod providers;
 mod quota;

@@ -78,7 +78,10 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/app/pickers.rs    model, command-palette, branch, and new-task workspace pickers
   src/app/composer_ops.rs autocomplete, attachments, "+" add-menu, model/thinking chips
   src/app/sidebar.rs    sidebar rows + session/workspace row menus; project-list prefs
-  src/app/settings.rs   Settings surface: General/Runtime/Agent/Skills/Subagents/Plugins/Models/Appearance/Providers/About (+ provider CRUD, plugin install, model list)
+  src/app/settings.rs   Settings surface: General/Runtime/Agent/Skills/Subagents/Permissions/Plugins/Models/Appearance/Providers/About (+ provider CRUD, plugin install, model list)
+  src/app/permissions_ui.rs  Settings → Permissions: baseline select, scope chips (every session /
+                        main only / one subagent), one row per tool family with Inherit·Allow·Ask·Deny,
+                        the resolved value, and its pattern rules + inline add form
   src/app/skills_ui.rs  Settings → Skills master-detail page and its controllers
   src/app/subagents_ui.rs  Settings → Subagents: master-detail list (builtins / user files) + the detail form (tier, mode, model, thinking, description, prompt, model-facing preview), with create/duplicate/rename/disable/delete/undo/reset
   src/app/mcp_ui.rs     Settings → MCP: server list, add/edit modal, probe/apply lifecycle
@@ -139,6 +142,9 @@ crates/orbit-pi/        GPUI app — window, shell, chat, settings
   src/providers.rs      provider catalog + models.json / auth.json read/write for Settings → Providers (provider metadata introspected from pi-ai; curated table is the fallback)
   src/quota.rs          account quota/balance/spend reducer over the `quota.*` RPC and the bridge's session entries (no secrets, no I/O)
   src/access.rs         access mode (Supervised / Auto-accept edits / Full access): persistence to `~/.orbit-pi/access.json`, which the guard extension reads
+  src/permissions.rs    per-command / per-agent permission rules: tool families, scope, glob matching,
+                        `~/.orbit-pi/access-rules.json` (the guard reads it fresh per call), lenient + atomic;
+                        see docs/permissions.md
   src/layout.rs         persisted workbench layout: resizable panel sizes in `~/.orbit-pi/layout.json` (recorded on drag, flushed by the heartbeat once a drag settles)
   src/workflow.rs       workflow mode (Plan / Build / Ask): per-session persistence to `~/.orbit-pi/workflow.json`, which the workflow extension reads
   src/subagent_file.rs  the agent file format: a lenient reader for `~/.pi/agent/agents/*.md` and a surgical writer that changes only the five keys Orbit owns (name, description, model, thinking, tools), preserving comments, key order, foreign keys and the body
@@ -175,8 +181,11 @@ contrib/orbit-guard-extension/  Orbit's bundled pi extension (loaded with
                         (via `ctx.ui.select` → `extension_ui_request`) before
                         mutating calls the active access mode does not
                         auto-approve, offering Allow once / Always allow this
-                        tool / Deny. policy.js holds the decision table and
-                        the `~/.orbit-pi/access-allow.json` allowlist;
+                        tool / Deny. policy.js holds the decision table, the
+                        `~/.orbit-pi/access-allow.json` allowlist, and the
+                        per-command / per-agent rules Settings → Permissions
+                        writes to `~/.orbit-pi/access-rules.json` (rule →
+                        allow / ask / deny, most specific scope first);
                         policy.test.mjs / index.test.mjs are `node --test`
 contrib/orbit-title-extension/  Orbit's bundled pi extension (loaded with
                         `pi --extension`): when a turn settles, asks a model

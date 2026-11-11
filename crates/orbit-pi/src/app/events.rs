@@ -704,6 +704,8 @@ impl OrbitApp {
             parked.execution.apply_event(&event);
             if own_prompt && !parked.execution.status().is_in_progress() {
                 parked.transcript.abandon_reply();
+                parked.turns.finish();
+                parked.transcript.set_review_turn_open(false);
             }
             changed = true;
             match &event {
@@ -845,6 +847,9 @@ impl OrbitApp {
                 _ => {}
             }
             changed |= parked.transcript.apply_event(&event);
+            if matches!(event, Event::AgentSettled { .. }) {
+                parked.transcript.set_review_turn_open(parked.turns.open);
+            }
         }
         parked.busy = parked.execution.status().is_in_progress();
         ParkedDrain {

@@ -28,9 +28,11 @@ import {
   agentEntry,
   allowedCeiling,
   ceilingAllowed,
+  effectiveCeiling,
   loadConfig,
   modeLabel,
   readAccessMode,
+  readRules,
   readWorkflowStore,
   resolveWorkflowMode,
 } from "./mode.js";
@@ -273,6 +275,12 @@ export async function executeTool({ params, signal, onUpdate, ctx, pi, deps, cou
     env: deps.env,
   });
   const allowed = allowedCeiling(accessMode, workflowMode);
+  // Settings → Permissions can pre-authorize a family for one agent, which is
+  // what lets a `worker` run under Supervised instead of being refused here.
+  // Only an unconditional allow rule counts: a pattern authorizes the commands
+  // it matches, not the tier, and this check must not promise a run it cannot
+  // finish.
+  const rules = readRules(path.join(deps.home ?? os.homedir(), ".orbit-pi", "access-rules.json"));
 
   const byName = new Map(agents.map((agent) => [agent.name, agent]));
   const resolved = [];
@@ -295,7 +303,13 @@ export async function executeTool({ params, signal, onUpdate, ctx, pi, deps, cou
         { mode: request.mode, cwd, now: now(), workflowMode },
       );
     }
-    if (!ceilingAllowed(agent.ceiling, allowed)) {
+    const effective = effectiveCeiling({
+      agentName: agent.name,
+      allowed,
+      workflowMode,
+      rules,
+    });
+    if (!ceilingAllowed(agent.ceiling, effective)) {
       return refusal(
         agent.name,
         task.task,
@@ -432,9 +446,11 @@ function capabilityPhrase(ceiling) {
 
 function remedy(ceiling) {
   if (ceiling === "read") return "Its tool list is below this mode's limit, so this should not happen.";
-  if (ceiling === "edit") return "Switch the session to Build + Auto-accept edits or Full access, or delegate to a read-only agent.";
-  if (ceiling === "all") return "Switch the session to Build + Full access, or delegate to an agent whose tools are file tools only.";
-  return "Switch the session to Build + Full access, or delegate to a read-only agent.";
+  if (ceiling === "edit")
+    return "Switch the session to Build + Auto-accept edits or Full access, allow File edits for this agent in Settings → Permissions, or delegate to a read-only agent.";
+  if (ceiling === "all")
+    return "Switch the session to Build + Full access, allow the tool family for this agent in Settings → Permissions, or delegate to an agent whose tools are file tools only.";
+  return "Switch the session to Build + Full access, allow Commands for this agent in Settings → Permissions, or delegate to a read-only agent.";
 }
 
 function safeSessionId(ctx) {

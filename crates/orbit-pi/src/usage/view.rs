@@ -70,7 +70,7 @@ use crate::model_selector::{leading_tile, provider_icon};
 use crate::theme::tokens::RaisedExt;
 use crate::theme::tokens::{
     button, context_menu, input, panel, picker, popover, ButtonSize, DynamicSpacing, IconSize,
-    Motion, Radius, TextSize,
+    Motion, Radius, StyledExt, TextSize,
 };
 use crate::theme::{self, Theme};
 use crate::transcript_view::activity_icon;
@@ -3912,9 +3912,10 @@ fn card(
         .flex_none()
         .w_full()
         .rounded(panel::RADIUS.px(&theme))
-        .border_1()
-        .border_color(theme.border)
-        .bg(theme.surface_elevated)
+        .frosted_card(&theme, theme.border, panel::RADIUS.px(&theme))
+        // Translucent whenever a wallpaper is behind the column, whatever the
+        // renderer can do with it: the frost is the extra, not the condition.
+        .bg(theme.card_fill(theme.surface_elevated))
         .shadow(theme.composer_shadow())
         .flex()
         .flex_col()

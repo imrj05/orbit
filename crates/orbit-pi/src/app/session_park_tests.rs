@@ -749,6 +749,51 @@ fn reading_a_result_does_not_erase_its_execution_outcome(cx: &mut gpui::TestAppC
 }
 
 #[gpui::test]
+fn parked_prompt_rejection_or_handled_response_closes_turn(cx: &mut gpui::TestAppContext) {
+    for (tag, response) in [
+        (
+            "rejected",
+            r#"{"type":"response","id":"send-1","command":"prompt","success":false,"error":"rejected"}"#,
+        ),
+        (
+            "handled",
+            r#"{"type":"response","id":"send-1","command":"prompt","success":true,"data":{"disposition":"handled"}}"#,
+        ),
+    ] {
+        let app = test_app(cx);
+        let fake = FakePi::install(
+            tag,
+            format!("#!/bin/sh\nprintf '%s\\n' '{response}'\nexec cat >/dev/null\n"),
+        );
+        let path = fake.dir.join("session.jsonl");
+        cx.update(|cx| {
+            app.update(cx, |app, _| {
+                let client = spawn_fake(app, &fake);
+                app.adopt_client(client);
+                app.current_session_path = Some(path.clone());
+                app.execution.start();
+                app.execution.prompt_id = Some("send-1".into());
+                app.turns.begin(0);
+                app.park_active_session();
+            })
+        });
+        pump_until(cx, &app, Duration::from_secs(5), |app| {
+            app.lives
+                .get(&path)
+                .is_some_and(|parked| parked.execution.prompt_id.is_none())
+        });
+        cx.update(|cx| {
+            app.update(cx, |app, _| {
+                let parked = app.lives.get_mut(&path).expect("session remains parked");
+                assert!(!parked.busy);
+                assert!(!parked.turns.open, "{tag} must close the turn");
+                assert!(parked.turns.begin(1), "the next prompt starts a new turn");
+            })
+        });
+    }
+}
+
+#[gpui::test]
 fn a_background_approval_stays_pending_and_opens_on_resume(cx: &mut gpui::TestAppContext) {
     let app = test_app(cx);
     let fake = FakePi::install("pending-approval", r#"#!/bin/sh
