@@ -566,8 +566,13 @@ under one grammar — ordered dither, the same screen the wallpaper's `Dither` e
   translucent page over a picture (every extra layer pulls the strip toward the palette
   canvas and prints a band that looks separate from the page), while a blur keeps the
   picture's own brightness, so the strip reads as the page it sits on and the text under
-  it stops being text. Without a backdrop pass the strip falls back to the page's
-  composited appearance.
+  it stops being text. The transcript's 3rem bottom settle blends the sharp and
+  frosted backdrop with a smoothstep from clear at the top to full frost at the
+  bottom, measured over the original strip bounds even when clipped. It adds no
+  palette wash or black dimming; only the blur coverage changes, using one Gaussian
+  pass rather than stacked strips. The composer remains opaque and the jump button
+  supplies its own contrast. Without a backdrop pass the strip falls back to the
+  page's composited appearance.
 
 Both are the page's floor, not an illustration: nothing on the page depends on them, and
 the chat page has neither.

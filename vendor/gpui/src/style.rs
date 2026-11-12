@@ -633,7 +633,9 @@ impl Style {
         // no visible border to lose, so the marker rides there.
         let frost = self.border_color.filter(crate::scene::is_backdrop_marker);
         let border_visible = self.is_border_visible() && frost.is_none();
-        if background_color.is_some_and(|color| !color.is_transparent()) {
+        // A frost request still needs a quad when its fill is fully transparent
+        // or absent; ordinary transparent fills can continue to be culled.
+        if frost.is_some() || background_color.is_some_and(|color| !color.is_transparent()) {
             let mut border_color = match background_color {
                 Some(color) => match color.tag {
                     BackgroundTag::Solid => color.solid,
@@ -1296,11 +1298,74 @@ impl From<Position> for taffy::style::Position {
 
 #[cfg(test)]
 mod tests {
-    use crate::{blue, green, px, red, yellow};
+    use crate::{
+        TestAppContext, backdrop_blur_fade_marker, backdrop_blur_marker, blue, canvas, green,
+        linear_color_stop, linear_gradient, px, red, yellow,
+    };
 
     use super::*;
 
     use util_macros::perf;
+
+    #[gpui::test]
+    fn transparent_style_backdrop_fills_reach_scene(cx: &mut TestAppContext) {
+        let cx = cx.add_empty_window();
+        let transparent = red().alpha(0.);
+        let backgrounds = [
+            None,
+            Some(Background::from(transparent)),
+            Some(linear_gradient(
+                180.,
+                linear_color_stop(transparent, 0.),
+                linear_color_stop(blue().alpha(0.), 1.),
+            )),
+        ];
+        // A marker without an explicit fill must not introduce a tint.
+        assert!(Background::default().is_transparent());
+
+        for marker in [
+            None,
+            Some(backdrop_blur_marker(12.)),
+            Some(backdrop_blur_fade_marker(12.)),
+        ] {
+            for background in backgrounds {
+                cx.draw(point(px(10.), px(10.)), size(px(100.), px(100.)), |_, _| {
+                    canvas(
+                        |_, _, _| (),
+                        move |bounds, (), window, cx| {
+                            let style = Style {
+                                background: background.map(Fill::Color),
+                                border_color: marker,
+                                ..Default::default()
+                            };
+                            let start = window.next_frame.scene.quads.len();
+                            style.paint(bounds, window, cx, |_, _| {});
+                            let quads = &window.next_frame.scene.quads[start..];
+                            if let Some(marker) = marker {
+                                assert_eq!(quads.len(), 1, "missing frost fill: {background:?}");
+                                let quad = &quads[0];
+                                assert_eq!(quad.bounds, bounds.scale(window.scale_factor()));
+                                assert_eq!(quad.background, background.unwrap_or_default());
+                                assert!(quad.background.is_transparent());
+                                assert_eq!(quad.border_widths, Edges::default());
+                                assert_eq!(
+                                    crate::scene::backdrop_blur_sigma(quad),
+                                    Some(12. * window.scale_factor())
+                                );
+                                assert_eq!(
+                                    crate::scene::backdrop_blur_fades(quad),
+                                    marker == backdrop_blur_fade_marker(12.)
+                                );
+                            } else {
+                                assert!(quads.is_empty(), "ordinary transparent fill not culled");
+                            }
+                        },
+                    )
+                    .size(px(40.))
+                });
+            }
+        }
+    }
 
     #[perf]
     fn test_basic_highlight_style_combination() {

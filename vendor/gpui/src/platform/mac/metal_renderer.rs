@@ -2,7 +2,8 @@ use super::metal_atlas::MetalAtlas;
 use crate::{
     AtlasTextureId, Background, Bounds, ContentMask, DevicePixels, MonochromeSprite, PaintSurface,
     Path, Point, PolychromeSprite, PrimitiveBatch, Quad, ScaledPixels, Scene, Shadow, Size,
-    Surface, Underline, backdrop_blur_sample_bounds, backdrop_blur_sigma, point, size,
+    Surface, Underline, backdrop_blur_fades, backdrop_blur_sample_bounds, backdrop_blur_sigma,
+    point, size,
 };
 use anyhow::Result;
 use block::ConcreteBlock;
@@ -910,21 +911,12 @@ impl MetalRenderer {
             ];
         }
 
-        let params = BackdropCompositeParams {
-            origin: [quad.bounds.origin.x.0, quad.bounds.origin.y.0],
-            size: [quad.bounds.size.width.0, quad.bounds.size.height.0],
-            clip_origin: [bounds.origin.x.0, bounds.origin.y.0],
-            clip_size: [bounds.size.width.0, bounds.size.height.0],
-            region_origin: [left as f32, top as f32],
-            region_size: [region.0 as f32, region.1 as f32],
-            viewport_size: viewport,
-            corner_radii: [
-                quad.corner_radii.top_left.0,
-                quad.corner_radii.top_right.0,
-                quad.corner_radii.bottom_left.0,
-                quad.corner_radii.bottom_right.0,
-            ],
-        };
+        let params = BackdropCompositeParams::new(
+            quad,
+            [left as f32, top as f32],
+            [region.0 as f32, region.1 as f32],
+            viewport,
+        );
         let encoder = new_command_encoder_for_texture(command_buffer, target, viewport_size);
         encoder.set_render_pipeline_state(&self.backdrop_composite_pipeline_state);
         let params_ptr = &params as *const BackdropCompositeParams as *const c_void;
@@ -1522,7 +1514,7 @@ fn build_pipeline_state(
 
 /// The uniforms `backdrop_composite_vertex` / `_fragment` read. Field order and
 /// padding match `BackdropCompositeParams` in `shaders.metal`.
-#[repr(C)]
+#[repr(C, align(8))]
 struct BackdropCompositeParams {
     origin: [f32; 2],
     size: [f32; 2],
@@ -1532,6 +1524,182 @@ struct BackdropCompositeParams {
     region_size: [f32; 2],
     viewport_size: [f32; 2],
     corner_radii: [f32; 4],
+    fade: u32,
+    padding: u32,
+}
+
+impl BackdropCompositeParams {
+    fn new(
+        quad: &Quad,
+        region_origin: [f32; 2],
+        region_size: [f32; 2],
+        viewport_size: [f32; 2],
+    ) -> Self {
+        let clipped = quad.bounds.intersect(&quad.content_mask.bounds);
+        Self {
+            origin: [quad.bounds.origin.x.0, quad.bounds.origin.y.0],
+            size: [quad.bounds.size.width.0, quad.bounds.size.height.0],
+            clip_origin: [clipped.origin.x.0, clipped.origin.y.0],
+            clip_size: [clipped.size.width.0, clipped.size.height.0],
+            region_origin,
+            region_size,
+            viewport_size,
+            corner_radii: [
+                quad.corner_radii.top_left.0,
+                quad.corner_radii.top_right.0,
+                quad.corner_radii.bottom_left.0,
+                quad.corner_radii.bottom_right.0,
+            ],
+            fade: u32::from(backdrop_blur_fades(quad)),
+            padding: 0,
+        }
+    }
+}
+
+#[cfg(test)]
+mod backdrop_composite_tests {
+    use super::*;
+    use crate::{backdrop_blur_fade_marker, backdrop_blur_marker};
+
+    #[test]
+    fn backdrop_uniform_layout_matches_metal() {
+        assert_eq!(mem::align_of::<BackdropCompositeParams>(), 8);
+        assert_eq!(mem::size_of::<BackdropCompositeParams>(), 80);
+        assert_eq!(mem::offset_of!(BackdropCompositeParams, origin), 0);
+        assert_eq!(mem::offset_of!(BackdropCompositeParams, size), 8);
+        assert_eq!(mem::offset_of!(BackdropCompositeParams, clip_origin), 16);
+        assert_eq!(mem::offset_of!(BackdropCompositeParams, clip_size), 24);
+        assert_eq!(mem::offset_of!(BackdropCompositeParams, region_origin), 32);
+        assert_eq!(mem::offset_of!(BackdropCompositeParams, region_size), 40);
+        assert_eq!(mem::offset_of!(BackdropCompositeParams, viewport_size), 48);
+        assert_eq!(mem::offset_of!(BackdropCompositeParams, corner_radii), 56);
+        assert_eq!(mem::offset_of!(BackdropCompositeParams, fade), 72);
+        assert_eq!(mem::offset_of!(BackdropCompositeParams, padding), 76);
+    }
+
+    #[test]
+    #[ignore = "requires a Metal GPU; run explicitly on macOS"]
+    fn backdrop_shader_preserves_uniform_frost_and_fades_over_unclipped_bounds() {
+        let device = metal::Device::system_default().expect("Metal GPU required");
+        #[cfg(not(feature = "runtime_shaders"))]
+        let library = device.new_library_with_data(SHADERS_METALLIB).unwrap();
+        #[cfg(feature = "runtime_shaders")]
+        let library = device
+            .new_library_with_source(SHADERS_SOURCE_FILE, &metal::CompileOptions::new())
+            .unwrap();
+        let pipeline = build_backdrop_pipeline_state(
+            &device,
+            &library,
+            "backdrop coverage test",
+            "backdrop_composite_vertex",
+            "backdrop_composite_fragment",
+            MTLPixelFormat::BGRA8Unorm,
+        );
+        let descriptor = metal::TextureDescriptor::new();
+        descriptor.set_width(16);
+        descriptor.set_height(16);
+        descriptor.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
+        descriptor.set_storage_mode(metal::MTLStorageMode::Shared);
+        descriptor
+            .set_usage(metal::MTLTextureUsage::ShaderRead | metal::MTLTextureUsage::RenderTarget);
+        let original = device.new_texture(&descriptor);
+        let blurred = device.new_texture(&descriptor);
+        let target = device.new_texture(&descriptor);
+        let region = metal::MTLRegion::new_2d(0, 0, 16, 16);
+        // Distinct premultiplied BGRA values catch black substitution, channel
+        // swaps, and alpha being forced opaque instead of interpolated.
+        let sharp_pixel = [24u8, 72, 120, 160];
+        let soft_pixel = [192u8, 144, 48, 224];
+        let sharp = sharp_pixel.repeat(16 * 16);
+        let soft = soft_pixel.repeat(16 * 16);
+        // These safe Metal wrappers receive live buffers sized for the whole
+        // 16x16 BGRA8 region, with a 64-byte row stride.
+        original.replace_region(region, 0, sharp.as_ptr().cast(), 64);
+        blurred.replace_region(region, 0, soft.as_ptr().cast(), 64);
+        let queue = device.new_command_queue();
+        let rect = |x, y, w, h| Bounds {
+            origin: point(ScaledPixels(x), ScaledPixels(y)),
+            size: size(ScaledPixels(w), ScaledPixels(h)),
+        };
+        for (fade, clipped) in [(false, false), (true, false), (true, true)] {
+            let quad = Quad {
+                bounds: rect(2., 2., 12., 12.),
+                content_mask: ContentMask {
+                    bounds: if clipped {
+                        rect(2., 8., 12., 6.)
+                    } else {
+                        rect(0., 0., 16., 16.)
+                    },
+                },
+                corner_radii: crate::Corners::all(ScaledPixels(4.)),
+                border_color: if fade {
+                    backdrop_blur_fade_marker(12.)
+                } else {
+                    backdrop_blur_marker(12.)
+                },
+                ..Default::default()
+            };
+            let params = BackdropCompositeParams::new(&quad, [0., 0.], [16., 16.], [16., 16.]);
+            assert_eq!(params.origin, [2., 2.]);
+            assert_eq!(params.size, [12., 12.]);
+            assert_eq!(params.clip_origin, [2., if clipped { 8. } else { 2. }]);
+            assert_eq!(params.clip_size, [12., if clipped { 6. } else { 12. }]);
+            assert_eq!(params.fade, u32::from(fade));
+            assert_eq!(params.padding, 0);
+            let command = queue.new_command_buffer();
+            let pass = metal::RenderPassDescriptor::new();
+            let color = pass.color_attachments().object_at(0).unwrap();
+            color.set_texture(Some(&target));
+            color.set_load_action(metal::MTLLoadAction::Clear);
+            color.set_store_action(metal::MTLStoreAction::Store);
+            color.set_clear_color(metal::MTLClearColor::new(0., 0., 0., 0.));
+            let encoder = command.new_render_command_encoder(pass);
+            encoder.set_render_pipeline_state(&pipeline);
+            let ptr = &params as *const BackdropCompositeParams as *const c_void;
+            encoder.set_vertex_bytes(0, mem::size_of_val(&params) as u64, ptr);
+            encoder.set_fragment_bytes(0, mem::size_of_val(&params) as u64, ptr);
+            encoder.set_fragment_texture(0, Some(&blurred));
+            encoder.set_fragment_texture(1, Some(&original));
+            encoder.draw_primitives(metal::MTLPrimitiveType::Triangle, 0, 6);
+            encoder.end_encoding();
+            command.commit();
+            command.wait_until_completed();
+            assert_eq!(command.status(), metal::MTLCommandBufferStatus::Completed);
+            let mut pixels = [0u8; 16 * 16 * 4];
+            target.get_bytes(pixels.as_mut_ptr().cast(), 64, region, 0);
+            for y in 0..16 {
+                let visible = (if clipped { 8..14 } else { 2..14 }).contains(&y);
+                let t = (y as f32 + 0.5 - 2.) / 12.;
+                let coverage = if fade { t * t * (3. - 2. * t) } else { 1. };
+                let pixel = &pixels[(y * 16 + 8) * 4..][..4];
+                for channel in 0..4 {
+                    let expected = if visible {
+                        let sharp = sharp_pixel[channel] as f32;
+                        let soft = soft_pixel[channel] as f32;
+                        (sharp + (soft - sharp) * coverage).round() as u8
+                    } else {
+                        0
+                    };
+                    assert!(
+                        (pixel[channel] as i32 - expected as i32).abs() <= 1,
+                        "fade={fade} clipped={clipped} y={y} channel={channel}: {pixel:?}, expected {expected}"
+                    );
+                }
+            }
+            // Every visible rounded corner must preserve all sharp BGRA bytes
+            // exactly, including alpha, rather than substituting black.
+            for (x, y) in [(2, 2), (13, 2), (2, 13), (13, 13)] {
+                if clipped && y < 8 {
+                    continue;
+                }
+                assert_eq!(
+                    &pixels[(y * 16 + x) * 4..][..4],
+                    &sharp_pixel,
+                    "fade={fade} clipped={clipped} corner=({x}, {y})"
+                );
+            }
+        }
+    }
 }
 
 /// Owns one `MPSImageGaussianBlur` reference for as long as it is cached.

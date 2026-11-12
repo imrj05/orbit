@@ -308,26 +308,20 @@ pub fn render_scroller(
         })
 }
 
-/// How much of the page's own fill a frosted scroller edge lays over its
-/// blurred strip. The blur is what hides the content, so the wash only has to
-/// keep the page's colour: a thicker one would pull the strip toward the
-/// palette canvas again, which is the band this replaces.
-const FROST_WASH: f32 = 0.35;
-
 /// The two colours a scroller edge fades between.
 ///
 /// The page is translucent over a wallpaper, so a fade that ends *opaque* can
 /// never match it: every extra layer pulls the strip toward the palette canvas
 /// and leaves a darker band with a hard edge right above the composer. With a
-/// backdrop pass the strip therefore blurs instead — a blur keeps the picture's
-/// own brightness, so the band reads as the page it sits on while the text
-/// under it stops being text. Without one, the strip falls back to the page's
-/// composited appearance ([`Theme::page_appearance`]).
+/// backdrop pass the strip therefore blends sharp into frosted pixels, without
+/// adding a tint that would change the picture's brightness. Without one, the
+/// strip falls back to the page's composited appearance
+/// ([`Theme::page_appearance`]).
 pub(crate) fn fade_stops(theme: Theme) -> (Hsla, Hsla) {
     match theme.glass_sigma() {
         Some(_) => {
-            let page = theme.panel_fill(theme.background);
-            (page.opacity(0.), page.opacity(FROST_WASH))
+            let clear = theme.background.opacity(0.);
+            (clear, clear)
         }
         None => {
             let page = theme.page_appearance();
@@ -336,7 +330,7 @@ pub(crate) fn fade_stops(theme: Theme) -> (Hsla, Hsla) {
     }
 }
 
-fn render_bottom_fade(theme: Theme) -> impl IntoElement {
+fn render_bottom_fade(theme: Theme) -> gpui::Stateful<gpui::Div> {
     let (clear, end) = fade_stops(theme);
     let fade = div()
         .id(ElementId::Name("message-scroller-fade".into()))
@@ -351,11 +345,11 @@ fn render_bottom_fade(theme: Theme) -> impl IntoElement {
             linear_color_stop(end, 1.),
         ));
     match theme.glass_sigma() {
-        // The marker rides the quad's border colour; a hairline of it paints
-        // nothing, it only asks the renderer to frost the strip.
+        // The marker paints no border. It smoothly mixes sharp into frosted
+        // backdrop over the strip's original bounds, avoiding a hard blur onset.
         Some(sigma) => fade
             .border_1()
-            .border_color(gpui::backdrop_blur_marker(sigma)),
+            .border_color(gpui::backdrop_blur_fade_marker(sigma)),
         None => fade,
     }
 }
@@ -420,10 +414,9 @@ mod tests {
 
     /// The transcript's bottom fade must never print a band the page does not
     /// have. Over a wallpaper the page is translucent, so an opaque stop is
-    /// always darker than the page beside it; with a backdrop pass the strip
-    /// frosts instead and only lays a thin wash of the page's own fill, which
-    /// keeps the picture's brightness. Without one it falls back to the page's
-    /// composited appearance.
+    /// always different from the page beside it. With a backdrop pass the strip
+    /// frosts instead, without a palette wash changing the picture's brightness.
+    /// Without one it falls back to the page's composited appearance.
     #[test]
     fn the_scroller_fade_matches_the_page_instead_of_printing_a_band() {
         use crate::theme::{SurfaceTreatment, ThemeId};
@@ -454,12 +447,12 @@ mod tests {
         });
         let (clear, end) = fade_stops(frosted);
         assert_eq!(clear.a, 0.);
-        let fill = frosted.panel_fill(plain.background);
-        assert_eq!(end, fill.opacity(FROST_WASH), "the wash is the page's fill");
-        assert!(
-            end.a < 0.4,
-            "a frosted strip washes, it does not cover: {}",
-            end.a
+        assert_eq!(end.a, 0., "the frost adds no palette tint");
+        let mut edge = render_bottom_fade(frosted);
+        assert_eq!(
+            edge.style().border_color,
+            frosted.glass_sigma().map(gpui::backdrop_blur_fade_marker),
+            "the edge must fade blur coverage, not just its background tint"
         );
 
         let unfrosted = frosted.with_wallpaper(SurfaceTreatment {
@@ -469,6 +462,37 @@ mod tests {
         let (_, end) = fade_stops(unfrosted);
         assert_eq!(end, unfrosted.page_appearance());
         assert_eq!(end.a, 1., "without a backdrop pass it has to cover");
+        assert_eq!(render_bottom_fade(unfrosted).style().border_color, None);
+    }
+
+    #[test]
+    fn frosted_scroller_edge_preserves_wallpaper_brightness_in_every_palette() {
+        use crate::theme::{SurfaceTreatment, ThemeId};
+
+        for id in ThemeId::ALL {
+            let plain = Theme::for_id(id);
+            for page in [gpui::black(), gpui::white()] {
+                let frosted = plain.with_wallpaper(SurfaceTreatment {
+                    active: true,
+                    full_window: true,
+                    glass: true,
+                    panel_alpha: 0.88,
+                    page: Some(page),
+                    ..SurfaceTreatment::OPAQUE
+                });
+                let (clear, end) = fade_stops(frosted);
+                assert_eq!(clear.a, 0.);
+                assert_eq!(
+                    end.a, 0.,
+                    "{id:?}: frost must mix sharp/soft pixels, not dim or tint the wallpaper"
+                );
+                let fallback = frosted.with_wallpaper(SurfaceTreatment {
+                    glass: false,
+                    ..frosted.wallpaper
+                });
+                assert_eq!(fade_stops(fallback).1, page);
+            }
+        }
     }
 
     type RowHeights = Rc<std::cell::RefCell<std::collections::HashMap<usize, f32>>>;

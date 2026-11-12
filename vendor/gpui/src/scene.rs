@@ -508,6 +508,7 @@ impl From<Quad> for Primitive {
 // border colour because that is the only per-quad channel that reaches the
 // renderer without changing the scene layout or layout-affecting types.
 const BACKDROP_MARKER_HUE: f32 = 0.707_106_77;
+const BACKDROP_FADE_MARKER_HUE: f32 = 0.618_034;
 const BACKDROP_MARKER_SATURATION: f32 = 0.577_215_7;
 const BACKDROP_MAX_SIGMA: f32 = 4096.;
 
@@ -523,26 +524,47 @@ pub fn backdrop_blur_marker(sigma: f32) -> Hsla {
     }
 }
 
-/// Whether this build's renderer honours [`backdrop_blur_marker`]. Only the
-/// macOS Metal backend runs the backdrop pass; every other backend paints the
-/// marked quad as it always would.
+/// Like [`backdrop_blur_marker`], but smoothly increases blur coverage from
+/// clear at the quad's top to fully frosted at its bottom. The Gaussian sigma
+/// stays constant; only the mix of sharp and blurred backdrop changes, using
+/// smoothstep over the original quad bounds even when clipped. Its background
+/// tint is still uniform. Give the quad no border width.
+pub fn backdrop_blur_fade_marker(sigma: f32) -> Hsla {
+    Hsla {
+        h: BACKDROP_FADE_MARKER_HUE,
+        ..backdrop_blur_marker(sigma)
+    }
+}
+
+/// Whether this build's renderer honours [`backdrop_blur_marker`] and
+/// [`backdrop_blur_fade_marker`]. Only the macOS Metal backend runs the backdrop
+/// pass; every other backend paints the marked quad as it always would.
 pub fn backdrop_blur_supported() -> bool {
-    cfg!(target_os = "macos")
+    cfg!(all(target_os = "macos", not(feature = "macos-blade")))
 }
 
 /// Re-encode a marker from logical points to device pixels. `paint_quad` owns
 /// the scale factor, so call sites pass points and never a window.
 pub(crate) fn scale_backdrop_marker(color: Hsla, scale_factor: f32) -> Hsla {
     match backdrop_blur_sigma_device(&color) {
-        Some(device) => backdrop_blur_marker(device * scale_factor),
+        Some(device) => Hsla {
+            l: (device * scale_factor / BACKDROP_MAX_SIGMA).clamp(0., 1.),
+            ..color
+        },
         None => color,
     }
 }
 
 /// The blur `quad` asks for in device pixels, if it carries
-/// [`backdrop_blur_marker`].
+/// [`backdrop_blur_marker`] or [`backdrop_blur_fade_marker`].
 pub(crate) fn backdrop_blur_sigma(quad: &Quad) -> Option<f32> {
     backdrop_blur_sigma_device(&quad.border_color)
+}
+
+/// Whether a marked quad fades coverage from clear at the top to frost below.
+#[cfg(any(test, all(target_os = "macos", not(feature = "macos-blade"))))]
+pub(crate) fn backdrop_blur_fades(quad: &Quad) -> bool {
+    is_backdrop_marker(&quad.border_color) && quad.border_color.h == BACKDROP_FADE_MARKER_HUE
 }
 
 /// The Gaussian snapshot includes its approximately three-sigma reach and a
@@ -565,11 +587,11 @@ pub(crate) fn backdrop_blur_sample_bounds(
     }
 }
 
-/// Whether `color` is a [`backdrop_blur_marker`]. A style carries the frost
-/// request in its border colour, and `Style::paint` copies it onto the quad's
-/// border field, which is where the renderer reads it back.
+/// Whether `color` is either backdrop marker. A style carries the frost request
+/// in its border colour, and `Style::paint` copies it onto the quad's border
+/// field, which is where the renderer reads it back.
 pub(crate) fn is_backdrop_marker(color: &Hsla) -> bool {
-    color.h == BACKDROP_MARKER_HUE
+    (color.h == BACKDROP_MARKER_HUE || color.h == BACKDROP_FADE_MARKER_HUE)
         && color.s == BACKDROP_MARKER_SATURATION
         && color.a == 0.
         && color.l > 0.
@@ -1009,6 +1031,78 @@ mod backdrop_order_tests {
                 _ => panic!("unexpected batch"),
             })
             .collect()
+    }
+
+    #[test]
+    fn backdrop_markers_round_trip_and_scale_without_changing_coverage() {
+        for marker in [backdrop_blur_marker, backdrop_blur_fade_marker] {
+            for sigma in [0.25, 1., 12., BACKDROP_MAX_SIGMA] {
+                let color = marker(sigma);
+                assert!(is_backdrop_marker(&color)); // Also used by Style::paint.
+                let quad = Quad {
+                    border_color: color,
+                    ..Default::default()
+                };
+                assert_eq!(backdrop_blur_sigma(&quad), Some(sigma));
+                for scale in [0.5, 1., 2.] {
+                    let scaled = scale_backdrop_marker(color, scale);
+                    assert_eq!(scaled, marker((sigma * scale).min(BACKDROP_MAX_SIGMA)));
+                    assert_eq!(
+                        backdrop_blur_fades(&Quad {
+                            border_color: scaled,
+                            ..Default::default()
+                        }),
+                        backdrop_blur_fades(&quad)
+                    );
+                }
+            }
+            for sigma in [-1., 0.] {
+                assert!(!is_backdrop_marker(&marker(sigma)));
+            }
+        }
+        assert!(!backdrop_blur_fades(&Quad {
+            border_color: backdrop_blur_marker(12.),
+            ..Default::default()
+        }));
+        assert!(backdrop_blur_fades(&Quad {
+            border_color: backdrop_blur_fade_marker(12.),
+            ..Default::default()
+        }));
+        let ordinary = Hsla {
+            h: 0.2,
+            s: 0.3,
+            l: 0.4,
+            a: 0.,
+        };
+        assert!(!is_backdrop_marker(&ordinary));
+        assert_eq!(scale_backdrop_marker(ordinary, 2.), ordinary);
+        let visible = Hsla {
+            a: 1.,
+            ..backdrop_blur_fade_marker(12.)
+        };
+        assert!(!is_backdrop_marker(&visible));
+    }
+
+    #[test]
+    fn fading_backdrop_barrier_survives_clipping_layers_and_replay() {
+        let full = rect(-100., -100., 300., 300.);
+        let mut source = Scene::default();
+        source.push_layer(rect(50., 50., 2., 2.));
+        source.insert_primitive(sprite(rect(14., 2., 1., 1.), full));
+        source.pop_layer();
+        let mut fade = glass(rect(0., 0., 10., 10.), rect(0., 5., 10., 5.));
+        fade.border_color = backdrop_blur_fade_marker(1.);
+        source.insert_primitive(fade);
+        source.insert_primitive(path(rect(12., 2., 1., 1.), full));
+        let mut replayed = Scene::default();
+        replayed.replay(0..source.len(), &source);
+        for scene in [&mut source, &mut replayed] {
+            scene.finish();
+            assert_eq!(kinds(scene), ["sprite", "quad", "path"]);
+            assert!(backdrop_blur_fades(&scene.quads[0]));
+            assert_eq!(scene.quads[0].bounds, rect(0., 0., 10., 10.));
+            assert_eq!(scene.quads[0].content_mask.bounds, rect(0., 5., 10., 5.));
+        }
     }
 
     #[test]
